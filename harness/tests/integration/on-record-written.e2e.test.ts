@@ -103,7 +103,7 @@ describe('saveRecord wake integration', () => {
     ]);
   });
 
-  it('parking in function_awaiting_approval does NOT wake', async () => {
+  it('parking in function_awaiting_approval wakes once (post-persist resolution scan)', async () => {
     const { iii, wakeInvocations } = fakeIii();
     const store = createTurnStore(iii);
     const rec = newRecord('sess-c');
@@ -111,6 +111,18 @@ describe('saveRecord wake integration', () => {
 
     await store.saveRecord(rec);
 
+    expect(wakeInvocations).toEqual([
+      {
+        session_id: 'sess-c',
+        function_id: 'turn::function_awaiting_approval',
+        action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
+      },
+    ]);
+
+    // Mid-park re-saves stay silent — further wakes come from
+    // harness::function::resolve.
+    wakeInvocations.length = 0;
+    await store.saveRecord(rec);
     expect(wakeInvocations).toEqual([]);
   });
 

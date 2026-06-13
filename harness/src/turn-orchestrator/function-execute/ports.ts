@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import type { DispatchResult } from '../agent-trigger.js';
+import type { DispatchContext, DispatchResult } from '../agent-trigger.js';
 import { dispatchWithHook, triggerFunctionCall } from '../agent-trigger.js';
 import { emit } from '../events.js';
 import type { ISdk } from '../../runtime/iii.js';
@@ -53,7 +53,7 @@ export type FunctionExecutePorts = TurnStatePorts & {
   emitEnd(session_id: string, executed: ExecutedCall): Promise<void>;
   /** Generic agent-event emit, for the inline max_turns end (message_complete). */
   emit(session_id: string, event: AgentEvent): Promise<void>;
-  dispatch(call: FunctionCall, session_id: string): Promise<DispatchResult>;
+  dispatch(call: FunctionCall, ctx: DispatchContext): Promise<DispatchResult>;
   triggerPreApproved(call: FunctionCall): Promise<FunctionResult>;
 };
 
@@ -92,8 +92,8 @@ export function createPorts(iii: ISdk): FunctionExecutePorts {
       return emit(iii, session_id, event);
     },
 
-    async dispatch(call, session_id) {
-      return dispatchWithHook(iii, withRoutingEnvelope(call, session_id), call);
+    async dispatch(call, ctx) {
+      return dispatchWithHook(iii, ctx, withRoutingEnvelope(call, ctx.session_id), call);
     },
 
     async triggerPreApproved(call) {

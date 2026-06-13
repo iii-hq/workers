@@ -168,16 +168,46 @@ export function toView(rec: TurnStateRecord): TurnStateView {
 
 export type GetStateResult = TurnStateView | null;
 
-const ApprovalDecisionWriteEventSchema = z.object({
-  type: z.literal('state').optional(),
-  scope: z.literal('approvals').optional(),
-  event_type: z.enum(['state:created', 'state:updated']),
-  key: z.string().regex(/^[^/]+\/[^/]+$/),
-  new_value: z.object({ decision: z.enum(['allow', 'deny', 'aborted']) }).passthrough(),
-  old_value: z.unknown().optional(),
-});
+const slashFreeId = (label: string) =>
+  z
+    .string()
+    .min(1)
+    .refine((v) => !v.includes('/'), { message: `${label} must not contain "/"` });
 
-export const ApprovalDecisionEventSchema = ApprovalDecisionWriteEventSchema.transform((data) => {
-  const session_id = data.key.slice(0, data.key.indexOf('/'));
-  return { session_id };
-});
+const ContentBlockSchema = z
+  .object({ type: z.string().min(1) })
+  .passthrough()
+  .array();
+
+/**
+ * `harness::function::resolve` payload — a sibling worker (the
+ * approval-gate) settles one held call: `execute` releases it through the
+ * normal dispatch pipeline; `deliver` answers it with the given content
+ * without executing (user deny, sweep timeout).
+ */
+export const FunctionResolvePayloadSchema = z
+  .object({
+    session_id: slashFreeId('session_id'),
+    turn_id: z.string().min(1),
+    function_call_id: slashFreeId('function_call_id'),
+    action: z.enum(['execute', 'deliver']),
+    is_error: z.boolean().optional(),
+    content: ContentBlockSchema.optional(),
+    details: z.unknown().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.action === 'deliver' && !v.content) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['content'],
+        message: 'content is required when action is "deliver"',
+      });
+    }
+  });
+export type FunctionResolvePayload = z.infer<typeof FunctionResolvePayloadSchema>;
+
+/** `resolved` is false for unknown/already-settled calls — never an error. */
+export type FunctionResolveResult = {
+  resolved: boolean;
+  turn_resumed?: boolean;
+};

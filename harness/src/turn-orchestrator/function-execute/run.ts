@@ -6,6 +6,7 @@ import type { AssistantMessage, FunctionResultMessage } from '../../types/agent-
 import type { FunctionCallContent } from '../../types/content.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import {
+  type DispatchContext,
   TOOL_NAME,
   isErrorResult,
   missingFunctionResult,
@@ -72,20 +73,30 @@ export function enterFunctionExecute(rec: TurnStateRecord, asst: AssistantMessag
   };
 }
 
+/** Hook-chain context for one batch, derived from the FSM record. */
+export function dispatchContext(rec: FunctionBatchTurnRecord): DispatchContext {
+  return {
+    session_id: rec.session_id,
+    turn_id: rec.turn_id,
+    step: rec.turn_count,
+    ...(rec.message_id ? { metadata: { message_id: rec.message_id } } : {}),
+  };
+}
+
 async function resolvePreparedCall(
   ports: FunctionExecutePorts,
   prepared: PreparedCall,
-  session_id: string,
+  ctx: DispatchContext,
 ): Promise<ResolveCallResult> {
   switch (prepared.route) {
     case 'synthetic':
-      return { kind: 'resolved', result: prepared.result, is_error: true };
+      return { kind: 'resolved', result: prepared.result, is_error: prepared.is_error ?? true };
     case 'pre_approved': {
       const result = await ports.triggerPreApproved(prepared.call);
       return { kind: 'resolved', result, is_error: isErrorResult(result) };
     }
     case 'dispatch': {
-      const out = await ports.dispatch(prepared.call, session_id);
+      const out = await ports.dispatch(prepared.call, ctx);
       if (out.kind === 'pending') {
         return { kind: 'pending' };
       }
@@ -101,12 +112,13 @@ export type RunOneCallOptions = {
 
 export async function runOneCall(
   ports: FunctionExecutePorts,
-  session_id: string,
+  ctx: DispatchContext,
   prepared: PreparedCall,
   executed: Record<string, ExecutedCall>,
   opts?: RunOneCallOptions,
 ): Promise<RunOneCallResult> {
   const call: FunctionCall = prepared.call;
+  const { session_id } = ctx;
 
   const prior = executed[call.id];
   if (prior) {
@@ -119,7 +131,7 @@ export async function runOneCall(
   }
   const startedAt = Date.now();
 
-  const resolved = await resolvePreparedCall(ports, prepared, session_id);
+  const resolved = await resolvePreparedCall(ports, prepared, ctx);
   if (resolved.kind === 'pending') {
     return { kind: 'pending', call };
   }
@@ -143,13 +155,14 @@ export async function runBatch(
   const executed = { ...rec.work.executed };
   const awaitingIds = new Set(rec.awaiting_approval.map((entry) => entry.function_call_id));
   const newPending: PendingApproval[] = [];
+  const ctx = dispatchContext(rec);
 
   for (const item of prepared) {
     const callId = preparedCallId(item);
     if (executed[callId]) continue;
     if (awaitingIds.has(callId)) continue;
 
-    const outcome = await runOneCall(ports, rec.session_id, item, executed);
+    const outcome = await runOneCall(ports, ctx, item, executed);
 
     if (outcome.kind === 'pending') {
       newPending.push({

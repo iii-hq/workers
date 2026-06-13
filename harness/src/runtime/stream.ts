@@ -1,7 +1,6 @@
 /**
  * `stream::set` wrapper used to emit AgentEvent / hook reply / arbitrary
- * stream frames. Mirrors `turn-orchestrator/src/events.rs` and the
- * approval-gate stream writers.
+ * stream frames. Mirrors `turn-orchestrator/src/events.rs`.
  */
 
 import type { ISdk } from 'iii-sdk';

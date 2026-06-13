@@ -176,8 +176,11 @@ describe('shouldWakeStep', () => {
     expect(shouldWakeStep('function_execute', 'stopped')).toBe(false);
   });
 
-  it('rejects function_awaiting_approval (orchestrator parks here)', () => {
-    expect(shouldWakeStep('function_execute', 'function_awaiting_approval')).toBe(false);
+  it('wakes once on entry into function_awaiting_approval (post-persist resolution scan)', () => {
+    expect(shouldWakeStep('function_execute', 'function_awaiting_approval')).toBe(true);
+    // Mid-park re-saves stay silent; further wakes come from
+    // harness::function::resolve.
+    expect(shouldWakeStep('function_awaiting_approval', 'function_awaiting_approval')).toBe(false);
   });
 
   it('rejects same-state writes', () => {

@@ -13,7 +13,9 @@ import {
   triggerFunctionCall,
   unwrapAgentTrigger,
 } from '../../src/turn-orchestrator/agent-trigger.js';
-import * as hookModule from '../../src/turn-orchestrator/hook.js';
+import * as chainModule from '../../src/turn-orchestrator/hooks/chain.js';
+
+const CTX = { session_id: 's1', turn_id: 't_test' };
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -459,19 +461,27 @@ describe('fetchContract', () => {
 });
 
 describe('dispatchWithHook returns DispatchResult', () => {
-  it('returns kind:pending when consultBefore returns pending', async () => {
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'pending' });
+  it('returns kind:pending when the hook chain holds the call', async () => {
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({
+      kind: 'hold',
+      held_by: 'approval::gate',
+      pending_timeout_ms: 1_800_000,
+    });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    const out = await dispatchWithHook(iii, {
+    const out = await dispatchWithHook(iii, CTX, {
       id: 'fc-1',
       function_id: 'shell::run',
       arguments: { command: 'ls' },
     });
-    expect(out.kind).toBe('pending');
+    expect(out).toEqual({
+      kind: 'pending',
+      held_by: 'approval::gate',
+      pending_timeout_ms: 1_800_000,
+    });
   });
 
   it('returns kind:result with denied details on hard deny', async () => {
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({
       kind: 'deny',
       denial: {
         schema_version: 1,
@@ -482,7 +492,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
       },
     });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    const out = await dispatchWithHook(iii, {
+    const out = await dispatchWithHook(iii, CTX, {
       id: 'fc-1',
       function_id: 'shell::run',
       arguments: {},
@@ -494,11 +504,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
   });
 
   it('returns kind:result on allow + successful dispatch', async () => {
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockResolvedValue({ ok: true }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(iii, {
+    const out = await dispatchWithHook(iii, CTX, {
       id: 'fc-1',
       function_id: 'shell::run',
       arguments: {},
@@ -506,12 +516,37 @@ describe('dispatchWithHook returns DispatchResult', () => {
     expect(out.kind).toBe('result');
   });
 
+  it('builds the HookInput from the ctx and the ENVELOPED call', async () => {
+    const consult = vi
+      .spyOn(chainModule, 'consultPreDispatch')
+      .mockResolvedValue({ kind: 'allow' });
+    const iii = { trigger: vi.fn().mockResolvedValue({ ok: true }) } as unknown as ISdk;
+    await dispatchWithHook(
+      iii,
+      { session_id: 's1', turn_id: 't_9', step: 3, metadata: { message_id: 'm1' } },
+      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls', session_id: 's1' } },
+    );
+    expect(consult).toHaveBeenCalledWith(iii, {
+      point: 'pre_dispatch',
+      session_id: 's1',
+      turn_id: 't_9',
+      step: 3,
+      depth: 0,
+      metadata: { message_id: 'm1' },
+      call: {
+        id: 'fc-1',
+        function_id: 'shell::run',
+        arguments: { command: 'ls', session_id: 's1' },
+      },
+    });
+  });
+
   it('triggers the TARGET with clean args, not the routing envelope (function_id clobber fix)', async () => {
     // Regression: engine::functions::info { function_id: "sandbox::create" } was
     // arriving with function_id overwritten by the routing envelope (which
     // spreads function_id = the target id), so the engine described itself. The
     // hook sees the envelope; the target must get the caller's untouched args.
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({ kind: 'allow' });
     const trigger = vi.fn().mockResolvedValue({ ok: true });
     const iii = { trigger } as unknown as ISdk;
     const hookCall = {
@@ -524,7 +559,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
       function_id: 'engine::functions::info',
       arguments: { function_id: 'sandbox::create' },
     };
-    const out = await dispatchWithHook(iii, hookCall, targetCall);
+    const out = await dispatchWithHook(iii, CTX, hookCall, targetCall);
     expect(out.kind).toBe('result');
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -540,11 +575,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
     // callable, retried 3× on `function_not_found`. The hint must
     // propose the canonical worker::fn form so the recovery loop
     // collapses to one turn.
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(iii, {
+    const out = await dispatchWithHook(iii, CTX, {
       id: 'fc-1',
       function_id: 'sandbox/skills/sandbox/create',
       arguments: { image: 'node' },
@@ -559,11 +594,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
   });
 
   it('attaches the generic slash-path hint when function_id has slashes but no clean rewrite', async () => {
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(iii, {
+    const out = await dispatchWithHook(iii, CTX, {
       id: 'fc-1',
       function_id: 'some/odd/three-segment/id',
       arguments: {},
@@ -578,11 +613,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
   });
 
   it('falls back to the engine discovery hint when function_id contains no slash', async () => {
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
+    vi.spyOn(chainModule, 'consultPreDispatch').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(iii, {
+    const out = await dispatchWithHook(iii, CTX, {
       id: 'fc-1',
       function_id: 'misspelled',
       arguments: {},

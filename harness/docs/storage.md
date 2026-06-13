@@ -1,7 +1,7 @@
-# Harness storage: provider credentials, settings & permissions
+# Harness storage: provider credentials & settings
 
-Provider API keys, per-provider settings, and the default agent permission
-mode live in a single entry — id `harness` — in the engine's built-in
+Provider API keys and per-provider settings live in a single entry — id
+`harness` — in the engine's built-in
 [`configuration`](https://github.com/iii-ai/iii/tree/main/workers/configuration)
 worker. The harness meta-worker owns that entry through its **provider
 registry** ([src/harness/providers/](../src/harness/providers/)).
@@ -14,7 +14,6 @@ worker.
 
 ```jsonc
 {
-  "permissions": { "default_mode": "manual" },   // manual | auto | full
   "providers": {
     "anthropic": { "api_key": "sk-ant-…", "api_url": "https://…", "max_tokens": 8192 },
     "openai":    { "api_key": "sk-…" },
@@ -55,11 +54,11 @@ setups keep working.
 
 ## Permissions
 
-`permissions.default_mode` (`manual | auto | full`) seeds the default
-approval mode for **new** agent sessions. The approval-gate reads it at
-startup and re-reads it via a `configuration` trigger on the `harness`
-entry, so an operator edit takes effect without a restart. Sessions with
-their own stored approval settings keep them.
+Deployment approval defaults (`default_mode`, `always_allow_seed`,
+`pending_timeout_ms`) live in the standalone approval-gate worker's own
+`approval-gate` configuration entry — the harness entry no longer carries a
+permissions block. See
+[tech-specs/2026-06-agentic/approval-gate.md § Configuration](../../tech-specs/2026-06-agentic/approval-gate.md#configuration).
 
 ## Adding a provider
 

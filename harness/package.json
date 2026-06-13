@@ -2,7 +2,7 @@
   "name": "harness",
   "version": "0.5.7",
   "private": true,
-  "description": "Node port of the iii harness stack: harness, approval-gate, turn-orchestrator, llm-budget, and side-cars. Conversations persist in the external session-manager worker; LLM providers are standalone llm-router plugin workers.",
+  "description": "Node port of the iii harness stack: harness, turn-orchestrator, llm-budget, and side-cars. Conversations persist in the external session-manager worker; LLM providers are standalone llm-router plugin workers; approval policy is the standalone approval-gate worker.",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -22,7 +22,6 @@
     "start:all": "node dist/index.js",
     "dev:all": "tsx --watch src/index.ts",
     "dev:harness": "tsx src/harness/main.ts",
-    "dev:approval-gate": "tsx src/approval-gate/main.ts",
     "dev:turn-orchestrator": "tsx src/turn-orchestrator/main.ts",
     "dev:llm-budget": "tsx src/llm-budget/main.ts",
     "dev:hook-fanout": "tsx src/hook-fanout/main.ts",
@@ -32,7 +31,6 @@
   "bin": {
     "harness": "./dist/index.js",
     "iii-harness": "./dist/harness/main.js",
-    "iii-approval-gate": "./dist/approval-gate/main.js",
     "iii-turn-orchestrator": "./dist/turn-orchestrator/main.js",
     "iii-llm-budget": "./dist/llm-budget/main.js",
     "iii-hook-fanout": "./dist/hook-fanout/main.js",

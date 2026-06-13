@@ -24,7 +24,6 @@ dependencies:
   turn-orchestrator: "^0.2.0"
   llm-router: "^0.1.0"
   shell: "^0.3.0"
-  approval-gate: "^0.2.0"
   session: "^0.2.0"
   hook-fanout: "^0.2.0"
   configuration: "^0.11.0"

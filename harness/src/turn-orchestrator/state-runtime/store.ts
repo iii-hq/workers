@@ -17,6 +17,7 @@ import { emit } from '../events.js';
 import { type RunRequest, defaultRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
 import { type TurnState, type TurnStateRecord } from '../state.js';
+import { emitTurnCompleted, terminalStatus } from '../turn-completed.js';
 
 /**
  * Turn-step wakes go to the engine's `default` queue. NOTE: engine.config.yaml
@@ -27,9 +28,18 @@ import { type TurnState, type TurnStateRecord } from '../state.js';
  */
 export const TURN_STEP_QUEUE = 'default';
 
-const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'failed', 'function_awaiting_approval']);
+const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'failed']);
 
-/** True when a persisted turn_state transition should enqueue `turn::{newState}`. */
+/**
+ * True when a persisted turn_state transition should enqueue `turn::{newState}`.
+ *
+ * Entering `function_awaiting_approval` enqueues exactly one scan wake:
+ * it drains any `harness::function::resolve` decision that landed while
+ * the batch was still in function_execute (that resolve's own wake
+ * stale-skipped against the not-yet-parked record). Subsequent wakes for
+ * the parked state come from function::resolve directly; mid-park
+ * checkpoints go through writeRecord and never wake.
+ */
 export function shouldWakeStep(previousState: TurnState | null, newState: TurnState): boolean {
   if (NON_STEPABLE_STATES.has(newState)) return false;
   if (previousState !== null && previousState === newState) return false;
@@ -129,6 +139,38 @@ async function emitTurnStateChanged(
   }
 }
 
+const TERMINAL_STATES = new Set<TurnState>(['stopped', 'failed']);
+
+/**
+ * Emit `harness::turn_completed` once per terminal transition: only the
+ * save that moved the record from a non-terminal state into stopped/failed
+ * fires (terminal→terminal rewrites stay silent). At-least-once — a
+ * crash between persist and emit loses the event, which consumers
+ * (the approval-gate sweep) tolerate by design.
+ */
+async function emitTurnCompletedOnTerminal(
+  iii: ISdk,
+  rec: TurnStateRecord,
+  prev: TurnStateRecord | null,
+): Promise<void> {
+  if (!TERMINAL_STATES.has(rec.state)) return;
+  if (prev != null && TERMINAL_STATES.has(prev.state)) return;
+  const status = terminalStatus(rec);
+  try {
+    await emitTurnCompleted(iii, {
+      session_id: rec.session_id,
+      turn_id: rec.turn_id,
+      status,
+      ...(status === 'failed' && rec.error ? { reason: rec.error.message } : {}),
+      timestamp: Date.now(),
+    });
+  } catch (err) {
+    // Fan-out must never abort the save path (a throw here would skip the
+    // step enqueue in saveRecord). Consumers tolerate lost events by design.
+    logger.warn('turn_completed emission failed', { session_id: rec.session_id, err: String(err) });
+  }
+}
+
 async function persistRecord(
   iii: ISdk,
   rec: TurnStateRecord,
@@ -151,6 +193,8 @@ async function persistRecord(
       prevView,
     );
   }
+
+  await emitTurnCompletedOnTerminal(iii, rec, prev);
 
   return prev;
 }

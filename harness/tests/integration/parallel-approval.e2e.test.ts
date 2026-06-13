@@ -32,7 +32,11 @@ describe('parallel approval e2e', () => {
   it('dispatches later calls while earlier ones park without blocking the batch', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
       .mockResolvedValueOnce({
         kind: 'result',
         result: {
@@ -41,7 +45,11 @@ describe('parallel approval e2e', () => {
           terminate: false,
         },
       })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
 
     h.seedExecute(
       'sess-parallel',
@@ -65,12 +73,20 @@ describe('parallel approval e2e', () => {
   it('executes one approved call immediately while a sibling stays pending', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
       .mockResolvedValueOnce({
         kind: 'result',
         result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
       })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
 
     h.seedExecute(
       'sess-partial',
@@ -99,8 +115,16 @@ describe('parallel approval e2e', () => {
   it('resolves approvals out of order without waiting for batch order', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
 
     h.seedExecute(
       'sess-order',
@@ -127,8 +151,16 @@ describe('parallel approval e2e', () => {
   it('denies one pending call without affecting an unresolved sibling', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
 
     h.seedExecute(
       'sess-deny',
@@ -146,16 +178,23 @@ describe('parallel approval e2e', () => {
     expect(rec?.awaiting_approval?.map((e) => e.function_call_id)).toEqual(['fc-2']);
     expect(rec?.work?.executed['fc-1']?.is_error).toBe(true);
     expect(rec?.work?.executed['fc-1']?.result.details).toMatchObject({
-      approval_denied: true,
-      decision: 'deny',
+      status: 'denied',
+      denied_by: 'user',
       reason: 'operator rejected',
+    });
+    expect(rec?.work?.executed['fc-1']?.result.content[0]).toMatchObject({
+      text: 'operator rejected',
     });
     expect(rec?.work?.executed['fc-2']).toBeUndefined();
   });
 
   it('is idempotent when the same decision wake is delivered twice', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({ kind: 'pending' });
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'pending',
+      held_by: 'approval::gate',
+      pending_timeout_ms: 1_800_000,
+    });
 
     h.seedExecute('sess-dup', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
     await h.runExecute('sess-dup');
@@ -175,8 +214,16 @@ describe('parallel approval e2e', () => {
   it('resolves two approvals fired in parallel without double-executing or double-finalizing', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
 
     h.seedExecute(
       'sess-par',
@@ -204,13 +251,23 @@ describe('parallel approval e2e', () => {
   it('drains a sibling approved mid-execution even when its own wake is dropped', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
     vi.spyOn(agentTriggerModule, 'triggerFunctionCall').mockImplementation(async (_iii, call) => {
       if (call.id === 'fc-driver') {
-        h.stateStore.set('approvals/sess-drain/fc-late', {
-          decision: 'allow',
-          reason: null,
+        const turn_id = h.loadTurnRecord('sess-drain')?.turn_id ?? 't_x';
+        h.stateStore.set('function_resolutions/sess-drain/fc-late', {
+          turn_id,
+          action: 'execute',
+          resolved_at: 1,
         });
       }
       return {
@@ -244,8 +301,16 @@ describe('parallel approval e2e', () => {
   it('re-enqueues a follow-up wake when a resolved call leaves siblings pending', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' })
-      .mockResolvedValueOnce({ kind: 'pending' });
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      })
+      .mockResolvedValueOnce({
+        kind: 'pending',
+        held_by: 'approval::gate',
+        pending_timeout_ms: 1_800_000,
+      });
 
     h.seedExecute(
       'sess-reenqueue',
@@ -264,22 +329,47 @@ describe('parallel approval e2e', () => {
     expect(wakeEnqueues(h, 'sess-reenqueue')).toBeGreaterThanOrEqual(before + 2);
   });
 
-  it('persists the decision and wakes function_awaiting_approval via approval::resolve', async () => {
+  it('wakes the parked turn via harness::function::resolve and deletes the consumed row', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({ kind: 'pending' });
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'pending',
+      held_by: 'approval::gate',
+      pending_timeout_ms: 1_800_000,
+    });
 
     h.seedExecute('sess-wake', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
     await h.runExecute('sess-wake');
 
     expect(h.loadTurnRecord('sess-wake')?.state).toBe('function_awaiting_approval');
 
-    await h.resolveApproval('sess-wake', 'fc-1', 'allow');
+    const out = await h.resolveApproval('sess-wake', 'fc-1', 'allow');
 
-    expect(h.stateStore.get('approvals/sess-wake/fc-1')).toEqual({
-      decision: 'allow',
-      reason: null,
-    });
+    expect(out).toEqual({ resolved: true, turn_resumed: true });
+    // The resolution row is consumed and deleted — the scope never accumulates.
+    expect(h.stateStore.has('function_resolutions/sess-wake/fc-1')).toBe(false);
     expect(h.loadTurnRecord('sess-wake')?.state).toBe('assistant_streaming');
     expect(h.loadTurnRecord('sess-wake')?.work).toBeUndefined();
+  });
+
+  it('answers {resolved: false} for an unknown call and a stale turn_id', async () => {
+    const h = createParallelApprovalHarness();
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'pending',
+      held_by: 'approval::gate',
+      pending_timeout_ms: 1_800_000,
+    });
+
+    h.seedExecute('sess-miss', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
+    await h.runExecute('sess-miss');
+
+    // Unknown function_call_id.
+    const unknown = await h.resolveApproval('sess-miss', 'fc-unknown', 'allow');
+    expect(unknown).toEqual({ resolved: false });
+    expect(h.loadTurnRecord('sess-miss')?.state).toBe('function_awaiting_approval');
+
+    // Duplicate after the call settled.
+    await h.resolveApproval('sess-miss', 'fc-1', 'allow');
+    const dup = await h.resolveApproval('sess-miss', 'fc-1', 'allow');
+    expect(dup).toEqual({ resolved: false });
   });
 });

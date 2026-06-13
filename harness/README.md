@@ -22,7 +22,7 @@ Read [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend
 
 **New capability, new worker.** When the harness needs something else (shell, database, coder, another provider), you add a worker, not a fork of the orchestrator. Published workers install from the [iii worker registry](https://workers.iii.dev) with `iii worker add <name>`; they register on the iii engine and show up in the live catalog.
 
-**Turns, approvals, budgets.** Seven-state durable turn FSM with queue-backed steps. Approval gate with YAML permissions, parallel tool batches, pending state across reload, fail-closed when policy is unreachable. Workspace and agent budget caps. Five provider workers behind one registry.
+**Turns, approvals, budgets.** Seven-state durable turn FSM with queue-backed steps. A `harness::hook::pre_dispatch` trigger type gates every agent function call — the standalone [approval-gate worker](../approval-gate/) binds its policy there (permission modes, YAML rules, pending inbox) and settles holds via `harness::function::resolve`; the chain fails closed when a bound hook is unreachable. Parallel tool batches, pending state across reload. Workspace and agent budget caps. Five provider workers behind one registry.
 
 **Context compaction.** Long sessions exceed model windows. The `context-compaction` worker compacts history as turns accumulate and backs the console `/compact` command.
 
@@ -30,17 +30,17 @@ Read [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend
 
 ## What ships here
 
-Fourteen workers in one TypeScript package, one folder per worker, one feature per file:
+One folder per worker, one feature per file:
 
 | Concern | Workers |
 | --- | --- |
-| Orchestration | `turn-orchestrator` (durable turn FSM), `hook-fanout` |
-| Governance | `harness` (permissions, provider registry, UI fanout), `approval-gate` |
+| Orchestration | `turn-orchestrator` (durable turn FSM, pre_dispatch hook point, `harness::function::resolve`), `hook-fanout` |
+| Governance | `harness` (yaml policy rules, UI fanout) |
 | Context | `context-compaction` (keeps long sessions inside the model window) |
 | Models | `models-catalog`, `provider-anthropic`, `provider-openai`, `provider-kimi`, `provider-lmstudio`, `provider-llamacpp` |
 | Cost | `llm-budget` |
 
-Rust workers (`shell`, `iii-directory`, `session-manager` — the durable, reactive conversation store the harness drives through `session::*`) and engine builtins (`state::*`, `stream::*`, `iii::durable::*`) stay on the same bus; this package does not reimplement them.
+Rust workers (`shell`, `iii-directory`, `session-manager` — the durable, reactive conversation store the harness drives through `session::*`, and `approval-gate` — the standalone approval policy worker at the repo root) and engine builtins (`state::*`, `stream::*`, `iii::durable::*`) stay on the same bus; this package does not reimplement them.
 
 ---
 

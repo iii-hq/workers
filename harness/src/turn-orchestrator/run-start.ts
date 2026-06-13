@@ -16,6 +16,7 @@ import { sessionSetStatus, userEntryId } from '../runtime/session.js';
 import { RunStartPayloadSchema, type RunStartPayload, type RunStartResult } from './schemas.js';
 import { createTurnStore } from './state-runtime/store.js';
 import { isTurnInFlight, newRecord } from './state.js';
+import { emitTurnCompleted } from './turn-completed.js';
 
 /**
  * Idle window after which an in-flight (non-parked) record is treated as
@@ -47,6 +48,16 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
       session_id,
       state: existing.state,
       idle_ms: idleMs,
+    });
+    // The replaced turn never reaches a terminal save, so its
+    // turn_completed would otherwise never fire and sibling cleanup
+    // (approval-gate pending purge) would wait for the sweep.
+    await emitTurnCompleted(iii, {
+      session_id,
+      turn_id: existing.turn_id,
+      status: 'cancelled',
+      reason: 'stale turn takeover',
+      timestamp: Date.now(),
     });
   }
 
