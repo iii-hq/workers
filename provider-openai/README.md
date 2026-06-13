@@ -55,3 +55,11 @@ III_ENGINE_BIN=$(which iii) cargo test --test integration -- --test-threads=1
 
 The integration suite spawns a real engine, the real router (path dep), this
 provider, and a local stub upstream — no external API calls anywhere.
+
+## Running
+
+The binary takes the standard worker CLI flags: `--url` (engine WebSocket,
+default `ws://127.0.0.1:49134`, falls back to the `III_WS_URL` environment
+variable), `--manifest` (print the registry manifest and exit), and
+`--config` (accepted but ignored with a warning — provider config comes
+from the `llm-router` configuration entry).

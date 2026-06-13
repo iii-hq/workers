@@ -14,6 +14,7 @@ on:
       - 'iii-lsp/v*'
       - 'image-resize/v*'
       - 'mcp/v*'
+      - 'provider-openai/v*'
       - 'session-manager/v*'
       - 'shell/v*'
       - 'storage/v*'
