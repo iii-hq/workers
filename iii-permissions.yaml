@@ -35,6 +35,10 @@ rules:
   - '!router::route'
   - '!router::on_worker_available'
   - '!router::on_config_changed'
+  # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
+  # bypass the router's accounting, budgets, and retry policy. The router
+  # invokes these worker-to-worker; agents never call them.
+  - '!provider::*'
   - '!configuration::get'
   - '!configuration::set'
   - '!configuration::register'

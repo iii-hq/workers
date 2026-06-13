@@ -1,0 +1,8 @@
+# llm-router has no file-based configuration.
+#
+# Operator config — providers, credentials, model routing — lives in the
+# engine's `llm-router` configuration entry (README § Configuration;
+# tech-specs/2026-06-agentic/llm-router.md § Configuration).
+#
+# This file exists to satisfy the standard worker layout
+# (docs/sops/new-worker.md §2). Keys placed here are ignored with a warning.

@@ -1,10 +1,56 @@
-use iii_sdk::{register_worker, InitOptions};
+//! `provider-anthropic` binary entry.
+//!
+//! The worker keeps no operator settings of its own: credentials, `api_url`,
+//! and `max_tokens` arrive per request from llm-router's resolve step.
+//! `--config` is still accepted per the binary-worker CLI contract (the
+//! engine passes it when an operator sets a config block); keys found there
+//! are warned about instead of silently dropped.
+
+use clap::Parser;
+use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 use provider_anthropic::register::register_provider;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "provider-anthropic",
+    about = "Anthropic Messages API provider worker behind llm-router."
+)]
+struct Cli {
+    /// Accepted for the standard worker CLI contract; provider config comes
+    /// from llm-router's resolve step, not from a file.
+    #[arg(long, default_value = "./config.yaml")]
+    config: String,
+
+    #[arg(long, env = "III_WS_URL", default_value = "ws://127.0.0.1:49134")]
+    url: String,
+
+    #[arg(long)]
+    manifest: bool,
+}
+
+/// True when the YAML contents carry anything beyond comments, blank lines,
+/// or a bare empty mapping (`{}`).
+fn has_config_keys(contents: &str) -> bool {
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .any(|line| line != "{}")
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
     // Registry publish pipeline: print the manifest JSON and exit.
-    if std::env::args().nth(1).as_deref() == Some("--manifest") {
+    if cli.manifest {
         println!(
             "{}",
             serde_json::to_string_pretty(&provider_anthropic::manifest::build_manifest())?
@@ -12,13 +58,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let url = std::env::var("III_WS_URL").unwrap_or_else(|_| "ws://localhost:49134".to_string());
-    let iii = register_worker(&url, InitOptions::default());
+    if let Ok(contents) = std::fs::read_to_string(&cli.config) {
+        if has_config_keys(&contents) {
+            tracing::warn!(
+                path = %cli.config,
+                "provider-anthropic takes no file-based config; configure the provider \
+                 via the engine's `llm-router` configuration entry — ignoring this file's keys"
+            );
+        }
+    }
+
+    let iii = register_worker(
+        &cli.url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                name: "provider-anthropic".to_string(),
+                os: std::env::consts::OS.to_string(),
+                pid: Some(std::process::id()),
+                telemetry: None,
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    );
 
     register_provider(iii.clone()).await?;
-    println!("[provider-anthropic] registered against {url}");
+    tracing::info!(url = %cli.url, "provider-anthropic registered");
 
     tokio::signal::ctrl_c().await?;
-    iii.shutdown();
+    iii.shutdown_async().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_config_keys;
+
+    #[test]
+    fn empty_and_comment_only_contents_have_no_keys() {
+        assert!(!has_config_keys(""));
+        assert!(!has_config_keys("\n\n"));
+        assert!(!has_config_keys("# only a comment\n  # indented comment\n"));
+        assert!(!has_config_keys("{}\n"));
+        assert!(!has_config_keys("# comment\n{}\n"));
+    }
+
+    #[test]
+    fn real_keys_are_detected() {
+        assert!(has_config_keys("api_url: https://example.com\n"));
+        assert!(has_config_keys("# comment\nmax_tokens: 8192\n"));
+    }
 }

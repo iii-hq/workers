@@ -19,7 +19,9 @@ on:
           - iii-lsp
           - iii-lsp-vscode
           - image-resize
+          - llm-router
           - mcp
+          - provider-anthropic
           - provider-openai
           - session-manager
           - shell
