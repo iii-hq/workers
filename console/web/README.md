@@ -63,7 +63,7 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   [session-manager](../../session-manager/architecture/integration.md)
   worker (`session::list`; live via the `session::*` trigger types).
   Transcripts hydrate from `session::messages` and stream live from
-  `session::message_added` / `session::message_updated` snapshots —
+  `session::message-added` / `session::message-updated` snapshots —
   localStorage keeps only UI affordances (active id, last model).
   Double-click a row to rename inline (writes through `session::set_meta`);
   hover to reveal the delete affordance (`session::delete`).

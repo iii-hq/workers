@@ -132,10 +132,10 @@ session-manager` / `get function info`); the shapes below are the contract.
 //   metadata: subset-equality against SessionMeta.metadata (every given key must match)
 
 // session::set_meta — supplied fields replace; metadata replaces WHOLESALE.
-// Fires session::meta_updated (all-fields-absent request is a silent no-op).
+// Fires session::meta-updated (all-fields-absent request is a silent no-op).
 { session_id, title?, description?, metadata? } -> { meta }
 
-// session::set_status — fires session::status_changed; SAME status = no-op,
+// session::set_status — fires session::status-changed; SAME status = no-op,
 // no event (even with a different reason). reason stored only with "error",
 // cleared on any other status.
 { session_id, status, reason? } -> { status, previous_status }
@@ -152,12 +152,12 @@ session-manager` / `get function info`); the shapes below are the contract.
 // Parent defaults to the active leaf; appending ALWAYS moves the leaf to the
 // new entry (also with an explicit parent_id — that starts a branch).
 // IDEMPOTENT on entry_id: an existing id returns the existing entry, fires
-// nothing, moves nothing. Fires session::message_added.
+// nothing, moves nothing. Fires session::message-added.
 { session_id, message?: AgentMessage, custom?: { custom_type, data },
   parent_id?, entry_id?, origin? }
   -> { entry_id, parent_id: string | null, timestamp }
 
-// session::append_many — ordered batch, chained; one message_added per
+// session::append_many — ordered batch, chained; one message-added per
 // entry, in order. NOT idempotent. Empty batch => session/empty_batch.
 { session_id, messages: AgentMessage[], parent_id?, origin? }
   -> { entry_ids: string[], last_entry_id }
@@ -209,7 +209,7 @@ register a trigger of the type with a `config` filter:
 ```typescript
 iii.registerFunction("ui::on_message_updated", async (evt) => render(evt));
 iii.registerTrigger({
-  type: "session::message_updated",
+  type: "session::message-updated",
   function_id: "ui::on_message_updated",
   config: { session_id: "s_123", roles: ["assistant"] },
 });
@@ -218,10 +218,10 @@ iii.registerTrigger({
 | Trigger type | Fires when | Config filters | Payload |
 |---|---|---|---|
 | `session::created` | create / ensure-created / fork | `metadata?` | `{ session_id, title, description, status, forked_from?, created_at }` |
-| `session::message_added` | an entry was appended | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, parent_id, message?, custom?, origin?, timestamp }` |
-| `session::message_updated` | a message's content changed | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, message, revision, origin?, timestamp }` |
-| `session::status_changed` | status actually changed | `session_id?`, `metadata?` | `{ session_id, status, previous_status, status_reason?, timestamp }` |
-| `session::meta_updated` | title/description/metadata changed | `session_id?`, `metadata?` | `{ session_id, title, description, metadata?, timestamp }` |
+| `session::message-added` | an entry was appended | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, parent_id, message?, custom?, origin?, timestamp }` |
+| `session::message-updated` | a message's content changed | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, message, revision, origin?, timestamp }` |
+| `session::status-changed` | status actually changed | `session_id?`, `metadata?` | `{ session_id, status, previous_status, status_reason?, timestamp }` |
+| `session::meta-updated` | title/description/metadata changed | `session_id?`, `metadata?` | `{ session_id, title, description, metadata?, timestamp }` |
 | `session::deleted` | session removed | `session_id?`, `metadata?` | `{ session_id, timestamp }` |
 
 Filter semantics (all supplied filters must hold — AND):
@@ -233,7 +233,7 @@ Filter semantics (all supplied filters must hold — AND):
 - `metadata` — subset-equality against the session's `metadata` (deep JSON
   equality per key). The tenancy filter: bind `{ metadata: { owner: "u_1" } }`
   and you only ever see that owner's sessions — including `deleted` events
-  (evaluated against the metadata as of deletion) and `meta_updated` events
+  (evaluated against the metadata as of deletion) and `meta-updated` events
   (evaluated against the post-update metadata).
 - **Malformed configs are rejected at registration** (unknown keys, `roles`
   on status events, `session_id` on `created`, invalid role values). If your
@@ -283,22 +283,22 @@ sequenceDiagram
   D->>S: session::create / ensure
   S-->>UI: session::created
   D->>S: append (user message, entry_id = idempotency key)
-  S-->>UI: message_added (user)
+  S-->>UI: message-added (user)
   D->>S: set_status working
-  S-->>UI: status_changed (working)
+  S-->>UI: status-changed (working)
   D->>S: append (assistant message, empty content)
-  S-->>UI: message_added (assistant)
+  S-->>UI: message-added (assistant)
   loop tokens arrive (batch/throttle as you like)
     D->>S: update_message (full content so far)
-    S-->>UI: message_updated (revision n)
+    S-->>UI: message-updated (revision n)
   end
   D->>S: set_status done
-  S-->>UI: status_changed (done)
+  S-->>UI: status-changed (done)
 ```
 
-The consumer renders the growing assistant message from `message_updated`
+The consumer renders the growing assistant message from `message-updated`
 snapshots (highest revision wins) and drives its spinner purely from
-`status_changed`.
+`status-changed`.
 
 ### Surviving redelivery (durable writers)
 
@@ -401,7 +401,7 @@ The integration the spec was designed around:
 - **Sub-agent linkage** is a metadata convention, not API:
   `metadata: { parent_session_id, parent_turn_id, function_call_id, depth }`
   on the child session; reconstruct the tree with `list { metadata }`
-  filters; render a child live by binding `message_updated` with that
+  filters; render a child live by binding `message-updated` with that
   metadata filter.
 - **Status is yours**: only the driver flips it; same-status calls are
   no-ops, so blind `set_status working` at turn start is safe.

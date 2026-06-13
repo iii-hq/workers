@@ -6,9 +6,9 @@
  * of truth.
  *
  * Two granularities:
- * - `subscribeSessionDirectory`: sidebar-level events (created, meta_updated,
- *   status_changed, deleted) across ALL sessions.
- * - `subscribeSessionTranscript`: message_added / message_updated for ONE
+ * - `subscribeSessionDirectory`: sidebar-level events (created, meta-updated,
+ *   status-changed, deleted) across ALL sessions.
+ * - `subscribeSessionTranscript`: message-added / message-updated for ONE
  *   session (`config.session_id` filter applied engine-side).
  *
  * Handler ids carry the `iii::` prefix so delivery spans are tagged internal
@@ -76,14 +76,14 @@ export function subscribeSessionDirectory(
   }
   if (handlers.onMetaUpdated) {
     offs.push(
-      bind(client, 'session::meta_updated', {}, handlers.onMetaUpdated, 'dir'),
+      bind(client, 'session::meta-updated', {}, handlers.onMetaUpdated, 'dir'),
     )
   }
   if (handlers.onStatusChanged) {
     offs.push(
       bind(
         client,
-        'session::status_changed',
+        'session::status-changed',
         {},
         handlers.onStatusChanged,
         'dir',
@@ -122,14 +122,14 @@ export function subscribeSessionTranscript(
   const offs = [
     bind(
       client,
-      'session::message_added',
+      'session::message-added',
       config,
       guard(handlers.onMessageAdded),
       'live',
     ),
     bind(
       client,
-      'session::message_updated',
+      'session::message-updated',
       config,
       guard(handlers.onMessageUpdated),
       'live',

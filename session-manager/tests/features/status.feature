@@ -14,7 +14,7 @@ Feature: session::set_status — the coarse lifecycle status
   # Prevents: status changes that don't notify (spinners would hang) or
   # that report the wrong previous_status (transition animations break).
   Scenario: a status change fires status_changed with the previous status
-    Given a binding "b1" on "session::status_changed" delivering to "ui::status" with config:
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
       """
       {}
       """
@@ -25,7 +25,7 @@ Feature: session::set_status — the coarse lifecycle status
     Then the call succeeds
     And the response field "status" is "working"
     And the response field "previous_status" is "idle"
-    And function "ui::status" received 1 "session::status_changed" delivery
+    And function "ui::status" received 1 "session::status-changed" delivery
     And delivery 0 to "ui::status" has "status" = "working"
     And delivery 0 to "ui::status" has "previous_status" = "idle"
     And delivery 0 to "ui::status" has "session_id" = "s_001"
@@ -33,7 +33,7 @@ Feature: session::set_status — the coarse lifecycle status
   # Prevents: duplicate status events on redundant driver calls — the
   # spec promises consumers a no-op fires nothing.
   Scenario: setting the same status again fires nothing
-    Given a binding "b1" on "session::status_changed" delivering to "ui::status" with config:
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
       """
       {}
       """
@@ -48,13 +48,13 @@ Feature: session::set_status — the coarse lifecycle status
     Then the call succeeds
     And the response field "status" is "working"
     And the response field "previous_status" is "working"
-    And function "ui::status" received 1 "session::status_changed" delivery
+    And function "ui::status" received 1 "session::status-changed" delivery
 
   # Prevents: spec-strict regression — same status with a DIFFERENT
   # reason is still a no-op; the stored reason must not silently change
   # and the second call must not emit a duplicate status_changed.
   Scenario: same status with a different reason is still a no-op
-    Given a binding "b1" on "session::status_changed" delivering to "ui::status" with config:
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
       """
       {}
       """
@@ -71,12 +71,12 @@ Feature: session::set_status — the coarse lifecycle status
       { "session_id": "s_001" }
       """
     Then the response field "meta.status_reason" is "rate limited"
-    And function "ui::status" received 1 "session::status_changed" delivery
+    And function "ui::status" received 1 "session::status-changed" delivery
 
   # Prevents: failures without a cause — error status must carry the
   # short reason for standalone UIs.
   Scenario: error stores the reason and the event carries it
-    Given a binding "b1" on "session::status_changed" delivering to "ui::status" with config:
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
       """
       {}
       """
@@ -113,7 +113,7 @@ Feature: session::set_status — the coarse lifecycle status
   # Prevents: the full driver lifecycle (idle -> working -> done)
   # emitting anything other than exactly one event per real transition.
   Scenario: a full turn lifecycle emits one event per transition
-    Given a binding "b1" on "session::status_changed" delivering to "ui::status" with config:
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
       """
       {}
       """
@@ -125,7 +125,7 @@ Feature: session::set_status — the coarse lifecycle status
       """
       { "session_id": "s_001", "status": "done" }
       """
-    Then function "ui::status" received 2 "session::status_changed" deliveries
+    Then function "ui::status" received 2 "session::status-changed" deliveries
     And delivery 0 to "ui::status" has "previous_status" = "idle"
     And delivery 1 to "ui::status" has "previous_status" = "working"
     And delivery 1 to "ui::status" has "status" = "done"

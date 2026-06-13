@@ -100,7 +100,7 @@ flowchart LR
   state -- "agent::events stream (scoped trigger)" --> client
   state -- "agent::events stream" --> compact
   compact -- "session::append (compaction custom entry)" --> sessionMgr
-  sessionMgr -- "session::message_added/updated, status_changed, ..." --> client
+  sessionMgr -- "session::message-added/updated, status-changed, ..." --> client
 ```
 
 ## Turn FSM

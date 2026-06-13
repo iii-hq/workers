@@ -15,15 +15,15 @@ Feature: engine reactivity — real trigger bindings receive filtered events
   Scenario: a streamed turn reaches filtered subscribers live
     Given the iii engine is reachable
     And a fresh unique marker as "M1"
-    And an engine subscriber "R_DELTAS" on "session::message_updated" with config:
+    And an engine subscriber "R_DELTAS" on "session::message-updated" with config:
       """
       { "roles": ["assistant"], "metadata": { "test_run": "${M1}" } }
       """
-    And an engine subscriber "R_STATUS" on "session::status_changed" with config:
+    And an engine subscriber "R_STATUS" on "session::status-changed" with config:
       """
       { "metadata": { "test_run": "${M1}" } }
       """
-    And an engine subscriber "R_USER_ONLY" on "session::message_added" with config:
+    And an engine subscriber "R_USER_ONLY" on "session::message-added" with config:
       """
       { "roles": ["user"], "metadata": { "test_run": "${M1}" } }
       """
@@ -99,7 +99,7 @@ Feature: engine reactivity — real trigger bindings receive filtered events
       { "metadata": { "test_run": "${M1}" } }
       """
     And over the engine I alias the response field "session_id" as "S2"
-    And an engine subscriber "R_S1" on "session::message_added" with config:
+    And an engine subscriber "R_S1" on "session::message-added" with config:
       """
       { "session_id": "${S1}" }
       """

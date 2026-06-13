@@ -58,19 +58,19 @@ export const WORKERS: Record<string, WorkerInfo> = {
       'a real-time conversation store any app can subscribe to, with or without the loop around it.',
     install: 'iii worker add session-manager',
     functions: [
-      { id: 'session::append', desc: 'append one entry; fires session::message_added.' },
-      { id: 'session::update_message', desc: 'stream deltas into an entry; fires session::message_updated.' },
+      { id: 'session::append', desc: 'append one entry; fires session::message-added.' },
+      { id: 'session::update_message', desc: 'stream deltas into an entry; fires session::message-updated.' },
       { id: 'session::messages', desc: 'load the active path, oldest first.' },
-      { id: 'session::set_status', desc: 'idle / working / done / error; fires session::status_changed.' },
+      { id: 'session::set_status', desc: 'idle / working / done / error; fires session::status-changed.' },
       { id: 'session::fork', desc: 'branch history into a new session.' },
       { id: 'session::create / get / list / delete', desc: 'lifecycle, pagination, tenancy filters.' },
     ],
     emits: [
       { id: 'session::created', desc: 'a session exists.' },
-      { id: 'session::message_added', desc: 'a new entry landed.' },
-      { id: 'session::message_updated', desc: 'an entry\u2019s content changed (streaming).' },
-      { id: 'session::status_changed', desc: 'working / done / error — drives spinners.' },
-      { id: 'session::meta_updated', desc: 'title / metadata changed.' },
+      { id: 'session::message-added', desc: 'a new entry landed.' },
+      { id: 'session::message-updated', desc: 'an entry\u2019s content changed (streaming).' },
+      { id: 'session::status-changed', desc: 'working / done / error — drives spinners.' },
+      { id: 'session::meta-updated', desc: 'title / metadata changed.' },
       { id: 'session::deleted', desc: 'a session was removed.' },
     ],
     notes: [
@@ -150,7 +150,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
       'every consumer is the same triangle: send through the harness, render from session events, observe turn boundaries.',
     functions: [
       { id: 'harness::send', desc: 'sends user messages (with session metadata for tenancy).' },
-      { id: 'session::message_added / updated', desc: 'binds these to render deltas last-write-wins.' },
+      { id: 'session::message-added / updated', desc: 'binds these to render deltas last-write-wins.' },
       { id: 'approval::resolve', desc: 'approve / deny buttons on held calls.' },
     ],
     notes: ['any worker or client can take this place — the surface is the contract.'],
@@ -165,7 +165,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
     functions: [
       { id: 'telegram::webhook', desc: 'receives updates; routes commands and messages.' },
       { id: 'harness::send', desc: 'idempotency_key = update_id — redeliveries change nothing.' },
-      { id: 'session::message_updated', desc: 'bound to edit the telegram message (~1/s throttle).' },
+      { id: 'session::message-updated', desc: 'bound to edit the telegram message (~1/s throttle).' },
     ],
   },
   'third-party': {

@@ -129,12 +129,12 @@ Every consumer is the same triangle — **send** through the harness, **render**
 surface-specific wiring:
 
 - **Web chat** (streaming UI): pass `session.metadata` (tenancy, e.g. `{ owner }`) on the first
-  `harness::send`; bind `session::message_added` / `session::message_updated` /
-  `session::status_changed` filtered by that metadata; render deltas last-write-wins by `revision`.
+  `harness::send`; bind `session::message-added` / `session::message-updated` /
+  `session::status-changed` filtered by that metadata; render deltas last-write-wins by `revision`.
   Session status drives the spinner.
 - **Telegram / Slack / WhatsApp bot**: webhooks redeliver — always pass `idempotency_key` (the
   platform update id) to `harness::send`. Map platform chat ↔ session via `session.metadata`
-  (e.g. `{ telegram_chat_id }`). Either bind `session::message_updated` and edit the platform
+  (e.g. `{ telegram_chat_id }`). Either bind `session::message-updated` and edit the platform
   message throttled (~1/s), or skip streaming and bind `harness::turn_completed` to post one final
   message.
 - **TUI / CLI**: the chat pattern for live rendering, or the blocking pattern —
@@ -189,13 +189,13 @@ allowed function when a turn opts into `functions.expose: "native"`. See
 Workers expose reactivity in two shapes, and each worker spec separates them:
 
 - **Trigger types emitted** — a custom trigger type *this* worker registers so *other* workers/clients
-  can bind handlers to its events (e.g. `session::message_added`). Binding is always the two-step
+  can bind handlers to its events (e.g. `session::message-added`). Binding is always the two-step
   pattern:
 
 ```typescript
 iii.registerFunction("my-worker::on-message-added", handler);
 iii.registerTrigger({
-  type: "session::message_added",
+  type: "session::message-added",
   function_id: "my-worker::on-message-added",
   config: { session_id: "s_123" }, // optional filters
 });

@@ -66,7 +66,7 @@ export function EventFanOut({ className }: { className?: string }) {
           {/* the trigger type */}
           <rect x={368} y={106} width={244} height={52} strokeWidth={1.4} className="fill-panel stroke-accent" />
           <text x={490} y={129} textAnchor="middle" fontSize="12" fontWeight={600} className="fill-ink">
-            session::message_updated
+            session::message-updated
           </text>
           <text x={490} y={146} textAnchor="middle" fontSize="9" letterSpacing="0.06em" className="fill-ink-faint uppercase">
             trigger type

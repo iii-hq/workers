@@ -17,9 +17,9 @@
 //! - [`service`] — all domain logic; returns the response **and** the
 //!   events to emit, so emission stays at the edge.
 //! - [`events`] — the six custom trigger types this worker registers
-//!   (`session::created`, `session::message_added`,
-//!   `session::message_updated`, `session::status_changed`,
-//!   `session::meta_updated`, `session::deleted`), the per-binding
+//!   (`session::created`, `session::message-added`,
+//!   `session::message-updated`, `session::status-changed`,
+//!   `session::meta-updated`, `session::deleted`), the per-binding
 //!   config filters, the `Emitter` fan-out, and the cross-instance
 //!   propagation plumbing (`EventEnvelope`, `RemotePublisher`,
 //!   `attach_bridge_relay`): the main instance is the single fan-out
