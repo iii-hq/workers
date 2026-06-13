@@ -12,6 +12,7 @@ on:
           - acp
           - coder
           - console
+          - context-manager
           - database
           - email
           - harness
