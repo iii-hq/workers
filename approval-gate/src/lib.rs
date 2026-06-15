@@ -31,5 +31,6 @@ pub mod redact;
 pub mod session;
 pub mod settings;
 pub mod state;
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod types;

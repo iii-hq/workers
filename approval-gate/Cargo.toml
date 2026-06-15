@@ -32,7 +32,17 @@ async-trait = "0.1"
 schemars = "0.8"
 base64 = "0.22"
 
+[features]
+# Test-only seam: exposes `testkit` (engine bootstrap for the engine-backed
+# tests) without compiling it into the production lib/binary. Off by default,
+# so `cargo build` / the release binary exclude it. Enabled for this crate's
+# own tests via the self dev-dependency below; CI also runs `--all-features`.
+testkit = []
+
 [dev-dependencies]
+# Self-reference enabling the `testkit` feature for the integration tests
+# (which link the lib) so `cargo test` works without `--all-features`.
+approval-gate = { path = ".", features = ["testkit"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
