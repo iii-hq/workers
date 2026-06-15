@@ -26,6 +26,25 @@ const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
+/**
+ * The slice managed by the `configuration` worker. `engine_url` is excluded —
+ * it is bootstrap (needed to reach the configuration worker), so it stays on
+ * the local seed / `--url` and never hot-reloads.
+ */
+export const RuntimeConfigSchema = ConfigSchema.omit({ engine_url: true });
+export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
+
+/** JSON Schema published to the configuration worker. */
+export function runtimeJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>;
+}
+
+/** The runtime slice of a full config, for use as `initial_value`. */
+export function toRuntime(cfg: Config): RuntimeConfig {
+  const { engine_url: _drop, ...runtime } = cfg;
+  return runtime;
+}
+
 export async function loadConfig(path: string): Promise<Config> {
   let raw: unknown = {};
   try {

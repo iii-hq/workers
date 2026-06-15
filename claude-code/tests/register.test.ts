@@ -16,7 +16,7 @@ async function registeredWorker(): Promise<FakeIii> {
   const cfg = await loadConfig('/nonexistent/config.yaml');
   const emit = makeEmitter(fake.iii, cfg.events_stream);
   const emitRaw = makeEmitter(fake.iii, cfg.raw_events_stream);
-  register(fake.iii, cfg, emit, emitRaw);
+  register(fake.iii, () => cfg, emit, emitRaw);
   return fake;
 }
 

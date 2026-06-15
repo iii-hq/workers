@@ -316,11 +316,11 @@ export async function executeRun(
   };
 }
 
-export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): void {
+export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
   iii.registerFunction(
     'claude::run',
     async (payload: unknown) =>
-      executeRun(iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
+      executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
         'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
@@ -333,12 +333,14 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
-      void executeRun(iii, cfg, emit, emitRaw, { ...parsed, session_id }).catch(async (err) => {
-        console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
-        // never leave the record stuck in `working`: a failure inside the
-        // turn's own terminal save lands here, so mark it error best-effort
-        await markSessionError(iii, session_id);
-      });
+      void executeRun(iii, getCfg(), emit, emitRaw, { ...parsed, session_id }).catch(
+        async (err) => {
+          console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
+          // never leave the record stuck in `working`: a failure inside the
+          // turn's own terminal save lands here, so mark it error best-effort
+          await markSessionError(iii, session_id);
+        },
+      );
       return { session_id, started: true };
     },
     {
@@ -388,7 +390,7 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
   iii.registerFunction(
     'run::start_and_wait',
     async (payload: unknown) =>
-      executeRun(iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
+      executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
         'Alias for claude::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
