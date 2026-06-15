@@ -1,0 +1,12 @@
+# Agent permissions for the codex worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# codex::run / codex::start spawn a full Codex coding agent with the host's
+# filesystem and shell — an agent invoking those without human approval is a
+# privilege escalation, so they are NOT allow-listed and stay at the
+# needs_approval default. Read-only introspection is safe to allow.
+version: 1
+
+rules:
+  - codex::status
+  - codex::sessions::list

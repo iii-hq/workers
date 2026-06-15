@@ -4,19 +4,4 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: codex
-description: OpenAI Codex as an iii worker — codex::* run headless Codex turns by spawning the codex CLI, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.
-
-targets:
-  - x86_64-apple-darwin
-  - aarch64-apple-darwin
-  - x86_64-unknown-linux-gnu
-  - x86_64-unknown-linux-musl
-  - aarch64-unknown-linux-gnu
-  - armv7-unknown-linux-gnueabihf
-
-runtime:
-  kind: rust
-
-scripts:
-  install: cargo build
-  start: cargo run
+description: OpenAI Codex as an iii worker; codex::run/start/stop/status/sessions::list spawn the codex CLI for headless turns, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.
