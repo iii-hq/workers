@@ -1,6 +1,6 @@
 # todo-worker-python
 
-Quickstart CRUD todo worker built on the Python [iii SDK](https://github.com/iii-hq/iii). Mirrors the Node-based [todo-worker](../todo-worker/) one-for-one and is the canonical "Python container" template referenced in [AGENTS-NEW-WORKER.md](../AGENTS-NEW-WORKER.md).
+Quickstart CRUD todo worker built on the Python [iii SDK](https://github.com/iii-hq/iii). Mirrors the Node-based [todo-worker](../todo-worker/) one-for-one and is the canonical Python container template in this repo.
 
 If you're scaffolding a new Python worker, start by copying this directory and trimming what you don't need.
 
@@ -67,9 +67,9 @@ The image inherits `III_URL=ws://localhost:49134`; override at runtime with `-e 
 
 ## Tests
 
-A `tests/` directory is not yet present. Per [AGENTS-NEW-WORKER.md](../AGENTS-NEW-WORKER.md) §5, Python workers should ship `tests/test_*.py` runnable with `pytest`. Adding one is the next step before this worker can be released through the standard `pr-checks` flow.
+A `tests/` directory is not yet present. Per [docs/sops/new-worker.md](../docs/sops/new-worker.md) §5, Python workers should ship `tests/test_*.py` runnable with `pytest`. Adding one is the next step before this worker can be released through the standard `pr-checks` flow.
 
 ## See also
 
 - [todo-worker/README.md](../todo-worker/README.md) — same API, Node SDK.
-- [AGENTS-NEW-WORKER.md](../AGENTS-NEW-WORKER.md) — full checklist for adding a new worker.
+- [docs/sops/new-worker.md](../docs/sops/new-worker.md) — full checklist for adding a new worker.

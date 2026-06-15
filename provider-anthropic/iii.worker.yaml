@@ -1,0 +1,7 @@
+iii: v1
+name: provider-anthropic
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: provider-anthropic
+description: Anthropic Messages API provider worker; implements provider::anthropic::stream and provider::anthropic::refresh_models behind llm-router.

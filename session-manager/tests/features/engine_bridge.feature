@@ -94,15 +94,15 @@ Feature: bridge backend — storage deferral and event propagation
     And a fresh unique marker as "M1"
     And a bridged instance "B1"
     And a bridged instance "B2"
-    And a local binding "b1" on "session::message_added" in bridged instance "B1" delivering to "ui::b1" with config:
+    And a local binding "b1" on "session::message-added" in bridged instance "B1" delivering to "ui::b1" with config:
       """
       { "metadata": { "test_run": "${M1}" } }
       """
-    And a local binding "b2" on "session::message_added" in bridged instance "B2" delivering to "ui::b2" with config:
+    And a local binding "b2" on "session::message-added" in bridged instance "B2" delivering to "ui::b2" with config:
       """
       { "roles": ["user"], "metadata": { "test_run": "${M1}" } }
       """
-    And an engine subscriber "R_MAIN" on "session::message_added" with config:
+    And an engine subscriber "R_MAIN" on "session::message-added" with config:
       """
       { "metadata": { "test_run": "${M1}" } }
       """
@@ -154,7 +154,7 @@ Feature: bridge backend — storage deferral and event propagation
       { "metadata": { "test_run": "${M1}" } }
       """
     And over the engine I alias the response field "session_id" as "S1"
-    And a local binding "b1" on "session::status_changed" in bridged instance "B1" delivering to "ui::b1" with config:
+    And a local binding "b1" on "session::status-changed" in bridged instance "B1" delivering to "ui::b1" with config:
       """
       { "session_id": "${S1}" }
       """

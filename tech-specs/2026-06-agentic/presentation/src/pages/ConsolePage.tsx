@@ -25,7 +25,7 @@ const STEPS: SeqStep[] = [
     label: 'session::update_message',
     title: 'the transcript streams',
     desc: 'deltas persist as they arrive; the console renders snapshots last-write-wins by revision. thinking content renders as a collapsible block, function calls as live cards.',
-    event: 'session::message_updated',
+    event: 'session::message-updated',
   },
   {
     from: 'harness',
@@ -87,11 +87,11 @@ export function ConsolePage() {
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4">
         <SpecSheet title="what the console binds" meta="reactive surface" defaultOpen>
           <div className="flex flex-col">
-            <SpecRow name="session::message_added / message_updated" type="render">
+            <SpecRow name="session::message-added / message-updated" type="render">
               the transcript paints from events, reconciled by revision —
               joining mid-stream just works.
             </SpecRow>
-            <SpecRow name="session::status_changed" type="spinner">
+            <SpecRow name="session::status-changed" type="spinner">
               working / done / error drive the session list and the composer
               state.
             </SpecRow>

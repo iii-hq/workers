@@ -98,7 +98,7 @@ attributable to a turn. One `harness::turn` step does:
    [output contract](#output-contract) rides provider-native structured output —
    `response_format`; `session::append` an
    assistant message, then `session::update_message` as deltas arrive (each fires
-   `session::message_updated`). Deltas may be batched to throttle update frequency; the final update
+   `session::message-updated`). Deltas may be batched to throttle update frequency; the final update
    writes the complete `AssistantMessage`. After the final update, run the read-only
    `post_generate` [hook chain](#hooks) (usage accounting, safety logging).
 5. If the message has `function_call` content: a `submit_result` call (present only when an
@@ -407,7 +407,7 @@ to the hot path — events are always the cheaper tool.
 The asymmetries are deliberate:
 
 - `post_generate` cannot mutate — the message already streamed to consumers
-  (`session::message_updated` fired per delta); redacting after the fact would lie to the UI. Strip
+  (`session::message-updated` fired per delta); redacting after the fact would lie to the UI. Strip
   secrets where they *enter* instead: `post_dispatch` runs before the result is persisted, so the
   transcript and the model both see the rewritten version.
 - `pre_generate` injection is **append-only** (plus the system prompt): rewriting history would
@@ -647,7 +647,7 @@ remain the right surface for anything observe-only.
 
 ### Triggers bound
 
-- **Optional** `harness::on_steering` — bind to [`session::message_added`](session-manager.md#trigger-types-emitted)
+- **Optional** `harness::on_steering` — bind to [`session::message-added`](session-manager.md#trigger-types-emitted)
   so a user message that arrives mid-turn is folded into the running turn rather than dropped. If a
   turn is already running, the loop's steering check (step 6) picks the new message up on its own; if
   none is running, the handler kicks a fresh turn:
@@ -675,7 +675,7 @@ iii.registerFunction("harness::on_steering", async (evt) => {
 });
 
 iii.registerTrigger({
-  type: "session::message_added",
+  type: "session::message-added",
   function_id: "harness::on_steering",
   config: { roles: ["user"] },
 });
@@ -852,7 +852,7 @@ type SpawnResponse = {
 
 Guard failures surface as `is_error` function_results, not throws: `harness/spawn_depth_exceeded`,
 `harness/spawn_fanout_exceeded`, or the standard policy denial when `harness::spawn` is not
-allowed. The child's transcript is a normal session — bind `session::message_updated` with
+allowed. The child's transcript is a normal session — bind `session::message-updated` with
 `{ metadata: { parent_session_id } }` to render sub-agent progress live.
 
 ### `harness::turn`

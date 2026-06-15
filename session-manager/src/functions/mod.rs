@@ -102,14 +102,14 @@ pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
         iii,
         deps,
         "session::set_meta",
-        "Update a session's title/description/metadata; fires session::meta_updated.",
+        "Update a session's title/description/metadata; fires session::meta-updated.",
         |d, r| async move { set_meta::handle(&d, r).await },
     );
     register(
         iii,
         deps,
         "session::set_status",
-        "Set status idle/working/done/error; fires session::status_changed (no-op when unchanged).",
+        "Set status idle/working/done/error; fires session::status-changed (no-op when unchanged).",
         |d, r| async move { set_status::handle(&d, r).await },
     );
     register(
@@ -123,21 +123,21 @@ pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
         iii,
         deps,
         "session::append",
-        "Append one entry (idempotent on entry_id); fires session::message_added.",
+        "Append one entry (idempotent on entry_id); fires session::message-added.",
         |d, r| async move { append::handle(&d, r).await },
     );
     register(
         iii,
         deps,
         "session::append_many",
-        "Append several message entries in order; fires session::message_added per entry.",
+        "Append several message entries in order; fires session::message-added per entry.",
         |d, r| async move { append_many::handle(&d, r).await },
     );
     register(
         iii,
         deps,
         "session::update_message",
-        "Replace a message entry's content (optimistic concurrency via expected_revision); fires session::message_updated.",
+        "Replace a message entry's content (optimistic concurrency via expected_revision); fires session::message-updated.",
         |d, r| async move { update_message::handle(&d, r).await },
     );
     register(

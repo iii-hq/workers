@@ -507,7 +507,7 @@ Four steps. Average size is 30–60 lines.
 
 - **The real backend's transcript path.** [`real.ts`](src/lib/backend/real.ts)
   no longer streams transcript content through `StreamEvent`s — text/thought
-  tokens render from session-manager events (`session::message_updated`
+  tokens render from session-manager events (`session::message-updated`
   snapshots) reconciled by `use-conversations` + `lib/sessions/entry-mapper`.
   The real backend's stream carries only ephemeral turn state (approvals,
   function-call lifecycle, stop-reason notices, agent_end). Mock scenario

@@ -43,7 +43,7 @@ Feature: session::append — append one entry, idempotent on entry_id
   # Prevents: re-running a durable harness step from duplicating
   # transcript entries — THE core idempotency guarantee of this worker.
   Scenario: appending an existing entry_id is a complete no-op
-    Given a binding "b1" on "session::message_added" delivering to "ui::recv" with config:
+    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
       """
       {}
       """
@@ -60,7 +60,7 @@ Feature: session::append — append one entry, idempotent on entry_id
     Then the call succeeds
     And the response field "entry_id" is "turn1-user"
     And the response field "parent_id" is null
-    And function "ui::recv" received 1 "session::message_added" delivery
+    And function "ui::recv" received 1 "session::message-added" delivery
     When I call "session::get_message" with:
       """
       { "session_id": "s_001", "entry_id": "turn1-user" }
@@ -116,7 +116,7 @@ Feature: session::append — append one entry, idempotent on entry_id
   # Prevents: writer-supplied correlation (turn_id) being lost between
   # the request and the event consumers stitch traces with.
   Scenario: origin is echoed on the emitted event
-    Given a binding "b1" on "session::message_added" delivering to "ui::recv" with config:
+    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
       """
       {}
       """
@@ -205,13 +205,13 @@ Feature: session::append — append one entry, idempotent on entry_id
   # Prevents: custom (bookkeeping) entries polluting message_count or
   # being dropped from events entirely.
   Scenario: appending a custom entry emits an event but does not count as a message
-    Given a binding "b1" on "session::message_added" delivering to "ui::recv" with config:
+    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
       """
       {}
       """
     When I append a custom entry of type "compaction" to "s_001"
     Then the call succeeds
-    And function "ui::recv" received 1 "session::message_added" delivery
+    And function "ui::recv" received 1 "session::message-added" delivery
     And delivery 0 to "ui::recv" has "custom.custom_type" = "compaction"
     And delivery 0 to "ui::recv" has no field "message"
     When I call "session::get" with:

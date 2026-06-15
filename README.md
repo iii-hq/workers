@@ -47,8 +47,10 @@ npx skills add iii-hq/iii --all
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
-| [`llm-budget`](llm-budget/) | Rust | Workspace + agent LLM spend caps with alerts, forecast, and period rollover under `budget::*`. |
+| [`llm-router`](llm-router/) | Rust | One front door + provider protocol in front of every LLM provider — `router::chat`/`router::complete`, provider registry + credentials, model catalog, and routing. See [`llm-router/README.md`](llm-router/README.md). |
 | [`mcp`](mcp/) | Rust | MCP 2025-06-18 Streamable HTTP bridge — exposes iii functions tagged `mcp.expose` as MCP tools. |
+| [`provider-anthropic`](provider-anthropic/) | Rust | Anthropic Messages API provider behind `llm-router` — `provider::anthropic::stream` with prompt caching, thinking, and live model discovery. |
+| [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider behind `llm-router` — `provider::openai::stream` with reasoning support and live chat-model discovery. |
 | [`shell`](shell/) | Rust | Unix shell + filesystem worker — `shell::exec` with allowlist/denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
@@ -119,11 +121,13 @@ host.
 
 ## Add a new worker
 
-[`binary-worker.md`](binary-worker.md) is the deep dive for the Rust binary
-scaffold (manifest, config, layout, function contract).
-[`worker-readme.md`](worker-readme.md) covers the README contract every
-worker shares (install via `iii worker add`, run via `iii start`, how-to
-over reference).
+Start with [`docs/sops/new-worker.md`](docs/sops/new-worker.md) — the
+cross-cutting checklist (naming, required files, CI gates, release wiring).
+For the inside of a Rust `deploy: binary` worker, continue with
+[`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
+a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
+contract (install via `iii worker add`, quickstart, configuration).
+[`docs/README.md`](docs/README.md) indexes all shared docs.
 
 ## CI
 
@@ -139,6 +143,9 @@ The `pr-checks` job additionally enforces, per changed worker: `README.md`
 present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
 version is greater than the version on the PR's base branch.
 
+Full reference (discovery buckets, interface boot smoke, e2e workflows):
+[`docs/architecture/testing-and-ci.md`](docs/architecture/testing-and-ci.md).
+
 ## CD
 
 Releases are cut manually via the **Create Tag** workflow
@@ -152,8 +159,13 @@ resulting `<worker>/v<X.Y.Z>` tag drives a single dispatcher
      [`_rust-binary.yml`](.github/workflows/_rust-binary.yml).
    - `image` → multi-arch image to `ghcr.io/<owner>/<worker>` via
      [`_container.yml`](.github/workflows/_container.yml).
+   - `bundle` → single-file archive via
+     [`_bundle.yml`](.github/workflows/_bundle.yml).
 2. Calls `POST /publish` against the workers registry API via
    [`_publish-registry.yml`](.github/workflows/_publish-registry.yml).
+
+Step-by-step (variants, troubleshooting, rollback):
+[`docs/sops/release.md`](docs/sops/release.md).
 
 ## License
 

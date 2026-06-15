@@ -30,7 +30,7 @@ const defaultModel = {
  * Build an ISdk-compatible mock for the sync flow.
  *
  * @param opts.fixtureMessages - entries returned by session::messages
- * @param opts.providerError - if true, make createChannel reject to simulate summariser error
+ * @param opts.providerError - if true, router::complete rejects to simulate a summariser error
  * @param opts.stateStore - optional shared state store for lease simulation
  */
 function buildSyncMock(opts: {
@@ -40,29 +40,14 @@ function buildSyncMock(opts: {
 }) {
   const { fixtureMessages, providerError = false, stateStore = new Map<string, unknown>() } = opts;
 
-  let channelCb: ((raw: string) => void) | null = null;
-
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
+  const doneSummaryMessage = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Sync compaction summary text.' }],
+    stop_reason: 'end',
+    model: 'claude-haiku-4-5',
+    provider: 'anthropic',
+    timestamp: Date.now(),
   };
-
-  const doneSummaryEvent = JSON.stringify({
-    type: 'done',
-    message: {
-      role: 'assistant',
-      content: [{ type: 'text', text: 'Sync compaction summary text.' }],
-      stop_reason: 'end',
-      model: 'claude-haiku-4-5',
-      provider: 'anthropic',
-      timestamp: Date.now(),
-    },
-  });
 
   const compactionAppends: unknown[] = [];
   const messageAppends: unknown[] = [];
@@ -117,21 +102,17 @@ function buildSyncMock(opts: {
       }
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
-    if (function_id.startsWith('provider::')) {
-      if (channelCb) {
-        channelCb(doneSummaryEvent);
+    if (function_id === 'router::complete') {
+      if (providerError) {
+        throw new Error('summariser unavailable');
       }
-      return undefined;
+      return { message: doneSummaryMessage };
     }
 
     return undefined;
   });
 
-  const createChannel = providerError
-    ? vi.fn().mockRejectedValue(new Error('provider channel unavailable'))
-    : vi.fn(async () => channel);
-
-  const iii = { trigger, createChannel } as unknown as ISdk;
+  const iii = { trigger } as unknown as ISdk;
 
   return { iii, trigger, compactionAppends, messageAppends, updateMessageCalls };
 }

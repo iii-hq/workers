@@ -1,3 +1,4 @@
+# Release SOP: docs/sops/release.md
 name: Release
 
 on:
@@ -12,7 +13,11 @@ on:
       - 'iii-directory/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
+      - 'llm-router/v*'
       - 'mcp/v*'
+      - 'provider-anthropic/v*'
+      - 'provider-openai/v*'
+      - 'session-manager/v*'
       - 'shell/v*'
       - 'storage/v*'
   workflow_dispatch:

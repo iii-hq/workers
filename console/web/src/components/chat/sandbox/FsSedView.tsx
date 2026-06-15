@@ -5,6 +5,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import {
+  type FsSedFileResult,
   fsSedRequestSchema,
   fsSedResponseSchema,
   safeParseResponse,
@@ -42,60 +43,74 @@ export function FsSedView({ input, output }: FsSedViewProps) {
           · no files touched
         </div>
       ) : (
-        <table className="w-full font-mono text-[12px] text-ink">
-          <thead>
-            <tr className="border-b border-rule-2 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-              <th className="text-left font-normal px-3 py-1.5">path</th>
-              <th className="text-left font-normal px-2 py-1.5 w-20 tabular-nums">
-                replacements
-              </th>
-              <th className="text-left font-normal px-3 py-1.5 w-8">status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {results.map((r) => (
-              <tr
-                key={r.path}
-                className="border-b border-rule-2 last:border-b-0"
-              >
-                <td className="px-3 py-1.5 text-ink">{r.path}</td>
-                <td className="px-2 py-1.5 text-ink-faint tabular-nums">
-                  {r.replacements}
-                </td>
-                <td className="px-3 py-1.5">
-                  {r.success ? (
-                    <span className="text-accent">ok</span>
-                  ) : r.error ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                          <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
-                          err
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{r.error}</TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <span className="text-warn">err</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            <tr className="bg-paper-2">
-              <td className="px-3 py-1.5 text-ink-faint uppercase tracking-[0.06em] text-[11px]">
-                total
-              </td>
-              <td className="px-2 py-1.5 tabular-nums" colSpan={2}>
-                <FooterPill
-                  tone={total_replacements > 0 ? 'accent' : 'default'}
-                >
-                  {`${total_replacements} replacements`}
-                </FooterPill>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <SedResultsTable
+          results={results}
+          totalReplacements={total_replacements}
+        />
       )}
     </div>
+  )
+}
+
+interface SedResultsTableProps {
+  results: FsSedFileResult[]
+  totalReplacements: number
+}
+
+/** Per-file replacement table with the total pill. Shared with the shell
+    module's `fs::sed` renderer — both wires speak `FsSedFileResult`. */
+export function SedResultsTable({
+  results,
+  totalReplacements,
+}: SedResultsTableProps) {
+  return (
+    <table className="w-full font-mono text-[12px] text-ink">
+      <thead>
+        <tr className="border-b border-rule-2 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+          <th className="text-left font-normal px-3 py-1.5">path</th>
+          <th className="text-left font-normal px-2 py-1.5 w-20 tabular-nums">
+            replacements
+          </th>
+          <th className="text-left font-normal px-3 py-1.5 w-8">status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {results.map((r) => (
+          <tr key={r.path} className="border-b border-rule-2 last:border-b-0">
+            <td className="px-3 py-1.5 text-ink">{r.path}</td>
+            <td className="px-2 py-1.5 text-ink-faint tabular-nums">
+              {r.replacements}
+            </td>
+            <td className="px-3 py-1.5">
+              {r.success ? (
+                <span className="text-accent">ok</span>
+              ) : r.error ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex items-center gap-1 text-warn cursor-help">
+                      <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
+                      err
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{r.error}</TooltipContent>
+                </Tooltip>
+              ) : (
+                <span className="text-warn">err</span>
+              )}
+            </td>
+          </tr>
+        ))}
+        <tr className="bg-paper-2">
+          <td className="px-3 py-1.5 text-ink-faint uppercase tracking-[0.06em] text-[11px]">
+            total
+          </td>
+          <td className="px-2 py-1.5 tabular-nums" colSpan={2}>
+            <FooterPill tone={totalReplacements > 0 ? 'accent' : 'default'}>
+              {`${totalReplacements} replacements`}
+            </FooterPill>
+          </td>
+        </tr>
+      </tbody>
+    </table>
   )
 }

@@ -151,7 +151,7 @@ export function OnboardingSection() {
             {'\n'}
             iii.<K>registerTrigger</K>(<M>{'{'}</M>
             {'\n'}
-            {'  '}type: <S>"session::message_updated"</S>,{'\n'}
+            {'  '}type: <S>"session::message-updated"</S>,{'\n'}
             {'  '}function_id: <S>"app::render"</S>,{'\n'}
             <M>{'}'}</M>);
           </CodeBlock>

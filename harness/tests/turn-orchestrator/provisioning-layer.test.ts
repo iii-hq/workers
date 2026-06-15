@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Model } from '../../src/models-catalog/types.js';
+import type { Model } from '../../src/types/model.js';
 import type { ProvisioningPorts } from '../../src/turn-orchestrator/provisioning/ports.js';
 import {
   applyProvisioningOutcome,
@@ -26,6 +26,7 @@ function stubPorts(overrides: Partial<ProvisioningPorts> = {}): ProvisioningPort
       function_schemas: [],
     })),
     saveRunRequest: vi.fn(async () => {}),
+    route: vi.fn(async (provider: string, _model: string) => provider || 'anthropic'),
     resolveModel: vi.fn(async () => null),
     ...overrides,
   };
@@ -71,7 +72,8 @@ describe('processProvisioning', () => {
     expect(outcome.runRequest.system_prompt).toBe('custom override');
   });
 
-  it('resolves the model once against the DECIDED provider and returns it', async () => {
+  it('resolves the model once against the ROUTED provider and pins it on the request', async () => {
+    const route = vi.fn(async () => 'openai');
     const resolveModel = vi.fn(async () => FAKE_MODEL);
     const ports = stubPorts({
       loadRunRequest: vi.fn(async () => ({
@@ -81,15 +83,42 @@ describe('processProvisioning', () => {
         system_prompt: '',
         function_schemas: [],
       })),
+      route,
       resolveModel,
     });
     const rec = { ...newRecord('s1'), state: 'provisioning' as const };
 
     const outcome = await processProvisioning(ports, rec);
 
+    expect(route).toHaveBeenCalledTimes(1);
+    expect(route).toHaveBeenCalledWith('', 'gpt-4');
     expect(resolveModel).toHaveBeenCalledTimes(1);
     expect(resolveModel).toHaveBeenCalledWith('openai', 'gpt-4');
+    expect(outcome.runRequest.routed_provider).toBe('openai');
     expect(outcome.model_meta).toEqual(FAKE_MODEL);
+  });
+
+  it('skips model resolution and serves the default-family prompt when routing fails', async () => {
+    const route = vi.fn(async () => null);
+    const resolveModel = vi.fn(async () => FAKE_MODEL);
+    const ports = stubPorts({
+      loadRunRequest: vi.fn(async () => ({
+        provider: '',
+        model: 'gpt-4',
+        mode: null,
+        system_prompt: '',
+        function_schemas: [],
+      })),
+      route,
+      resolveModel,
+    });
+    const rec = { ...newRecord('s1'), state: 'provisioning' as const };
+
+    const outcome = await processProvisioning(ports, rec);
+
+    expect(resolveModel).not.toHaveBeenCalled();
+    expect(outcome.runRequest.routed_provider).toBe('');
+    expect(outcome.model_meta).toBeNull();
   });
 
   it('does not resolve when there is no model id', async () => {

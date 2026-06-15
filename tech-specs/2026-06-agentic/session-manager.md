@@ -37,14 +37,14 @@ badge, a list filter):
 `session::create` starts a session at `idle`. The driver (typically the [harness](harness.md)) sets
 `working` when a turn starts, `done` when it completes or is cancelled, and `error` when it fails,
 via [`session::set_status`](#sessionset_status), which fires
-[`session::status_changed`](#trigger-types-emitted).
+[`session::status-changed`](#trigger-types-emitted).
 
 ## Standalone use
 
 - A web/mobile chat app uses it as the source of truth and binds the trigger types for real-time
   UI, with or without the harness.
 - A multi-channel bot stores every conversation here and forks sessions to explore alternatives.
-- A dashboard binds `session::status_changed` to show which sessions are working vs done.
+- A dashboard binds `session::status-changed` to show which sessions are working vs done.
 
 ## Sub-agent linkage
 
@@ -53,7 +53,7 @@ session whose relationship to its parent lives in `SessionMeta.metadata`:
 `{ parent_session_id, parent_turn_id, function_call_id, depth }`. This is a convention, not new API
 surface — `session::list` filters on it to reconstruct the agent tree, and trigger configs filter
 on it to render a child's transcript live (e.g. `{ metadata: { parent_session_id: "s_7a1" } }` on
-`session::message_updated`). Children are fully independent sessions: deleting the parent does not
+`session::message-updated`). Children are fully independent sessions: deleting the parent does not
 cascade (a cleanup worker can walk the linkage metadata when a deployment wants that).
 
 ## Reactivity model
@@ -63,8 +63,8 @@ types; a consumer binds handlers with the standard two-step pattern (see
 [README § Reactive pattern](README.md#reactive-pattern)).
 
 Streaming an assistant reply uses the same primitives as everything else: the driver appends an
-(initially empty) assistant message — which fires `session::message_added` — then calls
-`session::update_message` as tokens arrive — each firing `session::message_updated`. Updates may be
+(initially empty) assistant message — which fires `session::message-added` — then calls
+`session::update_message` as tokens arrive — each firing `session::message-updated`. Updates may be
 batched/throttled by the driver. Consumers render the growing message from those updates. Each
 update carries a server-assigned monotonic `revision`; trigger deliveries may arrive out of order,
 so consumers keep the highest revision per entry (last-write-wins on full-message snapshots).
@@ -74,19 +74,19 @@ sequenceDiagram
   participant UI as chat client
   participant H as harness (driver)
   participant S as session-manager
-  UI->>S: bind created / message_added / message_updated / status_changed / meta_updated / deleted
+  UI->>S: bind created / message-added / message-updated / status-changed / meta-updated / deleted
   H->>S: session::create (title, description)
   S-->>UI: session::created
   H->>S: session::set_status working
-  S-->>UI: session::status_changed (working)
+  S-->>UI: session::status-changed (working)
   H->>S: session::append (assistant message, empty)
-  S-->>UI: session::message_added
+  S-->>UI: session::message-added
   loop streaming deltas
     H->>S: session::update_message (grow content)
-    S-->>UI: session::message_updated
+    S-->>UI: session::message-updated
   end
   H->>S: session::set_status done
-  S-->>UI: session::status_changed (done)
+  S-->>UI: session::status-changed (done)
 ```
 
 ## Functions
@@ -99,15 +99,15 @@ Lifecycle:
 - `session::get` — Read one session's metadata.
 - `session::list` — List sessions with pagination/ordering.
 - `session::set_meta` — Update a session's `title`/`description`/`metadata` (e.g. an auto-generated
-  title); fires `session::meta_updated`.
-- `session::set_status` — Set status `idle`/`working`/`done`/`error`; fires `session::status_changed`.
+  title); fires `session::meta-updated`.
+- `session::set_status` — Set status `idle`/`working`/`done`/`error`; fires `session::status-changed`.
 - `session::delete` — Delete a session and its entries; fires `session::deleted`.
 
 Messages:
 
-- `session::append` — Append one message entry; fires `session::message_added`.
-- `session::append_many` — Append several message entries; fires `session::message_added` per entry.
-- `session::update_message` — Replace the content of a message entry; fires `session::message_updated`.
+- `session::append` — Append one message entry; fires `session::message-added`.
+- `session::append_many` — Append several message entries; fires `session::message-added` per entry.
+- `session::update_message` — Replace the content of a message entry; fires `session::message-updated`.
 - `session::messages` — Load the active-path `AgentMessage[]` (with entry ids), oldest first;
   supports pagination and role filtering.
 - `session::get_message` — Read a single entry by id.
@@ -147,7 +147,7 @@ type SessionCreatedEvent = {
 };
 ```
 
-- **`session::message_added`** — a message was appended.
+- **`session::message-added`** — a message was appended.
   - Config: `{ session_id?: string; roles?: Role[] }`.
   - Payload:
 
@@ -162,7 +162,7 @@ type MessageAddedEvent = {
 };
 ```
 
-- **`session::message_updated`** — a message's content changed (e.g. streaming deltas, edited
+- **`session::message-updated`** — a message's content changed (e.g. streaming deltas, edited
   function output).
   - Config: `{ session_id?: string; roles?: Role[] }`.
   - Payload:
@@ -178,7 +178,7 @@ type MessageUpdatedEvent = {
 };
 ```
 
-- **`session::status_changed`** — a session's status changed.
+- **`session::status-changed`** — a session's status changed.
   - Config: `{ session_id?: string }`.
   - Payload:
 
@@ -192,7 +192,7 @@ type StatusChangedEvent = {
 };
 ```
 
-- **`session::meta_updated`** — a session's `title`/`description`/`metadata` changed.
+- **`session::meta-updated`** — a session's `title`/`description`/`metadata` changed.
   - Config: `{ session_id?: string }`.
   - Payload:
 
@@ -219,7 +219,7 @@ Example binding (live-render every assistant delta for one session):
 ```typescript
 iii.registerFunction("ui::on_message_updated", async (evt) => render(evt.entry_id, evt.message));
 iii.registerTrigger({
-  type: "session::message_updated",
+  type: "session::message-updated",
   function_id: "ui::on_message_updated",
   config: { session_id: "s_123", roles: ["assistant"] },
 });
@@ -321,7 +321,7 @@ type ListResponse = { sessions: SessionMeta[]; next_cursor?: string };
 ### `session::set_meta`
 
 Update `title`/`description`/`metadata` (e.g. once a titling worker generates them from the first
-exchange). Does not change status or messages. Fires `session::meta_updated`, so consumers render
+exchange). Does not change status or messages. Fires `session::meta-updated`, so consumers render
 new titles live instead of polling `session::get`. A supplied `metadata` object replaces the stored
 one.
 
@@ -339,7 +339,7 @@ type SetMetaResponse = { meta: SessionMeta };
 
 ### `session::set_status`
 
-Set the session status. Fires `session::status_changed`. No-op (no event) if the status is unchanged.
+Set the session status. Fires `session::status-changed`. No-op (no event) if the status is unchanged.
 `reason` is stored as `status_reason` (typically set with `error`, cleared on any other status).
 
 - Invocation: **sync**
@@ -365,7 +365,7 @@ type DeleteResponse = { deleted: boolean };
 
 Append one message entry. The entry id and `parent_id` are assigned by the worker (parent = current
 active leaf) unless provided. Appending moves the active leaf to the new entry. Fires
-`session::message_added`. **Idempotent on `entry_id`**: appending an id that already exists is a
+`session::message-added`. **Idempotent on `entry_id`**: appending an id that already exists is a
 no-op — the existing entry is returned and no event fires (this is what makes the harness's
 redelivered steps safe; see [harness.md § Durability & idempotency](harness.md#durability--idempotency)).
 
@@ -400,7 +400,7 @@ Example:
 
 ### `session::append_many`
 
-- Invocation: **sync**. Fires `session::message_added` for each appended entry, in order. Not
+- Invocation: **sync**. Fires `session::message-added` for each appended entry, in order. Not
   idempotent — use `session::append` with `entry_id` where redelivery is possible.
 
 ```typescript
@@ -416,7 +416,7 @@ type AppendManyResponse = { entry_ids: string[]; last_entry_id: string };
 ### `session::update_message`
 
 Replace the content (and optionally `details`) of an existing message entry. Used for streaming
-assistant deltas and for edited function output. Fires `session::message_updated`. Each successful
+assistant deltas and for edited function output. Fires `session::message-updated`. Each successful
 update increments the entry's `revision` (echoed on the event). Pass `expected_revision` for
 optimistic concurrency: on mismatch nothing is written and `{ updated: false, revision }` returns
 the current revision.
@@ -523,8 +523,8 @@ future SQL/blob backend can implement the same interface.
 
 - Storage backend (per deployment): filesystem `data_dir` (default), or a main session-manager
   instance reached over the bus (bridge mode).
-- Registers six custom trigger types (`session::created`, `session::message_added`,
-  `session::message_updated`, `session::status_changed`, `session::meta_updated`,
+- Registers six custom trigger types (`session::created`, `session::message-added`,
+  `session::message-updated`, `session::status-changed`, `session::meta-updated`,
   `session::deleted`) and emits their events through the engine on every relevant mutation.
 
 ## Agent exposure

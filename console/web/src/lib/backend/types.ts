@@ -83,13 +83,19 @@ export type StreamEvent =
 
 export interface ChatStreamOptions {
   signal?: AbortSignal
+  /**
+   * Reasoning/thinking level for the turn. Sent to `run::start` as
+   * `thinking_level`; omitted when 'off' or absent. The provider degrades
+   * with a warning when the model can't honor it.
+   */
+  thinkingLevel?: import('@/types/chat').ThinkingLevel
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
    * Per-send message id (`msg-<uuid>`). The harness derives the user
    * message's session-manager entry id from it (`<message_id>-user-0`), so
    * the console's optimistic user message reconciles in place when the
-   * `session::message_added` snapshot arrives. The real backend mints one
+   * `session::message-added` snapshot arrives. The real backend mints one
    * when omitted.
    */
   messageId?: string

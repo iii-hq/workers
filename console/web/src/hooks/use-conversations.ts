@@ -17,7 +17,7 @@
  *   always sent.
  * - delete writes through `session::delete`; the sidebar prunes on the
  *   `session::deleted` event (and optimistically).
- * - transcript content reconciles `message_added` / `message_updated`
+ * - transcript content reconciles `message-added` / `message-updated`
  *   snapshots by entry, keeping the highest revision per entry
  *   (at-least-once, unordered delivery).
  *
@@ -174,7 +174,7 @@ export function useConversations(
   ])
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
 
-  /** Highest seen `message_updated` revision per (session, entry). */
+  /** Highest seen `message-updated` revision per (session, entry). */
   const revisionsRef = useRef(new Map<string, Map<string, number>>())
 
   const patchConversation = useCallback(

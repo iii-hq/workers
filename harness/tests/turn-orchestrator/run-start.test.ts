@@ -110,6 +110,19 @@ describe('RunStartPayloadSchema', () => {
     expect(() => RunStartPayloadSchema.parse(null)).toThrow();
     expect(() => RunStartPayloadSchema.parse(undefined)).toThrow();
   });
+
+  it('accepts a thinking_level and rejects unknown levels', () => {
+    // Threaded to router::chat via the persisted run request; an invalid
+    // level must fail at the boundary, not surface as a provider warning.
+    expect(
+      RunStartPayloadSchema.parse({ ...harnessRunStartPayload, thinking_level: 'high' })
+        .thinking_level,
+    ).toBe('high');
+    expect(RunStartPayloadSchema.parse(harnessRunStartPayload).thinking_level).toBeUndefined();
+    expect(() =>
+      RunStartPayloadSchema.parse({ ...harnessRunStartPayload, thinking_level: 'ultra' }),
+    ).toThrow();
+  });
 });
 
 describe('register', () => {

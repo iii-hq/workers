@@ -30,15 +30,13 @@ export type SystemPromptOptions = {
   override?: string | null;
   /** Operating mode; prepends a mode paragraph before the identity prompt. */
   mode?: Mode | null;
-  /** Run's provider id (e.g. `anthropic`); selects the prompt family. */
+  /** Run's ROUTED provider id (from `router::route`); selects the prompt family. */
   provider?: string | null;
-  /** Run's model id (e.g. `gpt-5`); refines the family when provider is empty. */
-  model?: string | null;
 };
 
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
-  const { override, mode, provider, model } = opts;
+  const { override, mode, provider } = opts;
   if (override && override.length > 0) return override;
-  const identity = selectIdentityPrompt(provider ?? '', model ?? '');
+  const identity = selectIdentityPrompt(provider ?? '');
   return isMode(mode) ? `${MODE_PARAGRAPHS[mode]}\n\n${identity}` : identity;
 }

@@ -48,10 +48,10 @@ use serde_json::Value;
 use crate::types::{metadata_matches, AgentMessage, CustomPayload, JsonMap, Role, SessionStatus};
 
 pub const CREATED: &str = "session::created";
-pub const MESSAGE_ADDED: &str = "session::message_added";
-pub const MESSAGE_UPDATED: &str = "session::message_updated";
-pub const STATUS_CHANGED: &str = "session::status_changed";
-pub const META_UPDATED: &str = "session::meta_updated";
+pub const MESSAGE_ADDED: &str = "session::message-added";
+pub const MESSAGE_UPDATED: &str = "session::message-updated";
+pub const STATUS_CHANGED: &str = "session::status-changed";
+pub const META_UPDATED: &str = "session::meta-updated";
 pub const DELETED: &str = "session::deleted";
 
 /// Internal trigger type: envelope feed for bridged instances. Served
@@ -112,7 +112,7 @@ pub struct CreatedBindingConfig {
     pub metadata: Option<JsonMap>,
 }
 
-/// Config accepted by `session::status_changed`, `session::meta_updated`
+/// Config accepted by `session::status-changed`, `session::meta-updated`
 /// and `session::deleted` bindings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -125,8 +125,8 @@ pub struct SessionBindingConfig {
     pub metadata: Option<JsonMap>,
 }
 
-/// Config accepted by `session::message_added` and
-/// `session::message_updated` bindings.
+/// Config accepted by `session::message-added` and
+/// `session::message-updated` bindings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MessageBindingConfig {
@@ -246,7 +246,7 @@ pub struct SessionCreatedEvent {
     pub created_at: i64,
 }
 
-/// `session::message_added` — an entry was appended. Carries `message`
+/// `session::message-added` — an entry was appended. Carries `message`
 /// for `kind: "message"` entries, `custom` for `kind: "custom"` entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MessageAddedEvent {
@@ -263,7 +263,7 @@ pub struct MessageAddedEvent {
     pub timestamp: i64,
 }
 
-/// `session::message_updated` — a message's content changed.
+/// `session::message-updated` — a message's content changed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MessageUpdatedEvent {
     pub session_id: String,
@@ -279,7 +279,7 @@ pub struct MessageUpdatedEvent {
     pub timestamp: i64,
 }
 
-/// `session::status_changed` — a session's status changed.
+/// `session::status-changed` — a session's status changed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusChangedEvent {
     pub session_id: String,
@@ -291,7 +291,7 @@ pub struct StatusChangedEvent {
     pub timestamp: i64,
 }
 
-/// `session::meta_updated` — title/description/metadata changed.
+/// `session::meta-updated` — title/description/metadata changed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MetaUpdatedEvent {
     pub session_id: String,
@@ -1108,7 +1108,7 @@ mod tests {
         let err = EventKind::MessageAdded
             .parse_binding_config(&json!({ "sesion_id": "s_1" }))
             .unwrap_err();
-        assert!(err.contains("invalid session::message_added config"));
+        assert!(err.contains("invalid session::message-added config"));
     }
 
     #[test]

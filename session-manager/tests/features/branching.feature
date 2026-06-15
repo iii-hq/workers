@@ -78,11 +78,11 @@ Feature: session::set_active_leaf — branch switching within a session
   # Prevents: set_active_leaf emitting spurious events — the spec gives
   # it none of the six trigger types.
   Scenario: a branch switch emits no events
-    Given a binding "b1" on "session::message_added" delivering to "obs::all" with config:
+    Given a binding "b1" on "session::message-added" delivering to "obs::all" with config:
       """
       {}
       """
-    And a binding "b2" on "session::meta_updated" delivering to "obs::all" with config:
+    And a binding "b2" on "session::meta-updated" delivering to "obs::all" with config:
       """
       {}
       """
