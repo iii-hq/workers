@@ -20,7 +20,7 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::OnceCell;
 
-use iii_mcp::{
+use mcp::{
     config::McpConfig,
     functions::{self, FUNCTION_ID},
 };

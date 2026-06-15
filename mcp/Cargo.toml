@@ -11,7 +11,7 @@ name = "mcp"
 path = "src/main.rs"
 
 [lib]
-name = "iii_mcp"
+name = "mcp"
 path = "src/lib.rs"
 
 [dependencies]

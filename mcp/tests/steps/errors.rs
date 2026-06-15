@@ -2,7 +2,7 @@
 //!
 //! Pins the JSON-RPC error envelopes the bridge returns for malformed
 //! / unsupported / hidden requests. Codes mirror the JSON-RPC spec
-//! constants in [`iii_mcp::jsonrpc`].
+//! constants in [`mcp::jsonrpc`].
 
 use cucumber::{then, when};
 use serde_json::json;
