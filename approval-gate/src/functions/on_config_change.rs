@@ -32,53 +32,43 @@ pub async fn handle(deps: &Deps, event: ConfigChangeEvent) -> Result<Value, Appr
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
+    use super::*;
+    use crate::gate_config::snapshot;
+    use crate::testkit::{with_stack, BootOpts};
+    use crate::types::PermissionMode;
     use serde_json::json;
 
-    use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::{shared_defaults, snapshot};
-    use crate::testkit::FakeBus;
-    use crate::types::PermissionMode;
-
-    fn deps() -> Arc<Deps> {
-        Arc::new(Deps {
-            bus: Arc::new(FakeBus::new()),
-            sink: Arc::new(RecordingSink::new()),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        })
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn reloads_defaults_on_matching_entry() {
-        let deps = deps();
-        let event: ConfigChangeEvent = serde_json::from_value(json!({
-            "id": "approval-gate",
-            "event_type": "configuration:updated",
-            "new_value": { "default_mode": "auto", "pending_timeout_ms": 60000 }
-        }))
-        .unwrap();
-        handle(&deps, event).await.unwrap();
-        let d = snapshot(&deps.defaults);
-        assert_eq!(d.default_mode, PermissionMode::Auto);
-        assert_eq!(d.pending_timeout_ms, 60_000);
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let event: ConfigChangeEvent = serde_json::from_value(json!({
+                "id": "approval-gate",
+                "event_type": "configuration:updated",
+                "new_value": { "default_mode": "auto", "pending_timeout_ms": 60000 }
+            }))
+            .unwrap();
+            handle(&stack.deps, event).await.unwrap();
+            let d = snapshot(&stack.defaults);
+            assert_eq!(d.default_mode, PermissionMode::Auto);
+            assert_eq!(d.pending_timeout_ms, 60_000);
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn ignores_other_entries() {
-        let deps = deps();
-        let event: ConfigChangeEvent = serde_json::from_value(json!({
-            "id": "llm-router",
-            "new_value": { "default_mode": "full" }
-        }))
-        .unwrap();
-        handle(&deps, event).await.unwrap();
-        assert_eq!(
-            snapshot(&deps.defaults).default_mode,
-            PermissionMode::Manual
-        );
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let event: ConfigChangeEvent = serde_json::from_value(json!({
+                "id": "llm-router",
+                "new_value": { "default_mode": "full" }
+            }))
+            .unwrap();
+            handle(&stack.deps, event).await.unwrap();
+            assert_eq!(
+                snapshot(&stack.defaults).default_mode,
+                PermissionMode::Manual
+            );
+        })
+        .await;
     }
 }

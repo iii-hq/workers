@@ -15,7 +15,7 @@ pub async fn handle(
 ) -> Result<SettingsResponse, ApprovalError> {
     let defaults = snapshot(&deps.defaults);
     let settings = settings::materialize_and(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &req.session_id,
         &defaults,
         deps.cfg.state_timeout_ms,
@@ -30,57 +30,45 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::{replace, shared_defaults, GateDefaults};
-    use crate::testkit::FakeBus;
+    use crate::gate_config::{replace, GateDefaults};
+    use crate::testkit::{with_stack, BootOpts};
     use crate::types::PermissionMode;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn removes_seed_entries_from_the_materialized_record() {
-        let bus = Arc::new(FakeBus::new());
-        let _state = bus.with_memory_state();
-        let defaults = shared_defaults();
-        replace(
-            &defaults,
-            GateDefaults {
-                default_mode: PermissionMode::Auto,
-                always_allow_seed: vec!["state::get".into(), "shell::run".into()],
-                pending_timeout_ms: 1_800_000,
-            },
-        );
-        let deps = Arc::new(Deps {
-            bus,
-            sink: Arc::new(RecordingSink::new()),
-            defaults,
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        let res = handle(
-            &deps,
-            AlwaysAllowMutationRequest {
-                session_id: "s_1".into(),
-                function_id: "shell::run".into(),
-            },
-        )
-        .await
-        .unwrap();
-        // The first mutation seeded both entries, then removed one.
-        assert_eq!(res.settings.always_allow.len(), 1);
-        assert_eq!(res.settings.always_allow[0].function_id, "state::get");
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            replace(
+                &stack.defaults,
+                GateDefaults {
+                    default_mode: PermissionMode::Auto,
+                    always_allow_seed: vec!["state::get".into(), "shell::run".into()],
+                    pending_timeout_ms: 1_800_000,
+                },
+            );
+            let res = handle(
+                &stack.deps,
+                AlwaysAllowMutationRequest {
+                    session_id: "s_1".into(),
+                    function_id: "shell::run".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(res.settings.always_allow.len(), 1);
+            assert_eq!(res.settings.always_allow[0].function_id, "state::get");
 
-        // Removing an absent entry is a no-op.
-        let again = handle(
-            &deps,
-            AlwaysAllowMutationRequest {
-                session_id: "s_1".into(),
-                function_id: "never::granted".into(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(again.settings.always_allow.len(), 1);
+            let again = handle(
+                &stack.deps,
+                AlwaysAllowMutationRequest {
+                    session_id: "s_1".into(),
+                    function_id: "never::granted".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.settings.always_allow.len(), 1);
+        })
+        .await;
     }
 }

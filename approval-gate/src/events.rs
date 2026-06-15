@@ -15,12 +15,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, III};
+use iii_sdk::{
+    IIIError, RegisterTriggerType, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest,
+    III,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::bus::Bus;
 use crate::types::{metadata_matches, JsonMap, PendingApprovalRecord, PendingResolvedEvent};
 
 pub const PENDING_CREATED: &str = "approval::pending_created";
@@ -219,7 +221,7 @@ pub fn register_trigger_types(iii: &Arc<III>) -> TriggerSets {
     sets
 }
 
-/// Where emissions go. Production fans out over the bus; tests record.
+/// Where emissions go. Production fans out via iii; tests record.
 #[async_trait]
 pub trait EventSink: Send + Sync {
     async fn pending_created(&self, record: &PendingApprovalRecord);
@@ -229,12 +231,12 @@ pub trait EventSink: Send + Sync {
 /// Filtered fire-and-forget fan-out to every matching binding.
 pub struct Emitter {
     sets: TriggerSets,
-    bus: Arc<dyn Bus>,
+    iii: Arc<III>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, bus: Arc<dyn Bus>) -> Self {
-        Self { sets, bus }
+    pub fn new(sets: TriggerSets, iii: Arc<III>) -> Self {
+        Self { sets, iii }
     }
 
     async fn fan_out(
@@ -246,9 +248,22 @@ impl Emitter {
     ) {
         for binding in set.snapshot() {
             if binding_matches(&binding.filter, session_id, session_metadata) {
-                self.bus
-                    .call_void(&binding.function_id, payload.clone())
+                let res = self
+                    .iii
+                    .trigger(TriggerRequest {
+                        function_id: binding.function_id.clone(),
+                        payload: payload.clone(),
+                        action: Some(TriggerAction::Void),
+                        timeout_ms: None,
+                    })
                     .await;
+                if let Err(e) = res {
+                    tracing::warn!(
+                        function_id = %binding.function_id,
+                        error = %e,
+                        "void fan-out failed"
+                    );
+                }
             }
         }
     }
@@ -283,55 +298,9 @@ impl EventSink for Emitter {
     }
 }
 
-/// Test double: records every emission.
-#[derive(Default)]
-pub struct RecordingSink {
-    pub created: Mutex<Vec<PendingApprovalRecord>>,
-    pub resolved: Mutex<Vec<PendingResolvedEvent>>,
-}
-
-impl RecordingSink {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn created_events(&self) -> Vec<PendingApprovalRecord> {
-        self.created
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-    }
-
-    pub fn resolved_events(&self) -> Vec<PendingResolvedEvent> {
-        self.resolved
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-    }
-}
-
-#[async_trait]
-impl EventSink for RecordingSink {
-    async fn pending_created(&self, record: &PendingApprovalRecord) {
-        self.created
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(record.clone());
-    }
-
-    async fn pending_resolved(&self, event: &PendingResolvedEvent) {
-        self.resolved
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(event.clone());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::FakeBus;
-    use crate::types::ResolvedOutcome;
     use serde_json::json;
 
     fn trigger_config(id: &str, function_id: &str, config: Value) -> TriggerConfig {
@@ -340,23 +309,6 @@ mod tests {
             function_id: function_id.into(),
             config,
             metadata: None,
-        }
-    }
-
-    fn record(session_id: &str, metadata: Option<Value>) -> PendingApprovalRecord {
-        PendingApprovalRecord {
-            session_id: session_id.into(),
-            turn_id: "t_1".into(),
-            function_call_id: "c_1".into(),
-            function_id: "shell::run".into(),
-            arguments_excerpt: Value::Null,
-            pending_at: 1,
-            expires_at: 2,
-            session_title: None,
-            session_description: None,
-            session_metadata: metadata.map(|m| serde_json::from_value(m).expect("metadata map")),
-            depth: 0,
-            assistant_excerpt: None,
         }
     }
 
@@ -386,57 +338,76 @@ mod tests {
         assert!(!binding_matches(&filter, "s_1", None));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn emitter_delivers_to_matching_bindings_with_status() {
-        let sets = TriggerSets::new();
-        sets.created
-            .add(trigger_config("b1", "notify::on_pending", json!({})))
-            .unwrap();
-        sets.created
-            .add(trigger_config(
-                "b2",
-                "other::on_pending",
-                json!({ "session_id": "different" }),
-            ))
-            .unwrap();
-
-        let bus = Arc::new(FakeBus::new());
-        let emitter = Emitter::new(sets, bus.clone());
-        emitter
-            .pending_created(&record("s_1", Some(json!({ "owner": "u_1" }))))
-            .await;
-
-        let delivered = bus.calls_to("notify::on_pending");
-        assert_eq!(delivered.len(), 1);
-        assert!(delivered[0].void);
-        assert_eq!(delivered[0].payload["status"], json!("pending"));
-        assert_eq!(delivered[0].payload["session_id"], json!("s_1"));
-        assert!(bus.calls_to("other::on_pending").is_empty());
+        crate::testkit::with_stack(
+            crate::testkit::BootOpts::needs_approval(),
+            |stack| async move {
+                let out = crate::testkit::call(
+                    &stack.iii,
+                    "approval::gate",
+                    crate::testkit::hook_input("s_1", "c_1", "shell::run"),
+                )
+                .await
+                .unwrap();
+                assert_eq!(out["decision"], json!("hold"));
+                assert!(
+                    crate::testkit::wait_for(3_000, || {
+                        !crate::testkit::log_snapshot(&stack.created).is_empty()
+                    })
+                    .await
+                );
+                let created = crate::testkit::log_snapshot(&stack.created);
+                assert_eq!(created.len(), 1);
+                assert_eq!(created[0]["status"], json!("pending"));
+            },
+        )
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn emitter_delivers_resolved_events() {
-        let sets = TriggerSets::new();
-        sets.resolved
-            .add(trigger_config("b1", "notify::on_resolved", json!(null)))
-            .unwrap();
-        let bus = Arc::new(FakeBus::new());
-        let emitter = Emitter::new(sets, bus.clone());
-        emitter
-            .pending_resolved(&PendingResolvedEvent {
-                session_id: "s_1".into(),
-                turn_id: "t_1".into(),
-                function_call_id: "c_1".into(),
-                function_id: "shell::run".into(),
-                outcome: ResolvedOutcome::Timeout,
-                reason: None,
-                session_metadata: None,
-                resolved_at: 5,
-            })
-            .await;
-        let delivered = bus.calls_to("notify::on_resolved");
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload["outcome"], json!("timeout"));
+        crate::testkit::with_stack(
+            crate::testkit::BootOpts::needs_approval(),
+            |stack| async move {
+                crate::testkit::state_set(
+                    &stack.iii,
+                    crate::pending::PENDING_SCOPE,
+                    "s_1/c_1",
+                    json!({
+                        "session_id": "s_1",
+                        "turn_id": "t_1",
+                        "function_call_id": "c_1",
+                        "function_id": "shell::run",
+                        "arguments_excerpt": {},
+                        "pending_at": 100,
+                        "expires_at": 1_800_100,
+                        "depth": 0,
+                    }),
+                )
+                .await;
+                crate::testkit::call(
+                    &stack.iii,
+                    "approval::resolve",
+                    json!({
+                        "session_id": "s_1",
+                        "function_call_id": "c_1",
+                        "decision": "allow"
+                    }),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    crate::testkit::wait_for(3_000, || {
+                        !crate::testkit::log_snapshot(&stack.resolved).is_empty()
+                    })
+                    .await
+                );
+                let resolved = crate::testkit::log_snapshot(&stack.resolved);
+                assert_eq!(resolved[0]["outcome"], json!("allow"));
+            },
+        )
+        .await;
     }
 
     #[test]

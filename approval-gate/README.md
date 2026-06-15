@@ -125,7 +125,7 @@ agent allow-lists too.
 ## Local development & testing
 
 ```bash
-cargo test                                   # unit suites (engine-free, FakeBus)
+cargo test                                   # lib suites: pure unit + engine-backed handlers
 cargo test --test integration               # engine-backed; self-skips without `iii`
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings

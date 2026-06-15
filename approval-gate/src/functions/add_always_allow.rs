@@ -18,7 +18,7 @@ pub async fn handle(
     }
     let defaults = snapshot(&deps.defaults);
     let settings = settings::materialize_and(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &req.session_id,
         &defaults,
         deps.cfg.state_timeout_ms,
@@ -33,32 +33,22 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::shared_defaults;
-    use crate::testkit::FakeBus;
+    use crate::testkit::{with_stack, BootOpts};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn add_is_idempotent_on_function_id() {
-        let bus = Arc::new(FakeBus::new());
-        let _state = bus.with_memory_state();
-        let deps = Arc::new(Deps {
-            bus,
-            sink: Arc::new(RecordingSink::new()),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        let req = AlwaysAllowMutationRequest {
-            session_id: "s_1".into(),
-            function_id: "shell::run".into(),
-        };
-        let first = handle(&deps, req.clone()).await.unwrap();
-        assert_eq!(first.settings.always_allow.len(), 1);
-        let second = handle(&deps, req).await.unwrap();
-        assert_eq!(second.settings.always_allow.len(), 1);
-        assert_eq!(first.settings.always_allow, second.settings.always_allow);
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let req = AlwaysAllowMutationRequest {
+                session_id: "s_1".into(),
+                function_id: "shell::run".into(),
+            };
+            let first = handle(&stack.deps, req.clone()).await.unwrap();
+            assert_eq!(first.settings.always_allow.len(), 1);
+            let second = handle(&stack.deps, req).await.unwrap();
+            assert_eq!(second.settings.always_allow.len(), 1);
+            assert_eq!(first.settings.always_allow, second.settings.always_allow);
+        })
+        .await;
     }
 }

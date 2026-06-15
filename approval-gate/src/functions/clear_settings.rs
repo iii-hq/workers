@@ -12,7 +12,7 @@ pub async fn handle(
     req: ClearSettingsRequest,
 ) -> Result<ClearSettingsResponse, ApprovalError> {
     let cleared = settings::clear(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &req.session_id,
         deps.cfg.state_timeout_ms,
     )
@@ -22,41 +22,31 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
     use crate::functions::set_mode;
-    use crate::gate_config::shared_defaults;
-    use crate::testkit::FakeBus;
+    use crate::testkit::{with_stack, BootOpts};
     use crate::types::{PermissionMode, SetModeRequest};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn clears_a_stored_record_and_tolerates_absence() {
-        let bus = Arc::new(FakeBus::new());
-        let _state = bus.with_memory_state();
-        let deps = Arc::new(Deps {
-            bus,
-            sink: Arc::new(RecordingSink::new()),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        let req = ClearSettingsRequest {
-            session_id: "s_1".into(),
-        };
-        assert!(!handle(&deps, req.clone()).await.unwrap().cleared);
-
-        set_mode::handle(
-            &deps,
-            SetModeRequest {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let req = ClearSettingsRequest {
                 session_id: "s_1".into(),
-                mode: PermissionMode::Full,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(handle(&deps, req.clone()).await.unwrap().cleared);
-        assert!(!handle(&deps, req).await.unwrap().cleared);
+            };
+            assert!(!handle(&stack.deps, req.clone()).await.unwrap().cleared);
+
+            set_mode::handle(
+                &stack.deps,
+                SetModeRequest {
+                    session_id: "s_1".into(),
+                    mode: PermissionMode::Full,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(handle(&stack.deps, req.clone()).await.unwrap().cleared);
+            assert!(!handle(&stack.deps, req).await.unwrap().cleared);
+        })
+        .await;
     }
 }

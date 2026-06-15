@@ -1,4 +1,4 @@
-//! Error conventions: every error crossing the bus carries a stable
+//! Error conventions: every error crossing the RPC boundary carries a stable
 //! snake_case, worker-prefixed code in a `code: message` shape (see
 //! tech-specs/2026-06-agentic/README.md § Error conventions).
 

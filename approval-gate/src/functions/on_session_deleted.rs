@@ -20,7 +20,7 @@ pub async fn handle(
     event: SessionDeletedEvent,
 ) -> Result<Value, crate::error::ApprovalError> {
     if let Err(e) = settings::clear(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &event.session_id,
         deps.cfg.state_timeout_ms,
     )
@@ -35,21 +35,16 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use serde_json::json;
 
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::shared_defaults;
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
-    use crate::testkit::{FakeBus, MemoryState};
-    use crate::types::ResolvedOutcome;
+    use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
 
-    fn seed_pending(state: &MemoryState, sid: &str, cid: &str) {
-        state.seed(
+    async fn seed_pending(iii: &iii_sdk::III, sid: &str, cid: &str) {
+        state_set(
+            iii,
             PENDING_SCOPE,
             &format!("{sid}/{cid}"),
             json!({
@@ -60,43 +55,42 @@ mod tests {
                 "pending_at": 1,
                 "expires_at": 2,
             }),
-        );
+        )
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn purges_settings_and_only_the_sessions_pending_records() {
-        let bus = Arc::new(FakeBus::new());
-        let state = bus.with_memory_state();
-        let sink = Arc::new(RecordingSink::new());
-        let deps = Arc::new(Deps {
-            bus,
-            sink: sink.clone(),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            state_set(&stack.iii, SETTINGS_SCOPE, "s_1", json!({ "mode": "auto" })).await;
+            seed_pending(&stack.iii, "s_1", "c_1").await;
+            seed_pending(&stack.iii, "s_1", "c_2").await;
+            seed_pending(&stack.iii, "s_2", "c_3").await;
 
-        state.seed(SETTINGS_SCOPE, "s_1", json!({ "mode": "auto" }));
-        seed_pending(&state, "s_1", "c_1");
-        seed_pending(&state, "s_1", "c_2");
-        seed_pending(&state, "s_2", "c_3");
+            handle(
+                &stack.deps,
+                SessionDeletedEvent {
+                    session_id: "s_1".into(),
+                },
+            )
+            .await
+            .unwrap();
 
-        handle(
-            &deps,
-            SessionDeletedEvent {
-                session_id: "s_1".into(),
-            },
-        )
-        .await
-        .unwrap();
+            assert!(state_get(&stack.iii, SETTINGS_SCOPE, "s_1").await.is_null());
+            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                .await
+                .is_null());
+            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
+                .await
+                .is_null());
+            assert!(!state_get(&stack.iii, PENDING_SCOPE, "s_2/c_3")
+                .await
+                .is_null());
 
-        assert!(state.peek(SETTINGS_SCOPE, "s_1").is_none());
-        assert!(state.peek(PENDING_SCOPE, "s_1/c_1").is_none());
-        assert!(state.peek(PENDING_SCOPE, "s_1/c_2").is_none());
-        // Other sessions untouched.
-        assert!(state.peek(PENDING_SCOPE, "s_2/c_3").is_some());
-
-        let events = sink.resolved_events();
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|e| e.outcome == ResolvedOutcome::Aborted));
+            let events = log_snapshot(&stack.resolved);
+            assert_eq!(events.len(), 2);
+            assert!(events.iter().all(|e| e["outcome"] == json!("aborted")));
+        })
+        .await;
     }
 }

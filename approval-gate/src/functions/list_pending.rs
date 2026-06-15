@@ -54,7 +54,7 @@ pub async fn handle(
     let after = req.cursor.as_deref().map(decode_cursor).transpose()?;
     let limit = req.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    let mut records = pending::list_all(deps.bus.as_ref(), deps.cfg.state_timeout_ms)
+    let mut records = pending::list_all(deps.iii.as_ref(), deps.cfg.state_timeout_ms)
         .await
         .map_err(|e| ApprovalError::StateUnavailable(format!("pending list failed: {e}")))?;
 
@@ -97,30 +97,13 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use serde_json::json;
 
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::shared_defaults;
     use crate::pending::PENDING_SCOPE;
-    use crate::testkit::{FakeBus, MemoryState};
+    use crate::testkit::{state_set, with_stack, BootOpts};
 
-    fn fixture() -> (Arc<Deps>, MemoryState) {
-        let bus = Arc::new(FakeBus::new());
-        let state = bus.with_memory_state();
-        let deps = Arc::new(Deps {
-            bus,
-            sink: Arc::new(RecordingSink::new()),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        (deps, state)
-    }
-
-    fn seed(state: &MemoryState, sid: &str, cid: &str, pending_at: i64, owner: Option<&str>) {
+    async fn seed(iii: &iii_sdk::III, sid: &str, cid: &str, pending_at: i64, owner: Option<&str>) {
         let mut record = json!({
             "session_id": sid,
             "turn_id": "t_1",
@@ -134,111 +117,121 @@ mod tests {
         if let Some(owner) = owner {
             record["session_metadata"] = json!({ "owner": owner });
         }
-        state.seed(PENDING_SCOPE, &format!("{sid}/{cid}"), record);
+        state_set(iii, PENDING_SCOPE, &format!("{sid}/{cid}"), record).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn orders_by_pending_at_ascending() {
-        let (deps, state) = fixture();
-        seed(&state, "s_1", "c_2", 300, None);
-        seed(&state, "s_1", "c_1", 100, None);
-        seed(&state, "s_2", "c_3", 200, None);
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed(&stack.iii, "s_1", "c_2", 300, None).await;
+            seed(&stack.iii, "s_1", "c_1", 100, None).await;
+            seed(&stack.iii, "s_2", "c_3", 200, None).await;
 
-        let res = handle(&deps, ListPendingRequest::default()).await.unwrap();
-        let order: Vec<i64> = res.pending.iter().map(|r| r.pending_at).collect();
-        assert_eq!(order, vec![100, 200, 300]);
-        assert!(res.next_cursor.is_none());
+            let res = handle(&stack.deps, ListPendingRequest::default())
+                .await
+                .unwrap();
+            let order: Vec<i64> = res.pending.iter().map(|r| r.pending_at).collect();
+            assert_eq!(order, vec![100, 200, 300]);
+            assert!(res.next_cursor.is_none());
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn filters_by_session_and_metadata() {
-        let (deps, state) = fixture();
-        seed(&state, "s_1", "c_1", 100, Some("u_1"));
-        seed(&state, "s_2", "c_2", 200, Some("u_2"));
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed(&stack.iii, "s_1", "c_1", 100, Some("u_1")).await;
+            seed(&stack.iii, "s_2", "c_2", 200, Some("u_2")).await;
 
-        let by_session = handle(
-            &deps,
-            ListPendingRequest {
-                session_id: Some("s_2".into()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(by_session.pending.len(), 1);
-        assert_eq!(by_session.pending[0].session_id, "s_2");
+            let by_session = handle(
+                &stack.deps,
+                ListPendingRequest {
+                    session_id: Some("s_2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(by_session.pending.len(), 1);
+            assert_eq!(by_session.pending[0].session_id, "s_2");
 
-        let by_meta = handle(
-            &deps,
-            ListPendingRequest {
-                metadata: Some(serde_json::from_value(json!({ "owner": "u_1" })).unwrap()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(by_meta.pending.len(), 1);
-        assert_eq!(by_meta.pending[0].session_id, "s_1");
+            let by_meta = handle(
+                &stack.deps,
+                ListPendingRequest {
+                    metadata: Some(serde_json::from_value(json!({ "owner": "u_1" })).unwrap()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(by_meta.pending.len(), 1);
+            assert_eq!(by_meta.pending[0].session_id, "s_1");
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn paginates_with_an_opaque_cursor() {
-        let (deps, state) = fixture();
-        for i in 0..5 {
-            seed(&state, "s_1", &format!("c_{i}"), 100 + i, None);
-        }
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            for i in 0..5 {
+                seed(&stack.iii, "s_1", &format!("c_{i}"), 100 + i, None).await;
+            }
 
-        let first = handle(
-            &deps,
-            ListPendingRequest {
-                limit: Some(2),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(first.pending.len(), 2);
-        let cursor = first.next_cursor.clone().unwrap();
+            let first = handle(
+                &stack.deps,
+                ListPendingRequest {
+                    limit: Some(2),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(first.pending.len(), 2);
+            let cursor = first.next_cursor.clone().unwrap();
 
-        let second = handle(
-            &deps,
-            ListPendingRequest {
-                limit: Some(2),
-                cursor: Some(cursor),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(second.pending.len(), 2);
-        assert!(second.pending[0].pending_at > first.pending[1].pending_at);
+            let second = handle(
+                &stack.deps,
+                ListPendingRequest {
+                    limit: Some(2),
+                    cursor: Some(cursor),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(second.pending.len(), 2);
+            assert!(second.pending[0].pending_at > first.pending[1].pending_at);
 
-        let third = handle(
-            &deps,
-            ListPendingRequest {
-                limit: Some(2),
-                cursor: second.next_cursor.clone(),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(third.pending.len(), 1);
-        assert!(third.next_cursor.is_none());
+            let third = handle(
+                &stack.deps,
+                ListPendingRequest {
+                    limit: Some(2),
+                    cursor: second.next_cursor.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(third.pending.len(), 1);
+            assert!(third.next_cursor.is_none());
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rejects_malformed_cursors() {
-        let (deps, _state) = fixture();
-        let err = handle(
-            &deps,
-            ListPendingRequest {
-                cursor: Some("not base64 json!!!".into()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.code(), "approval/invalid_payload");
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let err = handle(
+                &stack.deps,
+                ListPendingRequest {
+                    cursor: Some("not base64 json!!!".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.code(), "approval/invalid_payload");
+        })
+        .await;
     }
 }

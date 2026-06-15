@@ -11,8 +11,8 @@ pub async fn purge_matching<F>(deps: &Deps, predicate: F) -> usize
 where
     F: Fn(&PendingApprovalRecord) -> bool,
 {
-    let bus = deps.bus.as_ref();
-    let records = match pending::list_all(bus, deps.cfg.state_timeout_ms).await {
+    let iii = deps.iii.as_ref();
+    let records = match pending::list_all(iii, deps.cfg.state_timeout_ms).await {
         Ok(records) => records,
         Err(e) => {
             tracing::warn!(error = %e, "purge: pending list failed; sweep will retry");
@@ -23,7 +23,7 @@ where
     let mut purged = 0usize;
     for record in records.into_iter().filter(|r| predicate(r)) {
         match pending::delete_with_gate(
-            bus,
+            iii,
             &record.session_id,
             &record.function_call_id,
             deps.cfg.state_timeout_ms,

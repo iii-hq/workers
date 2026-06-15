@@ -16,7 +16,6 @@
 //! `harness::turn_completed` — harness.md § Hooks, § API Reference);
 //! those bindings are best-effort so the worker also boots standalone.
 
-pub mod bus;
 pub mod config;
 pub mod decision;
 pub mod denial;
@@ -24,10 +23,13 @@ pub mod error;
 pub mod events;
 pub mod functions;
 pub mod gate_config;
+pub mod harness;
 pub mod manifest;
 pub mod pending;
 pub mod policy;
 pub mod redact;
+pub mod session;
 pub mod settings;
+pub mod state;
 pub mod testkit;
 pub mod types;

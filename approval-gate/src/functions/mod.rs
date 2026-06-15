@@ -28,7 +28,6 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::bus::Bus;
 use crate::config::WorkerConfig;
 use crate::error::ApprovalError;
 use crate::events::EventSink;
@@ -36,14 +35,14 @@ use crate::gate_config::SharedDefaults;
 
 /// Everything a function handler needs.
 pub struct Deps {
-    pub bus: Arc<dyn Bus>,
+    pub iii: Arc<III>,
     pub sink: Arc<dyn EventSink>,
     pub defaults: SharedDefaults,
     pub cfg: Arc<WorkerConfig>,
 }
 
 /// Register one typed handler under `id`, mapping `ApprovalError` into
-/// the bus error shape (`code: message`).
+/// the wire error shape (`code: message`).
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<III>,
     deps: &Arc<Deps>,

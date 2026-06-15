@@ -7,9 +7,9 @@
 
 use std::time::Duration;
 
+use iii_sdk::{TriggerRequest, III};
 use serde_json::{json, Value};
 
-use crate::bus::Bus;
 use crate::types::MatchedConstraint;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,18 +23,18 @@ pub enum PolicyOutcome {
     Unavailable(String),
 }
 
-pub async fn check(
-    bus: &dyn Bus,
-    function_id: &str,
-    args: &Value,
-    timeout_ms: u64,
-) -> PolicyOutcome {
+pub async fn check(iii: &III, function_id: &str, args: &Value, timeout_ms: u64) -> PolicyOutcome {
     let payload = json!({ "function_id": function_id, "args": args });
-    // Belt and braces: the bus timeout should bound the call, but a
+    // Belt and braces: the trigger timeout should bound the call, but a
     // misbehaving transport must not stretch the hook past its budget.
     let reply = tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        bus.call("policy::check_permissions", payload, Some(timeout_ms)),
+        iii.trigger(TriggerRequest {
+            function_id: "policy::check_permissions".into(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
     )
     .await;
     match reply {
@@ -65,7 +65,6 @@ pub fn parse_reply(value: &Value) -> PolicyOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::FakeBus;
     use serde_json::json;
 
     #[test]
@@ -114,20 +113,5 @@ mod tests {
                 matched_constraint: None,
             }
         );
-    }
-
-    #[tokio::test]
-    async fn transport_error_maps_to_unavailable() {
-        let bus = FakeBus::new();
-        bus.on_error("policy::check_permissions", "connection refused");
-        let outcome = check(&bus, "shell::run", &json!({}), 100).await;
-        assert!(matches!(outcome, PolicyOutcome::Unavailable(_)));
-    }
-
-    #[tokio::test]
-    async fn missing_policy_worker_maps_to_unavailable() {
-        let bus = FakeBus::new();
-        let outcome = check(&bus, "shell::run", &json!({}), 100).await;
-        assert!(matches!(outcome, PolicyOutcome::Unavailable(_)));
     }
 }

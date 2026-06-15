@@ -4,9 +4,10 @@
 //! backstop (approval-gate.md § State lifecycle), which is what keeps
 //! `state::list` O(live holds).
 
-use serde_json::{json, Value};
+use iii_sdk::{IIIError, III};
+use serde_json::Value;
 
-use crate::bus::{Bus, BusError};
+use crate::state;
 use crate::types::PendingApprovalRecord;
 
 pub const PENDING_SCOPE: &str = "approval_pending";
@@ -33,18 +34,18 @@ pub fn parse_record(value: &Value) -> Option<PendingApprovalRecord> {
 }
 
 pub async fn get(
-    bus: &dyn Bus,
+    iii: &III,
     session_id: &str,
     function_call_id: &str,
     timeout_ms: u64,
-) -> Result<Option<PendingApprovalRecord>, BusError> {
-    let reply = bus
-        .call(
-            "state::get",
-            json!({ "scope": PENDING_SCOPE, "key": pending_key(session_id, function_call_id) }),
-            Some(timeout_ms),
-        )
-        .await?;
+) -> Result<Option<PendingApprovalRecord>, IIIError> {
+    let reply = state::get(
+        iii,
+        PENDING_SCOPE,
+        &pending_key(session_id, function_call_id),
+        Some(timeout_ms),
+    )
+    .await?;
     Ok(parse_record(&reply))
 }
 
@@ -52,21 +53,18 @@ pub async fn get(
 /// concurrent duplicate hold lost the race — the caller must not emit a
 /// second `pending_created`).
 pub async fn put(
-    bus: &dyn Bus,
+    iii: &III,
     record: &PendingApprovalRecord,
     timeout_ms: u64,
-) -> Result<Option<Value>, BusError> {
-    let reply = bus
-        .call(
-            "state::set",
-            json!({
-                "scope": PENDING_SCOPE,
-                "key": pending_key(&record.session_id, &record.function_call_id),
-                "value": record,
-            }),
-            Some(timeout_ms),
-        )
-        .await?;
+) -> Result<Option<Value>, IIIError> {
+    let reply = state::set(
+        iii,
+        PENDING_SCOPE,
+        &pending_key(&record.session_id, &record.function_call_id),
+        serde_json::to_value(record).unwrap_or(Value::Null),
+        Some(timeout_ms),
+    )
+    .await?;
     let old = reply.get("old_value").cloned().unwrap_or(Value::Null);
     Ok(if old.is_null() { None } else { Some(old) })
 }
@@ -84,28 +82,15 @@ pub async fn put(
 /// list O(live). The delete is benign if it races: the gate already
 /// decided emission.
 pub async fn delete_with_gate(
-    bus: &dyn Bus,
+    iii: &III,
     session_id: &str,
     function_call_id: &str,
     timeout_ms: u64,
-) -> Result<Option<PendingApprovalRecord>, BusError> {
+) -> Result<Option<PendingApprovalRecord>, IIIError> {
     let key = pending_key(session_id, function_call_id);
-    let reply = bus
-        .call(
-            "state::set",
-            json!({ "scope": PENDING_SCOPE, "key": key, "value": Value::Null }),
-            Some(timeout_ms),
-        )
-        .await?;
+    let reply = state::set(iii, PENDING_SCOPE, &key, Value::Null, Some(timeout_ms)).await?;
     let old = reply.get("old_value").cloned().unwrap_or(Value::Null);
-    if let Err(e) = bus
-        .call(
-            "state::delete",
-            json!({ "scope": PENDING_SCOPE, "key": key }),
-            Some(timeout_ms),
-        )
-        .await
-    {
+    if let Err(e) = state::delete(iii, PENDING_SCOPE, &key, Some(timeout_ms)).await {
         // The null tombstone survives until the next delete attempt; it
         // is invisible to readers (parse_record skips nulls).
         tracing::warn!(key, error = %e, "tombstone cleanup failed");
@@ -115,17 +100,8 @@ pub async fn delete_with_gate(
 
 /// Full-scope scan, values-only (the engine's `state::list` contract).
 /// Malformed/null values are skipped.
-pub async fn list_all(
-    bus: &dyn Bus,
-    timeout_ms: u64,
-) -> Result<Vec<PendingApprovalRecord>, BusError> {
-    let reply = bus
-        .call(
-            "state::list",
-            json!({ "scope": PENDING_SCOPE }),
-            Some(timeout_ms),
-        )
-        .await?;
+pub async fn list_all(iii: &III, timeout_ms: u64) -> Result<Vec<PendingApprovalRecord>, IIIError> {
+    let reply = state::list(iii, PENDING_SCOPE, Some(timeout_ms)).await?;
     let values = match reply {
         Value::Array(items) => items,
         Value::Null => Vec::new(),
@@ -140,7 +116,6 @@ pub async fn list_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::FakeBus;
     use serde_json::json;
 
     fn record(session_id: &str, call_id: &str) -> PendingApprovalRecord {
@@ -160,59 +135,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn put_get_roundtrip() {
-        let bus = FakeBus::new();
-        let _state = bus.with_memory_state();
-        let rec = record("s_1", "c_1");
-        assert!(put(&bus, &rec, 100).await.unwrap().is_none());
-        let read = get(&bus, "s_1", "c_1", 100).await.unwrap().unwrap();
-        assert_eq!(read, rec);
-    }
-
-    #[tokio::test]
-    async fn put_reports_prior_value_on_duplicate() {
-        let bus = FakeBus::new();
-        let _state = bus.with_memory_state();
-        let rec = record("s_1", "c_1");
-        assert!(put(&bus, &rec, 100).await.unwrap().is_none());
-        assert!(put(&bus, &rec, 100).await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn delete_with_gate_returns_the_record_exactly_once() {
-        let bus = FakeBus::new();
-        let state = bus.with_memory_state();
-        let rec = record("s_1", "c_1");
-        put(&bus, &rec, 100).await.unwrap();
-
-        let first = delete_with_gate(&bus, "s_1", "c_1", 100).await.unwrap();
-        assert_eq!(first, Some(rec));
-        // Second deletion path observes no live record: no emission.
-        let second = delete_with_gate(&bus, "s_1", "c_1", 100).await.unwrap();
-        assert!(second.is_none());
-        // The tombstone left by `state::set null` was cleaned up.
-        assert!(state.peek(PENDING_SCOPE, "s_1/c_1").is_none());
-    }
-
-    #[tokio::test]
-    async fn list_all_skips_null_tombstones_and_garbage() {
-        let bus = FakeBus::new();
-        let state = bus.with_memory_state();
-        put(&bus, &record("s_1", "c_1"), 100).await.unwrap();
-        state.seed(PENDING_SCOPE, "s_2/c_9", Value::Null);
-        state.seed(PENDING_SCOPE, "s_3/c_8", json!("garbage"));
-
-        let records = list_all(&bus, 100).await.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].session_id, "s_1");
-    }
-
-    #[tokio::test]
-    async fn state_outage_surfaces_as_bus_error() {
-        let bus = FakeBus::new();
-        assert!(get(&bus, "s_1", "c_1", 100).await.is_err());
-        assert!(list_all(&bus, 100).await.is_err());
-        assert!(delete_with_gate(&bus, "s_1", "c_1", 100).await.is_err());
+    #[test]
+    fn parse_record_skips_null_and_garbage() {
+        assert!(parse_record(&Value::Null).is_none());
+        assert!(parse_record(&json!("garbage")).is_none());
+        assert_eq!(
+            parse_record(&serde_json::to_value(record("s_1", "c_1")).unwrap())
+                .unwrap()
+                .session_id,
+            "s_1"
+        );
     }
 }

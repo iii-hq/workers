@@ -9,7 +9,7 @@ For maintainers changing this worker. The integration contract lives in
 | Module | Responsibility |
 |---|---|
 | `types.rs` | Every wire type (serde + schemars), id validation (`/` is the reserved key separator), `metadata_matches` subset-equality. |
-| `bus.rs` | The `Bus` trait — the testability seam over `iii.trigger`. `IiiBus` is production; `testkit/fake_bus.rs` is the scripted double. |
+| `state.rs` / `harness.rs` / `session.rs` | Thin per-target `iii.trigger` wrappers (state kv, `harness::function::resolve`, `session::get`). No transport abstraction; tests run against a real engine via `testkit/engine.rs`. |
 | `decision.rs` | **Pure** evaluation order (no I/O): human-only prefix check, mode/allow-list short-circuits, `*`-glob matching. |
 | `policy.rs` | `policy::check_permissions` client: 5s budget, reply parsing, failure mapping. |
 | `denial.rs` | `DenialEnvelope` assembly + text rendering; reason strings ported verbatim from the prior art. |
@@ -21,9 +21,10 @@ For maintainers changing this worker. The integration contract lives in
 | `functions/` | One file per `approval::*` function; `mod.rs` holds `Deps` and the typed registration helper. |
 | `main.rs` | Boot order: trigger types → functions → best-effort bindings → configuration entry + initial read. |
 
-Every handler takes `Deps { bus, sink, defaults, cfg }`, so the unit suites
-exercise the exact production code path with `FakeBus`/`RecordingSink` and
-no engine.
+Every handler takes `Deps { iii, sink, defaults, cfg }` and reaches siblings
+through the thin wrapper modules. Pure-logic modules are unit-tested with no
+engine; the `approval::*` handlers are driven against a real spawned engine
+via `testkit::engine` (see Testing).
 
 ## The gate's control flow (`functions/gate.rs`)
 
@@ -149,13 +150,13 @@ Verified against the engine source (`~/workspaces/personal/motia/iii`):
 
 ## Testing
 
-- **Unit** (`cargo test`): every module has a suite beside it; handlers run
-  against `FakeBus` (scripted replies + call log) and `MemoryState`, which
-  mirrors the engine's kv semantics **including** the null-tombstone
-  behavior so `delete_with_gate` is tested against the real contract. The
-  gate suite reproduces the seven prior-art permission-matrix cases from
-  `harness/tests/integration/mode-approval.e2e.test.ts` plus the
-  fail-closed rows.
+- **Unit** (`cargo test`): every module has a suite beside it. Pure-logic
+  modules (`decision`, `redact`, `denial`, `settings`, `types`, …) run with
+  no engine. The `approval::*` handlers run against a real spawned engine via
+  `testkit::engine` (`III_ENGINE_BIN` or `iii` on PATH; self-skips
+  otherwise), so `delete_with_gate`'s null-tombstone invariant is exercised
+  against the genuine kv contract. The gate suite reproduces the seven
+  prior-art permission-matrix cases plus the fail-closed rows.
 - **Integration** (`cargo test --test integration`): spawns a real engine
   (`III_ENGINE_BIN` or `iii` on PATH; self-skips otherwise) with
   `configuration` + `iii-state` real and the unbuilt siblings faked

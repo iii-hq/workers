@@ -24,7 +24,6 @@ use clap::Parser;
 use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput, WorkerMetadata, III};
 use serde_json::json;
 
-use approval_gate::bus::IiiBus;
 use approval_gate::events::{self, Emitter};
 use approval_gate::functions::{self, Deps};
 use approval_gate::gate_config::{self, replace, shared_defaults};
@@ -127,11 +126,10 @@ async fn main() -> Result<()> {
     // Trigger types first: the handlers capture the subscriber sets.
     let sets = events::register_trigger_types(&iii);
 
-    let bus = Arc::new(IiiBus::new(iii.clone()));
-    let sink = Arc::new(Emitter::new(sets, bus.clone()));
+    let sink = Arc::new(Emitter::new(sets, iii.clone()));
     let defaults = shared_defaults();
     let deps = Arc::new(Deps {
-        bus: bus.clone(),
+        iii: iii.clone(),
         sink,
         defaults: defaults.clone(),
         cfg: cfg.clone(),
@@ -182,10 +180,10 @@ async fn main() -> Result<()> {
     // Configuration entry: register (no initial_value — operator values
     // survive re-register), then one initial read; the configuration
     // trigger above keeps the defaults fresh reactively.
-    if let Err(e) = gate_config::register_entry(bus.as_ref()).await {
+    if let Err(e) = gate_config::register_entry(&iii).await {
         tracing::info!(error = %e, "configuration worker unavailable; running on built-in defaults");
     }
-    replace(&defaults, gate_config::read_defaults(bus.as_ref()).await);
+    replace(&defaults, gate_config::read_defaults(&iii).await);
 
     tracing::info!("approval-gate ready: 14 approval::* functions + 2 custom trigger types");
 

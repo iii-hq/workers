@@ -14,7 +14,7 @@ pub async fn handle(
     validate_id("session_id", &req.session_id)?;
     let defaults = snapshot(&deps.defaults);
     let stored = settings::read_strict(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &req.session_id,
         deps.cfg.state_timeout_ms,
     )
@@ -25,47 +25,38 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
     use crate::functions::set_mode;
-    use crate::gate_config::shared_defaults;
-    use crate::testkit::FakeBus;
+    use crate::settings::SETTINGS_SCOPE;
+    use crate::testkit::{state_get, with_stack, BootOpts};
     use crate::types::{PermissionMode, SetModeRequest, SettingsSource};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn reports_source_defaults_then_stored_and_never_writes_on_read() {
-        let bus = Arc::new(FakeBus::new());
-        let state = bus.with_memory_state();
-        let deps = Arc::new(Deps {
-            bus,
-            sink: Arc::new(RecordingSink::new()),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        let req = GetSettingsRequest {
-            session_id: "s_1".into(),
-        };
-
-        let before = handle(&deps, req.clone()).await.unwrap();
-        assert_eq!(before.source, SettingsSource::Defaults);
-        assert_eq!(before.settings.mode, PermissionMode::Manual);
-        assert!(state.is_empty());
-
-        set_mode::handle(
-            &deps,
-            SetModeRequest {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let req = GetSettingsRequest {
                 session_id: "s_1".into(),
-                mode: PermissionMode::Full,
-            },
-        )
-        .await
-        .unwrap();
+            };
 
-        let after = handle(&deps, req).await.unwrap();
-        assert_eq!(after.source, SettingsSource::Stored);
-        assert_eq!(after.settings.mode, PermissionMode::Full);
+            let before = handle(&stack.deps, req.clone()).await.unwrap();
+            assert_eq!(before.source, SettingsSource::Defaults);
+            assert_eq!(before.settings.mode, PermissionMode::Manual);
+            assert!(state_get(&stack.iii, SETTINGS_SCOPE, "s_1").await.is_null());
+
+            set_mode::handle(
+                &stack.deps,
+                SetModeRequest {
+                    session_id: "s_1".into(),
+                    mode: PermissionMode::Full,
+                },
+            )
+            .await
+            .unwrap();
+
+            let after = handle(&stack.deps, req).await.unwrap();
+            assert_eq!(after.source, SettingsSource::Stored);
+            assert_eq!(after.settings.mode, PermissionMode::Full);
+        })
+        .await;
     }
 }

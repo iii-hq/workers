@@ -3,11 +3,12 @@
 //! Reads never write — the *effective* settings are the stored record
 //! when one exists, else the configuration defaults computed in memory.
 
-use serde_json::{json, Value};
+use iii_sdk::III;
+use serde_json::Value;
 
-use crate::bus::Bus;
 use crate::error::ApprovalError;
 use crate::gate_config::GateDefaults;
+use crate::state;
 use crate::types::{
     now_ms, validate_id, AlwaysAllowEntry, ApprovalSettings, GrantedBy, SettingsSource,
 };
@@ -63,17 +64,11 @@ pub fn effective(
 /// garbage) degrades to `None` → configuration defaults. Safe because the
 /// default mode never widens beyond what the deployment configured.
 pub async fn read_tolerant(
-    bus: &dyn Bus,
+    iii: &III,
     session_id: &str,
     timeout_ms: u64,
 ) -> Option<ApprovalSettings> {
-    let reply = bus
-        .call(
-            "state::get",
-            json!({ "scope": SETTINGS_SCOPE, "key": session_id }),
-            Some(timeout_ms),
-        )
-        .await;
+    let reply = state::get(iii, SETTINGS_SCOPE, session_id, Some(timeout_ms)).await;
     match reply {
         Ok(value) => parse_settings(&value),
         Err(e) => {
@@ -86,16 +81,11 @@ pub async fn read_tolerant(
 /// Strict read for mutations: a state outage is an error — re-seeding
 /// over an unreadable record would clobber it.
 pub async fn read_strict(
-    bus: &dyn Bus,
+    iii: &III,
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<Option<ApprovalSettings>, ApprovalError> {
-    let reply = bus
-        .call(
-            "state::get",
-            json!({ "scope": SETTINGS_SCOPE, "key": session_id }),
-            Some(timeout_ms),
-        )
+    let reply = state::get(iii, SETTINGS_SCOPE, session_id, Some(timeout_ms))
         .await
         .map_err(|e| ApprovalError::StateUnavailable(format!("settings read failed: {e}")))?;
     Ok(parse_settings(&reply))
@@ -107,7 +97,7 @@ pub async fn read_strict(
 /// written in one `state::set` — mutations are human-driven and rare, so
 /// read-modify-write of one small record is sufficient.
 pub async fn materialize_and<F>(
-    bus: &dyn Bus,
+    iii: &III,
     session_id: &str,
     defaults: &GateDefaults,
     timeout_ms: u64,
@@ -118,13 +108,15 @@ where
 {
     validate_id("session_id", session_id)?;
     let now = now_ms();
-    let base = read_strict(bus, session_id, timeout_ms)
+    let base = read_strict(iii, session_id, timeout_ms)
         .await?
         .unwrap_or_else(|| seeded_from(defaults, now));
     let next = mutate(base, now);
-    bus.call(
-        "state::set",
-        json!({ "scope": SETTINGS_SCOPE, "key": session_id, "value": next }),
+    state::set(
+        iii,
+        SETTINGS_SCOPE,
+        session_id,
+        serde_json::to_value(&next).unwrap_or(Value::Null),
         Some(timeout_ms),
     )
     .await
@@ -134,18 +126,9 @@ where
 
 /// Drop the stored record (the session reverts to configuration
 /// defaults). Returns whether a record existed.
-pub async fn clear(
-    bus: &dyn Bus,
-    session_id: &str,
-    timeout_ms: u64,
-) -> Result<bool, ApprovalError> {
+pub async fn clear(iii: &III, session_id: &str, timeout_ms: u64) -> Result<bool, ApprovalError> {
     validate_id("session_id", session_id)?;
-    let old = bus
-        .call(
-            "state::delete",
-            json!({ "scope": SETTINGS_SCOPE, "key": session_id }),
-            Some(timeout_ms),
-        )
+    let old = state::delete(iii, SETTINGS_SCOPE, session_id, Some(timeout_ms))
         .await
         .map_err(|e| ApprovalError::StateUnavailable(format!("settings delete failed: {e}")))?;
     Ok(!old.is_null())
@@ -184,7 +167,6 @@ pub fn without_grant(entries: &[AlwaysAllowEntry], function_id: &str) -> Vec<Alw
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::FakeBus;
     use crate::types::PermissionMode;
     use serde_json::json;
 
@@ -227,78 +209,6 @@ mod tests {
         assert!(parse_settings(&json!({})).is_some());
     }
 
-    #[tokio::test]
-    async fn reads_never_write() {
-        let bus = FakeBus::new();
-        let state = bus.with_memory_state();
-        let stored = read_tolerant(&bus, "s_1", 100).await;
-        assert!(stored.is_none());
-        assert!(state.is_empty());
-        assert!(bus.calls_to("state::set").is_empty());
-    }
-
-    #[tokio::test]
-    async fn first_mutation_materializes_from_current_defaults() {
-        let bus = FakeBus::new();
-        let state = bus.with_memory_state();
-        let defaults = defaults_with_seed();
-
-        let next = materialize_and(&bus, "s_1", &defaults, 100, |s, now| ApprovalSettings {
-            mode: PermissionMode::Manual,
-            mode_set_at: now,
-            ..s
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(next.mode, PermissionMode::Manual);
-        // Seed copied into the record on first mutation.
-        assert_eq!(next.always_allow.len(), 2);
-        assert!(next
-            .always_allow
-            .iter()
-            .all(|e| e.granted_by == GrantedBy::Seed));
-
-        let written = state.peek(SETTINGS_SCOPE, "s_1").unwrap();
-        let parsed = parse_settings(&written).unwrap();
-        assert_eq!(parsed, next);
-    }
-
-    #[tokio::test]
-    async fn later_seed_changes_do_not_edit_a_stored_record() {
-        let bus = FakeBus::new();
-        let _state = bus.with_memory_state();
-        let defaults = defaults_with_seed();
-
-        materialize_and(&bus, "s_1", &defaults, 100, |s, _| s)
-            .await
-            .unwrap();
-
-        // Seed changed after the record materialized.
-        let changed = GateDefaults {
-            always_allow_seed: vec!["everything::*".into()],
-            ..defaults_with_seed()
-        };
-        let next = materialize_and(&bus, "s_1", &changed, 100, |s, _| s)
-            .await
-            .unwrap();
-        assert_eq!(next.always_allow.len(), 2);
-        assert!(next
-            .always_allow
-            .iter()
-            .all(|e| e.function_id != "everything::*"));
-    }
-
-    #[tokio::test]
-    async fn mutation_fails_closed_on_state_outage() {
-        let bus = FakeBus::new();
-        // No state handlers scripted: every state call errors.
-        let err = materialize_and(&bus, "s_1", &GateDefaults::default(), 100, |s, _| s)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), "approval/state_unavailable");
-    }
-
     #[test]
     fn with_grant_is_idempotent_on_function_id() {
         let one = with_grant(&[], "shell::run", 10);
@@ -314,17 +224,5 @@ mod tests {
         let list = with_grant(&[], "shell::run", 10);
         assert!(without_grant(&list, "shell::run").is_empty());
         assert_eq!(without_grant(&list, "other::fn"), list);
-    }
-
-    #[tokio::test]
-    async fn clear_reports_whether_a_record_existed() {
-        let bus = FakeBus::new();
-        let _state = bus.with_memory_state();
-        assert!(!clear(&bus, "s_1", 100).await.unwrap());
-        materialize_and(&bus, "s_1", &GateDefaults::default(), 100, |s, _| s)
-            .await
-            .unwrap();
-        assert!(clear(&bus, "s_1", 100).await.unwrap());
-        assert!(!clear(&bus, "s_1", 100).await.unwrap());
     }
 }

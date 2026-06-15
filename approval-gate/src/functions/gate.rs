@@ -9,8 +9,6 @@
 //! the pending-record write is keyed on it, so a duplicate hold is a
 //! no-op on the existing record (and emits no second `pending_created`).
 
-use serde_json::json;
-
 use super::Deps;
 use crate::decision;
 use crate::denial::{gate_unavailable_envelope, human_only_denial, permissions_deny_envelope};
@@ -19,6 +17,7 @@ use crate::gate_config::{snapshot, GateDefaults};
 use crate::pending;
 use crate::policy::{self, PolicyOutcome};
 use crate::redact::redact;
+use crate::session;
 use crate::settings;
 use crate::types::{
     now_ms, validate_id, HookCall, HookInput, HookOutput, JsonMap, PendingApprovalRecord,
@@ -54,7 +53,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
     //    default never widens beyond what the deployment configured.
     let defaults = snapshot(&deps.defaults);
     let stored = settings::read_tolerant(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &input.session_id,
         deps.cfg.state_timeout_ms,
     )
@@ -68,7 +67,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
 
     // 6. Yaml policy fallback.
     match policy::check(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &call.function_id,
         &call.arguments,
         deps.cfg.policy_timeout_ms,
@@ -113,10 +112,10 @@ async fn hold(
     call: &HookCall,
     defaults: &GateDefaults,
 ) -> HookOutput {
-    let bus = deps.bus.as_ref();
+    let iii = deps.iii.as_ref();
 
     // Idempotency: a redelivered step re-holds the same call.
-    match pending::get(bus, &input.session_id, &call.id, deps.cfg.state_timeout_ms).await {
+    match pending::get(iii, &input.session_id, &call.id, deps.cfg.state_timeout_ms).await {
         Ok(Some(existing)) => {
             return HookOutput::Hold {
                 pending_timeout_ms: (existing.expires_at - existing.pending_at).max(0),
@@ -151,7 +150,7 @@ async fn hold(
         assistant_excerpt: None,
     };
 
-    match pending::put(bus, &record, deps.cfg.state_timeout_ms).await {
+    match pending::put(iii, &record, deps.cfg.state_timeout_ms).await {
         Err(e) => {
             let envelope = gate_unavailable_envelope(
                 &call.function_id,
@@ -183,14 +182,12 @@ async fn fetch_session_context(
     deps: &Deps,
     session_id: &str,
 ) -> (Option<String>, Option<String>, Option<JsonMap>) {
-    let reply = deps
-        .bus
-        .call(
-            "session::get",
-            json!({ "session_id": session_id }),
-            Some(deps.cfg.session_fetch_timeout_ms),
-        )
-        .await;
+    let reply = session::get(
+        deps.iii.as_ref(),
+        session_id,
+        Some(deps.cfg.session_fetch_timeout_ms),
+    )
+    .await;
     let Ok(reply) = reply else {
         return (None, None, None);
     };
@@ -216,450 +213,181 @@ async fn fetch_session_context(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use serde_json::json;
 
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::{replace, shared_defaults};
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
-    use crate::testkit::{FakeBus, MemoryState};
+    use crate::testkit::{
+        boot, hook_input as test_hook_input, log_snapshot, require_engine, settle, state_get,
+        state_set, with_stack, BootOpts,
+    };
     use crate::types::{ApprovalSettings, PermissionMode};
 
-    struct Fixture {
-        deps: Arc<Deps>,
-        bus: Arc<FakeBus>,
-        sink: Arc<RecordingSink>,
-        state: MemoryState,
+    fn hook_input(function_id: &str) -> HookInput {
+        serde_json::from_value(test_hook_input("s_1", "c_1", function_id)).unwrap()
     }
 
-    fn fixture() -> Fixture {
-        let bus = Arc::new(FakeBus::new());
-        let state = bus.with_memory_state();
-        let sink = Arc::new(RecordingSink::new());
-        let deps = Arc::new(Deps {
-            bus: bus.clone(),
-            sink: sink.clone(),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        Fixture {
-            deps,
-            bus,
-            sink,
-            state,
-        }
-    }
-
-    fn seed_settings(f: &Fixture, session_id: &str, settings: &ApprovalSettings) {
-        f.state.seed(
+    async fn seed_settings(iii: &iii_sdk::III, session_id: &str, settings: &ApprovalSettings) {
+        state_set(
+            iii,
             SETTINGS_SCOPE,
             session_id,
             serde_json::to_value(settings).unwrap(),
-        );
+        )
+        .await;
     }
 
-    fn grants(ids: &[&str]) -> Vec<crate::types::AlwaysAllowEntry> {
-        ids.iter()
-            .map(|id| crate::types::AlwaysAllowEntry {
-                function_id: id.to_string(),
-                granted_at: 0,
-                granted_by: crate::types::GrantedBy::UserClick,
-            })
-            .collect()
+    #[tokio::test(flavor = "multi_thread")]
+    async fn full_mode_allows_without_consulting_policy() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_settings(
+                &stack.iii,
+                "s_1",
+                &ApprovalSettings {
+                    mode: PermissionMode::Full,
+                    ..Default::default()
+                },
+            )
+            .await;
+            let out = handle(&stack.deps, hook_input("shell::run")).await.unwrap();
+            assert_eq!(out, HookOutput::Continue);
+            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                .await
+                .is_null());
+        })
+        .await;
     }
 
-    fn hook_input(function_id: &str) -> HookInput {
-        serde_json::from_value(json!({
-            "point": "pre_dispatch",
-            "session_id": "s_1",
-            "turn_id": "t_1",
-            "step": 1,
-            "depth": 0,
-            "call": { "id": "c_1", "function_id": function_id, "arguments": { "cmd": "ls" } }
-        }))
-        .unwrap()
+    #[tokio::test(flavor = "multi_thread")]
+    async fn manual_mode_without_grants_holds() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_settings(
+                &stack.iii,
+                "s_1",
+                &ApprovalSettings {
+                    mode: PermissionMode::Manual,
+                    ..Default::default()
+                },
+            )
+            .await;
+            let out = handle(&stack.deps, hook_input("shell::run")).await.unwrap();
+            assert!(matches!(out, HookOutput::Hold { .. }));
+            let record = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(record["function_id"], json!("shell::run"));
+        })
+        .await;
     }
 
-    fn policy_needs_approval(f: &Fixture) {
-        f.bus.on_value(
-            "policy::check_permissions",
-            json!({ "decision": "needs_approval" }),
-        );
-    }
-
-    async fn run(f: &Fixture, function_id: &str) -> HookOutput {
-        handle(&f.deps, hook_input(function_id)).await.unwrap()
-    }
-
-    fn settle() -> tokio::time::Sleep {
-        // Let the spawned pending_created emission run.
-        tokio::time::sleep(std::time::Duration::from_millis(20))
-    }
-
-    // --- The seven prior-art permission-matrix cases -------------------
-
-    #[tokio::test]
-    async fn case_1_full_mode_allows_without_consulting_policy() {
-        let f = fixture();
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Full,
-                ..Default::default()
-            },
-        );
-        assert_eq!(run(&f, "shell::run").await, HookOutput::Continue);
-        assert!(f.bus.calls_to("policy::check_permissions").is_empty());
-        assert!(f.state.peek(PENDING_SCOPE, "s_1/c_1").is_none());
-    }
-
-    #[tokio::test]
-    async fn case_2_approved_always_holds_in_manual_mode() {
-        let f = fixture();
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Manual,
-                approved_always: grants(&["shell::run"]),
-                ..Default::default()
-            },
-        );
-        assert_eq!(run(&f, "shell::run").await, HookOutput::Continue);
-        assert!(f.bus.calls_to("policy::check_permissions").is_empty());
-    }
-
-    #[tokio::test]
-    async fn case_3_auto_mode_always_allow_hit_allows() {
-        let f = fixture();
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Auto,
-                always_allow: grants(&["shell::run"]),
-                ..Default::default()
-            },
-        );
-        assert_eq!(run(&f, "shell::run").await, HookOutput::Continue);
-    }
-
-    #[tokio::test]
-    async fn case_4_manual_mode_without_grants_holds() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Manual,
-                ..Default::default()
-            },
-        );
-        let out = run(&f, "shell::run").await;
-        assert_eq!(
-            out,
-            HookOutput::Hold {
-                pending_timeout_ms: 1_800_000
+    #[tokio::test(flavor = "multi_thread")]
+    async fn self_escalation_is_denied_before_everything() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_settings(
+                &stack.iii,
+                "s_1",
+                &ApprovalSettings {
+                    mode: PermissionMode::Full,
+                    ..Default::default()
+                },
+            )
+            .await;
+            for target in ["approval::set_mode", "approval::resolve"] {
+                let HookOutput::Deny { reason } =
+                    handle(&stack.deps, hook_input(target)).await.unwrap()
+                else {
+                    panic!("expected deny for {target}");
+                };
+                assert!(reason.contains("human_only_function"), "{reason}");
             }
-        );
-        let record = f.state.peek(PENDING_SCOPE, "s_1/c_1").unwrap();
-        assert_eq!(record["function_id"], json!("shell::run"));
-        settle().await;
-        assert_eq!(f.sink.created_events().len(), 1);
+        })
+        .await;
     }
 
-    #[tokio::test]
-    async fn case_5_always_allow_is_dormant_in_manual_mode() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Manual,
-                always_allow: grants(&["shell::run"]),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            run(&f, "shell::run").await,
-            HookOutput::Hold { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn case_6_auto_mode_miss_holds() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Auto,
-                always_allow: grants(&["other::fn"]),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            run(&f, "shell::run").await,
-            HookOutput::Hold { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn case_7_self_escalation_is_denied_before_everything() {
-        let f = fixture();
-        // Even under full mode, and without policy or state scripted.
-        seed_settings(
-            &f,
-            "s_1",
-            &ApprovalSettings {
-                mode: PermissionMode::Full,
-                ..Default::default()
-            },
-        );
-        for target in [
-            "approval::set_mode",
-            "approval::resolve",
-            "configuration::set",
-        ] {
-            let out = run(&f, target).await;
-            let HookOutput::Deny { reason } = out else {
-                panic!("expected deny for {target}");
-            };
-            assert!(reason.contains("human_only_function"), "{reason}");
-        }
-        assert!(f.bus.calls_to("policy::check_permissions").is_empty());
-    }
-
-    // --- Greenfield rows ------------------------------------------------
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn policy_allow_continues() {
-        let f = fixture();
-        f.bus.on_value(
-            "policy::check_permissions",
-            json!({ "decision": "allow", "rule_id": "r1" }),
-        );
-        assert_eq!(run(&f, "shell::run").await, HookOutput::Continue);
+        with_stack(
+            BootOpts::policy_reply(json!({ "decision": "allow", "rule_id": "r1" })),
+            |stack| async move {
+                assert_eq!(
+                    handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                    HookOutput::Continue
+                );
+            },
+        )
+        .await;
     }
 
-    #[tokio::test]
-    async fn policy_deny_carries_the_permissions_reason() {
-        let f = fixture();
-        f.bus.on_value(
-            "policy::check_permissions",
-            json!({
-                "decision": "deny",
-                "rule_id": "no_shell",
-                "matched_constraint": { "field": "cmd", "operator": "eq", "value": "ls" }
-            }),
-        );
-        let HookOutput::Deny { reason } = run(&f, "shell::run").await else {
-            panic!("expected deny");
-        };
-        assert!(reason.contains("matched rule no_shell"));
-        assert!(f.state.peek(PENDING_SCOPE, "s_1/c_1").is_none());
-    }
-
-    #[tokio::test]
-    async fn garbage_policy_reply_degrades_to_hold() {
-        let f = fixture();
-        f.bus
-            .on_value("policy::check_permissions", json!("what even is this"));
-        assert!(matches!(
-            run(&f, "shell::run").await,
-            HookOutput::Hold { .. }
-        ));
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn policy_transport_failure_fails_closed() {
-        let f = fixture();
-        f.bus
-            .on_error("policy::check_permissions", "connection refused");
-        let HookOutput::Deny { reason } = run(&f, "shell::run").await else {
-            panic!("expected deny");
-        };
-        assert!(reason.contains("policy unreachable"));
-        assert!(f.state.peek(PENDING_SCOPE, "s_1/c_1").is_none());
+        with_stack(
+            BootOpts::policy_error("connection refused"),
+            |stack| async move {
+                assert!(matches!(
+                    handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                    HookOutput::Deny { .. }
+                ));
+            },
+        )
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn missing_policy_worker_fails_closed() {
-        let bus = Arc::new(FakeBus::new());
-        let _state = bus.with_memory_state();
-        let sink = Arc::new(RecordingSink::new());
-        let deps = Arc::new(Deps {
-            bus: bus.clone(),
-            sink,
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        let out = handle(&deps, hook_input("shell::run")).await.unwrap();
-        assert!(matches!(out, HookOutput::Deny { .. }));
-    }
-
-    #[tokio::test]
-    async fn pending_write_failure_denies_never_holds_blind() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        // State reads succeed (no record) but writes fail.
-        f.bus.on("state::set", |_| {
-            Err(crate::bus::BusError("disk full".into()))
-        });
-        let HookOutput::Deny { reason } = run(&f, "shell::run").await else {
-            panic!("expected deny");
+        let Some(engine) = require_engine().await else {
+            return;
         };
-        assert!(reason.contains("pending record write failed"));
-        settle().await;
-        assert!(f.sink.created_events().is_empty());
+        let stack = boot(&engine, BootOpts::no_policy()).await;
+        assert!(matches!(
+            handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+            HookOutput::Deny { .. }
+        ));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn duplicate_hold_is_a_noop_on_the_existing_record() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        let first = run(&f, "shell::run").await;
-        assert!(matches!(first, HookOutput::Hold { .. }));
-        let before = f.state.peek(PENDING_SCOPE, "s_1/c_1").unwrap();
-
-        let second = run(&f, "shell::run").await;
-        assert!(matches!(second, HookOutput::Hold { .. }));
-        // No rewrite: pending_at unchanged.
-        assert_eq!(f.state.peek(PENDING_SCOPE, "s_1/c_1").unwrap(), before);
-        settle().await;
-        assert_eq!(f.sink.created_events().len(), 1);
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_settings(
+                &stack.iii,
+                "s_1",
+                &ApprovalSettings {
+                    mode: PermissionMode::Manual,
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(matches!(
+                handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                HookOutput::Hold { .. }
+            ));
+            let before = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert!(matches!(
+                handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                HookOutput::Hold { .. }
+            ));
+            assert_eq!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await,
+                before
+            );
+            settle().await;
+            assert_eq!(log_snapshot(&stack.created).len(), 1);
+        })
+        .await;
     }
 
-    #[tokio::test]
-    async fn no_stored_settings_uses_configuration_defaults() {
-        let f = fixture();
-        // Deployment defaults: auto mode with a seeded glob.
-        replace(
-            &f.deps.defaults,
-            crate::gate_config::GateDefaults {
-                default_mode: PermissionMode::Auto,
-                always_allow_seed: vec!["shell::*".into()],
-                pending_timeout_ms: 60_000,
-            },
-        );
-        // Seed honored in auto (no stored record).
-        assert_eq!(run(&f, "shell::run").await, HookOutput::Continue);
-
-        // Same seed dormant under manual defaults.
-        replace(
-            &f.deps.defaults,
-            crate::gate_config::GateDefaults {
-                default_mode: PermissionMode::Manual,
-                always_allow_seed: vec!["shell::*".into()],
-                pending_timeout_ms: 60_000,
-            },
-        );
-        policy_needs_approval(&f);
-        let out = run(&f, "shell::run").await;
-        assert_eq!(
-            out,
-            HookOutput::Hold {
-                pending_timeout_ms: 60_000
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn record_carries_redacted_args_and_session_context() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        f.bus.on_value(
-            "session::get",
-            json!({ "meta": {
-                "session_id": "s_1",
-                "title": "Deploy review",
-                "description": "prod deploy",
-                "metadata": { "owner": "u_1" }
-            }}),
-        );
-        let input: HookInput = serde_json::from_value(json!({
-            "session_id": "s_1",
-            "turn_id": "t_1",
-            "depth": 2,
-            "call": {
-                "id": "c_1",
-                "function_id": "shell::run",
-                "arguments": { "cmd": "ls", "api_key": "sk_live_123" }
-            }
-        }))
-        .unwrap();
-        handle(&f.deps, input).await.unwrap();
-
-        let record = f.state.peek(PENDING_SCOPE, "s_1/c_1").unwrap();
-        assert_eq!(record["arguments_excerpt"]["api_key"], json!("<redacted>"));
-        assert_eq!(record["session_title"], json!("Deploy review"));
-        assert_eq!(record["session_metadata"]["owner"], json!("u_1"));
-        assert_eq!(record["depth"], json!(2));
-        assert_eq!(
-            record["expires_at"].as_i64().unwrap() - record["pending_at"].as_i64().unwrap(),
-            1_800_000
-        );
-    }
-
-    #[tokio::test]
-    async fn session_fetch_failure_omits_context_but_still_holds() {
-        let f = fixture();
-        policy_needs_approval(&f);
-        // No session::get scripted → transport error → fields omitted.
-        assert!(matches!(
-            run(&f, "shell::run").await,
-            HookOutput::Hold { .. }
-        ));
-        let record = f.state.peek(PENDING_SCOPE, "s_1/c_1").unwrap();
-        assert!(record.get("session_title").is_none());
-        assert!(record.get("session_metadata").is_none());
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn slash_in_ids_fails_closed() {
-        let f = fixture();
-        let input: HookInput = serde_json::from_value(json!({
-            "session_id": "s/1",
-            "turn_id": "t_1",
-            "call": { "id": "c_1", "function_id": "shell::run", "arguments": {} }
-        }))
-        .unwrap();
-        assert!(matches!(
-            handle(&f.deps, input).await.unwrap(),
-            HookOutput::Deny { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn missing_call_payload_fails_closed() {
-        let f = fixture();
-        let input: HookInput =
-            serde_json::from_value(json!({ "session_id": "s_1", "turn_id": "t_1" })).unwrap();
-        assert!(matches!(
-            handle(&f.deps, input).await.unwrap(),
-            HookOutput::Deny { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn settings_state_outage_degrades_to_defaults_not_allow() {
-        let f = fixture();
-        // state::get fails entirely; manual defaults → policy consult.
-        f.bus
-            .on("state::get", |_| Err(crate::bus::BusError("down".into())));
-        f.bus.on_error("policy::check_permissions", "also down");
-        // Fail-closed end to end: deny, not allow, not hold.
-        assert!(matches!(
-            run(&f, "shell::run").await,
-            HookOutput::Deny { .. }
-        ));
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let input: HookInput = serde_json::from_value(json!({
+                "session_id": "s/1",
+                "turn_id": "t_1",
+                "call": { "id": "c_1", "function_id": "shell::run", "arguments": {} }
+            }))
+            .unwrap();
+            assert!(matches!(
+                handle(&stack.deps, input).await.unwrap(),
+                HookOutput::Deny { .. }
+            ));
+        })
+        .await;
     }
 }

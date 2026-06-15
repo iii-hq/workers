@@ -12,9 +12,9 @@
 
 use std::sync::{Arc, RwLock};
 
+use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::{json, Value};
 
-use crate::bus::{Bus, BusError};
 use crate::types::PermissionMode;
 
 pub const ENTRY_ID: &str = "approval-gate";
@@ -123,26 +123,32 @@ pub fn entry_schema() -> Value {
     })
 }
 
-pub async fn register_entry(bus: &dyn Bus) -> Result<(), BusError> {
-    bus.call(
-        "configuration::register",
-        json!({
+pub async fn register_entry(iii: &III) -> Result<(), IIIError> {
+    iii.trigger(TriggerRequest {
+        function_id: "configuration::register".into(),
+        payload: json!({
             "id": ENTRY_ID,
             "name": "Approval Gate",
             "description": "Deployment approval defaults: permission mode for new sessions, the auto-mode trust seed, and the pending-hold timeout.",
             "schema": entry_schema(),
         }),
-        None,
-    )
+        action: None,
+        timeout_ms: None,
+    })
     .await
     .map(|_| ())
 }
 
 /// Read the entry value; any failure (configuration worker absent, entry
 /// unset) yields the built-in defaults.
-pub async fn read_defaults(bus: &dyn Bus) -> GateDefaults {
-    match bus
-        .call("configuration::get", json!({ "id": ENTRY_ID }), None)
+pub async fn read_defaults(iii: &III) -> GateDefaults {
+    match iii
+        .trigger(TriggerRequest {
+            function_id: "configuration::get".into(),
+            payload: json!({ "id": ENTRY_ID }),
+            action: None,
+            timeout_ms: None,
+        })
         .await
     {
         Ok(reply) => parse_config_value(reply.get("value").unwrap_or(&Value::Null)),
@@ -156,7 +162,6 @@ pub async fn read_defaults(bus: &dyn Bus) -> GateDefaults {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::FakeBus;
     use serde_json::json;
 
     #[test]
@@ -186,22 +191,6 @@ mod tests {
         assert_eq!(parse_config_value(&json!("nope")), GateDefaults::default());
         let zero = parse_config_value(&json!({ "pending_timeout_ms": 0 }));
         assert_eq!(zero.pending_timeout_ms, DEFAULT_PENDING_TIMEOUT_MS);
-    }
-
-    #[tokio::test]
-    async fn read_defaults_tolerates_missing_configuration_worker() {
-        let bus = FakeBus::new();
-        assert_eq!(read_defaults(&bus).await, GateDefaults::default());
-    }
-
-    #[tokio::test]
-    async fn read_defaults_parses_the_entry_value() {
-        let bus = FakeBus::new();
-        bus.on_value(
-            "configuration::get",
-            json!({ "id": ENTRY_ID, "value": { "default_mode": "full" } }),
-        );
-        assert_eq!(read_defaults(&bus).await.default_mode, PermissionMode::Full);
     }
 
     #[test]

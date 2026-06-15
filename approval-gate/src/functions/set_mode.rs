@@ -11,7 +11,7 @@ use crate::types::{ApprovalSettings, SetModeRequest, SettingsResponse};
 pub async fn handle(deps: &Deps, req: SetModeRequest) -> Result<SettingsResponse, ApprovalError> {
     let defaults = snapshot(&deps.defaults);
     let settings = settings::materialize_and(
-        deps.bus.as_ref(),
+        deps.iii.as_ref(),
         &req.session_id,
         &defaults,
         deps.cfg.state_timeout_ms,
@@ -27,35 +27,25 @@ pub async fn handle(deps: &Deps, req: SetModeRequest) -> Result<SettingsResponse
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::shared_defaults;
-    use crate::testkit::FakeBus;
+    use crate::testkit::{with_stack, BootOpts};
     use crate::types::PermissionMode;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn sets_mode_and_stamps_mode_set_at() {
-        let bus = Arc::new(FakeBus::new());
-        let _state = bus.with_memory_state();
-        let deps = Arc::new(Deps {
-            bus,
-            sink: Arc::new(RecordingSink::new()),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        let res = handle(
-            &deps,
-            SetModeRequest {
-                session_id: "s_1".into(),
-                mode: PermissionMode::Auto,
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(res.settings.mode, PermissionMode::Auto);
-        assert!(res.settings.mode_set_at > 0);
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let res = handle(
+                &stack.deps,
+                SetModeRequest {
+                    session_id: "s_1".into(),
+                    mode: PermissionMode::Auto,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(res.settings.mode, PermissionMode::Auto);
+            assert!(res.settings.mode_set_at > 0);
+        })
+        .await;
     }
 }

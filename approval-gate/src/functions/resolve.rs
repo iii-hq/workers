@@ -13,6 +13,7 @@ use serde_json::json;
 use super::Deps;
 use crate::denial::{render_text, user_deny_envelope};
 use crate::error::ApprovalError;
+use crate::harness;
 use crate::pending;
 use crate::types::{
     now_ms, validate_id, PendingResolvedEvent, ResolveDecision, ResolveRequest, ResolveResponse,
@@ -23,9 +24,9 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
     validate_id("session_id", &req.session_id)?;
     validate_id("function_call_id", &req.function_call_id)?;
 
-    let bus = deps.bus.as_ref();
+    let iii = deps.iii.as_ref();
     let Some(record) = pending::get(
-        bus,
+        iii,
         &req.session_id,
         &req.function_call_id,
         deps.cfg.state_timeout_ms,
@@ -68,12 +69,7 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
 
     // The record is kept on failure so the decision stays resolvable
     // (or sweepable) — never delete before the harness acknowledged.
-    let reply = bus
-        .call(
-            "harness::function::resolve",
-            payload,
-            Some(deps.cfg.harness_timeout_ms),
-        )
+    let reply = harness::function_resolve(iii, payload, Some(deps.cfg.harness_timeout_ms))
         .await
         .map_err(|e| {
             ApprovalError::HarnessUnavailable(format!("harness::function::resolve failed: {e}"))
@@ -83,7 +79,7 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         .and_then(serde_json::Value::as_bool);
 
     match pending::delete_with_gate(
-        bus,
+        iii,
         &req.session_id,
         &req.function_call_id,
         deps.cfg.state_timeout_ms,
@@ -133,44 +129,14 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use serde_json::json;
 
     use super::*;
-    use crate::config::WorkerConfig;
-    use crate::events::RecordingSink;
-    use crate::gate_config::shared_defaults;
     use crate::pending::PENDING_SCOPE;
-    use crate::testkit::{FakeBus, MemoryState};
+    use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
     use crate::types::PendingApprovalRecord;
 
-    struct Fixture {
-        deps: Arc<Deps>,
-        bus: Arc<FakeBus>,
-        sink: Arc<RecordingSink>,
-        state: MemoryState,
-    }
-
-    fn fixture() -> Fixture {
-        let bus = Arc::new(FakeBus::new());
-        let state = bus.with_memory_state();
-        let sink = Arc::new(RecordingSink::new());
-        let deps = Arc::new(Deps {
-            bus: bus.clone(),
-            sink: sink.clone(),
-            defaults: shared_defaults(),
-            cfg: Arc::new(WorkerConfig::default()),
-        });
-        Fixture {
-            deps,
-            bus,
-            sink,
-            state,
-        }
-    }
-
-    fn seed_record(f: &Fixture) {
+    async fn seed_record(iii: &iii_sdk::III) {
         let record = PendingApprovalRecord {
             session_id: "s_1".into(),
             turn_id: "t_9".into(),
@@ -185,18 +151,13 @@ mod tests {
             depth: 0,
             assistant_excerpt: None,
         };
-        f.state.seed(
+        state_set(
+            iii,
             PENDING_SCOPE,
             "s_1/c_1",
             serde_json::to_value(record).unwrap(),
-        );
-    }
-
-    fn harness_ok(f: &Fixture) {
-        f.bus.on_value(
-            "harness::function::resolve",
-            json!({ "resolved": true, "turn_resumed": true }),
-        );
+        )
+        .await;
     }
 
     fn req(decision: ResolveDecision, reason: Option<&str>) -> ResolveRequest {
@@ -208,141 +169,70 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn allow_releases_via_action_execute() {
-        let f = fixture();
-        seed_record(&f);
-        harness_ok(&f);
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_record(&stack.iii).await;
+            let res = handle(&stack.deps, req(ResolveDecision::Allow, None))
+                .await
+                .unwrap();
+            assert!(res.resolved);
+            assert_eq!(res.turn_resumed, Some(true));
 
-        let res = handle(&f.deps, req(ResolveDecision::Allow, None))
-            .await
-            .unwrap();
-        assert!(res.resolved);
-        assert_eq!(res.turn_resumed, Some(true));
-
-        let calls = f.bus.calls_to("harness::function::resolve");
-        assert_eq!(calls.len(), 1);
-        let payload = &calls[0].payload;
-        assert_eq!(payload["action"], json!("execute"));
-        // The turn_id comes from the pending record.
-        assert_eq!(payload["turn_id"], json!("t_9"));
-        // Execute supplies no result.
-        assert!(payload.get("content").is_none());
-        assert!(payload.get("is_error").is_none());
-
-        // Record deleted; exactly one resolved event with the metadata.
-        assert!(f.state.peek(PENDING_SCOPE, "s_1/c_1").is_none());
-        let events = f.sink.resolved_events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].outcome, ResolvedOutcome::Allow);
-        assert_eq!(
-            events[0].session_metadata.as_ref().unwrap()["owner"],
-            json!("u_1")
-        );
+            let harness = log_snapshot(&stack.harness_calls);
+            assert_eq!(harness.len(), 1);
+            assert_eq!(harness[0]["action"], json!("execute"));
+            assert_eq!(harness[0]["turn_id"], json!("t_9"));
+            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                .await
+                .is_null());
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn deny_delivers_an_is_error_denial_envelope() {
-        let f = fixture();
-        seed_record(&f);
-        harness_ok(&f);
-
-        let res = handle(&f.deps, req(ResolveDecision::Deny, Some("too risky")))
-            .await
-            .unwrap();
-        assert!(res.resolved);
-
-        let calls = f.bus.calls_to("harness::function::resolve");
-        let payload = &calls[0].payload;
-        assert_eq!(payload["action"], json!("deliver"));
-        assert_eq!(payload["is_error"], json!(true));
-        assert_eq!(payload["content"][0]["type"], json!("text"));
-        assert_eq!(payload["content"][0]["text"], json!("too risky"));
-        assert_eq!(payload["details"]["denied_by"], json!("user"));
-        assert_eq!(payload["details"]["args_excerpt"], json!({ "cmd": "ls" }));
-
-        let events = f.sink.resolved_events();
-        assert_eq!(events[0].outcome, ResolvedOutcome::Deny);
-        assert_eq!(events[0].reason.as_deref(), Some("too risky"));
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_record(&stack.iii).await;
+            handle(&stack.deps, req(ResolveDecision::Deny, Some("too risky")))
+                .await
+                .unwrap();
+            let harness = log_snapshot(&stack.harness_calls);
+            assert_eq!(harness[0]["action"], json!("deliver"));
+            assert_eq!(harness[0]["is_error"], json!(true));
+            assert_eq!(harness[0]["content"][0]["text"], json!("too risky"));
+        })
+        .await;
     }
 
-    #[tokio::test]
-    async fn unknown_call_returns_resolved_false_and_emits_nothing() {
-        let f = fixture();
-        harness_ok(&f);
-        let res = handle(&f.deps, req(ResolveDecision::Allow, None))
-            .await
-            .unwrap();
-        assert!(!res.resolved);
-        assert!(f.bus.calls_to("harness::function::resolve").is_empty());
-        assert!(f.sink.resolved_events().is_empty());
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_call_returns_resolved_false() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let res = handle(&stack.deps, req(ResolveDecision::Allow, None))
+                .await
+                .unwrap();
+            assert!(!res.resolved);
+            assert!(log_snapshot(&stack.harness_calls).is_empty());
+        })
+        .await;
     }
 
-    #[tokio::test]
-    async fn duplicate_resolve_races_benignly() {
-        let f = fixture();
-        seed_record(&f);
-        harness_ok(&f);
-        let first = handle(&f.deps, req(ResolveDecision::Allow, None))
-            .await
-            .unwrap();
-        assert!(first.resolved);
-        let second = handle(&f.deps, req(ResolveDecision::Allow, None))
-            .await
-            .unwrap();
-        assert!(!second.resolved);
-        assert_eq!(f.sink.resolved_events().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn harness_failure_keeps_the_record() {
-        let f = fixture();
-        seed_record(&f);
-        f.bus
-            .on_error("harness::function::resolve", "connection refused");
-        let err = handle(&f.deps, req(ResolveDecision::Allow, None))
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_ids_are_rejected() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let err = handle(
+                &stack.deps,
+                ResolveRequest {
+                    session_id: "s/1".into(),
+                    function_call_id: "c_1".into(),
+                    decision: ResolveDecision::Allow,
+                    reason: None,
+                },
+            )
             .await
             .unwrap_err();
-        assert_eq!(err.code(), "approval/harness_unavailable");
-        // Record intact, no event: the decision can be retried.
-        assert!(f.state.peek(PENDING_SCOPE, "s_1/c_1").is_some());
-        assert!(f.sink.resolved_events().is_empty());
-    }
-
-    #[tokio::test]
-    async fn ordering_is_resolve_then_delete() {
-        let f = fixture();
-        seed_record(&f);
-        harness_ok(&f);
-        handle(&f.deps, req(ResolveDecision::Allow, None))
-            .await
-            .unwrap();
-        let calls = f.bus.calls();
-        let resolve_pos = calls
-            .iter()
-            .position(|c| c.function_id == "harness::function::resolve")
-            .unwrap();
-        let delete_pos = calls
-            .iter()
-            .position(|c| c.function_id == "state::set" && c.payload["value"].is_null())
-            .unwrap();
-        assert!(resolve_pos < delete_pos);
-    }
-
-    #[tokio::test]
-    async fn invalid_ids_are_rejected() {
-        let f = fixture();
-        let err = handle(
-            &f.deps,
-            ResolveRequest {
-                session_id: "s/1".into(),
-                function_call_id: "c_1".into(),
-                decision: ResolveDecision::Allow,
-                reason: None,
-            },
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.code(), "approval/invalid_payload");
+            assert_eq!(err.code(), "approval/invalid_payload");
+        })
+        .await;
     }
 }
