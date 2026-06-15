@@ -22,24 +22,26 @@
 //! call `engine::functions::list`, `engine::triggers::list`, etc.,
 //! directly.
 
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{
     register_worker, InitOptions, RegisterFunction, TriggerRequest, WorkerMetadata, III,
 };
 use serde_json::json;
 
-use iii_directory::config::SkillsConfig;
+use iii_directory::config::{SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
     download_worker_skills, reconcile_decision, InFlightGuard,
 };
+use iii_directory::functions::registry::RegistryCache;
 use iii_directory::functions::skills::{
     make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
-use iii_directory::{config, functions, manifest, trigger_types};
+use iii_directory::{configuration, functions, manifest, trigger_types};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -47,8 +49,11 @@ use iii_directory::{config, functions, manifest, trigger_types};
     about = "Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader."
 )]
 struct Cli {
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// Optional YAML seed used to populate `initial_value` on the first
+    /// `configuration::register`. After first boot the authoritative config
+    /// lives in the `configuration` worker under id `iii-directory`.
+    #[arg(long)]
+    config: Option<String>,
 
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
@@ -74,26 +79,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let cfg = match config::load_config(&cli.config) {
-        Ok(c) => {
-            tracing::info!(
-                skills_folder = %c.resolved_skills_folder().display(),
-                local_skills_folder = %c.local_skills_folder().display(),
-                registry_url = %c.registry_base(),
-                filter_unregistered = c.filter_unregistered,
-                auto_download = c.auto_download,
-                "loaded config from {}",
-                cli.config
-            );
-            c
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            config::SkillsConfig::default()
-        }
-    };
-    let cfg = Arc::new(cfg);
-
+    // Connect to the engine first so the configuration RPCs are reachable.
     let iii = register_worker(
         &cli.url,
         InitOptions {
@@ -111,26 +97,97 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
-    // Shared registered-workers cache used by read functions and
-    // invalidated by the worker-add event handler.
-    let cache = make_registered_cache(&cfg);
+    // Optional YAML seed used only to populate `initial_value` on the first
+    // `configuration::register`.
+    let seed = match cli.config.as_deref() {
+        Some(path) => match SkillsConfig::from_file(path) {
+            Ok(cfg) => {
+                tracing::info!(path = %path, "loaded seed config for initial registration");
+                Some(cfg)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path,
+                    error = %e,
+                    "failed to load seed config; relying on existing configuration entry"
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
-    // Custom trigger types come first because the download function
-    // captures the subscriber sets it'll fan out to on success.
+    // Register the schema (+ seed) and fetch the authoritative, env-expanded
+    // value from the `configuration` worker.
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering iii-directory configuration schema")?;
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading iii-directory configuration")?;
+
+    tracing::info!(
+        skills_folder = %cfg.resolved_skills_folder().display(),
+        local_skills_folder = %cfg.local_skills_folder().display(),
+        registry_url = %cfg.registry_base(),
+        filter_unregistered = cfg.filter_unregistered,
+        auto_download = cfg.auto_download,
+        "loaded configuration from the configuration worker"
+    );
+
+    // Shared, hot-reloadable state. Topology is captured at boot; tunable
+    // fields live in `cfg_handle` (swapped on reload) and the shared
+    // `cache_ttl_ms` cell read by both caches.
+    let boot_topology = cfg.topology();
+    let auto_download = cfg.auto_download;
+    let cache_ttl_ms = Arc::new(AtomicU64::new(cfg.registry_cache_ttl_ms));
+    let registered_cache = make_registered_cache(cache_ttl_ms.clone());
+    let registry_cache = RegistryCache::new_shared(cache_ttl_ms.clone());
+    let cfg_handle: SharedConfig = cfg.into_shared();
+
+    // Custom trigger types come first because the download function captures
+    // the subscriber sets it'll fan out to on success.
     let registered = trigger_types::register_all(&iii);
-    functions::register_all_with_cache(&iii, &cfg, &registered, &cache);
-    functions::log_fs_health(&cfg);
+    functions::register_all_with_cache(
+        &iii,
+        &cfg_handle,
+        &registered,
+        &registered_cache,
+        registry_cache.clone(),
+    );
+    functions::log_fs_health(&cfg_handle.load_full());
 
-    // Auto-download: subscribe to worker add events + boot reconcile.
-    if cfg.auto_download {
+    // Auto-download: subscribe to worker add events + boot reconcile. Wired
+    // from the boot value of `auto_download` (a topology field — changing it
+    // requires a restart).
+    if auto_download {
         let in_flight = Arc::new(InFlightGuard::new());
-        setup_auto_download(&iii, &cfg, &cache, &in_flight);
-        spawn_boot_reconcile(iii.clone(), cfg.clone(), cache.clone(), in_flight);
+        setup_auto_download(&iii, &cfg_handle, &registered_cache, &in_flight);
+        spawn_boot_reconcile(
+            iii.clone(),
+            cfg_handle.clone(),
+            registered_cache.clone(),
+            in_flight,
+        );
     }
 
-    let fn_count = if cfg.auto_download { 10 } else { 9 };
+    // Bind the configuration-change trigger so tunable fields hot-reload.
+    let state = configuration::SharedState::new(
+        cfg_handle.clone(),
+        cache_ttl_ms,
+        registry_cache,
+        registered_cache,
+        boot_topology,
+    );
+    configuration::register_config_trigger(&iii, state)
+        .context("registering configuration change trigger")?;
+
+    let fn_count = if auto_download { 10 } else { 9 };
     tracing::info!(
-        "iii-directory ready: {} directory::* functions + 2 custom trigger types",
+        "iii-directory ready: {} directory::* functions + 2 custom trigger types + \
+         configuration hot-reload",
         fn_count
     );
 
@@ -144,7 +201,7 @@ async fn main() -> Result<()> {
 /// subscribe to the `worker` trigger type for `add` operations.
 fn setup_auto_download(
     iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
+    cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
     in_flight: &Arc<InFlightGuard>,
 ) {
@@ -156,7 +213,7 @@ fn setup_auto_download(
     iii.register_function(
         "directory::__on_worker_added",
         RegisterFunction::new_async(move |input: serde_json::Value| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
             async move {
@@ -325,11 +382,16 @@ async fn fetch_worker_list_with_retry(iii: &III) -> Option<Vec<serde_json::Value
 /// AND name validates.
 fn spawn_boot_reconcile(
     iii: Arc<III>,
-    cfg: Arc<SkillsConfig>,
+    cfg: SharedConfig,
     cache: Arc<RegisteredWorkersCache>,
     in_flight: Arc<InFlightGuard>,
 ) {
     tokio::spawn(async move {
+        // Snapshot the live config for this one-shot boot pass. The fields it
+        // reads (skills_folder / local_skills_folder) are topology — fixed for
+        // the process lifetime — so a snapshot is sufficient.
+        let cfg = cfg.load_full();
+
         // Small delay so the engine has time to wire us up.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 

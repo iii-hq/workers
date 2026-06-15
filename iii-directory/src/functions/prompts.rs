@@ -20,7 +20,7 @@ use iii_sdk::{IIIError, RegisterFunction, III};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::SkillsConfig;
+use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source;
 use crate::functions::error::{not_found_message, NextAction};
 
@@ -63,17 +63,17 @@ pub struct PromptGetOutput {
     pub modified_at: String,
 }
 
-pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
+pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
     register_list_prompts(iii, cfg);
     register_get_prompt(iii, cfg);
 }
 
-fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
+fn register_list_prompts(iii: &Arc<III>, cfg: &SharedConfig) {
     let cfg_inner = cfg.clone();
     iii.register_function(
         "directory::prompts::list",
         RegisterFunction::new_async(move |_input: ListPromptsInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             async move {
                 let (prompts, _skipped) = fs_source::scan_prompts_merged(
                     &cfg.resolved_skills_folder(),
@@ -99,12 +99,12 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     );
 }
 
-fn register_get_prompt(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
+fn register_get_prompt(iii: &Arc<III>, cfg: &SharedConfig) {
     let cfg_inner = cfg.clone();
     iii.register_function(
         "directory::prompts::get",
         RegisterFunction::new_async(move |req: PromptGetInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             async move { get_prompt(&cfg, req).await.map_err(IIIError::Handler) }
         })
         .description(

@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::config::SkillsConfig;
+use crate::config::{SharedConfig, SkillsConfig};
 use crate::sources::{self, registry::VersionSpec, DownloadResult};
 use crate::trigger_types::{self, SubscriberSet};
 
@@ -108,7 +108,7 @@ pub enum ClassifiedInput {
 /// with `master`-default repos can override via the `branch` field.
 pub const DEFAULT_REPO_BRANCH: &str = "main";
 
-pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &super::Subscribers) {
+pub fn register(iii: &Arc<III>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
     register_download(iii, cfg, subscribers);
     register_download_from_registry(iii, cfg, subscribers);
     register_download_from_repo(iii, cfg, subscribers);
@@ -135,7 +135,7 @@ async fn run_and_fan_out(
 /// source set. Kept for back-compat; new callers should prefer the
 /// explicit `download_from_registry` / `download_from_repo`, whose
 /// schemas make the source unambiguous.
-fn register_download(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &super::Subscribers) {
+fn register_download(iii: &Arc<III>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     let skills_subs = subscribers.skills.clone();
@@ -144,7 +144,7 @@ fn register_download(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &supe
         "directory::skills::download",
         RegisterFunction::new_async(move |req: DownloadInput| {
             let iii = iii_inner.clone();
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let skills_subs = skills_subs.clone();
             let prompts_subs = prompts_subs.clone();
             async move { run_and_fan_out(&iii, &cfg, &skills_subs, &prompts_subs, req).await }
@@ -167,7 +167,7 @@ fn register_download(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &supe
 /// schema level (no "specify exactly one of two groups" guesswork).
 fn register_download_from_registry(
     iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
+    cfg: &SharedConfig,
     subscribers: &super::Subscribers,
 ) {
     let iii_inner = iii.clone();
@@ -178,7 +178,7 @@ fn register_download_from_registry(
         "directory::skills::download_from_registry",
         RegisterFunction::new_async(move |req: RegistryDownloadInput| {
             let iii = iii_inner.clone();
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let skills_subs = skills_subs.clone();
             let prompts_subs = prompts_subs.clone();
             async move {
@@ -208,7 +208,7 @@ fn register_download_from_registry(
 /// the schema level.
 fn register_download_from_repo(
     iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
+    cfg: &SharedConfig,
     subscribers: &super::Subscribers,
 ) {
     let iii_inner = iii.clone();
@@ -219,7 +219,7 @@ fn register_download_from_repo(
         "directory::skills::download_from_repo",
         RegisterFunction::new_async(move |req: RepoDownloadInput| {
             let iii = iii_inner.clone();
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let skills_subs = skills_subs.clone();
             let prompts_subs = prompts_subs.clone();
             async move {

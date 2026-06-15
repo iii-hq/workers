@@ -38,6 +38,7 @@
 //! change notifications to their clients.
 
 pub mod config;
+pub mod configuration;
 pub mod fs_source;
 pub mod functions;
 pub mod manifest;

@@ -28,6 +28,7 @@
 //! fired from the download function on success.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,7 +39,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use crate::config::SkillsConfig;
+use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source::{self, FsSkill, SkillFrontmatter};
 use crate::functions::error::{invalid_input_message, not_found_message, NextAction, SuggestEntry};
 
@@ -221,11 +222,19 @@ pub(crate) struct CacheEntry {
 pub struct RegisteredWorkersCache {
     /// `pub(crate)` so tests in sibling modules can inspect / populate.
     pub(crate) inner: Mutex<Option<CacheEntry>>,
-    ttl_ms: u64,
+    /// Live TTL in ms, shared with the registry cache and updated on a
+    /// `configuration:updated` reload (see `configuration::apply_config`).
+    ttl_ms: Arc<AtomicU64>,
 }
 
 impl RegisteredWorkersCache {
+    /// Construct with a fixed TTL (used by unit tests).
     pub fn new(ttl_ms: u64) -> Self {
+        Self::new_shared(Arc::new(AtomicU64::new(ttl_ms)))
+    }
+
+    /// Construct sharing a live TTL cell with the rest of the worker.
+    pub fn new_shared(ttl_ms: Arc<AtomicU64>) -> Self {
         Self {
             inner: Mutex::new(None),
             ttl_ms,
@@ -252,7 +261,9 @@ impl RegisteredWorkersCache {
         {
             let lock = self.inner.lock().await;
             if let Some(entry) = lock.as_ref() {
-                if entry.fetched_at.elapsed().as_millis() < self.ttl_ms as u128 {
+                if entry.fetched_at.elapsed().as_millis()
+                    < self.ttl_ms.load(Ordering::Relaxed) as u128
+                {
                     return Some(entry.workers.clone());
                 }
             }
@@ -429,22 +440,26 @@ pub(crate) fn filter_to_registered(
         .collect()
 }
 
-pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
-    let cache = Arc::new(RegisteredWorkersCache::new(cfg.registry_cache_ttl_ms));
+pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
+    let cache = Arc::new(RegisteredWorkersCache::new(
+        cfg.load().registry_cache_ttl_ms,
+    ));
     register_list_skills(iii, cfg, &cache);
     register_get_skill(iii, cfg, &cache);
     register_index_skills(iii, cfg, &cache);
 }
 
-/// Expose the cache so main.rs can share it with the event handler.
-pub fn make_registered_cache(cfg: &SkillsConfig) -> Arc<RegisteredWorkersCache> {
-    Arc::new(RegisteredWorkersCache::new(cfg.registry_cache_ttl_ms))
+/// Expose the cache so main.rs can share it with the event handler. Takes
+/// the live TTL cell so a `configuration:updated` reload changes the
+/// effective freshness window in place.
+pub fn make_registered_cache(ttl_ms: Arc<AtomicU64>) -> Arc<RegisteredWorkersCache> {
+    Arc::new(RegisteredWorkersCache::new_shared(ttl_ms))
 }
 
 /// Register all skills functions with a shared cache instance.
 pub fn register_with_cache(
     iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
+    cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     register_list_skills(iii, cfg, cache);
@@ -452,18 +467,14 @@ pub fn register_with_cache(
     register_index_skills(iii, cfg, cache);
 }
 
-fn register_list_skills(
-    iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
-    cache: &Arc<RegisteredWorkersCache>,
-) {
+fn register_list_skills(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<RegisteredWorkersCache>) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let cache_inner = cache.clone();
     iii.register_function(
         "directory::skills::list",
         RegisterFunction::new_async(move |input: ListSkillsInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
             let cache = cache_inner.clone();
             async move {
@@ -541,18 +552,14 @@ fn list_skills_filtered(entries: Vec<FsSkill>, input: &ListSkillsInput) -> Vec<S
     rows
 }
 
-fn register_get_skill(
-    iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
-    cache: &Arc<RegisteredWorkersCache>,
-) {
+fn register_get_skill(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<RegisteredWorkersCache>) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let cache_inner = cache.clone();
     iii.register_function(
         "directory::skills::get",
         RegisterFunction::new_async(move |req: SkillGetInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
             let cache = cache_inner.clone();
             async move {
@@ -566,18 +573,14 @@ fn register_get_skill(
     );
 }
 
-fn register_index_skills(
-    iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
-    cache: &Arc<RegisteredWorkersCache>,
-) {
+fn register_index_skills(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<RegisteredWorkersCache>) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let cache_inner = cache.clone();
     iii.register_function(
         "directory::skills::index",
         RegisterFunction::new_async(move |_input: IndexSkillsInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
             let cache = cache_inner.clone();
             async move {

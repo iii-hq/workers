@@ -1,0 +1,34 @@
+# Optional seed file for first-time registration
+# (`iii-directory --config ./config.yaml.example`).
+#
+# As of this version, iii-directory's runtime config lives in the
+# `configuration` worker under id `iii-directory` (the same pattern
+# `database` and `storage` use). This file is only a SEED: when the worker
+# is launched with `--config <this file>` AND no value is yet stored for id
+# `iii-directory`, its contents are passed as `initial_value` on
+# `configuration::register` (the configuration worker env-expands `${VAR}`).
+# After that first register the stored value is authoritative; edit it with
+# `configuration::set id=iii-directory` (or the console Workers tab), or by
+# editing `./data/configuration/iii-directory.yaml` directly.
+#
+# Tunable fields hot-reload on change (registry_url, download_timeout_ms,
+# registry_cache_ttl_ms, filter_unregistered). Topology fields require a
+# worker restart (skills_folder, local_skills_folder, auto_download).
+#
+# When omitted entirely, the worker seeds the built-in defaults
+# (skills_folder: ~/.iii/skills, registry_url: https://api.workers.iii.dev).
+
+# Folder that backs every read (`directory::skills::list`,
+# `directory::skills::get`, `directory::prompts::*`) and every write
+# from `directory::skills::download`. Relative paths are resolved
+# against the process current working directory; absolute paths are
+# used as-is.
+skills_folder: ./skills
+
+# Workers registry base URL — used by `directory::skills::download` and
+# the `directory::registry::*` proxies when a `worker=` source is
+# specified.
+registry_url: https://api.workers.iii.dev
+
+# Timeout for a single download (`git clone` or HTTP request) in ms.
+download_timeout_ms: 60000

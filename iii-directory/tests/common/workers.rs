@@ -64,7 +64,10 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
         ..SkillsConfig::default()
     });
     let registered = trigger_types::register_all(iii);
-    functions::register_all(iii, &cfg, &registered);
+    // `register_all` reads the live (hot-reloadable) handle; wrap a snapshot.
+    // `Shared.cfg` keeps the plain `Arc<SkillsConfig>` the step defs assert on.
+    let cfg_handle = (*cfg).clone().into_shared();
+    functions::register_all(iii, &cfg_handle, &registered);
 
     // Give the SDK a beat to publish the function registrations before
     // scenarios start triggering them.
