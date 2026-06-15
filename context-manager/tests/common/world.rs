@@ -210,7 +210,7 @@ pub async fn dispatch(deps: &Deps, function: &str, payload: Value) -> Result<Val
         "context::assemble" => out(assemble::handle(deps, parse(payload)?).await),
         "context::compact" => out(compact::handle(deps, parse(payload)?).await),
         "context::prune" => out(prune::handle(deps, parse(payload)?).await),
-        "context::count_tokens" => out(count_tokens::handle(deps, parse(payload)?).await),
+        "context::count-tokens" => out(count_tokens::handle(deps, parse(payload)?).await),
         other => Err(format!("unknown function {other}")),
     }
 }

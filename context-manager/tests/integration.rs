@@ -72,7 +72,7 @@ async fn end_to_end_via_iii_sdk() {
         let attempt = timeout(
             Duration::from_secs(5),
             client.trigger(TriggerRequest {
-                function_id: "context::count_tokens".into(),
+                function_id: "context::count-tokens".into(),
                 payload: payload.clone(),
                 action: None,
                 timeout_ms: Some(4_000),
@@ -86,7 +86,7 @@ async fn end_to_end_via_iii_sdk() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "context::count_tokens did not become routable within 20s"
+            "context::count-tokens did not become routable within 20s"
         );
         sleep(Duration::from_millis(250)).await;
     };

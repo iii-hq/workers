@@ -66,7 +66,7 @@ system prompt under `# Conversation summary`, and any further compaction
 *updates* it instead of starting over. Callers that skip persistence stay
 correct at the cost of one summariser call per over-budget request.
 
-The other three functions: `context::count_tokens` (estimate messages + tools +
+The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace verbose function outputs
 with `[output pruned: was ~N tokens]` placeholders, no LLM involved), and
 `context::compact` (summarise the head, keep a recent tail verbatim — returns

@@ -1,11 +1,11 @@
 {
   "description": "Estimate token usage for a set of messages (+ optional invocation schemas / system prompt) vs a model.",
-  "function_id": "context::count_tokens",
+  "function_id": "context::count-tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "AgentFunction": {
-        "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count_tokens` so callers can include the `agent_trigger` schema in their estimate.",
+        "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count-tokens` so callers can include the `agent_trigger` schema in their estimate.",
         "properties": {
           "description": {
             "type": "string"

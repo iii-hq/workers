@@ -1,6 +1,6 @@
-//! `context::count_tokens` — estimate token usage for a set of
+//! `context::count-tokens` — estimate token usage for a set of
 //! messages, optionally including invocation schemas and a system
-//! prompt, vs a model (context-manager.md § context::count_tokens).
+//! prompt, vs a model (context-manager.md § context::count-tokens).
 //!
 //! Pure and router-free: the model selects a tokenizer (v1 always
 //! falls back to the generic heuristic, reported in `estimator`), so

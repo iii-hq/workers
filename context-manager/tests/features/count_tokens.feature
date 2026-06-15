@@ -1,7 +1,7 @@
 @pure
-Feature: context::count_tokens — estimate token usage for a message set
+Feature: context::count-tokens — estimate token usage for a message set
 
-  Contract (context-manager.md § context::count_tokens): estimate token
+  Contract (context-manager.md § context::count-tokens): estimate token
   usage for messages, optionally including invocation schemas and a
   system prompt, vs a model. The model selects a tokenizer; v1 always
   falls back to the generic chars/4 heuristic and says so in

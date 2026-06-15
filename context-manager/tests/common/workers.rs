@@ -52,7 +52,7 @@ pub async fn register_all(iii: &Arc<III>) {
 
             // Registrations flow over one connection in order, so the
             // last one being routable means the batch landed.
-            wait_until_routable(iii, "context::count_tokens").await;
+            wait_until_routable(iii, "context::count-tokens").await;
         })
         .await;
 }

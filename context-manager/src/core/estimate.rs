@@ -4,7 +4,7 @@
 
 use crate::types::{AgentFunction, AgentMessage, Role};
 
-/// Which estimator produced a count — `count_tokens` echoes this.
+/// Which estimator produced a count — `count-tokens` echoes this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EstimatorKind {
     Tokenizer,
@@ -71,7 +71,7 @@ pub fn estimate_messages(est: &dyn Estimator, messages: &[AgentMessage]) -> u64 
     messages.iter().map(|m| est.message(m)).sum()
 }
 
-/// Per-role breakdown (`count_tokens.by_role`).
+/// Per-role breakdown (`count-tokens.by_role`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ByRole {
     pub user: u64,

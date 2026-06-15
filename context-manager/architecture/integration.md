@@ -32,7 +32,7 @@ Integration is always some subset of four moves:
 2. **Persist the round trip** when `applied.compacted` is true (store the
    summary + boundary, pass them back next time) so summarisation stays cheap
    and convergent.
-3. **Estimate** with `context::count_tokens` to gate model choice or cost with
+3. **Estimate** with `context::count-tokens` to gate model choice or cost with
    no LLM and no `llm-router`.
 4. **Use a single pass directly** — `context::prune` (no LLM) or
    `context::compact` (LLM) — when you want only that step, not the whole
@@ -64,7 +64,7 @@ Integration is always some subset of four moves:
 - **Agent exposure is cost-gated, not secret-gated.** Every function is a pure
   transform of caller input — nothing to leak — but `assemble`/`compact` can
   spend a summariser call. Deny those two to agents in cost-sensitive
-  deployments; `count_tokens`/`prune` are always safe (§9).
+  deployments; `count-tokens`/`prune` are always safe (§9).
 
 ## 3. Data types
 
@@ -104,7 +104,7 @@ type ModelInput = {
 
 `role: "custom"` messages are app-facing transcript items (UI markers, system
 notices, bookkeeping). They have **no provider wire mapping**, so `assemble`
-drops them from the model-facing list and its token count — but `count_tokens`
+drops them from the model-facing list and its token count — but `count-tokens`
 still counts what you give it, including customs (use its `by_role.custom`
 bucket to see or subtract that share).
 
@@ -156,7 +156,7 @@ inline limits, no router, and `allow_fallback_limits` is off). Everything else
 — busy lease, failed/absent summariser, disabled steps — is **best effort**:
 the context still returns, possibly with `token_count > usable`.
 
-### `context::count_tokens` — estimate usage
+### `context::count-tokens` — estimate usage
 
 Pure and router-free; safe for cost-sensitive callers with no `llm-router`.
 
@@ -294,7 +294,7 @@ provider-legal. Build on these:
 | Code | Meaning / trigger | Functions |
 |---|---|---|
 | `context/invalid_request` | `messages` missing or `null` (`messages is required`); a `model` missing where required; malformed shapes serde can't coerce. | all |
-| `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact, count_tokens |
+| `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact, count-tokens |
 | `context/state` | A backing lease filesystem write hard-failed (rare; lease problems usually degrade to `busy`). | compact, assemble |
 
 **Not errors — degradations you must read, not catch:**
@@ -331,7 +331,7 @@ persisted summary; send only the post-compaction window as `messages`.
 
 ### Standalone cost gate (no llm-router)
 
-Call `context::count_tokens` with inline `model.limits` (or just an id — the
+Call `context::count-tokens` with inline `model.limits` (or just an id — the
 heuristic ignores it) to decide whether a cheaper/larger model is needed before
 committing. Include the `agent_trigger` schema in `tools` so tool tokens count.
 No LLM, no router, no state — works on a bare engine.
@@ -354,10 +354,10 @@ overflow` union, and persists `summary` + `tail_start_index` itself.
 | Dependency | Used for | Without it |
 |---|---|---|
 | `configuration` (required) | the worker's own runtime config: schema registration + the authoritative value, hot-reloaded on change | the worker **cannot boot** — `register`/`get` run at startup and a failure aborts it. Not a per-request dependency: once booted, `context::*` calls never touch it. |
-| local filesystem (`lease_dir`) | compaction leases only | a filesystem error makes `compact`/`assemble` treat the lease as busy → compaction is skipped (best effort); `count_tokens`/`prune` unaffected. |
+| local filesystem (`lease_dir`) | compaction leases only | a filesystem error makes `compact`/`assemble` treat the lease as busy → compaction is skipped (best effort); `count-tokens`/`prune` unaffected. |
 | `llm-router` (soft) | model-limit resolution (`router::models::get`) + the summariser (`router::chat`) | Limits fall back to `8192`/`1024` (`model_resolved: "fallback"`) unless you pass inline `limits`; `compact` returns `overflow`; `assemble` can prune but not summarise. |
 
-The fully standalone *request* path — inline `limits` + `count_tokens`/`prune`,
+The fully standalone *request* path — inline `limits` + `count-tokens`/`prune`,
 or `assemble` with compaction off — needs no `llm-router` and writes no lease
 files (the `configuration` dependency is a one-time boot cost, not per call).
 Cost note: only `assemble` and `compact` can trigger a summariser LLM call.
@@ -400,13 +400,13 @@ bespoke in-harness compaction side-car with a reusable worker.
   without burning a model call. Crashed holders expire after `lease_ttl_secs`.
 - **Optional reactive pre-warm.** To pre-warm or surface a token-usage metric
   off the hot path, bind a handler to `session::message-added` and call
-  `context::count_tokens` (cheap, no LLM) there. This is opt-in and lives in
+  `context::count-tokens` (cheap, no LLM) there. This is opt-in and lives in
   the harness — context-manager binds no triggers and never reaches into a
   session itself, which is exactly what keeps it store-agnostic.
 - **Agent exposure.** All functions are pure transforms (nothing to leak), but
   deny `context::assemble` and `context::compact` to in-run agents in
   cost-sensitive deployments — they can trigger a summariser call.
-  `context::count_tokens` and `context::prune` are always safe.
+  `context::count-tokens` and `context::prune` are always safe.
 - **Degraded engine.** With `llm-router` absent the harness still gets budgeted
   output: limits fall back (or use inline `limits`), prune runs, and an
   over-budget context returns visibly over (`token_count > usable`) instead of

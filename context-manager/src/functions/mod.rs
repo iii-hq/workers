@@ -39,7 +39,7 @@ pub const PRUNE_DESC: &str =
     "Replace verbose function outputs with placeholders without summarising. \
      A cheaper first pass before compaction.";
 
-pub const COUNT_TOKENS_ID: &str = "context::count_tokens";
+pub const COUNT_TOKENS_ID: &str = "context::count-tokens";
 pub const COUNT_TOKENS_DESC: &str =
     "Estimate token usage for a set of messages (+ optional invocation schemas / system \
      prompt) vs a model.";

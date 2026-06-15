@@ -43,7 +43,7 @@ fn catalog_lists_all_four_functions_in_registration_order() {
             "context::assemble",
             "context::compact",
             "context::prune",
-            "context::count_tokens",
+            "context::count-tokens",
         ]
     );
 }

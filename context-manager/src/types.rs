@@ -263,7 +263,7 @@ pub struct Model {
 }
 
 /// An invocation-surface schema entry (README.md § AgentFunction) —
-/// accepted by `context::count_tokens` so callers can include the
+/// accepted by `context::count-tokens` so callers can include the
 /// `agent_trigger` schema in their estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentFunction {

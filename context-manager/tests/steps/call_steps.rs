@@ -15,7 +15,7 @@ fn history(world: &ContextWorld) -> Value {
 #[when(regex = r#"^I count tokens with model "([^"]+)"$"#)]
 async fn count_tokens(world: &mut ContextWorld, model: String) {
     let payload = json!({ "messages": history(world), "model": world.model_input(&model) });
-    world.call_pure("context::count_tokens", payload).await;
+    world.call_pure("context::count-tokens", payload).await;
 }
 
 #[when(regex = r#"^I count tokens with model "([^"]+)" and system prompt "([^"]*)"$"#)]
@@ -25,7 +25,7 @@ async fn count_tokens_system(world: &mut ContextWorld, model: String, system_pro
         "model": world.model_input(&model),
         "system_prompt": system_prompt
     });
-    world.call_pure("context::count_tokens", payload).await;
+    world.call_pure("context::count-tokens", payload).await;
 }
 
 #[when(regex = r#"^I count tokens with model "([^"]+)" and tools:$"#)]
@@ -36,7 +36,7 @@ async fn count_tokens_tools(world: &mut ContextWorld, model: String, step: &Step
         "model": world.model_input(&model),
         "tools": tools
     });
-    world.call_pure("context::count_tokens", payload).await;
+    world.call_pure("context::count-tokens", payload).await;
 }
 
 #[when("I prune the history")]

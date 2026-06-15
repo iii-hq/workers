@@ -34,7 +34,7 @@ Feature: error contract — spec strings, stable codes, tolerant unknowns
     And the error contains "messages is required"
 
   Scenario: count_tokens without messages fails with the spec string
-    When I call "context::count_tokens" with:
+    When I call "context::count-tokens" with:
       """
       { "model": { "id": "m1" } }
       """
@@ -53,7 +53,7 @@ Feature: error contract — spec strings, stable codes, tolerant unknowns
   # Prevents: malformed roles silently coercing — a typo'd role must be
   # rejected at the boundary, not guessed at.
   Scenario: an unknown message role is rejected at deserialisation
-    When I call "context::count_tokens" with:
+    When I call "context::count-tokens" with:
       """
       { "messages": [{ "role": "wizard", "content": [], "timestamp": 1 }],
         "model": { "id": "m1" } }
@@ -63,7 +63,7 @@ Feature: error contract — spec strings, stable codes, tolerant unknowns
   # Prevents: a missing model slipping through and counting against a
   # phantom tokenizer.
   Scenario: count_tokens requires a model
-    When I call "context::count_tokens" with:
+    When I call "context::count-tokens" with:
       """
       { "messages": [] }
       """

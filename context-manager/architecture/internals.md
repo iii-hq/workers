@@ -162,7 +162,7 @@ tail is "the last little bit kept raw", not a second copy of the window.
   `chars / 4`.** It counts the *full serialized message*, so structure and
   metadata weigh in roughly as they do on the wire, and it is deterministic and
   model-independent. `estimator_for_model` ignores the model id today and always
-  returns the heuristic; `count_tokens` reports `estimator: "heuristic"`.
+  returns the heuristic; `count-tokens` reports `estimator: "heuristic"`.
 - The trait is the seam for a real per-model tokenizer later: slot it into
   `estimator_for_model`, return `EstimatorKind::Tokenizer`, and every count —
   budget math, prune sizing, tail selection — picks it up with no caller
@@ -433,7 +433,7 @@ Boot and reload rules (`main.rs` / `configuration.rs`):
 - Every config field is per-call-overridable where the spec allows
   (`reserved_tokens`, `tail_turns`, the prune thresholds, `lease_key`,
   `preserve_recent_tokens`); request options take precedence over config.
-- `llm-router` is soft: the worker serves `count_tokens` and `prune` without it;
+- `llm-router` is soft: the worker serves `count-tokens` and `prune` without it;
   only compaction and router-based model resolution degrade.
 
 **The wire surface is golden-tested.** `functions::catalog()` returns each
@@ -495,7 +495,7 @@ UPDATE_GOLDENS=1 cargo test --test schemas      # regenerate wire-schema goldens
 - **One summariser call per over-budget request if the caller doesn't persist.**
   The round trip (§8) is the fix; skipping it is correct but not cheap.
 - **`assemble`/`compact` can spend money.** They may trigger a summariser LLM
-  call; `count_tokens` and `prune` never do. Deny the former two in
+  call; `count-tokens` and `prune` never do. Deny the former two in
   cost-sensitive agent deployments (see [integration.md §9](integration.md)).
 - **Lease key is content-derived by default.** Two callers compacting the
   *same* history contend even without a shared `lease_key`; conversely, a

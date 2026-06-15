@@ -16,7 +16,7 @@ Feature: engine round trip — the production surface over a live bus
   # a real trigger must reach the production count path end to end.
   Scenario: count_tokens answers over the bus
     Given a user message "hello engine"
-    When I call "context::count_tokens" on the engine with:
+    When I call "context::count-tokens" on the engine with:
       """
       { "messages": ${messages}, "model": { "id": "any-model" } }
       """
