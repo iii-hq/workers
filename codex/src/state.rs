@@ -26,10 +26,12 @@ pub async fn load_session(iii: &III, session_id: &str) -> anyhow::Result<Option<
     if v.is_null() {
         return Ok(None);
     }
-    match serde_json::from_value::<SessionRecord>(v) {
-        Ok(rec) => Ok(Some(rec)),
-        Err(_) => Ok(None),
-    }
+    // A decode failure means a corrupt or version-drifted record we wrote — a
+    // real problem, not a missing session. Surface it instead of silently
+    // starting a fresh conversation.
+    let rec = serde_json::from_value::<SessionRecord>(v)
+        .map_err(|e| anyhow::anyhow!("corrupt session record for {session_id}: {e}"))?;
+    Ok(Some(rec))
 }
 
 pub async fn save_session(iii: &III, record: &SessionRecord) -> anyhow::Result<()> {

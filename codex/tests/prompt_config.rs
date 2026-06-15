@@ -45,6 +45,15 @@ fn no_prompt_no_user_message_errors() {
 }
 
 #[test]
+fn unsupported_message_content_errors() {
+    let req: RunRequest = serde_json::from_value(json!({
+        "messages": [{ "role": "user", "content": { "unexpected": "object" } }]
+    }))
+    .unwrap();
+    assert!(extract_prompt(&req).is_err());
+}
+
+#[test]
 fn config_defaults_when_file_missing() {
     let cfg = Config::load("/nonexistent/config.yaml").unwrap();
     assert_eq!(cfg.engine_url, "ws://127.0.0.1:49134");

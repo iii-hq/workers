@@ -54,6 +54,22 @@ pub async fn is_live(session_id: &str) -> bool {
     LIVE.lock().await.contains_key(session_id)
 }
 
+/// Atomically reserve the single live slot for a session: returns false if one
+/// is already active. Check + insert happen under one lock so two concurrent
+/// runs for the same session can't both pass.
+async fn try_reserve(session_id: &str, cancel: CancellationToken) -> bool {
+    let mut live = LIVE.lock().await;
+    if live.contains_key(session_id) {
+        return false;
+    }
+    live.insert(session_id.to_string(), LiveRun { cancel });
+    true
+}
+
+async fn release(session_id: &str) {
+    LIVE.lock().await.remove(session_id);
+}
+
 pub async fn stop(session_id: &str) -> bool {
     if let Some(run) = LIVE.lock().await.get(session_id) {
         run.cancel.cancel();
@@ -79,9 +95,12 @@ pub async fn run(iii: III, cfg: Arc<Config>, req: RunRequest) -> Value {
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // One live run per session: the in-process handle is what codex::stop
-    // targets, so a second concurrent run would clobber it and race the record.
-    if is_live(&session_id).await {
+    // One live run per session: reserve the slot atomically up front. The
+    // in-process handle is what codex::stop targets, so a second concurrent run
+    // would clobber it and race the record. Every early return past this point
+    // must `release` the slot.
+    let cancel = CancellationToken::default();
+    if !try_reserve(&session_id, cancel.clone()).await {
         return json!({
             "session_id": session_id,
             "busy": true,
@@ -92,11 +111,20 @@ pub async fn run(iii: III, cfg: Arc<Config>, req: RunRequest) -> Value {
     let prompt = match extract_prompt(&req) {
         Ok(p) => p,
         Err(e) => {
-            return json!({ "session_id": session_id, "is_error": true, "result": e.to_string() })
+            release(&session_id).await;
+            return json!({ "session_id": session_id, "is_error": true, "result": e.to_string() });
         }
     };
 
-    let prior = load_session(&iii, &session_id).await.ok().flatten();
+    // A load failure is corruption/transient, not "no prior session": log it
+    // and proceed fresh rather than silently masking it.
+    let prior = match load_session(&iii, &session_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(session_id, error = %e, "load_session failed; proceeding without resume");
+            None
+        }
+    };
     let prior_thread = prior.as_ref().and_then(|r| r.codex_thread_id.clone());
     let want_ctx = req.iii_context.unwrap_or(cfg.iii_context);
 
@@ -118,7 +146,8 @@ pub async fn run(iii: III, cfg: Arc<Config>, req: RunRequest) -> Value {
         Some(schema) => match write_schema(schema) {
             Ok(f) => Some(f),
             Err(e) => {
-                return json!({ "session_id": session_id, "is_error": true, "result": format!("output_schema temp file: {e}") })
+                release(&session_id).await;
+                return json!({ "session_id": session_id, "is_error": true, "result": format!("output_schema temp file: {e}") });
             }
         },
         None => None,
@@ -153,7 +182,8 @@ pub async fn run(iii: III, cfg: Arc<Config>, req: RunRequest) -> Value {
     {
         Ok(c) => c,
         Err(e) => {
-            return json!({ "session_id": session_id, "is_error": true, "stop_reason": "error", "result": format!("failed to spawn codex: {e}") })
+            release(&session_id).await;
+            return json!({ "session_id": session_id, "is_error": true, "stop_reason": "error", "result": format!("failed to spawn codex: {e}") });
         }
     };
 
@@ -162,22 +192,28 @@ pub async fn run(iii: III, cfg: Arc<Config>, req: RunRequest) -> Value {
         let _ = stdin.shutdown().await;
     }
 
-    let cancel = CancellationToken::default();
-    LIVE.lock().await.insert(
-        session_id.clone(),
-        LiveRun {
-            cancel: cancel.clone(),
-        },
-    );
+    // Drain stderr in the background so a chatty child can't fill the pipe
+    // buffer and block. Tail is captured for the error path.
+    let stderr_tail = drain_stderr(child.stderr.take());
 
     record.status = Status::Working;
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
 
-    let outcome = stream_turn(&iii, &cfg, &session_id, &mut child, &cancel, &mut record).await;
+    let mut outcome = stream_turn(&iii, &cfg, &session_id, &mut child, &cancel, &mut record).await;
 
-    LIVE.lock().await.remove(&session_id);
+    release(&session_id).await;
     drop(schema_file);
+
+    // On error with no result text, surface the captured stderr tail.
+    if outcome.is_error && outcome.result_text.is_empty() {
+        if let Ok(tail) = stderr_tail.await {
+            let tail = tail.trim();
+            if !tail.is_empty() {
+                outcome.result_text = tail.chars().take(2000).collect();
+            }
+        }
+    }
 
     record.status = if outcome.is_error {
         Status::Error
@@ -307,7 +343,7 @@ async fn stream_turn(
         }
     }
 
-    let _ = child.wait().await;
+    let exit = child.wait().await;
     // fold the accumulated turn state into the outcome (cancel sets aborted above)
     if !outcome.is_error && outcome.stop_reason != "aborted" {
         outcome.is_error = state.is_error;
@@ -315,7 +351,36 @@ async fn stream_turn(
         outcome.result_text = state.result_text;
     }
     outcome.usage = state.usage;
+    // Backstop: a non-zero exit with no error event observed (e.g. the CLI
+    // crashed) must not be reported as success. The aborted path is expected
+    // to exit non-zero and is left as-is.
+    if !outcome.is_error && outcome.stop_reason != "aborted" {
+        let bad = matches!(&exit, Ok(s) if !s.success()) || exit.is_err();
+        if bad {
+            outcome.is_error = true;
+            outcome.stop_reason = "error".to_string();
+            if outcome.result_text.is_empty() {
+                outcome.result_text = match &exit {
+                    Ok(s) => format!("codex exited with {s}"),
+                    Err(e) => format!("codex wait failed: {e}"),
+                };
+            }
+        }
+    }
     outcome
+}
+
+/// Drain a child's stderr in the background into a captured tail, so a chatty
+/// process can't block on a full pipe. Returns a handle yielding the text.
+fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> tokio::task::JoinHandle<String> {
+    tokio::spawn(async move {
+        let mut buf = String::new();
+        if let Some(mut e) = stderr {
+            use tokio::io::AsyncReadExt;
+            let _ = e.read_to_string(&mut buf).await;
+        }
+        buf
+    })
 }
 
 fn write_schema(schema: &Value) -> anyhow::Result<tempfile::NamedTempFile> {

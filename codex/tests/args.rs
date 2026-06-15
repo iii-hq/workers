@@ -113,6 +113,20 @@ fn resolve_caller_developer_instructions_wins() {
 }
 
 #[test]
+fn resolve_empty_safety_fields_fall_back_to_defaults() {
+    // an empty string must not wipe the operator's sandbox / approval defaults
+    let req = RunRequest {
+        sandbox_mode: Some(String::new()),
+        approval_policy: Some(String::new()),
+        ..Default::default()
+    };
+    let cfg = Config::default();
+    let o = resolve(&req, &cfg, None, None, None);
+    assert_eq!(o.sandbox_mode, "workspace-write");
+    assert_eq!(o.approval_policy, "never");
+}
+
+#[test]
 fn resolve_honors_per_turn_overrides_over_prior() {
     let req = RunRequest {
         cwd: Some("/new".into()),

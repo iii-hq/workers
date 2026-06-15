@@ -169,21 +169,20 @@ pub fn resolve(
             .or_insert_with(|| Value::String(prompt.to_string()));
     }
 
+    // An empty string is treated as unset: a caller must not be able to wipe
+    // the operator's configured sandbox / approval defaults with "".
+    let or_default = |v: &Option<String>, dflt: &str| {
+        v.clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| dflt.to_string())
+    };
+
     ResolvedOptions {
         model,
         cwd,
-        sandbox_mode: req
-            .sandbox_mode
-            .clone()
-            .unwrap_or_else(|| d.sandbox_mode.clone()),
-        approval_policy: req
-            .approval_policy
-            .clone()
-            .unwrap_or_else(|| d.approval_policy.clone()),
-        reasoning_effort: req
-            .reasoning_effort
-            .clone()
-            .unwrap_or_else(|| d.reasoning_effort.clone()),
+        sandbox_mode: or_default(&req.sandbox_mode, &d.sandbox_mode),
+        approval_policy: or_default(&req.approval_policy, &d.approval_policy),
+        reasoning_effort: or_default(&req.reasoning_effort, &d.reasoning_effort),
         skip_git_repo_check: req.skip_git_repo_check.unwrap_or(d.skip_git_repo_check),
         base_url: cfg.base_url.clone(),
         config,

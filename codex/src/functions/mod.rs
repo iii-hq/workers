@@ -59,12 +59,23 @@ pub fn register_all(iii: &III, cfg: Arc<Config>) {
                     started.session_id = Some(session_id.clone());
                     let bg_iii = iii_h.clone();
                     let bg_id = session_id.clone();
+                    // Supervise the run: run() persists terminal state itself,
+                    // but if the task panics that never happens — the
+                    // supervisor catches the JoinError and marks the session
+                    // error so it can't stay stuck in `working`.
                     tokio::spawn(async move {
-                        // run() persists terminal state itself; this is the
-                        // backstop if the task panics or its save fails.
-                        let res = codex::run(bg_iii.clone(), cfg_h, started).await;
-                        if res.get("is_error").and_then(Value::as_bool) == Some(true) {
-                            mark_error(&bg_iii, &bg_id).await;
+                        let run_iii = bg_iii.clone();
+                        let inner = tokio::spawn(codex::run(run_iii, cfg_h, started));
+                        match inner.await {
+                            Ok(res) => {
+                                if res.get("is_error").and_then(Value::as_bool) == Some(true) {
+                                    mark_error(&bg_iii, &bg_id).await;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(session_id = %bg_id, error = %e, "codex::start task panicked");
+                                mark_error(&bg_iii, &bg_id).await;
+                            }
                         }
                     });
                     Ok::<Value, IIIError>(json!({ "session_id": session_id, "started": true }))

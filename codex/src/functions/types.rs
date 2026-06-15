@@ -73,6 +73,8 @@ pub fn extract_prompt(req: &RunRequest) -> anyhow::Result<String> {
             .filter_map(|b| b.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("\n")),
-        _ => Ok(String::new()),
+        _ => Err(anyhow::anyhow!(
+            "unsupported message content: expected a string or an array of content blocks"
+        )),
     }
 }

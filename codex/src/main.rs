@@ -16,7 +16,8 @@ struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
 
-    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
+    /// Engine WebSocket URL. Unset falls back to `engine_url` in config.yaml.
+    #[arg(long, env = "III_URL", default_value = "")]
     url: String,
 
     /// Print the registry manifest as JSON and exit.
