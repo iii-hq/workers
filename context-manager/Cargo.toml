@@ -1,0 +1,60 @@
+[workspace]
+
+[package]
+name = "context-manager"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "context-manager"
+path = "src/main.rs"
+
+[lib]
+name = "context_manager"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.19.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+# Must stay on the same schemars major as iii-sdk so the derived
+# `JsonSchema` impls satisfy `RegisterFunction::new_async`.
+schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }
+# Default compaction lease key = sha256 of the message set; must be
+# stable across processes, so no std hasher.
+sha2 = "0.10"
+# Home-dir resolution for the `~/`-prefixed lease_dir (same as
+# session-manager's data_dir).
+dirs = "5"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+which = "8"
+# BDD test runner. Drives Gherkin .feature files under tests/features/.
+cucumber = "0.22"
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+
+# Single BDD entry point. cucumber needs full control of the runner, so
+# `harness = false` is required. All .feature files under
+# `tests/features/**` are discovered at runtime; tags (`@pure`,
+# `@engine`, ...) let you filter to a subset:
+#
+#   cargo test --test bdd                  # everything (engine scenarios
+#                                          # soft-skip without an engine)
+#   cargo test --test bdd -- --tags @pure  # no engine required
+[[test]]
+name = "bdd"
+harness = false

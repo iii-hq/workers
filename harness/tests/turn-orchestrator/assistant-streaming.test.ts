@@ -32,7 +32,6 @@ function stubStreamingPorts(
   overrides: Partial<AssistantStreamingPorts> = {},
 ): AssistantStreamingPorts {
   return {
-    loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
     checkpoint: vi.fn(async () => {}),
     emitTurnEnd: vi.fn(async () => {}),
@@ -46,7 +45,13 @@ function stubStreamingPorts(
       system_prompt: 'sys',
       function_schemas: [{ name: 'agent_trigger', description: 'd', parameters: {} }],
     })),
-    runPreflight: vi.fn(async () => 'ok' as const),
+    loadAssembleWindow: vi.fn(async () => ({ window: [] })),
+    assembleContext: vi.fn(async (params) => ({
+      system_prompt: params.baseSystemPrompt,
+      messages: params.window.map((w) => w.message),
+      applied: { pruned: false, pruned_tokens: 0, compacted: false },
+    })),
+    persistCompaction: vi.fn(async () => {}),
     streamTurn: vi.fn(async () => ({ final: null, error: null })),
     emitMessageComplete: vi.fn(async () => {}),
     appendAssistantPlaceholder: vi.fn(async () => {}),
@@ -82,24 +87,69 @@ describe('turnAssistantEntryId', () => {
 });
 
 describe('prepareStreamContext', () => {
-  it("reloads messages when preflight compacts, excluding this turn's entry", async () => {
-    const loadMessages = vi
-      .fn()
-      .mockResolvedValueOnce([{ role: 'user', content: [], timestamp: 1 }])
-      .mockResolvedValueOnce([{ role: 'user', content: [], timestamp: 2 }]);
-    const ports = stubStreamingPorts({
-      loadMessages,
-      runPreflight: vi.fn(async () => 'compacted'),
-    });
+  it("assembles the window into system_prompt + messages, excluding this turn's entry", async () => {
+    const window = [
+      { entry_id: 'u1', message: { role: 'user' as const, content: [], timestamp: 1 } },
+    ];
+    const loadAssembleWindow = vi.fn(async () => ({ window, previousSummary: 'PRIOR' }));
+    const assembleContext = vi.fn(async () => ({
+      system_prompt: 'sys\n\n# Conversation summary\nPRIOR',
+      messages: [{ role: 'user' as const, content: [], timestamp: 1 }],
+      applied: { pruned: false, pruned_tokens: 0, compacted: false },
+    }));
+    const persistCompaction = vi.fn(async () => {});
+    const ports = stubStreamingPorts({ loadAssembleWindow, assembleContext, persistCompaction });
     const rec = newRecord('s1');
     rec.state = 'assistant_streaming';
 
     const ctx = await prepareStreamContext(ports, rec, 'asst-entry-1');
 
-    expect(loadMessages).toHaveBeenCalledTimes(2);
-    expect(loadMessages).toHaveBeenCalledWith('s1', { excludeEntryIds: ['asst-entry-1'] });
-    expect(ctx.messages).toEqual([{ role: 'user', content: [], timestamp: 2 }]);
+    expect(loadAssembleWindow).toHaveBeenCalledWith('s1', { excludeEntryIds: ['asst-entry-1'] });
+    // The anchored summary is passed back into the assemble request.
+    expect(assembleContext.mock.calls[0]?.[0]?.previousSummary).toBe('PRIOR');
+    // The returned (merged) system prompt + budgeted messages drive router::chat.
+    expect(ctx.system_prompt).toContain('# Conversation summary');
+    expect(ctx.messages).toEqual([{ role: 'user', content: [], timestamp: 1 }]);
     expect(ctx.tools[0]?.name).toBe('agent_trigger');
+    // No fresh compaction this turn → nothing persisted.
+    expect(persistCompaction).not.toHaveBeenCalled();
+  });
+
+  it('persists the compaction round trip when assemble compacts', async () => {
+    const window = [
+      { entry_id: 'u1', message: { role: 'user' as const, content: [], timestamp: 1 } },
+      {
+        entry_id: 'a1',
+        message: {
+          role: 'assistant' as const,
+          content: [],
+          stop_reason: 'end' as const,
+          model: 'm',
+          provider: 'p',
+          timestamp: 2,
+        },
+      },
+    ];
+    const applied = {
+      pruned: false,
+      pruned_tokens: 0,
+      compacted: true,
+      summary: 'S',
+      tail_start_index: 1,
+      tokens_before: 100,
+    };
+    const persistCompaction = vi.fn(async () => {});
+    const ports = stubStreamingPorts({
+      loadAssembleWindow: vi.fn(async () => ({ window })),
+      assembleContext: vi.fn(async () => ({ system_prompt: 'sys', messages: [], applied })),
+      persistCompaction,
+    });
+    const rec = newRecord('s1');
+    rec.state = 'assistant_streaming';
+
+    await prepareStreamContext(ports, rec, 'asst-entry-1');
+
+    expect(persistCompaction).toHaveBeenCalledWith('s1', applied, window);
   });
 });
 

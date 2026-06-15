@@ -17,7 +17,6 @@ import { emit } from '../events.js';
 import { type RunRequest, defaultRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
 import { type TurnState, type TurnStateRecord } from '../state.js';
-import { loadContextView } from './context-view.js';
 
 /**
  * Turn-step wakes go to the engine's `default` queue. NOTE: engine.config.yaml
@@ -82,11 +81,6 @@ export type AppendOptions = {
   entryIdFor?: (msg: AgentMessage, index: number) => string | undefined;
 };
 
-export type LoadMessagesOptions = {
-  /** Entry ids dropped from the provider window (this turn's placeholder). */
-  excludeEntryIds?: string[];
-};
-
 export type TurnStore = {
   loadRecord(session_id: string): Promise<TurnStateRecord | null>;
   /**
@@ -99,7 +93,6 @@ export type TurnStore = {
   saveRecord(rec: TurnStateRecord, previous?: TurnStateRecord | null): Promise<void>;
   writeRecord(rec: TurnStateRecord): Promise<void>;
   ensureSession(session_id: string): Promise<void>;
-  loadMessages(session_id: string, opts?: LoadMessagesOptions): Promise<AgentMessage[]>;
   appendMessages(session_id: string, msgs: AgentMessage[], opts?: AppendOptions): Promise<void>;
   loadRunRequest(session_id: string): Promise<RunRequest>;
   saveRunRequest(session_id: string, request: RunRequest): Promise<void>;
@@ -195,10 +188,6 @@ export function createTurnStore(iii: ISdk): TurnStore {
      */
     async ensureSession(session_id) {
       await sessionEnsure(iii, session_id);
-    },
-
-    async loadMessages(session_id, opts) {
-      return loadContextView(iii, session_id, opts);
     },
 
     /*

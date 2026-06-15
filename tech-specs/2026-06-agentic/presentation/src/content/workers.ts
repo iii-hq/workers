@@ -90,7 +90,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
       { id: 'context::assemble', desc: 'system prompt + budgeted messages: count, prune, compact, fit.' },
       { id: 'context::compact', desc: 'summarise older history into one compaction summary.' },
       { id: 'context::prune', desc: 'strip verbose function output — the cheap first pass.' },
-      { id: 'context::count_tokens', desc: 'estimate usage before committing to a model.' },
+      { id: 'context::count-tokens', desc: 'estimate usage before committing to a model.' },
     ],
     notes: [
       'one summarisation per overflow, amortised — the harness persists the summary, so it never re-pays per turn.',

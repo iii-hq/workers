@@ -64,7 +64,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'context-compaction',
     description:
-      'Out-of-band session-history compactor. Subscribes to agent::events::TurnEnd and writes a session-manager compaction custom entry when the running token count crosses the configured threshold.',
+      'Thin user-initiated /compact wrapper (context-compaction::compact_session) over the context-manager worker; persists the compaction round trip as a session bookkeeping entry. The transcript is never modified.',
     register: (iii) => registerContextCompaction(iii),
   },
   {

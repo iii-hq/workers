@@ -45,7 +45,13 @@ export const COMPACTION_CUSTOM_TYPE = 'compaction';
 export type CompactionData = {
   summary: string;
   tokens_before: number;
-  tail_start_id: string | null;
+  /**
+   * Entry id where the verbatim tail begins (spec name, harness.md
+   * § Compaction persistence). `null` when the whole head was summarised.
+   * Read back with a legacy `tail_start_id` fallback for pre-migration
+   * sessions (see {@link compactionRowsFromPath}).
+   */
+  tail_start_entry_id: string | null;
   details: Record<string, unknown>;
   /** Wall-clock at write time; path order remains the authoritative order. */
   timestamp: number;
@@ -243,13 +249,19 @@ export function compactionRowsFromPath(items: TranscriptItem[]): CompactionRow[]
   const rows: CompactionRow[] = [];
   for (const item of items) {
     if (item.custom?.custom_type !== COMPACTION_CUSTOM_TYPE) continue;
-    const data = (item.custom.data ?? {}) as Partial<CompactionData>;
+    // Legacy `tail_start_id` is read for sessions written before the
+    // rename to the spec's `tail_start_entry_id`.
+    const data = (item.custom.data ?? {}) as Partial<CompactionData> & {
+      tail_start_id?: unknown;
+    };
     if (typeof data.summary !== 'string') continue;
+    const tailNew = typeof data.tail_start_entry_id === 'string' ? data.tail_start_entry_id : null;
+    const tailLegacy = typeof data.tail_start_id === 'string' ? data.tail_start_id : null;
     rows.push({
       entry_id: item.entry_id,
       summary: data.summary,
       tokens_before: typeof data.tokens_before === 'number' ? data.tokens_before : 0,
-      tail_start_id: typeof data.tail_start_id === 'string' ? data.tail_start_id : null,
+      tail_start_entry_id: tailNew ?? tailLegacy,
       details:
         data.details && typeof data.details === 'object'
           ? (data.details as Record<string, unknown>)

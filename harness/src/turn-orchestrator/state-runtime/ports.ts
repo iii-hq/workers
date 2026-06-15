@@ -5,19 +5,12 @@
 import { emit } from '../events.js';
 import type { RunRequest } from '../run-request.js';
 import type { ISdk } from '../../runtime/iii.js';
-import type { ModelContextLimit } from '../../types/agent-event.js';
 import { sessionSetStatus } from '../../runtime/session.js';
 import type { AgentMessage, FunctionResultMessage } from '../../types/agent-message.js';
 import { transitionTo, type TurnStateRecord } from '../state.js';
-import {
-  createTurnStore,
-  type AppendOptions,
-  type LoadMessagesOptions,
-  type TurnStore,
-} from './store.js';
+import { createTurnStore, type AppendOptions, type TurnStore } from './store.js';
 
 export type TurnStatePorts = {
-  loadMessages(session_id: string, opts?: LoadMessagesOptions): Promise<AgentMessage[]>;
   appendMessages(session_id: string, msgs: AgentMessage[], opts?: AppendOptions): Promise<void>;
   checkpoint(rec: TurnStateRecord): Promise<void>;
   loadRunRequest(session_id: string): Promise<RunRequest>;
@@ -26,7 +19,6 @@ export type TurnStatePorts = {
     session_id: string,
     message: AgentMessage,
     function_results: FunctionResultMessage[],
-    model_limit?: ModelContextLimit,
   ): Promise<void>;
   finishSession(rec: TurnStateRecord): Promise<void>;
 };
@@ -44,10 +36,6 @@ export function createTurnStatePorts(iii: ISdk, store?: TurnStore): TurnStatePor
   const s = store ?? createTurnStore(iii);
 
   return {
-    loadMessages(session_id, opts) {
-      return s.loadMessages(session_id, opts);
-    },
-
     appendMessages(session_id, msgs, opts) {
       return s.appendMessages(session_id, msgs, opts);
     },
@@ -64,12 +52,11 @@ export function createTurnStatePorts(iii: ISdk, store?: TurnStore): TurnStatePor
       return s.saveRunRequest(session_id, request);
     },
 
-    async emitTurnEnd(session_id, message, function_results, model_limit) {
+    async emitTurnEnd(session_id, message, function_results) {
       await emit(iii, session_id, {
         type: 'turn_end',
         message,
         function_results,
-        ...(model_limit ? { model_limit } : {}),
       });
     },
 

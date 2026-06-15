@@ -8,6 +8,7 @@ on:
       - 'claude-code/v*'
       - 'coder/v*'
       - 'console/v*'
+      - 'context-manager/v*'
       - 'database/v*'
       - 'email/v*'
       - 'harness/v*'
