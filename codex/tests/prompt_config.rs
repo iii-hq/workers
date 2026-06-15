@@ -56,7 +56,6 @@ fn unsupported_message_content_errors() {
 #[test]
 fn config_defaults_when_file_missing() {
     let cfg = Config::load("/nonexistent/config.yaml").unwrap();
-    assert_eq!(cfg.engine_url, "ws://127.0.0.1:49134");
     assert_eq!(cfg.defaults.sandbox_mode, "workspace-write");
     assert_eq!(cfg.defaults.approval_policy, "never");
     assert!(cfg.defaults.skip_git_repo_check);
@@ -71,6 +70,19 @@ fn config_parse_error_is_fatal() {
     let path = dir.path().join("config.yaml");
     std::fs::write(&path, "defaults: [unclosed\n  bad: {").unwrap();
     assert!(Config::load(path.to_str().unwrap()).is_err());
+}
+
+#[test]
+fn config_round_trips_through_json_for_the_configuration_worker() {
+    // to_json (initial_value) -> from_json (fetched value) preserves the config
+    let cfg = Config::default();
+    let json = cfg.to_json();
+    let back = Config::from_json(&json).unwrap();
+    assert_eq!(back.defaults.sandbox_mode, cfg.defaults.sandbox_mode);
+    assert_eq!(back.raw_events_stream, cfg.raw_events_stream);
+    assert_eq!(back.iii_context, cfg.iii_context);
+    // the published schema is a JSON-schema object
+    assert_eq!(Config::json_schema()["type"], "object");
 }
 
 #[test]

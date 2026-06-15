@@ -1,10 +1,15 @@
-//! Operator config loaded from `config.yaml` (the seed default; same keys the
-//! TS worker used). Missing file falls back to defaults; a malformed file is a
-//! hard error so a typo fails the worker fast rather than silently.
+//! Runtime config managed by the `configuration` worker. `config.yaml` is the
+//! seed installed as `initial_value` on first registration; the live value from
+//! the configuration worker is authoritative thereafter and hot-reloads.
+//!
+//! `engine_url` is intentionally NOT here — it is bootstrap (you need it to
+//! reach the configuration worker), so it stays on the `--url` CLI flag.
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
     pub model: String,
@@ -28,10 +33,9 @@ impl Default for Defaults {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
-    pub engine_url: String,
     pub defaults: Defaults,
     pub events_stream: String,
     pub raw_events_stream: String,
@@ -43,7 +47,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            engine_url: "ws://127.0.0.1:49134".to_string(),
             defaults: Defaults::default(),
             events_stream: "agent::events".to_string(),
             raw_events_stream: "codex::events".to_string(),
@@ -55,13 +58,28 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load from a YAML file. A missing file yields defaults; any other error
-    /// (parse, permissions) propagates so the worker fails fast.
+    /// Load the seed from a YAML file. Missing file yields defaults; a parse
+    /// error propagates so a typo fails the worker fast.
     pub fn load(path: &str) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
             Ok(text) => Ok(serde_yaml::from_str(&text)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    pub fn json_schema() -> Value {
+        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<Config>();
+        serde_json::to_value(root).expect("config schema serializes")
+    }
+
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).expect("config serializes")
+    }
+
+    /// Parse a value fetched from the configuration worker (already env-expanded
+    /// by the worker; this does not re-expand).
+    pub fn from_json(value: &Value) -> anyhow::Result<Config> {
+        Ok(serde_json::from_value(value.clone())?)
     }
 }

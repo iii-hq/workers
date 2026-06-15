@@ -4,13 +4,11 @@
 
 pub mod types;
 
-use std::sync::Arc;
-
 use iii_sdk::{IIIError, RegisterFunction, III};
 use serde_json::{json, Value};
 
 use crate::codex;
-use crate::config::Config;
+use crate::configuration::ConfigCell;
 use crate::state::{list_sessions, load_session, mark_error};
 use types::{RunRequest, SessionIdRequest};
 
@@ -19,17 +17,20 @@ fn schema_value<T: schemars::JsonSchema>() -> Value {
     serde_json::to_value(root).expect("schema serializes")
 }
 
-pub fn register_all(iii: &III, cfg: Arc<Config>) {
+pub fn register_all(iii: &III, cell: ConfigCell) {
     // codex::run — run a turn and wait for the result.
     {
         let iii_h = iii.clone();
-        let cfg_h = cfg.clone();
+        let cell_h = cell.clone();
         iii.register_function(
             "codex::run",
             RegisterFunction::new_async(move |req: RunRequest| {
                 let iii_h = iii_h.clone();
-                let cfg_h = cfg_h.clone();
-                async move { Ok::<Value, IIIError>(codex::run(iii_h, cfg_h, req).await) }
+                let cell_h = cell_h.clone();
+                async move {
+                    let cfg = { cell_h.read().await.clone() };
+                    Ok::<Value, IIIError>(codex::run(iii_h, cfg, req).await)
+                }
             })
             .request_format(schema_value::<RunRequest>())
             .description(
@@ -44,12 +45,12 @@ pub fn register_all(iii: &III, cfg: Arc<Config>) {
     // codex::start — fire-and-forget; progress on the streams.
     {
         let iii_h = iii.clone();
-        let cfg_h = cfg.clone();
+        let cell_h = cell.clone();
         iii.register_function(
             "codex::start",
             RegisterFunction::new_async(move |req: RunRequest| {
                 let iii_h = iii_h.clone();
-                let cfg_h = cfg_h.clone();
+                let cell_h = cell_h.clone();
                 async move {
                     let session_id = req
                         .session_id
@@ -59,13 +60,14 @@ pub fn register_all(iii: &III, cfg: Arc<Config>) {
                     started.session_id = Some(session_id.clone());
                     let bg_iii = iii_h.clone();
                     let bg_id = session_id.clone();
+                    let cfg = { cell_h.read().await.clone() };
                     // Supervise the run: run() persists terminal state itself,
                     // but if the task panics that never happens — the
                     // supervisor catches the JoinError and marks the session
                     // error so it can't stay stuck in `working`.
                     tokio::spawn(async move {
                         let run_iii = bg_iii.clone();
-                        let inner = tokio::spawn(codex::run(run_iii, cfg_h, started));
+                        let inner = tokio::spawn(codex::run(run_iii, cfg, started));
                         match inner.await {
                             Ok(res) => {
                                 if res.get("is_error").and_then(Value::as_bool) == Some(true) {

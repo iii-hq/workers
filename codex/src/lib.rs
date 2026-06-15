@@ -3,6 +3,7 @@
 
 pub mod codex;
 pub mod config;
+pub mod configuration;
 pub mod events;
 pub mod functions;
 pub mod iii_prompt;

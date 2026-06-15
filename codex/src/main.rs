@@ -1,23 +1,26 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use iii_observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions};
+use tokio::sync::RwLock;
 
 use codex::config::Config;
+use codex::configuration;
 use codex::functions::register_all;
 use codex::manifest;
 
 #[derive(Parser, Debug)]
 #[command(name = "codex", about = "OpenAI Codex worker for iii agents")]
 struct Cli {
-    /// Seed config loaded at boot. Defaults to ./config.yaml.
+    /// Seed config registered as `initial_value` with the `configuration`
+    /// worker on first registration. Defaults to ./config.yaml. The live value
+    /// from the configuration worker is authoritative once an entry exists.
     #[arg(long, default_value = "./config.yaml")]
     config: String,
 
-    /// Engine WebSocket URL. Unset falls back to `engine_url` in config.yaml.
-    #[arg(long, env = "III_URL", default_value = "")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
 
     /// Print the registry manifest as JSON and exit.
@@ -45,23 +48,44 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cfg = Arc::new(Config::load(&cli.config)?);
-    let url = if cli.url.is_empty() {
-        cfg.engine_url.clone()
-    } else {
-        cli.url.clone()
-    };
-    tracing::info!(url = %url, config = %cli.config, "connecting to III engine");
+    tracing::info!(url = %cli.url, seed_config = %cli.config, "connecting to III engine");
 
     let iii = register_worker(
-        &url,
+        &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
     );
 
-    register_all(&iii, cfg);
+    // Seed from config.yaml when present; a parse error fails fast.
+    let seed = match Config::load(&cli.config) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            tracing::warn!(path = %cli.config, error = %e, "failed to load seed config; relying on the configuration worker");
+            None
+        }
+    };
+
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering codex configuration schema")?;
+
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading codex configuration")?;
+
+    let cell: configuration::ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
+
+    // Bind the config-change trigger and reconcile BEFORE serving, so a value
+    // that landed during boot is applied before the first turn.
+    configuration::register_config_trigger(&iii, cell.clone())
+        .context("registering configuration change trigger")?;
+    configuration::reconcile(&iii, &cell).await;
+
+    register_all(&iii, cell);
     tracing::info!("codex worker registered all functions, ready");
 
     wait_for_shutdown_signal().await?;

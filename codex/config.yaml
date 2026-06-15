@@ -1,4 +1,6 @@
-engine_url: ws://127.0.0.1:49134
+# Seed installed as `initial_value` with the configuration worker on first
+# registration; the live value is authoritative thereafter. The engine URL is
+# bootstrap and lives on the --url flag, not here.
 
 defaults:
   model: ""
@@ -24,8 +26,7 @@ raw_events_stream: codex::events
 # developer_instructions in codex_config wins.
 iii_context: true
 
-# Path to the Codex CLI binary. Empty = SDK default resolution; the worker
-# falls back to the `codex` binary on PATH (needed for the bundled build).
+# Path to the Codex CLI binary. Empty = the `codex` binary on PATH.
 codex_executable: ""
 
 # Override the API base URL (passed to the SDK as baseUrl). Empty = default.
