@@ -4,6 +4,7 @@
 
 pub mod args;
 pub mod events_types;
+pub mod translate;
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -21,10 +22,9 @@ use crate::config::Config;
 use crate::events::emit;
 use crate::functions::types::{extract_prompt, RunRequest};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
-use crate::map;
 use crate::state::{load_session, save_session};
 use crate::wire::{assistant_message, now_ms, ContentBlock, SessionRecord, Status};
-use events_types::{ThreadEvent, ThreadItemDetails};
+use events_types::ThreadEvent;
 
 /// A minimal cancellation token (avoids pulling tokio-util just for this).
 mod tokio_util_compat {
@@ -257,7 +257,7 @@ async fn stream_turn(
         }
     };
     let mut lines = BufReader::new(stdout).lines();
-    let mut started: HashMap<String, ()> = HashMap::new();
+    let mut state = translate::TurnState::new(record.model.clone());
 
     loop {
         if cancel.is_cancelled() {
@@ -293,125 +293,29 @@ async fn stream_turn(
             Ok(e) => e,
             Err(_) => continue,
         };
-        match event {
-            ThreadEvent::ThreadStarted(e) => {
-                record.codex_thread_id = Some(e.thread_id);
+        let had_thread = state.thread_id.is_some();
+        let frames = translate::step(&mut state, event);
+        // persist the thread id the first time it appears (enables resume)
+        if !had_thread {
+            if let Some(tid) = &state.thread_id {
+                record.codex_thread_id = Some(tid.clone());
                 let _ = save_session(iii, record).await;
             }
-            ThreadEvent::ItemStarted(ev) | ThreadEvent::ItemUpdated(ev) => {
-                if map::is_exec_item(&ev.item.details) && !started.contains_key(&ev.item.id) {
-                    started.insert(ev.item.id.clone(), ());
-                    emit_exec_start(iii, cfg, session_id, &ev.item.id, &ev.item.details).await;
-                }
-            }
-            ThreadEvent::ItemCompleted(ev) => {
-                let model = record.model.clone();
-                handle_item_completed(
-                    iii,
-                    cfg,
-                    session_id,
-                    &ev.item.id,
-                    &ev.item.details,
-                    &started,
-                    &model,
-                    &mut outcome,
-                )
-                .await;
-            }
-            ThreadEvent::TurnCompleted(e) => {
-                outcome.usage = Some(map::map_usage(&e.usage));
-            }
-            ThreadEvent::TurnFailed(e) => {
-                outcome.is_error = true;
-                outcome.stop_reason = "error".to_string();
-                outcome.result_text = e.error.message;
-            }
-            ThreadEvent::Error(e) => {
-                outcome.is_error = true;
-                outcome.stop_reason = "error".to_string();
-                outcome.result_text = e.message;
-            }
-            ThreadEvent::TurnStarted(_) | ThreadEvent::Unknown => {}
+        }
+        for frame in frames {
+            emit(iii, &cfg.events_stream, session_id, frame).await;
         }
     }
 
     let _ = child.wait().await;
-    outcome
-}
-
-async fn emit_exec_start(
-    iii: &III,
-    cfg: &Config,
-    session_id: &str,
-    id: &str,
-    details: &ThreadItemDetails,
-) {
-    emit(
-        iii,
-        &cfg.events_stream,
-        session_id,
-        json!({
-            "type": "function_execution_start",
-            "function_call_id": id,
-            "function_id": map::function_id(details),
-            "args": map::args_for(details),
-        }),
-    )
-    .await;
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_item_completed(
-    iii: &III,
-    cfg: &Config,
-    session_id: &str,
-    id: &str,
-    details: &ThreadItemDetails,
-    started: &HashMap<String, ()>,
-    model: &str,
-    outcome: &mut Outcome,
-) {
-    match details {
-        ThreadItemDetails::AgentMessage { text } | ThreadItemDetails::Reasoning { text } => {
-            let is_agent = matches!(details, ThreadItemDetails::AgentMessage { .. });
-            let block = if is_agent {
-                ContentBlock::Text { text: text.clone() }
-            } else {
-                ContentBlock::Thinking { text: text.clone() }
-            };
-            let msg = assistant_message(vec![block], model, None, "end");
-            emit(
-                iii,
-                &cfg.events_stream,
-                session_id,
-                json!({ "type": "message_complete", "message": msg }),
-            )
-            .await;
-            if is_agent {
-                outcome.result_text = text.clone();
-            }
-        }
-        d if map::is_exec_item(d) => {
-            if !started.contains_key(id) {
-                emit_exec_start(iii, cfg, session_id, id, d).await;
-            }
-            emit(
-                iii,
-                &cfg.events_stream,
-                session_id,
-                json!({
-                    "type": "function_execution_end",
-                    "function_call_id": id,
-                    "function_id": map::function_id(d),
-                    "result": { "content": map::result_content(d), "details": null },
-                    "is_error": map::is_error_item(d),
-                    "duration_ms": 0,
-                }),
-            )
-            .await;
-        }
-        _ => {}
+    // fold the accumulated turn state into the outcome (cancel sets aborted above)
+    if !outcome.is_error && outcome.stop_reason != "aborted" {
+        outcome.is_error = state.is_error;
+        outcome.stop_reason = state.stop_reason;
+        outcome.result_text = state.result_text;
     }
+    outcome.usage = state.usage;
+    outcome
 }
 
 fn write_schema(schema: &Value) -> anyhow::Result<tempfile::NamedTempFile> {
