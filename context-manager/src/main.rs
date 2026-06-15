@@ -125,7 +125,10 @@ async fn main() -> Result<()> {
     // summarizer_timeout_ms -> RouterSummarizer, lease_dir -> FsLeaseStore. A
     // later change to either is refused on hot-reload. A lease dir we can't
     // create is boot-fatal — leasing must never silently no-op.
-    let summarizer = Arc::new(RouterSummarizer::new(iii.clone(), cfg.summarizer_timeout_ms));
+    let summarizer = Arc::new(RouterSummarizer::new(
+        iii.clone(),
+        cfg.summarizer_timeout_ms,
+    ));
     let leases = Arc::new(
         FsLeaseStore::new(cfg.resolved_lease_dir())
             .map_err(|e| anyhow::anyhow!("opening the compaction lease directory: {e}"))?,

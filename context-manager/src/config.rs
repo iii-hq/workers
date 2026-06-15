@@ -334,12 +334,18 @@ mod tests {
             "summarizer_timeout_ms",
             "lease_dir",
         ] {
-            assert!(props.get(field).is_some(), "missing schema property {field}");
+            assert!(
+                props.get(field).is_some(),
+                "missing schema property {field}"
+            );
         }
         // Field doc-comments survive as schema descriptions.
         assert!(props["lease_dir"].get("description").is_some());
         // The shipped defaults are attached as a top-level example.
-        assert_eq!(schema.get("example"), Some(&WorkerConfig::default().to_json()));
+        assert_eq!(
+            schema.get("example"),
+            Some(&WorkerConfig::default().to_json())
+        );
     }
 
     #[test]
@@ -367,8 +373,7 @@ mod tests {
 
     #[test]
     fn from_json_rejects_garbage() {
-        let err =
-            WorkerConfig::from_json(&serde_json::json!({ "tail_turns": "nan" })).unwrap_err();
+        let err = WorkerConfig::from_json(&serde_json::json!({ "tail_turns": "nan" })).unwrap_err();
         assert!(err.contains("json parse"), "got: {err}");
         let err = WorkerConfig::from_json(&serde_json::json!("garbage")).unwrap_err();
         assert!(err.contains("json parse"), "got: {err}");

@@ -274,7 +274,10 @@ mod tests {
     #[tokio::test]
     async fn apply_config_swaps_snapshot() {
         let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
-        assert_eq!(cell.read().await.tail_turns, WorkerConfig::default().tail_turns);
+        assert_eq!(
+            cell.read().await.tail_turns,
+            WorkerConfig::default().tail_turns
+        );
 
         let tuned = WorkerConfig {
             tail_turns: 9,

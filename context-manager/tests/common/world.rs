@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cucumber::World;
-use tokio::sync::RwLock;
 use iii_sdk::{TriggerRequest, III};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 use context_manager::config::WorkerConfig;
 use context_manager::error::ContextError;

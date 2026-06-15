@@ -184,9 +184,10 @@ impl AgentMessage {
         }
     }
 
-    /// True when any content block (recursively for `function_result`
-    /// wrappers) is a `function_result` — used by tail selection to
-    /// avoid cutting a result away from its call.
+    /// True when any top-level content block is a `function_result` —
+    /// used by tail selection to avoid cutting a result away from its
+    /// call. Function-result content holds rendered output (text/image),
+    /// not nested `function_result` blocks, so a top-level scan suffices.
     pub fn has_function_result_block(&self) -> bool {
         fn scan(blocks: &[ContentBlock]) -> bool {
             blocks

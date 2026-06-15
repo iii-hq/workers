@@ -217,10 +217,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         {
             let store = FsLeaseStore::new(dir.path()).unwrap();
-            store
-                .set(SCOPE, "k1", Some(rec("n1", 1000)))
-                .await
-                .unwrap();
+            store.set(SCOPE, "k1", Some(rec("n1", 1000))).await.unwrap();
             assert_eq!(store.get(SCOPE, "k1").await.unwrap(), Some(rec("n1", 1000)));
         }
         // Fresh store over the same dir = worker restart: cache is cold,

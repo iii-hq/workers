@@ -27,7 +27,7 @@ Feature: context::prune — placeholder verbose function outputs
       """
     Then the call succeeds
     And the response field "pruned_parts" is 1
-    And the response field "pruned_tokens" is 2000
+    And the response field "pruned_tokens" is 1992
     And the response messages have as many messages as the request
     And every response message keeps its function_call_id
     And call/result pairing is intact in the response messages

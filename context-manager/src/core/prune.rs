@@ -109,7 +109,13 @@ pub fn prune(
         queue.push((idx, tokens));
     }
 
-    let pruned_tokens: u64 = queue.iter().map(|(_, t)| t).sum();
+    // Net tokens freed: each pruned output is replaced by a placeholder
+    // that itself costs a few tokens, so the real saving is the original
+    // size minus that placeholder. Gauge `min_free_tokens` on the net.
+    let pruned_tokens: u64 = queue
+        .iter()
+        .map(|(_, tokens)| tokens.saturating_sub(estimator.text(&placeholder(*tokens))))
+        .sum();
     if pruned_tokens < params.min_free_tokens {
         return PruneStats {
             pruned_tokens: 0,
@@ -179,7 +185,9 @@ mod tests {
         let mut messages = history();
         let stats = prune(&mut messages, &params(), &HeuristicEstimator);
         assert_eq!(stats.pruned_parts, 1);
-        assert_eq!(stats.pruned_tokens, 2_000);
+        // Net of the placeholder written back: 2000 minus the tokens of
+        // "[output pruned: was ~2000 tokens]" (33 chars / 4 = 8).
+        assert_eq!(stats.pruned_tokens, 1_992);
         // Oldest output replaced...
         assert_eq!(
             messages[1].content(),

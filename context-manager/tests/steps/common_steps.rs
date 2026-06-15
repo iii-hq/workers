@@ -235,8 +235,18 @@ async fn field_equals_object_sum(world: &mut ContextWorld, total: String, parts:
     let parts_value = lookup_path(response, &parts)
         .and_then(Value::as_object)
         .unwrap_or_else(|| panic!("`{parts}` is not an object"));
-    let parts_sum: u64 = parts_value.values().filter_map(Value::as_u64).sum();
-    assert_eq!(total_value, parts_sum);
+    let parts_sum: u64 = parts_value
+        .iter()
+        .map(|(key, value)| {
+            value
+                .as_u64()
+                .unwrap_or_else(|| panic!("`{parts}.{key}` is not a non-negative integer"))
+        })
+        .sum();
+    assert_eq!(
+        total_value, parts_sum,
+        "`{total}` did not match sum of `{parts}`"
+    );
 }
 
 // ---------------------------------------------------------------------------
