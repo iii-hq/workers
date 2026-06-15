@@ -152,11 +152,34 @@ export async function executeRun(
 ): Promise<Record<string, unknown>> {
   const session_id = payload.session_id ?? randomUUID();
   const prompt = extractPrompt(payload);
-  // one live run per session: the in-process handle is what claude::stop
-  // targets, so a second concurrent run would clobber it and race the record
+  // One live run per session. Reserve the slot atomically: the has-check and
+  // the set happen with NO await between them, so two concurrent same-session
+  // calls cannot both pass (JS is single-threaded). The handle's interrupt is
+  // a no-op placeholder until the real query exists; everything past here runs
+  // inside the try/finally below so the slot is always released.
   if (live.has(session_id)) {
     return { session_id, busy: true, reason: 'a run is already active for this session' };
   }
+  const handle: LiveRun = { interrupt: async () => {} };
+  live.set(session_id, handle);
+
+  try {
+    return await runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle);
+  } finally {
+    if (live.get(session_id) === handle) live.delete(session_id);
+  }
+}
+
+async function runReserved(
+  iii: ISdk,
+  cfg: Config,
+  emit: Emit,
+  emitRaw: Emit,
+  payload: RunPayload,
+  session_id: string,
+  prompt: string,
+  handle: LiveRun,
+): Promise<Record<string, unknown>> {
   const prior = await loadSession(iii, session_id);
   const d = cfg.defaults;
 
@@ -203,8 +226,8 @@ export async function executeRun(
   };
 
   const q = query({ prompt, options });
-  const handle: LiveRun = { interrupt: () => q.interrupt() };
-  live.set(session_id, handle);
+  // promote the placeholder to the real interrupt now that the query exists
+  handle.interrupt = () => q.interrupt();
 
   // persist `working` only once the query + live handle exist, so a throw
   // during setup never leaves the record stuck in `working`
@@ -279,9 +302,8 @@ export async function executeRun(
     isError = true;
     stopReason = 'error';
     resultText = String(err);
-  } finally {
-    if (live.get(session_id) === handle) live.delete(session_id);
   }
+  // slot release is handled by executeRun's finally (covers setup throws too)
 
   record.status = isError ? 'error' : 'done';
   record.updated_at_ms = Date.now();

@@ -35,6 +35,36 @@ beforeEach(() => {
 });
 
 describe('executeRun', () => {
+  it('releases the live slot even when the working-save rejects (no stuck busy)', async () => {
+    const fake = fakeIii();
+    const cfg = await baseConfig();
+    const capture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, capture) as never);
+    // make every state::set reject — the working-save during setup throws
+    const realTrigger = fake.iii.trigger.bind(fake.iii);
+    (fake.iii as { trigger: unknown }).trigger = async (req: { function_id: string }) => {
+      if (req.function_id === 'state::set') throw new Error('store down');
+      return realTrigger(req as never);
+    };
+    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    await executeRun(
+      fake.iii,
+      cfg,
+      emit,
+      emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'leak-1' }),
+    ).catch(() => {});
+    // slot must be free — a second run is not falsely "busy"
+    const second = (await executeRun(
+      fake.iii,
+      cfg,
+      emit,
+      emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'leak-1' }),
+    ).catch(() => ({ busy: undefined }))) as Record<string, unknown>;
+    expect(second.busy).not.toBe(true);
+  });
+
   it('returns the result with mapped usage and cost', async () => {
     const { result } = await runTurn({ prompt: 'do it', session_id: 's1' });
     expect(result).toMatchObject({
