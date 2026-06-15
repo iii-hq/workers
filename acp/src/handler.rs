@@ -20,7 +20,7 @@ use crate::types::{
 
 // Canonical iii brain function. Any worker exposing this id with the
 // turn-orchestrator wire shape (session_id, messages, model, ...) can
-// drive iii-acp without an adapter.
+// drive acp without an adapter.
 pub const DEFAULT_BRAIN_FN: &str = "run::start_and_wait";
 const BRAIN_TIMEOUT_MS: u64 = 600_000;
 
@@ -72,7 +72,7 @@ pub struct AcpHandler {
     brain_system_prompt: Option<String>,
     // Session ids owned by this connection. The agent::events stream
     // subscriber filters by this set so we don't forward events for
-    // sessions another iii-acp subprocess owns. Also written by
+    // sessions another acp subprocess owns. Also written by
     // session/new and session/close so close cleans up.
     owned_sessions: Arc<DashSet<String>>,
     // Trigger + function guards. Dropping them tears the registration
@@ -215,7 +215,7 @@ impl AcpHandler {
                 }
             },
             "agentInfo": {
-                "name": "iii-acp",
+                "name": "acp",
                 "title": "iii Agent",
                 "version": env!("CARGO_PKG_VERSION")
             }
@@ -322,7 +322,7 @@ impl AcpHandler {
         if self.brain_fn.is_some() && !self.event_subscriber_healthy {
             return Err((
                 INTERNAL_ERROR,
-                "iii-acp: agent::events stream subscriber failed to register at startup; \
+                "acp: agent::events stream subscriber failed to register at startup; \
                  external brain updates would not reach the editor. Check engine logs and \
                  ensure `iii-stream` worker is active before retrying."
                     .to_string(),
@@ -663,9 +663,9 @@ async fn write_notification(outbound: &Outbound, seq: &AtomicU64, method: &str, 
 // hold them; dropping either tears the registration down.
 //
 // The same stream is used by `turn-orchestrator`, every provider worker,
-// `context-compaction`, etc. iii-acp filters frames by group_id (the
+// `context-compaction`, etc. acp filters frames by group_id (the
 // session_id) against the per-process owned_sessions set so multiple
-// iii-acp subprocesses don't fight over the same events.
+// acp subprocesses don't fight over the same events.
 fn register_event_subscriber(
     iii: &III,
     conn_id: &str,

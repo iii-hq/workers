@@ -2,9 +2,9 @@
 
 **iii as a first-class agent in any ACP-speaking editor.**
 
-`iii-acp` is a stdio JSON-RPC adapter that exposes the iii engine — and every
+`acp` is a stdio JSON-RPC adapter that exposes the iii engine — and every
 brain worker on it — through the [Agent Client Protocol](https://agentclientprotocol.com).
-Editors and clients that already speak ACP launch `iii-acp` as a subprocess
+Editors and clients that already speak ACP launch `acp` as a subprocess
 and drive it through their native agent UI. No editor plugin, no fork, no
 bespoke per-client integration.
 
@@ -27,14 +27,14 @@ others don't.
 | **MCP server** (`iii-mcp`) | Exposes iii functions as **tools** to an external agent | You're already running Claude Code / Cursor / etc. and want to give it iii tools |
 | **Skill bundles** | Curated prompts + tools loaded into an agent host | You're inside a skill-aware host (Claude Code, Cursor) and want a preset toolset |
 | **Agent workers** (`turn-orchestrator`, `agent`, `coding`, …) | The brain itself — registers `run::start_and_wait`, runs LLM turns, executes tools | You're calling iii from your own code (`iii.trigger("run::start_and_wait", …)`) or backend automation |
-| **`iii-acp` (this worker)** | Editor → iii. Translates ACP `session/*` JSON-RPC into the canonical iii brain contract; turns iii's `agent::events` stream into ACP `session/update` notifications | You want iii to **be** the agent in an editor users already opened today |
+| **`acp` (this worker)** | Editor → iii. Translates ACP `session/*` JSON-RPC into the canonical iii brain contract; turns iii's `agent::events` stream into ACP `session/update` notifications | You want iii to **be** the agent in an editor users already opened today |
 
 ACP is the **north** edge of the stack. MCP is the **south** edge. They
 coexist:
 
 ```
 Editor (Zed, VS Code, Neovim, …)
-  ↓ ACP ─ session/prompt, session/update          ← iii-acp
+  ↓ ACP ─ session/prompt, session/update          ← acp
 iii engine + brain workers (turn-orchestrator,
   provider-router, guardrails, llm-budget,
   audit-log, dlp-scrubber, policy-denylist, …)
@@ -54,13 +54,13 @@ What iii brings to an editor session that a vanilla agent host doesn't:
 
 ## Supported clients
 
-ACP is an open spec. Any client that speaks it works with `iii-acp`. As of
+ACP is an open spec. Any client that speaks it works with `acp`. As of
 this writing the public client list ([agentclientprotocol.com/get-started/clients](https://agentclientprotocol.com/get-started/clients))
 includes:
 
 **Editors / IDEs**
 
-| Client | How to wire iii-acp |
+| Client | How to wire acp |
 |---|---|
 | [Zed](https://zed.dev) | `agent_servers` block in `~/.config/zed/settings.json` (snippet below) |
 | Visual Studio Code | ACP Client extension |
@@ -80,15 +80,15 @@ includes:
 (via `sidequery/duckdb-acp`), `marimo`, `Agmente` (iOS), `Ferngeist` (Android),
 `Happy`, `Mobvibe` (mobile), `OpenACP` (Telegram/Discord/Slack), and others.
 
-Setup pattern is the same everywhere: point the client at the `iii-acp`
+Setup pattern is the same everywhere: point the client at the `acp`
 binary, set the `IIIACP_*` env vars below.
 
 ## Prerequisites
 
-`iii-acp` needs an iii engine plus a brain. Minimum stack:
+`acp` needs an iii engine plus a brain. Minimum stack:
 
 ```bash
-# 1. Engine builtins iii-acp uses directly. iii-state holds session
+# 1. Engine builtins acp uses directly. iii-state holds session
 #    records + history; iii-stream carries the agent::events tape;
 #    iii-queue backs durable cancel topics.
 iii worker add iii-state iii-stream iii-queue
@@ -132,12 +132,12 @@ the stack is healthy.
 
 ## Spawn
 
-`iii-acp` is a stdio agent. The client launches it as a subprocess and
+`acp` is a stdio agent. The client launches it as a subprocess and
 exchanges JSON-RPC frames over stdin/stdout. **stderr is reserved for
 logs; stdout is reserved for ACP frames.**
 
 ```bash
-iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropic
+acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropic
 ```
 
 ## Configuration
@@ -162,9 +162,9 @@ iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anth
 ```jsonc
 {
   "agent_servers": {
-    "iii-acp": {
+    "acp": {
       "type": "custom",
-      "command": "/path/to/iii-acp",
+      "command": "/path/to/acp",
       "args": [],
       "env": {
         "IIIACP_ENGINE_URL": "ws://localhost:49134",
@@ -178,11 +178,11 @@ iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anth
 }
 ```
 
-Restart Zed → Agent panel → `+` → pick **iii-acp** → type a prompt.
+Restart Zed → Agent panel → `+` → pick **acp** → type a prompt.
 
 ### VS Code
 
-Install the ACP Client extension. Add `iii-acp` as a custom agent in the
+Install the ACP Client extension. Add `acp` as a custom agent in the
 extension's settings, pointing `command` at the binary and replicating the
 `env` block above.
 
@@ -195,12 +195,12 @@ the same env vars work.
 ### JetBrains / Emacs / Obsidian / Unity / Chrome
 
 Same pattern: client config takes a command path and env map. Point at
-`iii-acp` with the env vars above. The protocol is the same on all sides.
+`acp` with the env vars above. The protocol is the same on all sides.
 
 ### CLIs (`acpx`, `Nori CLI`, …)
 
 Most CLI ACP clients accept `--agent <command>` or a config file. Point them
-at `iii-acp` directly.
+at `acp` directly.
 
 ## Methods
 
@@ -232,11 +232,11 @@ include those slots in `SessionCapabilities` yet — clients that try them
 get a successful response; clients that don't try are unaffected. Both
 methods persist their values on the session record (`mode: Option<String>`
 and `config_options: Map<String, Value>`). Brains opt in to honoring them
-on the next `session/prompt` turn; iii-acp just stores.
+on the next `session/prompt` turn; acp just stores.
 
 ## Brain contract
 
-iii-acp talks to the canonical iii brain shape used by `turn-orchestrator`
+acp talks to the canonical iii brain shape used by `turn-orchestrator`
 and every provider worker. Any function with this input contract drops in
 as a brain — no adapter required.
 
@@ -269,12 +269,12 @@ as a brain — no adapter required.
 }
 ```
 
-iii-acp picks the ACP `stopReason` from the final assistant message's
+acp picks the ACP `stopReason` from the final assistant message's
 `stop_reason` field (`end` → `end_turn`, `length` → `max_tokens`,
 `aborted` → `cancelled`, `error` → `refusal`).
 
 **Streaming.** The brain emits `AgentEvent` frames into `agent::events`
-(group_id = session_id). iii-acp registers one stream subscriber per
+(group_id = session_id). acp registers one stream subscriber per
 connection at startup and translates each event:
 
 | `AgentEvent` | ACP `sessionUpdate` |
@@ -287,7 +287,7 @@ connection at startup and translates each event:
 | other | dropped |
 
 This is the same stream `context-compaction` and every provider worker
-already subscribe to. **No bespoke iii-acp publish protocol.**
+already subscribe to. **No bespoke acp publish protocol.**
 
 ## State layout
 
@@ -307,7 +307,7 @@ Streaming wire: `agent::events` (per-session events), per-connection topic
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"demo","version":"0"}}}' \
-  | iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropic
+  | acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropic
 ```
 
 Replies stream on stdout, one JSON frame per line.

@@ -3,5 +3,5 @@ name: acp
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-acp
+bin: acp
 description: Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions

@@ -28,7 +28,7 @@ pub fn session_history_key(session_id: &str) -> String {
 // Streaming wire = the iii ecosystem's `agent::events` stream. No
 // per-connection topic exists. Brains (turn-orchestrator and any
 // drop-in replacement) emit AgentEvent frames into that stream with
-// group_id = session_id; iii-acp subscribes once and routes by group.
+// group_id = session_id; acp subscribes once and routes by group.
 pub const AGENT_EVENTS_STREAM: &str = "agent::events";
 
 pub fn cancel_topic(conn_id: &str, session_id: &str) -> String {
