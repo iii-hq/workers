@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - 'acp/v*'
+      - 'claude-code/v*'
       - 'coder/v*'
       - 'console/v*'
       - 'database/v*'

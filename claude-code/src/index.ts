@@ -32,7 +32,13 @@ const url = values.url ? String(values.url) : seed.engine_url;
 
 const iii = registerWorker(url, { workerName: 'claude-code' });
 
-await registerClaudeConfig(iii, seed);
+// Best-effort: a configuration-worker hiccup at boot must not stop the worker
+// from registering claude::*; it falls back to the seed via fetchRuntime.
+try {
+  await registerClaudeConfig(iii, seed);
+} catch (err) {
+  console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
+}
 
 // Live snapshot: start from the seed, then refresh from the configuration
 // worker. `claude_executable` is re-resolved on every refresh so a live change

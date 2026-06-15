@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - acp
+          - claude-code
           - coder
           - console
           - database
