@@ -1,4 +1,4 @@
-# iii-lsp
+# lsp
 
 Language Server Protocol implementation for the [iii engine](https://github.com/iii-hq/iii). Provides autocompletion, hover documentation, and diagnostics for iii function calls and trigger registrations directly inside any LSP-capable editor.
 
@@ -26,7 +26,7 @@ When the engine is not reachable on startup, the server stays up and returns emp
 
 ```bash
 cargo build --release
-./target/release/iii-lsp --url ws://127.0.0.1:49134
+./target/release/lsp --url ws://127.0.0.1:49134
 ```
 
 The binary speaks LSP over stdio; spawn it from your editor's LSP client.
@@ -51,7 +51,7 @@ Use the bundled VS Code extension, which downloads the matching `iii-lsp` binary
 
 ```lua
 vim.lsp.config.iii = {
-  cmd = { '/path/to/iii-lsp', '--url', 'ws://127.0.0.1:49134' },
+  cmd = { '/path/to/lsp', '--url', 'ws://127.0.0.1:49134' },
   filetypes = { 'typescript', 'typescriptreact', 'javascript', 'python', 'rust' },
 }
 vim.lsp.enable('iii')
@@ -59,7 +59,7 @@ vim.lsp.enable('iii')
 
 ### Any LSP client
 
-Configure the client to launch the `iii-lsp` binary over stdio for the supported filetypes above. No initialization options are required.
+Configure the client to launch the `lsp` binary over stdio for the supported filetypes above. No initialization options are required.
 
 ## See also
 

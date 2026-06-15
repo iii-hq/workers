@@ -10,7 +10,7 @@ on:
       - 'email/v*'
       - 'harness/v*'
       - 'iii-directory/v*'
-      - 'iii-lsp/v*'
+      - 'lsp/v*'
       - 'image-resize/v*'
       - 'mcp/v*'
       - 'shell/v*'

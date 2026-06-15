@@ -25,7 +25,7 @@ impl EngineClient {
                 metadata: Some(WorkerMetadata {
                     runtime: "rust".to_string(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
-                    name: "iii-lsp".to_string(),
+                    name: "lsp".to_string(),
                     os: std::env::consts::OS.to_string(),
                     pid: Some(std::process::id()),
                     telemetry: None,

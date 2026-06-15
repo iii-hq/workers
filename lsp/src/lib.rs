@@ -1,4 +1,4 @@
-//! Library surface for `iii-lsp`.
+//! Library surface for `lsp`.
 //!
 //! The binary (`src/main.rs`) keeps its own `mod` declarations; this lib
 //! target re-exports the same modules so integration tests under `tests/`
