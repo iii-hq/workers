@@ -83,7 +83,7 @@ iii.register_function(
 );
 
 iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "session::message_updated".into(),
+    trigger_type: "session::message-updated".into(),
     function_id: "my-ui::on_message_updated".into(),
     config: json!({ "session_id": session_id, "roles": ["assistant"] }),
     metadata: None,
@@ -92,7 +92,7 @@ iii.register_trigger(RegisterTriggerInput {
 
 Streaming an assistant reply uses the same primitives: append an
 (initially empty) assistant message, then call `session::update_message`
-as tokens arrive — each update fires `session::message_updated` with an
+as tokens arrive — each update fires `session::message-updated` with an
 incremented `revision`.
 
 The full function surface (14 `session::*` functions: lifecycle,
@@ -110,10 +110,10 @@ rejected at registration.
 | Trigger type | Fires when | Config filters |
 |---|---|---|
 | `session::created` | A session is created (create / ensure / fork) | `metadata` |
-| `session::message_added` | An entry is appended | `session_id`, `roles`, `metadata` |
-| `session::message_updated` | A message's content changes (streaming deltas) | `session_id`, `roles`, `metadata` |
-| `session::status_changed` | Status moves between idle/working/done/error | `session_id`, `metadata` |
-| `session::meta_updated` | Title/description/metadata change | `session_id`, `metadata` |
+| `session::message-added` | An entry is appended | `session_id`, `roles`, `metadata` |
+| `session::message-updated` | A message's content changes (streaming deltas) | `session_id`, `roles`, `metadata` |
+| `session::status-changed` | Status moves between idle/working/done/error | `session_id`, `metadata` |
+| `session::meta-updated` | Title/description/metadata change | `session_id`, `metadata` |
 | `session::deleted` | A session and its entries are removed | `session_id`, `metadata` |
 
 Delivery is fire-and-forget, at-least-once, and unordered — reconcile

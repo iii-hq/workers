@@ -114,7 +114,7 @@ describe('createAgentEventTranslator — message_complete', () => {
 describe('createAgentEventTranslator — message_update / compaction_done / agent_end', () => {
   const { translate } = createAgentEventTranslator()
 
-  it('emits nothing for message_update — tokens render from session::message_updated snapshots', () => {
+  it('emits nothing for message_update — tokens render from session::message-updated snapshots', () => {
     const event: AgentEvent = {
       type: 'message_update',
       message: {

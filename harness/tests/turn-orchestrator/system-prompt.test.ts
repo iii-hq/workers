@@ -592,44 +592,40 @@ describe.each(VARIANTS)('invariant contract — %s variant', (_family, out) => {
 });
 
 describe('promptFamily', () => {
-  it('routes explicit providers to their families', () => {
-    expect(promptFamily('anthropic', 'claude-opus-4-7')).toBe('anthropic');
-    expect(promptFamily('openai', 'gpt-5')).toBe('gpt');
-    expect(promptFamily('kimi', 'kimi-k2-0905-preview')).toBe('kimi');
-    expect(promptFamily('lmstudio', 'qwen/qwen3-4b-2507')).toBe('default');
-    expect(promptFamily('llamacpp', 'Meta-Llama-3.1-8B')).toBe('default');
+  it('maps the ROUTED provider to its family — routing itself lives in the llm-router', () => {
+    expect(promptFamily('anthropic')).toBe('anthropic');
+    expect(promptFamily('openai')).toBe('gpt');
+    expect(promptFamily('kimi')).toBe('kimi');
+    expect(promptFamily('lmstudio')).toBe('default');
+    expect(promptFamily('llamacpp')).toBe('default');
   });
 
-  it('falls back to model heuristics when provider is empty', () => {
-    expect(promptFamily('', 'gpt-4')).toBe('gpt');
-    expect(promptFamily('', 'o3-mini')).toBe('gpt');
-    expect(promptFamily('', 'kimi-k2-0905-preview')).toBe('kimi');
-    expect(promptFamily('', 'moonshot-v1-128k')).toBe('kimi');
+  it('serves the anthropic family when no provider routed (router unreachable)', () => {
+    // Mirrors the llm-router entry's seeded default_provider, so the
+    // un-routed prompt matches what the routed turn would have served.
+    expect(promptFamily('')).toBe('anthropic');
   });
 
-  it('defaults to anthropic when nothing matches', () => {
-    expect(promptFamily('', '')).toBe('anthropic');
-    // Local model ids require an explicit provider (the router pins this); a
-    // bare HF-style id without provider stays on the anthropic route.
-    expect(promptFamily('', 'qwen-7b')).toBe('anthropic');
+  it('serves the generic default for an unrecognized provider id', () => {
+    expect(promptFamily('some-new-provider')).toBe('default');
   });
 });
 
 describe('buildSystemPrompt variant selection', () => {
   it('serves the gpt variant (persistence voice) for openai runs', () => {
-    const out = buildSystemPrompt({ provider: 'openai', model: 'gpt-5' });
+    const out = buildSystemPrompt({ provider: 'openai' });
     expect(out).toContain('## Autonomy and persistence');
     expect(out).toMatch(/Persist until the task is fully handled\s+end-to-end/);
   });
 
   it('serves the kimi variant (MUST imperatives) for kimi runs', () => {
-    const out = buildSystemPrompt({ provider: 'kimi', model: 'kimi-k2-0905-preview' });
+    const out = buildSystemPrompt({ provider: 'kimi' });
     expect(out).toContain('# Ultimate Reminders');
     expect(out).toContain('# Prompt and Tool Use');
   });
 
   it('serves the default variant (step-by-step) for local runtimes', () => {
-    const out = buildSystemPrompt({ provider: 'lmstudio', model: 'qwen/qwen3-4b-2507' });
+    const out = buildSystemPrompt({ provider: 'lmstudio' });
     expect(out).toContain('Follow these steps for EVERY action');
     expect(out).toContain('# Final checklist');
   });
@@ -640,10 +636,10 @@ describe('buildSystemPrompt variant selection', () => {
 
   it('prepends the mode paragraph before the identity line on every variant', () => {
     const runs = [
-      { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-      { provider: 'openai', model: 'gpt-5' },
-      { provider: 'kimi', model: 'kimi-k2-0905-preview' },
-      { provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' },
+      { provider: 'anthropic' },
+      { provider: 'openai' },
+      { provider: 'kimi' },
+      { provider: 'llamacpp' },
     ];
     for (const run of runs) {
       const out = buildSystemPrompt({ ...run, mode: 'agent' });
@@ -658,7 +654,6 @@ describe('buildSystemPrompt variant selection', () => {
       override: 'custom-override',
       mode: 'plan',
       provider: 'openai',
-      model: 'gpt-5',
     });
     expect(out).toBe('custom-override');
   });

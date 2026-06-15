@@ -3,7 +3,7 @@ Feature: session::append_many — append several message entries in order
 
   Contract (session-manager.md § session::append_many): messages are
   appended in request order, each chained to the previous; one
-  session::message_added fires per entry, in order; the response carries
+  session::message-added fires per entry, in order; the response carries
   every entry id plus last_entry_id; the batch is NOT idempotent (use
   session::append with entry_id where redelivery is possible).
 
@@ -13,7 +13,7 @@ Feature: session::append_many — append several message entries in order
   # Prevents: batch order scrambling — a user/assistant exchange written
   # out of order corrupts the conversation for every consumer.
   Scenario: a batch preserves order and chains the parent links
-    Given a binding "b1" on "session::message_added" delivering to "ui::recv" with config:
+    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
       """
       {}
       """
@@ -29,7 +29,7 @@ Feature: session::append_many — append several message entries in order
     Then the call succeeds
     And the response field "entry_ids" is ["e_001","e_002","e_003"]
     And the response field "last_entry_id" is "e_003"
-    And function "ui::recv" received 3 "session::message_added" deliveries
+    And function "ui::recv" received 3 "session::message-added" deliveries
     And delivery 0 to "ui::recv" has "entry_id" = "e_001"
     And delivery 0 to "ui::recv" has "parent_id" = null
     And delivery 1 to "ui::recv" has "entry_id" = "e_002"

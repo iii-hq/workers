@@ -3,6 +3,7 @@ import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
 import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
+import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
 import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
 import type { FunctionCallMessage as FCallType } from '@/types/chat'
@@ -123,6 +124,11 @@ export const DoneMultiFieldExpanded: Story = {
 export const SandboxFamily: Story = {
   name: 'sandbox family',
   render: () => <FamilyGallery fixtures={sandboxFixtures} />,
+}
+
+export const ShellFamily: Story = {
+  name: 'shell family',
+  render: () => <FamilyGallery fixtures={shellFixtures} />,
 }
 
 export const DirectoryFamily: Story = {

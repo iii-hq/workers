@@ -29,6 +29,12 @@ export const RunStartPayloadSchema = SessionIdPayloadSchema.extend({
   provider: z.string(),
   model: z.string(),
   mode: z.enum(['plan', 'ask', 'agent'] satisfies [Mode, Mode, Mode]).optional(),
+  /**
+   * Optional reasoning/thinking level, persisted on the run request and
+   * threaded to `router::chat` (omitted on the wire when 'off' or absent).
+   * The provider degrades-with-warning when the model can't honor it.
+   */
+  thinking_level: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
   messages: z.custom<AgentMessage[]>((v) => Array.isArray(v)).default([]),
   max_turns: z.number().optional(),
   system_prompt: z.string().default(''),

@@ -30,21 +30,26 @@ export async function fetchModelLimit(
   modelID: string,
 ): Promise<ResolvedModel> {
   try {
+    // router::models::get: payload key is `id`, result is wrapped as
+    // `{ model }`, null on a catalog miss (the cold-window signal).
     const entry = await iii.trigger<
       unknown,
       {
-        id?: string;
-        provider?: string;
-        context_window?: number;
-        max_output_tokens?: number;
+        model?: {
+          id?: string;
+          provider?: string;
+          context_window?: number;
+          max_output_tokens?: number;
+        } | null;
       } | null
     >({
-      function_id: 'models::get',
-      payload: { provider: providerID, model_id: modelID },
+      function_id: 'router::models::get',
+      payload: { provider: providerID, id: modelID },
       timeoutMs: 5_000,
     });
 
-    if (!entry) {
+    const model = entry?.model ?? null;
+    if (!model) {
       logger.debug('model-resolver: model not found in catalog', { providerID, modelID });
       return null;
     }
@@ -52,10 +57,10 @@ export async function fetchModelLimit(
     return {
       providerID,
       modelID,
-      modelLimit: limitFromModel(entry),
+      modelLimit: limitFromModel(model),
     };
   } catch (err) {
-    logger.debug('model-resolver: models::get failed', {
+    logger.debug('model-resolver: router::models::get failed', {
       providerID,
       modelID,
       err: String(err),

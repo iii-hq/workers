@@ -97,7 +97,7 @@ None. `context-manager` is a request/response capability worker.
 ### Triggers bound
 
 None by default. **Optional reactive integration:** when paired with `session-manager`, a deployment
-may bind a handler to `session::message_added` to pre-warm an assembled context off the turn's hot
+may bind a handler to `session::message-added` to pre-warm an assembled context off the turn's hot
 path (for example, to warm a cache or surface a token-usage metric). This is opt-in and lives in the
 consumer, which is what keeps `context-manager` decoupled from any store — it never reaches into a
 session on its own.
@@ -116,7 +116,7 @@ iii.registerFunction("context::on_message_added", async (evt) => {
 });
 
 iii.registerTrigger({
-  type: "session::message_added",
+  type: "session::message-added",
   function_id: "context::on_message_added",
   config: { /* optional: session_id, roles */ },
 });

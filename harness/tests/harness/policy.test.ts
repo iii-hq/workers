@@ -558,13 +558,18 @@ describe('shipped iii-permissions.yaml', () => {
     'state::delete',
     'stream::set',
     'iii::durable::publish',
-    'harness::provider::resolve',
-    'harness::provider::register',
+    'router::provider::resolve',
+    'router::provider::register',
+    'router::provider::update_credential',
+    'router::models::reconcile',
+    'router::chat',
+    'router::complete',
+    'router::abort',
+    'router::route',
     'configuration::get',
     'configuration::set',
     'configuration::register',
     'run::start',
-    'router::stream_assistant',
   ];
 
   it('kernel surfaces are denied unconditionally — hostile args cannot dodge them', async () => {
@@ -586,7 +591,14 @@ describe('shipped iii-permissions.yaml', () => {
 
   it('allows the read-only conveniences', async () => {
     const perms = await load();
-    for (const fid of ['state::get', 'state::list', 'models::list', 'models::get']) {
+    for (const fid of [
+      'state::get',
+      'state::list',
+      'router::models::list',
+      'router::models::get',
+      'router::models::supports',
+      'router::provider::list',
+    ]) {
       expect(perms.check(fid, {}).kind).toBe('allow');
     }
   });

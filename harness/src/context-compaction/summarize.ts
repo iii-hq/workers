@@ -8,7 +8,6 @@ import {
   readActivePath,
   sessionAppendCustom,
 } from '../runtime/session.js';
-import { decide, targetFunctionId } from '../turn-orchestrator/provider-router.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
 import { compactionConfig } from './config.js';
 import { stampLastCompaction } from './lease.js';
@@ -19,9 +18,11 @@ import {
   completedCompactions,
   selectWithEntryIds,
 } from './selection.js';
-import { streamAndCollect } from './stream-collect.js';
 import { stripMedia } from './strip-media.js';
 import { buildPrompt } from './template.js';
+
+/** Outer trigger budget; must exceed the router's 300s stream budget. */
+const SUMMARIZER_TIMEOUT_MS = 320_000;
 
 export type SummarizeMode = 'async' | 'sync';
 
@@ -157,19 +158,14 @@ export async function summarizeAndAppend(
   const systemPrompt = buildPrompt({ previousSummary, context: [] });
   const userPrompt = renderUserPrompt(stripped);
 
-  // Always use the session's own provider/model; route through the
-  // canonical provider-router so adding a provider covers /compact too.
-  const summariserId = targetFunctionId(
-    decide({ provider: model.providerID, model: model.modelID }),
-  );
-  const modelId = model.modelID;
-
   // One 250ms retry for transient failures (429/5xx/network). Permanent
   // failures (auth, malformed request) skip the retry to release the lease
-  // sooner.
-  const streamInput = {
+  // sooner. The session's own provider/model are pinned explicitly so
+  // /compact runs on exactly the provider the session streams on.
+  const completeInput = {
+    model: model.modelID,
+    provider: model.providerID,
     system_prompt: systemPrompt,
-    model: modelId,
     messages: [
       {
         role: 'user' as const,
@@ -181,7 +177,7 @@ export async function summarizeAndAppend(
   };
   let final: AssistantMessage;
   try {
-    final = await streamAndCollect(iii, streamInput, summariserId);
+    final = await routerComplete(iii, completeInput);
   } catch (firstErr) {
     const firstReason = firstErr instanceof Error ? firstErr.message : String(firstErr);
     if (!isRetryableStreamError(firstErr)) {
@@ -193,7 +189,7 @@ export async function summarizeAndAppend(
       setTimeout(resolve, 250);
     });
     try {
-      final = await streamAndCollect(iii, streamInput, summariserId);
+      final = await routerComplete(iii, completeInput);
     } catch (secondErr) {
       const reason = secondErr instanceof Error ? secondErr.message : String(secondErr);
       logger.warn('summariser stream failed after retry', {
@@ -234,4 +230,42 @@ export async function summarizeAndAppend(
     summary_text: summary,
     tail_messages,
   };
+}
+
+/**
+ * Run the summariser turn through `router::complete`. Pre-stream failures
+ * (unknown provider, not configured) throw from the trigger; a mid-stream
+ * failure comes back as an error-shaped AssistantMessage, surfaced here as a
+ * throw so the caller's retry logic treats both uniformly.
+ */
+async function routerComplete(
+  iii: ISdk,
+  input: Record<string, unknown>,
+): Promise<AssistantMessage> {
+  const resp = await iii.trigger<unknown, { message?: AssistantMessage }>({
+    function_id: 'router::complete',
+    payload: input,
+    timeoutMs: SUMMARIZER_TIMEOUT_MS,
+  });
+  const message = resp?.message;
+  if (!message) {
+    throw new Error('router::complete returned no message');
+  }
+  if (message.stop_reason === 'error') {
+    const detail =
+      typeof message.error_message === 'string' && message.error_message.length > 0
+        ? message.error_message
+        : extractTextFromMessage(message);
+    throw new Error(`summariser stream error: ${detail || 'unknown provider error'}`);
+  }
+  return message;
+}
+
+function extractTextFromMessage(msg: AssistantMessage): string {
+  for (const block of msg.content ?? []) {
+    if ((block as { type?: string }).type === 'text') {
+      return (block as { type: 'text'; text: string }).text;
+    }
+  }
+  return '';
 }

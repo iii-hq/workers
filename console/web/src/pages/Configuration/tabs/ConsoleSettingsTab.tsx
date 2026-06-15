@@ -19,9 +19,9 @@ import {
   saveDefaultAllowlist,
 } from '@/lib/storage'
 
-// Provider credentials + settings now live in the harness `configuration`
+// Provider credentials + settings now live in the llm-router `configuration`
 // entry, edited via the schema-driven form on the workers tab.
-const HARNESS_CONFIG_HASH = '#/configuration/workers/harness'
+const HARNESS_CONFIG_HASH = '#/configuration/workers/llm-router'
 
 interface ConsoleSettingsTabProps {
   theme: Theme

@@ -47,7 +47,7 @@ const STEPS: SeqStep[] = [
     label: 'session::update_message',
     title: 'the agent streams into the store',
     desc: 'the loop persists deltas as they arrive — and each write emits the event the worker is already bound to.',
-    event: 'session::message_updated',
+    event: 'session::message-updated',
   },
   {
     from: 'session',
@@ -110,7 +110,7 @@ export function TelegramPage() {
           {'\n\n'}
           iii.<K>registerTrigger</K>(<M>{'{'}</M>
           {'\n'}
-          {'  '}type: <S>"session::message_updated"</S>,{'\n'}
+          {'  '}type: <S>"session::message-updated"</S>,{'\n'}
           {'  '}function_id: <S>"tg::on-message-updated"</S>,{'\n'}
           {'  '}config: <M>{'{'}</M> roles: [<S>"assistant"</S>] <M>{'}'}</M>,
           {'\n'}
@@ -140,13 +140,13 @@ export function TelegramPage() {
             <SpecRow name="telegram::model_selected" type="function">
               inline-keyboard callback — locks the model, creates the session.
             </SpecRow>
-            <SpecRow name="session::message_added → tg::on-message-added" type="binding">
+            <SpecRow name="session::message-added → tg::on-message-added" type="binding">
               creates the telegram message for each new assistant entry.
             </SpecRow>
-            <SpecRow name="session::message_updated → tg::on-message-updated" type="binding">
+            <SpecRow name="session::message-updated → tg::on-message-updated" type="binding">
               streams edits, throttled, last-write-wins by revision.
             </SpecRow>
-            <SpecRow name="session::status_changed → tg::on-status-changed" type="binding">
+            <SpecRow name="session::status-changed → tg::on-status-changed" type="binding">
               typing indicator while working; ready marker on done.
             </SpecRow>
             <SpecRow name="harness::turn_completed → tg::on-turn-completed" type="binding">

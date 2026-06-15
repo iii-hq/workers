@@ -69,7 +69,7 @@ iii worker add <name>
 ````
 
 Where `<name>` is the value of `iii.worker.yaml.name` (which equals the
-folder name; see [`AGENTS-NEW-WORKER.md`](AGENTS-NEW-WORKER.md) §1).
+folder name; see [`docs/sops/new-worker.md`](docs/sops/new-worker.md) §1).
 That is the whole user-facing install — no source build, no
 `sudo install`, no `--manifest | jq` verification step. `iii worker add`
 fetches the binary, writes a config block into `~/.iii/config.yaml`,

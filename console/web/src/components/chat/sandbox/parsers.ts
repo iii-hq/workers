@@ -511,7 +511,12 @@ function invocationFromFunctionError(
   }
 }
 
-function collectErrorCandidates(value: unknown): unknown[] {
+/** Gather every sub-value that might carry an error payload: the value
+    itself, its unwrapped envelope, `value.error`, `error.details`,
+    `error.message`, and `content[]` text blocks. Shared with the shell
+    module's `parseShellErrorDisplay` — same harness wrapping, same
+    traversal. */
+export function collectErrorCandidates(value: unknown): unknown[] {
   const seen = new Set<unknown>()
   const out: unknown[] = []
   const push = (candidate: unknown) => {

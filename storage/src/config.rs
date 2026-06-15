@@ -404,7 +404,7 @@ pub fn redact_secret(s: &str) -> String {
 /// Load and validate a `WorkerConfig` from `path`.
 ///
 /// Free-function alias for [`WorkerConfig::from_file`] that returns
-/// [`anyhow::Result`], matching the binary-worker spec (`workers/binary-worker.md`
+/// [`anyhow::Result`], matching the binary-worker spec (`docs/sops/binary-worker.md`
 /// §5). Errors carry the file path as context.
 pub fn load_config(path: &str) -> anyhow::Result<WorkerConfig> {
     WorkerConfig::from_file(path)

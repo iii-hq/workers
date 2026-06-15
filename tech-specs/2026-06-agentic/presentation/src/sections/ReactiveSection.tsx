@@ -11,8 +11,8 @@ const EVENT_SOURCES = [
   'stream',
   'subscribe',
   'durable queue',
-  'session::message_added',
-  'session::status_changed',
+  'session::message-added',
+  'session::status-changed',
   'harness::turn_completed',
   'approval::pending_created',
 ] as const
@@ -38,7 +38,7 @@ export function ReactiveSection() {
           {'\n'}
           iii.<K>registerTrigger</K>(<M>{'{'}</M>
           {'\n'}
-          {'  '}type: <S>"session::message_updated"</S>,{'\n'}
+          {'  '}type: <S>"session::message-updated"</S>,{'\n'}
           {'  '}function_id: <S>"tg::on-message-updated"</S>,{'\n'}
           {'  '}config: <M>{'{'}</M> roles: [<S>"assistant"</S>] <M>{'}'}</M>,{'\n'}
           <M>{'}'}</M>);

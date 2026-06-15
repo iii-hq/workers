@@ -20,15 +20,15 @@ Feature: the reactivity model — streaming a reply end to end
       """
       {}
       """
-    And a binding "b2" on "session::message_added" delivering to "ui::chat" with config:
+    And a binding "b2" on "session::message-added" delivering to "ui::chat" with config:
       """
       {}
       """
-    And a binding "b3" on "session::message_updated" delivering to "ui::chat" with config:
+    And a binding "b3" on "session::message-updated" delivering to "ui::chat" with config:
       """
       { "roles": ["assistant"] }
       """
-    And a binding "b4" on "session::status_changed" delivering to "ui::chat" with config:
+    And a binding "b4" on "session::status-changed" delivering to "ui::chat" with config:
       """
       {}
       """
@@ -66,9 +66,9 @@ Feature: the reactivity model — streaming a reply end to end
 
     # -- what the consumer saw --
     Then function "ui::chat" received 1 "session::created" delivery
-    And function "ui::chat" received 2 "session::message_added" deliveries
-    And function "ui::chat" received 3 "session::message_updated" deliveries
-    And function "ui::chat" received 2 "session::status_changed" deliveries
+    And function "ui::chat" received 2 "session::message-added" deliveries
+    And function "ui::chat" received 3 "session::message-updated" deliveries
+    And function "ui::chat" received 2 "session::status-changed" deliveries
     And delivery 0 to "ui::chat" has "title" = "Weather question"
     And delivery 1 to "ui::chat" has "message.role" = "user"
     And delivery 2 to "ui::chat" has "status" = "working"

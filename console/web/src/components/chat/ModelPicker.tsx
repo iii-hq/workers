@@ -9,10 +9,10 @@ import {
   type ModelOption,
 } from '@/types/chat'
 
-// Deep link to the harness configuration entry in the workers/config editor,
+// Deep link to the llm-router configuration entry in the workers/config editor,
 // where api keys + per-provider settings are now edited (the bespoke
 // per-provider dialog was retired in favour of the schema-driven form).
-const HARNESS_CONFIG_HASH = '#/configuration/workers/harness'
+const HARNESS_CONFIG_HASH = '#/configuration/workers/llm-router'
 
 interface ModelPickerProps {
   value: ModelId | null
@@ -47,7 +47,7 @@ export function ModelPicker({
   // Optional: present in the app, absent in isolated Storybook renders.
   const ctx = useConversationsCtxOptional()
 
-  // Providers present as harness workers (from harness::provider::list).
+  // Providers present as workers (from router::provider::list).
   // Absent in Storybook or before the list resolves, in which case no empty
   // provider groups or gears appear until the dynamic list arrives.
   const presentIds = ctx?.presentProviders.map((p) => p.id) ?? []

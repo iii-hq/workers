@@ -49,20 +49,15 @@ const testModel = {
 };
 
 // ---------------------------------------------------------------------------
-// Channel + ISdk mock factory
+// ISdk mock factory
 //
-// streamAndCollect flow:
-//   1. channel = await iii.createChannel()
-//   2. channel.reader.onMessage(cb)   ← registers the callback
-//   3. await iii.trigger(provider...) ← we fire cb here, inside the trigger mock
-//   4. while(!terminal) drain loop
-//
-// We fire the channel message synchronously inside the provider trigger
-// call so that `terminal` is set before the drain loop runs.
+// The summariser now runs through one `router::complete` call — no channel.
+// `onComplete` receives the payload and returns the final AssistantMessage
+// (or throws to fail the call, feeding the retry logic).
 // ---------------------------------------------------------------------------
 
-function makeDoneEvent(summary = 'the summary'): string {
-  const msg: AssistantMessage = {
+function doneMessage(summary = 'the summary'): AssistantMessage {
+  return {
     role: 'assistant',
     content: [{ type: 'text', text: summary }],
     stop_reason: 'end',
@@ -70,19 +65,6 @@ function makeDoneEvent(summary = 'the summary'): string {
     provider: 'p',
     timestamp: 0,
   };
-  return JSON.stringify({ type: 'done', message: msg });
-}
-
-function makeEmptyDoneEvent(): string {
-  const msg: AssistantMessage = {
-    role: 'assistant',
-    content: [],
-    stop_reason: 'end',
-    model: 'm',
-    provider: 'p',
-    timestamp: 0,
-  };
-  return JSON.stringify({ type: 'done', message: msg });
 }
 
 type MockTriggerReq = { function_id: string; payload: Record<string, unknown> };
@@ -90,27 +72,14 @@ type MockTriggerReq = { function_id: string; payload: Record<string, unknown> };
 /**
  * Build a minimal ISdk mock.
  *
- * @param onProviderTrigger - Called synchronously when a provider trigger fires.
- *   Return the raw JSON event string to deliver on the channel, or null to skip.
+ * @param onComplete - Called with the `router::complete` payload; returns the
+ *   AssistantMessage wrapped as `{ message }`, or throws to fail the call.
  * @param extraHandlers - per function_id response overrides.
  */
 function buildMock(
-  onProviderTrigger: (payload: Record<string, unknown>) => string | null = () => makeDoneEvent(),
+  onComplete: (payload: Record<string, unknown>) => AssistantMessage = () => doneMessage(),
   extraHandlers: Record<string, (payload: Record<string, unknown>) => unknown> = {},
 ) {
-  // The channel message callback registered by streamAndCollect
-  let channelCb: ((raw: string) => void) | null = null;
-
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
-  };
-
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
 
@@ -133,25 +102,16 @@ function buildMock(
       return undefined;
     }
 
-    // Provider stream: fire channel callback synchronously so terminal is set
-    if (function_id.startsWith('provider::')) {
-      if (channelCb) {
-        const event = onProviderTrigger(payload);
-        if (event !== null) {
-          channelCb(event);
-        }
-      }
-      return undefined;
+    if (function_id === 'router::complete') {
+      return { message: onComplete(payload), provider: payload.provider, model: payload.model };
     }
 
     return undefined;
   });
 
-  const createChannel = vi.fn(async () => channel);
+  const iii = { trigger } as unknown as import('iii-sdk').ISdk;
 
-  const iii = { trigger, createChannel } as unknown as import('iii-sdk').ISdk;
-
-  return { iii, trigger, createChannel };
+  return { iii, trigger };
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +191,7 @@ describe('summarizeAndAppend async mode', () => {
   it('loads messages, calls summariser, appends compaction, returns ok', async () => {
     const compactPayloads: unknown[] = [];
 
-    const { iii, trigger } = buildMock(() => makeDoneEvent('my summary'), {
+    const { iii, trigger } = buildMock(() => doneMessage('my summary'), {
       'session::messages': () => ({
         messages: makeEntries().map((e) => ({ entry_id: e.entry_id, message: e.message })),
       }),
@@ -249,11 +209,9 @@ describe('summarizeAndAppend async mode', () => {
     const ok = result as { tail_start_id: string | null; tokens_before: number };
     expect(ok.tokens_before).toBeGreaterThan(0);
 
-    // Provider trigger fired
-    const providerCall = trigger.mock.calls.find(([req]) =>
-      req.function_id.startsWith('provider::'),
-    );
-    expect(providerCall).toBeDefined();
+    // The summariser ran through router::complete
+    const completeCall = trigger.mock.calls.find(([req]) => req.function_id === 'router::complete');
+    expect(completeCall).toBeDefined();
 
     // Compaction custom entry was appended with session_id and non-empty summary
     expect(compactPayloads).toHaveLength(1);
@@ -268,62 +226,52 @@ describe('summarizeAndAppend async mode', () => {
   });
 
   it('returns "empty" when summariser produces no text content', async () => {
-    const { iii } = buildMock(() => makeEmptyDoneEvent());
+    const { iii } = buildMock(() => ({ ...doneMessage(), content: [] }));
 
     const result = await summarizeAndAppend(iii, 'sess-empty', { mode: 'async' }, testModel);
     expect(result).toBe('empty');
   });
 
-  it('returns "compact" when streamAndCollect throws', async () => {
-    const { iii } = buildMock();
-    // Make createChannel reject so streamAndCollect throws
-    (iii as unknown as { createChannel: ReturnType<typeof vi.fn> }).createChannel = vi
-      .fn()
-      .mockRejectedValue(new Error('channel unavailable'));
+  it('returns "compact" when router::complete rejects', async () => {
+    const { iii } = buildMock(() => {
+      throw new Error('router unreachable');
+    });
 
     const result = await summarizeAndAppend(iii, 'sess-fail', { mode: 'async' }, testModel);
     expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
     if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
-      expect(result.reason).toContain('channel unavailable');
+      expect(result.reason).toContain('router unreachable');
     }
   });
 
-  it('retries streamAndCollect once and succeeds when the first attempt fails', async () => {
+  it('retries router::complete once and succeeds when the first attempt fails', async () => {
     // Transient provider failures (429, network blip, 5xx) should not
     // surface to /compact when a single retry would succeed.
-    const { iii } = buildMock();
-    let createChannelCalls = 0;
-    const realCreateChannel = (iii as unknown as { createChannel: () => Promise<unknown> })
-      .createChannel;
-    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi.fn(
-      async () => {
-        createChannelCalls += 1;
-        if (createChannelCalls === 1) {
-          throw new Error('transient provider failure');
-        }
-        return realCreateChannel();
-      },
-    );
+    let attempts = 0;
+    const { iii } = buildMock(() => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error('transient provider failure');
+      }
+      return doneMessage('recovered summary');
+    });
 
     const result = await summarizeAndAppend(iii, 'sess-retry', { mode: 'async' }, testModel);
-    expect(createChannelCalls).toBe(2);
+    expect(attempts).toBe(2);
     expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('ok');
   }, 10_000);
 
   it('returns "compact" when both stream attempts fail', async () => {
     // Generic permanent failure (no auth/4xx markers) — still retries once
     // then surfaces the failure.
-    const { iii } = buildMock();
-    let createChannelCalls = 0;
-    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi.fn(
-      async () => {
-        createChannelCalls += 1;
-        throw new Error('permanent provider failure');
-      },
-    );
+    let attempts = 0;
+    const { iii } = buildMock(() => {
+      attempts += 1;
+      throw new Error('permanent provider failure');
+    });
 
     const result = await summarizeAndAppend(iii, 'sess-fail-twice', { mode: 'async' }, testModel);
-    expect(createChannelCalls).toBe(2);
+    expect(attempts).toBe(2);
     expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
     if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
       expect(result.reason).toContain('permanent provider failure');
@@ -333,17 +281,14 @@ describe('summarizeAndAppend async mode', () => {
   it('skips retry on non-retryable errors (401/auth/malformed)', async () => {
     // Auth and 4xx errors won't fix on retry. Skip the retry so the
     // compaction lease releases ~1s sooner.
-    const { iii } = buildMock();
-    let createChannelCalls = 0;
-    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi.fn(
-      async () => {
-        createChannelCalls += 1;
-        throw new Error('401 unauthorized: invalid_api_key');
-      },
-    );
+    let attempts = 0;
+    const { iii } = buildMock(() => {
+      attempts += 1;
+      throw new Error('401 unauthorized: invalid_api_key');
+    });
 
     const result = await summarizeAndAppend(iii, 'sess-auth-fail', { mode: 'async' }, testModel);
-    expect(createChannelCalls).toBe(1); // no retry
+    expect(attempts).toBe(1); // no retry
     expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
     if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
       expect(result.reason).toContain('401');
@@ -355,25 +300,20 @@ describe('summarizeAndAppend async mode', () => {
     // combo) used to be silently stored as the compaction summary text,
     // showing "COMPACTED · N TOKENS" in the UI with the error JSON as
     // the summary. The error terminal must surface as a failure instead.
-    const errorEvent = JSON.stringify({
-      type: 'error',
-      error: {
-        role: 'assistant',
-        content: [
-          {
-            type: 'text',
-            text: '{"type":"error","error":{"type":"not_found_error","message":"model: gpt-5-mini"}}',
-          },
-        ],
-        stop_reason: 'end',
-        error_kind: 'NotFound',
-        error_message: 'model: gpt-5-mini',
-        model: 'gpt-5-mini',
-        provider: 'anthropic',
-        timestamp: 0,
-      },
-    });
-    const { iii } = buildMock(() => errorEvent);
+    const { iii } = buildMock(() => ({
+      role: 'assistant',
+      content: [
+        {
+          type: 'text',
+          text: '{"type":"error","error":{"type":"not_found_error","message":"model: gpt-5-mini"}}',
+        },
+      ],
+      stop_reason: 'error',
+      error_message: 'model: gpt-5-mini',
+      model: 'gpt-5-mini',
+      provider: 'anthropic',
+      timestamp: 0,
+    }));
 
     const result = await summarizeAndAppend(
       iii,
@@ -387,20 +327,10 @@ describe('summarizeAndAppend async mode', () => {
     }
   });
 
-  it('routes the summariser to the session provider', async () => {
-    // /compact uses the session's own provider/model. Earlier default was
-    // a hardcoded 'anthropic'; OpenAI sessions got an Anthropic stream
-    // + an OpenAI model id, producing not_found_error.
-    let calledFunctionId: string | null = null;
-    const { iii } = buildMock();
-    const wrapped = iii as unknown as { trigger: ReturnType<typeof vi.fn> };
-    const originalTrigger = wrapped.trigger;
-    wrapped.trigger = vi.fn(async (req: MockTriggerReq) => {
-      if (req.function_id.startsWith('provider::')) {
-        calledFunctionId = req.function_id;
-      }
-      return originalTrigger(req);
-    });
+  it('pins the session provider/model on the router::complete call', async () => {
+    // /compact uses the session's own provider/model, pinned explicitly so
+    // the router executes on exactly the provider the session streams on.
+    const { iii, trigger } = buildMock();
 
     const openAiModel = {
       providerID: 'openai',
@@ -408,24 +338,14 @@ describe('summarizeAndAppend async mode', () => {
       modelLimit: { context: 200_000, input: 200_000, output: 4_096 },
     };
     await summarizeAndAppend(iii, 'sess-openai', { mode: 'async' }, openAiModel);
-    expect(calledFunctionId).toBe('provider::openai::stream');
+    const call = trigger.mock.calls.find(([req]) => req.function_id === 'router::complete');
+    expect(call?.[0].payload).toEqual(
+      expect.objectContaining({ provider: 'openai', model: 'gpt-5-mini' }),
+    );
   });
 
-  it('routes kimi sessions to provider::kimi::stream, not anthropic', async () => {
-    // Regression: a binary openai-vs-anthropic ternary sent every non-openai
-    // provider (including kimi) to provider::anthropic::stream, producing
-    // NOT_FOUND_ERROR on the kimi model id. Fix uses the canonical provider
-    // router so adding a provider only needs a router update.
-    let calledFunctionId: string | null = null;
-    const { iii } = buildMock();
-    const wrapped = iii as unknown as { trigger: ReturnType<typeof vi.fn> };
-    const originalTrigger = wrapped.trigger;
-    wrapped.trigger = vi.fn(async (req: MockTriggerReq) => {
-      if (req.function_id.startsWith('provider::')) {
-        calledFunctionId = req.function_id;
-      }
-      return originalTrigger(req);
-    });
+  it('pins kimi sessions to the kimi provider, not anthropic', async () => {
+    const { iii, trigger } = buildMock();
 
     const kimiModel = {
       providerID: 'kimi',
@@ -433,7 +353,10 @@ describe('summarizeAndAppend async mode', () => {
       modelLimit: { context: 256_000, input: 256_000, output: 16_384 },
     };
     await summarizeAndAppend(iii, 'sess-kimi', { mode: 'async' }, kimiModel);
-    expect(calledFunctionId).toBe('provider::kimi::stream');
+    const call = trigger.mock.calls.find(([req]) => req.function_id === 'router::complete');
+    expect(call?.[0].payload).toEqual(
+      expect.objectContaining({ provider: 'kimi', model: 'kimi-k2.5' }),
+    );
   });
 });
 
@@ -449,7 +372,7 @@ describe('summarizeAndAppend anchored prompt', () => {
     const { iii } = buildMock(
       (payload) => {
         capturedPrompts.push(payload.system_prompt as string);
-        return makeDoneEvent('updated summary');
+        return doneMessage('updated summary');
       },
       {
         'session::messages': (p) => ({
@@ -495,7 +418,7 @@ describe('summarizeAndAppend sync mode', () => {
     const messageReads: Array<Record<string, unknown>> = [];
     const compactPayloads: unknown[] = [];
 
-    const { iii } = buildMock(() => makeDoneEvent('sync summary'), {
+    const { iii } = buildMock(() => doneMessage('sync summary'), {
       'session::messages': (p) => {
         messageReads.push(p);
         return { messages: [] };

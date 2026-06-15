@@ -1,6 +1,7 @@
 import { File, FileText, Folder, Link as LinkIcon } from 'lucide-react'
 import { formatBytes, formatMode, formatMtime } from './format'
 import {
+  type FsEntry,
   fsLsRequestSchema,
   fsLsResponseSchema,
   safeParseResponse,
@@ -30,39 +31,47 @@ export function FsLsView({ input, output }: FsLsViewProps) {
           · directory is empty
         </div>
       ) : (
-        <table className="w-full font-mono text-[12px] text-ink">
-          <tbody>
-            {entries.map((e) => {
-              const Icon = e.is_symlink
-                ? LinkIcon
-                : e.is_dir
-                  ? Folder
-                  : iconForFile(e.name)
-              return (
-                <tr
-                  key={`${e.name}:${e.size}:${e.mtime}`}
-                  className="border-b border-rule-2 last:border-b-0"
-                >
-                  <td className="pl-3 pr-1.5 py-1.5 w-5">
-                    <Icon aria-hidden className="w-3.5 h-3.5 text-ink-faint" />
-                  </td>
-                  <td className="px-1.5 py-1.5 text-ink">{e.name}</td>
-                  <td className="px-2 py-1.5 text-ink-faint tabular-nums text-right">
-                    {e.is_dir ? '—' : formatBytes(e.size)}
-                  </td>
-                  <td className="px-2 py-1.5 text-ink-faint tabular-nums">
-                    {`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}
-                  </td>
-                  <td className="pr-3 pl-2 py-1.5 text-ink-faint">
-                    {formatMtime(e.mtime)}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <FsEntriesTable entries={entries} />
       )}
     </div>
+  )
+}
+
+/** Directory-listing table. Shared with the shell module's `fs::ls`
+    renderer — both wires speak `FsEntry`. */
+export function FsEntriesTable({ entries }: { entries: FsEntry[] }) {
+  return (
+    <table className="w-full font-mono text-[12px] text-ink">
+      <tbody>
+        {entries.map((e) => {
+          const Icon = e.is_symlink
+            ? LinkIcon
+            : e.is_dir
+              ? Folder
+              : iconForFile(e.name)
+          return (
+            <tr
+              key={`${e.name}:${e.size}:${e.mtime}`}
+              className="border-b border-rule-2 last:border-b-0"
+            >
+              <td className="pl-3 pr-1.5 py-1.5 w-5">
+                <Icon aria-hidden className="w-3.5 h-3.5 text-ink-faint" />
+              </td>
+              <td className="px-1.5 py-1.5 text-ink">{e.name}</td>
+              <td className="px-2 py-1.5 text-ink-faint tabular-nums text-right">
+                {e.is_dir ? '—' : formatBytes(e.size)}
+              </td>
+              <td className="px-2 py-1.5 text-ink-faint tabular-nums">
+                {`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}
+              </td>
+              <td className="pr-3 pl-2 py-1.5 text-ink-faint">
+                {formatMtime(e.mtime)}
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
   )
 }
 

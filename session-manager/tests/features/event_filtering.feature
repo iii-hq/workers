@@ -16,7 +16,7 @@ Feature: trigger binding configs — the per-subscriber filter contract
   Scenario: session_id filters message events to one session
     Given a bare session
     And a bare session
-    And a binding "b1" on "session::message_added" delivering to "ui::s1" with config:
+    And a binding "b1" on "session::message-added" delivering to "ui::s1" with config:
       """
       { "session_id": "s_001" }
       """
@@ -29,7 +29,7 @@ Feature: trigger binding configs — the per-subscriber filter contract
   # messages or custom entries.
   Scenario: roles filters to matching roles and never matches custom entries
     Given a bare session
-    And a binding "b1" on "session::message_added" delivering to "ui::assistant" with config:
+    And a binding "b1" on "session::message-added" delivering to "ui::assistant" with config:
       """
       { "roles": ["assistant"] }
       """
@@ -44,7 +44,7 @@ Feature: trigger binding configs — the per-subscriber filter contract
   # matches the former, never the latter.
   Scenario: roles custom matches custom messages but not custom entries
     Given a bare session
-    And a binding "b1" on "session::message_added" delivering to "ui::custom" with config:
+    And a binding "b1" on "session::message-added" delivering to "ui::custom" with config:
       """
       { "roles": ["custom"] }
       """
@@ -69,7 +69,7 @@ Feature: trigger binding configs — the per-subscriber filter contract
       """
       { "metadata": { "owner": "u_2" } }
       """
-    And a binding "b1" on "session::message_added" delivering to "obs::u1" with config:
+    And a binding "b1" on "session::message-added" delivering to "obs::u1" with config:
       """
       { "metadata": { "owner": "u_1" } }
       """
@@ -83,7 +83,7 @@ Feature: trigger binding configs — the per-subscriber filter contract
   Scenario: combined session_id and roles must both match
     Given a bare session
     And a bare session
-    And a binding "b1" on "session::message_added" delivering to "ui::combo" with config:
+    And a binding "b1" on "session::message-added" delivering to "ui::combo" with config:
       """
       { "session_id": "s_001", "roles": ["assistant"] }
       """
@@ -98,11 +98,11 @@ Feature: trigger binding configs — the per-subscriber filter contract
   # function).
   Scenario: every matching binding receives its own delivery
     Given a bare session
-    And a binding "b1" on "session::message_added" delivering to "ui::recv" with config:
+    And a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
       """
       {}
       """
-    And a binding "b2" on "session::message_added" delivering to "ui::recv" with config:
+    And a binding "b2" on "session::message-added" delivering to "ui::recv" with config:
       """
       { "session_id": "s_001" }
       """
@@ -112,19 +112,19 @@ Feature: trigger binding configs — the per-subscriber filter contract
   # Prevents: unregistered bindings continuing to receive events.
   Scenario: an unbound subscriber stops receiving
     Given a bare session
-    And a binding "b1" on "session::message_added" delivering to "ui::recv" with config:
+    And a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
       """
       {}
       """
     Given a user message "before" appended to "s_001"
-    When I unbind "b1" from "session::message_added"
+    When I unbind "b1" from "session::message-added"
     And I append a user message "after" to "s_001"
     Then function "ui::recv" received 1 delivery
 
   # Prevents: typo'd configs silently registering and then matching
   # nothing — the classic "why is my UI not updating" failure.
   Scenario: a config with an unknown field is rejected at registration
-    When I try to bind "bad" on "session::message_added" delivering to "x" with config:
+    When I try to bind "bad" on "session::message-added" delivering to "x" with config:
       """
       { "sesion_id": "s_001" }
       """
@@ -133,7 +133,7 @@ Feature: trigger binding configs — the per-subscriber filter contract
   # Prevents: roles sneaking onto trigger types that have no role
   # semantics.
   Scenario: roles on status_changed is rejected
-    When I try to bind "bad" on "session::status_changed" delivering to "x" with config:
+    When I try to bind "bad" on "session::status-changed" delivering to "x" with config:
       """
       { "roles": ["assistant"] }
       """
@@ -150,11 +150,11 @@ Feature: trigger binding configs — the per-subscriber filter contract
 
   # Prevents: invalid role values registering as never-matching filters.
   Scenario: an invalid role value is rejected
-    When I try to bind "bad" on "session::message_updated" delivering to "x" with config:
+    When I try to bind "bad" on "session::message-updated" delivering to "x" with config:
       """
       { "roles": ["robot"] }
       """
-    Then the binding registration fails mentioning "invalid session::message_updated config"
+    Then the binding registration fails mentioning "invalid session::message-updated config"
 
   # Prevents: null configs (engine default) being treated differently
   # from {}.

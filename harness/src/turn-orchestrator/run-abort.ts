@@ -40,6 +40,23 @@ export async function execute(iii: ISdk, payload: RunAbortPayload): Promise<RunA
 
   logger.info('run::abort: ending in-flight turn', { session_id, state: rec.state });
 
+  // Best-effort upstream cancellation: router::abort closes the provider-side
+  // reader so the upstream actually stops generating (and billing). The FSM
+  // record below stays the source of truth — the router's own terminal frame
+  // is discarded by the streaming step's re-entry guard.
+  void iii
+    .trigger({
+      function_id: 'router::abort',
+      payload: { request_id: `${session_id}:${rec.started_at_ms}` },
+      timeoutMs: 2_000,
+    })
+    .catch((err) => {
+      logger.debug('run::abort: router::abort failed (best-effort)', {
+        session_id,
+        err: String(err),
+      });
+    });
+
   const ports = createTurnStatePorts(iii, store);
   const msg = syntheticAssistant({ stop_reason: 'aborted', text: 'run aborted by user' });
   rec.last_assistant = msg;

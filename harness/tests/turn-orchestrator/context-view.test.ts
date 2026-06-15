@@ -26,6 +26,12 @@ function entry(id: string, message: AgentMessage): MessageWithEntryId {
   return { entry_id: id, message };
 }
 
+/** buildSummaryMessage stamps Date.now(); the view under test calls it again,
+ *  so an exact-timestamp expectation races the millisecond boundary. */
+function summary(text: string) {
+  return { ...buildSummaryMessage(text), timestamp: expect.any(Number) };
+}
+
 describe('buildContextView', () => {
   it('returns raw path when there is no compaction', () => {
     const messages = [entry('a', user('one')), entry('b', asst('two'))];
@@ -47,7 +53,7 @@ describe('buildContextView', () => {
     const compactions = [{ summary: 'condensed', tail_start_id: 'tail1', timestamp: 100 }];
 
     expect(buildContextView(messages, compactions)).toEqual([
-      buildSummaryMessage('condensed'),
+      summary('condensed'),
       asst('keep'),
       user('in flight'),
     ]);
@@ -64,10 +70,7 @@ describe('buildContextView', () => {
       { summary: 'latest', tail_start_id: 't2', timestamp: 20 },
     ];
 
-    expect(buildContextView(messages, compactions)).toEqual([
-      buildSummaryMessage('latest'),
-      user('recent'),
-    ]);
+    expect(buildContextView(messages, compactions)).toEqual([summary('latest'), user('recent')]);
   });
 
   it('keeps the whole tail when tail_start_id is absent from the path', () => {
@@ -75,7 +78,7 @@ describe('buildContextView', () => {
     const compactions = [{ summary: 's', tail_start_id: 'gone', timestamp: 1 }];
 
     expect(buildContextView(messages, compactions)).toEqual([
-      buildSummaryMessage('s'),
+      summary('s'),
       user('one'),
       asst('two'),
     ]);

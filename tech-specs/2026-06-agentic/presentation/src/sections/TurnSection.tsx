@@ -61,7 +61,7 @@ const STEPS: SeqStep[] = [
     label: 'session::update_message',
     title: 'stream to everyone',
     desc: 'every delta is persisted as it arrives, and every write emits an event. the chat ui, the telegram bridge, and any dashboard all render the same write, live — one stream in, any number of surfaces out.',
-    event: 'session::message_updated',
+    event: 'session::message-updated',
   },
   {
     from: 'harness',
