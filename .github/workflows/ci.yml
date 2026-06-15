@@ -177,7 +177,10 @@ jobs:
           iii --version
 
       - name: Run tests
-        run: cargo test --all-features
+        # Serial: engine-backed tests each spawn their own iii engine, and
+        # running them in parallel on a 2-core runner starves the engines
+        # until state ops time out. One engine at a time is deterministic.
+        run: cargo test --all-features -- --test-threads=1
 
   # ──────────────────────────────────────────────────────────────
   # Interface boot smoke: build each changed Rust worker from source,
