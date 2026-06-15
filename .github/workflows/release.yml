@@ -6,6 +6,7 @@ on:
     tags:
       - 'acp/v*'
       - 'coder/v*'
+      - 'codex/v*'
       - 'console/v*'
       - 'database/v*'
       - 'email/v*'

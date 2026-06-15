@@ -11,6 +11,7 @@ on:
         options:
           - acp
           - coder
+          - codex
           - console
           - database
           - email

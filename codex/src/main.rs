@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use iii_observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions};
@@ -67,22 +67,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    configuration::register_config(&iii, seed.as_ref())
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("registering codex configuration schema")?;
-
-    let cfg = configuration::fetch_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("loading codex configuration")?;
+    // Config registration is best-effort: codex has no security policy, so if
+    // the configuration worker is unreachable (or absent, as in interface
+    // collection on a bare engine) the worker still serves with the seed /
+    // built-in defaults. Never fatal — registering codex::* must not depend on
+    // the configuration worker being up.
+    if let Err(e) = configuration::register_config(&iii, seed.as_ref()).await {
+        tracing::warn!(error = %e, "configuration::register failed; continuing with the seed");
+    }
+    let cfg = match configuration::fetch_config(&iii).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "configuration fetch failed; using seed/default config");
+            seed.clone().unwrap_or_default()
+        }
+    };
 
     let cell: configuration::ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    // Bind the config-change trigger and reconcile BEFORE serving, so a value
-    // that landed during boot is applied before the first turn.
-    configuration::register_config_trigger(&iii, cell.clone())
-        .context("registering configuration change trigger")?;
+    // Bind the config-change trigger and reconcile so a value that landed
+    // during boot is applied before the first turn. Best-effort.
+    if let Err(e) = configuration::register_config_trigger(&iii, cell.clone()) {
+        tracing::warn!(error = %e, "configuration change trigger registration failed");
+    }
     configuration::reconcile(&iii, &cell).await;
 
     register_all(&iii, cell);

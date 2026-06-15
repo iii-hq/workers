@@ -8,5 +8,7 @@
 version: 1
 
 rules:
+  # internal config-reload callback — bus-internal, never agent-callable
+  - '!codex::on-config-change'
   - codex::status
   - codex::sessions::list
