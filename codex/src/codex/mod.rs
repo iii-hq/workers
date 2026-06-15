@@ -320,7 +320,10 @@ async fn stream_turn(
         }
         let raw: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(session_id, error = %e, "skipping non-JSON line from codex exec");
+                continue;
+            }
         };
         // verbatim onto the raw stream
         emit(iii, &cfg.raw_events_stream, session_id, raw.clone()).await;
