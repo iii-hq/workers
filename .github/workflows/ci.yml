@@ -158,6 +158,24 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Engine-backed tests (e.g. approval-gate) spawn a real `iii` engine and
+      # self-skip when no binary is on PATH. Install it so those tests actually
+      # run in CI instead of silently passing. Workers with only pure-unit
+      # tests are unaffected. Mirrors the install in `interface-smoke` below.
+      - name: Install iii CLI + engine (for engine-backed tests)
+        env:
+          VERSION: '0.19.2'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
+
       - name: Run tests
         run: cargo test --all-features
 
