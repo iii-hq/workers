@@ -91,12 +91,18 @@ export class FakeSessionManager {
     data: {
       summary: string;
       tokens_before?: number;
-      tail_start_id?: string | null;
+      tail_start_entry_id?: string | null;
       timestamp?: number;
+      /**
+       * Write the legacy `tail_start_id` key instead of `tail_start_entry_id`,
+       * to cover the back-compat read path for pre-migration sessions.
+       */
+      legacyTailField?: boolean;
     },
   ): string {
     const s = this.session(session_id);
     const entry_id = `compaction-${++autoId}`;
+    const tail = data.tail_start_entry_id ?? null;
     s.entries.push({
       entry_id,
       parent_id: s.entries.at(-1)?.entry_id ?? null,
@@ -106,7 +112,7 @@ export class FakeSessionManager {
         data: {
           summary: data.summary,
           tokens_before: data.tokens_before ?? 0,
-          tail_start_id: data.tail_start_id ?? null,
+          ...(data.legacyTailField ? { tail_start_id: tail } : { tail_start_entry_id: tail }),
           details: {},
           timestamp: data.timestamp ?? Date.now(),
         },
@@ -207,5 +213,41 @@ export class FakeSessionManager {
     s.status = String(p.status);
     s.status_reason = p.status === 'error' && typeof p.reason === 'string' ? p.reason : undefined;
     return { status: s.status, previous_status };
+  }
+}
+
+/**
+ * In-memory fake of the `context::*` surface — `assemble` and `compact`.
+ * Tests route `context::*` trigger calls into `handle()`; responses are
+ * configurable via {@link assemble} / {@link compact}.
+ */
+export class FakeContextManager {
+  calls: Array<{ function_id: string; payload: Record<string, unknown> }> = [];
+
+  /** Default assemble: echo the request (no prune/compaction). Override per test. */
+  assemble: (p: Record<string, unknown>) => unknown = (p) => ({
+    system_prompt: typeof p.system_prompt === 'string' ? p.system_prompt : '',
+    messages: Array.isArray(p.messages) ? p.messages : [],
+    token_count: 0,
+    usable: 1_000_000,
+    model_resolved: 'inline',
+    applied: { pruned: false, pruned_tokens: 0, compacted: false },
+  });
+
+  /** Default compact: nothing to compact. Override per test. */
+  compact: (p: Record<string, unknown>) => unknown = () => ({ status: 'empty' });
+
+  /** Route a trigger call. Returns undefined when not a context::* id. */
+  async handle(function_id: string, payload: unknown): Promise<unknown> {
+    if (!function_id.startsWith('context::')) return undefined;
+    const p = (payload ?? {}) as Record<string, unknown>;
+    this.calls.push({ function_id, payload: p });
+    if (function_id === 'context::assemble') return this.assemble(p);
+    if (function_id === 'context::compact') return this.compact(p);
+    throw new Error(`fake context-manager: unhandled ${function_id}`);
+  }
+
+  callsTo(function_id: string): Array<Record<string, unknown>> {
+    return this.calls.filter((c) => c.function_id === function_id).map((c) => c.payload);
   }
 }

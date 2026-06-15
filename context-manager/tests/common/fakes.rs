@@ -169,8 +169,8 @@ impl Summarizer for FakeSummarizer {
 // ---------------------------------------------------------------------------
 
 /// In-memory `(scope, key) -> LeaseRecord` map. `swap` is genuinely
-/// atomic under the mutex, mirroring `state::update`. `fail_all`
-/// simulates a state outage (every call errors).
+/// atomic under the mutex, mirroring `FsLeaseStore`'s under-lock swap.
+/// `fail_all` simulates a lease-store outage (every call errors).
 pub struct InMemoryLeaseStore {
     records: Mutex<HashMap<(String, String), LeaseRecord>>,
     pub fail_all: AtomicBool,

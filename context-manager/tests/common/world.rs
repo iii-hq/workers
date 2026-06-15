@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cucumber::World;
+use tokio::sync::RwLock;
 use iii_sdk::{TriggerRequest, III};
 use serde_json::Value;
 
@@ -92,10 +93,12 @@ impl ContextWorld {
         *self = Self::new();
     }
 
-    /// Build the production `Deps` over the current fakes + config.
+    /// Build the production `Deps` over the current fakes + config. The
+    /// per-scenario `config` is wrapped in a fresh `ConfigCell` so handlers
+    /// take the snapshot the Given steps set up.
     pub fn deps(&self) -> Deps {
         Deps {
-            config: self.config.clone(),
+            config: Arc::new(RwLock::new(Arc::new(self.config.clone()))),
             resolver: self.resolver.clone(),
             summarizer: self.summarizer.clone(),
             leases: self.leases.clone(),

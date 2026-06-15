@@ -82,22 +82,23 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
         return Ok(CompactResponse::Empty);
     }
 
+    let config = deps.config().await;
     let options = req.options.unwrap_or_default();
     let resolved = resolve_model(deps, &req.model).await?;
     let estimator = estimator_for_model(&req.model.id);
 
-    let reserved = default_reserved(&deps.config, resolved.limits.context_window);
+    let reserved = default_reserved(&config, resolved.limits.context_window);
     let budget = preserve_recent_budget(
         usable(&resolved.limits, reserved, 0),
         options.preserve_recent_tokens,
     );
-    let tail_turns = options.tail_turns.unwrap_or(deps.config.tail_turns);
+    let tail_turns = options.tail_turns.unwrap_or(config.tail_turns);
 
     let lease_key = options
         .lease_key
         .clone()
         .unwrap_or_else(|| lease::default_lease_key(&messages));
-    let ttl_ms = (deps.config.lease_ttl_secs * 1_000) as i64;
+    let ttl_ms = (config.lease_ttl_secs * 1_000) as i64;
     let Some(nonce) = lease::acquire(
         deps.leases.as_ref(),
         deps.clock.as_ref(),
@@ -142,7 +143,7 @@ async fn summarise(
     let tail = &messages[selection.head_len..];
 
     let tokens_before: u64 = head.iter().map(|m| estimator.message(m)).sum();
-    let stripped = strip_media(head, deps.config.max_output_chars);
+    let stripped = strip_media(head, deps.config().await.max_output_chars);
 
     let request = SummarizeRequest {
         system_prompt: build_system_prompt(previous_summary),

@@ -33,7 +33,7 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 - **Three modes** — `plan`, `ask`, and `agent` toggle right in the composer
 - **Live model picker** — provider-grouped from `models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
 - **`@`-mentions** — fuzzy-search every function registered against the engine
-- **`/compact` slash command** — collapses conversation history via `context-compaction::compact_session`
+- **`/compact` slash command** — summarises conversation history via `context-compaction::compact_session` (a thin wrapper over the `context-manager` worker's `context::compact`); the durable transcript is untouched — a compaction bookkeeping entry is added and the summary anchors future turns
 - **Attachments** — multi-file picker with text/image previews
 - **Function calls** — running / pending / error cards, consecutive calls grouped, with **approve/deny** gating for pending approvals (`approval::resolve`)
 - **Streaming** — abortable mid-flight; thinking shimmer; collapsible thought messages

@@ -29,6 +29,7 @@ pub fn build_manifest() -> ModuleManifest {
             "lease_ttl_secs": 300,
             "allow_fallback_limits": true,
             "summarizer_timeout_ms": 320_000,
+            "lease_dir": "~/.iii/data/context-manager",
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }

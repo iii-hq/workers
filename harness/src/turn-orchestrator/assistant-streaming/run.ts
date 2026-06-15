@@ -42,37 +42,44 @@ export async function prepareStreamContext(
   assistantEntry: string,
 ): Promise<StreamContext> {
   const request = await ports.loadRunRequest(rec.session_id);
-  // Exclude this turn's assistant entry: on step re-entry the placeholder
-  // already sits on the path (possibly with partial content) and must not be
-  // replayed to the provider as history.
-  const loadOpts = { excludeEntryIds: [assistantEntry] };
-  let messages = await ports.loadMessages(rec.session_id, loadOpts);
   const { provider, model, system_prompt, function_schemas, thinking_level } = request;
   // Provisioning pinned the routed provider; fall back to the raw request
   // provider for records provisioned before the router cutover.
   const routedProvider = request.routed_provider ?? provider;
   const tools = parseFunctionSchemas(function_schemas);
-  const model_meta = rec.model_meta;
 
-  if (
-    (await ports.runPreflight(
-      rec.session_id,
-      messages,
-      routedProvider || provider,
-      model,
-      model_meta,
-    )) === 'compacted'
-  ) {
-    messages = await ports.loadMessages(rec.session_id, loadOpts);
+  // Load the post-compaction window. Exclude this turn's assistant entry: on
+  // step re-entry the placeholder already sits on the path (possibly with
+  // partial content) and must not be replayed to the provider as history.
+  const { window, previousSummary } = await ports.loadAssembleWindow(rec.session_id, {
+    excludeEntryIds: [assistantEntry],
+  });
+
+  // context::assemble prunes/compacts the window to fit the model and renders
+  // any summary into the system prompt. When it compacts, the harness owns
+  // persistence of the round trip (an additive compaction bookkeeping entry;
+  // the transcript itself is never modified).
+  const assembled = await ports.assembleContext({
+    session_id: rec.session_id,
+    window,
+    baseSystemPrompt: system_prompt,
+    modelId: model,
+    provider: routedProvider || provider,
+    modelMeta: rec.model_meta,
+    thinkingLevel: thinking_level,
+    previousSummary,
+  });
+  if (assembled.applied.compacted) {
+    await ports.persistCompaction(rec.session_id, assembled.applied, window);
   }
 
   return {
     session_id: rec.session_id,
     provider: routedProvider,
     model,
-    system_prompt,
+    system_prompt: assembled.system_prompt,
     tools,
-    messages,
+    messages: assembled.messages,
     ...(thinking_level ? { thinking_level } : {}),
     request_id: `${rec.session_id}:${rec.started_at_ms}`,
   };

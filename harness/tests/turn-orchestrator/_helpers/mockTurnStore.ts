@@ -24,7 +24,6 @@ export function mockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore
     saveRecord: vi.fn(async () => {}),
     writeRecord: vi.fn(async () => {}),
     ensureSession: vi.fn(async () => {}),
-    loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
     loadRunRequest: vi.fn(async () => defaultRunRequest),
     saveRunRequest: vi.fn(async () => {}),

@@ -20,7 +20,7 @@ pub enum ContextError {
     #[error("context/model_unresolved: could not resolve model limits ({0})")]
     ModelUnresolved(String),
 
-    /// A `state::*` call backing the compaction lease failed.
+    /// A filesystem operation backing the compaction lease failed.
     #[error("context/state: {0}")]
     State(String),
 }

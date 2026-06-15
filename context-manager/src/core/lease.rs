@@ -10,7 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::ports::{Clock, LeaseRecord, LeaseStore};
 use crate::types::AgentMessage;
 
-/// The single state scope this worker writes.
+/// The single lease scope this worker writes (a subdirectory under the
+/// configured `lease_dir`).
 pub const LEASE_SCOPE: &str = "context_lease";
 
 /// Default lease key: sha256 over the serialized message set, so two

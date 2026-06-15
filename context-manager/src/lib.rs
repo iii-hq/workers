@@ -8,6 +8,7 @@
 
 pub mod adapters;
 pub mod config;
+pub mod configuration;
 pub mod core;
 pub mod error;
 pub mod functions;

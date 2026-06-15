@@ -3,20 +3,21 @@
 //!
 //! Re-uses the production entry points in the binary's boot order —
 //! production adapters (`RouterModelResolver`, `RouterSummarizer`,
-//! `IiiLeaseStore`, `SystemClock`) and `functions::register_all` — so
+//! `FsLeaseStore`, `SystemClock`) and `functions::register_all` — so
 //! @engine scenarios exercise identical code paths end to end,
-//! including real `state::*` lease writes. `llm-router` is absent on
-//! the test engine, which is exactly the degraded mode the spec
-//! defines (fallback limits; compact -> overflow).
+//! including real filesystem lease writes (under a per-process temp
+//! dir). `llm-router` is absent on the test engine, which is exactly
+//! the degraded mode the spec defines (fallback limits; compact ->
+//! overflow).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::{TriggerRequest, III};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, RwLock};
 
+use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
-use context_manager::adapters::state_lease::IiiLeaseStore;
 use context_manager::config::WorkerConfig;
 use context_manager::functions;
 use context_manager::ports::{Deps, SystemClock};
@@ -37,9 +38,15 @@ pub async fn register_all(iii: &Arc<III>) {
                     // path runs and a long stream budget buys nothing.
                     5_000,
                 )),
-                leases: Arc::new(IiiLeaseStore::new(iii.clone())),
+                leases: Arc::new(
+                    FsLeaseStore::new(
+                        std::env::temp_dir()
+                            .join(format!("context-manager-bdd-leases-{}", std::process::id())),
+                    )
+                    .expect("create bdd lease dir"),
+                ),
                 clock: Arc::new(SystemClock),
-                config: cfg,
+                config: Arc::new(RwLock::new(Arc::new(cfg))),
             });
             functions::register_all(iii, &deps);
 

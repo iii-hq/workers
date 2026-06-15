@@ -1,25 +1,34 @@
 //! `context-manager` binary entry.
 //!
 //! Boot sequence:
-//!   1. Parse CLI / load YAML config (a missing file falls back to
-//!      defaults; a file that exists but doesn't parse is fatal — a
-//!      typo'd budget knob must never silently run the defaults).
+//!   1. Parse CLI. An optional `--config` YAML file is only a SEED for the
+//!      first registration; the authoritative config lives in the
+//!      `configuration` worker.
 //!   2. Connect to the local iii engine over WebSocket.
-//!   3. Wire production adapters behind the ports: model limits via
-//!      `router::models::get`, the summariser via `router::chat`, and
-//!      compaction leases via `state::*` (all soft — the worker runs
-//!      without `llm-router`; only compaction degrades).
-//!   4. Register the four `context::*` functions.
-//!   5. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!   3. Register the config schema (+ seed) with the `configuration`
+//!      worker and fetch the authoritative, env-expanded value.
+//!      `configuration` is a required boot dependency: a failed
+//!      register/fetch aborts startup.
+//!   4. Wire production adapters behind the ports: model limits via
+//!      `router::models::get` and the summariser via `router::chat`
+//!      (both soft — only compaction degrades without `llm-router`), plus
+//!      compaction leases on the local filesystem (`lease_dir`).
+//!      `lease_dir` and `summarizer_timeout_ms` are read once here and are
+//!      restart-required.
+//!   5. Register the four `context::*` functions, then bind a
+//!      `configuration` trigger that hot-reloads the per-call tuning knobs.
+//!   6. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
+use tokio::sync::RwLock;
 
+use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
-use context_manager::adapters::state_lease::IiiLeaseStore;
+use context_manager::configuration::{self, ConfigCell};
 use context_manager::ports::{Deps, SystemClock};
 use context_manager::{config, functions, manifest};
 
@@ -29,8 +38,11 @@ use context_manager::{config, functions, manifest};
     about = "Model-ready context assembly: token counting, pruning, and history compaction."
 )]
 struct Cli {
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// Optional seed config.yaml used to populate `initial_value` on the
+    /// first registration. The AUTHORITATIVE config is always fetched from
+    /// the `configuration` worker afterward; this file only seeds it.
+    #[arg(long)]
+    config: Option<String>,
 
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
@@ -56,20 +68,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let cfg = match config::load_config(&cli.config) {
-        Ok(c) => c,
-        Err(e)
-            if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            tracing::warn!(path = %cli.config, "config file not found, using defaults");
-            config::WorkerConfig::default()
-        }
-        Err(e) => {
-            return Err(e.context(format!("invalid config {} — refusing to start", cli.config)));
-        }
-    };
-
+    // Connect first so the configuration round-trip below runs over a live
+    // connection.
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
@@ -86,18 +86,68 @@ async fn main() -> Result<()> {
         },
     ));
 
+    // A `--config` file only SEEDS the first registration; a failed parse
+    // WARNS and falls through to None (the authoritative value comes from the
+    // configuration worker). The seed IS env-expanded (`${VAR}`).
+    let seed = match cli.config.as_deref() {
+        Some(path) => match config::WorkerConfig::from_file(path) {
+            Ok(c) => {
+                tracing::info!(path = %path, "loaded seed config for initial registration");
+                Some(c)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path,
+                    error = %e,
+                    "failed to load seed config; relying on the stored configuration entry"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Register the schema (+ optional seed) and fetch the authoritative,
+    // env-expanded config. `configuration` is a required boot dependency.
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering context-manager configuration schema")?;
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading context-manager configuration")?;
+
+    // Capture the restart-required signature before moving cfg into the cell.
+    let boot_sig = cfg.boot_signature();
+
+    // Boot-time adapters read the restart-required fields ONCE here:
+    // summarizer_timeout_ms -> RouterSummarizer, lease_dir -> FsLeaseStore. A
+    // later change to either is refused on hot-reload. A lease dir we can't
+    // create is boot-fatal — leasing must never silently no-op.
+    let summarizer = Arc::new(RouterSummarizer::new(iii.clone(), cfg.summarizer_timeout_ms));
+    let leases = Arc::new(
+        FsLeaseStore::new(cfg.resolved_lease_dir())
+            .map_err(|e| anyhow::anyhow!("opening the compaction lease directory: {e}"))?,
+    );
+
+    // The hot-swappable snapshot shared with every handler.
+    let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
+
     let deps = Arc::new(Deps {
+        config: cell.clone(),
         resolver: Arc::new(RouterModelResolver::new(iii.clone())),
-        summarizer: Arc::new(RouterSummarizer::new(
-            iii.clone(),
-            cfg.summarizer_timeout_ms,
-        )),
-        leases: Arc::new(IiiLeaseStore::new(iii.clone())),
+        summarizer,
+        leases,
         clock: Arc::new(SystemClock),
-        config: cfg,
     });
 
     functions::register_all(&iii, &deps);
+
+    // LAST: bind the configuration-change trigger so its handler closes over
+    // the fully-built snapshot cell + boot signature.
+    configuration::register_config_trigger(&iii, cell, boot_sig)
+        .context("registering the configuration change trigger")?;
 
     tracing::info!("context-manager ready: 4 context::* functions");
 

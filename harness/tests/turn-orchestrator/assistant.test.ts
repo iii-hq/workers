@@ -3,7 +3,6 @@ import type { ISdk } from '../../src/runtime/iii.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
-import * as preflightModule from '../../src/turn-orchestrator/preflight.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { handleFinishing } from '../../src/turn-orchestrator/finishing.js';
 import { handleStreaming } from '../../src/turn-orchestrator/assistant-streaming/process.js';
@@ -91,7 +90,6 @@ function mockStreamingStore(overrides: Parameters<typeof installMockTurnStore>[0
       system_prompt: '',
       function_schemas: [],
     })),
-    loadMessages: vi.fn(async () => []),
     ...overrides,
   });
 }
@@ -105,7 +103,6 @@ describe('handleStreaming turn start', () => {
       },
     });
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
@@ -125,7 +122,6 @@ describe('handleStreaming', () => {
       },
     });
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
@@ -149,7 +145,6 @@ describe('handleStreaming', () => {
     const { iii, calls, sessions } = fakeIiiWithDone(finalMsg);
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
@@ -173,7 +168,6 @@ describe('handleStreaming', () => {
     const { iii } = fakeIiiWithDone(finalMsg);
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
@@ -209,7 +203,6 @@ describe('handleStreaming', () => {
     });
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
@@ -223,7 +216,6 @@ describe('handleStreaming', () => {
     const { iii, sessions } = fakeIiiWithDone(finalMsg);
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
@@ -253,7 +245,6 @@ describe('handleStreaming', () => {
     const { iii, sessions } = fakeIiiWithDone(finalMsg);
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
     expect(sessions.messageEntries('s1')).toHaveLength(1);

@@ -62,7 +62,7 @@ pub(crate) async fn resolve_model(
         Ok(None) => format!("model {} is not in the router catalog", input.id),
         Err(e) => format!("router unavailable: {e}"),
     };
-    if deps.config.allow_fallback_limits {
+    if deps.config().await.allow_fallback_limits {
         tracing::warn!(model = %input.id, %reason, "using conservative fallback limits");
         return Ok(fallback_model());
     }

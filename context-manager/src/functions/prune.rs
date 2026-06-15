@@ -59,17 +59,16 @@ pub async fn handle(deps: &Deps, req: PruneRequest) -> Result<PruneResponse, Con
         .messages
         .ok_or_else(|| ContextError::InvalidRequest("messages is required".into()))?;
 
+    let config = deps.config().await;
     let options = req.options.unwrap_or_default();
     let params = PruneParams {
         protect_recent_tokens: options
             .protect_recent_tokens
-            .unwrap_or(deps.config.protect_recent_tokens),
-        min_free_tokens: options
-            .min_free_tokens
-            .unwrap_or(deps.config.min_free_tokens),
+            .unwrap_or(config.protect_recent_tokens),
+        min_free_tokens: options.min_free_tokens.unwrap_or(config.min_free_tokens),
         max_output_chars: options
             .max_output_chars
-            .unwrap_or(deps.config.max_output_chars),
+            .unwrap_or(config.max_output_chars),
         protected_functions: options.protected_functions.unwrap_or_default(),
     };
 

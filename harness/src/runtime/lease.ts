@@ -3,8 +3,8 @@
  * iii exposes (there's no native lock). Acquire writes a `{nonce, ts}` claim and
  * reads the prior value in one atomic op, so exactly one concurrent acquirer
  * sees a free/expired prior and wins; a claim older than `ttlMs` reads inactive,
- * folding crash recovery into the same op. session-lease and
- * context-compaction/lease are thin (scope, ttl) adapters.
+ * folding crash recovery into the same op. session-lease is a thin (scope, ttl)
+ * adapter over this.
  */
 
 import { randomUUID } from 'node:crypto';

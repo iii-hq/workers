@@ -19,7 +19,6 @@ afterEach(() => {
 
 function mockFinalizePersistence(): void {
   installMockTurnStore({
-    loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
   });
 }
@@ -379,7 +378,6 @@ describe('handleExecute new flow', () => {
       asst,
     );
     installMockTurnStore({
-      loadMessages: vi.fn(async () => []),
       appendMessages: vi.fn(async () => {}),
     });
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);

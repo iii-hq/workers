@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
+use crate::configuration::ConfigCell;
 use crate::types::Model;
 
 /// Resolves a model id to its router catalog record.
@@ -107,9 +108,21 @@ impl Clock for SystemClock {
 
 /// Everything a `context::*` handler needs.
 pub struct Deps {
-    pub config: WorkerConfig,
+    /// Hot-swappable config snapshot, sourced from the `configuration`
+    /// worker and reloaded live (see [`crate::configuration`]).
+    pub config: ConfigCell,
     pub resolver: Arc<dyn ModelResolver>,
     pub summarizer: Arc<dyn Summarizer>,
     pub leases: Arc<dyn LeaseStore>,
     pub clock: Arc<dyn Clock>,
+}
+
+impl Deps {
+    /// Take a cheap snapshot of the current config. Handlers call this
+    /// once at the top of a request and read fields off the returned
+    /// `Arc`; a concurrent hot-reload swaps the cell without disturbing
+    /// snapshots already taken.
+    pub async fn config(&self) -> Arc<WorkerConfig> {
+        self.config.read().await.clone()
+    }
 }

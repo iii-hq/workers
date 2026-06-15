@@ -116,11 +116,12 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         .messages
         .ok_or_else(|| ContextError::InvalidRequest("messages is required".into()))?;
     let options = req.options.unwrap_or_default();
+    let config = deps.config().await;
 
     let resolved = resolve_model(deps, &req.model).await?;
     let reserved = options
         .reserved_tokens
-        .unwrap_or_else(|| default_reserved(&deps.config, resolved.limits.context_window));
+        .unwrap_or_else(|| default_reserved(&config, resolved.limits.context_window));
     let thinking_budget = resolved.thinking_budget(options.thinking_level);
     let usable_budget = usable(&resolved.limits, reserved, thinking_budget);
 
@@ -159,9 +160,9 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // Step 1: prune function outputs.
     if token_count > usable_budget && options.allow_prune.unwrap_or(true) {
         let params = PruneParams {
-            protect_recent_tokens: deps.config.protect_recent_tokens,
-            min_free_tokens: deps.config.min_free_tokens,
-            max_output_chars: deps.config.max_output_chars,
+            protect_recent_tokens: config.protect_recent_tokens,
+            min_free_tokens: config.min_free_tokens,
+            max_output_chars: config.max_output_chars,
             protected_functions: options.protected_functions.clone().unwrap_or_default(),
         };
         let stats = run_prune(&mut working, &params, estimator);
@@ -185,7 +186,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             &req.model,
             &working,
             usable_budget,
-            options.tail_turns.unwrap_or(deps.config.tail_turns),
+            options.tail_turns.unwrap_or(config.tail_turns),
             &lease_key,
             options.previous_summary.as_deref(),
             estimator,
@@ -237,7 +238,8 @@ async fn try_compact(
     previous_summary: Option<&str>,
     estimator: &dyn Estimator,
 ) -> Option<CompactionOutcome> {
-    let ttl_ms = (deps.config.lease_ttl_secs * 1_000) as i64;
+    let config = deps.config().await;
+    let ttl_ms = (config.lease_ttl_secs * 1_000) as i64;
     let nonce =
         lease::acquire(deps.leases.as_ref(), deps.clock.as_ref(), lease_key, ttl_ms).await?;
 
@@ -250,7 +252,7 @@ async fn try_compact(
         }
 
         let tokens_before: u64 = head.iter().map(|m| estimator.message(m)).sum();
-        let stripped = strip_media(head, deps.config.max_output_chars);
+        let stripped = strip_media(head, config.max_output_chars);
         let request = SummarizeRequest {
             system_prompt: build_system_prompt(previous_summary),
             user_prompt: render_user_prompt(&stripped),
