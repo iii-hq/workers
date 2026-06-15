@@ -26,7 +26,7 @@ deterministic idempotent entry ids, streams assistant content via
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*` / `harness::provider::{register,resolve,list}`. Owns the provider registry + the `harness` entry in the `configuration` worker (credentials, settings, permissions — see [storage.md](harness/docs/storage.md)). | [workers/harness.md](harness/docs/workers/harness.md) |
-| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` pre_dispatch hook chokepoint; owns `harness::function::resolve` and the `harness::hook::pre_dispatch` / `harness::turn_completed` trigger types. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
+| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` pre_dispatch hook chokepoint; owns `harness::function::resolve` and the `harness::hook::pre-dispatch` / `harness::turn-completed` trigger types. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
 | approval-gate (external) | [approval-gate/ (repo root)](../../approval-gate/) | Standalone Rust worker: approval policy, pending inbox, decision RPCs. Binds `approval::gate` to the harness's pre_dispatch hook and settles holds via `harness::function::resolve`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
@@ -88,7 +88,7 @@ flowchart LR
 
   client -- "approval::resolve" --> approval
   approval -- "harness::function::resolve (execute / deliver)" --> turnOrch
-  turnOrch -- "harness::turn_completed" --> approval
+  turnOrch -- "harness::turn-completed" --> approval
   turnOrch -- "enqueue turn::{state} on turn-step queue" --> turnOrch
 
   provAnth -- "harness::provider::resolve" --> harness
@@ -138,7 +138,7 @@ unexpectedly (unless it opts into queue retry via `TransientError`).
 
 ## Approval flow
 
-The orchestrator consults the `harness::hook::pre_dispatch` chain inside
+The orchestrator consults the `harness::hook::pre-dispatch` chain inside
 `dispatchWithHook` — bound hooks (the standalone approval-gate's
 `approval::gate`) answer `continue`, `deny`, or `hold`. The approval policy
 itself (permission modes, allow-lists, `policy::check_permissions` fallback)
@@ -176,7 +176,7 @@ parked until A and C are resolved.
 |---|---|---|
 | Open approvals | `turn_state/<session_id>` → `awaiting_approval[]` | Which calls are parked and their args |
 | Decisions | `function_resolutions/<session_id>/<function_call_id>` | Written by `harness::function::resolve`; consumed (and deleted) on each wake |
-| Pending inbox | approval-gate worker (`approval::list_pending`) | Cross-session human-attention index, owned by the gate |
+| Pending inbox | approval-gate worker (`approval::list-pending`) | Cross-session human-attention index, owned by the gate |
 | UI mirror | `turn_state_changed` on `agent::events` | Console shows pending modals from `TurnStateView.awaiting_approval` |
 | Reload | `turn::get_state` | One-shot lean view after refresh (no direct iii state reads) |
 

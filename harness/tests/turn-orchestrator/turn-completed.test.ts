@@ -80,7 +80,7 @@ describe('turn_completed fan-out', () => {
   it('delivers to bindings, honoring the session_id filter', async () => {
     const f = fixture();
     registerTurnCompletedTriggerType(f.iii);
-    await f.handler().registerTrigger(binding('b1', 'approval::on_turn_completed', {}));
+    await f.handler().registerTrigger(binding('b1', 'approval::on-turn-completed', {}));
     await f.handler().registerTrigger(binding('b2', 'other::handler', { session_id: 's-other' }));
 
     await emitTurnCompleted(f.iii, {
@@ -92,7 +92,7 @@ describe('turn_completed fan-out', () => {
 
     expect(f.deliveries).toEqual([
       {
-        function_id: 'approval::on_turn_completed',
+        function_id: 'approval::on-turn-completed',
         payload: { session_id: 's1', turn_id: 't_1', status: 'completed', timestamp: 1 },
       },
     ]);
@@ -101,7 +101,7 @@ describe('turn_completed fan-out', () => {
   it('a failing consumer never throws back into the emitter', async () => {
     const f = fixture();
     registerTurnCompletedTriggerType(f.iii);
-    await f.handler().registerTrigger(binding('b1', 'approval::on_turn_completed', {}));
+    await f.handler().registerTrigger(binding('b1', 'approval::on-turn-completed', {}));
     const trigger = f.iii.trigger as unknown as ReturnType<typeof vi.fn>;
     trigger.mockRejectedValueOnce(new Error('consumer down'));
 
@@ -129,7 +129,7 @@ describe('saveRecord terminal emission', () => {
   it('emits once when a turn transitions into stopped', async () => {
     const f = fixture();
     registerTurnCompletedTriggerType(f.iii);
-    await f.handler().registerTrigger(binding('b1', 'approval::on_turn_completed', {}));
+    await f.handler().registerTrigger(binding('b1', 'approval::on-turn-completed', {}));
 
     const prev = newRecord('s1');
     prev.state = 'finishing';
@@ -149,7 +149,7 @@ describe('saveRecord terminal emission', () => {
   it('carries the failure reason on failed transitions', async () => {
     const f = fixture();
     registerTurnCompletedTriggerType(f.iii);
-    await f.handler().registerTrigger(binding('b1', 'approval::on_turn_completed', {}));
+    await f.handler().registerTrigger(binding('b1', 'approval::on-turn-completed', {}));
 
     const prev = newRecord('s1');
     prev.state = 'function_execute';
@@ -165,7 +165,7 @@ describe('saveRecord terminal emission', () => {
   it('stays silent on non-terminal saves and terminal rewrites', async () => {
     const f = fixture();
     registerTurnCompletedTriggerType(f.iii);
-    await f.handler().registerTrigger(binding('b1', 'approval::on_turn_completed', {}));
+    await f.handler().registerTrigger(binding('b1', 'approval::on-turn-completed', {}));
 
     const prev = newRecord('s1');
     prev.state = 'provisioning';

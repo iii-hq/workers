@@ -142,7 +142,7 @@ async function emitTurnStateChanged(
 const TERMINAL_STATES = new Set<TurnState>(['stopped', 'failed']);
 
 /**
- * Emit `harness::turn_completed` once per terminal transition: only the
+ * Emit `harness::turn-completed` once per terminal transition: only the
  * save that moved the record from a non-terminal state into stopped/failed
  * fires (terminal→terminal rewrites stay silent). At-least-once — a
  * crash between persist and emit loses the event, which consumers

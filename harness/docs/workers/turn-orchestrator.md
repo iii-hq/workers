@@ -26,7 +26,7 @@ crash-isolation contract:
 
 `dispatchWithHook` in [agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts)
 is the single chokepoint every agent-issued function call passes through.
-It consults the `harness::hook::pre_dispatch` chain
+It consults the `harness::hook::pre-dispatch` chain
 ([hooks/chain.ts](harness/src/turn-orchestrator/hooks/chain.ts)) before
 forwarding to the target function id: each bound hook (e.g. the standalone
 approval-gate worker's `approval::gate`) answers `continue` / `deny` /
@@ -54,8 +54,8 @@ Paused turns (`function_awaiting_approval`) are woken by `harness::function::res
 
 The worker also registers two custom trigger types sibling workers bind to:
 
-- `harness::hook::pre_dispatch` ([hooks/registry.ts](harness/src/turn-orchestrator/hooks/registry.ts)) — synchronous pre-dispatch hooks; the standalone approval-gate binds `approval::gate` here. Binding config: `{functions?: string[] (globs), priority?, timeout_ms? (default 5000), on_error?: "fail_closed" | "fail_open"}`.
-- `harness::turn_completed` ([turn-completed.ts](harness/src/turn-orchestrator/turn-completed.ts)) — fired once when a turn goes terminal (`{session_id, turn_id, status: completed|cancelled|failed, reason?, timestamp}`); the approval-gate purges its pending records here. Delivery is at-least-once and unordered.
+- `harness::hook::pre-dispatch` ([hooks/registry.ts](harness/src/turn-orchestrator/hooks/registry.ts)) — synchronous pre-dispatch hooks; the standalone approval-gate binds `approval::gate` here. Binding config: `{functions?: string[] (globs), priority?, timeout_ms? (default 5000), on_error?: "fail_closed" | "fail_open"}`.
+- `harness::turn-completed` ([turn-completed.ts](harness/src/turn-orchestrator/turn-completed.ts)) — fired once when a turn goes terminal (`{session_id, turn_id, status: completed|cancelled|failed, reason?, timestamp}`); the approval-gate purges its pending records here. Delivery is at-least-once and unordered.
 
 ## Turn FSM
 
@@ -127,7 +127,7 @@ consumers.
 
 ## Hook chokepoint
 
-`dispatchWithHook` → `consultPreDispatch` → each `harness::hook::pre_dispatch`
+`dispatchWithHook` → `consultPreDispatch` → each `harness::hook::pre-dispatch`
 binding in priority order (per-binding `timeout_ms`, fail-closed). The
 approval policy itself (permission modes, allow-lists, yaml rules) lives in
 the standalone approval-gate worker — see
@@ -159,16 +159,16 @@ From
 | File | Purpose |
 |---|---|
 | [src/turn-orchestrator/main.ts](harness/src/turn-orchestrator/main.ts) | Binary entry point. |
-| [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes all registered functions and trigger types: `run::start`, per-state `turn::{state}` handlers, `harness::function::resolve`, `turn::get_state`, `harness::hook::pre_dispatch`, `harness::turn_completed`. |
+| [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes all registered functions and trigger types: `run::start`, per-state `turn::{state}` handlers, `harness::function::resolve`, `turn::get_state`, `harness::hook::pre-dispatch`, `harness::turn-completed`. |
 | [src/turn-orchestrator/run-start.ts](harness/src/turn-orchestrator/run-start.ts) | `run::start` handler — persists run config and messages, seeds `turn_state` to `provisioning` via `saveRecord` (which wakes the FSM). |
 | [src/turn-orchestrator/run-transition.ts](harness/src/turn-orchestrator/run-transition.ts) | Shared FSM transition runner: load → null-check → stale-skip → handle → save. Routes to `failed` on unexpected throw; re-throws `TransientError` for queue retry. |
 | [src/turn-orchestrator/state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) | `TurnStore` / `createTurnStore` — agent-scope load/save, `shouldWakeStep`, inline FIFO enqueue from `saveRecord`. |
 | [src/turn-orchestrator/run-request.ts](harness/src/turn-orchestrator/run-request.ts) | `RunRequest` type and `parseRunRequest` — the typed, parsed form of scope `run_request` (includes `function_schemas`). |
 | [src/turn-orchestrator/get-state.ts](harness/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader returning `TurnStateView \| null`. |
 | [src/turn-orchestrator/agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts) | Dispatcher chokepoint: `dispatchWithHook` (consult + trigger), `triggerFunctionCall` (trigger/decode/error), `agentTriggerTool` (schema), `unwrapAgentTrigger`. |
-| [src/turn-orchestrator/hooks/](harness/src/turn-orchestrator/hooks/) | The `harness::hook::pre_dispatch` surface: `registry.ts` (trigger type + subscriber set), `chain.ts` (`consultPreDispatch`, fail-closed), `types.ts` (HookInput/HookOutput/BindingConfig), `denial.ts` (`DenialEnvelope`, `gateUnavailableEnvelope`, `denialResult`). |
+| [src/turn-orchestrator/hooks/](harness/src/turn-orchestrator/hooks/) | The `harness::hook::pre-dispatch` surface: `registry.ts` (trigger type + subscriber set), `chain.ts` (`consultPreDispatch`, fail-closed), `types.ts` (HookInput/HookOutput/BindingConfig), `denial.ts` (`DenialEnvelope`, `gateUnavailableEnvelope`, `denialResult`). |
 | [src/turn-orchestrator/function-resolve.ts](harness/src/turn-orchestrator/function-resolve.ts) | `harness::function::resolve` + the `function_resolutions` scope helpers (`readResolution`, `deleteResolution`, `enqueueAwaitingApprovalWake`). |
-| [src/turn-orchestrator/turn-completed.ts](harness/src/turn-orchestrator/turn-completed.ts) | `harness::turn_completed` trigger type, `emitTurnCompleted`, `terminalStatus`. |
+| [src/turn-orchestrator/turn-completed.ts](harness/src/turn-orchestrator/turn-completed.ts) | `harness::turn-completed` trigger type, `emitTurnCompleted`, `terminalStatus`. |
 | [src/turn-orchestrator/function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) | `turn::function_awaiting_approval` FSM step. |
 | [src/turn-orchestrator/schemas.ts](harness/src/turn-orchestrator/schemas.ts) | All registered-function I/O schemas and types: `RunStartPayloadSchema`, `TurnStepPayloadSchema`, `TurnStateView`, `toView`, `FunctionResolvePayloadSchema`. |
 | [src/turn-orchestrator/state-runtime/ports.ts](harness/src/turn-orchestrator/state-runtime/ports.ts) | `TurnStatePorts` / `createTurnStatePorts` — shared dependency ports for per-state handlers (incl. `finishSession`). |

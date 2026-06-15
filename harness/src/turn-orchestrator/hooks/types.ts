@@ -1,5 +1,5 @@
 /**
- * Wire types for the `harness::hook::pre_dispatch` trigger type: the
+ * Wire types for the `harness::hook::pre-dispatch` trigger type: the
  * hook input/output contract (harness.md § Hooks › Contract) and the
  * per-binding config schema. Hook owners (e.g. the approval-gate
  * worker's `approval::gate`) bind to the trigger type and answer
@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 
-export const PRE_DISPATCH_TRIGGER_TYPE = 'harness::hook::pre_dispatch';
+export const PRE_DISPATCH_TRIGGER_TYPE = 'harness::hook::pre-dispatch';
 
 /** Fail-closed default budget for one hook consult. */
 export const DEFAULT_HOOK_TIMEOUT_MS = 5_000;

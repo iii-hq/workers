@@ -1,7 +1,7 @@
 /**
  * End-to-end pre_dispatch hook flow against the REAL chain (no
  * dispatchWithHook mocks): a fake `approval::gate` bound to
- * `harness::hook::pre_dispatch` holds/denies/allows calls, and
+ * `harness::hook::pre-dispatch` holds/denies/allows calls, and
  * `harness::function::resolve` settles held ones — exactly the wire the
  * standalone approval-gate worker drives.
  */

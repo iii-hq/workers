@@ -2,7 +2,7 @@
  * Agent function-call dispatcher + hook chokepoint.
  *
  * `dispatchWithHook` is the single chokepoint for FSM-issued calls: every
- * agent function call consults the `harness::hook::pre_dispatch` chain
+ * agent function call consults the `harness::hook::pre-dispatch` chain
  * before reaching the inner trigger. `triggerFunctionCall` is the shared
  * trigger/decode/error path used by both the hook gate and released
  * (pre-approved) resume execution.

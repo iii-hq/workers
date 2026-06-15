@@ -2,7 +2,7 @@
 
 The in-harness approval-gate worker has been removed. Approval policy —
 permission modes, allow-lists, the yaml-policy fallback, the pending inbox,
-and the decision RPCs (`approval::resolve`, `approval::set_mode`, …) — now
+and the decision RPCs (`approval::resolve`, `approval::set-mode`, …) — now
 lives in the **standalone approval-gate worker** (Rust crate at
 [`approval-gate/`](../../../approval-gate/) in the repo root).
 
@@ -11,15 +11,15 @@ lives in the **standalone approval-gate worker** (Rust crate at
 
 The harness keeps only the mechanics the gate composes with:
 
-- the `harness::hook::pre_dispatch` trigger type the gate binds
+- the `harness::hook::pre-dispatch` trigger type the gate binds
   `approval::gate` to (see
   [turn-orchestrator.md § Hook chokepoint](turn-orchestrator.md#hook-chokepoint)),
 - `harness::function::resolve` (`execute` releases a held call, `deliver`
   answers it without executing), and
-- the `harness::turn_completed` trigger type (terminal-turn cleanup).
+- the `harness::turn-completed` trigger type (terminal-turn cleanup).
 
 Deployment note: the gate is a separate process (like `llm-router`). Start
-the harness first — the gate's `harness::hook::pre_dispatch` binding is
+the harness first — the gate's `harness::hook::pre-dispatch` binding is
 best-effort at boot and only retries on gate restart. A deployment without
 the gate runs **ungated** (zero pre_dispatch bindings ⇒ every call is
 allowed).

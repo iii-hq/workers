@@ -1,7 +1,7 @@
 /**
- * Subscriber registry for the `harness::hook::pre_dispatch` trigger
+ * Subscriber registry for the `harness::hook::pre-dispatch` trigger
  * type. Hook owners bind via the engine's standard trigger registration
- * (`iii.registerTrigger({ type: "harness::hook::pre_dispatch", … })`);
+ * (`iii.registerTrigger({ type: "harness::hook::pre-dispatch", … })`);
  * the engine routes each registration here. After a harness restart the
  * engine replays existing registrations to the type owner, so the set
  * rebuilds itself.

@@ -1,5 +1,5 @@
 /**
- * The `harness::turn_completed` trigger type — fired when a turn goes
+ * The `harness::turn-completed` trigger type — fired when a turn goes
  * terminal (completed / cancelled / failed). Sibling workers bind to it
  * for cleanup; the approval-gate purges a terminal turn's pending
  * records here instead of polling.
@@ -14,7 +14,7 @@ import { TriggerAction, type ISdk, type TriggerConfig } from '../runtime/iii.js'
 import { logger } from '../runtime/otel.js';
 import type { TurnStateRecord } from './state.js';
 
-export const TURN_COMPLETED_TRIGGER_TYPE = 'harness::turn_completed';
+export const TURN_COMPLETED_TRIGGER_TYPE = 'harness::turn-completed';
 
 export type TurnCompletedStatus = 'completed' | 'cancelled' | 'failed';
 
