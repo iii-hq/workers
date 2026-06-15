@@ -169,8 +169,15 @@ jobs:
           VERSION: '0.19.2'
         run: |
           set -euo pipefail
-          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh
+          # Retry: install.iii.dev's release index can transiently 404 an
+          # existing version (e.g. right after a new release publishes), which
+          # would otherwise fail the whole job.
+          for attempt in 1 2 3; do
+            curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh \
+              && sh /tmp/install-iii.sh && break
+            echo "::warning::iii install attempt ${attempt} failed (transient release-index hiccup?); retrying in 10s"
+            sleep 10
+          done
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
