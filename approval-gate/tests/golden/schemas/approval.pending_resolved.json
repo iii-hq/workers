@@ -1,0 +1,66 @@
+{
+  "description": "A pending approval left the inbox (outcome: allow | deny | timeout | aborted). Emitted exactly once per record; lets UIs clear badges.",
+  "payload_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ResolvedOutcome": {
+        "enum": [
+          "allow",
+          "deny",
+          "timeout",
+          "aborted"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Payload of `approval::pending_resolved` — a pending call left the inbox. Emitted exactly once per record (gated on the record delete).",
+    "properties": {
+      "function_call_id": {
+        "type": "string"
+      },
+      "function_id": {
+        "type": "string"
+      },
+      "outcome": {
+        "$ref": "#/definitions/ResolvedOutcome"
+      },
+      "reason": {
+        "description": "Operator-supplied on deny.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "resolved_at": {
+        "description": "ms epoch",
+        "format": "int64",
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "Tenancy routing, from the record.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "function_call_id",
+      "function_id",
+      "outcome",
+      "resolved_at",
+      "session_id",
+      "turn_id"
+    ],
+    "title": "PendingResolvedEvent",
+    "type": "object"
+  },
+  "trigger_id": "approval::pending_resolved"
+}

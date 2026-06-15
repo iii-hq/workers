@@ -26,7 +26,15 @@ use serde_json::Value;
 use crate::types::{metadata_matches, JsonMap, PendingApprovalRecord, PendingResolvedEvent};
 
 pub const PENDING_CREATED: &str = "approval::pending_created";
+pub const PENDING_CREATED_DESC: &str =
+    "A function call was held for human approval and its inbox record written. \
+     Payload: PendingApprovalRecord (redacted args, session context, expiry). \
+     Bind notification workers here.";
+
 pub const PENDING_RESOLVED: &str = "approval::pending_resolved";
+pub const PENDING_RESOLVED_DESC: &str =
+    "A pending approval left the inbox (outcome: allow | deny | timeout | aborted). \
+     Emitted exactly once per record; lets UIs clear badges.";
 
 /// Config accepted by both trigger types.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -193,9 +201,7 @@ pub fn register_trigger_types(iii: &Arc<III>) -> TriggerSets {
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             PENDING_CREATED,
-            "A function call was held for human approval and its inbox record written. \
-             Payload: PendingApprovalRecord (redacted args, session context, expiry). \
-             Bind notification workers here.",
+            PENDING_CREATED_DESC,
             ApprovalTriggerHandler {
                 set: sets.created.clone(),
             },
@@ -205,8 +211,7 @@ pub fn register_trigger_types(iii: &Arc<III>) -> TriggerSets {
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             PENDING_RESOLVED,
-            "A pending approval left the inbox (outcome: allow | deny | timeout | aborted). \
-             Emitted exactly once per record; lets UIs clear badges.",
+            PENDING_RESOLVED_DESC,
             ApprovalTriggerHandler {
                 set: sets.resolved.clone(),
             },

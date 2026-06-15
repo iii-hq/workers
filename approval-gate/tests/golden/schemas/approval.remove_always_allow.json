@@ -1,0 +1,119 @@
+{
+  "description": "Remove a function from the session's auto-mode trust list (no-op when absent). Human/console-only.",
+  "function_id": "approval::remove_always_allow",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "function_id": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "function_id",
+      "session_id"
+    ],
+    "title": "AlwaysAllowMutationRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AlwaysAllowEntry": {
+        "properties": {
+          "function_id": {
+            "type": "string"
+          },
+          "granted_at": {
+            "description": "ms epoch",
+            "format": "int64",
+            "type": "integer"
+          },
+          "granted_by": {
+            "$ref": "#/definitions/GrantedBy"
+          }
+        },
+        "required": [
+          "function_id",
+          "granted_at",
+          "granted_by"
+        ],
+        "type": "object"
+      },
+      "ApprovalSettings": {
+        "description": "The stored per-session record (scope `approval_settings`). Reads compute the effective settings from configuration defaults when no record exists — see settings.rs.",
+        "properties": {
+          "always_allow": {
+            "default": [],
+            "description": "Consulted only in auto mode.",
+            "items": {
+              "$ref": "#/definitions/AlwaysAllowEntry"
+            },
+            "type": "array"
+          },
+          "approved_always": {
+            "default": [],
+            "description": "Consulted in every mode — remembered human decisions.",
+            "items": {
+              "$ref": "#/definitions/AlwaysAllowEntry"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/PermissionMode"
+              }
+            ],
+            "default": "manual"
+          },
+          "mode_set_at": {
+            "default": 0,
+            "description": "ms epoch",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "GrantedBy": {
+        "oneOf": [
+          {
+            "enum": [
+              "user_click"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Copied from the deployment's `always_allow_seed` on first mutation.",
+            "enum": [
+              "seed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PermissionMode": {
+        "enum": [
+          "manual",
+          "auto",
+          "full"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Shared by every settings mutation RPC: the post-mutation record.",
+    "properties": {
+      "settings": {
+        "$ref": "#/definitions/ApprovalSettings"
+      }
+    },
+    "required": [
+      "settings"
+    ],
+    "title": "SettingsResponse",
+    "type": "object"
+  }
+}

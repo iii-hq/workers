@@ -1,0 +1,63 @@
+{
+  "description": "Apply a human decision to a held call: release it for execution (allow) or deliver a denial (deny). Human/console-only.",
+  "function_id": "approval::resolve",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ResolveDecision": {
+        "enum": [
+          "allow",
+          "deny"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "decision": {
+        "$ref": "#/definitions/ResolveDecision"
+      },
+      "function_call_id": {
+        "type": "string"
+      },
+      "reason": {
+        "default": null,
+        "description": "Surfaced to the model on deny.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "decision",
+      "function_call_id",
+      "session_id"
+    ],
+    "title": "ResolveRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "resolved": {
+        "description": "false: unknown/already-resolved pending call.",
+        "type": "boolean"
+      },
+      "turn_resumed": {
+        "description": "Passthrough from harness::function::resolve.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "resolved"
+    ],
+    "title": "ResolveResponse",
+    "type": "object"
+  }
+}

@@ -309,7 +309,9 @@ pub struct ListPendingResponse {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GetPendingRequest {
+    /// The session the pending record belongs to.
     pub session_id: String,
+    /// The function call id of the held call.
     pub function_call_id: String,
 }
 

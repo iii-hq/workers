@@ -1,0 +1,139 @@
+{
+  "description": "pre_dispatch hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.",
+  "function_id": "approval::gate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "HookCall": {
+        "properties": {
+          "arguments": {
+            "default": null
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id",
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "call": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/HookCall"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "pre_dispatch payload."
+      },
+      "depth": {
+        "default": 0,
+        "description": "Sub-agent depth (hooks run for child turns too).",
+        "format": "int64",
+        "type": "integer"
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "default": null,
+        "description": "The per-send tracing metadata.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "point": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "step": {
+        "default": null,
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "turn_id"
+    ],
+    "title": "HookInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "oneOf": [
+      {
+        "properties": {
+          "decision": {
+            "enum": [
+              "continue"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "decision": {
+            "enum": [
+              "deny"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "reason"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "decision": {
+            "enum": [
+              "hold"
+            ],
+            "type": "string"
+          },
+          "pending_timeout_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decision",
+          "pending_timeout_ms"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "HookOutput"
+  }
+}
