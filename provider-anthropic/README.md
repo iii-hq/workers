@@ -70,7 +70,12 @@ Worker-side environment variables:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROVIDER_ANTHROPIC_CACHE` | enabled | `0`/`false` disables automatic prompt-cache markers |
-| `III_WS_URL` | `ws://localhost:49134` | engine WebSocket to attach to |
+| `III_WS_URL` | `ws://127.0.0.1:49134` | engine WebSocket to attach to when `--url` is not set |
+
+The binary also takes the standard worker CLI flags: `--url` (engine
+WebSocket), `--manifest` (print the registry manifest and exit), and
+`--config` (accepted but ignored with a warning — provider config comes
+from the `llm-router` configuration entry).
 
 Prompt caching needs no setup: markers go on the system prompt, the tools
 tail, and the last stable assistant turn whenever the prefix is big enough

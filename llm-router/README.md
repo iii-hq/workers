@@ -189,5 +189,10 @@ discovery, and event delivery end to end.
 To run the worker locally against an engine:
 
 ```bash
-III_WS_URL=ws://localhost:49134 cargo run
+cargo run -- --url ws://127.0.0.1:49134
 ```
+
+`--url` defaults to `ws://127.0.0.1:49134` and honours the `III_WS_URL`
+environment variable when the flag is not set. `--config` is accepted per
+the standard worker CLI but ignored with a warning — operator config lives
+in the engine's `llm-router` configuration entry (see Configuration above).
