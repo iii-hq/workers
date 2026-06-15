@@ -88,7 +88,7 @@ export async function runStreamTurn(
 
   // Coalesce consecutive same-type provider deltas into one update to cut the
   // per-token RPC explosion on the streaming path. Each flush replaces the
-  // session entry's content (durable; fires session::message_updated — the
+  // session entry's content (durable; fires session::message-updated — the
   // live token surface consumers render from). Discrete events flush through
   // 1:1; the final flush below guarantees the tail.
   const coalescer = createDeltaCoalescer(async (partial, _event) => {

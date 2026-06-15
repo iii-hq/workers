@@ -95,7 +95,7 @@ export interface ChatStreamOptions {
    * Per-send message id (`msg-<uuid>`). The harness derives the user
    * message's session-manager entry id from it (`<message_id>-user-0`), so
    * the console's optimistic user message reconciles in place when the
-   * `session::message_added` snapshot arrives. The real backend mints one
+   * `session::message-added` snapshot arrives. The real backend mints one
    * when omitted.
    */
   messageId?: string

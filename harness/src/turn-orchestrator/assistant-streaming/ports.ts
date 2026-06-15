@@ -87,7 +87,7 @@ export type AssistantStreamingPorts = TurnStatePorts & {
    * `stop_reason` (length/error/aborted notices) from it — the stored entry
    * can't carry it (update_message replaces content only). Streaming deltas
    * are NOT mirrored to agent::events anymore; the durable
-   * `session::message_updated` feed is the live token surface.
+   * `session::message-updated` feed is the live token surface.
    */
   emitMessageComplete(
     session_id: string,
@@ -108,7 +108,7 @@ export type AssistantStreamingPorts = TurnStatePorts & {
   /**
    * Replace the assistant entry's content (full snapshot so far). Tolerant
    * mode logs and continues — a dropped mid-stream batch only costs one
-   * `message_updated` revision; the final strict update restores parity.
+   * `message-updated` revision; the final strict update restores parity.
    */
   updateAssistantContent(
     session_id: string,

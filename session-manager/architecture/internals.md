@@ -103,7 +103,7 @@ one is a regression even if all types still line up):
     (`messages`, `fork`, `set_active_leaf`, ...) rejects with `session/not_found`
     / `session/entry_not_found`.
 12. **Exactly one of `message` / `custom` per append.** Custom-entry appends
-    fire `session::message_added` with a `custom` field instead of `message`,
+    fire `session::message-added` with a `custom` field instead of `message`,
     and never match a `roles` filter.
 
 Cursors (both `list` and `messages`): opaque base64(JSON). The list cursor
@@ -215,9 +215,9 @@ agents.
 ### 6.1 Types, configs, filters
 
 Six public trigger types, registered **before** the functions (handlers
-capture the subscriber sets): `session::created`, `session::message_added`,
-`session::message_updated`, `session::status_changed`,
-`session::meta_updated`, `session::deleted`.
+capture the subscriber sets): `session::created`, `session::message-added`,
+`session::message-updated`, `session::status-changed`,
+`session::meta-updated`, `session::deleted`.
 
 Per-binding config structs are typed and `deny_unknown_fields` — a typo'd
 filter key is rejected at registration, never silently ignored:
@@ -225,15 +225,15 @@ filter key is rejected at registration, never silently ignored:
 | Trigger types | Config struct | Fields |
 |---|---|---|
 | `created` | `CreatedBindingConfig` | `metadata?` |
-| `message_added`, `message_updated` | `MessageBindingConfig` | `session_id?`, `roles?`, `metadata?` |
-| `status_changed`, `meta_updated`, `deleted` | `SessionBindingConfig` | `session_id?`, `metadata?` |
+| `message-added`, `message-updated` | `MessageBindingConfig` | `session_id?`, `roles?`, `metadata?` |
+| `status-changed`, `meta-updated`, `deleted` | `SessionBindingConfig` | `session_id?`, `metadata?` |
 
 Filter evaluation is the pure function `binding_matches(filter, ctx)`:
 `session_id` equality AND `roles` membership (a `kind:"custom"` entry has no
 role and never matches a roles filter) AND `metadata` subset-equality against
 the session's metadata (deep JSON equality per key; empty filter map is
 vacuous; non-empty filter never matches a session without metadata). The
-`meta_updated` filter sees the **post-update** metadata; the `deleted` filter
+`meta-updated` filter sees the **post-update** metadata; the `deleted` filter
 sees the **as-of-deletion** metadata.
 
 ### 6.2 Emitter and sinks

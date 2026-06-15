@@ -3,8 +3,8 @@
  * to console/web's `StreamEvent` contract.
  *
  * Since the session-manager integration, transcript CONTENT (thought/text
- * tokens, full message snapshots) renders from `session::message_added` /
- * `session::message_updated` events reconciled by the conversations layer —
+ * tokens, full message snapshots) renders from `session::message-added` /
+ * `session::message-updated` events reconciled by the conversations layer —
  * NOT from this translator. `agent::events` remains the channel for
  * ephemeral turn state only:
  *
@@ -65,7 +65,7 @@ export function createAgentEventTranslator(): {
         return translateMessageComplete(event.message)
 
       case 'message_update':
-        // Transcript content arrives via session::message_updated snapshots.
+        // Transcript content arrives via session::message-updated snapshots.
         return []
 
       case 'function_execution_start':
@@ -99,7 +99,7 @@ export function createAgentEventTranslator(): {
 
       case 'compaction_done':
         // The compaction marker renders from the session's custom entry
-        // (session::message_added); no separate UI signal needed here.
+        // (session::message-added); no separate UI signal needed here.
         return []
     }
   }

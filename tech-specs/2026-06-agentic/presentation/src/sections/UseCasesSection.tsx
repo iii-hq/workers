@@ -8,7 +8,7 @@ const CASES = [
     name: 'telegram bot',
     blurb:
       'a webhook bridge in one worker: live message edits while the agent streams, idempotent redeliveries, /stop that actually stops.',
-    chips: ['harness::send', 'session::message_updated', 'harness::stop'],
+    chips: ['harness::send', 'session::message-updated', 'harness::stop'],
     foot: 'messaging surface',
   },
   {

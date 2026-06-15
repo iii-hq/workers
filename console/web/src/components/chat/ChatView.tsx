@@ -120,7 +120,7 @@ export function ChatView({
   const messagesRef = useRef(conversation.messages)
   messagesRef.current = conversation.messages
 
-  // Driver-owned session status from session-manager (status_changed events);
+  // Driver-owned session status from session-manager (status-changed events);
   // covers reloads and turns observed from another tab. Local isStreaming
   // covers the gap before the first status event lands.
   const serverWorking = conversation.status === 'working'
@@ -216,7 +216,7 @@ export function ChatView({
 
       // The harness appends the user message with the deterministic entry id
       // `<messageId>-user-0`; using the same id here lets the
-      // session::message_added snapshot reconcile this optimistic row in place.
+      // session::message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
       const userMsg: UserMessage = {
         id: `${messageId}-user-0`,
@@ -257,7 +257,7 @@ export function ChatView({
           )
           if (result.status === 'ok' && backend.id === 'real') {
             // Server-backed transcript: the compaction custom entry arrives
-            // via session::message_added and renders the marker (which the
+            // via session::message-added and renders the marker (which the
             // CTX estimator anchors on); just resolve the pending notice.
             onPatchMessage(conversationId, pendingId, {
               content: formatCompactResult(result),

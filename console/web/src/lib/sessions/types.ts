@@ -75,10 +75,10 @@ export type TranscriptItem = {
 
 export const SESSION_TRIGGER_TYPES = [
   'session::created',
-  'session::message_added',
-  'session::message_updated',
-  'session::status_changed',
-  'session::meta_updated',
+  'session::message-added',
+  'session::message-updated',
+  'session::status-changed',
+  'session::meta-updated',
   'session::deleted',
 ] as const
 

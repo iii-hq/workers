@@ -7,10 +7,10 @@
  *   message whose id IS the `entry_id`. The optimistic user message the
  *   console appends on send uses the predicted entry id
  *   (`<message_id>-user-0`, the harness's deterministic scheme), so the
- *   `message_added` snapshot replaces it in place.
+ *   `message-added` snapshot replaces it in place.
  * - An assistant entry splits per content block into segments with ids
  *   `<entry_id>:<block_index>` (thinking → thought, text → assistant,
- *   function_call → function-call row). Each `message_updated` snapshot
+ *   function_call → function-call row). Each `message-updated` snapshot
  *   re-derives the segment list wholesale and replaces the entry's range.
  * - `function_result` entries render no row of their own; they fill the
  *   `output` of the function-call row with the matching `functionCallId`.
