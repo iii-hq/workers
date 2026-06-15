@@ -167,15 +167,19 @@ jobs:
         if: matrix.worker == 'approval-gate'
         env:
           VERSION: '0.19.2'
+          # The install script resolves the release via the GitHub API; without
+          # a token it shares the 60/hr unauthenticated limit and fails CI under
+          # load (surfaces as "rate limit hit" or a misleading "release tag not
+          # found"). The Actions token raises that to 5000/hr.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Retry: install.iii.dev's release index can transiently 404 an
-          # existing version (e.g. right after a new release publishes), which
-          # would otherwise fail the whole job.
+          # The token above is what prevents the rate-limit failures; the retry
+          # only guards a genuine transient network blip.
           for attempt in 1 2 3; do
             curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh \
               && sh /tmp/install-iii.sh && break
-            echo "::warning::iii install attempt ${attempt} failed (transient release-index hiccup?); retrying in 10s"
+            echo "::warning::iii install attempt ${attempt} failed; retrying in 10s"
             sleep 10
           done
           {
@@ -288,6 +292,10 @@ jobs:
         if: steps.optout.outputs.skip != 'true'
         env:
           VERSION: '0.17.0'
+          # Authenticate the install script's GitHub API release lookup; without
+          # this the step shares the 60/hr unauthenticated limit and flakes
+          # under load (whichever workers' jobs hit it after exhaustion fail).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
