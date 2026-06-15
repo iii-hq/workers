@@ -1,17 +1,22 @@
 iii: v1
 name: codex
-language: javascript
-deploy: bundle
-manifest: package.json
-description: OpenAI Codex as an iii worker — codex::* functions run headless Codex turns, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: codex
+description: OpenAI Codex as an iii worker — codex::* run headless Codex turns by spawning the codex CLI, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.
+
+targets:
+  - x86_64-apple-darwin
+  - aarch64-apple-darwin
+  - x86_64-unknown-linux-gnu
+  - x86_64-unknown-linux-musl
+  - aarch64-unknown-linux-gnu
+  - armv7-unknown-linux-gnueabihf
 
 runtime:
-  kind: javascript
+  kind: rust
 
 scripts:
-  install: pnpm install && pnpm run build
-  start: node dist/index.js
-
-dependencies:
-  iii-state: "^0.17.0"
-  iii-stream: "^0.17.0"
+  install: cargo build
+  start: cargo run

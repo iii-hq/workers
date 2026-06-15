@@ -86,22 +86,24 @@ Two ids come back from every run. `session_id` is the iii session id: the key fo
 | `codex::status` | Session state, live flag, usage |
 | `codex::sessions::list` | All sessions this worker has run |
 
-`codex::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as the claude-code worker and `run::start_and_wait`, so the acp worker drives Codex with `--brain-fn codex::run` — plus `model`, `cwd`, `sandbox_mode`, `approval_policy`, `reasoning_effort`, `skip_git_repo_check`, `output_schema`, `images` (local image paths attached to the prompt), and `codex_config` (per-turn `config.toml` overrides: MCP servers, model providers, profiles — anything the CLI accepts as `--config key=value`).
+`codex::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as the claude-code worker and `run::start_and_wait`, so the acp worker drives Codex with `--brain-fn codex::run` — plus `model`, `cwd`, `sandbox_mode`, `approval_policy`, `reasoning_effort`, `skip_git_repo_check`, `output_schema`, `images` (local image paths), `additional_directories` (extra writable roots), and `codex_config`.
 
 ### Raw API pass-through
 
-The named fields cover the common path; everything else the Codex SDK accepts goes through the `options` field untouched (camelCase ThreadOptions, exactly as in the SDK):
+The worker drives the `codex exec --json` CLI, so anything the CLI exposes as a `config.toml` override goes through the `codex_config` field untouched — MCP servers, model providers, profiles, network access, web search, and the rest. Each key/value becomes a `--config key=value` on the spawn:
 
 ```jsonc
 {
   "prompt": "...",
-  "options": {
-    "networkAccessEnabled": true,
-    "webSearchMode": "live",
-    "additionalDirectories": ["/another/repo"]
+  "codex_config": {
+    "sandbox_workspace_write": { "network_access": true },
+    "web_search": "live",
+    "mcp_servers": { "github": { "command": "gh-mcp" } }
   }
 }
 ```
+
+Extra writable directories use the named `additional_directories` field (the CLI's `--add-dir`).
 
 And the full output side is available raw: every event Codex emits (`thread.started`, `turn.started`, `item.started/updated/completed` for commands, patches, MCP tool calls, web searches, reasoning, agent messages, `turn.completed` with usage, `turn.failed`) is mirrored verbatim onto the `codex::events` stream, group_id = session_id. Consumers that want the exact Codex wire format read `codex::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
 
