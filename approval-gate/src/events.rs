@@ -381,7 +381,9 @@ mod tests {
                         "function_id": "shell::run",
                         "arguments_excerpt": {},
                         "pending_at": 100,
-                        "expires_at": 1_800_100,
+                        // Live record so the resolve path (not the sweep)
+                        // owns it and emits the resolved event under test.
+                        "expires_at": crate::types::now_ms() + 1_800_000,
                         "depth": 0,
                     }),
                 )
