@@ -1,4 +1,4 @@
-//! `approval::set_mode` — set the session's permission mode. First
+//! `approval::set-mode` — set the session's permission mode. First
 //! mutation materializes the settings record from the current
 //! configuration defaults (lazy seeding).
 

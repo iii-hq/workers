@@ -5,15 +5,15 @@ The policy and decision surface for human-held function calls
 worker:
 
 1. **The gate** — `approval::gate`, a `pre_dispatch` hook the worker binds
-   itself at startup on the harness's `harness::hook::pre_dispatch` trigger
+   itself at startup on the harness's `harness::hook::pre-dispatch` trigger
    type. It evaluates per-session mode, allow-lists, and the yaml policy, and
    answers `continue`, `deny`, or `hold`.
 2. **The decision plane** — `approval::resolve` plus the per-session settings
    RPCs (`set_mode`, `add_always_allow`, `approve_always`, …). Human/console
    only.
 3. **The pending inbox** — an **ephemeral** index of held calls
-   (`approval::list_pending` / `approval::get_pending`) plus two trigger types
-   (`approval::pending_created` / `approval::pending_resolved`) that
+   (`approval::list-pending` / `approval::get-pending`) plus two trigger types
+   (`approval::pending-created` / `approval::pending-resolved`) that
    notification workers and UIs bind to.
 
 The worker keeps **no resolved-approval history**: a record exists only while
@@ -24,8 +24,8 @@ event are the audit trail.
 ## Standalone caveat
 
 This worker codes against the greenfield harness contracts
-(`harness::hook::pre_dispatch`, `harness::function::resolve`,
-`harness::turn_completed` — see harness.md § Hooks / § API Reference), which
+(`harness::hook::pre-dispatch`, `harness::function::resolve`,
+`harness::turn-completed` — see harness.md § Hooks / § API Reference), which
 are **not implemented by the current harness yet**. All trigger bindings are
 best-effort: on an engine without those trigger types the worker still boots,
 serves its RPCs, registers its configuration entry, and logs
@@ -54,7 +54,7 @@ Hold → decide → release, from any client:
 
 ```bash
 # A held call shows up in the inbox…
-iii call approval::list_pending '{}'
+iii call approval::list-pending '{}'
 # …a human allows it (the harness re-runs it through dispatch)…
 iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "allow"}'
 # …or denies it with a reason the model can adapt to.
@@ -85,13 +85,13 @@ modes.
 
 | Type | Fires | Payload |
 |---|---|---|
-| `approval::pending_created` | a call was held and its inbox record written (async, off the hot path) | `PendingApprovalRecord & { status: "pending" }` — redacted args, session context, expiry: self-sufficient for notification copy |
-| `approval::pending_resolved` | a pending call left the inbox (exactly once per record) | ids + `outcome: "allow" \| "deny" \| "timeout" \| "aborted"`, operator `reason` on deny |
+| `approval::pending-created` | a call was held and its inbox record written (async, off the hot path) | `PendingApprovalRecord & { status: "pending" }` — redacted args, session context, expiry: self-sufficient for notification copy |
+| `approval::pending-resolved` | a pending call left the inbox (exactly once per record) | ids + `outcome: "allow" \| "deny" \| "timeout" \| "aborted"`, operator `reason` on deny |
 
 Binding config (both types): `{ session_id?, metadata? }` — `metadata` is a
 subset-equality match against the record's denormalized `session_metadata`,
 so a multi-tenant notification worker binds to only its own sessions. After a
-restart, reconcile with one `approval::list_pending` call.
+restart, reconcile with one `approval::list-pending` call.
 
 ## Configuration
 

@@ -17,7 +17,7 @@ fn default_on_error() -> String {
     "fail_closed".to_string()
 }
 
-/// The `harness::hook::pre_dispatch` binding the worker registers for
+/// The `harness::hook::pre-dispatch` binding the worker registers for
 /// itself at startup.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]

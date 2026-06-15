@@ -64,8 +64,8 @@ flowchart LR
 
 ## Standalone status
 
-The harness contracts this worker binds (`harness::hook::pre_dispatch`,
-`harness::function::resolve`, `harness::turn_completed`) are specified in
+The harness contracts this worker binds (`harness::hook::pre-dispatch`,
+`harness::function::resolve`, `harness::turn-completed`) are specified in
 harness.md but not implemented by the current harness. All bindings are
 best-effort: the worker boots and serves its full RPC + trigger surface
 without them, and the integration suite fakes them. See

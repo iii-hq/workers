@@ -67,8 +67,8 @@ Two scopes, both with explicit deletion paths:
 
 | Scope/key | Created | Deleted by |
 |---|---|---|
-| `approval_pending/<sid>/<cid>` | in-hook, before `hold` returns | resolve · `harness::turn_completed` · `session::deleted` · sweep on `expires_at` |
-| `approval_settings/<sid>` | first user mutation (lazy; reads never write) | `session::deleted` · `approval::clear_settings` |
+| `approval_pending/<sid>/<cid>` | in-hook, before `hold` returns | resolve · `harness::turn-completed` · `session::deleted` · sweep on `expires_at` |
+| `approval_settings/<sid>` | first user mutation (lazy; reads never write) | `session::deleted` · `approval::clear-settings` |
 
 All four pending-deletion paths funnel through
 `pending::delete_with_gate`, which is where exactly-once emission is decided:
@@ -117,7 +117,7 @@ Mutation helpers are immutable: `with_grant` (idempotent on exact
 built-in defaults (`manual`, `[]`, 30 min) apply in memory whenever the
 entry value is null or the configuration worker is absent. Parsing is
 field-wise tolerant — one malformed field degrades to its default, never
-fails the gate open. `approval::on_config_change` guards on
+fails the gate open. `approval::on-config-change` guards on
 `id == "approval-gate"` and swaps the shared `RwLock`. Boot order: bind the
 configuration trigger, register the entry, then one initial
 `configuration::get` — an update landing in the gap is caught by either the

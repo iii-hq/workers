@@ -44,45 +44,45 @@ pub const GATE_DESC: &str = "pre_dispatch hook: evaluate the permission model an
 pub const RESOLVE_ID: &str = "approval::resolve";
 pub const RESOLVE_DESC: &str = "Apply a human decision to a held call: release it for execution (allow) or deliver a denial (deny). Human/console-only.";
 
-pub const LIST_PENDING_ID: &str = "approval::list_pending";
+pub const LIST_PENDING_ID: &str = "approval::list-pending";
 pub const LIST_PENDING_DESC: &str = "The pending inbox across sessions, with tenancy filters; the catch-up path for notification workers after a restart.";
 
-pub const GET_PENDING_ID: &str = "approval::get_pending";
+pub const GET_PENDING_ID: &str = "approval::get-pending";
 pub const GET_PENDING_DESC: &str = "Read one pending record; null when resolved or unknown.";
 
-pub const SET_MODE_ID: &str = "approval::set_mode";
+pub const SET_MODE_ID: &str = "approval::set-mode";
 pub const SET_MODE_DESC: &str =
     "Set the session's permission mode (manual / auto / full). Human/console-only.";
 
-pub const ADD_ALWAYS_ALLOW_ID: &str = "approval::add_always_allow";
+pub const ADD_ALWAYS_ALLOW_ID: &str = "approval::add-always-allow";
 pub const ADD_ALWAYS_ALLOW_DESC: &str =
     "Add a function to the session's auto-mode trust list (idempotent). Human/console-only.";
 
-pub const REMOVE_ALWAYS_ALLOW_ID: &str = "approval::remove_always_allow";
+pub const REMOVE_ALWAYS_ALLOW_ID: &str = "approval::remove-always-allow";
 pub const REMOVE_ALWAYS_ALLOW_DESC: &str = "Remove a function from the session's auto-mode trust list (no-op when absent). Human/console-only.";
 
-pub const APPROVE_ALWAYS_ID: &str = "approval::approve_always";
+pub const APPROVE_ALWAYS_ID: &str = "approval::approve-always";
 pub const APPROVE_ALWAYS_DESC: &str =
     "Record a per-session 'approve always' grant (honoured in every mode). Human/console-only.";
 
-pub const GET_SETTINGS_ID: &str = "approval::get_settings";
+pub const GET_SETTINGS_ID: &str = "approval::get-settings";
 pub const GET_SETTINGS_DESC: &str = "Read the session's effective settings (stored record or configuration defaults); never writes.";
 
-pub const CLEAR_SETTINGS_ID: &str = "approval::clear_settings";
+pub const CLEAR_SETTINGS_ID: &str = "approval::clear-settings";
 pub const CLEAR_SETTINGS_DESC: &str =
     "Drop the session's stored settings record (revert to configuration defaults).";
 
-pub const ON_CONFIG_CHANGE_ID: &str = "approval::on_config_change";
+pub const ON_CONFIG_CHANGE_ID: &str = "approval::on-config-change";
 pub const ON_CONFIG_CHANGE_DESC: &str =
     "Internal: configuration trigger handler (reload deployment defaults).";
 
-pub const ON_SESSION_DELETED_ID: &str = "approval::on_session_deleted";
+pub const ON_SESSION_DELETED_ID: &str = "approval::on-session-deleted";
 pub const ON_SESSION_DELETED_DESC: &str =
     "Internal: session::deleted handler (purge the session's settings and pending records).";
 
-pub const ON_TURN_COMPLETED_ID: &str = "approval::on_turn_completed";
+pub const ON_TURN_COMPLETED_ID: &str = "approval::on-turn-completed";
 pub const ON_TURN_COMPLETED_DESC: &str =
-    "Internal: harness::turn_completed handler (purge the turn's pending records).";
+    "Internal: harness::turn-completed handler (purge the turn's pending records).";
 
 pub const SWEEP_ID: &str = "approval::sweep";
 pub const SWEEP_DESC: &str = "Internal: cron handler (expire pending records past expires_at).";

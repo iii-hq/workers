@@ -56,17 +56,17 @@ fn catalog_lists_all_functions_in_registration_order() {
         vec![
             "approval::gate",
             "approval::resolve",
-            "approval::list_pending",
-            "approval::get_pending",
-            "approval::set_mode",
-            "approval::add_always_allow",
-            "approval::remove_always_allow",
-            "approval::approve_always",
-            "approval::get_settings",
-            "approval::clear_settings",
-            "approval::on_config_change",
-            "approval::on_session_deleted",
-            "approval::on_turn_completed",
+            "approval::list-pending",
+            "approval::get-pending",
+            "approval::set-mode",
+            "approval::add-always-allow",
+            "approval::remove-always-allow",
+            "approval::approve-always",
+            "approval::get-settings",
+            "approval::clear-settings",
+            "approval::on-config-change",
+            "approval::on-session-deleted",
+            "approval::on-turn-completed",
             "approval::sweep",
         ]
     );
@@ -79,7 +79,7 @@ fn trigger_catalog_lists_both_trigger_types_in_registration_order() {
     let ids: Vec<&str> = trigger_catalog().iter().map(|s| s.trigger_id).collect();
     assert_eq!(
         ids,
-        vec!["approval::pending_created", "approval::pending_resolved",]
+        vec!["approval::pending-created", "approval::pending-resolved",]
     );
 }
 
@@ -135,11 +135,11 @@ fn schemas_carry_field_descriptions() {
     let must_have_descriptions = [
         "approval::gate",
         "approval::resolve",
-        "approval::list_pending",
-        "approval::get_pending",
-        "approval::on_config_change",
-        "approval::on_session_deleted",
-        "approval::on_turn_completed",
+        "approval::list-pending",
+        "approval::get-pending",
+        "approval::on-config-change",
+        "approval::on-session-deleted",
+        "approval::on-turn-completed",
     ];
     for spec in catalog() {
         if !must_have_descriptions.contains(&spec.function_id) {

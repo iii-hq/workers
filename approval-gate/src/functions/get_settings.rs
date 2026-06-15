@@ -1,4 +1,4 @@
-//! `approval::get_settings` — read the session's **effective** settings.
+//! `approval::get-settings` — read the session's **effective** settings.
 //! Never writes (lazy seeding happens on mutation, not on read).
 
 use super::Deps;

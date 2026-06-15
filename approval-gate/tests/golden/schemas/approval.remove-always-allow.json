@@ -1,17 +1,21 @@
 {
-  "description": "Read the session's effective settings (stored record or configuration defaults); never writes.",
-  "function_id": "approval::get_settings",
+  "description": "Remove a function from the session's auto-mode trust list (no-op when absent). Human/console-only.",
+  "function_id": "approval::remove-always-allow",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
+      "function_id": {
+        "type": "string"
+      },
       "session_id": {
         "type": "string"
       }
     },
     "required": [
+      "function_id",
       "session_id"
     ],
-    "title": "GetSettingsRequest",
+    "title": "AlwaysAllowMutationRequest",
     "type": "object"
   },
   "response_schema": {
@@ -98,33 +102,18 @@
           "full"
         ],
         "type": "string"
-      },
-      "SettingsSource": {
-        "enum": [
-          "stored",
-          "defaults"
-        ],
-        "type": "string"
       }
     },
+    "description": "Shared by every settings mutation RPC: the post-mutation record.",
     "properties": {
       "settings": {
         "$ref": "#/definitions/ApprovalSettings"
-      },
-      "source": {
-        "allOf": [
-          {
-            "$ref": "#/definitions/SettingsSource"
-          }
-        ],
-        "description": "Whether a per-session record exists."
       }
     },
     "required": [
-      "settings",
-      "source"
+      "settings"
     ],
-    "title": "GetSettingsResponse",
+    "title": "SettingsResponse",
     "type": "object"
   }
 }

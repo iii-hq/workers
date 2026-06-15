@@ -1,5 +1,5 @@
-//! `approval::on_turn_completed` — bound to the harness's
-//! `harness::turn_completed` trigger type. Purges the turn's pending
+//! `approval::on-turn-completed` — bound to the harness's
+//! `harness::turn-completed` trigger type. Purges the turn's pending
 //! records when it goes terminal (covers `harness::stop` cancellation
 //! cascades and failed turns). A `completed` turn has no live holds by
 //! construction — the purge is then a harmless stale-record cleanup.
@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::{purge, Deps};
 
-/// `harness::turn_completed` payload (only the field we read).
+/// `harness::turn-completed` payload (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TurnCompletedEvent {
     pub turn_id: String,

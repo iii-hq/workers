@@ -7,13 +7,13 @@
 //! 2. The decision plane — `approval::resolve` plus the per-session
 //!    settings RPCs (human/console-only).
 //! 3. The pending inbox — an ephemeral index of held calls
-//!    (`approval::list_pending` / `approval::get_pending`) plus the
-//!    `approval::pending_created` / `approval::pending_resolved` trigger
+//!    (`approval::list-pending` / `approval::get-pending`) plus the
+//!    `approval::pending-created` / `approval::pending-resolved` trigger
 //!    types notification workers bind to.
 //!
 //! The worker codes against the greenfield harness contracts
-//! (`harness::hook::pre_dispatch`, `harness::function::resolve`,
-//! `harness::turn_completed` — harness.md § Hooks, § API Reference);
+//! (`harness::hook::pre-dispatch`, `harness::function::resolve`,
+//! `harness::turn-completed` — harness.md § Hooks, § API Reference);
 //! those bindings are best-effort so the worker also boots standalone.
 
 pub mod config;

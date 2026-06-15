@@ -221,9 +221,9 @@ pub struct TestStack {
     pub defaults: SharedDefaults,
     /// Requests received by the fake `harness::function::resolve`.
     pub harness_calls: CallLog,
-    /// `approval::pending_created` deliveries.
+    /// `approval::pending-created` deliveries.
     pub created: CallLog,
-    /// `approval::pending_resolved` deliveries.
+    /// `approval::pending-resolved` deliveries.
     pub resolved: CallLog,
 }
 
@@ -349,7 +349,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
 
     let _ = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "configuration".to_string(),
-        function_id: "approval::on_config_change".to_string(),
+        function_id: "approval::on-config-change".to_string(),
         config: json!({
             "configuration_id": ENTRY_ID,
             "event_types": ["configuration:registered", "configuration:updated"],

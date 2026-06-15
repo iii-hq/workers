@@ -1,4 +1,4 @@
-//! `approval::on_config_change` — bound to the engine's `configuration`
+//! `approval::on-config-change` — bound to the engine's `configuration`
 //! trigger on `configuration_id: "approval-gate"`. Reactive reload, no
 //! polling: swaps the in-memory deployment defaults.
 

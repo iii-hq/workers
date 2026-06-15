@@ -1,6 +1,6 @@
 {
   "description": "Drop the session's stored settings record (revert to configuration defaults).",
-  "function_id": "approval::clear_settings",
+  "function_id": "approval::clear-settings",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {

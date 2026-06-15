@@ -1,4 +1,4 @@
-//! `approval::list_pending` — the pending inbox. Filters apply
+//! `approval::list-pending` — the pending inbox. Filters apply
 //! worker-side over the live scope (cheap — the scope only ever holds
 //! live records). Ordered by `pending_at` ascending with a stable
 //! tie-break so the opaque cursor paginates deterministically.

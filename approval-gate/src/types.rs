@@ -175,7 +175,7 @@ pub enum ResolvedOutcome {
     Aborted,
 }
 
-/// Payload of `approval::pending_resolved` — a pending call left the
+/// Payload of `approval::pending-resolved` — a pending call left the
 /// inbox. Emitted exactly once per record (gated on the record delete).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingResolvedEvent {

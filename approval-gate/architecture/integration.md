@@ -12,16 +12,16 @@ operational contract).
 
 | Function | Caller | Purpose |
 |---|---|---|
-| `approval::gate` | harness only (via the `harness::hook::pre_dispatch` binding) | The hook: `HookInput` → `{ decision: "continue" \| "deny" \| "hold" }`. Never call directly. |
+| `approval::gate` | harness only (via the `harness::hook::pre-dispatch` binding) | The hook: `HookInput` → `{ decision: "continue" \| "deny" \| "hold" }`. Never call directly. |
 | `approval::resolve` | console / inbox UI (human-only) | Apply a decision to a held call: `{ session_id, function_call_id, decision: "allow" \| "deny", reason? }` → `{ resolved, turn_resumed? }`. |
-| `approval::list_pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
-| `approval::get_pending` | console | One record or `null`. |
-| `approval::set_mode` | console (human-only) | `manual` / `auto` / `full`. |
-| `approval::add_always_allow` / `remove_always_allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). |
-| `approval::approve_always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. |
-| `approval::get_settings` | console | Effective settings + `source: "stored" \| "defaults"`. Never writes. |
-| `approval::clear_settings` | console | Drop the stored record; revert to deployment defaults. |
-| `approval::on_config_change` / `on_session_deleted` / `on_turn_completed` / `approval::sweep` | trigger handlers | Internal — never call directly. |
+| `approval::list-pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
+| `approval::get-pending` | console | One record or `null`. |
+| `approval::set-mode` | console (human-only) | `manual` / `auto` / `full`. |
+| `approval::add-always-allow` / `remove_always_allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). |
+| `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. |
+| `approval::get-settings` | console | Effective settings + `source: "stored" \| "defaults"`. Never writes. |
+| `approval::clear-settings` | console | Drop the stored record; revert to deployment defaults. |
+| `approval::on-config-change` / `on_session_deleted` / `on_turn_completed` / `approval::sweep` | trigger handlers | Internal — never call directly. |
 
 Errors use `code: message` with codes `approval/invalid_payload`,
 `approval/state_unavailable`, `approval/harness_unavailable`. An unknown
@@ -33,10 +33,10 @@ returns `{ resolved: false }` (duplicate decisions race benignly).
 
 Bind with the standard two-step pattern (register your handler function,
 then `registerTrigger` with the type). Delivery is fire-and-forget,
-at-least-once, **unordered** — reconcile with one `approval::list_pending`
+at-least-once, **unordered** — reconcile with one `approval::list-pending`
 call after a restart.
 
-### `approval::pending_created`
+### `approval::pending-created`
 
 A call was held and its inbox record written. Fires asynchronously after the
 hook returns `hold` — never on the dispatch hot path.
@@ -49,7 +49,7 @@ session-manager was unreachable at hold time), sub-agent `depth`.
 Self-sufficient for notification copy — no follow-up reads needed, and safe
 to forward to push/Slack payloads (arguments are redacted and clipped).
 
-### `approval::pending_resolved`
+### `approval::pending-resolved`
 
 A pending call left the inbox. Emitted **exactly once per record** — your
 badge-clearing logic can trust it. Payload: ids plus
@@ -77,11 +77,11 @@ sequenceDiagram
   participant N as notify worker
   H->>AG: approval::gate (pre_dispatch hook)
   AG-->>H: { decision: "hold", pending_timeout_ms }
-  AG--)N: approval::pending_created
+  AG--)N: approval::pending-created
   UI->>AG: approval::resolve { decision: "allow" }
   AG->>H: harness::function::resolve { action: "execute" }
   Note over H: re-enqueue turn; run the released call through the remaining dispatch pipeline
-  AG--)N: approval::pending_resolved { outcome: "allow" }
+  AG--)N: approval::pending-resolved { outcome: "allow" }
 ```
 
 On `deny`, the gate calls `harness::function::resolve` with
@@ -94,7 +94,7 @@ and can adapt.
 What the (future) harness must provide — and what this worker already
 assumes, faked today by `tests/integration.rs`:
 
-- **`harness::hook::pre_dispatch` trigger type.** The worker binds
+- **`harness::hook::pre-dispatch` trigger type.** The worker binds
   `approval::gate` at startup with
   `{ functions, timeout_ms, on_error: "fail_closed" }` from its
   `config.yaml`. The hook is an ordinary registered function: the harness
@@ -104,7 +104,7 @@ assumes, faked today by `tests/integration.rs`:
   held call) and `{ ..., action: "deliver", is_error, content, details }`
   (settle with a result), idempotent on the deterministic entry id,
   returning `{ resolved, turn_resumed }`.
-- **`harness::turn_completed` trigger type** with at least `turn_id` in the
+- **`harness::turn-completed` trigger type** with at least `turn_id` in the
   payload (terminal-turn purge).
 
 Until those exist the bindings log `trigger_type_not_found` at boot
@@ -123,7 +123,7 @@ gated sets a broad dispatch policy and lets the gate hold/deny.
   worker or rely on modes/allow-lists.
 - **session-manager** (soft): provides hold-time context and the
   `session::deleted` cascade. Without it, records carry no session context
-  and settings cleanup relies on `approval::clear_settings`.
+  and settings cleanup relies on `approval::clear-settings`.
 - **Configuration**: deployment defaults live in the `approval-gate`
   configuration entry (`default_mode`, `always_allow_seed`,
   `pending_timeout_ms`); `configuration::set` replaces the **whole** value —

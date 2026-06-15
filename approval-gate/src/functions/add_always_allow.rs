@@ -1,4 +1,4 @@
-//! `approval::add_always_allow` — curate the session's auto-mode trust
+//! `approval::add-always-allow` — curate the session's auto-mode trust
 //! list (idempotent add).
 
 use super::Deps;

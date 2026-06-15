@@ -1,9 +1,9 @@
 {
-  "description": "Internal: harness::turn_completed handler (purge the turn's pending records).",
-  "function_id": "approval::on_turn_completed",
+  "description": "Internal: harness::turn-completed handler (purge the turn's pending records).",
+  "function_id": "approval::on-turn-completed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "`harness::turn_completed` payload (only the field we read).",
+    "description": "`harness::turn-completed` payload (only the field we read).",
     "properties": {
       "turn_id": {
         "type": "string"

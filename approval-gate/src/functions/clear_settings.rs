@@ -1,6 +1,6 @@
-//! `approval::clear_settings` — drop the session's stored settings record
+//! `approval::clear-settings` — drop the session's stored settings record
 //! (the session reverts to configuration defaults). Also invoked
-//! internally by `approval::on_session_deleted`.
+//! internally by `approval::on-session-deleted`.
 
 use super::Deps;
 use crate::error::ApprovalError;

@@ -4,12 +4,12 @@
 //!   1. Parse CLI / load YAML config (a missing file falls back to
 //!      defaults; a file that exists but doesn't parse is fatal).
 //!   2. Connect to the local iii engine over WebSocket.
-//!   3. Register the two custom trigger types (`approval::pending_created`,
-//!      `approval::pending_resolved`) — first, because the function
+//!   3. Register the two custom trigger types (`approval::pending-created`,
+//!      `approval::pending-resolved`) — first, because the function
 //!      handlers capture the subscriber sets they fan out to.
 //!   4. Register the 14 `approval::*` functions.
-//!   5. Bind triggers, all best-effort (`harness::hook::pre_dispatch`,
-//!      `configuration`, `session::deleted`, `harness::turn_completed`,
+//!   5. Bind triggers, all best-effort (`harness::hook::pre-dispatch`,
+//!      `configuration`, `session::deleted`, `harness::turn-completed`,
 //!      `cron`) — in a standalone deployment some of these trigger types
 //!      don't exist yet; the worker still boots and serves its RPCs.
 //!   6. Register the `approval-gate` configuration entry and read the
@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
     // the hook (approval-gate.md § The approval::gate hook).
     bind_best_effort(
         &iii,
-        "harness::hook::pre_dispatch",
+        "harness::hook::pre-dispatch",
         "approval::gate",
         json!({
             "functions": cfg.hook.functions,
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
     bind_best_effort(
         &iii,
         "configuration",
-        "approval::on_config_change",
+        "approval::on-config-change",
         json!({
             "configuration_id": gate_config::ENTRY_ID,
             "event_types": ["configuration:registered", "configuration:updated"],
@@ -161,13 +161,13 @@ async fn main() -> Result<()> {
     bind_best_effort(
         &iii,
         "session::deleted",
-        "approval::on_session_deleted",
+        "approval::on-session-deleted",
         json!({}),
     );
     bind_best_effort(
         &iii,
-        "harness::turn_completed",
-        "approval::on_turn_completed",
+        "harness::turn-completed",
+        "approval::on-turn-completed",
         json!({}),
     );
     bind_best_effort(

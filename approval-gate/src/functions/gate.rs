@@ -291,7 +291,7 @@ mod tests {
                 },
             )
             .await;
-            for target in ["approval::set_mode", "approval::resolve"] {
+            for target in ["approval::set-mode", "approval::resolve"] {
                 let HookOutput::Deny { reason } =
                     handle(&stack.deps, hook_input(target)).await.unwrap()
                 else {

@@ -1,4 +1,4 @@
-//! `approval::approve_always` — record a per-session "approve always"
+//! `approval::approve-always` — record a per-session "approve always"
 //! grant (honoured in **every** mode). Typically called by the console
 //! from an approval prompt, immediately before
 //! `approval::resolve { decision: "allow" }`.

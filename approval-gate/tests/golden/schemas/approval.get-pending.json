@@ -1,6 +1,6 @@
 {
   "description": "Read one pending record; null when resolved or unknown.",
-  "function_id": "approval::get_pending",
+  "function_id": "approval::get-pending",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {

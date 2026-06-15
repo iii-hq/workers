@@ -1,21 +1,31 @@
 {
-  "description": "Remove a function from the session's auto-mode trust list (no-op when absent). Human/console-only.",
-  "function_id": "approval::remove_always_allow",
+  "description": "Set the session's permission mode (manual / auto / full). Human/console-only.",
+  "function_id": "approval::set-mode",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "properties": {
-      "function_id": {
+    "definitions": {
+      "PermissionMode": {
+        "enum": [
+          "manual",
+          "auto",
+          "full"
+        ],
         "type": "string"
+      }
+    },
+    "properties": {
+      "mode": {
+        "$ref": "#/definitions/PermissionMode"
       },
       "session_id": {
         "type": "string"
       }
     },
     "required": [
-      "function_id",
+      "mode",
       "session_id"
     ],
-    "title": "AlwaysAllowMutationRequest",
+    "title": "SetModeRequest",
     "type": "object"
   },
   "response_schema": {

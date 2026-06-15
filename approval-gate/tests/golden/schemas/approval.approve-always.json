@@ -1,6 +1,6 @@
 {
   "description": "Record a per-session 'approve always' grant (honoured in every mode). Human/console-only.",
-  "function_id": "approval::approve_always",
+  "function_id": "approval::approve-always",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {

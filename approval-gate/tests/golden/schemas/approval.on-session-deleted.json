@@ -1,6 +1,6 @@
 {
   "description": "Internal: session::deleted handler (purge the session's settings and pending records).",
-  "function_id": "approval::on_session_deleted",
+  "function_id": "approval::on-session-deleted",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "description": "`session::deleted` payload (only the field we read).",

@@ -39,7 +39,7 @@ npx skills add iii-hq/iii --all
 | Worker | Kind | Summary |
 |---|---|---|
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
-| [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits `approval::pending_*` events. Binds the harness `pre_dispatch` hook. See [`approval-gate/architecture/`](approval-gate/architecture/). |
+| [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits `approval::pending-*` events. Binds the harness `pre_dispatch` hook. See [`approval-gate/architecture/`](approval-gate/architecture/). |
 | [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `approval-gate`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
 | [`claude-code`](claude-code/) | Node | Claude Code as an iii worker — `claude::*` runs headless Claude Code turns, mirrors raw messages onto `claude::events`, and streams AgentEvent frames onto `agent::events`. |
 | [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |

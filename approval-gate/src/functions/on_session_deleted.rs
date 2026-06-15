@@ -1,4 +1,4 @@
-//! `approval::on_session_deleted` — bound to session-manager's
+//! `approval::on-session-deleted` — bound to session-manager's
 //! `session::deleted` trigger type. Purges the session's settings record
 //! and every pending record (the cascade the prior deployment lacked).
 

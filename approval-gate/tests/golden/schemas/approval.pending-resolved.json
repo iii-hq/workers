@@ -13,7 +13,7 @@
         "type": "string"
       }
     },
-    "description": "Payload of `approval::pending_resolved` — a pending call left the inbox. Emitted exactly once per record (gated on the record delete).",
+    "description": "Payload of `approval::pending-resolved` — a pending call left the inbox. Emitted exactly once per record (gated on the record delete).",
     "properties": {
       "function_call_id": {
         "type": "string"
@@ -62,5 +62,5 @@
     "title": "PendingResolvedEvent",
     "type": "object"
   },
-  "trigger_id": "approval::pending_resolved"
+  "trigger_id": "approval::pending-resolved"
 }

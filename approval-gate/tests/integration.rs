@@ -94,7 +94,7 @@ async fn resolve_allow_releases_and_deny_delivers_through_the_fake_harness() {
         assert_eq!(harness[1]["action"], json!("deliver"));
         assert_eq!(harness[1]["details"]["denied_by"], json!("user"));
 
-        let listed = call(iii, "approval::list_pending", json!({}))
+        let listed = call(iii, "approval::list-pending", json!({}))
             .await
             .unwrap();
         assert_eq!(listed["pending"].as_array().unwrap().len(), 0);
@@ -199,7 +199,7 @@ async fn settings_are_lazily_seeded_against_real_state() {
         let iii = &stack.iii;
         let before = call(
             iii,
-            "approval::get_settings",
+            "approval::get-settings",
             json!({ "session_id": "s_lazy" }),
         )
         .await
@@ -208,7 +208,7 @@ async fn settings_are_lazily_seeded_against_real_state() {
 
         call(
             iii,
-            "approval::approve_always",
+            "approval::approve-always",
             json!({ "session_id": "s_lazy", "function_id": "shell::run" }),
         )
         .await
@@ -216,7 +216,7 @@ async fn settings_are_lazily_seeded_against_real_state() {
 
         let after = call(
             iii,
-            "approval::get_settings",
+            "approval::get-settings",
             json!({ "session_id": "s_lazy" }),
         )
         .await
@@ -241,7 +241,7 @@ async fn human_only_targets_are_denied_through_the_full_stack() {
         let out = call(
             &stack.iii,
             "approval::gate",
-            hook_input("s_1", "c_1", "approval::set_mode"),
+            hook_input("s_1", "c_1", "approval::set-mode"),
         )
         .await
         .unwrap();

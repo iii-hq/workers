@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn human_only_uses_the_reserved_rule_id() {
-        let envelope = human_only_denial("approval::set_mode", &json!({}));
+        let envelope = human_only_denial("approval::set-mode", &json!({}));
         assert_eq!(envelope.rule_id.as_deref(), Some(HUMAN_ONLY_RULE_ID));
         assert_eq!(envelope.denied_by, DeniedBy::Permissions);
     }

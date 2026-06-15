@@ -75,5 +75,5 @@
     "title": "PendingApprovalRecord",
     "type": "object"
   },
-  "trigger_id": "approval::pending_created"
+  "trigger_id": "approval::pending-created"
 }

@@ -1,6 +1,6 @@
 {
   "description": "The pending inbox across sessions, with tenancy filters; the catch-up path for notification workers after a restart.",
-  "function_id": "approval::list_pending",
+  "function_id": "approval::list-pending",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {

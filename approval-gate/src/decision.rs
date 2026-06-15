@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn human_only_covers_approval_and_configuration_prefixes() {
-        assert!(is_human_only("approval::set_mode"));
+        assert!(is_human_only("approval::set-mode"));
         assert!(is_human_only("approval::resolve"));
         assert!(is_human_only("configuration::set"));
         assert!(!is_human_only("shell::run"));

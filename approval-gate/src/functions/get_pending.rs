@@ -1,4 +1,4 @@
-//! `approval::get_pending` — read one pending record; `null` when
+//! `approval::get-pending` — read one pending record; `null` when
 //! resolved or unknown.
 
 use super::Deps;

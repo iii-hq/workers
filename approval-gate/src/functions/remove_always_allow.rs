@@ -1,4 +1,4 @@
-//! `approval::remove_always_allow` — remove a function from the session's
+//! `approval::remove-always-allow` — remove a function from the session's
 //! auto-mode trust list (no-op when absent; seed entries removable like
 //! any other — the stored record overrides the deployment seed from first
 //! mutation on).

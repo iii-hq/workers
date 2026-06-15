@@ -2,7 +2,7 @@
 # always_allow_seed, pending_timeout_ms) live in the engine's
 # configuration entry "approval-gate", not here — see README § Configuration.
 
-# The harness::hook::pre_dispatch binding the worker registers for itself
+# The harness::hook::pre-dispatch binding the worker registers for itself
 # at startup (tech-specs/2026-06-agentic/approval-gate.md § The approval::gate hook).
 hook:
   functions: ["*"]

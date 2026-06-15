@@ -1,5 +1,5 @@
 //! The two custom trigger types this worker emits —
-//! `approval::pending_created` / `approval::pending_resolved` — and the
+//! `approval::pending-created` / `approval::pending-resolved` — and the
 //! fan-out machinery behind them (the session-manager reactivity model:
 //! consumers bind handlers with the standard two-step pattern; the engine
 //! routes each registration to our [`TriggerHandler`]s; delivery is
@@ -25,13 +25,13 @@ use serde_json::Value;
 
 use crate::types::{metadata_matches, JsonMap, PendingApprovalRecord, PendingResolvedEvent};
 
-pub const PENDING_CREATED: &str = "approval::pending_created";
+pub const PENDING_CREATED: &str = "approval::pending-created";
 pub const PENDING_CREATED_DESC: &str =
     "A function call was held for human approval and its inbox record written. \
      Payload: PendingApprovalRecord (redacted args, session context, expiry). \
      Bind notification workers here.";
 
-pub const PENDING_RESOLVED: &str = "approval::pending_resolved";
+pub const PENDING_RESOLVED: &str = "approval::pending-resolved";
 pub const PENDING_RESOLVED_DESC: &str =
     "A pending approval left the inbox (outcome: allow | deny | timeout | aborted). \
      Emitted exactly once per record; lets UIs clear badges.";

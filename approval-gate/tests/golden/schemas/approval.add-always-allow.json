@@ -1,31 +1,21 @@
 {
-  "description": "Set the session's permission mode (manual / auto / full). Human/console-only.",
-  "function_id": "approval::set_mode",
+  "description": "Add a function to the session's auto-mode trust list (idempotent). Human/console-only.",
+  "function_id": "approval::add-always-allow",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-      "PermissionMode": {
-        "enum": [
-          "manual",
-          "auto",
-          "full"
-        ],
-        "type": "string"
-      }
-    },
     "properties": {
-      "mode": {
-        "$ref": "#/definitions/PermissionMode"
+      "function_id": {
+        "type": "string"
       },
       "session_id": {
         "type": "string"
       }
     },
     "required": [
-      "mode",
+      "function_id",
       "session_id"
     ],
-    "title": "SetModeRequest",
+    "title": "AlwaysAllowMutationRequest",
     "type": "object"
   },
   "response_schema": {
