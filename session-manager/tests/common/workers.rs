@@ -13,16 +13,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::{TriggerRequest, III};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, RwLock};
 
-use session_manager::config::WorkerConfig;
+use session_manager::config::{FsBackendConfig, StorageAdapter, WorkerConfig};
+use session_manager::configuration::{AppState, ConfigCell};
 use session_manager::events::{
-    register_store_events_type, register_trigger_types, BridgeSubscribers, Emitter, EventSink,
-    IiiDeliverer,
+    register_store_events_type, register_trigger_types, BridgeSubscribers,
 };
-use session_manager::functions::{self, store_protocol, Deps};
-use session_manager::service::SessionService;
-use session_manager::store::{FsStore, SessionStore};
+use session_manager::functions::{self, store_protocol};
+use session_manager::runtime::{build_runtime, SessionBuildContext};
 
 pub struct Shared {
     /// The main (fs-mode) instance's data directory; steps read the
@@ -40,35 +39,39 @@ static SHARED: OnceCell<Arc<Shared>> = OnceCell::const_new();
 pub async fn register_all(iii: &Arc<III>) -> Arc<Shared> {
     SHARED
         .get_or_init(|| async {
-            let cfg = WorkerConfig::default();
-
             // Leaked tempdir that lives for the test binary lifetime.
             let tmp = tempfile::tempdir().expect("create main data_dir tempdir");
             let data_dir = tmp.keep();
 
+            let cfg = WorkerConfig {
+                adapter: StorageAdapter::Fs(FsBackendConfig {
+                    data_dir: data_dir.display().to_string(),
+                }),
+                ..WorkerConfig::default()
+            };
+
             // Same boot order as src/main.rs in fs mode.
             let sets = register_trigger_types(iii);
             let bridges = register_store_events_type(iii);
-            let emitter = Arc::new(Emitter::with_bridges(
+            let config_cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
+            let ctx = Arc::new(SessionBuildContext {
+                iii: iii.clone(),
+                local_url: super::engine::ws_url(),
                 sets,
-                Arc::new(IiiDeliverer::new(iii.clone())),
-                bridges.clone(),
-            ));
+                bridge_subscribers: bridges.clone(),
+                config_cell,
+            });
+            let runtime = build_runtime(&cfg, &ctx).expect("build main fs runtime");
+            let state = AppState::new(runtime, ctx);
 
-            let store: Arc<dyn SessionStore> =
-                Arc::new(FsStore::new(&data_dir).expect("open main FsStore"));
-            store_protocol::register_store_protocol(iii, store.clone(), emitter.clone());
-
-            let service = Arc::new(SessionService::new(store, &cfg));
-            let sink: Arc<dyn EventSink> = emitter;
-            let deps = Arc::new(Deps { service, sink });
-            functions::register_all(iii, &deps);
+            store_protocol::register_store_protocol(iii, state.clone());
+            functions::register_all(iii, &state);
 
             // Block until the engine can route to the surface registered
             // above: registrations flow over one connection in boot
             // order, so the *last* one being routable means the batch
             // landed. No fixed sleep — slow runners just poll longer.
-            wait_until_routable(iii, "session::set_active_leaf").await;
+            wait_until_routable(iii, "session::set-active-leaf").await;
 
             Arc::new(Shared { data_dir, bridges })
         })

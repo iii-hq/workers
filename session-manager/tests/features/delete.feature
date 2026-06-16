@@ -29,7 +29,7 @@ Feature: session::delete — delete a session and its entries
       { "session_id": "s_001" }
       """
     Then the response is null
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """

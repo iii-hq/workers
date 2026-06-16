@@ -1,7 +1,7 @@
 @pure
-Feature: session::set_status — the coarse lifecycle status
+Feature: session::set-status — the coarse lifecycle status
 
-  Contract (session-manager.md § Session status / session::set_status):
+  Contract (session-manager.md § Session status / session::set-status):
   idle -> working -> done/error is driven by the harness; consumers
   render it directly (spinner, done badge, list filter). set_status is
   a NO-OP (no event) when the status is unchanged. reason is stored as
@@ -18,7 +18,7 @@ Feature: session::set_status — the coarse lifecycle status
       """
       {}
       """
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
@@ -37,11 +37,11 @@ Feature: session::set_status — the coarse lifecycle status
       """
       {}
       """
-    Given I call "session::set_status" with:
+    Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
@@ -58,11 +58,11 @@ Feature: session::set_status — the coarse lifecycle status
       """
       {}
       """
-    Given I call "session::set_status" with:
+    Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "error", "reason": "rate limited" }
       """
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "error", "reason": "DIFFERENT" }
       """
@@ -80,7 +80,7 @@ Feature: session::set_status — the coarse lifecycle status
       """
       {}
       """
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "error", "reason": "provider quota exhausted" }
       """
@@ -95,11 +95,11 @@ Feature: session::set_status — the coarse lifecycle status
   # Prevents: stale error reasons surviving recovery — a session back at
   # work must not still advertise last week's failure.
   Scenario: leaving error clears the stored reason
-    Given I call "session::set_status" with:
+    Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "error", "reason": "boom" }
       """
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
@@ -117,11 +117,11 @@ Feature: session::set_status — the coarse lifecycle status
       """
       {}
       """
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
-    And I call "session::set_status" with:
+    And I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "done" }
       """
@@ -132,7 +132,7 @@ Feature: session::set_status — the coarse lifecycle status
 
   # Prevents: setting status on sessions that don't exist.
   Scenario: set_status on an unknown session is rejected
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_404", "status": "working" }
       """

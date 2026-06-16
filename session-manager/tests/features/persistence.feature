@@ -29,16 +29,16 @@ Feature: fs backend persistence — one JSONL file per session, replayed on rest
       """
     And a user message "one" appended to "s_001"
     And an empty assistant message appended to "s_001"
-    And I call "session::update_message" with:
+    And I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [{ "type": "text", "text": "streamed" }] }
       """
-    And I call "session::set_status" with:
+    And I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "done" }
       """
-    And I call "session::set_active_leaf" with:
+    And I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -53,7 +53,7 @@ Feature: fs backend persistence — one JSONL file per session, replayed on rest
     And the response field "meta.status" is "done"
     And the response field "meta.message_count" is 2
     And the response field "meta.metadata.owner" is "u_1"
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002" }
       """

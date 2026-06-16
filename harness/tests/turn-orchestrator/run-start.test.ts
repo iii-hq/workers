@@ -307,7 +307,7 @@ describe('execute', () => {
 
     await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
 
-    const statusIdx = calls.findIndex((c) => c.function_id === 'session::set_status');
+    const statusIdx = calls.findIndex((c) => c.function_id === 'session::set-status');
     const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session::append');
     expect(statusIdx).toBeGreaterThanOrEqual(0);
     expect((calls[statusIdx]?.payload as { status: string }).status).toBe('working');

@@ -36,7 +36,7 @@ badge, a list filter):
 
 `session::create` starts a session at `idle`. The driver (typically the [harness](harness.md)) sets
 `working` when a turn starts, `done` when it completes or is cancelled, and `error` when it fails,
-via [`session::set_status`](#sessionset_status), which fires
+via [`session::set-status`](#sessionset-status), which fires
 [`session::status-changed`](#trigger-types-emitted).
 
 ## Standalone use
@@ -64,7 +64,7 @@ types; a consumer binds handlers with the standard two-step pattern (see
 
 Streaming an assistant reply uses the same primitives as everything else: the driver appends an
 (initially empty) assistant message — which fires `session::message-added` — then calls
-`session::update_message` as tokens arrive — each firing `session::message-updated`. Updates may be
+`session::update-message` as tokens arrive — each firing `session::message-updated`. Updates may be
 batched/throttled by the driver. Consumers render the growing message from those updates. Each
 update carries a server-assigned monotonic `revision`; trigger deliveries may arrive out of order,
 so consumers keep the highest revision per entry (last-write-wins on full-message snapshots).
@@ -77,15 +77,15 @@ sequenceDiagram
   UI->>S: bind created / message-added / message-updated / status-changed / meta-updated / deleted
   H->>S: session::create (title, description)
   S-->>UI: session::created
-  H->>S: session::set_status working
+  H->>S: session::set-status working
   S-->>UI: session::status-changed (working)
   H->>S: session::append (assistant message, empty)
   S-->>UI: session::message-added
   loop streaming deltas
-    H->>S: session::update_message (grow content)
+    H->>S: session::update-message (grow content)
     S-->>UI: session::message-updated
   end
-  H->>S: session::set_status done
+  H->>S: session::set-status done
   S-->>UI: session::status-changed (done)
 ```
 
@@ -98,25 +98,25 @@ Lifecycle:
 - `session::ensure` — Idempotently ensure a session with a given id exists.
 - `session::get` — Read one session's metadata.
 - `session::list` — List sessions with pagination/ordering.
-- `session::set_meta` — Update a session's `title`/`description`/`metadata` (e.g. an auto-generated
+- `session::set-meta` — Update a session's `title`/`description`/`metadata` (e.g. an auto-generated
   title); fires `session::meta-updated`.
-- `session::set_status` — Set status `idle`/`working`/`done`/`error`; fires `session::status-changed`.
+- `session::set-status` — Set status `idle`/`working`/`done`/`error`; fires `session::status-changed`.
 - `session::delete` — Delete a session and its entries; fires `session::deleted`.
 
 Messages:
 
 - `session::append` — Append one message entry; fires `session::message-added`.
-- `session::append_many` — Append several message entries; fires `session::message-added` per entry.
-- `session::update_message` — Replace the content of a message entry; fires `session::message-updated`.
+- `session::append-many` — Append several message entries; fires `session::message-added` per entry.
+- `session::update-message` — Replace the content of a message entry; fires `session::message-updated`.
 - `session::messages` — Load the active-path `AgentMessage[]` (with entry ids), oldest first;
   supports pagination and role filtering.
-- `session::get_message` — Read a single entry by id.
+- `session::get-message` — Read a single entry by id.
 
 Branching:
 
 - `session::fork` — Copy history up to an entry into a new session (copy-on-fork: fresh entry ids);
   fires `session::created` for the new session.
-- `session::set_active_leaf` — Move the active path to end at a given entry (branch switch).
+- `session::set-active-leaf` — Move the active path to end at a given entry (branch switch).
 
 ## Triggers
 
@@ -254,7 +254,7 @@ type SessionMeta = {
 ### `session::create`
 
 Create a session at status `idle`. `title`/`description` may be supplied up front (e.g. derived from
-the opening message) and refined later with `session::set_meta`. `metadata` is persisted onto
+the opening message) and refined later with `session::set-meta`. `metadata` is persisted onto
 `SessionMeta` — it is the tenancy hook (e.g. `{ owner: "u_1" }`) that `session::list` and every
 trigger config can filter on. Fires `session::created`.
 
@@ -318,7 +318,7 @@ type ListRequest = {
 type ListResponse = { sessions: SessionMeta[]; next_cursor?: string };
 ```
 
-### `session::set_meta`
+### `session::set-meta`
 
 Update `title`/`description`/`metadata` (e.g. once a titling worker generates them from the first
 exchange). Does not change status or messages. Fires `session::meta-updated`, so consumers render
@@ -337,7 +337,7 @@ type SetMetaRequest = {
 type SetMetaResponse = { meta: SessionMeta };
 ```
 
-### `session::set_status`
+### `session::set-status`
 
 Set the session status. Fires `session::status-changed`. No-op (no event) if the status is unchanged.
 `reason` is stored as `status_reason` (typically set with `error`, cleared on any other status).
@@ -398,7 +398,7 @@ Example:
 { "entry_id": "e_001", "parent_id": null, "timestamp": 1717800000000 }
 ```
 
-### `session::append_many`
+### `session::append-many`
 
 - Invocation: **sync**. Fires `session::message-added` for each appended entry, in order. Not
   idempotent — use `session::append` with `entry_id` where redelivery is possible.
@@ -413,7 +413,7 @@ type AppendManyRequest = {
 type AppendManyResponse = { entry_ids: string[]; last_entry_id: string };
 ```
 
-### `session::update_message`
+### `session::update-message`
 
 Replace the content (and optionally `details`) of an existing message entry. Used for streaming
 assistant deltas and for edited function output. Fires `session::message-updated`. Each successful
@@ -464,7 +464,7 @@ type MessagesResponse = {
 };
 ```
 
-### `session::get_message`
+### `session::get-message`
 
 - Invocation: **sync**
 
@@ -488,7 +488,7 @@ type ForkRequest = { session_id: string; entry_id: string; title?: string };
 type ForkResponse = { session_id: string; meta: SessionMeta };
 ```
 
-### `session::set_active_leaf`
+### `session::set-active-leaf`
 
 Switch the active path to end at `entry_id` (switching to a non-leaf makes the chain above it the
 active path). Subsequent `session::append` without `parent_id` chains from here. Appending with an
@@ -532,10 +532,10 @@ future SQL/blob backend can implement the same interface.
 Deny-by-default for in-run agents (see [README § Security model](README.md#security-model)). An
 agent that can write here can rewrite its own transcript, flip session status, or destroy history:
 
-- **Deny:** `session::create`, `session::ensure`, `session::append`, `session::append_many`,
-  `session::update_message`, `session::set_status`, `session::set_meta`, `session::set_active_leaf`,
+- **Deny:** `session::create`, `session::ensure`, `session::append`, `session::append-many`,
+  `session::update-message`, `session::set-status`, `session::set-meta`, `session::set-active-leaf`,
   `session::fork`, `session::delete`.
-- **Allow with care:** `session::get`, `session::list`, `session::messages`, `session::get_message`
+- **Allow with care:** `session::get`, `session::list`, `session::messages`, `session::get-message`
   — read-only, but in multi-tenant deployments they leak other owners' sessions; deny unless the
   deployment is single-tenant.
 

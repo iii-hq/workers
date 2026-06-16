@@ -1,4 +1,4 @@
-//! `session::set_status` — set the session lifecycle status.
+//! `session::set-status` — set the session lifecycle status.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

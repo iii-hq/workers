@@ -29,7 +29,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'session',
-    label: 'session::set_status working',
+    label: 'session::set-status working',
     title: 'the session goes live',
     desc: 'status flips to working and the turn-started event fires. every bound consumer shows a spinner without asking anyone — the write itself is the notification.',
     event: 'harness::turn_started',
@@ -58,7 +58,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'session',
-    label: 'session::update_message',
+    label: 'session::update-message',
     title: 'stream to everyone',
     desc: 'every delta is persisted as it arrives, and every write emits an event. the chat ui, the telegram bridge, and any dashboard all render the same write, live — one stream in, any number of surfaces out.',
     event: 'session::message-updated',
@@ -80,7 +80,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'session',
-    label: 'session::set_status done',
+    label: 'session::set-status done',
     title: 'the turn completes',
     desc: 'the turn-completed event carries the terminal status and the typed result — the orchestration surface for anything that reacts to outcomes: chain a follow-up, notify a channel, or settle a parent agent.',
     event: 'harness::turn_completed',

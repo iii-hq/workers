@@ -9,7 +9,7 @@ use crate::types::{JsonMap, SessionMeta};
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct CreateRequest {
-    /// Session title; may be refined later with `session::set_meta`. Default "".
+    /// Session title; may be refined later with `session::set-meta`. Default "".
     pub title: Option<String>,
     /// Session description. Default "".
     pub description: Option<String>,

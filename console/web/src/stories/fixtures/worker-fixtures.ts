@@ -676,6 +676,108 @@ export const SCHEMA_EXAMPLES: SchemaExample[] = [
     initial: { min: 10, max: 5 },
     errors: new Map([['/max', 'max must be greater than or equal to min']]),
   },
+  {
+    // Mirrors session-manager's registered schema: an adjacently tagged
+    // `StorageAdapter` enum (`name` + `config`) that schemars emits as a
+    // `oneOf`. The console renders a variant picker plus only the selected
+    // adapter's `config` fields; switching resets `config` to that adapter's
+    // defaults.
+    id: 'adapter-oneof',
+    label: 'oneOf · adapter (name + config)',
+    wide: true,
+    schema: {
+      type: 'object',
+      title: 'session-manager',
+      description:
+        'adjacently tagged adapter (name + config). switch fs ↔ bridge to see only its fields.',
+      definitions: {
+        FsBackendConfig: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'settings for the fs adapter.',
+          properties: {
+            data_dir: {
+              type: 'string',
+              default: '~/.iii/data/session-manager',
+              title: 'data dir',
+              description: 'one <session_id>.jsonl per session.',
+            },
+          },
+        },
+        BridgeBackendConfig: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'settings for the bridge adapter.',
+          properties: {
+            url: {
+              type: 'string',
+              title: 'url',
+              description: 'websocket url of the main instance.',
+            },
+            timeout_ms: {
+              type: 'integer',
+              default: 5000,
+              title: 'timeout ms',
+              description: 'per store/publish call timeout (ms).',
+            },
+          },
+          required: ['url'],
+        },
+        StorageAdapter: {
+          description: 'storage adapter selection.',
+          oneOf: [
+            {
+              type: 'object',
+              description: 'one append-only JSONL file per session.',
+              properties: {
+                name: { type: 'string', enum: ['fs'] },
+                config: { $ref: '#/definitions/FsBackendConfig' },
+              },
+              required: ['config', 'name'],
+            },
+            {
+              type: 'object',
+              description: 'defer storage to a main session-manager.',
+              properties: {
+                name: { type: 'string', enum: ['bridge'] },
+                config: { $ref: '#/definitions/BridgeBackendConfig' },
+              },
+              required: ['config', 'name'],
+            },
+          ],
+        },
+      },
+      properties: {
+        adapter: {
+          allOf: [{ $ref: '#/definitions/StorageAdapter' }],
+          default: {
+            name: 'fs',
+            config: { data_dir: '~/.iii/data/session-manager' },
+          },
+          title: 'adapter',
+          description: 'storage adapter (fs | bridge) plus its settings.',
+        },
+        default_list_limit: {
+          type: 'integer',
+          default: 50,
+          title: 'default list limit',
+        },
+        max_list_limit: {
+          type: 'integer',
+          default: 500,
+          title: 'max list limit',
+        },
+      },
+    },
+    initial: {
+      adapter: {
+        name: 'fs',
+        config: { data_dir: '~/.iii/data/session-manager' },
+      },
+      default_list_limit: 50,
+      max_list_limit: 500,
+    },
+  },
 ]
 
 /* ------------------------------------------------------------------ */

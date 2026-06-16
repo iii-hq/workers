@@ -163,7 +163,7 @@ describe('runStreamTurn wires the coalescer', () => {
     return { ports, updates };
   }
 
-  it('collapses a run of same-type deltas into a single session::update_message (via the final flush)', async () => {
+  it('collapses a run of same-type deltas into a single session::update-message (via the final flush)', async () => {
     const { ports, updates } = mkPorts(async (onDelta) => {
       await onDelta(P, td('a'));
       await onDelta(P, td('b'));

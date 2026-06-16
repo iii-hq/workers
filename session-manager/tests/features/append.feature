@@ -61,7 +61,7 @@ Feature: session::append — append one entry, idempotent on entry_id
     And the response field "entry_id" is "turn1-user"
     And the response field "parent_id" is null
     And function "ui::recv" received 1 "session::message-added" delivery
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "turn1-user" }
       """
@@ -189,7 +189,7 @@ Feature: session::append — append one entry, idempotent on entry_id
             "content": [{ "type": "text", "text": "README.md" }], "is_error": false }
         ], "stop_reason": "end", "model": "m1", "provider": "p1", "timestamp": 2 } }
       """
-    And I call "session::get_message" with:
+    And I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """

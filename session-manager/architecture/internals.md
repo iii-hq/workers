@@ -11,8 +11,11 @@ in-process.
 
 | Path | Responsibility |
 |---|---|
-| [src/main.rs](../src/main.rs) | Boot: CLI (`--config`, `--url`, `--manifest`), config load, backend resolution (**fatal** on invalid `backend_config`), engine connection, registration order, Ctrl+C shutdown (both connections in bridge mode). |
-| [src/config.rs](../src/config.rs) | `WorkerConfig { backend, backend_config, default_list_limit, max_list_limit }`. `backend_config` is raw JSON resolved by `resolve_backend()` into `Backend::Fs(FsBackendConfig)` / `Backend::Bridge(BridgeBackendConfig)` (both `deny_unknown_fields`). `~/` expansion for `data_dir`. |
+| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connection, configuration register/fetch (**fatal** on an invalid bridge `config`), builds the initial `SessionRuntime` via `build_runtime` and wraps it in the hot-swappable `AppState`, registration order (store protocol + 14 functions + `configuration` trigger + `session::config-status`), Ctrl+C shutdown (the remote connection too when a bridge runtime is live). |
+| [src/config.rs](../src/config.rs) | `WorkerConfig { adapter, default_list_limit, max_list_limit }` with serde + `schemars::JsonSchema`. `adapter` is an adjacently tagged enum `StorageAdapter` (`name` + `config`, `rename_all = "snake_case"`) → `Fs(FsBackendConfig)` / `Bridge(BridgeBackendConfig)`, each `config` a typed `deny_unknown_fields` struct; `schemars` emits a `oneOf` so the console shows a variant picker plus the selected adapter's fields. `resolve_adapter()` returns the typed selection; bridge `url` is required at parse time. `~/` expansion for `data_dir`; `${VAR}` seed expansion; `json_schema()` / `to_json` / `from_json` / `from_file`; `boot_signature()` = the `adapter` half, compared on reload to decide rebuild-vs-tune. |
+| [src/configuration.rs](../src/configuration.rs) | Integration with the `configuration` worker: `register_config` (schema + seed), `fetch_config`, the hot-swappable `AppState` (live `SessionRuntime` + reload lock + `ReloadStatus`), `apply_runtime` / `reload_serialized` (build a candidate then swap; last-good on failure), `register_config_trigger` (binds `configuration` → `session::on-config-change`), `register_config_status` (`session::config-status`), `ConfigCell` (per-call list-limit snapshot). |
+| [src/runtime.rs](../src/runtime.rs) | `SessionRuntime` (store + service + sink + local emitter + `AdapterMode` + optional bridge remote), `SessionBuildContext`, `build_runtime` (constructs the runtime for an adapter; pure, so the reload path builds a candidate and only swaps on success). |
+| [src/resync.rs](../src/resync.rs) | `resync_triggers`: after an adapter swap, replays the new store's state (`created` + per-entry `message-added` / `message-updated`) through the local emitter and emits `deleted` for vanished sessions, so subscribers stay real-time without a refetch. |
 | [src/manifest.rs](../src/manifest.rs) | `--manifest` JSON for the registry publish pipeline; `default_config` mirrors `WorkerConfig::default()`. |
 | [src/types.rs](../src/types.rs) | Wire contracts: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `SessionEntry` (message/custom envelope), `SessionMeta`, `SessionStatus`, `CustomPayload`, `metadata_matches` (subset-equality helper). All serde + `schemars::JsonSchema`; serde tags keep the JSON byte-compatible with the spec's TypeScript. |
 | [src/error.rs](../src/error.rs) | `SessionError` — every variant renders as `code: message` with a stable `session/*` code; `From<SessionError> for IIIError` puts that string on the bus. |
@@ -21,9 +24,9 @@ in-process.
 | [src/store/bridge.rs](../src/store/bridge.rs) | Bridge backend (defers to a main instance's `session::store::*`). |
 | [src/service.rs](../src/service.rs) | **All domain logic.** Per-session locks, id/clock injection, cursors, active-path walks, fork copying. Returns `(response, Vec<EmittableEvent>)` — never emits itself. |
 | [src/events.rs](../src/events.rs) | The six public trigger types, binding-config parsing + filters, `Emitter`, `EventEnvelope`, `EventSink` (`Emitter` / `RemotePublisher`), the internal `session::store::events` feed, `attach_bridge_relay`. |
-| [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }`, generic typed registration helper, `register_all` (14 functions). |
+| [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }` built per call from the live `AppState` runtime (so a hot-reload is picked up without re-registering), generic typed registration helper, `register_all` (14 functions). |
 | [src/functions/<verb>.rs](../src/functions) | One file per function: request/response structs (serde + JsonSchema, doc comments become schema descriptions) and a thin `pub async fn handle(deps, req)` = service call + `sink.publish_all(events)`. |
-| [src/functions/store_protocol.rs](../src/functions/store_protocol.rs) | The internal `session::store::*` protocol (11 raw store functions + `publish_events`), served in fs mode only. |
+| [src/functions/store_protocol.rs](../src/functions/store_protocol.rs) | The internal `session::store::*` protocol (11 raw store functions + `publish_events`). Registered unconditionally but mode-gated per call: served only while in fs mode, so it follows adapter hot-reloads (bridge mode rejects). |
 | [tests/](../tests) | Cucumber BDD (`tests/bdd.rs`, `harness = false`) + `tests/manifest.rs` subprocess test. See §10. |
 
 Layering rule that keeps everything testable: **handlers are thin, the service
@@ -192,8 +195,8 @@ Record per line, discriminated by `type`:
 
 Implements the same trait by calling the **main** instance's
 `session::store::*` functions over a dedicated SDK connection
-(`backend_config.url`), one `trigger` per trait method with
-`backend_config.timeout_ms`. Failures (unreachable main, malformed replies)
+(the bridge adapter's `config.url`), one `trigger` per trait method with
+`config.timeout_ms`. Failures (unreachable main, malformed replies)
 map to `StoreError` → `session/storage`; the bridged mutation fails cleanly.
 The bridged instance never caches — the main's store (and its cache) is the
 source of truth.
@@ -206,9 +209,9 @@ the 11 trait methods 1:1 (`get_meta`, `put_meta`, `delete_meta`,
 `get_active_leaf`, `set_active_leaf`, `delete_active_leaf`) plus
 `publish_events` (§6.3). They bypass all domain logic by design — they are
 deployment plumbing for bridges, not an app API. Bridge-mode instances never
-serve them (a bridge forwarding to itself would recurse; boot also warns when
-`backend_config.url` equals the local `--url`). Deployments must deny them to
-agents.
+serve them (a bridge forwarding to itself would recurse; boot also fails when
+the bridge adapter's `config.url` equals the local `--url`). Deployments must
+deny them to agents.
 
 ## 6. Event pipeline
 
@@ -249,7 +252,7 @@ snapshot filters evaluate against — payloads do not carry it).
   `EventEnvelope` and deliver it to every subscriber of the internal
   `session::store::events` feed (§6.3).
 - **bridge mode** — the sink is `RemotePublisher`: serialize the mutation's
-  events into envelopes and make **one** `session::store::publish_events`
+  events into envelopes and make **one** `session::store::publish-events`
   call to the main. Log-and-continue on failure (the mutation already
   succeeded; this is the same best-effort stance as `Void` fan-out — see §11).
 
@@ -264,7 +267,7 @@ flowchart LR
     relay1["relay fn session::bridge::recv::&lt;uuid&gt;"] --> em1[local Emitter] --> subs1[B1 subscribers]
   end
   subgraph mainI [main instance, fs]
-    pubfn[session::store::publish_events] --> emM[main Emitter]
+    pubfn[session::store::publish-events] --> emM[main Emitter]
     emM --> subsM[main subscribers]
     emM --> feed["session::store::events fan-out"]
   end
@@ -309,26 +312,62 @@ bridged instances to force a clean re-attach.
 
 ## 7. Configuration and boot
 
+Runtime config lives in the **`configuration` worker** under id
+`session-manager`; [`configuration.rs`](../src/configuration.rs) owns the
+integration. On first boot (no stored value) the built-in
+[`WorkerConfig::default()`](../src/config.rs) is registered as
+`initial_value`; an optional `--config <path>` may seed from YAML instead.
+
 ```yaml
-backend: fs | bridge
-backend_config:            # shape depends on backend
-  data_dir: ~/.iii/data/session-manager   # fs (default shown)
-  # url: ws://main:49134                  # bridge (required)
-  # timeout_ms: 5000                      # bridge (default 5000)
+adapter:
+  name: fs | bridge
+  config:                  # shape depends on the adapter name
+    data_dir: ~/.iii/data/session-manager   # fs (default shown)
+    # url: ws://main:49134                  # bridge (required)
+    # timeout_ms: 5000                      # bridge (default 5000)
 default_list_limit: 50
 max_list_limit: 500
 ```
 
 Boot rules (see `main.rs` header for the full sequence):
 
-- Missing/unreadable config file ⇒ warn + full defaults (scaffold-standard).
-- **Invalid `backend_config` ⇒ fatal.** A misconfigured bridge must never
-  silently fall back to writing a local fs store.
-- Registration order matters: six public trigger types → backend-specific
-  pieces (fs: store-events feed + store protocol; bridge: remote connection,
-  relay, publisher) → the 14 functions.
-- Shutdown awaits `shutdown_async` on the local connection and, in bridge
-  mode, the remote one as well.
+- **Connect first, then config.** After the engine connection, `register_config`
+  registers `WorkerConfig::json_schema()` (+ the seed as `initial_value` when
+  one is supplied or nothing is stored yet) and `fetch_config` reads the
+  authoritative, env-expanded value. `configuration` is a **required boot
+  dependency** — a failed register/fetch aborts startup.
+- A missing/unparseable `--config` seed ⇒ warn + rely on the stored entry (or
+  the built-in default registered on first boot); the seed never overwrites an
+  already-stored value.
+- **Invalid bridge `config` ⇒ fatal.** A bridge without a `url` fails at parse
+  time, so a misconfigured bridge never silently falls back to writing a local
+  fs store.
+- Registration order matters: six public trigger types + the internal
+  store-events feed (both registered unconditionally, even in bridge mode, so a
+  later bridge→fs reload has them ready) → `build_runtime` for the boot adapter →
+  the `session::store::*` protocol (mode-gated) → the 14 functions → the
+  `configuration` trigger (`session::on-config-change`) → `session::config-status`.
+  Handlers read the live runtime from `AppState` per call, so registration
+  happens once and never needs to repeat across a reload.
+- **Adapter hot-reload (full).** Every field reloads live. On
+  `configuration:updated`, `session::on-config-change` re-fetches the
+  authoritative value under the serialized `reload_lock`:
+  - **Adapter unchanged** (only the list limits differ): swap the shared
+    `ConfigCell` so `list` / `messages` pick up the new limits per call. No
+    store/sink rebuild.
+  - **Adapter changed** (fs↔bridge, a new `data_dir`, a bridge url/timeout):
+    `build_runtime` constructs a fresh `SessionRuntime`; a failed build keeps the
+    previous runtime (last-good) and records `Rejected` for `session::config-status`.
+    On success the runtime is swapped under the write lock, then `resync_triggers`
+    replays the new store's state through the trigger fan-out (and `deleted` for
+    sessions gone across the swap) so subscribers stay real-time. The previous
+    bridge connection, if any, is shut down afterward.
+
+  The handler ignores the trigger payload and re-reads via `configuration::get`,
+  so a direct call cannot inject config — it is denied to agents in
+  `iii-permissions.yaml`.
+- Shutdown awaits `shutdown_async` on the local connection and, when a bridge
+  runtime is live, the remote one as well.
 
 ## 8. Error model
 
@@ -416,12 +455,12 @@ cargo test --test bdd -- --tags @engine   # with a running engine
   feature file. If it mutates, take the session lock and decide which event
   it fires (every mutation has an event — `set_active_leaf` is the one
   spec'd exception).
-- **New storage backend:** implement `SessionStore` (store/fetch only — no
-  ordering/counting logic), add a `BackendKind` + typed config struct
-  (`deny_unknown_fields`) + `resolve_backend` arm + `main.rs` wiring. Decide
-  whether it is *authoritative* (serves the store protocol + events feed,
-  like fs) or *deferring* (like bridge). Reuse `persistence.feature`'s
-  restart scenarios as the acceptance bar.
+- **New storage adapter:** implement `SessionStore` (store/fetch only — no
+  ordering/counting logic), add a `StorageAdapter` variant + its typed config
+  struct (`deny_unknown_fields`) + a `main.rs` wiring arm. Decide whether it is
+  *authoritative* (serves the store protocol + events feed, like fs) or
+  *deferring* (like bridge). Reuse `persistence.feature`'s restart scenarios as
+  the acceptance bar.
 - **New trigger type:** add the const + `EventKind` variant + payload struct
   + config struct, register it in `register_trigger_types`, extend
   `EventEnvelope::to_emittable`, and cover the filter matrix in

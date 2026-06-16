@@ -1,4 +1,4 @@
-//! `session::update_message` — replace a message entry's content
+//! `session::update-message` — replace a message entry's content
 //! (streaming deltas, edited function output).
 
 use schemars::JsonSchema;

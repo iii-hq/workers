@@ -1,7 +1,7 @@
 @pure
-Feature: session::update_message — streaming deltas and edited output
+Feature: session::update-message — streaming deltas and edited output
 
-  Contract (session-manager.md § session::update_message): replaces the
+  Contract (session-manager.md § session::update-message): replaces the
   content (and optionally details) of an existing message entry. Each
   successful update increments the entry's revision (echoed on the
   event, monotonic per entry — consumers keep the highest). With
@@ -21,14 +21,14 @@ Feature: session::update_message — streaming deltas and edited output
       """
       {}
       """
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
         "content": [{ "type": "text", "text": "Hel" }] }
       """
     Then the response field "updated" is true
     And the response field "revision" is 1
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
         "content": [{ "type": "text", "text": "Hello world" }] }
@@ -39,7 +39,7 @@ Feature: session::update_message — streaming deltas and edited output
     And delivery 0 to "ui::recv" has "message.content.0.text" = "Hel"
     And delivery 1 to "ui::recv" has "revision" = 2
     And delivery 1 to "ui::recv" has "message.content.0.text" = "Hello world"
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -51,12 +51,12 @@ Feature: session::update_message — streaming deltas and edited output
   # update time.
   Scenario: an update never changes the entry's creation timestamp
     Given the clock advances by 5000 ms
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
         "content": [{ "type": "text", "text": "x" }] }
       """
-    And I call "session::get_message" with:
+    And I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -70,12 +70,12 @@ Feature: session::update_message — streaming deltas and edited output
       """
       {}
       """
-    Given I call "session::update_message" with:
+    Given I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
         "content": [{ "type": "text", "text": "winner" }], "expected_revision": 0 }
       """
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
         "content": [{ "type": "text", "text": "loser" }], "expected_revision": 0 }
@@ -84,7 +84,7 @@ Feature: session::update_message — streaming deltas and edited output
     And the response field "updated" is false
     And the response field "revision" is 1
     And function "ui::recv" received 1 "session::message-updated" delivery
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -100,14 +100,14 @@ Feature: session::update_message — streaming deltas and edited output
                      "content": [{ "type": "text", "text": "long output" }],
                      "details": { "full": true }, "is_error": false, "timestamp": 5 } }
       """
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [{ "type": "text", "text": "[pruned]" }],
         "details": { "compacted_at": 1000123 } }
       """
     Then the response field "updated" is true
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002" }
       """
@@ -118,7 +118,7 @@ Feature: session::update_message — streaming deltas and edited output
   # field (they would vanish on the next read).
   Scenario: details on a user message are rejected
     Given a user message "plain" appended to "s_001"
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [], "details": { "x": 1 } }
@@ -129,7 +129,7 @@ Feature: session::update_message — streaming deltas and edited output
   # surface.
   Scenario: updating a custom entry is rejected
     Given a custom entry of type "compaction" appended to "s_001"
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002", "content": [] }
       """
@@ -138,12 +138,12 @@ Feature: session::update_message — streaming deltas and edited output
   # Prevents: updates against missing entries/sessions failing silently
   # or fabricating entries.
   Scenario: unknown entry and unknown session are rejected
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "ghost", "content": [] }
       """
     Then the call fails with code "session/entry_not_found"
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "s_404", "entry_id": "e_001", "content": [] }
       """
