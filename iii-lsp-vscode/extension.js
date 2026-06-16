@@ -20,9 +20,14 @@ function resolvePathBinary() {
       for (const ext of exts) {
         const full = path.join(dir, candidate + ext);
         try {
-          if (fs.statSync(full).isFile()) {
-            return full;
+          const stat = fs.statSync(full);
+          if (!stat.isFile()) {
+            continue;
           }
+          if (process.platform !== "win32") {
+            fs.accessSync(full, fs.constants.X_OK);
+          }
+          return full;
         } catch {
           // not here, keep looking
         }
@@ -43,7 +48,7 @@ async function activate(context) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     vscode.window.showWarningMessage(
-      `Failed to install iii-lsp binary. Falling back to configured path or PATH lookup. ${message}`
+      `Failed to install lsp binary. Falling back to configured path or PATH lookup. ${message}`
     );
     serverPath = config.get("serverPath") || resolvePathBinary();
   }
