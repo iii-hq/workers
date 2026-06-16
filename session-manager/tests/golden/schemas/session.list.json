@@ -1,0 +1,177 @@
+{
+  "function_id": "session::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ListOrder": {
+        "description": "Sort order for `session::list`.",
+        "enum": [
+          "created_asc",
+          "created_desc",
+          "updated_desc"
+        ],
+        "type": "string"
+      },
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "cursor": {
+        "description": "Opaque pagination cursor from a previous response.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Page size. Default 50, clamped to the configured maximum.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "description": "Equality filter against `SessionMeta.metadata` (tenancy): every given key must equal the stored value.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "order": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ListOrder"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Sort order. Default `updated_desc`."
+      },
+      "status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SessionStatus"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Only sessions with this status."
+      }
+    },
+    "title": "ListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionMeta": {
+        "description": "A session's metadata record.",
+        "properties": {
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "forked_from": {
+            "description": "Source session id when created by `session::fork`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "description": "Number of `kind: \"message\"` entries (custom entries are bookkeeping and not counted).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` and every trigger config can filter on.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/SessionStatus"
+          },
+          "status_reason": {
+            "description": "Short cause, set on `error`, cleared on any other status.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "description",
+          "message_count",
+          "session_id",
+          "status",
+          "title",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "next_cursor": {
+        "description": "Present when more pages remain.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "sessions": {
+        "items": {
+          "$ref": "#/definitions/SessionMeta"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "sessions"
+    ],
+    "title": "ListResponse",
+    "type": "object"
+  }
+}

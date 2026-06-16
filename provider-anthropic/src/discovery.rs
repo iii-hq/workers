@@ -11,7 +11,8 @@ use crate::{router_client, state, PROVIDER_ID};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
 use llm_router::types::model::Model;
-use serde_json::{json, Value};
+use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
+use serde_json::Value;
 
 /// Derive the models endpoint from the configured messages endpoint
 /// (`…/v1/messages` → `…/v1/models`). The page size covers Anthropic's
@@ -167,12 +168,15 @@ pub async fn refresh_models(iii: &III, http: &reqwest::Client) -> Result<usize, 
 pub fn make_refresh_models(
     iii: III,
     http: reqwest::Client,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |_raw: Value| {
+) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |_req: RefreshModelsRequest| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move {
             let count = refresh_models(&iii, &http).await?;
-            Ok(json!({ "ok": true, "count": count }))
+            Ok(RefreshModelsResponse { ok: true, count })
         })
     }
 }

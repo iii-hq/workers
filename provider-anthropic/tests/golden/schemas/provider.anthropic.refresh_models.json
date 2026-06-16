@@ -1,0 +1,30 @@
+{
+  "description": "Refresh the Anthropic catalog slice from the upstream models endpoint and reconcile it through the router; returns the model count written.",
+  "function_id": "provider::anthropic::refresh_models",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of a provider's `provider::<id>::refresh_models` — takes no arguments. A struct (not `Value`) keeps the request schema concrete; unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
+    "title": "RefreshModelsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of `provider::<id>::refresh_models`.",
+    "properties": {
+      "count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "count",
+      "ok"
+    ],
+    "title": "RefreshModelsResponse",
+    "type": "object"
+  }
+}

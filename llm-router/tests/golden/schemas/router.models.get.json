@@ -1,0 +1,180 @@
+{
+  "description": "Read one catalog model by {provider, id}; null when the model is not registered.",
+  "function_id": "router::models::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::models::get`.",
+    "properties": {
+      "id": {
+        "default": "",
+        "description": "Model id to look up.",
+        "type": "string"
+      },
+      "provider": {
+        "default": "",
+        "description": "Provider id that owns the model.",
+        "type": "string"
+      }
+    },
+    "title": "ModelGetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/ModelGetResponse"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "Model": {
+        "description": "The capability record (README § Model descriptor).",
+        "properties": {
+          "context_window": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_limit": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Pricing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "supports_cache": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_structured_output": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_thinking": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_tools": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_vision": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_xhigh": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "thinking_budgets": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "context_window",
+          "id",
+          "max_output_tokens",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "ModelGetResponse": {
+        "description": "Output of `router::models::get` (the function returns `null` when the model is not registered — the cold-window signal).",
+        "properties": {
+          "model": {
+            "$ref": "#/definitions/Model"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
+      "Pricing": {
+        "properties": {
+          "cache_read": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "title": "Nullable_ModelGetResponse"
+  }
+}

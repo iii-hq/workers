@@ -13,6 +13,7 @@ pub mod router_client;
 pub mod sse;
 pub mod state;
 pub mod stream_fn;
+pub mod surface;
 pub mod upstream;
 pub mod wire;
 

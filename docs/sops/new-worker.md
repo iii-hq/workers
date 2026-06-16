@@ -80,6 +80,14 @@ errors.
 
 - `tests/` must exist and be non-empty — `pr-checks` enforces this on every
   changed worker.
+- **Typed wire schemas (all languages):** every registered function must publish
+  a typed request **and** response schema — never the permissive `AnyValue`
+  ("unknown") schema a `Value`/untyped handler emits. Rust workers pin this with
+  a `catalog()` + golden schema test (`tests/schemas.rs`) that also asserts no
+  schema is untyped; see [`binary-worker.md`](binary-worker.md) §7 (typed-schema
+  rule) and §9 (catalog + golden test). The publish pipeline re-checks the live
+  interface with `collect_worker_interface.py --assert-typed-schemas`
+  (`_publish-registry.yml`), so an untyped handler fails the release.
 - **Rust binary:** pattern A (integration against lib) or pattern B (Cucumber
   BDD). See [`binary-worker.md`](binary-worker.md) §9.
 - **Node:** `npm test` when `tests/` exists.

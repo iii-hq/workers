@@ -21,6 +21,16 @@ pub fn metadata_matches(want: &JsonMap, have: Option<&JsonMap>) -> bool {
         .all(|(key, value)| have.and_then(|m| m.get(key)) == Some(value))
 }
 
+/// Acknowledgement returned by the internal trigger-bound handlers
+/// (`on-config-change`, `on-session-deleted`, `on-turn-completed`) whose result
+/// is not consumed by callers — kept typed so the response schema is concrete
+/// rather than the permissive `AnyValue` ("unknown") schema a `Value` return
+/// would emit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EventAck {
+    pub ok: bool,
+}
+
 /// `session_id` / `function_call_id` boundary validation: non-empty and
 /// no `/` — the reserved key separator in the `approval_pending` scope.
 pub fn validate_id(label: &str, value: &str) -> Result<(), ApprovalError> {

@@ -123,6 +123,23 @@ fn trigger_schema_snapshots_match_goldens() {
     );
 }
 
+/// No function may ship the permissive `AnyValue` schema — the deploy-time
+/// "unknown" request/response schema this convention exists to prevent. Every
+/// request and response schema must be a typed struct.
+#[test]
+fn every_function_has_typed_request_and_response_schemas() {
+    for spec in catalog() {
+        support::assert_typed_schema(
+            &format!("{} request_schema", spec.function_id),
+            &spec.request_schema,
+        );
+        support::assert_typed_schema(
+            &format!("{} response_schema", spec.function_id),
+            &spec.response_schema,
+        );
+    }
+}
+
 /// Request schemas that carry field-level doc comments must keep them — a
 /// rename or accidental removal of `///` comments is a breaking API change
 /// even if types still compile. Only the functions whose request types

@@ -9,6 +9,7 @@ use serde_json::Value;
 use super::Deps;
 use crate::error::ApprovalError;
 use crate::gate_config::{parse_config_value, replace, ENTRY_ID};
+use crate::types::EventAck;
 
 /// The configuration trigger payload (only the fields we read; the
 /// engine owns the shape).
@@ -20,14 +21,14 @@ pub struct ConfigChangeEvent {
     pub new_value: Value,
 }
 
-pub async fn handle(deps: &Deps, event: ConfigChangeEvent) -> Result<Value, ApprovalError> {
+pub async fn handle(deps: &Deps, event: ConfigChangeEvent) -> Result<EventAck, ApprovalError> {
     if event.id.as_deref() != Some(ENTRY_ID) {
-        return Ok(Value::Null);
+        return Ok(EventAck { ok: true });
     }
     let next = parse_config_value(&event.new_value);
     tracing::info!(?next, "approval-gate configuration reloaded");
     replace(&deps.defaults, next);
-    Ok(Value::Null)
+    Ok(EventAck { ok: true })
 }
 
 #[cfg(test)]

@@ -250,14 +250,13 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     use crate::types::{
         AlwaysAllowMutationRequest, ApproveAlwaysRequest, ClearSettingsRequest,
-        ClearSettingsResponse, GetPendingRequest, GetPendingResponse, GetSettingsRequest,
+        ClearSettingsResponse, EventAck, GetPendingRequest, GetPendingResponse, GetSettingsRequest,
         GetSettingsResponse, HookInput, HookOutput, ListPendingRequest, ListPendingResponse,
         ResolveRequest, ResolveResponse, SetModeRequest, SettingsResponse,
     };
     use on_config_change::ConfigChangeEvent;
     use on_session_deleted::SessionDeletedEvent;
     use on_turn_completed::TurnCompletedEvent;
-    use serde_json::Value;
 
     vec![
         spec::<HookInput, HookOutput>(GATE_ID, GATE_DESC),
@@ -276,10 +275,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ApproveAlwaysRequest, SettingsResponse>(APPROVE_ALWAYS_ID, APPROVE_ALWAYS_DESC),
         spec::<GetSettingsRequest, GetSettingsResponse>(GET_SETTINGS_ID, GET_SETTINGS_DESC),
         spec::<ClearSettingsRequest, ClearSettingsResponse>(CLEAR_SETTINGS_ID, CLEAR_SETTINGS_DESC),
-        spec::<ConfigChangeEvent, Value>(ON_CONFIG_CHANGE_ID, ON_CONFIG_CHANGE_DESC),
-        spec::<SessionDeletedEvent, Value>(ON_SESSION_DELETED_ID, ON_SESSION_DELETED_DESC),
-        spec::<TurnCompletedEvent, Value>(ON_TURN_COMPLETED_ID, ON_TURN_COMPLETED_DESC),
-        spec::<Value, Value>(SWEEP_ID, SWEEP_DESC),
+        spec::<ConfigChangeEvent, EventAck>(ON_CONFIG_CHANGE_ID, ON_CONFIG_CHANGE_DESC),
+        spec::<SessionDeletedEvent, EventAck>(ON_SESSION_DELETED_ID, ON_SESSION_DELETED_DESC),
+        spec::<TurnCompletedEvent, EventAck>(ON_TURN_COMPLETED_ID, ON_TURN_COMPLETED_DESC),
+        spec::<sweep::SweepRequest, sweep::SweepResponse>(SWEEP_ID, SWEEP_DESC),
     ]
 }
 

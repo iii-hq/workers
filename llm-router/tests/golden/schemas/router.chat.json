@@ -1,0 +1,232 @@
+{
+  "description": "Stream a chat completion: route {model, provider?} to a provider, relay assistant frames to writer_ref, and return the terminal response.",
+  "function_id": "router::chat",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ChannelDirection": {
+        "enum": [
+          "read",
+          "write"
+        ],
+        "type": "string"
+      },
+      "StreamChannelRef": {
+        "properties": {
+          "access_key": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/definitions/ChannelDirection"
+          }
+        },
+        "required": [
+          "access_key",
+          "channel_id",
+          "direction"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's write channel. The handler relays assistant frames to `writer_ref` and also returns the terminal [`ChatResponse`].",
+    "properties": {
+      "max_output_tokens": {
+        "default": null,
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "messages": true,
+      "metadata": {
+        "default": null
+      },
+      "model": {
+        "type": "string"
+      },
+      "provider": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider_options": {
+        "default": null
+      },
+      "request_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "response_format": {
+        "default": null
+      },
+      "system_prompt": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "thinking_level": {
+        "default": null
+      },
+      "tools": {
+        "default": null
+      },
+      "writer_ref": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/StreamChannelRef"
+          }
+        ],
+        "description": "The caller's write channel (direction \"write\"); frames are relayed here."
+      }
+    },
+    "required": [
+      "messages",
+      "model",
+      "writer_ref"
+    ],
+    "title": "ChatFnInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ErrorShape": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "StopReason": {
+        "enum": [
+          "end",
+          "length",
+          "function_call",
+          "aborted",
+          "error"
+        ],
+        "type": "string"
+      },
+      "Usage": {
+        "properties": {
+          "cache_read": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ErrorShape"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "model": {
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "stop_reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/StopReason"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "usage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Usage"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "model",
+      "ok",
+      "provider"
+    ],
+    "title": "ChatResponse",
+    "type": "object"
+  }
+}

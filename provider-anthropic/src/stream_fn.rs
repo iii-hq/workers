@@ -2,7 +2,7 @@
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
-use crate::errors::{classify_bus_error, invalid_request};
+use crate::errors::classify_bus_error;
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
@@ -14,8 +14,7 @@ use iii_sdk::{IIIError, III};
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
-use llm_router::types::router::ProviderStreamInput;
-use serde_json::{json, Value};
+use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -25,17 +24,18 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 pub fn make_stream(
     iii: III,
     http: reqwest::Client,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |input: ProviderStreamInput| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move {
-            let input: ProviderStreamInput = serde_json::from_value(raw)
-                .map_err(|e| invalid_request(format!("bad ProviderStreamInput: {e}")))?;
             let sink = open_sink(&iii, &input.writer_ref).await?;
             run_stream_call(&iii, http, input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
-            Ok(json!({ "ok": true }))
+            Ok(ProviderStreamOutput { ok: true })
         })
     }
 }
@@ -165,6 +165,7 @@ mod tests {
     use llm_router::chat::relay::RelayRead;
     use llm_router::testkit::fake_channels::FakeChannel;
     use llm_router::types::messages::AssistantMessage;
+    use serde_json::Value;
 
     fn empty_assistant(model: &str) -> AssistantMessage {
         llm_router::chat::synthesize::empty_partial(model, crate::PROVIDER_ID, crate::now_ms())

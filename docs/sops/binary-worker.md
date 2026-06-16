@@ -506,6 +506,44 @@ has a human-readable summary alongside the generated schemas.
 blobs still work, but you duplicate schema in Rust types and JSON; prefer
 `RegisterFunction::new_async` + `JsonSchema` for new workers.
 
+### Typed schemas are mandatory — never register a `Value` handler
+
+Every function's request **and** response must be a concrete type deriving
+`JsonSchema`. A closure that takes `serde_json::Value` (or returns it) makes the
+SDK emit the permissive `AnyValue` schema, which ships to the registry as an
+**"unknown"** request/response schema — the exact failure this rule prevents.
+The reference shape is
+[`iii-directory/src/functions/download.rs`](../../iii-directory/src/functions/download.rs):
+a typed input struct as the closure parameter (`move |req: RepoDownloadInput|`)
+plus a typed return type. (That file predates the `<worker>::<verb>` naming
+convention above; copy its *schema* pattern, not its function ids.)
+
+Apply it everywhere, including the surfaces that are easy to leave untyped:
+
+- **No-arg calls** (`{}` payloads): use an empty struct
+  `#[derive(Default, Deserialize, JsonSchema)] struct FooRequest {}`. Plain serde
+  structs ignore unknown fields, so the engine-injected `_caller_worker_id` (and
+  any future field) is tolerated — do **not** reach for `Value` to "ignore the
+  payload".
+- **Trigger-bound / internal handlers** (config-change, cron sweeps, pubsub
+  subscribers): type the event payload (only the fields you read; the rest are
+  ignored) and return a small typed ack (e.g. `struct Ack { ok: bool }`) instead
+  of `Ok(Value::Null)`.
+- **Custom bad-request errors:** if you previously hand-deserialized `Value` to
+  control the error code, use
+  `RegisterFunction::new_async_with_bad_request(handler, map_err)` — it
+  auto-extracts the typed schema **and** lets you own the malformed-payload
+  contract.
+- **Genuinely freeform sub-fields** (a verbatim-forwarded `messages` array,
+  provider passthrough options): keep that one field `Value` *inside* a typed
+  struct. The top-level request schema stays concrete; only the nested blob is
+  permissive.
+
+This is enforced two ways (see section 9): a per-worker golden test fails if any
+catalog schema is the `AnyValue`/empty schema, and the publish pipeline
+(`collect_worker_interface.py --assert-typed-schemas`) re-checks the *live*
+deployed interface so an untyped handler can never reach the registry.
+
 ### Handler shape
 
 Prefer **async closures** passed to `RegisterFunction::new_async` that return
@@ -603,6 +641,47 @@ additionally requires `tests/` to exist and be non-empty.
 **`CARGO_BIN_EXE_*`:** Cargo exposes `env!("CARGO_BIN_EXE_<BIN>")` where `<BIN>`
 is the **binary name** with `-` replaced by `_` (e.g. `acme-helper` →
 `CARGO_BIN_EXE_acme_helper`).
+
+### Wire-surface catalog + golden schema test (required)
+
+The set of `{function_id, request_schema, response_schema}` a worker registers is
+its agent-facing **product surface**. Pin it so every change is an explicit,
+reviewed diff and a `Value` handler can never sneak in:
+
+1. Expose a `pub fn catalog() -> Vec<FunctionSpec>` (in `src/surface.rs`, or
+   `src/functions/mod.rs`) listing every registered function, in registration
+   order, with its typed request/response structs. Build each `RootSchema` with
+   the **same** generator the SDK uses, so the snapshot equals what registration
+   emits:
+
+```rust
+fn schema_of<T: schemars::JsonSchema>() -> schemars::schema::RootSchema {
+    schemars::r#gen::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>()
+}
+```
+
+2. Add `tests/schemas.rs` (plus a `tests/support/mod.rs` golden harness) that:
+   - serializes each catalog entry to `tests/golden/schemas/<id>.json` (`::` maps
+     to `.`) and compares it against the committed golden;
+   - asserts the catalog ids match registration order;
+   - asserts **every** request/response schema is typed — i.e. it carries a
+     schema-defining keyword (`type` / `properties` / `$ref` / `anyOf` / …) and is
+     never the `AnyValue`/empty schema.
+
+   Copy the harness and the `assert_typed_schema` helper verbatim from an
+   existing worker (`context-manager`, `approval-gate`, `llm-router`,
+   `session-manager`, `provider-openai`).
+
+3. Regenerate goldens with `UPDATE_GOLDENS=1 cargo test`; review the diff and
+   commit the goldens alongside the change that caused them.
+
+The publish pipeline is the second line of defense: it collects the live
+interface from `engine::functions::list` and runs
+`collect_worker_interface.py --assert-typed-schemas`, failing the release if any
+deployed function still has an `AnyValue`/empty ("unknown") schema. The Rust test
+catches it at PR time; the pipeline check is the backstop at publish time.
 
 ### Pattern A — minimal: manifest subprocess + integration
 
@@ -911,7 +990,11 @@ The checks:
 - `fmt` — must pass with no diff. CI runs the same command.
 - `clippy` — `-D warnings` is the same level CI enforces.
 - `test` — passes locally and on CI hosts that don't have `iii` (e2e tests
-  should self-skip or use `@pure`-only runs as you designed).
+  should self-skip or use `@pure`-only runs as you designed). This includes the
+  wire-surface golden test (`tests/schemas.rs`): every function must have a typed
+  request/response schema (no `AnyValue`/"unknown"). If you changed a function's
+  input/output, regenerate with `UPDATE_GOLDENS=1 cargo test` and commit the
+  golden diff.
 - `--manifest` — valid JSON with `name`, `version`, `description`,
   `default_config`, `supported_targets`.
 

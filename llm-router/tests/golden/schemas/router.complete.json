@@ -1,0 +1,396 @@
+{
+  "description": "Non-streaming convenience over router::chat: run the turn on an internal channel and return the final assistant message + usage.",
+  "function_id": "router::complete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "ChatRequest minus writer_ref (the sink arrives separately — the function handler wraps the looked-up writer, complete wraps its own).\n\n`messages` / `tools` / `response_format` / `thinking_level` / `provider_options` stay `Value`: they are forwarded to the provider verbatim, so the router intentionally does not re-validate their shape. The struct still derives `JsonSchema` so the SDK emits a real request schema (the freeform sub-fields surface as permissive sub-schemas).",
+    "properties": {
+      "max_output_tokens": {
+        "default": null,
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "messages": true,
+      "metadata": {
+        "default": null
+      },
+      "model": {
+        "type": "string"
+      },
+      "provider": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider_options": {
+        "default": null
+      },
+      "request_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "response_format": {
+        "default": null
+      },
+      "system_prompt": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "thinking_level": {
+        "default": null
+      },
+      "tools": {
+        "default": null
+      }
+    },
+    "required": [
+      "messages",
+      "model"
+    ],
+    "title": "ChatCall",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AssistantMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "error_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "native_stop_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/definitions/AssistantRoleTag"
+          },
+          "stop_reason": {
+            "$ref": "#/definitions/StopReason"
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "content",
+          "model",
+          "provider",
+          "role",
+          "stop_reason",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "AssistantRoleTag": {
+        "enum": [
+          "assistant"
+        ],
+        "type": "string"
+      },
+      "ContentBlock": {
+        "description": "Content blocks — the atomic units of message content (README § Content blocks).",
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Opaque redacted thinking payload — replayed verbatim on the Anthropic wire.",
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "redacted_thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": true,
+              "function_id": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "content": {
+                "items": {
+                  "$ref": "#/definitions/ContentBlock"
+                },
+                "type": "array"
+              },
+              "function_call_id": {
+                "type": "string"
+              },
+              "is_error": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "function_result"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "function_call_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ErrorKind": {
+        "enum": [
+          "auth_expired",
+          "rate_limited",
+          "context_overflow",
+          "transient",
+          "permanent"
+        ],
+        "type": "string"
+      },
+      "StopReason": {
+        "enum": [
+          "end",
+          "length",
+          "function_call",
+          "aborted",
+          "error"
+        ],
+        "type": "string"
+      },
+      "Usage": {
+        "properties": {
+          "cache_read": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Output of the `router::complete` iii function (non-streaming convenience).",
+    "properties": {
+      "message": {
+        "$ref": "#/definitions/AssistantMessage"
+      },
+      "model": {
+        "type": "string"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "usage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Usage"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "message",
+      "model",
+      "provider"
+    ],
+    "title": "CompleteResponse",
+    "type": "object"
+  }
+}

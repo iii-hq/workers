@@ -5,6 +5,8 @@
 //! orphaned by a crash between resolve and delete — which is why no
 //! delete path needs to be transactional.
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::Deps;
@@ -15,7 +17,19 @@ use crate::types::{
     now_ms, text_block, PendingApprovalRecord, PendingResolvedEvent, ResolvedOutcome,
 };
 
-pub async fn handle(deps: &Deps, _payload: Value) -> Result<Value, ApprovalError> {
+/// Input of `approval::sweep` — the cron tick carries no arguments. A struct
+/// (not `Value`) keeps the request schema concrete; unknown fields (the cron
+/// trigger payload, engine-injected ids) are ignored.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct SweepRequest {}
+
+/// Output of `approval::sweep`: how many expired records were collected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SweepResponse {
+    pub swept: usize,
+}
+
+pub async fn handle(deps: &Deps, _req: SweepRequest) -> Result<SweepResponse, ApprovalError> {
     let iii = deps.iii.as_ref();
     let now = now_ms();
 
@@ -23,7 +37,7 @@ pub async fn handle(deps: &Deps, _payload: Value) -> Result<Value, ApprovalError
         Ok(records) => records,
         Err(e) => {
             tracing::warn!(error = %e, "sweep: pending list failed; retrying next tick");
-            return Ok(json!({ "swept": 0 }));
+            return Ok(SweepResponse { swept: 0 });
         }
     };
 
@@ -84,7 +98,7 @@ pub async fn handle(deps: &Deps, _payload: Value) -> Result<Value, ApprovalError
     if swept > 0 {
         tracing::info!(swept, "sweep: expired pending approvals collected");
     }
-    Ok(json!({ "swept": swept }))
+    Ok(SweepResponse { swept })
 }
 
 /// Not a `DenialEnvelope` — nobody denied the call; no human decision
@@ -155,8 +169,8 @@ mod tests {
             )
             .await;
 
-            let res = handle(&stack.deps, Value::Null).await.unwrap();
-            assert_eq!(res["swept"], json!(1));
+            let res = handle(&stack.deps, SweepRequest::default()).await.unwrap();
+            assert_eq!(res.swept, 1);
             assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_expired")
                 .await
                 .is_null());
@@ -175,8 +189,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_scope_is_a_noop() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            let res = handle(&stack.deps, Value::Null).await.unwrap();
-            assert_eq!(res["swept"], json!(0));
+            let res = handle(&stack.deps, SweepRequest::default()).await.unwrap();
+            assert_eq!(res.swept, 0);
         })
         .await;
     }

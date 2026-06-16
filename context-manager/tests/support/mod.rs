@@ -88,3 +88,31 @@ fn diff_hint(rel: &str, expected: &str, actual: &str) -> String {
     );
     out
 }
+
+/// Assert a schemars-derived request/response schema is a *real* schema and
+/// not the permissive `AnyValue` schema a `Value` handler emits (the "unknown"
+/// schema this whole convention exists to prevent). A real schema carries at
+/// least one schema-defining keyword.
+pub fn assert_typed_schema(label: &str, schema: &schemars::schema::RootSchema) {
+    let value = serde_json::to_value(schema).expect("schema serializes");
+    let obj = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{label}: schema is not a JSON object"));
+    const DEFINING: [&str; 8] = [
+        "type",
+        "properties",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "enum",
+        "items",
+    ];
+    let has_defining = DEFINING.iter().any(|k| obj.contains_key(*k));
+    assert!(
+        has_defining,
+        "{label}: schema is the permissive AnyValue/empty schema (no type/properties/$ref/…). \
+         The handler is registered with `Value` — give it a typed struct deriving JsonSchema. \
+         Got: {value}"
+    );
+}

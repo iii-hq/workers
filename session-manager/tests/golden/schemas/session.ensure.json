@@ -1,0 +1,138 @@
+{
+  "function_id": "session::ensure",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "description": {
+        "description": "Description applied only when the session is created.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "description": "Metadata applied only when the session is created.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "description": "Caller-chosen session id to ensure.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Title applied only when the session is created.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "EnsureRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionMeta": {
+        "description": "A session's metadata record.",
+        "properties": {
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "forked_from": {
+            "description": "Source session id when created by `session::fork`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "description": "Number of `kind: \"message\"` entries (custom entries are bookkeeping and not counted).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` and every trigger config can filter on.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/SessionStatus"
+          },
+          "status_reason": {
+            "description": "Short cause, set on `error`, cleared on any other status.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "description",
+          "message_count",
+          "session_id",
+          "status",
+          "title",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "created": {
+        "description": "True when this call created the session (and fired `session::created`).",
+        "type": "boolean"
+      },
+      "meta": {
+        "$ref": "#/definitions/SessionMeta"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "created",
+      "meta",
+      "session_id"
+    ],
+    "title": "EnsureResponse",
+    "type": "object"
+  }
+}

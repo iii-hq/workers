@@ -8,12 +8,12 @@ use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
 use iii_sdk::IIIError;
-use serde_json::{json, Value};
 
 use crate::catalog::store::CatalogStore;
 use crate::registry::store::RegistryStore;
 use crate::settings::RouterSettings;
 use crate::types::errors::{RouterCode, RouterError};
+use crate::types::router::{RouteRequest, RouteResponse};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heuristic {
@@ -102,38 +102,33 @@ pub fn make_route(
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
     settings: Arc<RwLock<RouterSettings>>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(RouteRequest) -> BoxFuture<'static, Result<RouteResponse, IIIError>> + Send + Sync + 'static
+{
+    move |req: RouteRequest| {
         let (registry, catalog, settings) = (registry.clone(), catalog.clone(), settings.clone());
         Box::pin(async move {
-            let model = raw
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if model.is_empty() {
+            if req.model.is_empty() {
                 return Err(
                     RouterError::new(RouterCode::InvalidRequest, "model is required").into(),
                 );
             }
-            let provider = raw
-                .get("provider")
-                .and_then(Value::as_str)
-                .map(String::from);
             let (heuristics, default_provider) = {
                 let s = settings.read().unwrap();
                 (s.routing_heuristics.clone(), s.default_provider.clone())
             };
             let candidates = decide(&DecideInput {
-                model,
-                provider,
+                model: req.model,
+                provider: req.provider,
                 registered_providers: registry.ids().await,
                 catalog: catalog.model_ids().await,
                 heuristics,
                 default_provider,
             })
             .map_err(IIIError::from)?;
-            Ok(json!({ "provider": candidates[0], "candidates": candidates }))
+            Ok(RouteResponse {
+                provider: candidates[0].clone(),
+                candidates,
+            })
         })
     }
 }

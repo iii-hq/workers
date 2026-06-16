@@ -6,10 +6,12 @@
 //! (design § risks) — dispatch-time flips in chat.rs are the fallback.
 use std::sync::Arc;
 
-use crate::types::router::{ProviderInfo, ProviderListResponse};
+use crate::types::router::{
+    ProviderInfo, ProviderListRequest, ProviderListResponse, RouterAck, WorkerAvailableEvent,
+};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::registry::resolve::resolve_provider_config;
 use crate::registry::store::RegistryStore;
@@ -18,19 +20,22 @@ use crate::triggers;
 pub fn make_on_worker_available(
     iii: III,
     registry: Arc<RegistryStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(WorkerAvailableEvent) -> BoxFuture<'static, Result<RouterAck, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |event: WorkerAvailableEvent| {
         let (iii, registry) = (iii.clone(), registry.clone());
         Box::pin(async move {
-            let Some(worker_id) = raw.get("worker_id").and_then(Value::as_str) else {
-                return Ok(Value::Null); // unknown shapes are ignored
+            let Some(worker_id) = event.worker_id.as_deref() else {
+                return Ok(RouterAck { ok: true }); // unknown shapes are ignored
             };
             let providers = registry.providers_for_worker(worker_id).await;
             if providers.is_empty() {
-                return Ok(Value::Null); // a worker with no registered provider creates nothing
+                return Ok(RouterAck { ok: true }); // a worker with no registered provider creates nothing
             }
-            let event = raw.get("event").and_then(Value::as_str).unwrap_or("");
-            let available = !event.contains("disconnect");
+            let event_name = event.event.as_deref().unwrap_or("");
+            let available = !event_name.contains("disconnect");
             for id in providers {
                 if registry.set_availability(&id, available).await {
                     triggers::publish(
@@ -41,7 +46,7 @@ pub fn make_on_worker_available(
                     .await;
                 }
             }
-            Ok(Value::Null)
+            Ok(RouterAck { ok: true })
         })
     }
 }
@@ -49,8 +54,11 @@ pub fn make_on_worker_available(
 pub fn make_provider_list(
     iii: III,
     registry: Arc<RegistryStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |_raw: Value| {
+) -> impl Fn(ProviderListRequest) -> BoxFuture<'static, Result<ProviderListResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |_req: ProviderListRequest| {
         let (iii, registry) = (iii.clone(), registry.clone());
         Box::pin(async move {
             let mut providers = Vec::new();
@@ -69,8 +77,7 @@ pub fn make_provider_list(
                 });
             }
             providers.sort_by(|a, b| a.id.cmp(&b.id));
-            Ok(serde_json::to_value(ProviderListResponse { providers })
-                .expect("serializable response"))
+            Ok(ProviderListResponse { providers })
         })
     }
 }

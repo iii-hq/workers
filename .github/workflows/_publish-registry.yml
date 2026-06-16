@@ -258,7 +258,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/collect_worker_interface.py \
-            --assert-non-empty --assert-file worker-interface.json
+            --assert-non-empty --assert-typed-schemas --assert-file worker-interface.json
 
       - name: Resolve binary artifacts
         if: inputs.deploy == 'binary'

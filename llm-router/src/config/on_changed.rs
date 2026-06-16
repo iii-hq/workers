@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use super::fingerprint::{changed_slices, fingerprint_slices};
 use crate::settings::{parse_settings, provider_slices, RouterSettings};
+use crate::types::router::{ConfigChangedEvent, RouterAck};
 
 /// Async lookup: the registry's records sit behind a tokio mutex, so a sync
 /// closure would have to block — async keeps the handler deadlock-free.
@@ -25,12 +26,13 @@ pub fn make_on_config_changed(
     supports_model_listing: ListingLookup,
     settings: Arc<RwLock<RouterSettings>>,
     debounce_ms: u64,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
+) -> impl Fn(ConfigChangedEvent) -> BoxFuture<'static, Result<RouterAck, IIIError>> + Send + Sync + 'static
+{
     let last_fingerprints: Arc<Mutex<BTreeMap<String, String>>> = Arc::default();
     let pending: Arc<Mutex<BTreeSet<String>>> = Arc::default();
     let flush_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
 
-    move |raw: Value| {
+    move |event: ConfigChangedEvent| {
         let iii = iii.clone();
         let supports = supports_model_listing.clone();
         let settings = settings.clone();
@@ -38,10 +40,10 @@ pub fn make_on_config_changed(
         let pending = pending.clone();
         let flush_task = flush_task.clone();
         Box::pin(async move {
-            if raw.get("id").and_then(Value::as_str) != Some("llm-router") {
-                return Ok(Value::Null);
+            if event.id.as_deref() != Some("llm-router") {
+                return Ok(RouterAck { ok: true });
             }
-            let new_value = raw.get("new_value").cloned().unwrap_or(Value::Null);
+            let new_value = event.new_value;
 
             *settings.write().unwrap() = parse_settings(&new_value);
 
@@ -61,7 +63,7 @@ pub fn make_on_config_changed(
                 }
             }
             if !any_pending && pending.lock().unwrap().is_empty() {
-                return Ok(Value::Null);
+                return Ok(RouterAck { ok: true });
             }
 
             // debounce: replace any armed flush with a fresh one
@@ -87,7 +89,7 @@ pub fn make_on_config_changed(
                         .await;
                 }
             }));
-            Ok(Value::Null)
+            Ok(RouterAck { ok: true })
         })
     }
 }

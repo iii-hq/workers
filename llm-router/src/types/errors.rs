@@ -57,6 +57,14 @@ impl From<RouterError> for iii_sdk::IIIError {
     }
 }
 
+/// Map a serde deserialization failure (the typed-handler bad-request path) to
+/// the router's stable `invalid_request` wire error. Used with
+/// `RegisterFunction::new_async_with_bad_request` so typed schemas are emitted
+/// while the malformed-payload contract stays `router/invalid_request`.
+pub fn invalid_request_from_serde(e: serde_json::Error) -> iii_sdk::IIIError {
+    RouterError::new(RouterCode::InvalidRequest, e.to_string()).into()
+}
+
 /// The engine's invocation path reports a missing function as
 /// `function_not_found` (engine/src/engine/mod.rs); bare `NOT_FOUND` is the
 /// configuration worker's missing-entry code and must not match here.

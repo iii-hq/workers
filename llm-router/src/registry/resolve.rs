@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use crate::types::credential::Credential;
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::router::{CredentialSource, ProviderDeclaration, ProviderResolveResponse};
+use crate::types::router::{
+    CredentialSource, ProviderDeclaration, ProviderResolveRequest, ProviderResolveResponse,
+    UpdateCredentialRequest, UpdateCredentialResponse,
+};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
 use serde_json::{json, Value};
@@ -84,22 +87,18 @@ pub async fn resolve_provider_config(
 pub fn make_provider_resolve(
     iii: III,
     registry: Arc<RegistryStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ProviderResolveRequest) -> BoxFuture<'static, Result<ProviderResolveResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |req: ProviderResolveRequest| {
         let (iii, registry) = (iii.clone(), registry.clone());
         Box::pin(async move {
-            let id = raw
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let token = raw.get("token").and_then(Value::as_str).map(String::from);
             let record = registry
-                .verify_token(&id, token.as_deref())
+                .verify_token(&req.id, req.token.as_deref())
                 .await
                 .map_err(IIIError::from)?;
-            let res = resolve_provider_config(&iii, &record.declaration).await;
-            Ok(serde_json::to_value(res).expect("serializable response"))
+            Ok(resolve_provider_config(&iii, &record.declaration).await)
         })
     }
 }
@@ -110,21 +109,18 @@ pub fn make_update_credential(
     iii: III,
     registry: Arc<RegistryStore>,
     entry_lock: EntryWriteLock,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(UpdateCredentialRequest) -> BoxFuture<'static, Result<UpdateCredentialResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |req: UpdateCredentialRequest| {
         let (iii, registry, entry_lock) = (iii.clone(), registry.clone(), entry_lock.clone());
         Box::pin(async move {
-            let id = raw
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let token = raw.get("token").and_then(Value::as_str).map(String::from);
             registry
-                .verify_token(&id, token.as_deref())
+                .verify_token(&req.id, req.token.as_deref())
                 .await
                 .map_err(IIIError::from)?;
-            let credential = raw.get("credential").cloned().unwrap_or(Value::Null);
+            let credential = req.credential;
             if !credential.is_object() {
                 return Err(RouterError::new(
                     RouterCode::InvalidRequest,
@@ -145,11 +141,11 @@ pub fn make_update_credential(
             let slice = providers
                 .as_object_mut()
                 .expect("object")
-                .entry(&id)
+                .entry(&req.id)
                 .or_insert_with(|| json!({}));
             slice["credential"] = credential;
             write_entry_value(&iii, entry).await?;
-            Ok(json!({ "ok": true }))
+            Ok(UpdateCredentialResponse { ok: true })
         })
     }
 }

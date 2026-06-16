@@ -1,0 +1,186 @@
+{
+  "description": "Replace a provider's catalog slice — the only catalog write path (token-gated).",
+  "function_id": "router::models::reconcile",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Model": {
+        "description": "The capability record (README § Model descriptor).",
+        "properties": {
+          "context_window": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_limit": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Pricing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "supports_cache": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_structured_output": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_thinking": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_tools": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_vision": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_xhigh": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "thinking_budgets": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "context_window",
+          "id",
+          "max_output_tokens",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "Pricing": {
+        "properties": {
+          "cache_read": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Input of `router::models::reconcile` — the only catalog write path.",
+    "properties": {
+      "models": {
+        "default": [],
+        "description": "The full replacement set of models for this provider.",
+        "items": {
+          "$ref": "#/definitions/Model"
+        },
+        "type": "array"
+      },
+      "provider": {
+        "default": "",
+        "description": "Provider whose catalog slice is being replaced.",
+        "type": "string"
+      },
+      "token": {
+        "description": "Registration token gating the write (optional).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ModelsReconcileRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of the `router::models::reconcile` iii function.",
+    "properties": {
+      "count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "provider": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "count",
+      "provider"
+    ],
+    "title": "ModelsReconcileResponse",
+    "type": "object"
+  }
+}

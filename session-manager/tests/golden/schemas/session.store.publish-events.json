@@ -1,0 +1,63 @@
+{
+  "function_id": "session::store::publish-events",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EventEnvelope": {
+        "description": "Wire form of an [`EmittableEvent`] for cross-instance propagation. `session_metadata` rides along so `metadata` filters keep working at every edge (the spec payloads do not carry it).",
+        "properties": {
+          "payload": {
+            "description": "The spec payload for that trigger type."
+          },
+          "session_metadata": {
+            "additionalProperties": true,
+            "description": "`SessionMeta.metadata` as of the mutation.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "trigger_type": {
+            "description": "One of the six public trigger type ids.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload",
+          "trigger_type"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "events": {
+        "description": "Event envelopes produced by a bridged instance's mutation.",
+        "items": {
+          "$ref": "#/definitions/EventEnvelope"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "events"
+    ],
+    "title": "PublishEventsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "published": {
+        "description": "Number of well-formed envelopes accepted and fanned out.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "published"
+    ],
+    "title": "PublishEventsResponse",
+    "type": "object"
+  }
+}
