@@ -12,6 +12,7 @@ on:
           - acp
           - claude-code
           - coder
+          - codex
           - console
           - context-manager
           - database

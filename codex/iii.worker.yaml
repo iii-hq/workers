@@ -1,0 +1,7 @@
+iii: v1
+name: codex
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: codex
+description: OpenAI Codex as an iii worker; codex::run/start/stop/status/sessions::list spawn the codex CLI for headless turns, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.
