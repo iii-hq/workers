@@ -11,7 +11,7 @@
  * - "new chat" is a LOCAL DRAFT (`draft: true`, id `console-<uuid>`); the
  *   session is materialised by `ensureSession` on the first send so empty
  *   chats never litter the store.
- * - rename / model / mode changes write through `session::set_meta`. The
+ * - rename / model / mode changes write through `session::set-meta`. The
  *   console owns the metadata convention `{ surface, model, mode,
  *   title_manual }`; metadata replaces WHOLESALE, so the full object is
  *   always sent.

@@ -56,7 +56,7 @@ export async function setSessionMeta(input: {
   metadata?: Record<string, unknown>
 }): Promise<{ meta: SessionMeta }> {
   const client = await getIiiClient()
-  return client.call('session::set_meta', input)
+  return client.call('session::set-meta', input)
 }
 
 export async function deleteSession(
@@ -72,7 +72,7 @@ export async function setSessionStatus(
   reason?: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.call('session::set_status', {
+  await client.call('session::set-status', {
     session_id: sessionId,
     status,
     ...(reason ? { reason } : {}),

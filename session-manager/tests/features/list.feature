@@ -42,7 +42,7 @@ Feature: session::list — pagination, ordering and filters
   Scenario: status filters to exactly that status
     Given a bare session
     And a bare session
-    And I call "session::set_status" with:
+    And I call "session::set-status" with:
       """
       { "session_id": "s_002", "status": "working" }
       """

@@ -1,7 +1,7 @@
 @pure
-Feature: session::set_active_leaf — branch switching within a session
+Feature: session::set-active-leaf — branch switching within a session
 
-  Contract (session-manager.md § session::set_active_leaf): moves the
+  Contract (session-manager.md § session::set-active-leaf): moves the
   active path to end at a given entry (switching to a non-leaf makes
   the chain above it the active path). Subsequent session::append
   without parent_id chains from there. Entries on abandoned branches
@@ -16,7 +16,7 @@ Feature: session::set_active_leaf — branch switching within a session
 
   # Prevents: branch switches silently landing on the wrong entry.
   Scenario: switching to a non-leaf truncates the active path
-    When I call "session::set_active_leaf" with:
+    When I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -32,7 +32,7 @@ Feature: session::set_active_leaf — branch switching within a session
   # Prevents: appends after a branch switch chaining from the OLD leaf,
   # which would silently merge the branches back together.
   Scenario: append after a switch creates a sibling branch
-    Given I call "session::set_active_leaf" with:
+    Given I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -50,12 +50,12 @@ Feature: session::set_active_leaf — branch switching within a session
   # Prevents: abandoned branches being garbage-collected or hidden from
   # explicit reads — forks and audits depend on them.
   Scenario: the abandoned branch stays fully readable
-    Given I call "session::set_active_leaf" with:
+    Given I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
     And a user message "two-alt" appended to "s_001"
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_003" }
       """
@@ -69,7 +69,7 @@ Feature: session::set_active_leaf — branch switching within a session
 
   # Prevents: pointing the active path at entries that don't exist.
   Scenario: switching to an unknown entry is rejected
-    When I call "session::set_active_leaf" with:
+    When I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "ghost" }
       """
@@ -86,7 +86,7 @@ Feature: session::set_active_leaf — branch switching within a session
       """
       {}
       """
-    When I call "session::set_active_leaf" with:
+    When I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """

@@ -28,14 +28,14 @@ Feature: engine roundtrip — every function over the bus, persisted as JSONL
     And the main store file for session "${S1}" exists
     And the latest meta record for session "${S1}" has "title" = "engine roundtrip"
 
-    When over the engine I call "session::set_meta" with:
+    When over the engine I call "session::set-meta" with:
       """
       { "session_id": "${S1}", "title": "renamed live" }
       """
     Then the engine call succeeds
     And the latest meta record for session "${S1}" has "title" = "renamed live"
 
-    When over the engine I call "session::set_status" with:
+    When over the engine I call "session::set-status" with:
       """
       { "session_id": "${S1}", "status": "working" }
       """
@@ -88,7 +88,7 @@ Feature: engine roundtrip — every function over the bus, persisted as JSONL
     And the latest record for entry "idem-1" of session "${S1}" has "message.content.0.text" = "hello engine"
     And the latest meta record for session "${S1}" has "message_count" = 1
 
-    When over the engine I call "session::update_message" with:
+    When over the engine I call "session::update-message" with:
       """
       { "session_id": "${S1}", "entry_id": "idem-1",
         "content": [{ "type": "text", "text": "edited" }], "expected_revision": 0 }
@@ -105,7 +105,7 @@ Feature: engine roundtrip — every function over the bus, persisted as JSONL
     Then the engine response field "messages" has length 1
     And the engine response field "messages.0.message.content.0.text" is "edited"
 
-    When over the engine I call "session::get_message" with:
+    When over the engine I call "session::get-message" with:
       """
       { "session_id": "${S1}", "entry_id": "idem-1" }
       """
@@ -167,7 +167,7 @@ Feature: engine roundtrip — every function over the bus, persisted as JSONL
   # (callers branch on the session/* prefix programmatically).
   Scenario: bus errors carry the stable session/* codes
     Given the iii engine is reachable
-    When over the engine I call "session::set_status" with:
+    When over the engine I call "session::set-status" with:
       """
       { "session_id": "definitely-not-a-session", "status": "working" }
       """

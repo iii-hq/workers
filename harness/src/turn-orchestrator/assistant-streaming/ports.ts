@@ -203,7 +203,7 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
         await sessionUpdateMessage(iii, { session_id, entry_id, content, origin: opts?.origin });
       } catch (err) {
         if (!opts?.tolerant) throw err;
-        logger.warn('session::update_message failed mid-stream; continuing', {
+        logger.warn('session::update-message failed mid-stream; continuing', {
           session_id,
           entry_id,
           err: String(err),

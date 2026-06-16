@@ -18,9 +18,11 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
+use crate::configuration::ConfigCell;
 use crate::error::SessionError;
 use crate::events::{
     EmittableEvent, MessageAddedEvent, MessageUpdatedEvent, MetaUpdatedEvent, SessionCreatedEvent,
@@ -85,12 +87,20 @@ impl Clock for SystemClock {
 
 type ServiceResult<T> = Result<(T, Vec<EmittableEvent>), SessionError>;
 
+/// Wrap a config value in a fresh, standalone [`ConfigCell`] (not shared with
+/// a configuration-change trigger). Used by the non-production constructors.
+fn new_config_cell(cfg: &WorkerConfig) -> ConfigCell {
+    Arc::new(RwLock::new(Arc::new(cfg.clone())))
+}
+
 pub struct SessionService {
     store: Arc<dyn SessionStore>,
     ids: Arc<dyn IdGen>,
     clock: Arc<dyn Clock>,
-    default_list_limit: usize,
-    max_list_limit: usize,
+    /// Hot-swappable config snapshot shared with the configuration-change
+    /// trigger; `list` / `messages` read the current list limits per call so
+    /// a `configuration::set` of the limits applies without a restart.
+    config: ConfigCell,
     /// Per-session mutation locks. Entries are kept for the worker
     /// lifetime (tens of bytes per touched session) — never removed, so
     /// two waiters can never end up serialized on different locks.
@@ -99,22 +109,38 @@ pub struct SessionService {
 
 impl SessionService {
     pub fn new(store: Arc<dyn SessionStore>, cfg: &WorkerConfig) -> Self {
-        Self::with_parts(store, Arc::new(UuidIds), Arc::new(SystemClock), cfg)
+        Self::with_config_cell(store, new_config_cell(cfg))
     }
 
-    /// Full-injection constructor used by tests.
+    /// Production constructor: shares the hot-swappable [`ConfigCell`] with the
+    /// configuration-change trigger, so a live `configuration::set` of the
+    /// list limits is picked up without a restart.
+    pub fn with_config_cell(store: Arc<dyn SessionStore>, config: ConfigCell) -> Self {
+        Self::with_parts_cell(store, Arc::new(UuidIds), Arc::new(SystemClock), config)
+    }
+
+    /// Full-injection constructor used by tests. The config is wrapped in a
+    /// private cell (tests don't exercise hot-reload).
     pub fn with_parts(
         store: Arc<dyn SessionStore>,
         ids: Arc<dyn IdGen>,
         clock: Arc<dyn Clock>,
         cfg: &WorkerConfig,
     ) -> Self {
+        Self::with_parts_cell(store, ids, clock, new_config_cell(cfg))
+    }
+
+    fn with_parts_cell(
+        store: Arc<dyn SessionStore>,
+        ids: Arc<dyn IdGen>,
+        clock: Arc<dyn Clock>,
+        config: ConfigCell,
+    ) -> Self {
         Self {
             store,
             ids,
             clock,
-            default_list_limit: cfg.default_list_limit,
-            max_list_limit: cfg.max_list_limit,
+            config,
             locks: Mutex::new(HashMap::new()),
         }
     }
@@ -139,10 +165,11 @@ impl SessionService {
             .ok_or_else(|| SessionError::NotFound(format!("session {session_id} does not exist")))
     }
 
-    fn clamp_limit(&self, limit: Option<usize>) -> usize {
+    async fn clamp_limit(&self, limit: Option<usize>) -> usize {
+        let cfg = self.config.read().await;
         limit
-            .unwrap_or(self.default_list_limit)
-            .clamp(1, self.max_list_limit)
+            .unwrap_or(cfg.default_list_limit)
+            .clamp(1, cfg.max_list_limit)
     }
 
     // -----------------------------------------------------------------
@@ -228,7 +255,7 @@ impl SessionService {
 
     pub async fn list(&self, req: ListRequest) -> ServiceResult<ListResponse> {
         let order = req.order.unwrap_or_default();
-        let limit = self.clamp_limit(req.limit);
+        let limit = self.clamp_limit(req.limit).await;
 
         let mut metas = self.store.list_metas().await?;
         if let Some(status) = req.status {
@@ -614,7 +641,7 @@ impl SessionService {
         } = entry
         else {
             return Err(SessionError::InvalidEntryKind(format!(
-                "entry {} is a custom entry; session::update_message only applies to messages",
+                "entry {} is a custom entry; session::update-message only applies to messages",
                 req.entry_id
             )));
         };
@@ -747,7 +774,7 @@ impl SessionService {
             }
         };
 
-        let limit = self.clamp_limit(req.limit);
+        let limit = self.clamp_limit(req.limit).await;
         let end = (start + limit).min(filtered.len());
         let page = &filtered[start..end];
         let next_cursor = if end < filtered.len() {
@@ -973,7 +1000,10 @@ fn active_path<'a>(
     Ok(path)
 }
 
-fn created_event(meta: &SessionMeta) -> EmittableEvent {
+/// The `session::created` event for a session's metadata. Shared with the
+/// post-reload [`resync`](crate::resync) replay so a swap re-announces sessions
+/// through the exact event shape a real create fires.
+pub(crate) fn created_event(meta: &SessionMeta) -> EmittableEvent {
     EmittableEvent {
         event: SessionEvent::Created(SessionCreatedEvent {
             session_id: meta.session_id.clone(),

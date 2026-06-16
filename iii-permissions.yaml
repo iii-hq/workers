@@ -59,14 +59,18 @@ rules:
   - '!session::store::*'
   - '!session::create'
   - '!session::ensure'
-  - '!session::set_meta'
-  - '!session::set_status'
+  - '!session::set-meta'
+  - '!session::set-status'
   - '!session::delete'
   - '!session::append'
-  - '!session::append_many'
-  - '!session::update_message'
+  - '!session::append-many'
+  - '!session::update-message'
   - '!session::fork'
-  - '!session::set_active_leaf'
+  - '!session::set-active-leaf'
+  # Operator/automation health signal, not an agent tool: it can surface a
+  # build-error string (e.g. a data_dir path). Operators/console reach it via
+  # the privileged dispatch path that bypasses this agent gate.
+  - '!session::config-status'
   # context-manager: assemble/compact are pure transforms (nothing to leak)
   # but each can spend a summariser LLM call, so deny them to in-run agents in
   # this cost-sensitive deployment (context-manager.md § Agent exposure).
@@ -80,6 +84,7 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  - '!session::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

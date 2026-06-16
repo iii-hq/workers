@@ -17,7 +17,7 @@ talks to its own workers. Conversation transcripts live in the external
 (`session::*` functions + six trigger types); the harness is the **driver**:
 it ensures sessions, appends user/assistant/function_result messages with
 deterministic idempotent entry ids, streams assistant content via
-`session::update_message`, writes compaction records as
+`session::update-message`, writes compaction records as
 `custom_type: "compaction"` entries, and flips session status around runs
 (`working` → `done`/`error`).
 

@@ -1,4 +1,4 @@
-//! `session::set_active_leaf` — switch the active path (branch switch).
+//! `session::set-active-leaf` — switch the active path (branch switch).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

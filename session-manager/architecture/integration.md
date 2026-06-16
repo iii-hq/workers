@@ -46,13 +46,14 @@ Integration is always some subset of the same triangle:
   message`. Match on the code substring (the SDK may prefix transport
   framing). Reads (`get`, `get_message`) return `null` instead of erroring
   for unknown ids.
-- **Pagination**: `limit` (operator-configurable; defaults: 50 when omitted,
-  hard cap 500) + opaque `cursor`. Re-send the same filters/order with a
-  cursor; a list cursor used with a different `order` is rejected
-  (`session/invalid_cursor`).
+- **Pagination**: `limit` (operator-configurable via the `configuration`
+  worker under id `session-manager`; defaults: 50 when omitted, hard cap 500)
+  + opaque `cursor`. Re-send the same filters/order with a cursor; a list
+  cursor used with a different `order` is rejected (`session/invalid_cursor`).
 - **Agent exposure is deny-by-default.** An in-run agent that can write here
   can rewrite its own transcript. Deny every mutation, all of
-  `session::store::*`, and expose reads only in single-tenant deployments.
+  `session::store::*`, and the internal `session::on-config-change` reload
+  hook, and expose reads only in single-tenant deployments.
 
 ## 3. Data types
 
@@ -131,11 +132,11 @@ session-manager` / `get function info`); the shapes below are the contract.
 //   order: "created_asc" | "created_desc" | "updated_desc" (default)
 //   metadata: subset-equality against SessionMeta.metadata (every given key must match)
 
-// session::set_meta — supplied fields replace; metadata replaces WHOLESALE.
+// session::set-meta — supplied fields replace; metadata replaces WHOLESALE.
 // Fires session::meta-updated (all-fields-absent request is a silent no-op).
 { session_id, title?, description?, metadata? } -> { meta }
 
-// session::set_status — fires session::status-changed; SAME status = no-op,
+// session::set-status — fires session::status-changed; SAME status = no-op,
 // no event (even with a different reason). reason stored only with "error",
 // cleared on any other status.
 { session_id, status, reason? } -> { status, previous_status }
@@ -157,12 +158,12 @@ session-manager` / `get function info`); the shapes below are the contract.
   parent_id?, entry_id?, origin? }
   -> { entry_id, parent_id: string | null, timestamp }
 
-// session::append_many — ordered batch, chained; one message-added per
+// session::append-many — ordered batch, chained; one message-added per
 // entry, in order. NOT idempotent. Empty batch => session/empty_batch.
 { session_id, messages: AgentMessage[], parent_id?, origin? }
   -> { entry_ids: string[], last_entry_id }
 
-// session::update_message — replace content (streaming deltas / edits).
+// session::update-message — replace content (streaming deltas / edits).
 // Each success increments revision (echoed on the event). With
 // expected_revision set, a mismatch writes nothing, fires nothing, and
 // returns { updated: false, revision: current }. details only for
@@ -180,7 +181,7 @@ session-manager` / `get function info`); the shapes below are the contract.
   -> { messages: [{ entry_id, message?: AgentMessage,
                     custom?: { custom_type, data } }], next_cursor? }
 
-// session::get_message — null when session or entry is unknown.
+// session::get-message — null when session or entry is unknown.
 { session_id, entry_id } -> { entry: SessionEntry } | null
 ```
 
@@ -194,7 +195,7 @@ session-manager` / `get function info`); the shapes below are the contract.
 // session::created (with forked_from). title defaults to the source's.
 { session_id, entry_id, title? } -> { session_id, meta }
 
-// session::set_active_leaf — branch switch: the active path now ends here;
+// session::set-active-leaf — branch switch: the active path now ends here;
 // subsequent appends chain from it. No event (the spec'd exception).
 { session_id, entry_id } -> { active_leaf }
 ```
@@ -207,10 +208,10 @@ Bind with the standard two-step pattern — register a handler function, then
 register a trigger of the type with a `config` filter:
 
 ```typescript
-iii.registerFunction("ui::on_message_updated", async (evt) => render(evt));
+iii.registerFunction("ui::on-message-updated", async (evt) => render(evt));
 iii.registerTrigger({
   type: "session::message-updated",
-  function_id: "ui::on_message_updated",
+  function_id: "ui::on-message-updated",
   config: { session_id: "s_123", roles: ["assistant"] },
 });
 ```
@@ -335,10 +336,10 @@ filters, or default reads.
 
 ## 8. Deployment topologies
 
-**Single instance (`backend: fs`)** — the default. One worker, one
+**Single instance (`adapter name: fs`)** — the default. One worker, one
 `data_dir`, one JSONL file per session. Everything in §4–§7 applies as-is.
 
-**Bridge (`backend: bridge`)** — several iii instances share one
+**Bridge (`adapter name: bridge`)** — several iii instances share one
 conversation store:
 
 ```mermaid
@@ -405,5 +406,6 @@ The integration the spec was designed around:
   metadata filter.
 - **Status is yours**: only the driver flips it; same-status calls are
   no-ops, so blind `set_status working` at turn start is safe.
-- **Agent exposure**: deny all mutations and `session::store::*` to in-run
-  agents; reads are tenancy-sensitive (see the spec's Agent exposure table).
+- **Agent exposure**: deny all mutations, `session::store::*`, and the
+  internal `session::on-config-change` hook to in-run agents; reads are
+  tenancy-sensitive (see the spec's Agent exposure table).

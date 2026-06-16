@@ -68,8 +68,8 @@ flowchart LR
 | **Active leaf** | The entry the current conversation path ends at. Appends chain from it and move it. Stored per session. |
 | **Active path** | Walk from the active leaf to the root, reversed (oldest first). What `session::messages` returns. |
 | **Revision** | Per-entry monotonic counter, starts at 0, +1 per content update. Consumers reconcile streamed snapshots last-write-wins by revision. |
-| **Branch** | Appending under a non-leaf parent (or after `session::set_active_leaf`) creates a sibling chain. Abandoned branches stay readable. |
+| **Branch** | Appending under a non-leaf parent (or after `session::set-active-leaf`) creates a sibling chain. Abandoned branches stay readable. |
 | **Fork** | Copy-on-fork: the root→entry path is copied into a *new session* with fresh entry ids. Fully independent afterwards. |
 | **Main instance** | An fs-backend instance that owns durable storage and is the single event fan-out point in a bridge topology. |
-| **Bridged instance** | A `backend: bridge` instance: runs all domain logic locally, stores through the main, publishes its events to the main, and receives every participant's events back through a relay. |
+| **Bridged instance** | A bridge-adapter instance: runs all domain logic locally, stores through the main, publishes its events to the main, and receives every participant's events back through a relay. |
 | **Envelope** | `EventEnvelope { trigger_type, payload, session_metadata }` — the wire form events travel in between instances, carrying session metadata so tenancy filters work at every edge. |

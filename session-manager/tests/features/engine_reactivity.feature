@@ -34,7 +34,7 @@ Feature: engine reactivity — real trigger bindings receive filtered events
       { "title": "live turn", "metadata": { "test_run": "${M1}" } }
       """
     And over the engine I alias the response field "session_id" as "S1"
-    And over the engine I call "session::set_status" with:
+    And over the engine I call "session::set-status" with:
       """
       { "session_id": "${S1}", "status": "working" }
       """
@@ -49,17 +49,17 @@ Feature: engine reactivity — real trigger bindings receive filtered events
         "message": { "role": "assistant", "content": [], "stop_reason": "end",
                      "model": "m", "provider": "p", "timestamp": 2 } }
       """
-    And over the engine I call "session::update_message" with:
+    And over the engine I call "session::update-message" with:
       """
       { "session_id": "${S1}", "entry_id": "reply-1",
         "content": [{ "type": "text", "text": "It" }] }
       """
-    And over the engine I call "session::update_message" with:
+    And over the engine I call "session::update-message" with:
       """
       { "session_id": "${S1}", "entry_id": "reply-1",
         "content": [{ "type": "text", "text": "It works." }] }
       """
-    And over the engine I call "session::set_status" with:
+    And over the engine I call "session::set-status" with:
       """
       { "session_id": "${S1}", "status": "done" }
       """

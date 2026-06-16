@@ -30,7 +30,7 @@ Every worker needs a top-level folder with:
 |---|---|---|
 | `iii.worker.yaml` | yes | Registry + CI metadata |
 | Version manifest | yes | `Cargo.toml`, `package.json`, or `pyproject.toml` per `manifest:` |
-| `config.yaml` | yes | Operator defaults (or equivalent for container workers) |
+| `config.yaml` | yes | Operator defaults (or equivalent for container workers). For schema-validated, hot-reloadable, or shared config, migrate to the [`configuration`](configuration.md) worker — `config.yaml` becomes a seed |
 | `tests/` (non-empty) | yes | See §5 |
 | `README.md` | yes | Per [`worker-readme.md`](../../worker-readme.md) |
 

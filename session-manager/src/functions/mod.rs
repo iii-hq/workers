@@ -31,23 +31,28 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use crate::configuration::AppState;
 use crate::error::SessionError;
 use crate::events::EventSink;
 use crate::service::SessionService;
 
-/// Everything a function handler needs. The sink is mode-dependent:
-/// fs mode publishes through the local `Emitter`; bridge mode forwards
-/// envelopes to the main instance (`RemotePublisher`).
+/// Everything a function handler needs. Built fresh per call from the live
+/// [`SessionRuntime`](crate::runtime::SessionRuntime), so a config reload that
+/// swapped the adapter is picked up by the next call. The sink is
+/// mode-dependent: fs mode publishes through the local `Emitter`; bridge mode
+/// forwards envelopes to the main instance (`RemotePublisher`).
 pub struct Deps {
     pub service: Arc<SessionService>,
     pub sink: Arc<dyn EventSink>,
 }
 
 /// Register one typed handler under `id`, mapping `SessionError` into
-/// the bus error shape (`code: message`).
+/// the bus error shape (`code: message`). Each call snapshots the live
+/// runtime's `service` + `sink` from [`AppState`], so handlers never capture a
+/// stale adapter across a hot-reload.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<III>,
-    deps: &Arc<Deps>,
+    state: &AppState,
     id: &str,
     description: &str,
     handler: F,
@@ -57,114 +62,123 @@ fn register<Req, Resp, F, Fut>(
     F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<Resp, SessionError>> + Send + 'static,
 {
-    let deps = deps.clone();
+    let state = state.clone();
     iii.register_function(
         id,
         RegisterFunction::new_async(move |req: Req| {
-            let deps = deps.clone();
+            let state = state.clone();
             let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(IIIError::from) }
+            async move {
+                let deps = {
+                    let rt = state.runtime.read().await;
+                    Arc::new(Deps {
+                        service: rt.service.clone(),
+                        sink: rt.sink.clone(),
+                    })
+                };
+                handler(deps, req).await.map_err(IIIError::from)
+            }
         })
         .description(description),
     );
 }
 
-pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register_all(iii: &Arc<III>, state: &AppState) {
     register(
         iii,
-        deps,
+        state,
         "session::create",
         "Create a session at status idle; fires session::created.",
         |d, r| async move { create::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::ensure",
         "Idempotently ensure a session with a given id exists; fires session::created only when it creates.",
         |d, r| async move { ensure::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::get",
         "Read one session's metadata (null when unknown).",
         |d, r| async move { get::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::list",
         "List sessions with pagination, ordering, and status/metadata filters.",
         |d, r| async move { list::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
-        "session::set_meta",
+        state,
+        "session::set-meta",
         "Update a session's title/description/metadata; fires session::meta-updated.",
         |d, r| async move { set_meta::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
-        "session::set_status",
+        state,
+        "session::set-status",
         "Set status idle/working/done/error; fires session::status-changed (no-op when unchanged).",
         |d, r| async move { set_status::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::delete",
         "Delete a session and its entries; fires session::deleted.",
         |d, r| async move { delete::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::append",
         "Append one entry (idempotent on entry_id); fires session::message-added.",
         |d, r| async move { append::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
-        "session::append_many",
+        state,
+        "session::append-many",
         "Append several message entries in order; fires session::message-added per entry.",
         |d, r| async move { append_many::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
-        "session::update_message",
+        state,
+        "session::update-message",
         "Replace a message entry's content (optimistic concurrency via expected_revision); fires session::message-updated.",
         |d, r| async move { update_message::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::messages",
         "Load the active path as messages with entry ids, oldest first; pagination and role filtering.",
         |d, r| async move { messages::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
-        "session::get_message",
+        state,
+        "session::get-message",
         "Read a single entry by id (null when unknown).",
         |d, r| async move { get_message::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
+        state,
         "session::fork",
         "Copy history up to an entry into a new session (copy-on-fork); fires session::created.",
         |d, r| async move { fork::handle(&d, r).await },
     );
     register(
         iii,
-        deps,
-        "session::set_active_leaf",
+        state,
+        "session::set-active-leaf",
         "Move the active path to end at a given entry (branch switch).",
         |d, r| async move { set_active_leaf::handle(&d, r).await },
     );

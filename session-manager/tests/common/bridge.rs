@@ -1,6 +1,6 @@
 //! In-process "bridged instance" stacks for @engine bridge scenarios.
 //!
-//! Each stack is exactly what a `backend: bridge` binary wires up:
+//! Each stack is exactly what a bridge-adapter binary wires up:
 //! a `BridgeStore` + `RemotePublisher` over the (shared test) engine
 //! connection, a local `Emitter` fed by a relay attached to the main's
 //! `session::store::events` feed — except the "local bus" deliverer is

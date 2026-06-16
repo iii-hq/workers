@@ -59,9 +59,9 @@ export const WORKERS: Record<string, WorkerInfo> = {
     install: 'iii worker add session-manager',
     functions: [
       { id: 'session::append', desc: 'append one entry; fires session::message-added.' },
-      { id: 'session::update_message', desc: 'stream deltas into an entry; fires session::message-updated.' },
+      { id: 'session::update-message', desc: 'stream deltas into an entry; fires session::message-updated.' },
       { id: 'session::messages', desc: 'load the active path, oldest first.' },
-      { id: 'session::set_status', desc: 'idle / working / done / error; fires session::status-changed.' },
+      { id: 'session::set-status', desc: 'idle / working / done / error; fires session::status-changed.' },
       { id: 'session::fork', desc: 'branch history into a new session.' },
       { id: 'session::create / get / list / delete', desc: 'lifecycle, pagination, tenancy filters.' },
     ],

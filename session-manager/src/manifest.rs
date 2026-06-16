@@ -19,11 +19,13 @@ pub fn build_manifest() -> ModuleManifest {
             "Durable, reactive, branching store of typed conversation entries with six emitted trigger types."
                 .to_string(),
         // Mirrors config::WorkerConfig::default() field-for-field,
-        // with backend_config spelled out in its resolved fs shape.
+        // with the adapter spelled out in its resolved fs shape.
         default_config: serde_json::json!({
-            "backend": "fs",
-            "backend_config": {
-                "data_dir": "~/.iii/data/session-manager",
+            "adapter": {
+                "name": "fs",
+                "config": {
+                    "data_dir": "~/.iii/data/session-manager",
+                },
             },
             "default_list_limit": 50,
             "max_list_limit": 500,
@@ -55,9 +57,9 @@ mod tests {
     fn default_config_mirrors_worker_config_default() {
         let m = build_manifest();
         let cfg = WorkerConfig::default();
-        assert_eq!(m.default_config["backend"], serde_json::json!("fs"));
+        assert_eq!(m.default_config["adapter"]["name"], serde_json::json!("fs"));
         assert_eq!(
-            m.default_config["backend_config"]["data_dir"],
+            m.default_config["adapter"]["config"]["data_dir"],
             serde_json::json!(crate::config::default_data_dir())
         );
         assert_eq!(
@@ -68,5 +70,8 @@ mod tests {
             m.default_config["max_list_limit"],
             serde_json::json!(cfg.max_list_limit)
         );
+        // The manifest's hand-written default must stay byte-for-byte the
+        // serialized default config (catches adapter-shape drift).
+        assert_eq!(m.default_config, cfg.to_json());
     }
 }

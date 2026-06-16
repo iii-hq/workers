@@ -39,27 +39,27 @@ Feature: the reactivity model — streaming a reply end to end
       { "title": "Weather question" }
       """
     And I append a user message "What's the weather?" to "s_001"
-    And I call "session::set_status" with:
+    And I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
     And I append an empty assistant message to "s_001"
-    And I call "session::update_message" with:
+    And I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [{ "type": "text", "text": "It" }] }
       """
-    And I call "session::update_message" with:
+    And I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [{ "type": "text", "text": "It looks" }] }
       """
-    And I call "session::update_message" with:
+    And I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [{ "type": "text", "text": "It looks sunny." }] }
       """
-    And I call "session::set_status" with:
+    And I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "done" }
       """

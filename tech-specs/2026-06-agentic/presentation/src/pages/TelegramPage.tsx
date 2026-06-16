@@ -44,7 +44,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'session',
-    label: 'session::update_message',
+    label: 'session::update-message',
     title: 'the agent streams into the store',
     desc: 'the loop persists deltas as they arrive — and each write emits the event the worker is already bound to.',
     event: 'session::message-updated',

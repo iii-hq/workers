@@ -74,7 +74,7 @@ use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput};
 use serde_json::{json, Value};
 
 iii.register_function(
-    "my-ui::on_message_updated",
+    "my-ui::on-message-updated",
     RegisterFunction::new_async(|event: Value| async move {
         // full updated message + monotonic revision; keep the highest
         println!("{} rev {}", event["entry_id"], event["revision"]);
@@ -84,14 +84,14 @@ iii.register_function(
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "session::message-updated".into(),
-    function_id: "my-ui::on_message_updated".into(),
+    function_id: "my-ui::on-message-updated".into(),
     config: json!({ "session_id": session_id, "roles": ["assistant"] }),
     metadata: None,
 })?;
 ```
 
 Streaming an assistant reply uses the same primitives: append an
-(initially empty) assistant message, then call `session::update_message`
+(initially empty) assistant message, then call `session::update-message`
 as tokens arrive — each update fires `session::message-updated` with an
 incremented `revision`.
 
@@ -120,9 +120,10 @@ Delivery is fire-and-forget, at-least-once, and unordered — reconcile
 message updates by `revision` (keep the highest) and transcript order
 by the parent chain, never by arrival order.
 
-## Storage backends
+## Storage adapters
 
-Two backends, selected by `backend` + a nested `backend_config`:
+Two adapters, selected by an `adapter` block (a `name` plus a nested
+`config`):
 
 - **`fs`** (default) — one append-only JSONL file per session under
   `data_dir` (`<encoded_session_id>.jsonl`): typed `meta` / `entry` /
@@ -130,12 +131,12 @@ Two backends, selected by `backend` + a nested `backend_config`:
   session delete. This is the durable, single-instance setup.
 - **`bridge`** — this instance keeps all domain logic (idempotency,
   revisions, branching, locks) but stores through a **main** instance
-  running its own session-manager (`backend: fs`) on another iii
+  running its own session-manager (`adapter name: fs`) on another iii
   engine, via the internal `session::store::*` protocol.
 
 Event propagation in a bridge topology: the main is the single fan-out
 point. A bridged instance publishes each mutation's events to the main
-(`session::store::publish_events`); the main delivers to its own
+(`session::store::publish-events`); the main delivers to its own
 subscribers and forwards an envelope to **every** attached bridged
 instance over its internal `session::store::events` feed; each bridge
 re-emits through its local trigger types with its own subscribers'
@@ -151,28 +152,57 @@ surface.
 
 ## Configuration
 
-```yaml
-backend: fs                # fs | bridge
-backend_config:
-  data_dir: ~/.iii/data/session-manager   # fs: one <session_id>.jsonl per session
+Runtime settings live in the **`configuration` worker** under id
+**`session-manager`**. At startup the worker registers its JSON Schema,
+fetches the live, env-expanded value via `configuration::get`, and binds a
+`configuration` trigger so changes apply without a restart. Persisted values
+default to `./data/configuration/session-manager.yaml` (the configuration
+worker's `fs` adapter) — edit that file directly or call `configuration::set`
+and the change propagates. `adapter` is an adjacently tagged enum, so the
+console's worker-config form renders a variant picker (`fs` / `bridge`) and
+only the selected adapter's `config` fields (`data_dir`, or `url` /
+`timeout_ms`), plus the list limits — all as editable inputs.
 
-# backend: bridge
-# backend_config:
-#   url: ws://127.0.0.1:49134   # main engine WebSocket URL
-#   timeout_ms: 5000            # per store/publish call timeout
+```yaml
+adapter:
+  name: fs                                   # fs | bridge
+  config:
+    data_dir: ~/.iii/data/session-manager    # fs: one <session_id>.jsonl per session
+
+# adapter:
+#   name: bridge
+#   config:
+#     url: ws://127.0.0.1:49134   # main engine WebSocket URL
+#     timeout_ms: 5000            # per store/publish call timeout
 
 default_list_limit: 50   # page size when list/messages omit `limit`
 max_list_limit: 500      # hard cap on any requested `limit`
 ```
 
-An invalid `backend_config` is fatal at boot (a misconfigured bridge
-never silently falls back to writing a local fs store). Other defaults
-live in [`src/config.rs`](src/config.rs).
+**Reload policy.** Every field hot-reloads on `configuration:updated`, no
+restart required. `default_list_limit` / `max_list_limit` swap the shared
+snapshot the list/messages calls read. A change to the `adapter` (fs↔bridge, a
+new `data_dir`, a bridge url/timeout) rebuilds the store and event plumbing and
+swaps it in atomically; the new store's current state is then replayed through
+the `session::*` triggers so open subscribers (the console sidebar/transcript,
+the harness, ...) stay live without a refetch. A reload that cannot be built
+(e.g. an unreadable `data_dir`, or a self-referential bridge `url`) keeps the
+previous runtime (last-good) and is surfaced by `session::config-status`. An
+invalid bridge `config` is still rejected at parse time, and at boot a
+misconfigured bridge is fatal (it never silently falls back to a local fs store).
+Switching `data_dir` or bridge `url` changes the backing storage immediately and
+does not migrate existing sessions.
+
+**First boot.** When no value is stored yet for id `session-manager`, the worker
+registers [`WorkerConfig::default()`](src/config.rs) as `initial_value`.
+Optionally pass `--config <path>` to seed from a YAML file instead (one-time,
+never overwrites an existing stored value). `${VAR:default}` placeholders in
+stored values are expanded by the configuration worker on every read.
 
 ## Local development & testing
 
 ```bash
-cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
+cargo run --release -- --url ws://127.0.0.1:49134
 cargo test                       # unit + manifest + BDD (engine scenarios self-skip)
 cargo test --test bdd -- --tags @pure    # no engine required
 cargo test --test bdd -- --tags @engine  # requires a running `iii`

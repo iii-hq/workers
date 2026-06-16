@@ -119,12 +119,12 @@ export async function sessionSetStatus(
 ): Promise<void> {
   try {
     await iii.trigger({
-      function_id: 'session::set_status',
+      function_id: 'session::set-status',
       payload: { session_id, status, ...(reason ? { reason } : {}) },
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
   } catch (err) {
-    logger.warn('session::set_status failed', { session_id, status, err: String(err) });
+    logger.warn('session::set-status failed', { session_id, status, err: String(err) });
   }
 }
 
@@ -186,7 +186,7 @@ export async function sessionUpdateMessage(
   },
 ): Promise<{ updated: boolean; revision: number }> {
   const resp = await iii.trigger<unknown, { updated: boolean; revision: number }>({
-    function_id: 'session::update_message',
+    function_id: 'session::update-message',
     payload: input,
     timeoutMs: DEFAULT_TIMEOUT_MS,
   });

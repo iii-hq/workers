@@ -26,12 +26,19 @@
 //!   point and every bridged instance re-emits its feed locally.
 //! - [`functions`] — the 14 `session::*` typed function handlers plus
 //!   the internal `session::store::*` protocol.
+//! - [`runtime`] — the hot-swappable storage + event runtime built from
+//!   the `adapter` config, so an adapter change reloads live (no restart).
+//! - [`resync`] — replays the new store's state through the trigger
+//!   fan-out after an adapter swap so subscribers stay real-time.
 
 pub mod config;
+pub mod configuration;
 pub mod error;
 pub mod events;
 pub mod functions;
 pub mod manifest;
+pub mod resync;
+pub mod runtime;
 pub mod service;
 pub mod store;
 pub mod types;
