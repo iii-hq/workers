@@ -30,7 +30,7 @@ Every worker needs a top-level folder with:
 |---|---|---|
 | `iii.worker.yaml` | yes | Registry + CI metadata |
 | Version manifest | yes | `Cargo.toml`, `package.json`, or `pyproject.toml` per `manifest:` |
-| `config.yaml` | yes | Operator defaults (or equivalent for container workers). For schema-validated, hot-reloadable, or shared config, migrate to the [`configuration`](configuration.md) worker — `config.yaml` becomes a seed |
+| `config.yaml` | **Path A (static config):** yes — operator defaults, committed | **Path B (configuration worker):** **no** — omit; use `WorkerConfig::default()` + configuration worker; optional uncommitted local seed. See [`configuration.md`](configuration.md); `session-manager` is Path B |
 | `tests/` (non-empty) | yes | See §5 |
 | `README.md` | yes | Per [`worker-readme.md`](../../worker-readme.md) |
 

@@ -46,10 +46,12 @@ prefix it with `iii-`.
 - `iii.worker.yaml` — registry manifest. See section 3.
 - `Cargo.toml` — crate manifest with one `[[bin]]`. See section 4.
 - `build.rs` — exposes the build-time `TARGET` triple to the binary. See section 4.
-- `config.yaml` — operator-facing runtime config (commit it; it is the default
-  loaded by `--config ./config.yaml`). See section 5.
+- `config.yaml` — **Path A only** (static config): operator-facing runtime
+  config, committed, loaded by `--config ./config.yaml`. **Path B** (configuration
+  worker): omit — see section 5 and [`configuration.md`](configuration.md).
 - `src/main.rs` — entry point. See section 6.
-- `src/config.rs` — `Config` struct + `load_config`. See section 5.
+- `src/config.rs` — `Config` struct; Path A adds `load_config`. Path B adds
+  `json_schema()` / `from_json` / `boot_signature()`. See section 5.
 - `src/manifest.rs` — `build_manifest()` for the `--manifest` subcommand. See section 5.
 - `src/state.rs` — thin `state::get` / `state::set` wrappers around `iii.trigger()`. Optional but recommended. See section 7.
 - `src/functions/mod.rs` — `register_all(...)` plus one `register_<verb>` per function. See section 7.
@@ -192,7 +194,27 @@ triple.
 
 ## 5. Config: `config.yaml` + `src/config.rs` + `src/manifest.rs`
 
-### `config.yaml`
+Two paths. Pick one per worker; do not mix them in production boot.
+
+**Path A (baseline — static config)** — for simple workers not on the
+configuration worker yet (e.g. `todo-worker`, unreleased scaffolds):
+
+- Committed `config.yaml` + `load_config()` + `--config` default `./config.yaml`
+- Sections below through "Reactive config" describe Path A.
+
+**Path B (configuration worker — preferred for production workers)** — see
+[`configuration.md`](configuration.md) for the full recipe:
+
+- **No** committed `config.yaml`
+- **No** `load_config()` in the production boot path
+- `--config` is `Option<String>` (no default path); optional one-time seed only
+- `register_config` + `fetch_config` are **required** boot dependencies
+- Choose reload tier: ConfigCell-only vs full runtime swap (+ resync)
+
+Reference: `session-manager` (Path B, full runtime + resync), `context-manager`
+(Path B, ConfigCell-only).
+
+### `config.yaml` (Path A only)
 
 Operator-facing defaults, committed alongside the worker:
 
@@ -268,18 +290,21 @@ You may **additionally** cover `--manifest` by spawning the binary from
 `tests/manifest.rs` (pattern A, section 9); that is optional if unit tests
 already enforce the JSON contract.
 
-### Reactive config via the `configuration` worker
+### Path B — reactive config via the `configuration` worker
 
-The static `config.yaml` + `load_config` pattern above is the baseline. When a
-worker needs a **schema-validated, observable, hot-reloadable** config that
-other workers and the operator console can read and edit on a live bus,
-migrate its block to the built-in **`configuration` worker** instead: register
-a JSON Schema, fetch the authoritative value at boot, and hot-reload on change.
-`config.yaml` then becomes a SEED, not the source of truth, and `src/config.rs`
-gains `json_schema()` / `to_json` / `from_json` / `boot_signature()` alongside
-`load_config`. See [`configuration.md`](configuration.md) for the full recipe;
+When a worker needs a **schema-validated, observable, hot-reloadable** config
+that other workers and the operator console can read and edit on a live bus,
+use **Path B**: migrate to the built-in **`configuration` worker**. Register a
+JSON Schema, fetch the authoritative value at boot, and hot-reload on change.
+
+Path B **does not ship** `config.yaml`. Defaults live in
+`WorkerConfig::default()` and are registered as `initial_value` only when
+nothing is stored yet. `src/config.rs` gains `json_schema()` / `to_json` /
+`from_json` / `boot_signature()`; production boot does not call `load_config()`.
+See [`configuration.md`](configuration.md) for reload tiers and boot order;
 `session-manager`, `context-manager`, `shell`, `storage`, `database`, and
-`coder` follow it.
+`coder` follow Path B (some older workers still ship a legacy seed file — do
+not mirror that for new integrations).
 
 ## 6. `src/main.rs`: the entry point
 
@@ -287,14 +312,21 @@ The entry point must:
 
 1. **Initialise tracing**: `tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))).init();`. Operators tune via `RUST_LOG`.
 2. **Parse CLI** with clap derive. Required flags:
-   - `--config <PATH>` (default `./config.yaml`)
+   - **Path A:** `--config <PATH>` (default `./config.yaml`)
+   - **Path B:** `--config <PATH>` optional seed only — no default path:
+
+     ```rust
+     #[arg(long)]
+     config: Option<String>,   // optional seed; no default path
+     ```
+
    - `--url <URL>` (default `ws://127.0.0.1:49134`)
    - `--manifest` (boolean)
 3. **Handle `--manifest`**: if set, print
    `serde_json::to_string_pretty(&manifest::build_manifest()).unwrap()` and
    `return Ok(())`. **No engine connection.** This path is what the registry
    publish pipeline calls; it must be fast and side-effect-free.
-4. **Load config**, falling back to defaults on error:
+4. **Load config** (Path A), falling back to defaults on error:
 
    ```rust
    let cfg = match config::load_config(&cli.config) {
@@ -306,6 +338,9 @@ The entry point must:
    };
    let cfg = std::sync::Arc::new(cfg);
    ```
+
+   **Path B:** connect first, then `register_config(cli.config.as_deref())` +
+   `fetch_config()` — see [`configuration.md`](configuration.md) §4c.
 
 5. **Connect to iii** with **`WorkerMetadata` required** — operators and the
    registry rely on a stable identity line for your process:
@@ -668,11 +703,14 @@ async fn boot() -> Option<Harness> {
     sleep(Duration::from_millis(800)).await;
 
     let worker_bin = env!("CARGO_BIN_EXE_<worker_underscored>");
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{manifest_dir}/config.yaml");
 
+    // Path A: pass --config with a test fixture or config.yaml.
+    // Path B (configuration worker): omit --config unless testing seed
+    // semantics — the engine's configuration worker holds authoritative config.
     let worker = Command::new(worker_bin)
-        .args(["--url", ENGINE_WS, "--config", &config_path])
+        .arg("--url")
+        .arg(ENGINE_WS)
+        // .args(["--config", &config_path])   // Path A only
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -939,7 +977,7 @@ fn main() {
 }
 ```
 
-### `<worker>/config.yaml`
+### `<worker>/config.yaml` (Path A only; omit for Path B)
 
 ```yaml
 greeting: "hello"
@@ -1261,11 +1299,11 @@ async fn boot() -> Option<Harness> {
     sleep(Duration::from_millis(800)).await;
 
     let worker_bin = env!("CARGO_BIN_EXE_<worker_underscored>");
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{manifest_dir}/config.yaml");
 
+    // Path A: pass --config. Path B: omit unless testing seed semantics.
     let worker = Command::new(worker_bin)
-        .args(["--url", ENGINE_WS, "--config", &config_path])
+        .arg("--url")
+        .arg(ENGINE_WS)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
