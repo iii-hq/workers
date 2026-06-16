@@ -26,8 +26,8 @@ deterministic idempotent entry ids, streams assistant content via
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*` / `harness::provider::{register,resolve,list}`. Owns the provider registry + the `harness` entry in the `configuration` worker (credentials, settings, permissions — see [storage.md](harness/docs/storage.md)). | [workers/harness.md](harness/docs/workers/harness.md) |
-| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. Default mode from `harness` config `permissions.default_mode`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
+| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `triggerWithHook` pre_trigger hook chokepoint; owns `harness::function::resolve` and the `harness::hook::pre-trigger` / `harness::turn-completed` trigger types. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
+| approval-gate (external) | [approval-gate/ (repo root)](../../approval-gate/) | Standalone Rust worker: approval policy, pending inbox, decision RPCs. Binds `approval::gate` to the harness's pre_trigger hook and settles holds via `harness::function::resolve`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
 | models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Model-capability catalogue in iii state (provider-registered only; no embedded seed or fallback), refreshed by `provider::<name>::refresh_models`. | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
@@ -50,7 +50,6 @@ flowchart LR
   subgraph harnessNode [harness workers]
     harness[harness]
     turnOrch[turn-orchestrator]
-    approval[approval-gate]
     budget[llm-budget]
     hook[hook-fanout]
     models[models-catalog]
@@ -69,6 +68,7 @@ flowchart LR
   subgraph external [External Rust workers + engine]
     shell[shell]
     directory[iii-directory]
+    approval["approval-gate (standalone)"]
     sessionMgr["session-manager (session::*)"]
     state["iii engine state::* / stream::* / iii::durable::*"]
   end
@@ -81,13 +81,14 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "provider::*::stream" --> provLlama
-  turnOrch -- "consultBefore: policy::check_permissions" --> harness
+  turnOrch -- "pre_trigger hook: approval::gate" --> approval
+  approval -- "policy::check_permissions" --> harness
   turnOrch -- "session::ensure/append/update_message/set_status" --> sessionMgr
   turnOrch -- "state::* persistence" --> state
 
   client -- "approval::resolve" --> approval
-  approval -- "state::set approvals/<sid>/<cid>" --> state
-  state -- "state trigger (scope=approvals)" --> turnOrch
+  approval -- "harness::function::resolve (execute / deliver)" --> turnOrch
+  turnOrch -- "harness::turn-completed" --> approval
   turnOrch -- "enqueue turn::{state} on turn-step queue" --> turnOrch
 
   provAnth -- "harness::provider::resolve" --> harness
@@ -110,8 +111,9 @@ defines a 7-state durable FSM. Each state is a registered `turn::{state}`
 function executed via `runTransition` and enqueued onto the `turn-step` FIFO
 queue from `saveRecord` ([store.ts](harness/src/turn-orchestrator/state-runtime/store.ts)).
 `saveRecord` calls `shouldWakeStep` then enqueues `turn::{newState}` when the persisted state
-transitions to a stepable state. Paused sessions are woken when `approval::resolve` writes
-scope `approvals`, which fires `turn::on_approval` to enqueue `turn::function_awaiting_approval`.
+transitions to a stepable state. Paused sessions are woken by
+`harness::function::resolve`, which persists a `function_resolutions` row and
+enqueues `turn::function_awaiting_approval` directly.
 
 ```mermaid
 stateDiagram-v2
@@ -136,13 +138,18 @@ unexpectedly (unless it opts into queue retry via `TransientError`).
 
 ## Approval flow
 
-The orchestrator consults `policy::check_permissions` directly inside
-`consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
-the before path. The orchestrator parks the turn in `function_awaiting_approval`
-when any call in the batch needs approval, then resumes as each parked call
-receives `approval::resolve` (decisions may arrive independently and out of
-batch order). Each `approval::resolve` persists the decision; the `turn::on_approval`
-state trigger enqueues `turn::function_awaiting_approval`.
+The orchestrator consults the `harness::hook::pre-trigger` chain inside
+`triggerWithHook` — bound hooks (the standalone approval-gate's
+`approval::gate`) answer `continue`, `deny`, or `hold`. The approval policy
+itself (permission modes, allow-lists, `policy::check_permissions` fallback)
+lives in the gate worker; see
+[tech-specs/2026-06-agentic/approval-gate.md](../../tech-specs/2026-06-agentic/approval-gate.md).
+The orchestrator parks the turn in `function_awaiting_approval` when any
+call in the batch is held, then resumes as each parked call receives
+`harness::function::resolve` (`execute` releases it, `deliver` answers it
+without executing; decisions may arrive independently and out of batch
+order). Each resolve persists a `function_resolutions` row (deleted after
+consumption) and enqueues `turn::function_awaiting_approval`.
 
 ### Parallel batch during `function_execute`
 
@@ -150,9 +157,9 @@ When the assistant message contains multiple tool calls, `runBatch` does not
 stop at the first `pending`. For each call in assistant tool order:
 
 - already in `work.executed` or listed in `awaiting_approval[]` → skip
-- policy `allow` (or immediate policy `deny`) → dispatch, checkpoint, emit
+- hook `continue` (or inline hook `deny`) → trigger, checkpoint, emit
   `function_execution_end`
-- policy `needs_approval` → emit `function_execution_start`, append the call
+- hook `hold` → emit `function_execution_start`, append the call
   to `awaiting_approval[]`, **continue** remaining siblings
 
 After the loop: if any call is still awaiting approval, transition to
@@ -168,45 +175,47 @@ parked until A and C are resolved.
 | Surface | Location | Role |
 |---|---|---|
 | Open approvals | `turn_state/<session_id>` → `awaiting_approval[]` | Which calls are parked and their args |
-| Decisions | `approvals/<session_id>/<function_call_id>` | Written by `approval::resolve`; read on each wake |
+| Decisions | `function_resolutions/<session_id>/<function_call_id>` | Written by `harness::function::resolve`; consumed (and deleted) on each wake |
+| Pending inbox | approval-gate worker (`approval::list-pending`) | Cross-session human-attention index, owned by the gate |
 | UI mirror | `turn_state_changed` on `agent::events` | Console shows pending modals from `TurnStateView.awaiting_approval` |
 | Reload | `turn::get_state` | One-shot lean view after refresh (no direct iii state reads) |
 
 A page refresh does not lose pending approvals as long as iii state persists.
-Operators can still approve from the console after reload; each decision write
-fires `turn::on_approval` to enqueue the parked turn step while the worker is running.
+Operators can still approve from the console after reload; each
+`harness::function::resolve` enqueues the parked turn step directly while
+the worker is running.
 
 ### Resume semantics
 
 - Decisions may arrive in any order (e.g. resolve call C before call A).
-- On `allow`, the parked call executes with `skipStart: true` — the
+- On `execute`, the parked call runs with `skipStart: true` — the
   `function_execution_start` event was already emitted when the call first
   returned `pending`.
-- A duplicate `approval::resolve` for the same call re-wakes the handler;
-  resolved entries are pruned idempotently so execution is not doubled.
+- A duplicate `harness::function::resolve` for the same call answers
+  `{resolved: false}` once it settled; resolved entries are pruned
+  idempotently so execution is not doubled.
 
 ```mermaid
 sequenceDiagram
   participant Turn as turn-orchestrator (FSM)
-  participant Bus as iii bus (state::* + stream::*)
+  participant Gate as approval-gate (standalone)
   participant Harness as harness (policy::check_permissions)
-  participant Gate as approval-gate
   participant User
 
-  Note over Turn: function_execute: runBatch walks all tool calls.<br/>pending calls append to awaiting_approval[];<br/>allowed siblings execute in the same pass.
+  Note over Turn: function_execute: runBatch walks all tool calls.<br/>held calls append to awaiting_approval[];<br/>allowed siblings execute in the same pass.
 
-  Turn->>Harness: policy::check_permissions(function_id, args) [5s timeout]
-  alt rule.action == allow
-    Harness-->>Turn: allow → dispatch the call
-  else rule.action == deny
-    Harness-->>Turn: deny + DenialEnvelope → error FunctionResult
-  else no rule (needs_approval)
-    Harness-->>Turn: needs_approval → append to awaiting_approval[], continue batch
-    Note over Turn,Bus: When the batch pass finishes with any awaiting calls,<br/>saveRecord parks in function_awaiting_approval (no wake on park).
+  Turn->>Gate: pre_trigger hook approval::gate (HookInput)
+  alt gate allows (mode / allow-lists / yaml allow)
+    Gate-->>Turn: continue → trigger the call
+  else gate denies
+    Gate-->>Turn: deny + reason → error FunctionResult
+  else needs a human
+    Gate-->>Turn: hold + pending_timeout_ms → append to awaiting_approval[], continue batch
+    Note over Turn: When the batch pass finishes with any awaiting calls,<br/>saveRecord parks in function_awaiting_approval<br/>(one post-persist scan wake).
     User->>Gate: approval::resolve(decision, reason)
-    Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Gate->>Turn: enqueue turn::function_awaiting_approval
-    Turn->>Turn: function_awaiting_approval executes<br/>that call immediately (skipStart), removes it from awaiting_approval[]
+    Gate->>Turn: harness::function::resolve (execute | deliver)
+    Turn->>Turn: persist function_resolutions row,<br/>enqueue turn::function_awaiting_approval
+    Turn->>Turn: settle that call immediately (skipStart),<br/>delete the row, remove it from awaiting_approval[]
     alt more calls still awaiting
       Turn->>Turn: stay in function_awaiting_approval
     else awaiting empty and batch incomplete
@@ -217,8 +226,10 @@ sequenceDiagram
   end
 ```
 
-Fail-closed: policy unreachable (transport error or 5 s timeout) →
-`consultBefore` denies the call with a `gate_unavailable` envelope.
+Fail-closed: a bound hook unreachable (transport error or its `timeout_ms`)
+→ the chain denies the call with a `gate_unavailable` envelope. Note the
+gate consults `policy::check_permissions` itself as its yaml fallback; the
+orchestrator no longer calls policy directly.
 
 ## Kernel deny list
 
@@ -292,7 +303,7 @@ dependants register:
 ```mermaid
 flowchart TD
   harness --> turnOrch
-  harness --> approval
+  turnOrch --> approval["approval-gate (external; binds the pre_trigger hook at boot)"]
   models[models-catalog] --> turnOrch
   sessionMgr["session-manager (external)"] --> turnOrch
   harness --> provAnth[provider-anthropic]

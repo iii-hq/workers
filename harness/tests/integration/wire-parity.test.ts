@@ -6,6 +6,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { FunctionResolvePayloadSchema } from '../../src/turn-orchestrator/schemas.js';
+import { HookOutputSchema, type HookInput } from '../../src/turn-orchestrator/hooks/types.js';
 import type { AgentEvent } from '../../src/types/agent-event.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 import { formatFunctionResultContent } from '../../src/types/wire.js';
@@ -96,5 +98,76 @@ describe('FunctionResult / formatFunctionResultContent wire shape', () => {
     expect(env.status).toBe('denied');
     expect(env.rule_id).toBe('git/no-force-push');
     expect(out.endsWith('Permission denied: …')).toBe(true);
+  });
+});
+
+describe('approval-gate worker wire parity', () => {
+  // These shapes must match the Rust worker's serde forms
+  // (approval-gate/src/types.rs): HookInput/HookOutput and the
+  // harness::function::resolve payloads it sends.
+
+  it('HookInput matches what approval::gate deserializes', () => {
+    const input: HookInput = {
+      point: 'pre_trigger',
+      session_id: 's_1',
+      turn_id: 't_1',
+      step: 3,
+      depth: 0,
+      call: { id: 'c_1', function_id: 'shell::run', arguments: { cmd: 'ls' } },
+    };
+    expect(JSON.parse(JSON.stringify(input))).toEqual({
+      point: 'pre_trigger',
+      session_id: 's_1',
+      turn_id: 't_1',
+      step: 3,
+      depth: 0,
+      call: { id: 'c_1', function_id: 'shell::run', arguments: { cmd: 'ls' } },
+    });
+  });
+
+  it('HookOutput accepts the three Rust serde forms and rejects garbage', () => {
+    expect(HookOutputSchema.parse({ decision: 'continue' })).toEqual({ decision: 'continue' });
+    expect(HookOutputSchema.parse({ decision: 'deny', reason: 'nope' })).toEqual({
+      decision: 'deny',
+      reason: 'nope',
+    });
+    expect(HookOutputSchema.parse({ decision: 'hold', pending_timeout_ms: 1_800_000 })).toEqual({
+      decision: 'hold',
+      pending_timeout_ms: 1_800_000,
+    });
+    expect(HookOutputSchema.safeParse('what even is this').success).toBe(false);
+    expect(HookOutputSchema.safeParse({ decision: 'hold' }).success).toBe(false);
+  });
+
+  it('function::resolve accepts the exact payloads the Rust resolve/sweep send', () => {
+    // approval-gate/src/functions/resolve.rs — allow:
+    expect(
+      FunctionResolvePayloadSchema.parse({
+        session_id: 's_1',
+        turn_id: 't_9',
+        function_call_id: 'c_1',
+        action: 'execute',
+      }).action,
+    ).toBe('execute');
+
+    // approval-gate/src/functions/resolve.rs — deny (rendered DenialEnvelope):
+    const deny = FunctionResolvePayloadSchema.parse({
+      session_id: 's_1',
+      turn_id: 't_9',
+      function_call_id: 'c_1',
+      action: 'deliver',
+      is_error: true,
+      content: [{ type: 'text', text: 'too risky' }],
+      details: {
+        schema_version: 1,
+        status: 'denied',
+        denied_by: 'user',
+        function_id: 'shell::run',
+        args_excerpt: { cmd: 'ls' },
+        reason: 'too risky',
+      },
+    });
+    expect(deny.is_error).toBe(true);
+    expect(deny.content?.[0]).toEqual({ type: 'text', text: 'too risky' });
   });
 });

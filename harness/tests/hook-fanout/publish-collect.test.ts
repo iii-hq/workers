@@ -194,7 +194,7 @@ describe('publish-collect execute', () => {
 describe('handleStreamReply frame shapes', () => {
   it('accepts both groupId and group_id', async () => {
     const fakeCamel = makeFakeSdk({});
-    // Manually publish and dispatch via camelCase
+    // Manually publish and deliver via camelCase
     const publishCalls: unknown[] = [];
     const iiiCamel = {
       trigger: async (req: { function_id: string; payload: unknown }) => {

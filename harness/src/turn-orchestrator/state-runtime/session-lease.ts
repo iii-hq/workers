@@ -3,8 +3,8 @@
  * (scope, ttl) adapter over the shared lease in runtime/lease.ts.
  *
  * The `turn-step` durable queue has no per-session ordering, so two
- * `turn::function_awaiting_approval` wakes (one per `approval::resolve`, fanned
- * out by `turn::on_approval`) can run concurrently and double-execute the parked
+ * `turn::function_awaiting_approval` wakes (one per `harness::function::resolve`)
+ * can run concurrently and double-execute the parked
  * turn. The lease lets one through; the loser throws TransientError and retries
  * via the queue, by which point the state has usually advanced and it stale-skips.
  */

@@ -5,7 +5,6 @@ import { loadHarnessConfig } from './config.js';
 import { spawnPumps } from './fanout/index.js';
 import { register as registerFs } from './fs.js';
 import { migrateLlmRouterConfig } from './migrate-llm-router-config.js';
-import { registerHarnessConfigEntry } from './permissions-config.js';
 import { registerPolicy } from './policy/check-permissions.js';
 import { loadAndWatch } from './policy/handle.js';
 import { FanoutState, registerSubscriptions } from './ui-subscribe.js';
@@ -21,10 +20,6 @@ export async function register(iii: ISdk, ctx: { configPath: string; url: string
   spawnPumps(iii, fanoutState);
   registerFs(iii, ctx.url);
 
-  // Provider credentials/settings live in the router-owned `llm-router`
-  // entry; the `harness` entry keeps only the permissions block. Paste-a-key
-  // reactivity is the router's configuration trigger now.
-  await registerHarnessConfigEntry(iii);
   // One-time copy of any pre-router provider config into the llm-router
   // entry (internal retries — the router composes that entry's schema only
   // after the first provider registers, so this must not block boot).

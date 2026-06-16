@@ -1,8 +1,8 @@
 /**
  * RPC adapters for the per-session approval settings (`approval::*`
- * handlers in harness/src/approval-gate/settings/). These are
+ * functions on the standalone approval-gate worker). These are
  * user-initiated RPCs only — agent function calls cannot reach them
- * (the turn-orchestrator hook hard-denies these function ids).
+ * (the gate hard-denies approval::* function ids).
  */
 
 import { getIiiClient } from '@/lib/iii-client'
@@ -12,7 +12,7 @@ export type PermissionMode = 'manual' | 'auto' | 'full'
 export interface AlwaysAllowEntry {
   function_id: string
   granted_at: number
-  granted_by: 'user_click'
+  granted_by: 'user_click' | 'seed'
 }
 
 export interface ApprovalSettings {
@@ -40,7 +40,7 @@ function coerceEntries(raw: unknown): AlwaysAllowEntry[] {
       (entry): AlwaysAllowEntry => ({
         function_id: String(entry.function_id ?? ''),
         granted_at: Number(entry.granted_at ?? 0),
-        granted_by: 'user_click',
+        granted_by: entry.granted_by === 'seed' ? 'seed' : 'user_click',
       }),
     )
     .filter((entry) => entry.function_id.length > 0)
@@ -48,7 +48,14 @@ function coerceEntries(raw: unknown): AlwaysAllowEntry[] {
 
 function coerceSettings(raw: unknown): ApprovalSettings {
   if (!raw || typeof raw !== 'object') return DEFAULT_APPROVAL_SETTINGS
-  const r = raw as Record<string, unknown>
+  // The approval-gate worker wraps the record: mutations return
+  // { settings }, get_settings returns { settings, source }.
+  const outer = raw as Record<string, unknown>
+  const r = (
+    outer.settings && typeof outer.settings === 'object'
+      ? outer.settings
+      : outer
+  ) as Record<string, unknown>
   const mode: PermissionMode =
     r.mode === 'auto' || r.mode === 'full' ? r.mode : 'manual'
   return {
@@ -63,7 +70,7 @@ export async function getApprovalSettings(
   sessionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::get_settings', {
+  const raw = await client.call('approval::get-settings', {
     session_id: sessionId,
   })
   return coerceSettings(raw)
@@ -74,7 +81,7 @@ export async function setApprovalMode(
   mode: PermissionMode,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::set_mode', {
+  const raw = await client.call('approval::set-mode', {
     session_id: sessionId,
     mode,
   })
@@ -86,7 +93,7 @@ export async function addAlwaysAllow(
   functionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::add_always_allow', {
+  const raw = await client.call('approval::add-always-allow', {
     session_id: sessionId,
     function_id: functionId,
   })
@@ -98,7 +105,7 @@ export async function removeAlwaysAllow(
   functionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::remove_always_allow', {
+  const raw = await client.call('approval::remove-always-allow', {
     session_id: sessionId,
     function_id: functionId,
   })
@@ -110,7 +117,7 @@ export async function approveAlways(
   functionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::approve_always', {
+  const raw = await client.call('approval::approve-always', {
     session_id: sessionId,
     function_id: functionId,
   })
@@ -120,7 +127,7 @@ export async function approveAlways(
 export async function clearApprovalSettings(sessionId: string): Promise<void> {
   const client = await getIiiClient()
   await client
-    .call('approval::clear_settings', { session_id: sessionId })
+    .call('approval::clear-settings', { session_id: sessionId })
     .catch(() => {
       /* best-effort cleanup on conversation deletion */
     })

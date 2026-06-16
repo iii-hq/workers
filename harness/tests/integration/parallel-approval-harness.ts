@@ -1,17 +1,24 @@
 /**
- * Integration harness for parallel approval flows: real TurnStore + runTransition,
- * simulated iii state/streams, and dispatchWithHook routing.
+ * Integration harness for parallel approval flows: real TurnStore +
+ * runTransition + harness::function::resolve, simulated iii
+ * state/streams, and a scriptable fake `approval::gate` bound to the
+ * real pre_trigger hook chain.
  */
 
 import { vi } from 'vitest';
-import { handleResolveRequest } from '../../src/approval-gate/resolve.js';
-import {
-  handleApprovalStateWrite,
-  handleAwaitingApproval,
-} from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
 import { TransientError } from '../../src/turn-orchestrator/errors.js';
+import { handleAwaitingApproval } from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
 import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
 import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
+import {
+  handleFunctionResolve,
+  type FunctionResolveResult,
+} from '../../src/turn-orchestrator/function-resolve.js';
+import {
+  addPreTriggerBindingForTests,
+  resetPreTriggerBindingsForTests,
+} from '../../src/turn-orchestrator/hooks/registry.js';
+import type { HookOutput } from '../../src/turn-orchestrator/hooks/types.js';
 import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
 import {
   TURN_STATE_SCOPE,
@@ -28,6 +35,10 @@ export type ParallelApprovalHarness = {
   stateStore: Map<string, unknown>;
   emitted: AgentEvent[];
   sessions: FakeSessionManager;
+  /** Calls the fake `approval::gate` received through the hook chain. */
+  gateCalls: unknown[];
+  /** Script the fake gate's next answers (default: hold). */
+  setGateOutput(output: HookOutput | ((input: unknown) => HookOutput)): void;
   loadTurnRecord(session_id: string): TurnStateRecord | null;
   seedExecute(session_id: string, assistant: AssistantMessage): TurnStateRecord;
   runExecute(session_id: string): Promise<void>;
@@ -36,7 +47,7 @@ export type ParallelApprovalHarness = {
     function_call_id: string,
     decision: 'allow' | 'deny',
     reason?: string | null,
-  ): Promise<void>;
+  ): Promise<FunctionResolveResult>;
 };
 
 function makeAgentTriggerCall(
@@ -114,6 +125,19 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
   const stateStore = new Map<string, unknown>();
   const emitted: AgentEvent[] = [];
   const sessions = new FakeSessionManager();
+  const gateCalls: unknown[] = [];
+  let gateOutput: HookOutput | ((input: unknown) => HookOutput) = {
+    decision: 'hold',
+    pending_timeout_ms: 1_800_000,
+  };
+
+  // Bind the fake gate to the REAL hook chain (module-global registry).
+  resetPreTriggerBindingsForTests();
+  addPreTriggerBindingForTests({
+    id: 'test-gate',
+    function_id: 'approval::gate',
+    config: { functions: ['*'], timeout_ms: 5_000, on_error: 'fail_closed' },
+  });
 
   const iii = {
     trigger: vi.fn(
@@ -130,6 +154,11 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
         const sessionResult = await sessions.handle(function_id, payload);
         if (sessionResult !== undefined) return sessionResult;
 
+        if (function_id === 'approval::gate') {
+          gateCalls.push(payload);
+          return typeof gateOutput === 'function' ? gateOutput(payload) : gateOutput;
+        }
+
         if (function_id === 'state::get') {
           const p = payload as { scope: string; key: string };
           const v = stateStore.get(`${p.scope}/${p.key}`);
@@ -144,18 +173,13 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
             : null;
           const new_value = structuredClone(p.value);
           stateStore.set(storeKey, new_value);
-          if (p.scope === 'approvals') {
-            const event = {
-              event_type: old_value == null ? 'state:created' : 'state:updated',
-              scope: p.scope,
-              key: p.key,
-              old_value,
-              new_value,
-              message_type: 'state',
-            };
-            await handleApprovalStateWrite(iii as unknown as ISdk, event);
-          }
           return { old_value, new_value };
+        }
+
+        if (function_id === 'state::delete') {
+          const p = payload as { scope: string; key: string };
+          stateStore.delete(`${p.scope}/${p.key}`);
+          return {};
         }
 
         if (function_id === 'state::update') {
@@ -200,14 +224,6 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
           };
         }
 
-        // Realistic default for the real `consultBefore` fall-through: no
-        // yaml rule matches → needs_approval. Mode/allowlist short-circuits
-        // happen before this in consultBefore, so tests that seed
-        // approval_settings exercise those paths without reaching here.
-        if (function_id === 'policy::check_permissions') {
-          return { decision: 'needs_approval' };
-        }
-
         if (function_id.startsWith('turn::') && action != null) {
           const p = payload as { session_id: string };
           await runTurnStepWithRetry(iii as unknown as ISdk, function_id, p.session_id);
@@ -219,16 +235,23 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
     ),
   } as unknown as ISdk;
 
+  function loadTurnRecord(session_id: string): TurnStateRecord | null {
+    const raw = stateStore.get(`${TURN_STATE_SCOPE}/${session_id}`);
+    return raw ? (structuredClone(raw) as TurnStateRecord) : null;
+  }
+
   return {
     iii,
     stateStore,
     emitted,
     sessions,
+    gateCalls,
 
-    loadTurnRecord(session_id: string): TurnStateRecord | null {
-      const raw = stateStore.get(`${TURN_STATE_SCOPE}/${session_id}`);
-      return raw ? (structuredClone(raw) as TurnStateRecord) : null;
+    setGateOutput(output) {
+      gateOutput = output;
     },
+
+    loadTurnRecord,
 
     seedExecute(session_id: string, assistant: AssistantMessage): TurnStateRecord {
       const rec = newRecord(session_id);
@@ -242,20 +265,45 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
       await runTurnStep(iii, 'turn::function_execute', session_id);
     },
 
+    /** Drive the real harness::function::resolve handler, like the gate worker does. */
     async resolveApproval(
       session_id: string,
       function_call_id: string,
       decision: 'allow' | 'deny',
       reason: null | string = null,
-    ): Promise<void> {
-      const out = await handleResolveRequest(iii, {
-        session_id,
-        function_call_id,
-        decision,
-        reason,
-      });
-      if (!out.ok) throw new Error(`approval::resolve failed: ${out.error}`);
+    ): Promise<FunctionResolveResult> {
+      const rec = loadTurnRecord(session_id);
+      if (!rec) throw new Error(`no turn record for ${session_id}`);
+      const why = reason ?? 'Rejected by operator.';
+      const target =
+        rec.awaiting_approval?.find((e) => e.function_call_id === function_call_id)?.function_id ??
+        'unknown';
+      const payload =
+        decision === 'allow'
+          ? {
+              session_id,
+              turn_id: rec.turn_id,
+              function_call_id,
+              action: 'execute' as const,
+            }
+          : {
+              session_id,
+              turn_id: rec.turn_id,
+              function_call_id,
+              action: 'deliver' as const,
+              is_error: true,
+              content: [{ type: 'text', text: why }],
+              details: {
+                schema_version: 1,
+                status: 'denied',
+                denied_by: 'user',
+                function_id: target,
+                reason: why,
+              },
+            };
+      const out = await handleFunctionResolve(iii, payload);
       await flushMicrotasks();
+      return out;
     },
   };
 }

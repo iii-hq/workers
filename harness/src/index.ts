@@ -8,9 +8,6 @@
  */
 
 import { Command } from 'commander';
-import { register as registerApprovalGate } from './approval-gate/resolve.js';
-import { initDefaultMode } from './approval-gate/settings/default-mode.js';
-import { registerSettingsHandlers as registerApprovalSettings } from './approval-gate/settings/register.js';
 import { register as registerContextCompaction } from './context-compaction/register.js';
 import { register as registerHarness } from './harness/register.js';
 import { register as registerHookFanout } from './hook-fanout/register.js';
@@ -39,16 +36,6 @@ const WORKERS: readonly WorkerDefinition[] = [
     description:
       'Durable run::start state machine driving each agent turn through provisioning, assistant, and function-execute.',
     register: (iii, ctx) => registerTurnOrchestrator(iii, ctx),
-  },
-  {
-    name: 'approval-gate',
-    description:
-      'Registers approval::resolve and the per-session mode/allow-list settings handlers; persists human decisions to the approvals and approval_settings scopes.',
-    register: async (iii) => {
-      await registerApprovalGate(iii);
-      registerApprovalSettings(iii);
-      await initDefaultMode(iii);
-    },
   },
   {
     name: 'hook-fanout',

@@ -4,11 +4,16 @@
 
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 
-/** Exactly one execution route per prepared call: dispatch, pre_approved, or synthetic. */
+/** Exactly one execution route per prepared call: trigger, pre_approved, or synthetic. */
 export type PreparedCall =
-  | { route: 'dispatch'; call: FunctionCall }
+  | { route: 'trigger'; call: FunctionCall }
   | { route: 'pre_approved'; call: FunctionCall }
-  | { route: 'synthetic'; call: FunctionCall; result: FunctionResult };
+  /**
+   * Pre-rendered result, never triggered. `is_error` defaults to true
+   * (denials, missing-function shims); a delivered non-error result
+   * (`harness::function::resolve` action "deliver") sets it explicitly.
+   */
+  | { route: 'synthetic'; call: FunctionCall; result: FunctionResult; is_error?: boolean };
 
 export type ExecutedCall = {
   call: FunctionCall;
