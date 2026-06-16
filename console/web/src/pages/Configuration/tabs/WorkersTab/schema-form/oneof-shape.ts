@@ -87,13 +87,18 @@ export interface Discriminator {
  */
 export function discriminator(variants: JsonSchema[]): Discriminator | null {
   if (variants.length < 2) return null
-  const propsList: (Record<string, JsonSchema> | null)[] = variants.map((v) =>
-    v.properties &&
-    typeof v.properties === 'object' &&
-    !Array.isArray(v.properties)
+  const propsList: (Record<string, JsonSchema> | null)[] = variants.map((v) => {
+    // A variant explicitly typed as a non-object cannot be an object branch,
+    // even if it carries a `properties` map — routing it here would emit an
+    // object value (`{ [key]: value }`) for a string/number/etc. branch.
+    const types = schemaTypes(v)
+    if (types.length > 0 && !types.includes('object')) return null
+    return v.properties &&
+      typeof v.properties === 'object' &&
+      !Array.isArray(v.properties)
       ? (v.properties as Record<string, JsonSchema>)
-      : null,
-  )
+      : null
+  })
   if (propsList.some((p) => p === null)) return null
   const allProps = propsList as Record<string, JsonSchema>[]
 

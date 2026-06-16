@@ -86,6 +86,14 @@ describe('discriminator', () => {
     expect(discriminator(variants)).toBeNull()
   })
 
+  it('returns null when a non-object variant still carries a properties map', () => {
+    const variants: JsonSchema[] = [
+      { type: 'string', properties: { kind: { enum: ['a'] } } },
+      { type: 'number', properties: { kind: { enum: ['b'] } } },
+    ]
+    expect(discriminator(variants)).toBeNull()
+  })
+
   it('returns null for a single-variant union', () => {
     expect(discriminator([adapterVariants[0]])).toBeNull()
   })
