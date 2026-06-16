@@ -1,6 +1,6 @@
 {
   "name": "claude-code",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Claude Code as an iii worker: headless turns over the iii bus, raw messages on claude::events, AgentEvent frames on agent::events.",
   "license": "Apache-2.0",
