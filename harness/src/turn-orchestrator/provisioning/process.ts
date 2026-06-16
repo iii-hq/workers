@@ -2,6 +2,7 @@
  * Load run request, build the provisioned RunRequest, and register the FSM step.
  */
 
+import type { Model } from '../../types/model.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { agentTriggerTool } from '../agent-trigger.js';
 import { runTransition } from '../run-transition.js';
@@ -14,6 +15,8 @@ import { createProvisioningPorts, type ProvisioningPorts } from './ports.js';
 export type ProvisioningOutcome = {
   kind: 'ready';
   runRequest: RunRequest;
+  /** Catalog entry for the turn's model; null when the catalog has no match. */
+  model_meta: Model | null;
 };
 
 export async function processProvisioning(
@@ -22,21 +25,31 @@ export async function processProvisioning(
 ): Promise<ProvisioningOutcome> {
   const request = await ports.loadRunRequest(rec.session_id);
 
+  // The router is the single routing authority: one `router::route` preview
+  // serves both prompt-family selection and model-metadata resolution, and
+  // the routed provider is pinned on the run request so the chat call
+  // executes on exactly the previewed provider.
+  const routed = request.model ? await ports.route(request.provider, request.model) : null;
+
   const override = request.system_prompt.length > 0 ? request.system_prompt : null;
   const prompt = buildSystemPrompt({
     override,
     mode: request.mode,
-    provider: request.provider,
-    model: request.model,
+    provider: routed ?? '',
   });
+
+  const model_meta =
+    request.model && routed ? await ports.resolveModel(routed, request.model) : null;
 
   return {
     kind: 'ready',
     runRequest: {
       ...request,
+      routed_provider: routed ?? '',
       system_prompt: prompt,
       function_schemas: [agentTriggerTool()],
     },
+    model_meta,
   };
 }
 
@@ -46,6 +59,7 @@ export async function applyProvisioningOutcome(
   outcome: ProvisioningOutcome,
 ): Promise<void> {
   await ports.saveRunRequest(rec.session_id, outcome.runRequest);
+  if (outcome.model_meta) rec.model_meta = outcome.model_meta;
   transitionTo(rec, 'assistant_streaming');
 }
 

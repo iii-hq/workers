@@ -39,14 +39,20 @@ npx skills add iii-hq/iii --all
 | Worker | Kind | Summary |
 |---|---|---|
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
-| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `approval-gate`, `session`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. See [`harness/README.md`](harness/README.md). |
+| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `approval-gate`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
+| [`codex`](codex/) | Rust | OpenAI Codex as an iii worker — `codex::*` spawn the codex CLI for headless turns, mirror raw thread events onto `codex::events`, and stream AgentEvent frames onto `agent::events`. |
+| [`claude-code`](claude-code/) | Node | Claude Code as an iii worker — `claude::*` runs headless Claude Code turns, mirrors raw messages onto `claude::events`, and streams AgentEvent frames onto `agent::events`. |
+| [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |
+| [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds the `lsp` server. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
-| [`llm-budget`](llm-budget/) | Rust | Workspace + agent LLM spend caps with alerts, forecast, and period rollover under `budget::*`. |
+| [`llm-router`](llm-router/) | Rust | One front door + provider protocol in front of every LLM provider — `router::chat`/`router::complete`, provider registry + credentials, model catalog, and routing. See [`llm-router/README.md`](llm-router/README.md). |
 | [`mcp`](mcp/) | Rust | MCP 2025-06-18 Streamable HTTP bridge — exposes iii functions tagged `mcp.expose` as MCP tools. |
+| [`provider-anthropic`](provider-anthropic/) | Rust | Anthropic Messages API provider behind `llm-router` — `provider::anthropic::stream` with prompt caching, thinking, and live model discovery. |
+| [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider behind `llm-router` — `provider::openai::stream` with reasoning support and live chat-model discovery. |
 | [`shell`](shell/) | Rust | Unix shell + filesystem worker — `shell::exec` with allowlist/denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
@@ -117,11 +123,13 @@ host.
 
 ## Add a new worker
 
-[`binary-worker.md`](binary-worker.md) is the deep dive for the Rust binary
-scaffold (manifest, config, layout, function contract).
-[`worker-readme.md`](worker-readme.md) covers the README contract every
-worker shares (install via `iii worker add`, run via `iii start`, how-to
-over reference).
+Start with [`docs/sops/new-worker.md`](docs/sops/new-worker.md) — the
+cross-cutting checklist (naming, required files, CI gates, release wiring).
+For the inside of a Rust `deploy: binary` worker, continue with
+[`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
+a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
+contract (install via `iii worker add`, quickstart, configuration).
+[`docs/README.md`](docs/README.md) indexes all shared docs.
 
 ## CI
 
@@ -137,6 +145,9 @@ The `pr-checks` job additionally enforces, per changed worker: `README.md`
 present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
 version is greater than the version on the PR's base branch.
 
+Full reference (discovery buckets, interface boot smoke, e2e workflows):
+[`docs/architecture/testing-and-ci.md`](docs/architecture/testing-and-ci.md).
+
 ## CD
 
 Releases are cut manually via the **Create Tag** workflow
@@ -150,8 +161,13 @@ resulting `<worker>/v<X.Y.Z>` tag drives a single dispatcher
      [`_rust-binary.yml`](.github/workflows/_rust-binary.yml).
    - `image` → multi-arch image to `ghcr.io/<owner>/<worker>` via
      [`_container.yml`](.github/workflows/_container.yml).
+   - `bundle` → single-file archive via
+     [`_bundle.yml`](.github/workflows/_bundle.yml).
 2. Calls `POST /publish` against the workers registry API via
    [`_publish-registry.yml`](.github/workflows/_publish-registry.yml).
+
+Step-by-step (variants, troubleshooting, rollback):
+[`docs/sops/release.md`](docs/sops/release.md).
 
 ## License
 

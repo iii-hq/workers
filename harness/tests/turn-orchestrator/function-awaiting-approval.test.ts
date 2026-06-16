@@ -94,6 +94,11 @@ describe('applyDecisionToPrepared', () => {
       result: denialResultFromDecision({ decision: 'deny', reason: 'policy' }),
     });
   });
+
+  it('a denial resumes the loop; an abort terminates the turn', () => {
+    expect(denialResultFromDecision({ decision: 'deny', reason: null }).terminate).toBe(false);
+    expect(denialResultFromDecision({ decision: 'aborted', reason: null }).terminate).toBe(true);
+  });
 });
 
 describe('handleAwaitingApproval', () => {
@@ -110,17 +115,20 @@ describe('handleAwaitingApproval', () => {
     );
 
     installMockTurnStore({
-      loadMessages: vi.fn(async () => []),
       appendMessages: vi.fn(async () => {}),
     });
-    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleAwaitingApproval(iii, rec);
 
     expect(rec.awaiting_approval).toEqual([]);
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
     expect(rec.work).toBeUndefined();
-    expect(rec.function_results).toHaveLength(1);
+    expect(rec.function_results).toEqual([]);
+    const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
+      | { function_results: unknown[] }
+      | undefined;
+    expect(turnEnd?.function_results).toHaveLength(1);
   });
 
   it('leaves state parked when awaiting entries remain undecided', async () => {

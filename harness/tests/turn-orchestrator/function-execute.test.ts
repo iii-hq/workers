@@ -39,6 +39,7 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
   return {
     emitStart: vi.fn(async () => {}),
     emitEnd: vi.fn(async () => {}),
+    emit: vi.fn(async () => {}),
     checkpoint: vi.fn(async () => {}),
     dispatch: vi.fn(async () => ({
       kind: 'result' as const,
@@ -48,7 +49,6 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
       content: [{ type: 'text' as const, text: 'ok' }],
       details: {},
     })),
-    loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
     emitTurnEnd: vi.fn(async () => {}),
     finishSession: vi.fn(async (rec) => {
@@ -61,7 +61,7 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
 function preparedFromAssistant(asst: AssistantMessage) {
   const rec = newRecord('s1');
   enterFunctionExecute(rec, asst);
-  return rec.work!.prepared;
+  return rec.work?.prepared;
 }
 
 describe('batch planning from assistant', () => {
@@ -176,27 +176,14 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    expect(rec.state).toBe('stopped');
-    expect(ports.finishSession).toHaveBeenCalledOnce();
+    expect(rec.state).toBe('finishing');
+    expect(ports.finishSession).not.toHaveBeenCalled();
   });
 
-  it('skips duplicate function_result ids on re-entry', async () => {
+  it('appends results in one idempotent batch (no transcript reload for dedup)', async () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const appendMessages = vi.fn(async () => {});
-    const ports = stubPorts({
-      loadMessages: vi.fn(async () => [
-        {
-          role: 'function_result' as const,
-          function_call_id: 'fc-1',
-          function_id: 'shell::run',
-          content: [{ type: 'text' as const, text: 'existing' }],
-          details: {},
-          is_error: false,
-          timestamp: 1,
-        },
-      ]),
-      appendMessages,
-    });
+    const ports = stubPorts({ appendMessages });
     const rec = newRecord('s1');
     enterFunctionExecute(rec, makeAssistant([fc]));
     rec.state = 'function_execute';
@@ -214,7 +201,70 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    expect(appendMessages).not.toHaveBeenCalled();
-    expect(rec.state).toBe('steering_check');
+    expect(appendMessages).toHaveBeenCalledTimes(1);
+    expect(appendMessages).toHaveBeenCalledWith(
+      's1',
+      [expect.objectContaining({ role: 'function_result', function_call_id: 'fc-1' })],
+      expect.objectContaining({ origin: { turn: rec.turn_count } }),
+    );
+    expect(rec.state).toBe('assistant_streaming');
+  });
+
+  it('resumes to assistant_streaming with cleared results when a result continues', async () => {
+    const ports = stubPorts();
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    const rec = newRecord('s1');
+    enterFunctionExecute(rec, makeAssistant([fc]));
+    rec.state = 'function_execute';
+    rec.work = {
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
+          result: { content: [{ type: 'text' as const, text: 'ok' }], details: {} },
+          is_error: false,
+          duration_ms: 1,
+        },
+      },
+    };
+
+    await finalizeBatch(ports, rec);
+
+    expect(rec.state).toBe('assistant_streaming');
+    expect(rec.function_results).toEqual([]);
+    expect(rec.turn_end_emitted).toBe(true);
+    expect(ports.finishSession).not.toHaveBeenCalled();
+  });
+
+  it('ends the loop inline at the max_turns cap instead of resuming', async () => {
+    const appendMessages = vi.fn(async () => {});
+    const emit = vi.fn(async () => {});
+    const ports = stubPorts({ appendMessages, emit });
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    const rec = { ...newRecord('s1', 2), turn_count: 2 };
+    enterFunctionExecute(rec, makeAssistant([fc]));
+    rec.state = 'function_execute';
+    rec.work = {
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
+          result: { content: [{ type: 'text' as const, text: 'ok' }], details: {} },
+          is_error: false,
+          duration_ms: 1,
+        },
+      },
+    };
+
+    await finalizeBatch(ports, rec);
+
+    expect(rec.state).toBe('finishing');
+    expect(ports.finishSession).not.toHaveBeenCalled();
+    expect(appendMessages).toHaveBeenCalledTimes(2);
+    const appended = appendMessages.mock.calls[1]?.[1] as Array<{ content: unknown[] }>;
+    expect(JSON.stringify(appended)).toContain('max_turns (2) reached');
+    expect(
+      emit.mock.calls.some((call) => (call[1] as { type: string })?.type === 'message_complete'),
+    ).toBe(true);
   });
 });

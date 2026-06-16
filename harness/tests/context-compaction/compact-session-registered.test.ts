@@ -1,266 +1,173 @@
 /**
- * End-to-end test for `context-compaction::compact_session` invoked via the
- * REGISTERED handler (not handleSync directly). Mirrors the UI `/compact`
- * slash-command path: provider/model in payload, session-tree mock that
- * returns a realistic transcript.
- *
- * The bug we're chasing: the UI reports `compacted — 0 tokens summarised
- * (continued)`. `(continued)` proves a replay happened, so summarize was
- * NOT in the 'empty' branch. So tokens_before should be > 0. This test
- * asserts that.
+ * `context-compaction::compact_session` — the thin `/compact` wrapper over the
+ * context-manager worker. Exercises the registered handler end to end:
+ * session-manager + context-manager are faked, and we assert the wrapper maps
+ * the `context::compact` union onto the console's `CompactResult` wire shape and
+ * persists the round trip as an additive compaction bookkeeping entry (the
+ * transcript is never rewritten).
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import { register } from '../../src/context-compaction/register.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
+import { FakeContextManager, FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 
-type Handler = (payload: unknown) => Promise<unknown>;
+type Handler = (payload: unknown) => Promise<unknown> | unknown;
 
-function userEntry(id: string, text: string): { entry_id: string; message: AgentMessage } {
-  return {
-    entry_id: id,
-    message: { role: 'user', content: [{ type: 'text', text }], timestamp: 0 },
-  };
-}
-
-function asstEntry(id: string, text: string): { entry_id: string; message: AgentMessage } {
-  return {
-    entry_id: id,
-    message: {
-      role: 'assistant',
-      content: [{ type: 'text', text }],
-      stop_reason: 'end',
-      error_message: null,
-      error_kind: null,
-      usage: null,
-      model: 'fake-model',
-      provider: 'anthropic',
-      timestamp: 0,
-    },
-  };
-}
-
-function buildSdk(opts: {
-  sessionEntries: Array<{ entry_id: string; message: AgentMessage }>;
-  summaryText?: string;
-}): {
+function buildIii(): {
   iii: ISdk;
   handlers: Map<string, Handler>;
-  stateStore: Map<string, unknown>;
+  sessions: FakeSessionManager;
+  context: FakeContextManager;
 } {
   const handlers = new Map<string, Handler>();
-  const stateStore = new Map<string, unknown>();
-
-  let channelCb: ((raw: string) => void) | null = null;
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
-  };
-
-  const trigger = vi.fn(async (req: { function_id: string; payload?: unknown }) => {
-    const fn = req.function_id;
-    const payload = req.payload;
-    const p = (payload ?? {}) as Record<string, unknown>;
-
-    if (fn === 'state::get') {
-      const v = stateStore.get(p.key as string);
-      return v !== undefined ? v : null;
-    }
-    if (fn === 'state::set') {
-      if (p.value === null || p.value === undefined) stateStore.delete(p.key as string);
-      else stateStore.set(p.key as string, p.value);
-      return { ok: true };
-    }
-    if (fn === 'state::update') {
-      const key = p.key as string;
-      const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
-      const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
-      let newValue: unknown = oldValue;
-      for (const op of ops) {
-        if (op.type === 'set') newValue = op.value;
-      }
-      if (newValue === null || newValue === undefined) stateStore.delete(key);
-      else stateStore.set(key, newValue);
-      return { old_value: oldValue ?? null, new_value: newValue ?? null };
-    }
-    if (fn === 'session-tree::messages') {
-      return { messages: opts.sessionEntries };
-    }
-    if (fn === 'session-tree::compactions') {
-      return { entries: [] };
-    }
-    if (fn === 'session-tree::compact') {
-      return { entry_id: `compaction-${Date.now()}` };
-    }
-    if (fn === 'session-tree::append') {
-      return { entry_id: `appended-${Date.now()}` };
-    }
-    if (fn === 'session-tree::append_synthetic') {
-      return { entry_id: `synthetic-${Date.now()}` };
-    }
-    if (fn === 'session-tree::update_parts') {
-      return { updated: 0 };
-    }
-    if (fn === 'models::get') {
-      return { context_window: 200_000, max_output_tokens: 4_096 };
-    }
-    if (fn.startsWith('provider::')) {
-      const summary = opts.summaryText ?? 'summary text here';
-      const event = JSON.stringify({
-        type: 'done',
-        message: {
-          role: 'assistant',
-          content: [{ type: 'text', text: summary }],
-          stop_reason: 'end',
-          model: 'fake-model',
-          provider: 'anthropic',
-          timestamp: Date.now(),
-        },
-      });
-      if (channelCb) channelCb(event);
-      return undefined;
-    }
-    return null;
-  });
-
-  const createChannel = vi.fn(async () => channel);
-  const registerFunction = vi.fn((id: string, h: Handler) => {
-    handlers.set(id, h);
-  });
-
+  const sessions = new FakeSessionManager();
+  const context = new FakeContextManager();
   const iii = {
-    trigger,
-    createChannel,
-    registerFunction,
+    trigger: vi.fn(async (req: { function_id: string; payload?: unknown }) => {
+      const s = await sessions.handle(req.function_id, req.payload);
+      if (s !== undefined) return s;
+      const c = await context.handle(req.function_id, req.payload);
+      if (c !== undefined) return c;
+      return null;
+    }),
+    registerFunction: vi.fn((id: string, h: Handler) => {
+      handlers.set(id, h);
+    }),
     registerTrigger: vi.fn(),
     publish: vi.fn(),
     subscribe: vi.fn(),
     enqueue: vi.fn(),
   } as unknown as ISdk;
+  return { iii, handlers, sessions, context };
+}
 
-  return { iii, handlers, stateStore };
+function seed(sessions: FakeSessionManager): string[] {
+  const msgs: AgentMessage[] = [
+    { role: 'user', content: [{ type: 'text', text: 'q1' }], timestamp: 1 },
+    {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'a1' }],
+      stop_reason: 'end',
+      model: 'm',
+      provider: 'p',
+      timestamp: 2,
+    },
+    { role: 'user', content: [{ type: 'text', text: 'q2' }], timestamp: 3 },
+  ];
+  return sessions.seedMessages('s1', msgs, ['u1', 'a1', 'u2']);
 }
 
 describe('context-compaction::compact_session via registered handler', () => {
-  it('returns ok with tokens_before > 0 and auto_continued=false for a multi-turn session', async () => {
-    // 2 user + 2 assistant turns. compact_session does NOT extract a
-    // replay target (the replay mechanism is for compact_now's overflow
-    // pre-flight only), so all 4 entries feed into selection. The summary
-    // covers turn 1, turn 2 stays as tail.
-    const entries = [
-      userEntry('e1', 'first question'),
-      asstEntry('e2', 'first answer'),
-      userEntry('e3', 'second question — the most recent user message'),
-      asstEntry('e4', 'second answer'),
-    ];
-
-    const { iii, handlers } = buildSdk({
-      sessionEntries: entries,
-      summaryText: 'summary covering turns 1-2',
+  it('maps context::compact ok onto CompactResult and persists the round trip', async () => {
+    const { iii, handlers, sessions, context } = buildIii();
+    seed(sessions);
+    context.compact = () => ({
+      status: 'ok',
+      summary: 'SUMMARY',
+      tail_start_index: 2,
+      tokens_before: 123,
+      tokens_after: 10,
+      used_prior_summary: false,
     });
 
     await register(iii);
-
     const handler = handlers.get('context-compaction::compact_session');
-    expect(handler).toBeDefined();
-
     const result = (await handler?.({
-      session_id: 'test-session',
-      model: { id: 'fake-model', providerID: 'anthropic' },
-    })) as {
-      status: string;
-      tokens_before?: number;
-      auto_continued?: boolean;
-      tail_start_id?: string | null;
-      summary_text?: string;
-    };
+      session_id: 's1',
+      model: { id: 'm', providerID: 'p' },
+    })) as Record<string, unknown>;
 
-    expect(result.status).toBe('ok');
-    // /compact is user-initiated; no in-flight turn to auto-continue.
-    expect(result.auto_continued).toBe(false);
-    expect(typeof result.tokens_before).toBe('number');
-    expect(result.tokens_before).toBeGreaterThan(0);
-    // Surface every field so we can spot wire-format weirdness.
+    // Console wire contract (unchanged): legacy `tail_start_id` key in the RPC.
+    expect(result).toMatchObject({
+      status: 'ok',
+      tokens_before: 123,
+      auto_continued: false,
+      summary_text: 'SUMMARY',
+      tail_start_id: 'u2',
+    });
     expect(Object.keys(result).sort()).toEqual(
       ['auto_continued', 'status', 'summary_text', 'tail_start_id', 'tokens_before'].sort(),
     );
-    // summary_text MUST be present and non-empty so the UI marker can ship
-    // it as the next-turn <conversation-summary> block.
-    expect(typeof result.summary_text).toBe('string');
-    expect((result.summary_text ?? '').length).toBeGreaterThan(0);
+
+    // Persisted as an additive compaction custom entry using the spec field name.
+    const appended = sessions
+      .callsTo('session::append')
+      .filter((p) => (p.custom as { custom_type?: string })?.custom_type === 'compaction');
+    expect(appended).toHaveLength(1);
+    const data = (appended[0]?.custom as { data: Record<string, unknown> }).data;
+    expect(data.tail_start_entry_id).toBe('u2');
+    expect(data.summary).toBe('SUMMARY');
+
+    // The transcript is untouched: the 3 seeded messages are all still present.
+    expect(sessions.messageEntries('s1')).toHaveLength(3);
   });
 
-  it('summarises a session with only one user message and nothing else', async () => {
-    // Before the fix this returned 'empty' because compact_session
-    // extracted u1 as the replay target, leaving truncatedMessages = [].
-    // After the fix the single user message is summarised normally.
-    const entries = [userEntry('only-user', 'just one message')];
-    const { iii, handlers } = buildSdk({
-      sessionEntries: entries,
-      summaryText: 'summary of the lone user message',
-    });
-    await register(iii);
-    const handler = handlers.get('context-compaction::compact_session');
-
-    const result = (await handler?.({
-      session_id: 'one-msg-session',
-      model: { id: 'fake-model', providerID: 'anthropic' },
-    })) as { status: string; tokens_before?: number; auto_continued?: boolean };
-
-    expect(result.status).toBe('ok');
-    expect(result.tokens_before).toBeGreaterThan(0);
-    expect(result.auto_continued).toBe(false);
-  });
-
-  it('summarises a single-user-turn session with many subsequent entries', async () => {
-    // Regression: a long-running task with one user message + lots of
-    // assistant/tool output ends up at ~30k+ tokens. Before the fix,
-    // compact_session always extracted the last user message via
-    // extractReplayTarget; with only one user message at idx=0,
-    // truncatedMessages was [] and summarize returned 'empty'. The user
-    // saw "compact: session is too small to summarise" despite a 30%
-    // full context window.
-    //
-    // After the fix, compact_session does NOT extract a replay target
-    // (that mechanism is for the compact_now overflow path), so the full
-    // entry list is summarised normally.
-    const longText = 'x'.repeat(8_000);
-    const entries = [
-      userEntry('u1', 'the only user question — start a long task'),
-      asstEntry('a1', `${longText} first assistant chunk`),
-      asstEntry('a2', `${longText} second assistant chunk`),
-      asstEntry('a3', `${longText} third assistant chunk`),
-      asstEntry('a4', `${longText} fourth assistant chunk`),
-    ];
-
-    const { iii, handlers } = buildSdk({
-      sessionEntries: entries,
-      summaryText: 'summary of the long task',
+  it('anchors on the latest stored summary as previous_summary', async () => {
+    const { iii, handlers, sessions, context } = buildIii();
+    seed(sessions);
+    sessions.seedCompaction('s1', { summary: 'PRIOR', tail_start_entry_id: 'u1' });
+    context.compact = () => ({
+      status: 'ok',
+      summary: 'NEW',
+      tail_start_index: null,
+      tokens_before: 5,
+      tokens_after: 5,
+      used_prior_summary: true,
     });
 
     await register(iii);
-    const handler = handlers.get('context-compaction::compact_session');
+    await handlers.get('context-compaction::compact_session')?.({
+      session_id: 's1',
+      model: { id: 'm', providerID: 'p' },
+    });
 
-    const result = (await handler?.({
-      session_id: 'one-turn-large-session',
-      model: { id: 'fake-model', providerID: 'anthropic' },
-    })) as {
-      status: string;
-      tokens_before?: number;
-      auto_continued?: boolean;
-      summary_text?: string;
-    };
+    expect(context.callsTo('context::compact')[0]?.options).toMatchObject({
+      lease_key: 's1',
+      previous_summary: 'PRIOR',
+    });
+  });
 
-    expect(result.status).toBe('ok');
-    expect(result.tokens_before).toBeGreaterThan(0);
-    // /compact (user-initiated) does NOT auto-continue. Replay is only
-    // appropriate for the orchestrator's overflow pre-flight.
-    expect(result.auto_continued).toBe(false);
+  it('maps busy / empty / overflow statuses', async () => {
+    for (const status of ['busy', 'empty'] as const) {
+      const { iii, handlers, context } = buildIii();
+      context.compact = () => ({ status });
+      await register(iii);
+      const r = await handlers.get('context-compaction::compact_session')?.({
+        session_id: 's1',
+        model: { id: 'm', providerID: 'p' },
+      });
+      expect(r).toEqual({ status });
+    }
+
+    const { iii, handlers, context } = buildIii();
+    context.compact = () => ({ status: 'overflow' });
+    await register(iii);
+    const r = (await handlers.get('context-compaction::compact_session')?.({
+      session_id: 's1',
+      model: { id: 'm', providerID: 'p' },
+    })) as Record<string, unknown>;
+    expect(r.status).toBe('overflow');
+    expect(typeof r.message).toBe('string');
+  });
+
+  it('returns an error result when no model is supplied', async () => {
+    const { iii, handlers } = buildIii();
+    await register(iii);
+    const r = (await handlers.get('context-compaction::compact_session')?.({
+      session_id: 's1',
+    })) as Record<string, unknown>;
+    expect(r.status).toBe('error');
+  });
+
+  it('throws when session_id is missing', async () => {
+    const { iii, handlers } = buildIii();
+    await register(iii);
+    await expect(
+      handlers.get('context-compaction::compact_session')?.({
+        model: { id: 'm', providerID: 'p' },
+      }),
+    ).rejects.toThrow('session_id is required');
   });
 });

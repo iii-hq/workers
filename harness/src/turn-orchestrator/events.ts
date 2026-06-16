@@ -1,7 +1,6 @@
 /**
  * Emit AgentEvent frames on `agent::events`, one per call with a per-session
- * monotonic sequence number. `turn_end` frames are additionally mirrored onto
- * the dedicated `agent::turn_end` stream (see TURN_END_STREAM).
+ * monotonic sequence number.
  *
  * The sequence number is kept IN-PROCESS (not persisted): the old per-event
  * `state::update` increment cost one engine state write — and thus one
@@ -21,12 +20,6 @@ import { logger } from '../runtime/otel.js';
 import type { AgentEvent } from '../types/agent-event.js';
 
 export const EVENTS_STREAM = 'agent::events';
-/**
- * Dedicated stream carrying only `turn_end` frames. Compaction subscribes here
- * instead of the full `agent::events` firehose so it wakes once per turn rather
- * than on every event (token updates, function lifecycle, …).
- */
-export const TURN_END_STREAM = 'agent::turn_end';
 
 /** Unique per process run; prefixes every item_id so a restart can't collide. */
 const PROCESS_EPOCH = uuidLike();
@@ -50,10 +43,6 @@ export function _resetSeqForTests(): void {
 
 function formatItemId(session_id: string, seq: number): string {
   return `${session_id}-${PROCESS_EPOCH}-${seq.toString().padStart(8, '0')}`;
-}
-
-function isTurnEnd(event: AgentEvent): boolean {
-  return (event as { type?: string }).type === 'turn_end';
 }
 
 async function setStream(
@@ -82,7 +71,4 @@ export async function emit(iii: ISdk, session_id: string, event: AgentEvent): Pr
   const seq = nextSeq(session_id);
   const item_id = formatItemId(session_id, seq);
   await setStream(iii, EVENTS_STREAM, session_id, item_id, event);
-  if (isTurnEnd(event)) {
-    await setStream(iii, TURN_END_STREAM, session_id, item_id, event);
-  }
 }

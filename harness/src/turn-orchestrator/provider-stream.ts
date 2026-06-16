@@ -1,21 +1,26 @@
 /**
- * Provider streaming. Turns an iii stream channel plus the provider trigger into
- * a single final `AssistantMessage`, hiding the pull-based message pump behind an
- * async iterator.
+ * Streaming pump for `router::chat`. Turns an iii stream channel plus the
+ * router trigger into a single final `AssistantMessage`, hiding the
+ * pull-based message pump behind an async iterator.
  *
- * `streamProviderTurn` owns channel creation, the concurrent provider trigger,
- * and the read loop. The caller supplies how to build the provider input (it
- * needs the channel's writer ref) and a per-delta callback used to emit UI
+ * `streamProviderTurn` owns channel creation, the concurrent trigger, and the
+ * read loop. The caller supplies how to build the request payload (it needs
+ * the channel's writer ref) and a per-delta callback used to emit UI
  * `message_update` events.
  */
 
 import type { ISdk, StreamChannelRef } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AssistantMessage } from '../types/agent-message.js';
-import type { ProviderStreamInput } from '../types/provider.js';
 import type { AssistantMessageEvent } from '../types/stream-event.js';
 
-const PROVIDER_STREAM_TIMEOUT_MS = 300_000;
+/**
+ * Outer trigger budget. Must exceed the router's own 300s stream budget so
+ * the router (which owns retries and terminal-frame synthesis) always
+ * finishes first — a shorter outer timeout would kill the bus call while the
+ * router still owns the stream.
+ */
+const PROVIDER_STREAM_TIMEOUT_MS = 320_000;
 
 type Channel = Awaited<ReturnType<ISdk['createChannel']>>;
 
@@ -99,7 +104,7 @@ export async function streamProviderTurn(
   params: {
     session_id: string;
     targetFn: string;
-    buildInput: (writerRef: StreamChannelRef) => ProviderStreamInput;
+    buildInput: (writerRef: StreamChannelRef) => unknown;
     onDelta: (partial: AssistantMessage, event: AssistantMessageEvent) => Promise<void>;
   },
 ): Promise<ProviderTurnResult> {

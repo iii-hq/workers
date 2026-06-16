@@ -16,20 +16,22 @@ import type { ChatBackend } from '@/lib/backend'
 import type { CompactResult } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import { makeSessionId } from '@/lib/session-id'
+import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
-import type {
-  AssistantMessage,
-  Conversation,
-  FunctionCallMessage,
-  Message,
-  MessagePatch,
-  Mode,
-  ModelId,
-  ModelOption,
-  SystemMessage,
-  ThoughtMessage,
-  UserMessage,
+import {
+  type AssistantMessage,
+  type Conversation,
+  DEFAULT_THINKING_LEVEL,
+  type FunctionCallMessage,
+  type Message,
+  type MessagePatch,
+  type Mode,
+  type ModelId,
+  type ModelOption,
+  type SystemMessage,
+  type ThinkingLevel,
+  type ThoughtMessage,
+  type UserMessage,
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
@@ -99,6 +101,9 @@ export function ChatView({
   onCompactConversation,
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
+    DEFAULT_THINKING_LEVEL,
+  )
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
@@ -109,11 +114,22 @@ export function ChatView({
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
 
-  // Matches iii.session.id on every span so the traces UI can group by it.
-  const sessionId = useMemo(
-    () => makeSessionId(conversation.id),
-    [conversation.id],
-  )
+  // Live view of the transcript for the long-running stream loop: the
+  // session-events reconciler (use-conversations) may add/replace rows while
+  // a turn is in flight, and dedupe-by-functionCallId must see them.
+  const messagesRef = useRef(conversation.messages)
+  messagesRef.current = conversation.messages
+
+  // Driver-owned session status from session-manager (status-changed events);
+  // covers reloads and turns observed from another tab. Local isStreaming
+  // covers the gap before the first status event lands.
+  const serverWorking = conversation.status === 'working'
+  const streamingIndicator = isStreaming || serverWorking
+
+  // The conversation id IS the engine session_id (console-<uuid> for chats
+  // created here). Matches iii.session.id on every span so the traces UI can
+  // group by it.
+  const sessionId = conversation.id
 
   const contextWindow = useMemo(() => {
     const match = modelOptions.find((o) => o.id === conversation.model)
@@ -151,10 +167,6 @@ export function ChatView({
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
-    // "Approve always" is a per-session grant honored in every mode, so the
-    // button shows on every prompt (full mode never produces prompts, so
-    // it's moot there). Approves this call and stops asking for the same
-    // function for the rest of the conversation.
     return async (sId: string, functionCallId: string, functionId: string) => {
       await approvalSettings.approveAlways(functionId)
       await resolveFn(sId, functionCallId, 'allow')
@@ -170,6 +182,8 @@ export function ChatView({
     })
   }, [sessionId])
 
+  const ensureSession = conversationsCtx?.ensureSession
+
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (harnessBlockedRef.current) return
@@ -183,8 +197,29 @@ export function ChatView({
         return
       }
 
+      // Materialise draft conversations in session-manager before the first
+      // write (no-op for existing sessions and mock backends).
+      if (backend.id === 'real' && ensureSession) {
+        try {
+          await ensureSession(conversationId, payload.text)
+        } catch (err) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not create the session — ${err instanceof Error ? err.message : String(err)}`,
+              'error',
+            ),
+          )
+          return
+        }
+      }
+
+      // The harness appends the user message with the deterministic entry id
+      // `<messageId>-user-0`; using the same id here lets the
+      // session::message-added snapshot reconcile this optimistic row in place.
+      const messageId = newMessageId()
       const userMsg: UserMessage = {
-        id: uid(),
+        id: `${messageId}-user-0`,
         role: 'user',
         content: payload.text,
         attachments:
@@ -220,7 +255,15 @@ export function ChatView({
             model,
             contextWindow,
           )
-          if (result.status === 'ok') {
+          if (result.status === 'ok' && backend.id === 'real') {
+            // Server-backed transcript: the compaction custom entry arrives
+            // via session::message-added and renders the marker (which the
+            // CTX estimator anchors on); just resolve the pending notice.
+            onPatchMessage(conversationId, pendingId, {
+              content: formatCompactResult(result),
+              tone: 'info',
+            })
+          } else if (result.status === 'ok') {
             const marker: SystemMessage = {
               id: uid(),
               role: 'system',
@@ -233,7 +276,6 @@ export function ChatView({
             }
             onCompactConversation(conversationId, marker)
           } else {
-            // empty | busy | overflow | error: nothing rewritten server-side.
             onPatchMessage(conversationId, pendingId, {
               content: formatCompactResult(result),
               tone: compactResultTone(result),
@@ -266,7 +308,7 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           model,
-          { signal: controller.signal, sessionId },
+          { signal: controller.signal, sessionId, messageId, thinkingLevel },
         )) {
           switch (event.kind) {
             case 'thought-start': {
@@ -301,9 +343,18 @@ export function ChatView({
             }
             case 'fcall-start': {
               if (event.functionCallId) {
-                const existing = [...fcallMap.entries()].find(
-                  ([, fcid]) => fcid === event.functionCallId,
-                )?.[0]
+                // Dedupe against rows created earlier in this stream AND
+                // rows the session-events reconciler derived from the
+                // assistant entry's function_call blocks.
+                const existing =
+                  [...fcallMap.entries()].find(
+                    ([, fcid]) => fcid === event.functionCallId,
+                  )?.[0] ??
+                  messagesRef.current.find(
+                    (m) =>
+                      m.role === 'function-call' &&
+                      m.functionCallId === event.functionCallId,
+                  )?.id
                 if (existing) {
                   onPatchMessage(conversationId, existing, {
                     pendingApproval: event.pendingApproval,
@@ -340,15 +391,45 @@ export function ChatView({
               break
             }
             case 'fcall-end': {
-              if (!fcallId) break
-              onPatchMessage(conversationId, fcallId, {
+              // Prefer targeting by functionCallId (parallel batches end out
+              // of order; the row may also be an entry-derived segment).
+              const targetId: string | null = event.functionCallId
+                ? ([...fcallMap.entries()].find(
+                    ([, fcid]) => fcid === event.functionCallId,
+                  )?.[0] ??
+                  messagesRef.current.find(
+                    (m) =>
+                      m.role === 'function-call' &&
+                      m.functionCallId === event.functionCallId,
+                  )?.id ??
+                  null)
+                : fcallId
+              if (!targetId) break
+              onPatchMessage(conversationId, targetId, {
                 output: event.output,
                 durationMs: event.durationMs,
                 running: false,
                 pendingApproval: false,
               })
-              fcallMap.delete(fcallId)
-              fcallId = null
+              fcallMap.delete(targetId)
+              if (targetId === fcallId) fcallId = null
+              break
+            }
+            case 'fcall-approval-cleared': {
+              const clearedId =
+                [...fcallMap.entries()].find(
+                  ([, fcid]) => fcid === event.functionCallId,
+                )?.[0] ??
+                messagesRef.current.find(
+                  (m) =>
+                    m.role === 'function-call' &&
+                    m.functionCallId === event.functionCallId,
+                )?.id
+              if (clearedId) {
+                onPatchMessage(conversationId, clearedId, {
+                  pendingApproval: false,
+                })
+              }
               break
             }
             case 'assistant-token': {
@@ -384,12 +465,6 @@ export function ChatView({
               break
             }
             case 'compaction': {
-              // Server-side context-compaction finished rewriting the
-              // session's flat-state. Append a marker so:
-              //   1. The user sees that compaction happened.
-              //   2. estimateConversationTokens stops counting pre-marker
-              //      messages → the CTX bar drops to the real value.
-              // We append (not replace) so the transcript stays scrollable.
               const compactionContent =
                 event.mode === 'sync'
                   ? `compacted ${event.tokensBefore.toLocaleString()} tokens before continuing`
@@ -409,10 +484,6 @@ export function ChatView({
               break
             }
             case 'stop-reason': {
-              // The assistant turn ended abnormally — show the user why
-              // instead of leaving the response looking like it just
-              // ran out of words. Pre-fix this event didn't exist and
-              // the same condition produced a silently truncated reply.
               const noticeContent = formatStopReason(
                 event.reason,
                 event.message,
@@ -443,7 +514,6 @@ export function ChatView({
           }
         }
       } catch (err) {
-        // Backends signal semantic failures via fcall-end; thrown = abort or bug.
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
         }
@@ -465,10 +535,12 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      thinkingLevel,
       sessionId,
       contextWindow,
       backend,
       announcer,
+      ensureSession,
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
@@ -477,12 +549,13 @@ export function ChatView({
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort()
-  }, [])
+    void backend.abortRun?.(sessionId).catch(() => {})
+  }, [backend, sessionId])
 
-  // Covers the gap between submit / fcall-end and the next streamed token,
+  // Covers the gap between submit / fcall-end and the next streamed content,
   // where the assistant/thought shimmer hasn't yet rendered.
   const isThinking =
-    isStreaming &&
+    streamingIndicator &&
     (() => {
       const last =
         conversation.messages[conversation.messages.length - 1] ?? null
@@ -561,11 +634,28 @@ export function ChatView({
           />
           <div className="flex items-center gap-2">
             <StatusDot
-              tone={isStreaming ? 'accent' : 'ink'}
-              pulse={isStreaming}
+              tone={
+                conversation.status === 'error'
+                  ? 'alert'
+                  : streamingIndicator
+                    ? 'accent'
+                    : 'ink'
+              }
+              pulse={streamingIndicator}
             />
-            <span className="text-ink-faint">
-              {isStreaming ? 'streaming' : 'ready'}
+            <span
+              className="text-ink-faint"
+              title={
+                conversation.status === 'error'
+                  ? conversation.statusReason
+                  : undefined
+              }
+            >
+              {streamingIndicator
+                ? 'working'
+                : conversation.status === 'error'
+                  ? 'error'
+                  : 'ready'}
             </span>
           </div>
         </div>
@@ -596,6 +686,8 @@ export function ChatView({
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}
+            thinkingLevel={thinkingLevel}
+            onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             onPermissionModeChange={(next) =>
@@ -603,7 +695,7 @@ export function ChatView({
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
-            isStreaming={isStreaming}
+            isStreaming={streamingIndicator}
             blocked={harnessBlocked}
             blockedPlaceholder={
               conversationsCtx

@@ -1,18 +1,26 @@
+# Release SOP: docs/sops/release.md
 name: Release
 
 on:
   push:
     tags:
       - 'acp/v*'
+      - 'claude-code/v*'
       - 'coder/v*'
+      - 'codex/v*'
       - 'console/v*'
+      - 'context-manager/v*'
       - 'database/v*'
       - 'email/v*'
       - 'harness/v*'
       - 'iii-directory/v*'
       - 'lsp/v*'
       - 'image-resize/v*'
+      - 'llm-router/v*'
       - 'mcp/v*'
+      - 'provider-anthropic/v*'
+      - 'provider-openai/v*'
+      - 'session-manager/v*'
       - 'shell/v*'
       - 'storage/v*'
   workflow_dispatch:

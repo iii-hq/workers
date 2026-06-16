@@ -18,12 +18,8 @@ export const STATIC_FUNCTIONS: FunctionEntry[] = [
     description: 'compact a session now',
   },
   {
-    id: 'context-compaction::prune_tool_outputs',
-    description: 'prune old tool outputs',
-  },
-  {
-    id: 'session-tree::compactions',
-    description: 'list compaction history for a session',
+    id: 'session::messages',
+    description: 'read a session transcript',
   },
 ]
 

@@ -5,6 +5,6 @@ import { register } from './register.js';
 await bootstrapWorker({
   name: 'turn-orchestrator',
   description:
-    'Durable run::start state machine driving each agent turn through provisioning, assistant, function-execute, and steering.',
+    'Durable run::start state machine driving each agent turn through provisioning, assistant, and function-execute.',
   register: (iii, ctx) => register(iii, ctx),
 });

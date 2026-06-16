@@ -103,8 +103,24 @@ pub fn last_err(world: &CoderWorld) -> String {
 /// Locate a batch result entry by `path` in `results[]`. Returns `None`
 /// when missing. Shared by create-file / update-file / delete-file
 /// assertions.
+///
+/// Result `path`s are canonical-absolute when the input resolved inside
+/// the jail and verbatim otherwise; features speak base-relative, so
+/// accept either the verbatim form or the path anchored at the
+/// scenario's (canonical) base.
 pub fn batch_result<'a>(world: &'a CoderWorld, path: &str) -> Option<&'a Value> {
+    let abs = world.base_path.as_ref().map(|b| b.join(path));
     let v = world.stash.get(LAST_OK)?;
     let arr = v.get("results")?.as_array()?;
-    arr.iter().find(|e| e["path"].as_str() == Some(path))
+    arr.iter().find(|e| {
+        let Some(got) = e["path"].as_str() else {
+            return false;
+        };
+        // Component-wise Path comparison so "." anchors to the base
+        // itself rather than the literal "<base>/." string.
+        got == path
+            || abs
+                .as_deref()
+                .is_some_and(|a| std::path::Path::new(got) == a)
+    })
 }

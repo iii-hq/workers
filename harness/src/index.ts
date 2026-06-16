@@ -15,12 +15,6 @@ import { register as registerContextCompaction } from './context-compaction/regi
 import { register as registerHarness } from './harness/register.js';
 import { register as registerHookFanout } from './hook-fanout/register.js';
 import { register as registerLlmBudget } from './llm-budget/register.js';
-import { register as registerModelsCatalog } from './models-catalog/register.js';
-import { register as registerProviderAnthropic } from './provider-anthropic/register.js';
-import { register as registerProviderKimi } from './provider-kimi/register.js';
-import { register as registerProviderLlamacpp } from './provider-llamacpp/register.js';
-import { register as registerProviderLmstudio } from './provider-lmstudio/register.js';
-import { register as registerProviderOpenai } from './provider-openai/register.js';
 import { logger } from './runtime/otel.js';
 import {
   DEFAULT_CONFIG_PATH,
@@ -30,7 +24,6 @@ import {
   runWorker,
   waitForShutdown,
 } from './runtime/worker.js';
-import { register as registerSession } from './session/register.js';
 import { register as registerTurnOrchestrator } from './turn-orchestrator/register.js';
 import { register as registerWeb } from './web/register.js';
 
@@ -44,7 +37,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'turn-orchestrator',
     description:
-      'Durable run::start state machine driving each agent turn through provisioning, assistant, function-execute, and steering.',
+      'Durable run::start state machine driving each agent turn through provisioning, assistant, and function-execute.',
     register: (iii, ctx) => registerTurnOrchestrator(iii, ctx),
   },
   {
@@ -58,50 +51,10 @@ const WORKERS: readonly WorkerDefinition[] = [
     },
   },
   {
-    name: 'session',
-    description: 'Session storage (parent-id tree under session-tree::*) backed by iii state.',
-    register: (iii, ctx) => registerSession(iii, ctx),
-  },
-  {
     name: 'hook-fanout',
     description:
       'Generic publish-collect primitive: publishes a topic via iii::durable::publish, collects subscriber replies on agent::hook_reply, applies a merge rule, returns the merged result.',
     register: (iii, ctx) => registerHookFanout(iii, ctx),
-  },
-  {
-    name: 'models-catalog',
-    description: 'Model capabilities catalog on the iii bus (models::list/get/supports/register).',
-    register: async (iii) => registerModelsCatalog(iii),
-  },
-  {
-    name: 'provider-anthropic',
-    description:
-      'Anthropic Messages API streaming provider on the iii bus (provider::anthropic::stream + ::complete).',
-    register: (iii, ctx) => registerProviderAnthropic(iii, ctx),
-  },
-  {
-    name: 'provider-openai',
-    description:
-      'OpenAI Chat Completions streaming provider on the iii bus (provider::openai::stream + ::complete).',
-    register: (iii, ctx) => registerProviderOpenai(iii, ctx),
-  },
-  {
-    name: 'provider-kimi',
-    description:
-      'Kimi (Moonshot) Chat Completions streaming provider on the iii bus (provider::kimi::stream + ::complete).',
-    register: (iii, ctx) => registerProviderKimi(iii, ctx),
-  },
-  {
-    name: 'provider-lmstudio',
-    description:
-      'LM Studio (localhost) Chat Completions streaming provider on the iii bus (provider::lmstudio::stream + ::complete).',
-    register: (iii, ctx) => registerProviderLmstudio(iii, ctx),
-  },
-  {
-    name: 'provider-llamacpp',
-    description:
-      'llama.cpp llama-server (localhost) Chat Completions streaming provider on the iii bus (provider::llamacpp::stream + ::complete).',
-    register: (iii, ctx) => registerProviderLlamacpp(iii, ctx),
   },
   {
     name: 'llm-budget',
@@ -111,7 +64,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'context-compaction',
     description:
-      'Out-of-band session-history compactor. Subscribes to agent::events::TurnEnd and writes a session-tree Compaction entry when the running token count crosses the configured threshold.',
+      'Thin user-initiated /compact wrapper (context-compaction::compact_session) over the context-manager worker; persists the compaction round trip as a session bookkeeping entry. The transcript is never modified.',
     register: (iii) => registerContextCompaction(iii),
   },
   {

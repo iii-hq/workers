@@ -2,14 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
-import * as preflightModule from '../../src/turn-orchestrator/preflight.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
+import { handleFinishing } from '../../src/turn-orchestrator/finishing.js';
 import { handleStreaming } from '../../src/turn-orchestrator/assistant-streaming/process.js';
 
 type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
 
-function fakeIii(overrides?: Partial<ISdk>): { iii: ISdk; calls: TriggerCall[] } {
+function fakeIii(overrides?: Partial<ISdk>): {
+  iii: ISdk;
+  calls: TriggerCall[];
+  sessions: FakeSessionManager;
+} {
   const calls: TriggerCall[] = [];
+  const sessions = new FakeSessionManager();
   const iii = {
     trigger: async <T, R>(req: {
       function_id: string;
@@ -21,11 +27,13 @@ function fakeIii(overrides?: Partial<ISdk>): { iii: ISdk; calls: TriggerCall[] }
         payload: req.payload,
         timeoutMs: req.timeoutMs,
       });
+      const handled = await sessions.handle(req.function_id, req.payload);
+      if (handled !== undefined) return handled as R;
       return null as R;
     },
     ...overrides,
   } as unknown as ISdk;
-  return { iii, calls };
+  return { iii, calls, sessions };
 }
 
 function assistant(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
@@ -44,7 +52,11 @@ function assistant(overrides: Partial<AssistantMessage> = {}): AssistantMessage 
 }
 
 /** Build a fake iii whose createChannel delivers a single done event synchronously on stream.resume(). */
-function fakeIiiWithDone(finalMsg: AssistantMessage): { iii: ISdk; calls: TriggerCall[] } {
+function fakeIiiWithDone(finalMsg: AssistantMessage): {
+  iii: ISdk;
+  calls: TriggerCall[];
+  sessions: FakeSessionManager;
+} {
   return fakeIii({
     createChannel: async () => {
       let deliver: ((msg: string) => void) | null = null;
@@ -78,7 +90,6 @@ function mockStreamingStore(overrides: Parameters<typeof installMockTurnStore>[0
       system_prompt: '',
       function_schemas: [],
     })),
-    loadMessages: vi.fn(async () => []),
     ...overrides,
   });
 }
@@ -92,15 +103,12 @@ describe('handleStreaming turn start', () => {
       },
     });
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
     expect(rec.turn_count).toBe(1);
-    // createChannel failure → synthetic error → finalizeAssistant sets turn_end_emitted = true
     expect(rec.turn_end_emitted).toBe(true);
     expect(calls.some((c) => c.function_id === 'approval::consume')).toBe(false);
-    // stream::set is called by emit(message_complete) and emit(turn_end) in the error path
     expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
   });
 });
@@ -114,11 +122,10 @@ describe('handleStreaming', () => {
       },
     });
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.last_assistant?.stop_reason).toBe('error');
     expect(rec.last_assistant?.error_message).toContain('create_channel failed');
   });
@@ -135,40 +142,41 @@ describe('handleStreaming', () => {
       ],
     });
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
-    const { iii, calls } = fakeIiiWithDone(finalMsg);
+    const { iii, calls, sessions } = fakeIiiWithDone(finalMsg);
 
-    const store = mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
-    const appendSpy = store.appendMessages;
+    mockStreamingStore();
 
     await handleStreaming(iii, rec);
 
-    // emitted message_complete via stream::set trigger
     expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
-    // assistant persisted
-    expect(appendSpy).toHaveBeenCalledOnce();
-    // routed to function_execute (NOT assistant_finished)
+    const asstEntries = sessions.messageEntries('s1');
+    expect(asstEntries).toHaveLength(1);
+    expect(asstEntries[0]?.message).toMatchObject({
+      role: 'assistant',
+      content: finalMsg.content,
+    });
+    expect(asstEntries[0]?.revision).toBeGreaterThanOrEqual(1);
     expect(rec.state).toBe('function_execute');
     expect(rec.last_assistant).toEqual(finalMsg);
     expect(rec.function_results).toEqual([]);
     expect(rec.work?.prepared).toHaveLength(1);
   });
 
-  it('routes to steering_check when the assistant made no calls', async () => {
+  it('ends the turn inline when the assistant made no calls', async () => {
     const finalMsg = assistant({ content: [{ type: 'text', text: 'done reply' }] });
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const { iii } = fakeIiiWithDone(finalMsg);
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('finishing');
+    expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant).toEqual(finalMsg);
   });
 
-  it('captures provider done frame and routes correctly (text-only → steering_check)', async () => {
+  it('captures provider done frame and routes correctly (text-only → end of turn)', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const finalMsg = assistant({ content: [{ type: 'text', text: 'done reply' }] });
     let deliver: ((msg: string) => void) | null = null;
@@ -195,28 +203,31 @@ describe('handleStreaming', () => {
     });
 
     mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('finishing');
     expect(rec.last_assistant).toEqual(finalMsg);
   });
 
-  it('stops on an error assistant without persisting transcript', async () => {
+  it('stops on an error assistant, keeping the error content on the session entry', async () => {
     const finalMsg = assistant({ stop_reason: 'error', error_message: 'auth failed' });
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
-    const { iii } = fakeIiiWithDone(finalMsg);
+    const { iii, sessions } = fakeIiiWithDone(finalMsg);
 
-    const store = mockStreamingStore();
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
-    const appendSpy = store.appendMessages;
+    mockStreamingStore();
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
-    expect(appendSpy).not.toHaveBeenCalled();
+    const entries = sessions.messageEntries('s1');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.message?.content).toEqual(finalMsg.content);
+
+    await handleFinishing(iii, rec);
+    expect(sessions.session('s1').status).toBe('error');
+    expect(sessions.session('s1').status_reason).toBe('auth failed');
   });
 
   it('does NOT duplicate the assistant message on re-entry', async () => {
@@ -230,25 +241,21 @@ describe('handleStreaming', () => {
         },
       ],
     });
-    // Simulate re-entry: messages already contain the assistant message
-    let storedMessages: unknown[] = [finalMsg];
-
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
-    const { iii } = fakeIiiWithDone(finalMsg);
+    const { iii, sessions } = fakeIiiWithDone(finalMsg);
 
-    mockStreamingStore({
-      loadMessages: vi.fn(async () => storedMessages as never),
-      appendMessages: vi.fn(async (_sid, msgs) => {
-        storedMessages = [...storedMessages, ...msgs];
-      }),
-    });
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
+    mockStreamingStore();
 
     await handleStreaming(iii, rec);
+    expect(sessions.messageEntries('s1')).toHaveLength(1);
 
-    const asstMsgs = (storedMessages as Array<{ role?: string }>).filter(
-      (m) => m.role === 'assistant',
-    );
+    // Re-entry: the persisted record had not advanced past assistant_streaming
+    // (crash before checkpoint) — same turn re-runs with the same entry id.
+    rec.state = 'assistant_streaming';
+    rec.turn_count = 0;
+    await handleStreaming(iii, rec);
+
+    const asstMsgs = sessions.messageEntries('s1').filter((e) => e.message?.role === 'assistant');
     expect(asstMsgs).toHaveLength(1);
   });
 });

@@ -3,7 +3,17 @@ import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
 import { CreateFilePreview, CreateFileView } from './CreateFileView'
 import { DeleteFilePreview, DeleteFileView } from './DeleteFileView'
-import { isCoderMutateFunction, unwrapEnvelope } from './parsers'
+import { InfoView } from './InfoView'
+import { ListFolderView } from './ListFolderView'
+import { MovePreview, MoveView } from './MoveView'
+import {
+  isCoderFunction,
+  isCoderMutateFunction,
+  unwrapEnvelope,
+} from './parsers'
+import { ReadFileView } from './ReadFileView'
+import { SearchView } from './SearchView'
+import { TreeView } from './TreeView'
 import { UpdateFilePreview, UpdateFileView } from './UpdateFileView'
 
 export function CoderFunctionIdLabel({ functionId }: { functionId: string }) {
@@ -20,7 +30,7 @@ export function CoderFunctionIdLabel({ functionId }: { functionId: string }) {
 }
 
 function tryRender(message: FunctionCallMessage): React.ReactNode | null {
-  if (!isCoderMutateFunction(message.functionId)) return null
+  if (!isCoderFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
   const input = unwrapEnvelope(message.input)
@@ -41,11 +51,26 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
       return <UpdateFileView input={input} output={output} running={running} />
     case 'coder::delete-file':
       return <DeleteFileView input={input} output={output} running={running} />
+    case 'coder::move':
+      return <MoveView input={input} output={output} running={running} />
+    case 'coder::read-file':
+      return <ReadFileView input={input} output={output} running={running} />
+    case 'coder::search':
+      return <SearchView input={input} output={output} running={running} />
+    case 'coder::tree':
+      return <TreeView input={input} output={output} running={running} />
+    case 'coder::list-folder':
+      return <ListFolderView input={input} output={output} running={running} />
+    case 'coder::info':
+      return <InfoView input={input} output={output} running={running} />
     default:
       return null
   }
 }
 
+/** Only the mutators (create/update/delete/move) gate on approval — the
+ *  read-side functions never reach the pending state, so they have no
+ *  Preview components to dispatch to. */
 function tryRenderPreview(
   message: FunctionCallMessage,
 ): React.ReactNode | null {
@@ -58,12 +83,15 @@ function tryRenderPreview(
       return <UpdateFilePreview input={input} />
     case 'coder::delete-file':
       return <DeleteFilePreview input={input} />
+    case 'coder::move':
+      return <MovePreview input={input} />
     default:
       return null
   }
 }
 
 export const CoderToolView = {
+  isCoderFunction,
   isCoderMutateFunction,
   tryRender,
   tryRenderRunning: tryRender,

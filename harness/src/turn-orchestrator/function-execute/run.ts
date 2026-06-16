@@ -2,7 +2,6 @@
  * Plan, execute, and finalize function call batches.
  */
 
-import { logger } from '../../runtime/otel.js';
 import type { AssistantMessage, FunctionResultMessage } from '../../types/agent-message.js';
 import type { FunctionCallContent } from '../../types/content.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
@@ -12,10 +11,14 @@ import {
   missingFunctionResult,
   unwrapAgentTrigger,
 } from '../agent-trigger.js';
-import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
-import { persistedTrailingResultIds } from '../state-runtime/transcript.js';
 import {
-  transitionTo,
+  emitTurnEndOnce,
+  endTurnForMaxTurns,
+  maxTurnsReached,
+  resumeToAssistantStreaming,
+  transitionToFinishing,
+} from '../state-runtime/turn-end.js';
+import {
   type AwaitingApprovalEntry,
   type FunctionBatchTurnRecord,
   type TurnStateRecord,
@@ -187,7 +190,13 @@ function toFunctionResultMessage(
 
 /** Collect executed entries in batch order (caller must only invoke when batch is complete). */
 function executedInBatchOrder(work: FunctionBatchWork): ExecutedCall[] {
-  return work.prepared.map((item) => work.executed[preparedCallId(item)]!);
+  return work.prepared.map((item) => {
+    const entry = work.executed[preparedCallId(item)];
+    if (!entry) {
+      throw new Error(`missing executed entry for call ${preparedCallId(item)}`);
+    }
+    return entry;
+  });
 }
 
 export async function finalizeBatch(
@@ -205,18 +214,14 @@ export async function finalizeBatch(
     function_results.push(toFunctionResultMessage(entry, result));
   }
 
-  const messages = await ports.loadMessages(rec.session_id);
-  const alreadyPersisted = persistedTrailingResultIds(messages);
-  const fresh = function_results.filter((r) => !alreadyPersisted.has(r.function_call_id));
-  if (fresh.length < function_results.length) {
-    logger.warn('finalizeBatch: skipped duplicate function_results (re-entry detected)', {
-      session_id: rec.session_id,
-      total: function_results.length,
-      skipped: function_results.length - fresh.length,
+  // Re-entry safety comes from the deterministic `fr-<function_call_id>`
+  // entry ids: session::append is idempotent on entry_id, so a replayed batch
+  // re-appends as a no-op (no duplicate rows, no duplicate events) — no
+  // transcript reload or trailing-id scan needed.
+  if (function_results.length > 0) {
+    await ports.appendMessages(rec.session_id, function_results, {
+      origin: { turn: rec.turn_count },
     });
-  }
-  if (fresh.length > 0) {
-    await ports.appendMessages(rec.session_id, fresh);
   }
 
   rec.function_results = function_results;
@@ -224,9 +229,11 @@ export async function finalizeBatch(
   await emitTurnEndOnce(ports, rec, lastAssistant, function_results);
 
   if (allTerminate) {
-    await ports.finishSession(rec);
+    transitionToFinishing(rec);
+  } else if (maxTurnsReached(rec)) {
+    await endTurnForMaxTurns(ports, rec);
   } else {
-    transitionTo(rec, 'steering_check');
+    resumeToAssistantStreaming(rec);
   }
 
   (rec as TurnStateRecord).work = undefined;

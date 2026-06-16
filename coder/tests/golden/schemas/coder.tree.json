@@ -1,0 +1,164 @@
+{
+  "description": "Recursive directory snapshot bounded by `max_depth` and a `per_folder_limit`. Slim wire shape: nodes carry only `name` — the root node's path IS the response's top-level `path`; derive any child's path as parent path + '/' + name. Folders that hit the limit are flagged `truncated` and the caller is pointed at coder::list-folder for pagination. Noise directories matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) appear as childless `truncated` stubs; pass use_default_excludes: false to descend into them. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::tree",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "max_depth": 3,
+        "path": "."
+      }
+    ],
+    "properties": {
+      "max_depth": {
+        "default": null,
+        "description": "Maximum depth to descend; the root node is depth 0.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": ".",
+        "description": "Base folder for the snapshot. Relative to the primary allowed root, or an absolute path inside any allowed root. Defaults to `.` (the primary root itself). Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "type": "string"
+      },
+      "per_folder_limit": {
+        "default": null,
+        "description": "Maximum children listed per folder. When more exist, the folder is flagged `truncated` and callers should switch to `coder::list-folder`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "use_default_excludes": {
+        "default": true,
+        "description": "Apply the worker's `default_exclude_globs` config (noise folders like .git/node_modules/target — call `coder::info` for the active list). Excluded directories still appear as childless nodes flagged `truncated` with reason \"default_exclude\"; excluded files are omitted. Pass `false` to list everything.",
+        "type": "boolean"
+      }
+    },
+    "title": "TreeInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "NodeKind": {
+        "enum": [
+          "file",
+          "dir",
+          "symlink",
+          "other"
+        ],
+        "type": "string"
+      },
+      "TreeNode": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/definitions/TreeNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/definitions/NodeKind"
+          },
+          "mtime": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "description": "Entry basename. The ROOT node's path is the response's top-level `path` itself; every other node's path derives by joining from there: child path = parent path + \"/\" + name.",
+            "type": "string"
+          },
+          "non_accessible": {
+            "type": "boolean"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TruncationInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set on directories whose `children` was capped at `per_folder_limit`, whose subtree was cut off by `max_depth`, or which matched `default_exclude_globs` (reason \"default_exclude\")."
+          }
+        },
+        "required": [
+          "kind",
+          "mtime",
+          "name",
+          "non_accessible",
+          "size"
+        ],
+        "type": "object"
+      },
+      "TruncationInfo": {
+        "properties": {
+          "hint": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "Reason this folder was truncated: hit `per_folder_limit`, cut off by `max_depth`, or matched `default_exclude_globs` (`default_exclude`).",
+            "type": "string"
+          },
+          "shown": {
+            "description": "Number of children actually returned.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total number of children eligible for listing in the folder, counted after default-exclude filtering (only populated when `reason == \"per_folder_limit\"`; for depth truncation we don't peek into the folder).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "hint",
+          "reason",
+          "shown"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "path": {
+        "description": "Canonical absolute path of the requested folder (resolved through the jail). Nodes carry only `name`, and the root node's path IS this `path` — do not join the root's `name` onto it; derive children by joining from here: child path = parent path + \"/\" + name. Operations on derived paths re-validate through the jail.",
+        "type": "string"
+      },
+      "root": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/TreeNode"
+          }
+        ],
+        "description": "Root node of the snapshot; its `name` is the folder's basename."
+      }
+    },
+    "required": [
+      "path",
+      "root"
+    ],
+    "title": "TreeOutput",
+    "type": "object"
+  }
+}

@@ -42,11 +42,18 @@ describe('buildSystemPrompt', () => {
     expect(out).toMatch(/NEVER poll/);
   });
 
-  it('preamble contains no directory::* integration', () => {
-    // The agent must learn iii from the live engine surface only:
-    // engine::functions::info is the API reference, not directory skills.
+  it('preamble integrates the public worker registry without foreign doc schemes', () => {
+    // The agent learns iii from the live engine surface, extended by the
+    // public worker registry (directory::registry::workers::* only — every
+    // other directory::* surface, like the legacy doc proxies and markdown
+    // skills/prompts, stays out; engine::functions::info remains the only
+    // API reference).
     const out = buildSystemPrompt();
-    expect(out).not.toContain('directory::');
+    expect(out).toContain('directory::registry::workers::list');
+    expect(out).toContain('directory::registry::workers::info');
+    for (const id of out.match(/directory::[\w:-]+/g) ?? []) {
+      expect(id.startsWith('directory::registry::workers::')).toBe(true);
+    }
     expect(out).not.toContain('iii://');
     expect(out).not.toMatch(/skill/i);
   });
@@ -151,7 +158,7 @@ describe('buildSystemPrompt', () => {
     expect(out).toMatch(/not an iii\s+function, stop and re-check the engine/);
   });
 
-  it('preamble is generic — no worker-specific examples leak into the identity prompt', () => {
+  it('preamble carries no leaked worker internals (sandbox/heredoc)', () => {
     const out = buildSystemPrompt();
     expect(out.toLowerCase()).not.toContain('sandbox');
     expect(out).not.toContain('heredoc');
@@ -203,6 +210,89 @@ describe('buildSystemPrompt', () => {
     // Declared schemas become the contract engine::functions::info serves.
     expect(out).toMatch(/request_format/);
     expect(out).toMatch(/response_format/);
+  });
+
+  it('preamble teaches registry search → install → verify when nothing registered fits', () => {
+    // New-capability flow: search the published catalogue, judge fit from the
+    // registry detail, announce the install, install via worker::add, then
+    // re-discover — the engine, not the registry, stays the contract authority.
+    const out = buildSystemPrompt();
+    expect(out).toContain('directory::registry::workers::list { search: "<capability>" }');
+    expect(out).toContain('directory::registry::workers::info { name: "<name>" }');
+    expect(out).toContain('{ source: { kind: "registry", name: "<name>" } }');
+    expect(out).toContain('say what you are about to install and why');
+    expect(out).toContain('confirm the new function ids appear');
+    expect(out).toContain('engine::functions::list { prefix: "<worker>::" }');
+    expect(out).toContain('a preview, not the contract');
+  });
+
+  it('preamble bootstraps or degrades gracefully when the directory worker is absent', () => {
+    // directory::* may itself be missing: try worker::list/start, then install
+    // it from the registry by name, then degrade to what is registered.
+    const out = buildSystemPrompt();
+    expect(out).toContain('name: "iii-directory"');
+    expect(out).toContain('continue with what is registered');
+  });
+
+  it('preamble routes code-file work through the coder worker', () => {
+    const out = buildSystemPrompt();
+    expect(out).toContain('engine::functions::list { prefix: "coder::" }');
+    expect(out).toContain('{ source: { kind: "registry", name: "coder" } }');
+    for (const fn of [
+      'coder::read-file',
+      'coder::search',
+      'coder::list-folder',
+      'coder::tree',
+      'coder::create-file',
+      'coder::update-file',
+      'coder::move',
+      'coder::delete-file',
+    ]) {
+      expect(out).toContain(fn);
+    }
+    // The enumeration must read as non-exhaustive (coder grows; the prefix
+    // list call is the inventory) and renames must not become delete+create.
+    expect(out).toMatch(/the full inventory/);
+    expect(out).toMatch(/never delete-then-recreate/);
+  });
+
+  it('preamble points worker authoring at the per-language SDK references', () => {
+    const out = buildSystemPrompt();
+    for (const url of [
+      'https://iii.dev/docs/sdk-reference/engine-sdk',
+      'https://iii.dev/docs/sdk-reference/node-sdk',
+      'https://iii.dev/docs/sdk-reference/python-sdk',
+      'https://iii.dev/docs/sdk-reference/rust-sdk',
+      'https://iii.dev/docs/sdk-reference/browser-sdk',
+    ]) {
+      expect(out).toContain(url);
+    }
+    expect(out).toMatch(/implementation\s+language/);
+    expect(out).toContain('https://iii.dev/docs/llms.txt');
+    expect(out).toContain('`.md`');
+    // The gate must not generalize into doc-fetching for ordinary calls, and
+    // unreachable docs must degrade gracefully instead of stalling the task.
+    expect(out).toMatch(/fetch\s+docs\s+for an ordinary call/);
+    expect(out).toMatch(/say so and proceed with extra\s+care/);
+  });
+
+  it('preamble gates worker code behind the SDK reference (registerTrigger-from-memory trap)', () => {
+    // Observed live (hello-world session): the agent wrote a registerTrigger
+    // from memory, the binding landed but never fired, and it fetched the
+    // node-sdk reference only after burning turns debugging. The reference
+    // comes BEFORE the first line of code.
+    const out = buildSystemPrompt();
+    expect(out).toContain('the FIRST line of worker code');
+  });
+
+  it('preamble extends the web::fetch mandate to localhost and just-bound endpoints', () => {
+    // Observed live (hello-world session): the agent tested its freshly
+    // bound HTTP trigger with shell curl (six calls, plus lsof to hunt the
+    // port) instead of web::fetch. The no-curl rule must name the local-test
+    // case explicitly.
+    const out = buildSystemPrompt();
+    expect(out).toContain('includes localhost');
+    expect(out).toMatch(/IS\s+the verification/);
   });
 
   it('preamble warns that a trigger binding lands even when the provider is down', () => {
@@ -376,12 +466,97 @@ describe.each(VARIANTS)('invariant contract — %s variant', (_family, out) => {
     expect(out).toContain('{ ok, status, headers, body }');
   });
 
+  it('extends the web::fetch mandate to localhost and just-bound endpoints', () => {
+    expect(out).toContain('includes localhost');
+    expect(out).toMatch(/IS\s+the verification/);
+  });
+
+  it('gates worker code behind the SDK reference (reference before the first line)', () => {
+    expect(out).toContain('the FIRST line of worker code');
+  });
+
   it('steers page reads to format:"markdown" (raw HTML floods context)', () => {
     expect(out).toMatch(/pass\s+`format: "markdown"`/);
   });
 
   it('carries the worker lifecycle consent rule', () => {
     expect(out).toMatch(/require exactly\s+`yes: true`/);
+  });
+
+  it('teaches registry search → install → verify', () => {
+    expect(out).toContain('directory::registry::workers::list { search: "<capability>" }');
+    expect(out).toContain('directory::registry::workers::info { name: "<name>" }');
+    expect(out).toContain('{ source: { kind: "registry", name: "<name>" } }');
+    expect(out).toContain('say what you are about to install and why');
+    expect(out).toContain('confirm the new function ids appear');
+    expect(out).toContain('engine::functions::list { prefix: "<worker>::" }');
+    expect(out).toContain('a preview, not the contract');
+  });
+
+  it('teaches install-from-registry before authoring (capability ladder order)', () => {
+    expect(out.indexOf('directory::registry::workers::list')).toBeLessThan(
+      out.indexOf('registerWorker'),
+    );
+    expect(out.indexOf('coder::')).toBeLessThan(out.indexOf('registerWorker'));
+  });
+
+  it('keeps the registry-install worked example (published email worker)', () => {
+    // The example must model a trajectory that succeeds against the live
+    // registry: "email" is published and exposes email::send. It must also
+    // model fetching the worker::add contract before installing (RULE 2) and
+    // announcing the install as a plain assistant line.
+    expect(out).toContain('directory::registry::workers::info { name: "email" }');
+    expect(out).toContain('worker::add { source: { kind: "registry", name: "email" } }');
+    expect(out).toContain('engine::functions::info { function_id: "worker::add" }');
+    expect(out).toContain('engine::functions::info { function_id: "email::send" }');
+    expect(out).toContain('I am installing the "email" worker');
+  });
+
+  it('bootstraps or degrades when the directory worker is absent', () => {
+    expect(out).toContain('name: "iii-directory"');
+    expect(out).toContain('continue with what is registered');
+  });
+
+  it('routes code-file work through the coder worker', () => {
+    expect(out).toContain('engine::functions::list { prefix: "coder::" }');
+    expect(out).toContain('{ source: { kind: "registry", name: "coder" } }');
+    for (const fn of [
+      'coder::read-file',
+      'coder::search',
+      'coder::list-folder',
+      'coder::tree',
+      'coder::create-file',
+      'coder::update-file',
+      'coder::move',
+      'coder::delete-file',
+    ]) {
+      expect(out).toContain(fn);
+    }
+    expect(out).toMatch(/the full inventory/);
+    expect(out).toMatch(/never delete-then-recreate/);
+  });
+
+  it('points worker authoring at the per-language SDK references', () => {
+    for (const url of [
+      'https://iii.dev/docs/sdk-reference/engine-sdk',
+      'https://iii.dev/docs/sdk-reference/node-sdk',
+      'https://iii.dev/docs/sdk-reference/python-sdk',
+      'https://iii.dev/docs/sdk-reference/rust-sdk',
+      'https://iii.dev/docs/sdk-reference/browser-sdk',
+    ]) {
+      expect(out).toContain(url);
+    }
+    expect(out).toMatch(/implementation\s+language/);
+    expect(out).toContain('https://iii.dev/docs/llms.txt');
+    expect(out).toContain('`.md`');
+    // engine-sdk is the fallback for languages without an official SDK.
+    expect(out).toMatch(/for any other\s+language/);
+    // The gate must not generalize into doc-fetching for ordinary calls, and
+    // unreachable docs must degrade gracefully instead of stalling the task.
+    expect(out).toMatch(/fetch\s+docs\s+for an ordinary call/);
+    expect(out).toMatch(/say so and proceed with extra\s+care/);
+    // llms.txt is the recovery path when a docs fetch fails.
+    expect(out).toMatch(/if a fetch fails|If a fetch fails/);
   });
 
   it('teaches the @fn pill syntax', () => {
@@ -398,8 +573,16 @@ describe.each(VARIANTS)('invariant contract — %s variant', (_family, out) => {
     expect(out).toContain('</example>');
   });
 
-  it('contains no foreign integration, worker-specific examples, or mode leakage', () => {
-    expect(out).not.toContain('directory::');
+  it('integrates the worker registry; bans doc schemes, leaked internals, and mode leakage', () => {
+    expect(out).toContain('directory::registry::workers::list');
+    expect(out).toContain('directory::registry::workers::info');
+    // Allowlist invariant: the registry catalogue is the ONLY directory::*
+    // surface the prompt may name — the legacy doc proxies
+    // (directory::engine::*), markdown skills/prompts surfaces, and internal
+    // handlers stay out.
+    for (const id of out.match(/directory::[\w:-]+/g) ?? []) {
+      expect(id.startsWith('directory::registry::workers::')).toBe(true);
+    }
     expect(out).not.toContain('iii://');
     expect(out).not.toMatch(/skill/i);
     expect(out.toLowerCase()).not.toContain('sandbox');
@@ -409,44 +592,40 @@ describe.each(VARIANTS)('invariant contract — %s variant', (_family, out) => {
 });
 
 describe('promptFamily', () => {
-  it('routes explicit providers to their families', () => {
-    expect(promptFamily('anthropic', 'claude-opus-4-7')).toBe('anthropic');
-    expect(promptFamily('openai', 'gpt-5')).toBe('gpt');
-    expect(promptFamily('kimi', 'kimi-k2-0905-preview')).toBe('kimi');
-    expect(promptFamily('lmstudio', 'qwen/qwen3-4b-2507')).toBe('default');
-    expect(promptFamily('llamacpp', 'Meta-Llama-3.1-8B')).toBe('default');
+  it('maps the ROUTED provider to its family — routing itself lives in the llm-router', () => {
+    expect(promptFamily('anthropic')).toBe('anthropic');
+    expect(promptFamily('openai')).toBe('gpt');
+    expect(promptFamily('kimi')).toBe('kimi');
+    expect(promptFamily('lmstudio')).toBe('default');
+    expect(promptFamily('llamacpp')).toBe('default');
   });
 
-  it('falls back to model heuristics when provider is empty', () => {
-    expect(promptFamily('', 'gpt-4')).toBe('gpt');
-    expect(promptFamily('', 'o3-mini')).toBe('gpt');
-    expect(promptFamily('', 'kimi-k2-0905-preview')).toBe('kimi');
-    expect(promptFamily('', 'moonshot-v1-128k')).toBe('kimi');
+  it('serves the anthropic family when no provider routed (router unreachable)', () => {
+    // Mirrors the llm-router entry's seeded default_provider, so the
+    // un-routed prompt matches what the routed turn would have served.
+    expect(promptFamily('')).toBe('anthropic');
   });
 
-  it('defaults to anthropic when nothing matches', () => {
-    expect(promptFamily('', '')).toBe('anthropic');
-    // Local model ids require an explicit provider (the router pins this); a
-    // bare HF-style id without provider stays on the anthropic route.
-    expect(promptFamily('', 'qwen-7b')).toBe('anthropic');
+  it('serves the generic default for an unrecognized provider id', () => {
+    expect(promptFamily('some-new-provider')).toBe('default');
   });
 });
 
 describe('buildSystemPrompt variant selection', () => {
   it('serves the gpt variant (persistence voice) for openai runs', () => {
-    const out = buildSystemPrompt({ provider: 'openai', model: 'gpt-5' });
+    const out = buildSystemPrompt({ provider: 'openai' });
     expect(out).toContain('## Autonomy and persistence');
     expect(out).toMatch(/Persist until the task is fully handled\s+end-to-end/);
   });
 
   it('serves the kimi variant (MUST imperatives) for kimi runs', () => {
-    const out = buildSystemPrompt({ provider: 'kimi', model: 'kimi-k2-0905-preview' });
+    const out = buildSystemPrompt({ provider: 'kimi' });
     expect(out).toContain('# Ultimate Reminders');
     expect(out).toContain('# Prompt and Tool Use');
   });
 
   it('serves the default variant (step-by-step) for local runtimes', () => {
-    const out = buildSystemPrompt({ provider: 'lmstudio', model: 'qwen/qwen3-4b-2507' });
+    const out = buildSystemPrompt({ provider: 'lmstudio' });
     expect(out).toContain('Follow these steps for EVERY action');
     expect(out).toContain('# Final checklist');
   });
@@ -457,10 +636,10 @@ describe('buildSystemPrompt variant selection', () => {
 
   it('prepends the mode paragraph before the identity line on every variant', () => {
     const runs = [
-      { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-      { provider: 'openai', model: 'gpt-5' },
-      { provider: 'kimi', model: 'kimi-k2-0905-preview' },
-      { provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' },
+      { provider: 'anthropic' },
+      { provider: 'openai' },
+      { provider: 'kimi' },
+      { provider: 'llamacpp' },
     ];
     for (const run of runs) {
       const out = buildSystemPrompt({ ...run, mode: 'agent' });
@@ -475,7 +654,6 @@ describe('buildSystemPrompt variant selection', () => {
       override: 'custom-override',
       mode: 'plan',
       provider: 'openai',
-      model: 'gpt-5',
     });
     expect(out).toBe('custom-override');
   });

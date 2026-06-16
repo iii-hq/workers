@@ -1,12 +1,53 @@
-# Root directory the worker operates inside. Every path argument in the
-# coder::* API is resolved relative to this directory; absolute paths and
-# `..` segments that would escape are rejected with C215. Required; the
-# worker refuses to start if this can't be canonicalized.
-base_path: ./
+# SEED FILE — NOT the runtime source of truth.
+#
+# As of 0.5.0 coder's runtime config lives in the `configuration` worker
+# under id "coder". This file is only a SEED: when coder is launched with
+# `--config <this file>` AND no value is yet stored for id "coder", its
+# contents are passed as `initial_value` on `configuration::register` (the
+# configuration worker env-expands ${VAR}). After that first register the
+# stored value is authoritative; edit it with `configuration::set id=coder`
+# (or by editing the configuration worker's persisted file) and coder picks
+# up the change without re-reading this file. Re-running with `--config`
+# does NOT overwrite an already-stored value.
+#
+# RELOAD POLICY (see README "Configuration"): the JAIL fields below
+# (base_paths / base_path, non_accessible_globs, default_exclude_globs) are
+# RESTART-REQUIRED — a live config change that alters any of them is refused
+# and the running jail is kept (log: "restart coder to apply"). The numeric
+# budgets/limits below HOT-RELOAD on `configuration:updated`.
+#
+# See config.yaml.example for the seed-on-first-register contract.
 
-# Glob patterns (matched against the path relative to base_path) for files
-# the worker will refuse to read, modify, or delete. Matching entries are
-# still visible to coder::list-folder and coder::tree with a
+# Allowed root directories the worker operates inside. The FIRST entry is
+# the primary root: relative wire paths resolve against it. Absolute wire
+# paths are accepted when they canonicalize inside ANY listed root; a path
+# outside every root is rejected with C215 naming the roots.
+#
+# Legacy single-root form `base_path: <dir>` is still honored as a
+# one-entry list. Setting BOTH `base_path` and `base_paths` is a startup
+# error (C210); keep only `base_paths`.
+#
+# Default when neither key is set: ["./", "/tmp"]
+#
+# Startup behavior:
+#   - Each root is canonicalized; unreachable roots are skipped with a
+#     warning logged at startup.
+#   - If zero roots remain after skipping, the worker refuses to start.
+#   - Duplicate roots (post-canonicalization) are deduplicated with a
+#     warning.
+#   - The final canonical root list is logged at startup.
+#
+# SECURITY POSTURE — /tmp in the default list:
+#   /tmp is a world-writable shared directory. It is included in the
+#   default so agent tasks that target /tmp work out of the box on a
+#   trusted bus. Operators on multi-tenant hosts should remove /tmp from
+#   base_paths and configure only the project root(s) they intend to
+#   expose.
+base_paths: ["./", "/tmp"]
+
+# Glob patterns (matched against the path relative to its containing root)
+# for files the worker will refuse to read, modify, or delete. Matching
+# entries are still visible to coder::list-folder and coder::tree with a
 # `non_accessible: true` flag so callers can see they exist.
 non_accessible_globs:
   - "**/.env"
@@ -14,6 +55,21 @@ non_accessible_globs:
   - "**/*.pem"
   - "**/*.key"
   - "**/secrets/**"
+
+# Noise-exclusion globs (same syntax and root-relative matching as
+# non_accessible_globs). coder::tree skips descent into matching directories
+# (they appear as childless nodes flagged `truncated` with reason
+# "default_exclude") and coder::search omits matching paths. HIDE-ONLY — this
+# grants no access protection; that remains non_accessible_globs. Callers can
+# opt out per call with `use_default_excludes: false`; coder::info reports
+# the active list.
+default_exclude_globs:
+  - "**/.git/**"
+  - "**/node_modules/**"
+  - "**/target/**"
+  - "**/dist/**"
+  - "**/.venv/**"
+  - "**/__pycache__/**"
 
 # Per-file caps. read returns C213 when a file exceeds max_read_bytes;
 # create/update reject payloads larger than max_write_bytes.
@@ -34,3 +90,36 @@ list_max_page_size: 1000
 # coder::search caps. truncated:true is set whenever either cap is hit.
 search_default_max_matches: 1000
 search_default_max_line_bytes: 4096
+
+# Aggregate byte budget for one coder::search response, measured in CONVERTED
+# WIRE BYTES at accumulation time — the strings that will actually be
+# serialized (path + matched text + context lines for content matches; path
+# for path matches). When the next match would exceed the budget the search
+# stops accumulating and sets truncated:true — it degrades, it never errors.
+# Default: 256 KiB (262_144 bytes).
+search_response_budget_bytes: 262144
+
+# Aggregate budget for a single paths[] batch call to coder::read-file,
+# measured in BYTES OF RETURNED CONTENT (after UTF-8 sanitization: invalid
+# bytes expand to 3-byte U+FFFD replacements BEFORE they are counted, so the
+# cap bounds what the caller actually receives — binary files can never
+# deliver more than this budget). Entries are collected in request order;
+# each entry may consume up to min(remaining_budget, max_read_bytes). An
+# entry reached with zero remaining budget gets a per-entry C213 naming this
+# key, its value, and the bytes already consumed, plus recovery guidance
+# (use line_from/line_to windows, fewer entries, or raise this cap).
+# Single-path FULL reads are budgeted by max_output_bytes instead and are
+# unaffected by this cap.
+# Default: 1 MiB (1_048_576 bytes).
+batch_read_budget_bytes: 1048576
+
+# Budget for single-path FULL reads in coder::read-file (no line_from/
+# line_to, stat:false), measured in BYTES OF RETURNED CONTENT after UTF-8
+# sanitization, numbered prefixes included — the same accounting unit as
+# batch_read_budget_bytes. A full read whose converted content would exceed
+# this budget fails with a C213 reporting the file's size and line count and
+# naming the recovery calls (line_from/line_to window, stat:true probe, or a
+# per-call max_output_bytes raise, clamped to max_read_bytes). Windowed reads
+# and batch mode are NOT governed by this key.
+# Default: 128 KiB (131_072 bytes).
+max_output_bytes: 131072

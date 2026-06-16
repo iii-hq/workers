@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
@@ -18,7 +19,6 @@ afterEach(() => {
 
 function mockFinalizePersistence(): void {
   installMockTurnStore({
-    loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
   });
 }
@@ -108,6 +108,7 @@ describe('handleExecute new flow', () => {
         terminate: false,
       },
     });
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     enterFunctionExecute(
@@ -118,9 +119,13 @@ describe('handleExecute new flow', () => {
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
-    expect(rec.state).toBe('steering_check');
-    expect(rec.function_results).toHaveLength(1);
-    expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
+    expect(rec.state).toBe('assistant_streaming');
+    expect(rec.function_results).toEqual([]);
+    const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
+      | { function_results: Array<{ function_call_id: string }> }
+      | undefined;
+    expect(turnEnd?.function_results).toHaveLength(1);
+    expect(turnEnd?.function_results[0]?.function_call_id).toBe('fc-1');
   });
 
   it('finishes the session when every function result terminates', async () => {
@@ -146,7 +151,7 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
   });
 
   it('does not re-emit function_execution_start for already-executed calls on re-entry', async () => {
@@ -242,13 +247,17 @@ describe('handleExecute new flow', () => {
       executed: {},
     });
     mockFinalizePersistence();
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
 
-    expect(rec.state).toBe('steering_check');
-    expect(rec.function_results).toHaveLength(1);
-    expect(rec.function_results[0]?.is_error).toBe(true);
-    const details = rec.function_results[0]?.details as Record<string, unknown>;
+    expect(rec.state).toBe('assistant_streaming');
+    const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
+      | { function_results: Array<{ is_error: boolean; details: Record<string, unknown> }> }
+      | undefined;
+    expect(turnEnd?.function_results).toHaveLength(1);
+    expect(turnEnd?.function_results[0]?.is_error).toBe(true);
+    const details = turnEnd?.function_results[0]?.details as Record<string, unknown>;
     expect(details?.status).toBe('denied');
     expect(details?.denied_by).toBe('gate_unavailable');
     expect(details?.function_id).toBe('shell::fs::write');
@@ -281,7 +290,7 @@ describe('handleExecute new flow', () => {
       (call) => (call[0] as { function_id: string }).function_id === 'shell::run',
     );
     expect(shellCalls).toHaveLength(0);
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
   });
 
   it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.executed)', async () => {
@@ -311,10 +320,10 @@ describe('handleExecute new flow', () => {
     await handleExecute(iii, rec);
 
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
   });
 
-  it('transitions to steering_check after a successful hook dispatch', async () => {
+  it('resumes to assistant_streaming after a successful hook dispatch', async () => {
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
@@ -331,7 +340,7 @@ describe('handleExecute new flow', () => {
     mockFinalizePersistence();
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
   });
 
   it('emits turn lifecycle and sets turn_end_emitted when last_assistant is present', async () => {
@@ -369,14 +378,13 @@ describe('handleExecute new flow', () => {
       asst,
     );
     installMockTurnStore({
-      loadMessages: vi.fn(async () => []),
       appendMessages: vi.fn(async () => {}),
     });
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
     expect(rec.turn_end_emitted).toBe(true);
     expect(emitSpy.mock.calls.some((call) => call[2]?.type === 'turn_end')).toBe(true);
   });
@@ -389,7 +397,15 @@ describe('handleExecute new flow', () => {
     };
     const fc = { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } };
 
-    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
+    // Route session::* into the in-memory fake so the real store's
+    // fr-<call_id> entry-id idempotency is what dedupes the re-entry.
+    const sessions = new FakeSessionManager();
+    const iii = {
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) =>
+          (await sessions.handle(function_id, payload)) ?? null,
+      ),
+    } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
     enterFunctionExecute(
@@ -397,13 +413,6 @@ describe('handleExecute new flow', () => {
       makeAssistant([agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' })]),
     );
 
-    let storedMessages: unknown[] = [];
-    installMockTurnStore({
-      loadMessages: vi.fn(async () => storedMessages as never),
-      appendMessages: vi.fn(async (_sid, msgs) => {
-        storedMessages = [...storedMessages, ...msgs];
-      }),
-    });
     vi.spyOn(events, 'emit').mockResolvedValue(undefined);
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValue({
       kind: 'result',
@@ -432,10 +441,12 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    const fnResults = (
-      storedMessages as Array<{ role?: string; function_call_id?: string }>
-    ).filter((m) => m.role === 'function_result');
+    const fnResults = sessions
+      .messageEntries('s1')
+      .filter((e) => e.message?.role === 'function_result');
     expect(fnResults).toHaveLength(1);
-    expect(fnResults[0]?.function_call_id).toBe('toolu_01');
+    expect(
+      (fnResults[0]?.message as { function_call_id?: string } | undefined)?.function_call_id,
+    ).toBe('toolu_01');
   });
 });

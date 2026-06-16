@@ -35,26 +35,28 @@ describe('emit (agent event producer)', () => {
     expect(streamSets(calls).map((c) => c.payload.stream_name)).toEqual(['agent::events']);
   });
 
-  it('mirrors a turn_end event onto the dedicated agent::turn_end stream', async () => {
+  it('writes turn_end only to agent::events with no out-of-band compaction wake', async () => {
     const { iii, calls } = buildSdk();
     const event = {
       type: 'turn_end',
-      message: { role: 'assistant' },
+      message: {
+        role: 'assistant',
+        usage: { input: 100, output: 5 },
+        provider: 'anthropic',
+        model: 'claude-haiku-4-5',
+      },
       function_results: [],
     } as unknown as AgentEvent;
 
     await emit(iii, SID, event);
 
-    const sets = streamSets(calls);
-    const streams = sets.map((c) => c.payload.stream_name);
-    expect(streams).toContain('agent::events');
-    expect(streams).toContain('agent::turn_end');
+    // The event is written only to agent::events — no dedicated turn_end stream.
+    expect(streamSets(calls).map((c) => c.payload.stream_name)).toEqual(['agent::events']);
 
-    const mirror = sets.find((c) => c.payload.stream_name === 'agent::turn_end');
-    expect(mirror?.payload.group_id).toBe(SID);
-    expect(mirror?.payload.data).toEqual(event);
-    // Same logical event → identical item_id on both streams (single seq per emit).
-    expect(new Set(sets.map((c) => c.payload.item_id)).size).toBe(1);
+    // Async post-turn compaction is retired: the harness compacts inline on the
+    // hot path (context::assemble), so turn_end no longer enqueues a wake.
+    expect(calls.some((c) => c.function_id === 'context-compaction::on_turn_end')).toBe(false);
+    expect(calls.some((c) => c.function_id.startsWith('context-compaction::'))).toBe(false);
   });
 });
 

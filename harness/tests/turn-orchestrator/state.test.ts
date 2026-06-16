@@ -3,7 +3,6 @@ import { TurnStateInvariantError } from '../../src/turn-orchestrator/errors.js';
 import {
   parseAssistantStreamingRecord,
   parseFunctionBatchRecord,
-  parseSteeringCheckRecord,
 } from '../../src/turn-orchestrator/schemas.js';
 import {
   type TurnStateRecord,
@@ -83,20 +82,5 @@ describe('parseAssistantStreamingRecord', () => {
     const rec = newRecord('s1');
     rec.state = 'provisioning';
     expect(() => parseAssistantStreamingRecord(rec)).toThrow(TurnStateInvariantError);
-  });
-});
-
-describe('parseSteeringCheckRecord', () => {
-  it('returns a validated record for steering_check', () => {
-    const rec = newRecord('s1');
-    rec.state = 'steering_check';
-    const steering = parseSteeringCheckRecord(rec);
-    expect(steering.state).toBe('steering_check');
-    expect(steering.function_results).toEqual([]);
-  });
-
-  it('throws TurnStateInvariantError when session_id is missing', () => {
-    const rec = { state: 'steering_check' } as TurnStateRecord;
-    expect(() => parseSteeringCheckRecord(rec)).toThrow(TurnStateInvariantError);
   });
 });

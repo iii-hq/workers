@@ -1,3 +1,4 @@
+# Release SOP: docs/sops/release.md
 name: Create Tag
 
 on:
@@ -9,8 +10,11 @@ on:
         type: choice
         options:
           - acp
+          - claude-code
           - coder
+          - codex
           - console
+          - context-manager
           - database
           - email
           - harness
@@ -18,7 +22,11 @@ on:
           - lsp
           - iii-lsp-vscode
           - image-resize
+          - llm-router
           - mcp
+          - provider-anthropic
+          - provider-openai
+          - session-manager
           - shell
           - storage
       bump:

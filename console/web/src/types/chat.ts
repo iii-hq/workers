@@ -19,6 +19,20 @@ export const MODES: { id: Mode; label: string }[] = [
 
 export const DEFAULT_MODE: Mode = 'agent'
 
+/** Reasoning effort sent to run::start as `thinking_level`; 'off' is omitted. */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+export const THINKING_LEVELS: ThinkingLevel[] = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]
+
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'off'
+
 export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
 
 export interface Attachment {
@@ -73,8 +87,8 @@ export interface FunctionCallMessage extends BaseMessage {
 
 /**
  * `kind: 'compaction'` renders the collapsed-history marker in the
- * transcript. The session-tree is the single source of truth for what the
- * provider sees, so this marker is purely presentational.
+ * transcript. The session-manager transcript is the single source of truth
+ * for what the provider sees, so this marker is purely presentational.
  */
 export interface SystemMessage extends BaseMessage {
   role: 'system'
@@ -117,7 +131,15 @@ export interface MessagePatch {
   tokensBefore?: number
 }
 
+/** Mirrors session-manager's SessionStatus. */
+export type ConversationStatus = 'idle' | 'working' | 'done' | 'error'
+
 export interface Conversation {
+  /**
+   * The engine session_id (`console-<uuid>` for console-created chats).
+   * Conversations are backed by the session-manager worker; this id is used
+   * verbatim for `session::*` calls and `harness::trigger`.
+   */
   id: string
   title: string
   /** flips to true after the user explicitly renames; otherwise auto-derived */
@@ -125,6 +147,13 @@ export interface Conversation {
   model: ModelId | null
   mode: Mode
   messages: Message[]
+  /** Driver-owned session status (spinner + sidebar indicator). */
+  status?: ConversationStatus
+  statusReason?: string
+  /** Local-only until the first send creates the session server-side. */
+  draft?: boolean
+  /** Transcript fetched from session-manager at least once. */
+  hydrated?: boolean
   createdAt: number
   updatedAt: number
 }

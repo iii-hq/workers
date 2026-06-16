@@ -1,20 +1,26 @@
-import { describe, expect, it } from 'vitest';
-import { parseStateListValues } from '../../src/runtime/state.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { ISdk } from '../../src/runtime/iii.js';
+import { createState } from '../../src/runtime/state.js';
 
-describe('parseStateListValues', () => {
-  it('accepts flat array (official iii shape)', () => {
+function makeIii(listResult: unknown): ISdk {
+  return {
+    trigger: vi.fn(async ({ function_id }: { function_id: string }) =>
+      function_id === 'state::list' ? listResult : null,
+    ),
+  } as unknown as ISdk;
+}
+
+describe('createState().list', () => {
+  it('returns the flat array of stored values (official iii shape)', async () => {
     const rows = [{ session_id: 's1', state: 'stopped' }];
-    expect(parseStateListValues(rows)).toEqual(rows);
+    await expect(createState(makeIii(rows)).list({ scope: 'turn_state' })).resolves.toEqual(rows);
   });
 
-  it('unwraps { value } rows', () => {
-    const inner = { session_id: 's1', state: 'function_awaiting_approval' };
-    expect(parseStateListValues([{ value: inner }])).toEqual([inner]);
-  });
-
-  it('returns [] for non-array responses', () => {
-    expect(parseStateListValues(null)).toEqual([]);
-    expect(parseStateListValues({ ok: true })).toEqual([]);
-    expect(parseStateListValues({ items: [{ id: 'm1' }] })).toEqual([]);
+  it('returns [] for non-array responses', async () => {
+    await expect(createState(makeIii(null)).list({ scope: 's' })).resolves.toEqual([]);
+    await expect(createState(makeIii({ ok: true })).list({ scope: 's' })).resolves.toEqual([]);
+    await expect(
+      createState(makeIii({ items: [{ id: 'm1' }] })).list({ scope: 's' }),
+    ).resolves.toEqual([]);
   });
 });

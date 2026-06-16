@@ -1,0 +1,24 @@
+# Agent permissions for llm-router and its pluggable provider workers.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # Credential read/write, provider spoofing, catalog poisoning — never agent-callable.
+  - '!router::provider::resolve'
+  - '!router::provider::update_credential'
+  - '!router::provider::register'
+  - '!router::models::reconcile'
+  - '!configuration::get'
+  - '!configuration::set'
+  - '!configuration::register'
+  # Deny by default: direct router spend bypasses the harness loop's accounting.
+  - '!router::chat'
+  - '!router::complete'
+  - '!router::abort'
+  # Routing preview is orchestrator-internal; agents have no business probing it.
+  - '!router::route'
+  # Safe read surface (enumerated — deliberately NOT router::models::*).
+  - 'router::models::list'
+  - 'router::models::get'
+  - 'router::models::supports'
+  - 'router::provider::list'

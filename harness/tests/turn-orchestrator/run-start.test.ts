@@ -1,13 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
-import { execute, register } from '../../src/turn-orchestrator/run-start.js';
+import {
+  STALE_TURN_TAKEOVER_MS,
+  execute,
+  register,
+} from '../../src/turn-orchestrator/run-start.js';
 import { RunStartPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 import { TURN_STEP_QUEUE } from '../../src/turn-orchestrator/state-runtime/store.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 
 type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
 
-function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
+function fakeIii(): { iii: ISdk; calls: TriggerCall[]; sessions: FakeSessionManager } {
   const calls: TriggerCall[] = [];
+  const sessions = new FakeSessionManager();
   const iii = {
     trigger: async <T, R>(req: {
       function_id: string;
@@ -15,14 +21,15 @@ function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
       action?: unknown;
     }): Promise<R> => {
       calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
+      const handled = await sessions.handle(req.function_id, req.payload);
+      if (handled !== undefined) return handled as R;
       return null as R;
     },
     registerFunction: vi.fn(),
   } as unknown as ISdk;
-  return { iii, calls };
+  return { iii, calls, sessions };
 }
 
-/** Shape console/web sends inside harness::trigger payload (real.ts). */
 const consoleRunStartPayload = {
   session_id: 'sess-1',
   message_id: 'msg-1',
@@ -38,7 +45,6 @@ const consoleRunStartPayload = {
   ],
 };
 
-/** Minimal shape harness/trigger.test.ts forwards to run::start. */
 const harnessRunStartPayload = {
   session_id: 'sess-1',
   provider: 'anthropic',
@@ -104,24 +110,41 @@ describe('RunStartPayloadSchema', () => {
     expect(() => RunStartPayloadSchema.parse(null)).toThrow();
     expect(() => RunStartPayloadSchema.parse(undefined)).toThrow();
   });
+
+  it('accepts a thinking_level and rejects unknown levels', () => {
+    // Threaded to router::chat via the persisted run request; an invalid
+    // level must fail at the boundary, not surface as a provider warning.
+    expect(
+      RunStartPayloadSchema.parse({ ...harnessRunStartPayload, thinking_level: 'high' })
+        .thinking_level,
+    ).toBe('high');
+    expect(RunStartPayloadSchema.parse(harnessRunStartPayload).thinking_level).toBeUndefined();
+    expect(() =>
+      RunStartPayloadSchema.parse({ ...harnessRunStartPayload, thinking_level: 'ultra' }),
+    ).toThrow();
+  });
 });
 
 describe('register', () => {
   it('registers run::start and parses payload at the unknown boundary', async () => {
     const registered = new Map<string, (payload: unknown) => Promise<unknown>>();
+    const sessions = new FakeSessionManager();
     const iii = {
       registerFunction: (fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
         registered.set(fnId, handler);
       },
-      trigger: vi.fn(async () => null),
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) =>
+          (await sessions.handle(function_id, payload)) ?? null,
+      ),
     } as unknown as ISdk;
 
     register(iii);
     const handler = registered.get('run::start');
     expect(handler).toBeDefined();
 
-    const result = await handler!(harnessRunStartPayload);
-    expect(result).toEqual({ session_id: 'sess-1' });
+    const result = await handler?.(harnessRunStartPayload);
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
   });
 
   it('rejects invalid payloads at register boundary', async () => {
@@ -137,7 +160,7 @@ describe('register', () => {
     const handler = registered.get('run::start');
     expect(handler).toBeDefined();
 
-    await expect(handler!({ provider: 'openai' })).rejects.toThrow();
+    await expect(handler?.({ provider: 'openai' })).rejects.toThrow();
   });
 });
 
@@ -147,7 +170,7 @@ describe('execute', () => {
 
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    expect(result).toEqual({ session_id: 'sess-1' });
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
 
     const turnStateSet = calls.find(
       (c) =>
@@ -166,20 +189,152 @@ describe('execute', () => {
     expect(wake?.action).toEqual(TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }));
   });
 
-  it('ensures the session tree exactly once, before the first append', async () => {
+  it('ensures the session exactly once, before the first append', async () => {
     const { iii, calls } = fakeIii();
 
     await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    // Single ensure per run — later loadMessages/appendMessages no longer re-ensure.
-    const ensureCalls = calls.filter((c) => c.function_id === 'session-tree::ensure');
+    const ensureCalls = calls.filter((c) => c.function_id === 'session::ensure');
     expect(ensureCalls).toHaveLength(1);
     expect(ensureCalls[0]?.payload).toEqual({ session_id: 'sess-1' });
 
-    // The single ensure must precede the run's first tree write (append).
-    const ensureIdx = calls.findIndex((c) => c.function_id === 'session-tree::ensure');
-    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append');
+    const ensureIdx = calls.findIndex((c) => c.function_id === 'session::ensure');
+    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session::append');
     expect(ensureIdx).toBeGreaterThanOrEqual(0);
     expect(firstAppendIdx).toBeGreaterThan(ensureIdx);
+  });
+
+  function fakeIiiWithRecord(record: unknown): { iii: ISdk; calls: TriggerCall[] } {
+    const calls: TriggerCall[] = [];
+    const sessions = new FakeSessionManager();
+    const iii = {
+      trigger: async <T, R>(req: {
+        function_id: string;
+        payload: T;
+        action?: unknown;
+      }): Promise<R> => {
+        calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
+        if (req.function_id === 'state::get') return record as R;
+        const handled = await sessions.handle(req.function_id, req.payload);
+        if (handled !== undefined) return handled as R;
+        return null as R;
+      },
+      registerFunction: vi.fn(),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  const inFlightRecord = (state: string, updated_at_ms = Date.now()) => ({
+    session_id: 'sess-1',
+    state,
+    turn_count: 1,
+    function_results: [],
+    turn_end_emitted: false,
+    started_at_ms: 1,
+    updated_at_ms,
+  });
+
+  it('refuses to clobber a turn already in flight and makes no writes', async () => {
+    const { iii, calls } = fakeIiiWithRecord(inFlightRecord('assistant_streaming'));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: false, reason: 'session_busy' });
+    expect(calls.some((c) => c.function_id === 'session::ensure')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'session::append')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'state::set')).toBe(false);
+  });
+
+  it('treats a parked function_awaiting_approval turn as in flight', async () => {
+    const { iii } = fakeIiiWithRecord(inFlightRecord('function_awaiting_approval'));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result.started).toBe(false);
+  });
+
+  it('starts a fresh turn when the prior turn is terminal (stopped)', async () => {
+    const { iii, calls } = fakeIiiWithRecord({
+      ...inFlightRecord('stopped'),
+      turn_end_emitted: true,
+    });
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
+    expect(calls.some((c) => c.function_id === 'session::append')).toBe(true);
+  });
+
+  it('takes over an in-flight record idle past the stale window (wedge recovery)', async () => {
+    const stale = Date.now() - STALE_TURN_TAKEOVER_MS - 1_000;
+    const { iii, calls } = fakeIiiWithRecord(inFlightRecord('finishing', stale));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
+    expect(calls.some((c) => c.function_id === 'session::append')).toBe(true);
+  });
+
+  it('never stale-takes-over a parked approval (user-paced; abort is its escape)', async () => {
+    const stale = Date.now() - STALE_TURN_TAKEOVER_MS - 1_000;
+    const { iii } = fakeIiiWithRecord(inFlightRecord('function_awaiting_approval', stale));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result.started).toBe(false);
+  });
+
+  it('fails closed when the guard read fails (no clobber on a state blip)', async () => {
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string }) => {
+        if (req.function_id === 'state::get') throw new Error('state worker unavailable');
+        return null;
+      }),
+      registerFunction: vi.fn(),
+    } as unknown as ISdk;
+
+    await expect(execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload))).rejects.toThrow(
+      /state worker unavailable/,
+    );
+    const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls as Array<
+      [{ function_id: string }]
+    >;
+    expect(calls.some(([req]) => req.function_id === 'state::set')).toBe(false);
+  });
+
+  it('flips session status to working before the first append', async () => {
+    const { iii, calls } = fakeIii();
+
+    await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
+
+    const statusIdx = calls.findIndex((c) => c.function_id === 'session::set_status');
+    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session::append');
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect((calls[statusIdx]?.payload as { status: string }).status).toBe('working');
+    expect(firstAppendIdx).toBeGreaterThan(statusIdx);
+  });
+
+  it('appends user messages with deterministic per-send entry ids and origin', async () => {
+    const { iii, sessions } = fakeIii();
+
+    await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
+
+    const appended = sessions.messageEntries('sess-1');
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.entry_id).toBe('msg-1-user-0');
+    expect(appended[0]?.origin).toEqual({ message_id: 'msg-1' });
+
+    await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
+    expect(sessions.messageEntries('sess-1')).toHaveLength(1);
+  });
+
+  it('appends without entry ids when the caller sent no message_id', async () => {
+    const { iii, sessions } = fakeIii();
+
+    await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    const appended = sessions.messageEntries('sess-1');
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.entry_id).toMatch(/^e-/);
   });
 });

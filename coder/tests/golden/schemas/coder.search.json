@@ -1,0 +1,206 @@
+{
+  "description": "Search file contents and/or paths. Supports literal or regex queries with include/exclude globs; non-accessible files are excluded from both content and path results. Only the FIRST match on each line is reported (one content match per matching line). Optional context_lines_before/context_lines_after (max 10) attach surrounding lines to each content match so many edits can go straight to coder::update-file with no read in between. Noise paths matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) are skipped by default; pass use_default_excludes: false to search inside them. Files larger than max_read_bytes are silently skipped during content scanning. Results are capped by max_matches AND a response byte budget (search_response_budget_bytes); when truncated is true, refine the query or add include_globs rather than paginate. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::search",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "context_lines_after": 2,
+        "context_lines_before": 2,
+        "include_globs": [
+          "**/*.rs"
+        ],
+        "path": "src",
+        "query": "fn handle",
+        "search_content": true,
+        "search_paths": false
+      }
+    ],
+    "properties": {
+      "context_lines_after": {
+        "default": null,
+        "description": "Lines of context to return AFTER each content match. Same max (10), truncation, and budget rules as `context_lines_before`; unset = 0.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "context_lines_before": {
+        "default": null,
+        "description": "Lines of context to return BEFORE each content match (same file only, in file order), max 10 — larger values are rejected with C210. With context lines many edit tasks can go straight from search output to coder::update-file with no read in between. Context lines are truncated to `max_line_bytes` like the matched text and count toward the response byte budget. Unset = 0.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "exclude_globs": {
+        "default": [],
+        "description": "Glob patterns (same relative-to-root matching) that exclude paths.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "ignore_case": {
+        "default": false,
+        "type": "boolean"
+      },
+      "include_globs": {
+        "default": [],
+        "description": "Glob patterns (matched against the path relative to its containing root) that paths must match to be considered. Empty = include everything.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "max_line_bytes": {
+        "default": null,
+        "description": "Bytes per line to consider when scanning content; longer lines are truncated for the match snippet.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "max_matches": {
+        "default": null,
+        "description": "Optional explicit cap. Falls back to config when unset.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": ".",
+        "description": "Folder scoping the walk. Relative to the primary allowed root, or an absolute path inside any allowed root. Defaults to `.` (the primary root itself). Globs are matched relative to the containing root; result paths are absolute regardless of this value. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "type": "string"
+      },
+      "query": {
+        "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring.",
+        "type": "string"
+      },
+      "regex": {
+        "default": false,
+        "type": "boolean"
+      },
+      "search_content": {
+        "default": true,
+        "description": "Search file contents (default true).",
+        "type": "boolean"
+      },
+      "search_paths": {
+        "default": true,
+        "description": "Search file paths (default true).",
+        "type": "boolean"
+      },
+      "use_default_excludes": {
+        "default": true,
+        "description": "Apply the worker's `default_exclude_globs` config (noise paths like .git, node_modules, target, dist — call coder::info for the active list): the walk does not descend into matching directories and matching files are omitted from BOTH content and path results. Pass `false` to search inside them.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "SearchInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentMatch": {
+        "properties": {
+          "after": {
+            "description": "Context lines immediately after the matched line — same file only, in file order, each truncated to `max_line_bytes`. Omitted when empty (no `context_lines_after` requested, or the match is at the end of the file).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "before": {
+            "description": "Context lines immediately before the matched line — same file only, in file order, each truncated to `max_line_bytes`. Omitted when empty (no `context_lines_before` requested, or the match is at the start of the file).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "column": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Absolute path under the canonical parent; symlinks at the entry itself are not resolved. Operations on it re-validate through the jail.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Matched line; truncated to `max_line_bytes` and never spans newlines.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "column",
+          "line",
+          "path",
+          "text"
+        ],
+        "type": "object"
+      },
+      "PathMatch": {
+        "properties": {
+          "path": {
+            "description": "Absolute path under the canonical parent; symlinks at the entry itself are not resolved. Operations on it re-validate through the jail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "content_matches": {
+        "items": {
+          "$ref": "#/definitions/ContentMatch"
+        },
+        "type": "array"
+      },
+      "path_matches": {
+        "items": {
+          "$ref": "#/definitions/PathMatch"
+        },
+        "type": "array"
+      },
+      "truncated": {
+        "description": "True if results were cut off — either match list hit the `max_matches` cap, or the response hit the `search_response_budget_bytes` byte budget. When true, refine the query or add include_globs rather than paginate.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "content_matches",
+      "path_matches",
+      "truncated"
+    ],
+    "title": "SearchOutput",
+    "type": "object"
+  }
+}

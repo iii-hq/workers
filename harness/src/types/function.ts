@@ -3,6 +3,7 @@
  * `harness/crates/harness-types/src/function.rs`.
  */
 
+import { z } from 'zod';
 import type { ContentBlock } from './content.js';
 
 export type ExecutionMode = 'parallel' | 'sequential';
@@ -25,6 +26,19 @@ export type AgentFunction = {
   execution_mode?: ExecutionMode;
   prepare_arguments_supported?: boolean;
 };
+
+/**
+ * Zod schema for {@link AgentFunction}, used to validate the run request's
+ * stored function schemas before they ride to the router on `router::chat`.
+ */
+export const AgentFunctionSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  parameters: z.unknown().default({}),
+  label: z.string().optional(),
+  execution_mode: z.enum(['parallel', 'sequential']).optional(),
+  prepare_arguments_supported: z.boolean().optional(),
+});
 
 /** A single function call emitted by the assistant. */
 export type FunctionCall = {

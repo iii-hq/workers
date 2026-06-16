@@ -1,5 +1,10 @@
 /**
  * `coder::delete-file` — path-level removal summary (no file body on wire).
+ *
+ * Missing paths are idempotent SUCCESSES: success + !removed renders as
+ * "already absent", never as a deletion. Per-entry errors are structured
+ * WireError {code, message}; C210 = refusing to delete an allowed root,
+ * C211 = not-found-or-denied (incl. non-accessible entries mid-recursion).
  */
 import { TriangleAlert } from 'lucide-react'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
@@ -62,44 +67,38 @@ export function DeleteFileView({
         <tbody>
           {req.paths.map((path, i) => {
             const result = resp?.results[i]
-            const removed = result?.removed
-            const outcomeLabel =
-              preview || running
-                ? 'pending'
-                : removed
-                  ? 'removed'
-                  : 'not removed'
+            const pending = preview || running
+            // success + !removed = idempotent no-op (path already gone).
+            const outcome = pending
+              ? { label: 'pending', tone: 'text-ink-faint' }
+              : !result
+                ? { label: '—', tone: 'text-ink-faint' }
+                : result.removed
+                  ? { label: 'removed', tone: 'text-warn' }
+                  : result.success
+                    ? { label: 'already absent', tone: 'text-ink-ghost' }
+                    : { label: 'failed', tone: 'text-ink-ghost' }
 
             return (
               <tr key={path} className="border-b border-rule-2 last:border-b-0">
                 <td className="px-3 py-1.5">{path}</td>
                 <td className="px-3 py-1.5">
-                  <span
-                    className={
-                      removed
-                        ? 'text-warn'
-                        : preview || running
-                          ? 'text-ink-faint'
-                          : 'text-ink-ghost'
-                    }
-                  >
-                    {outcomeLabel}
-                  </span>
+                  <span className={outcome.tone}>{outcome.label}</span>
                 </td>
                 <td className="px-3 py-1.5">
-                  {preview || running ? (
+                  {pending || !result ? (
                     <span className="text-ink-faint">—</span>
-                  ) : result?.success ? (
+                  ) : result.success ? (
                     <span className="text-accent">ok</span>
-                  ) : result?.error ? (
+                  ) : result.error ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span className="inline-flex items-center gap-1 text-warn cursor-help">
                           <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
-                          err
+                          {result.error.code}
                         </span>
                       </TooltipTrigger>
-                      <TooltipContent>{result.error}</TooltipContent>
+                      <TooltipContent>{result.error.message}</TooltipContent>
                     </Tooltip>
                   ) : (
                     <span className="text-warn">err</span>

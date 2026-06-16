@@ -1,0 +1,343 @@
+{
+  "description": "Read a file window-first: probe with stat: true (size/mtime/mode plus total_lines, no content), then fetch just the lines you need with line_from/line_to (1-based, inclusive) — windows keep files larger than max_read_bytes readable window by window, with more_lines/total_lines reporting what remains. numbered: true prefixes each line with its absolute 1-based file line number, matching coder::update-file's line ops exactly. Full reads are budgeted by max_output_bytes (default 128 KiB; per-call override clamped to max_read_bytes) — an over-budget full read fails with a C213 carrying the file's size, line count, and the window/stat recovery calls. Batch mode: pass paths[] (XOR path) to read multiple files in one call — entries are processed in request order against batch_read_budget_bytes, measured in bytes of returned content (after UTF-8 sanitization); per-entry errors (C211/C213) leave other entries unaffected. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*. Non-accessible paths return C211.",
+  "function_id": "coder::read-file",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ReadTarget": {
+        "anyOf": [
+          {
+            "description": "Bare path string: read the whole file (within remaining batch budget and `max_read_bytes`).",
+            "type": "string"
+          },
+          {
+            "description": "Object form: path plus optional 1-based window parameters. Omit `line_from` to start from line 1; omit `line_to` to read to EOF.",
+            "properties": {
+              "line_from": {
+                "default": null,
+                "description": "First line of the window, 1-based inclusive (must be >= 1; 0 is rejected with C210 for this entry). Defaults to 1 when only `line_to` is set.",
+                "format": "uint64",
+                "minimum": 1.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line_to": {
+                "default": null,
+                "description": "Last line of the window, 1-based inclusive. Must be >= `line_from` (C210 for this entry otherwise). Omit to read from `line_from` to EOF.",
+                "format": "uint64",
+                "minimum": 1.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "numbered": {
+                "default": false,
+                "description": "Prefix this entry's content lines with their absolute 1-based file line numbers (`N→`) — same semantics as the top-level `numbered` field. Prefix bytes are charged against `batch_read_budget_bytes`.",
+                "type": "boolean"
+              },
+              "path": {
+                "description": "File to read. Same jail rules as the top-level `path` field.",
+                "type": "string"
+              },
+              "stat": {
+                "default": false,
+                "description": "Per-entry metadata probe: same semantics as the top-level `stat` field — size/mode/mtime always, `total_lines`/`is_utf8` when the file fits `max_read_bytes`, content null, no batch budget consumed. C210 when combined with this entry's `line_from`/`line_to` or `numbered`.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A single entry in a `paths[]` batch request. Pass either a bare file path string (whole-file read, same cap as `max_read_bytes`) or an object with optional per-entry `line_from`/`line_to` window parameters (1-based, inclusive — same rules as the top-level `path` mode)."
+      }
+    },
+    "examples": [
+      {
+        "line_from": 10,
+        "line_to": 50,
+        "path": "src/main.rs"
+      },
+      {
+        "paths": [
+          "src/lib.rs",
+          {
+            "line_from": 1,
+            "line_to": 30,
+            "path": "src/config.rs"
+          }
+        ]
+      }
+    ],
+    "properties": {
+      "line_from": {
+        "default": null,
+        "description": "First line of the window, 1-based inclusive (must be >= 1; 0 is rejected with C210). Setting `line_from` and/or `line_to` switches to windowed mode: the file is streamed and only the requested lines are returned, so files larger than `max_read_bytes` stay readable slice by slice — the byte cap then applies to the returned window, never the file size. Defaults to 1 when only `line_to` is set. A window starting past EOF succeeds with empty content and reports the file's `total_lines`. Only valid in single-path mode (`path`); ignored when `paths` is set. Lines are 0x0A- or EOF-terminated segments; a trailing newline does not create a phantom line (same convention as `coder::update-file`).",
+        "format": "uint64",
+        "minimum": 1.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "line_to": {
+        "default": null,
+        "description": "Last line of the window, 1-based inclusive. Must be >= `line_from` (C210 otherwise). Omit to read from `line_from` to end-of-file (still bounded by `max_read_bytes` on the returned bytes). Only valid in single-path mode (`path`); ignored when `paths` is set.",
+        "format": "uint64",
+        "minimum": 1.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "max_output_bytes": {
+        "default": null,
+        "description": "Per-call override of the `max_output_bytes` config (default 131072) that budgets single-path FULL reads, measured in returned content bytes after UTF-8 conversion (numbered prefixes included). Values above `max_read_bytes` are silently clamped to it. When the full content would exceed the effective budget the call fails with a C213 naming the file's size and `total_lines` — recover by windowing with `line_from`/`line_to`, probing with `stat: true`, or raising this field. Full reads only: combining it with `line_from`/`line_to` is C210 (windows are bounded by `max_read_bytes` instead); ignored when `paths` is set (batch mode is governed by `batch_read_budget_bytes`).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "numbered": {
+        "default": false,
+        "description": "When true every returned content line is prefixed `N→`, where N is the line's ABSOLUTE 1-based number in the file — a window starting at `line_from: 40` is numbered from 40, not 1. Numbers match `coder::update-file`'s 1-based line ops exactly, so you can go from a numbered read straight to a line edit. Prefix bytes count toward all byte caps and budgets (no hidden bypass). C210 with `stat: true` (no content to number). Batch entries take a per-entry `numbered` field instead; this top-level flag is ignored when `paths` is set.",
+        "type": "boolean"
+      },
+      "path": {
+        "default": null,
+        "description": "Single file to read. Relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail. Mutually exclusive with `paths` (XOR): pass either `path` or `paths`, not both — C210 if both or neither is set.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "paths": {
+        "description": "Batch of files (or windowed slices) to read in a single call. Each entry is either a plain path string (whole-file read) or an object `{path, line_from?, line_to?}` with per-entry window parameters. Entries are processed in request order against a shared `batch_read_budget_bytes` cap, measured in bytes of returned content (after UTF-8 sanitization) — see `coder::info` for the configured value. Results are returned in the `results` field; top-level fields are null. Mutually exclusive with `path` (XOR): pass either `path` or `paths`, not both — C210 if both or neither is set.",
+        "items": {
+          "$ref": "#/definitions/ReadTarget"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "stat": {
+        "default": false,
+        "description": "Metadata probe — the cheap \"how big is it\" call. When true the response carries size/mode/mtime plus `total_lines` and `is_utf8` (both null when the file exceeds `max_read_bytes` — size/mode/mtime still populate, so stat on a huge file SUCCEEDS); `content` is null, `lines_returned` 0, `more_lines` false. Probe BEFORE reading an unknown file, then fetch just the slice you need with `line_from`/`line_to`. Mutually exclusive with `line_from`, `line_to`, `numbered`, and `max_output_bytes` (C210 — stat returns no content for them to act on). Batch entries take a per-entry `stat` field instead; this top-level flag is ignored when `paths` is set.",
+        "type": "boolean"
+      }
+    },
+    "title": "ReadFileInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ReadEntryResult": {
+        "description": "Per-entry result in a batch `paths[]` response.",
+        "properties": {
+          "content": {
+            "description": "File content as a UTF-8 string — the whole file or the requested window. Binary bytes are replaced by U+FFFD (`is_utf8: false`). `null` on failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WireError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured error — present only when `success: false`."
+          },
+          "is_utf8": {
+            "description": "Whether `content` survived UTF-8 conversion without losing bytes. `null` on failure.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "lines_returned": {
+            "description": "Number of lines returned in `content`. `null` on failure.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mode": {
+            "description": "Unix permission bits (lower 9 bits of `st_mode`), e.g. 0o644. `null` on failure.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "more_lines": {
+            "description": "`true` when the file has content beyond what `content` includes (window ended before EOF, or byte budget cut the window short). `null` on failure.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "mtime": {
+            "description": "Last-modified time as a Unix epoch in seconds. `null` on failure.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Canonical absolute path of the file (resolved through the jail). If resolution failed, this echoes the caller's input verbatim.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Size of the FILE in bytes (from metadata). `null` on failure or when the entry budget was exhausted before the file was opened.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "success": {
+            "description": "`true` when the read succeeded (content/metadata fields are populated); `false` when an error occurred (only `error` is set).",
+            "type": "boolean"
+          },
+          "total_lines": {
+            "description": "Total lines in the file; present when the stream reached EOF during this entry's read. `null` when not traversed or on failure.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "success"
+        ],
+        "type": "object"
+      },
+      "WireError": {
+        "description": "Structured per-entry error as it appears on the wire.\n\nUse `code` for stable programmatic branching (e.g. `\"C211\"` for not-found-or-denied). `message` carries the human/LLM-readable problem description plus the corrective next call.",
+        "properties": {
+          "code": {
+            "description": "Stable error code, e.g. \"C211\". See the README error table.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human/LLM-readable message: problem + actual values + corrective next call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "content": {
+        "description": "File content as a UTF-8 string — the whole file, or just the requested window when `line_from`/`line_to` was given (window lines keep their newline terminators). Binary content is returned with invalid bytes replaced by U+FFFD; use a future binary-aware function if exact bytes matter. **Single-path mode only; null when the request used `paths[]`.**",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "is_utf8": {
+        "description": "Whether `content` survived UTF-8 conversion without losing bytes. Reflects the RETURNED content only: a clean window inside an otherwise-binary file is still `true`. **Single-path mode only; null when the request used `paths[]`.**",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "lines_returned": {
+        "description": "Number of lines in `content`. For full reads this equals the file's total line count. **Single-path mode only; null when the request used `paths[]`.**",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "mode": {
+        "description": "Unix permission bits (lower 9 bits of `st_mode`), e.g. 0o644. **Single-path mode only; null when the request used `paths[]`.**",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "more_lines": {
+        "description": "True when the file has content beyond what `content` includes: the window ended before EOF, or the byte budget cut the window short. Always false for full reads. **Single-path mode only; null when the request used `paths[]`.**",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "mtime": {
+        "description": "Last-modified time as a Unix epoch in seconds. **Single-path mode only; null when the request used `paths[]`.**",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Canonical absolute path of the file read (resolved through the jail). **Single-path mode only; null when the request used `paths[]`.**",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "results": {
+        "description": "Per-entry results for a batch `paths[]` request. **Present only when the request used `paths[]`; null in single-path mode.**",
+        "items": {
+          "$ref": "#/definitions/ReadEntryResult"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "size": {
+        "description": "Size of the FILE in bytes (from metadata) — not the size of `content`; in windowed mode the two differ. **Single-path mode only; null when the request used `paths[]`.**",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "total_lines": {
+        "description": "Total number of lines in the file. Present only when the read traversed the whole file: always for full reads; for windowed reads only when the stream naturally reached EOF within the byte cap. Never computed by forcing an extra full scan — absent means the file was not fully traversed. **Single-path mode only; null when the request used `paths[]`.**",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "title": "ReadFileOutput",
+    "type": "object"
+  }
+}

@@ -22,7 +22,7 @@ callers don't summarise the same logical session concurrently) under its own iii
 
 - A non-chat feature that needs "summarise these messages to fit model X" calls `context::compact`
   directly.
-- A cost-sensitive caller calls `context::count_tokens` before deciding which model to use, with no
+- A cost-sensitive caller calls `context::count-tokens` before deciding which model to use, with no
   agent loop involved.
 - A different harness implementation reuses `context::assemble` as its pre-flight step and persists
   results into its own store.
@@ -85,7 +85,7 @@ Whatever pruning or compaction does, the returned context must still be accepted
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
 - `context::prune` — Strip/truncate verbose function outputs without summarising. A cheaper first pass.
-- `context::count_tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
+- `context::count-tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
   system) vs a model.
 
 ## Triggers
@@ -97,7 +97,7 @@ None. `context-manager` is a request/response capability worker.
 ### Triggers bound
 
 None by default. **Optional reactive integration:** when paired with `session-manager`, a deployment
-may bind a handler to `session::message_added` to pre-warm an assembled context off the turn's hot
+may bind a handler to `session::message-added` to pre-warm an assembled context off the turn's hot
 path (for example, to warm a cache or surface a token-usage metric). This is opt-in and lives in the
 consumer, which is what keeps `context-manager` decoupled from any store — it never reaches into a
 session on its own.
@@ -110,13 +110,13 @@ iii.registerFunction("context::on_message_added", async (evt) => {
   });
   // Measure / pre-warm; no persistence. The harness still calls context::assemble on the hot path.
   await iii.trigger({
-    function_id: "context::count_tokens",
+    function_id: "context::count-tokens",
     payload: { messages: messages.map((m) => m.message), model: { id: "<model>" } },
   });
 });
 
 iii.registerTrigger({
-  type: "session::message_added",
+  type: "session::message-added",
   function_id: "context::on_message_added",
   config: { /* optional: session_id, roles */ },
 });
@@ -303,7 +303,7 @@ type PruneResponse = {
 };
 ```
 
-### `context::count_tokens`
+### `context::count-tokens`
 
 Estimate token usage for a set of messages, optionally including the invocation schema (typically the
 single `agent_trigger` entry) and a system prompt.
@@ -351,7 +351,7 @@ type CountTokensResponse = {
 
 All functions are pure transforms over caller-supplied messages — nothing secret to leak (see
 [README § Security model](README.md#security-model)). The only caveat is cost: `context::assemble`
-and `context::compact` can trigger a summariser LLM call. `context::count_tokens` and
+and `context::compact` can trigger a summariser LLM call. `context::count-tokens` and
 `context::prune` are safe; deny the other two in cost-sensitive deployments.
 
 ## Boundaries

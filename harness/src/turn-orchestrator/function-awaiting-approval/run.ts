@@ -25,7 +25,7 @@ export function denialResultFromDecision(decision: ApprovalDecision): FunctionRe
       decision: decision.decision,
       reason,
     },
-    terminate: false,
+    terminate: decision.decision === 'aborted',
   };
 }
 
@@ -79,7 +79,9 @@ export async function processResolvedApprovals(
       const decision = await readPorts.readDecision(rec.session_id, callId);
       if (!decision) continue;
 
-      const current = work.prepared.find((p) => p.call.id === callId)!;
+      const current = work.prepared.find((p) => p.call.id === callId);
+      if (!current) continue;
+
       const resolved = applyDecisionToPrepared(current, decision);
       await runOneCall(executePorts, rec.session_id, resolved, executed, { skipStart: true });
 

@@ -1,11 +1,17 @@
 /**
  * Stream one provider turn, persist the assistant message, and route onward.
+ *
+ * The driver loop (integration.md §10): append an empty assistant entry with
+ * a deterministic id before the provider stream starts, replace its content
+ * via `session::update_message` per coalesced delta batch, and land the final
+ * content with a last strict update. Step re-entry reuses the same entry
+ * (idempotent append) instead of duplicating it.
  */
 
-import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
-import { decide } from '../provider-router.js';
+import { assistantEntryId, runKey } from '../../runtime/session.js';
+import type { AssistantMessage } from '../../types/agent-message.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
-import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
+import { emitTurnEndOnce, transitionToFinishing } from '../state-runtime/turn-end.js';
 import { enterFunctionExecute } from '../function-execute/run.js';
 import { transitionTo, type AssistantStreamingTurnRecord } from '../state.js';
 import { createDeltaCoalescer } from './coalesce-deltas.js';
@@ -25,45 +31,78 @@ export function beginTurn(rec: AssistantStreamingTurnRecord): void {
   rec.assistant_body_streamed = false;
 }
 
+/** Deterministic session-manager entry id for this turn's assistant message. */
+export function turnAssistantEntryId(rec: AssistantStreamingTurnRecord): string {
+  return assistantEntryId(runKey(rec), rec.turn_count);
+}
+
 export async function prepareStreamContext(
   ports: AssistantStreamingPorts,
   rec: AssistantStreamingTurnRecord,
+  assistantEntry: string,
 ): Promise<StreamContext> {
   const request = await ports.loadRunRequest(rec.session_id);
-  let messages = await ports.loadMessages(rec.session_id);
   const { provider, model, system_prompt, function_schemas, thinking_level } = request;
-  const decision = decide({ provider, model });
+  // Provisioning pinned the routed provider; fall back to the raw request
+  // provider for records provisioned before the router cutover.
+  const routedProvider = request.routed_provider ?? provider;
   const tools = parseFunctionSchemas(function_schemas);
 
-  if (
-    (await ports.runPreflight(rec.session_id, messages, decision.provider, model)) === 'compacted'
-  ) {
-    messages = await ports.loadMessages(rec.session_id);
+  // Load the post-compaction window. Exclude this turn's assistant entry: on
+  // step re-entry the placeholder already sits on the path (possibly with
+  // partial content) and must not be replayed to the provider as history.
+  const { window, previousSummary } = await ports.loadAssembleWindow(rec.session_id, {
+    excludeEntryIds: [assistantEntry],
+  });
+
+  // context::assemble prunes/compacts the window to fit the model and renders
+  // any summary into the system prompt. When it compacts, the harness owns
+  // persistence of the round trip (an additive compaction bookkeeping entry;
+  // the transcript itself is never modified).
+  const assembled = await ports.assembleContext({
+    session_id: rec.session_id,
+    window,
+    baseSystemPrompt: system_prompt,
+    modelId: model,
+    provider: routedProvider || provider,
+    modelMeta: rec.model_meta,
+    thinkingLevel: thinking_level,
+    previousSummary,
+  });
+  if (assembled.applied.compacted) {
+    await ports.persistCompaction(rec.session_id, assembled.applied, window);
   }
 
   return {
     session_id: rec.session_id,
-    decision,
-    system_prompt,
+    provider: routedProvider,
+    model,
+    system_prompt: assembled.system_prompt,
     tools,
-    messages,
+    messages: assembled.messages,
     ...(thinking_level ? { thinking_level } : {}),
+    request_id: `${rec.session_id}:${rec.started_at_ms}`,
   };
 }
 
 export async function runStreamTurn(
   ports: AssistantStreamingPorts,
   session_id: string,
+  assistantEntry: string,
   ctx: StreamContext,
 ): Promise<StreamTurnOutcome> {
   let body_streamed = false;
 
-  // Coalesce consecutive same-type provider deltas into one message_update to
-  // cut the per-token span/RPC explosion on the streaming path. Discrete
-  // events flush through 1:1; the final flush below guarantees the tail.
-  const coalescer = createDeltaCoalescer((partial, event) =>
-    ports.emitMessageUpdate(session_id, partial, event),
-  );
+  // Coalesce consecutive same-type provider deltas into one update to cut the
+  // per-token RPC explosion on the streaming path. Each flush replaces the
+  // session entry's content (durable; fires session::message-updated — the
+  // live token surface consumers render from). Discrete events flush through
+  // 1:1; the final flush below guarantees the tail.
+  const coalescer = createDeltaCoalescer(async (partial, _event) => {
+    await ports.updateAssistantContent(session_id, assistantEntry, partial.content, {
+      tolerant: true,
+    });
+  });
 
   const { final, error } = await ports.streamTurn(ctx, async (partial, event) => {
     if (event.type === 'text_delta' || event.type === 'thinking_delta') {
@@ -78,23 +117,20 @@ export async function runStreamTurn(
 
 export function resolveAssistantMessage(
   outcome: StreamTurnOutcome,
-  decision: StreamContext['decision'],
+  ctx: Pick<StreamContext, 'provider' | 'model'>,
 ): AssistantMessage {
   if (outcome.final) return outcome.final;
 
+  // Defense-in-depth behind the router's terminal-frame guarantee: the
+  // router itself can die mid-relay, so a close-without-terminal still
+  // synthesizes a visible error.
   const reason = outcome.error ?? 'provider channel closed without final';
   return syntheticAssistant({
     stop_reason: 'error',
     text: reason,
-    provider: decision.provider,
-    model: decision.model,
+    provider: ctx.provider,
+    model: ctx.model,
   });
-}
-
-/** Reason text for a synthetic error update when the provider did not return a final message. */
-export function syntheticStreamReason(outcome: StreamTurnOutcome): string | null {
-  if (outcome.final) return null;
-  return outcome.error ?? 'provider channel closed without final';
 }
 
 export function routeAssistantTurn(asst: AssistantMessage): AssistantRoute {
@@ -107,26 +143,29 @@ export function routeAssistantTurn(asst: AssistantMessage): AssistantRoute {
   if (hasFunctionCalls(asst)) {
     return { kind: 'function_execute' };
   }
-  return { kind: 'steering_check' };
+  return { kind: 'end_turn' };
 }
 
 export async function finalizeAssistantTurn(
   ports: AssistantStreamingPorts,
   rec: AssistantStreamingTurnRecord,
   asst: AssistantMessage,
-  messages: AgentMessage[],
+  assistantEntry: string,
 ): Promise<void> {
+  // Strict final update: the durable transcript must hold the full message
+  // (or the synthetic error text) before completion is announced. Covers the
+  // error/aborted routes too — partial output survives for reload.
+  await ports.updateAssistantContent(rec.session_id, assistantEntry, asst.content);
+
   await ports.emitMessageComplete(rec.session_id, asst, rec.assistant_body_streamed === true);
 
   const route = routeAssistantTurn(asst);
 
   if (route.kind === 'stopped') {
     await emitTurnEndOnce(ports, rec, asst);
-    await ports.finishSession(rec);
+    transitionToFinishing(rec);
     return;
   }
-
-  await ports.persistAssistantIfNew(rec.session_id, asst, messages);
 
   if (route.kind === 'function_execute') {
     rec.function_results = [];
@@ -135,7 +174,8 @@ export async function finalizeAssistantTurn(
     return;
   }
 
-  transitionTo(rec, 'steering_check');
+  await emitTurnEndOnce(ports, rec, asst);
+  transitionToFinishing(rec);
 }
 
 export async function runAssistantStreaming(
@@ -143,20 +183,18 @@ export async function runAssistantStreaming(
   rec: AssistantStreamingTurnRecord,
 ): Promise<void> {
   beginTurn(rec);
-  const ctx = await prepareStreamContext(ports, rec);
-  const outcome = await runStreamTurn(ports, rec.session_id, ctx);
-  const asst = resolveAssistantMessage(outcome, ctx.decision);
+  const assistantEntry = turnAssistantEntryId(rec);
+  const ctx = await prepareStreamContext(ports, rec, assistantEntry);
+  await ports.appendAssistantPlaceholder(rec.session_id, assistantEntry, ctx, {
+    turn: rec.turn_count,
+  });
+  const outcome = await runStreamTurn(ports, rec.session_id, assistantEntry, ctx);
+  // When the provider died without a final, resolveAssistantMessage builds a
+  // synthetic error assistant; its text lands on the entry via the strict
+  // final update in finalizeAssistantTurn (no separate delta emission).
+  const asst = resolveAssistantMessage(outcome, ctx);
   rec.last_assistant = asst;
   rec.assistant_body_streamed = outcome.body_streamed;
 
-  const syntheticReason = syntheticStreamReason(outcome);
-  if (syntheticReason) {
-    await ports.emitMessageUpdate(rec.session_id, asst, {
-      type: 'text_delta',
-      partial: asst,
-      delta: syntheticReason,
-    });
-  }
-
-  await finalizeAssistantTurn(ports, rec, asst, ctx.messages);
+  await finalizeAssistantTurn(ports, rec, asst, assistantEntry);
 }

@@ -19,12 +19,26 @@ rules:
   - '!state::delete'
   - '!stream::set'
   - '!iii::durable::publish'
-  # Provider credentials live in the `harness` configuration entry. Agents
-  # must never resolve a secret, self-register a provider, or read/rewrite
-  # the configuration value (which carries plaintext api keys). The console
-  # edits these as a user-initiated SDK call, which bypasses this gate.
-  - '!harness::provider::resolve'
-  - '!harness::provider::register'
+  # Provider credentials live in the `llm-router` configuration entry. Agents
+  # must never resolve a secret, self-register a provider, poison the model
+  # catalog, or read/rewrite the configuration value (which carries plaintext
+  # api keys). Direct router spend (chat/complete) bypasses the harness
+  # loop's accounting; the routing preview is orchestrator-internal. The
+  # console edits config as a user-initiated SDK call, which bypasses this gate.
+  - '!router::provider::resolve'
+  - '!router::provider::register'
+  - '!router::provider::update_credential'
+  - '!router::models::reconcile'
+  - '!router::chat'
+  - '!router::complete'
+  - '!router::abort'
+  - '!router::route'
+  - '!router::on_worker_available'
+  - '!router::on_config_changed'
+  # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
+  # bypass the router's accounting, budgets, and retry policy. The router
+  # invokes these worker-to-worker; agents never call them.
+  - '!provider::*'
   - '!configuration::get'
   - '!configuration::set'
   - '!configuration::register'
@@ -38,7 +52,27 @@ rules:
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
-  - '!router::stream_assistant'
+  # session-manager: deny-by-default for in-run agents (integration.md §2).
+  # An agent that can write here can rewrite its own transcript; the raw
+  # store protocol (session::store::*) bypasses every invariant. Reads stay
+  # at the needs_approval default (tenancy-sensitive).
+  - '!session::store::*'
+  - '!session::create'
+  - '!session::ensure'
+  - '!session::set_meta'
+  - '!session::set_status'
+  - '!session::delete'
+  - '!session::append'
+  - '!session::append_many'
+  - '!session::update_message'
+  - '!session::fork'
+  - '!session::set_active_leaf'
+  # context-manager: assemble/compact are pure transforms (nothing to leak)
+  # but each can spend a summariser LLM call, so deny them to in-run agents in
+  # this cost-sensitive deployment (context-manager.md § Agent exposure).
+  # count_tokens/prune are always safe and stay at the needs_approval default.
+  - '!context::assemble'
+  - '!context::compact'
   # Internal lifecycle hooks — agents must never force a config reload directly.
   # The handlers already re-fetch from configuration::get (ignoring the event
   # payload), so a direct call cannot inject config. These denies are
@@ -50,9 +84,10 @@ rules:
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list
-  - models::list
-  - models::get
-  - models::supports
+  - router::models::list
+  - router::models::get
+  - router::models::supports
+  - router::provider::list
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
@@ -64,3 +99,18 @@ rules:
   - engine::registered-triggers::list
   - engine::registered-triggers::info
   - worker::list
+  # Public worker-registry catalogue reads — the system prompt's
+  # search-before-build ladder starts here. worker::add stays approval-gated.
+  - directory::registry::workers::list
+  - directory::registry::workers::info
+  # Read-only coder surface. Mutating ops (create/update/move/delete-file)
+  # stay approval-gated.
+  - coder::info
+  - coder::read-file
+  - coder::search
+  - coder::list-folder
+  - coder::tree
+  # web::fetch is load-bearing for the system prompt's SDK-reference gate and
+  # HTTP-trigger verification; it enforces size/timeout caps and server-side
+  # SSRF protection, so it is allowed by default.
+  - web::fetch

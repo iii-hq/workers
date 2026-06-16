@@ -1,6 +1,6 @@
 # todo-worker
 
-Quickstart CRUD todo worker built on the Node.js [iii SDK](https://github.com/iii-hq/iii). It exposes a tiny in-memory todos service over five HTTP routes and is the canonical "Node container" template referenced in [AGENTS-NEW-WORKER.md](../AGENTS-NEW-WORKER.md).
+Quickstart CRUD todo worker built on the Node.js [iii SDK](https://github.com/iii-hq/iii). It exposes a tiny in-memory todos service over five HTTP routes and is the canonical Node container template in this repo.
 
 If you're scaffolding a new Node worker, start by copying this directory and trimming what you don't need.
 
@@ -71,4 +71,4 @@ The image inherits `III_URL=ws://localhost:49134`; override at runtime with `-e 
 ## See also
 
 - [todo-worker-python/README.md](../todo-worker-python/README.md) — same API, Python SDK.
-- [AGENTS-NEW-WORKER.md](../AGENTS-NEW-WORKER.md) — full checklist for adding a new worker.
+- [docs/sops/new-worker.md](../docs/sops/new-worker.md) — full checklist for adding a new worker.

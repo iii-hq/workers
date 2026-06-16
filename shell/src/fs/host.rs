@@ -289,6 +289,12 @@ fn lexical_operand_with(path: &str, host_root_canon: Option<&Path>) -> PathBuf {
     normalize_lexical(p)
 }
 
+// MIRROR-INVARIANT: `canonicalize_with_fallback` + `normalize_lexical`
+// below are mirrored in `coder/src/path/mod.rs` (the coder worker's
+// PathResolver). The two implementations are the same jail-safety
+// algorithm and MUST evolve in lockstep — port any fix in one file to
+// the other.
+// Canonical case matrix for this invariant: `coder/tests/parity.rs`.
 /// Resolve `p` to a canonical path that is symlink-free for every existing
 /// ancestor, even when `p` itself doesn't yet exist. The naive fallback —
 /// "canonicalize, on ENOENT use the lexical path" — is a jail-escape vector
