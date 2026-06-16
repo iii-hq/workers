@@ -53,7 +53,7 @@
             "description": "Redacted — safe to forward to notification channels."
           },
           "assistant_excerpt": {
-            "description": "First text block of the assistant message that contained this function_call. Best-effort; not derivable from `pre_dispatch` `HookInput` in v1, so always omitted today.",
+            "description": "First text block of the assistant message that contained this function_call. Best-effort; not derivable from `pre_trigger` `HookInput` in v1, so always omitted today.",
             "type": [
               "string",
               "null"

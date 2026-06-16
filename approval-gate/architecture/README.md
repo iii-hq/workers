@@ -23,13 +23,13 @@ rows, and the exactly-once emission contract are all pinned by tests.
 
 approval-gate decides, for one function call at a time, whether a human must
 be involved — and routes the human's answer back to the parked turn. It is a
-`pre_dispatch` hook (`approval::gate`) that answers `continue` / `deny` /
+`pre_trigger` hook (`approval::gate`) that answers `continue` / `deny` /
 `hold` from a per-session permission model (mode + two allow-lists) with a
 yaml-policy fallback; a decision plane (`approval::resolve` + settings RPCs,
 human/console-only); and an **ephemeral** pending inbox (state scope
 `approval_pending`, two custom trigger types) that exists only while calls
 are held. It never executes the held function itself — on allow it asks the
-harness to release the call through its own dispatch pipeline
+harness to release the call through its own trigger pipeline
 (`harness::function::resolve`, `action: "execute"`); on deny/timeout it
 delivers an `is_error` result. No decision history is kept: the transcript
 and the `pending_resolved` event are the audit trail, and every state record
@@ -38,7 +38,7 @@ backstop.
 
 ```mermaid
 flowchart LR
-  H[harness dispatch] -- "pre_dispatch hook (sync)" --> G[approval::gate]
+  H[harness trigger] -- "pre_trigger hook (sync)" --> G[approval::gate]
   G -- "continue / deny / hold" --> H
   G -- "hold: write record" --> S[(approval_pending)]
   G -. "pending_created (async)" .-> N[notification workers / UIs]
@@ -64,7 +64,7 @@ flowchart LR
 
 ## Standalone status
 
-The harness contracts this worker binds (`harness::hook::pre-dispatch`,
+The harness contracts this worker binds (`harness::hook::pre-trigger`,
 `harness::function::resolve`, `harness::turn-completed`) are specified in
 harness.md but not implemented by the current harness. All bindings are
 best-effort: the worker boots and serves its full RPC + trigger surface

@@ -17,12 +17,12 @@ fn default_on_error() -> String {
     "fail_closed".to_string()
 }
 
-/// The `harness::hook::pre-dispatch` binding the worker registers for
+/// The `harness::hook::pre-trigger` binding the worker registers for
 /// itself at startup.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HookBinding {
-    /// pre_dispatch target globs to consult on; omit-equivalent default
+    /// pre_trigger target globs to consult on; omit-equivalent default
     /// (`["*"]`) consults on every call.
     #[serde(default = "default_hook_functions")]
     pub functions: Vec<String>,

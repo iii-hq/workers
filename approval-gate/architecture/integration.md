@@ -12,7 +12,7 @@ operational contract).
 
 | Function | Caller | Purpose |
 |---|---|---|
-| `approval::gate` | harness only (via the `harness::hook::pre-dispatch` binding) | The hook: `HookInput` → `{ decision: "continue" \| "deny" \| "hold" }`. Never call directly. |
+| `approval::gate` | harness only (via the `harness::hook::pre-trigger` binding) | The hook: `HookInput` → `{ decision: "continue" \| "deny" \| "hold" }`. Never call directly. |
 | `approval::resolve` | console / inbox UI (human-only) | Apply a decision to a held call: `{ session_id, function_call_id, decision: "allow" \| "deny", reason? }` → `{ resolved, turn_resumed? }`. |
 | `approval::list-pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
 | `approval::get-pending` | console | One record or `null`. |
@@ -39,7 +39,7 @@ call after a restart.
 ### `approval::pending-created`
 
 A call was held and its inbox record written. Fires asynchronously after the
-hook returns `hold` — never on the dispatch hot path.
+hook returns `hold` — never on the trigger hot path.
 
 Payload: the `PendingApprovalRecord` plus `status: "pending"` — ids
 (`session_id`, `turn_id`, `function_call_id`, `function_id`), redacted
@@ -75,12 +75,12 @@ sequenceDiagram
   participant AG as approval-gate
   participant UI as console
   participant N as notify worker
-  H->>AG: approval::gate (pre_dispatch hook)
+  H->>AG: approval::gate (pre_trigger hook)
   AG-->>H: { decision: "hold", pending_timeout_ms }
   AG--)N: approval::pending-created
   UI->>AG: approval::resolve { decision: "allow" }
   AG->>H: harness::function::resolve { action: "execute" }
-  Note over H: re-enqueue turn; run the released call through the remaining dispatch pipeline
+  Note over H: re-enqueue turn; run the released call through the remaining trigger pipeline
   AG--)N: approval::pending-resolved { outcome: "allow" }
 ```
 
@@ -94,7 +94,7 @@ and can adapt.
 What the (future) harness must provide — and what this worker already
 assumes, faked today by `tests/integration.rs`:
 
-- **`harness::hook::pre-dispatch` trigger type.** The worker binds
+- **`harness::hook::pre-trigger` trigger type.** The worker binds
   `approval::gate` at startup with
   `{ functions, timeout_ms, on_error: "fail_closed" }` from its
   `config.yaml`. The hook is an ordinary registered function: the harness
@@ -109,9 +109,9 @@ assumes, faked today by `tests/integration.rs`:
 
 Until those exist the bindings log `trigger_type_not_found` at boot
 (harmless); **restart the worker after the harness lands to re-bind**. The
-`pre_dispatch` ordering caveat from the spec applies: hooks run *after* the
+`pre_trigger` ordering caveat from the spec applies: hooks run *after* the
 harness's fail-closed allow/deny globs — a deployment that wants everything
-gated sets a broad dispatch policy and lets the gate hold/deny.
+gated sets a broad trigger policy and lets the gate hold/deny.
 
 ## Deployment notes
 
@@ -140,7 +140,7 @@ gated sets a broad dispatch policy and lets the gate hold/deny.
   multi-tenant leak caveat as `session::list`).
 - **Don't execute a held function yourself** after an allow — always go
   through `approval::resolve` so the harness runs the call through its
-  remaining dispatch pipeline (post_dispatch redaction, checkpoints,
+  remaining trigger pipeline (post_trigger redaction, checkpoints,
   provenance).
 - **Don't persist approval history from the inbox** — records vanish on
   resolution by design. Bind `pending_resolved` and keep your own log if

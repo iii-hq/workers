@@ -59,7 +59,7 @@ adapt to).
      → deny (`gate_unavailable`), never hold blind. A non-null `old_value`
      on the write means a concurrent duplicate won the race: skip emission.
    - `pending_created` emits via `tokio::spawn` **after** the hook returns —
-     fan-out never blocks the dispatch hot path.
+     fan-out never blocks the trigger hot path.
 
 ## State lifecycle and the emit gate
 

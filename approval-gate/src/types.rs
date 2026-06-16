@@ -160,7 +160,7 @@ pub struct PendingApprovalRecord {
     pub depth: i64,
 
     /// First text block of the assistant message that contained this
-    /// function_call. Best-effort; not derivable from `pre_dispatch`
+    /// function_call. Best-effort; not derivable from `pre_trigger`
     /// `HookInput` in v1, so always omitted today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_excerpt: Option<String>,
@@ -222,7 +222,7 @@ pub struct HookInput {
     /// The per-send tracing metadata.
     #[serde(default)]
     pub metadata: Option<JsonMap>,
-    /// pre_dispatch payload.
+    /// pre_trigger payload.
     #[serde(default)]
     pub call: Option<HookCall>,
 }
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn hook_input_tolerates_unknown_and_missing_optional_fields() {
         let input: HookInput = serde_json::from_value(json!({
-            "point": "pre_dispatch",
+            "point": "pre_trigger",
             "session_id": "s_1",
             "turn_id": "t_1",
             "step": 3,

@@ -39,7 +39,7 @@ use crate::gate_config::SharedDefaults;
 // ---------------------------------------------------------------------------
 
 pub const GATE_ID: &str = "approval::gate";
-pub const GATE_DESC: &str = "pre_dispatch hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.";
+pub const GATE_DESC: &str = "pre_trigger hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.";
 
 pub const RESOLVE_ID: &str = "approval::resolve";
 pub const RESOLVE_DESC: &str = "Apply a human decision to a held call: release it for execution (allow) or deliver a denial (deny). Human/console-only.";

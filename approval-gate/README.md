@@ -4,8 +4,8 @@ The policy and decision surface for human-held function calls
 ([spec](../tech-specs/2026-06-agentic/approval-gate.md)). Three surfaces, one
 worker:
 
-1. **The gate** — `approval::gate`, a `pre_dispatch` hook the worker binds
-   itself at startup on the harness's `harness::hook::pre-dispatch` trigger
+1. **The gate** — `approval::gate`, a `pre_trigger` hook the worker binds
+   itself at startup on the harness's `harness::hook::pre-trigger` trigger
    type. It evaluates per-session mode, allow-lists, and the yaml policy, and
    answers `continue`, `deny`, or `hold`.
 2. **The decision plane** — `approval::resolve` plus the per-session settings
@@ -24,7 +24,7 @@ event are the audit trail.
 ## Standalone caveat
 
 This worker codes against the greenfield harness contracts
-(`harness::hook::pre-dispatch`, `harness::function::resolve`,
+(`harness::hook::pre-trigger`, `harness::function::resolve`,
 `harness::turn-completed` — see harness.md § Hooks / § API Reference), which
 are **not implemented by the current harness yet**. All trigger bindings are
 best-effort: on an engine without those trigger types the worker still boots,
@@ -55,7 +55,7 @@ Hold → decide → release, from any client:
 ```bash
 # A held call shows up in the inbox…
 iii call approval::list-pending '{}'
-# …a human allows it (the harness re-runs it through dispatch)…
+# …a human allows it (the harness re-runs it through trigger)…
 iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "allow"}'
 # …or denies it with a reason the model can adapt to.
 iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "deny", "reason": "not on prod"}'

@@ -8,7 +8,7 @@
 //!      `approval::pending-resolved`) — first, because the function
 //!      handlers capture the subscriber sets they fan out to.
 //!   4. Register the 14 `approval::*` functions.
-//!   5. Bind triggers, all best-effort (`harness::hook::pre-dispatch`,
+//!   5. Bind triggers, all best-effort (`harness::hook::pre-trigger`,
 //!      `configuration`, `session::deleted`, `harness::turn-completed`,
 //!      `cron`) — in a standalone deployment some of these trigger types
 //!      don't exist yet; the worker still boots and serves its RPCs.
@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
     // the hook (approval-gate.md § The approval::gate hook).
     bind_best_effort(
         &iii,
-        "harness::hook::pre-dispatch",
+        "harness::hook::pre-trigger",
         "approval::gate",
         json!({
             "functions": cfg.hook.functions,

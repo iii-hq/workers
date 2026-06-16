@@ -407,7 +407,7 @@ pub async fn settle() {
 
 pub fn hook_input(session_id: &str, call_id: &str, function_id: &str) -> Value {
     json!({
-        "point": "pre_dispatch",
+        "point": "pre_trigger",
         "session_id": session_id,
         "turn_id": "t_1",
         "step": 1,

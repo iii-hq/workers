@@ -16,7 +16,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
-            "Policy and decision surface for human-held function calls — pre_dispatch gate, pending inbox, per-session permission settings, and two notification trigger types."
+            "Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session permission settings, and two notification trigger types."
                 .to_string(),
         // Mirrors config::WorkerConfig::default() field-for-field.
         default_config: serde_json::json!({

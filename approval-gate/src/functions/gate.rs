@@ -1,4 +1,4 @@
-//! `approval::gate` — the `pre_dispatch` hook (approval-gate.md § The
+//! `approval::gate` — the `pre_trigger` hook (approval-gate.md § The
 //! approval::gate hook). Maps `HookInput` → `HookOutput`. Never errors:
 //! every failure mode resolves to a fail-closed `deny` so a confused
 //! harness cannot interpret an exception as anything but denial (its
@@ -26,7 +26,7 @@ use crate::types::{
 pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, ApprovalError> {
     let Some(call) = input.call.clone() else {
         return Ok(deny(
-            "approval-gate received a pre_dispatch hook input without a call payload",
+            "approval-gate received a pre_trigger hook input without a call payload",
         ));
     };
 
@@ -105,7 +105,7 @@ fn deny(reason: &str) -> HookOutput {
 /// the hook returns hold** — a held call must never be invisible to the
 /// inbox. Write failure → fail-closed deny, never hold blind.
 /// `pending_created` emits asynchronously after the record is written —
-/// notification fan-out never blocks the dispatch hot path.
+/// notification fan-out never blocks the trigger hot path.
 async fn hold(
     deps: &Deps,
     input: &HookInput,
