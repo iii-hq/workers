@@ -35,7 +35,7 @@ describe('emit (agent event producer)', () => {
     expect(streamSets(calls).map((c) => c.payload.stream_name)).toEqual(['agent::events']);
   });
 
-  it('enqueues a compaction wake on turn_end instead of mirroring to a stream', async () => {
+  it('writes turn_end only to agent::events with no out-of-band compaction wake', async () => {
     const { iii, calls } = buildSdk();
     const event = {
       type: 'turn_end',
@@ -53,15 +53,10 @@ describe('emit (agent event producer)', () => {
     // The event is written only to agent::events — no dedicated turn_end stream.
     expect(streamSets(calls).map((c) => c.payload.stream_name)).toEqual(['agent::events']);
 
-    // A typed compaction wake is enqueued to the out-of-band compactor.
-    const wake = calls.find((c) => c.function_id === 'context-compaction::on_turn_end');
-    expect(wake).toBeDefined();
-    expect(wake?.payload).toMatchObject({
-      session_id: SID,
-      usage: { input: 100, output: 5 },
-      provider: 'anthropic',
-      model: 'claude-haiku-4-5',
-    });
+    // Async post-turn compaction is retired: the harness compacts inline on the
+    // hot path (context::assemble), so turn_end no longer enqueues a wake.
+    expect(calls.some((c) => c.function_id === 'context-compaction::on_turn_end')).toBe(false);
+    expect(calls.some((c) => c.function_id.startsWith('context-compaction::'))).toBe(false);
   });
 });
 

@@ -5,9 +5,11 @@ on:
   push:
     tags:
       - 'acp/v*'
+      - 'claude-code/v*'
       - 'coder/v*'
       - 'codex/v*'
       - 'console/v*'
+      - 'context-manager/v*'
       - 'database/v*'
       - 'email/v*'
       - 'harness/v*'

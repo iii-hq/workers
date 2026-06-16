@@ -6,7 +6,7 @@ import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 
 describe('TurnStatePorts.finishSession', () => {
   it('emits agent_end as a signal (no transcript reload) and sets state to stopped', async () => {
-    const store = installMockTurnStore();
+    installMockTurnStore();
     const emitted: Array<{ type: string; messages?: unknown }> = [];
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
@@ -27,6 +27,5 @@ describe('TurnStatePorts.finishSession', () => {
     // agent_end is a turn-end signal; no consumer reads .messages, so the
     // session is no longer reloaded just to populate it.
     expect(agentEnd?.messages).toEqual([]);
-    expect(store.loadMessages).not.toHaveBeenCalled();
   });
 });

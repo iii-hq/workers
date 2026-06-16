@@ -1,0 +1,7 @@
+iii: v1
+name: context-manager
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: context-manager
+description: Turns a raw conversation history plus a target model into a model-ready context — token counting, function-result pruning, and history compaction.

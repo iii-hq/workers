@@ -5,7 +5,21 @@
 import { z } from 'zod';
 import { logger } from '../../runtime/otel.js';
 import type { ISdk } from '../../runtime/iii.js';
-import { sessionAppendMessage, sessionUpdateMessage } from '../../runtime/session.js';
+import {
+  sessionAppendMessage,
+  sessionUpdateMessage,
+  type MessageWithEntryId,
+} from '../../runtime/session.js';
+import {
+  assembleContext,
+  loadAssembleWindow,
+  persistCompactionRoundTrip,
+  type AppliedReport,
+  type AssembleParams,
+  type AssembleResult,
+  type AssembleWindow,
+  type LoadWindowOptions,
+} from '../../runtime/compaction.js';
 import {
   emptyAssistant,
   type AgentMessage,
@@ -16,10 +30,8 @@ import type { AgentFunction } from '../../types/function.js';
 import type { AssistantMessageEvent } from '../../types/stream-event.js';
 import { AgentFunctionSchema } from '../../types/function.js';
 import { emit } from '../events.js';
-import { runPreflight } from '../preflight.js';
 import { streamProviderTurn } from '../provider-stream.js';
 import type { RunRequest } from '../run-request.js';
-import type { Model } from '../../types/model.js';
 import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
 
 export type StreamContext = {
@@ -71,13 +83,23 @@ export type DeltaHandler = (
 
 export type AssistantStreamingPorts = TurnStatePorts & {
   loadRunRequest(session_id: string): Promise<RunRequest>;
-  runPreflight(
+  /**
+   * Load the post-compaction message window (raw messages from the latest
+   * compaction's tail boundary onward) plus the anchored summary, for
+   * `context::assemble`. Compaction bookkeeping entries are never included.
+   */
+  loadAssembleWindow(session_id: string, opts?: LoadWindowOptions): Promise<AssembleWindow>;
+  /** Build the model-ready context via `context::assemble` (best-effort). */
+  assembleContext(params: AssembleParams): Promise<AssembleResult>;
+  /**
+   * Persist the compaction round trip as an additive `kind:"custom"`
+   * bookkeeping entry when assemble compacted. The transcript is untouched.
+   */
+  persistCompaction(
     session_id: string,
-    messages: AgentMessage[],
-    provider: string,
-    model: string,
-    model_meta?: Model,
-  ): Promise<'ok' | 'compacted'>;
+    applied: AppliedReport,
+    window: MessageWithEntryId[],
+  ): Promise<void>;
   streamTurn(
     ctx: StreamContext,
     onDelta: DeltaHandler,
@@ -124,8 +146,16 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
   return {
     ...base,
 
-    async runPreflight(session_id, messages, provider, model, model_meta) {
-      return runPreflight(iii, session_id, messages, provider, model, model_meta);
+    async loadAssembleWindow(session_id, opts) {
+      return loadAssembleWindow(iii, session_id, opts);
+    },
+
+    async assembleContext(params) {
+      return assembleContext(iii, params);
+    },
+
+    async persistCompaction(session_id, applied, window) {
+      await persistCompactionRoundTrip(iii, session_id, applied, window);
     },
 
     async streamTurn(ctx, onDelta) {

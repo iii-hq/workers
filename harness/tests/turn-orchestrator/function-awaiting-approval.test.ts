@@ -115,7 +115,6 @@ describe('handleAwaitingApproval', () => {
     );
 
     installMockTurnStore({
-      loadMessages: vi.fn(async () => []),
       appendMessages: vi.fn(async () => {}),
     });
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);

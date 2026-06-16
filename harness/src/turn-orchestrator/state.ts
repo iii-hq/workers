@@ -55,11 +55,12 @@ type TurnStateRecordCore = {
   assistant_body_streamed?: boolean;
   /**
    * Full catalog entry for this turn's model, resolved once at `provisioning`
-   * and read by preflight, provider streaming, and turn-end compaction instead
-   * of each re-fetching `models::get`. Optional: absent on records persisted
-   * before this field existed (and on a cold catalog) — every reader falls back
-   * to a live fetch. The model is fixed for a turn, so no invalidation is
-   * needed. Excluded from {@link toView}, so it never bloats turn_state events.
+   * and read by the assemble pre-flight (inline limits for `context::assemble`)
+   * and provider streaming instead of re-fetching `models::get`. Optional:
+   * absent on records persisted before this field existed (and on a cold
+   * catalog) — readers fall back accordingly. The model is fixed for a turn, so
+   * no invalidation is needed. Excluded from {@link toView}, so it never bloats
+   * turn_state events.
    */
   model_meta?: Model;
   error?: { kind: string; message: string };

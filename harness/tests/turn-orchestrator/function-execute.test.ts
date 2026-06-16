@@ -49,7 +49,6 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
       content: [{ type: 'text' as const, text: 'ok' }],
       details: {},
     })),
-    loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
     emitTurnEnd: vi.fn(async () => {}),
     finishSession: vi.fn(async (rec) => {
@@ -184,8 +183,7 @@ describe('finalizeBatch', () => {
   it('appends results in one idempotent batch (no transcript reload for dedup)', async () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const appendMessages = vi.fn(async () => {});
-    const loadMessages = vi.fn(async () => []);
-    const ports = stubPorts({ loadMessages, appendMessages });
+    const ports = stubPorts({ appendMessages });
     const rec = newRecord('s1');
     enterFunctionExecute(rec, makeAssistant([fc]));
     rec.state = 'function_execute';
@@ -203,7 +201,6 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    expect(loadMessages).not.toHaveBeenCalled();
     expect(appendMessages).toHaveBeenCalledTimes(1);
     expect(appendMessages).toHaveBeenCalledWith(
       's1',

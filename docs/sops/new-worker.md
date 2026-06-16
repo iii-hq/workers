@@ -18,6 +18,9 @@ after §2.
 - Do **not** prefix with `iii-` unless the worker itself is named that way
   (e.g. `iii-directory`, `iii-lsp`).
 - Git release tags use the folder name: `<worker>/vX.Y.Z`.
+- **Function and trigger IDs** are `<worker>::<verb>`; multi-word segments use
+  kebab-case, never snake_case (e.g. `context::count-tokens`,
+  `shell::on-config-change`). See [`binary-worker.md`](binary-worker.md) §7.
 
 ## 2. Required files by deploy mode
 

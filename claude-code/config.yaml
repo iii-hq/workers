@@ -1,0 +1,34 @@
+engine_url: ws://127.0.0.1:49134
+
+defaults:
+  model: ""
+  permission_mode: acceptEdits
+  max_turns: 50
+  cwd: ""
+  append_system_prompt: ""
+  allowed_tools: []
+  disallowed_tools: []
+
+# Route Claude Code permission prompts through policy::check_permissions
+# (harness approval gate). Fail-closed when the gate is unreachable.
+# Requires the harness worker; leave false for standalone use.
+approval_gate: false
+
+# Stream AgentEvent frames here, grouped by session_id. The console and
+# acp worker both read this stream.
+events_stream: agent::events
+
+# Raw Claude Code messages (exact Agent SDK shapes: system/init, assistant,
+# user, result, stream_event) mirrored verbatim here, grouped by session_id.
+raw_events_stream: claude::events
+
+# Append the iii runtime context to the system prompt: teaches the agent
+# live discovery against the engine catalog through the iii CLI
+# (engine::functions::list, `iii trigger <fn> --help`). Per-turn override
+# via the iii_context payload field; a caller-supplied system_prompt
+# always wins and gets nothing appended.
+iii_context: true
+
+# Path to the Claude Code CLI binary. Empty = Agent SDK default resolution;
+# set to an absolute path (or "claude") when running the single-file bundle.
+claude_executable: ""

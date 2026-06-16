@@ -126,13 +126,6 @@ describe('session-manager call reduction', () => {
     return { iii, calls };
   }
 
-  it('loadMessages reads the window in one paginated read without re-ensuring', async () => {
-    const { iii, calls } = recordingIii();
-    await createTurnStore(iii).loadMessages('sess-a');
-    expect(calls.filter((c) => c === 'session::messages')).toHaveLength(1);
-    expect(calls).not.toContain('session::ensure');
-  });
-
   it('appendMessages writes without re-ensuring the session', async () => {
     const { iii, calls } = recordingIii();
     const msg = {

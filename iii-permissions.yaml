@@ -67,6 +67,12 @@ rules:
   - '!session::update_message'
   - '!session::fork'
   - '!session::set_active_leaf'
+  # context-manager: assemble/compact are pure transforms (nothing to leak)
+  # but each can spend a summariser LLM call, so deny them to in-run agents in
+  # this cost-sensitive deployment (context-manager.md § Agent exposure).
+  # count_tokens/prune are always safe and stay at the needs_approval default.
+  - '!context::assemble'
+  - '!context::compact'
   # Internal lifecycle hooks — agents must never force a config reload directly.
   # The handlers already re-fetch from configuration::get (ignoring the event
   # payload), so a direct call cannot inject config. These denies are

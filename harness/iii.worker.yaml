@@ -19,3 +19,7 @@ dependencies:
   configuration: "^0.17.0"
   iii-directory: "^0.8.1"
   session-manager: "^0.1.0"
+  # Soft dependency: the turn loop degrades to raw history when absent
+  # (see harness pre-flight fallback in src/runtime/compaction.ts). Declared
+  # for install convenience; the runtime fallback is the actual contract.
+  context-manager: "^0.1.0"

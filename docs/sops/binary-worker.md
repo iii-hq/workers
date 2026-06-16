@@ -371,6 +371,16 @@ final messages can be lost.
 
 ## 7. Functions: registering and writing handlers
 
+### Naming
+
+Function IDs are `<worker>::<verb>` (e.g. `shell::exec`, `context::assemble`).
+Each segment is lowercase, and **multi-word segments use kebab-case, never
+snake_case** — `context::count-tokens` and `shell::on-config-change`, not
+`context::count_tokens`. The id is the public wire surface other workers and
+agents call, so renaming it later is a breaking change. The same rule applies
+to a trigger's target `function_id` and to any custom `trigger_type` string
+(§8).
+
 ### Layout
 
 One file per function (or small feature group) under `src/functions/`.
@@ -498,6 +508,11 @@ Other built-ins worth knowing: `state::set`, `state::delete`, `state::list`,
 A function is callable via the SDK on its own. To make it callable from
 outside iii (HTTP, cron, queue, etc.) you also register a **trigger** that
 binds an external event source to the function.
+
+**Naming.** A trigger's `function_id` is the id the function was registered
+under, so it follows the same kebab-case rule as functions (§7 Naming). Any
+custom `trigger_type` string you introduce is also kebab-case (e.g.
+`row-change`), never snake_case.
 
 Trigger types in use across this repo and the SDK's built-ins:
 

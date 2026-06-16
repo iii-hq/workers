@@ -2,8 +2,7 @@
  * Shared turn-end helper for step outcome application.
  */
 
-import { limitFromModel } from '../../context-compaction/model-resolver.js';
-import type { AgentEvent, ModelContextLimit } from '../../types/agent-event.js';
+import type { AgentEvent } from '../../types/agent-event.js';
 import {
   emptyAssistant,
   type AgentMessage,
@@ -18,7 +17,6 @@ export type TurnEndEmitter = {
     session_id: string,
     message: AssistantMessage,
     function_results: FunctionResultMessage[],
-    model_limit?: ModelContextLimit,
   ): Promise<void>;
 };
 
@@ -30,8 +28,7 @@ export async function emitTurnEndOnce(
 ): Promise<void> {
   if (rec.turn_end_emitted) return;
   const last = message ?? rec.last_assistant ?? emptyAssistant();
-  const model_limit = rec.model_meta ? limitFromModel(rec.model_meta) : undefined;
-  await ports.emitTurnEnd(rec.session_id, last, function_results, model_limit);
+  await ports.emitTurnEnd(rec.session_id, last, function_results);
   rec.turn_end_emitted = true;
 }
 
