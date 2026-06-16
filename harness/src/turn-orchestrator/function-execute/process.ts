@@ -49,7 +49,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state function_execute: dispatch prepared calls and finalize results.',
+        'Run one durable FSM transition for session in state function_execute: trigger prepared calls and finalize results.',
     },
   );
 }

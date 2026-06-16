@@ -43,7 +43,7 @@ type TurnStateRecordCore = {
   session_id: string;
   /**
    * Unique id for this run, generated at `newRecord`. Threaded through the
-   * pre_dispatch hook contract, `harness::function::resolve`, and
+   * pre_trigger hook contract, `harness::function::resolve`, and
    * `harness::turn-completed` so sibling workers (the approval-gate) can key
    * their records to one turn. Never contains `/` (reserved state-key
    * separator on the sibling side).

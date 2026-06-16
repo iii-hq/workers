@@ -1,6 +1,6 @@
 /**
  * `harness::function::resolve` — the release/deliver surface for held
- * function calls. The approval-gate worker (or any pre_dispatch hook
+ * function calls. The approval-gate worker (or any pre_trigger hook
  * owner) calls it to settle a call its hook parked:
  *
  *   - `action: "execute"` — the call was approved: the awaiting-approval

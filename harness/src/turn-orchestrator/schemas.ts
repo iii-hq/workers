@@ -182,7 +182,7 @@ const ContentBlockSchema = z
 /**
  * `harness::function::resolve` payload — a sibling worker (the
  * approval-gate) settles one held call: `execute` releases it through the
- * normal dispatch pipeline; `deliver` answers it with the given content
+ * normal trigger pipeline; `deliver` answers it with the given content
  * without executing (user deny, sweep timeout).
  */
 export const FunctionResolvePayloadSchema = z

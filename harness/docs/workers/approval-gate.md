@@ -11,7 +11,7 @@ lives in the **standalone approval-gate worker** (Rust crate at
 
 The harness keeps only the mechanics the gate composes with:
 
-- the `harness::hook::pre-dispatch` trigger type the gate binds
+- the `harness::hook::pre-trigger` trigger type the gate binds
   `approval::gate` to (see
   [turn-orchestrator.md § Hook chokepoint](turn-orchestrator.md#hook-chokepoint)),
 - `harness::function::resolve` (`execute` releases a held call, `deliver`
@@ -19,7 +19,7 @@ The harness keeps only the mechanics the gate composes with:
 - the `harness::turn-completed` trigger type (terminal-turn cleanup).
 
 Deployment note: the gate is a separate process (like `llm-router`). Start
-the harness first — the gate's `harness::hook::pre-dispatch` binding is
+the harness first — the gate's `harness::hook::pre-trigger` binding is
 best-effort at boot and only retries on gate restart. A deployment without
-the gate runs **ungated** (zero pre_dispatch bindings ⇒ every call is
+the gate runs **ungated** (zero pre_trigger bindings ⇒ every call is
 allowed).

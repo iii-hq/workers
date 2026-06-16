@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../../src/runtime/iii.js';
-import { consultPreDispatch } from '../../../src/turn-orchestrator/hooks/chain.js';
+import { consultPreTrigger } from '../../../src/turn-orchestrator/hooks/chain.js';
 import {
-  addPreDispatchBindingForTests,
-  resetPreDispatchBindingsForTests,
+  addPreTriggerBindingForTests,
+  resetPreTriggerBindingsForTests,
 } from '../../../src/turn-orchestrator/hooks/registry.js';
 import type { BindingConfig, HookInput } from '../../../src/turn-orchestrator/hooks/types.js';
 
 function input(function_id = 'shell::run'): HookInput {
   return {
-    point: 'pre_dispatch',
+    point: 'pre_trigger',
     session_id: 's1',
     turn_id: 't_1',
     step: 1,
@@ -19,7 +19,7 @@ function input(function_id = 'shell::run'): HookInput {
 }
 
 function bind(function_id: string, config?: Partial<BindingConfig>): void {
-  addPreDispatchBindingForTests({
+  addPreTriggerBindingForTests({
     id: `b-${function_id}`,
     function_id,
     config: { timeout_ms: 5_000, on_error: 'fail_closed', ...config },
@@ -37,20 +37,20 @@ function iiiAnswering(answers: Record<string, unknown | (() => unknown)>): ISdk 
 }
 
 beforeEach(() => {
-  resetPreDispatchBindingsForTests();
+  resetPreTriggerBindingsForTests();
 });
 
-describe('consultPreDispatch', () => {
+describe('consultPreTrigger', () => {
   it('allows when no bindings match (hooks narrow, never widen)', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    expect(await consultPreDispatch(iii, input())).toEqual({ kind: 'allow' });
+    expect(await consultPreTrigger(iii, input())).toEqual({ kind: 'allow' });
     expect(iii.trigger).not.toHaveBeenCalled();
   });
 
   it('skips bindings whose functions globs do not match', async () => {
     bind('approval::gate', { functions: ['web::*'] });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    expect(await consultPreDispatch(iii, input('shell::run'))).toEqual({ kind: 'allow' });
+    expect(await consultPreTrigger(iii, input('shell::run'))).toEqual({ kind: 'allow' });
     expect(iii.trigger).not.toHaveBeenCalled();
   });
 
@@ -58,7 +58,7 @@ describe('consultPreDispatch', () => {
     bind('approval::gate');
     const iii = iiiAnswering({ 'approval::gate': { decision: 'continue' } });
 
-    expect(await consultPreDispatch(iii, input())).toEqual({ kind: 'allow' });
+    expect(await consultPreTrigger(iii, input())).toEqual({ kind: 'allow' });
     expect(iii.trigger).toHaveBeenCalledWith({
       function_id: 'approval::gate',
       payload: input(),
@@ -73,7 +73,7 @@ describe('consultPreDispatch', () => {
       'approval::gate': { decision: 'deny', reason: 'human_only_function' },
     });
 
-    const out = await consultPreDispatch(iii, input());
+    const out = await consultPreTrigger(iii, input());
     expect(out).toEqual({
       kind: 'deny',
       denial: {
@@ -93,7 +93,7 @@ describe('consultPreDispatch', () => {
       'approval::gate': { decision: 'hold', pending_timeout_ms: 1_800_000 },
     });
 
-    expect(await consultPreDispatch(iii, input())).toEqual({
+    expect(await consultPreTrigger(iii, input())).toEqual({
       kind: 'hold',
       held_by: 'approval::gate',
       pending_timeout_ms: 1_800_000,
@@ -108,7 +108,7 @@ describe('consultPreDispatch', () => {
       },
     });
 
-    const out = await consultPreDispatch(iii, input());
+    const out = await consultPreTrigger(iii, input());
     expect(out.kind).toBe('deny');
     if (out.kind !== 'deny') return;
     expect(out.denial.denied_by).toBe('gate_unavailable');
@@ -120,7 +120,7 @@ describe('consultPreDispatch', () => {
     bind('approval::gate');
     const iii = iiiAnswering({ 'approval::gate': 'what even is this' });
 
-    const out = await consultPreDispatch(iii, input());
+    const out = await consultPreTrigger(iii, input());
     expect(out.kind).toBe('deny');
     if (out.kind !== 'deny') return;
     expect(out.denial.denied_by).toBe('gate_unavailable');
@@ -136,7 +136,7 @@ describe('consultPreDispatch', () => {
       'beta::gate': { decision: 'hold', pending_timeout_ms: 60_000 },
     });
 
-    expect(await consultPreDispatch(iii, input())).toEqual({
+    expect(await consultPreTrigger(iii, input())).toEqual({
       kind: 'hold',
       held_by: 'beta::gate',
       pending_timeout_ms: 60_000,
@@ -156,7 +156,7 @@ describe('consultPreDispatch', () => {
       }),
     } as unknown as ISdk;
 
-    const out = await consultPreDispatch(iii, input());
+    const out = await consultPreTrigger(iii, input());
     expect(order).toEqual(['alpha::first', 'beta::second']);
     expect(out.kind).toBe('deny');
   });

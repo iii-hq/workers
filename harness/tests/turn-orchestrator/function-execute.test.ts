@@ -41,7 +41,7 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
     emitEnd: vi.fn(async () => {}),
     emit: vi.fn(async () => {}),
     checkpoint: vi.fn(async () => {}),
-    dispatch: vi.fn(async () => ({
+    trigger: vi.fn(async () => ({
       kind: 'result' as const,
       result: { content: [{ type: 'text' as const, text: 'ok' }], details: {} },
     })),
@@ -78,7 +78,7 @@ describe('batch planning from assistant', () => {
     );
 
     expect(batch[0]).toEqual({
-      route: 'dispatch',
+      route: 'trigger',
       call: unwrapAgentTrigger({
         id: 'fc-1',
         function_id: 'agent_trigger',
@@ -129,22 +129,22 @@ describe('runOneCall', () => {
       },
     };
 
-    const outcome = await runOneCall(ports, 's1', { route: 'dispatch', call: fc }, executed);
+    const outcome = await runOneCall(ports, 's1', { route: 'trigger', call: fc }, executed);
 
     expect(outcome.kind).toBe('skipped');
     expect(ports.emitStart).not.toHaveBeenCalled();
     expect(ports.emitEnd).toHaveBeenCalledOnce();
-    expect(ports.dispatch).not.toHaveBeenCalled();
+    expect(ports.trigger).not.toHaveBeenCalled();
   });
 
   it('returns pending without mutating executed map', async () => {
     const ports = stubPorts({
-      dispatch: vi.fn(async () => ({ kind: 'pending' as const })),
+      trigger: vi.fn(async () => ({ kind: 'pending' as const })),
     });
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const executed: Record<string, ExecutedCall> = {};
 
-    const outcome = await runOneCall(ports, 's1', { route: 'dispatch', call: fc }, executed);
+    const outcome = await runOneCall(ports, 's1', { route: 'trigger', call: fc }, executed);
 
     expect(outcome.kind).toBe('pending');
     expect(executed).toEqual({});
@@ -160,7 +160,7 @@ describe('finalizeBatch', () => {
     rec.state = 'function_execute';
 
     rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -189,7 +189,7 @@ describe('finalizeBatch', () => {
     rec.state = 'function_execute';
 
     rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -217,7 +217,7 @@ describe('finalizeBatch', () => {
     enterFunctionExecute(rec, makeAssistant([fc]));
     rec.state = 'function_execute';
     rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -245,7 +245,7 @@ describe('finalizeBatch', () => {
     enterFunctionExecute(rec, makeAssistant([fc]));
     rec.state = 'function_execute';
     rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,

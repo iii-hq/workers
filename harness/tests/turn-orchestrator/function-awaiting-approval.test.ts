@@ -97,24 +97,24 @@ function makeIii(resolutionStore: Map<string, unknown>): ISdk {
 }
 
 describe('applyDecisionToPrepared', () => {
-  const dispatchCall = {
-    route: 'dispatch' as const,
+  const triggerCall = {
+    route: 'trigger' as const,
     call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
   };
 
   it('maps execute to pre_approved', () => {
-    expect(applyDecisionToPrepared(dispatchCall, executeResolution())).toEqual({
+    expect(applyDecisionToPrepared(triggerCall, executeResolution())).toEqual({
       route: 'pre_approved',
-      call: dispatchCall.call,
+      call: triggerCall.call,
     });
   });
 
   it('maps deliver to a synthetic result carrying the delivered content verbatim', () => {
     const resolution = deliverResolution();
-    const resolved = applyDecisionToPrepared(dispatchCall, resolution);
+    const resolved = applyDecisionToPrepared(triggerCall, resolution);
     expect(resolved).toEqual({
       route: 'synthetic',
-      call: dispatchCall.call,
+      call: triggerCall.call,
       result: {
         content: [{ type: 'text', text: 'Permission denied by user: policy' }],
         details: { status: 'denied', denied_by: 'user', reason: 'policy' },
@@ -126,7 +126,7 @@ describe('applyDecisionToPrepared', () => {
 
   it('deliver carries is_error through (false stays false)', () => {
     const resolved = applyDecisionToPrepared(
-      dispatchCall,
+      triggerCall,
       deliverResolution({ is_error: false, details: undefined }),
     );
     expect(resolved).toMatchObject({ route: 'synthetic', is_error: false });
@@ -143,7 +143,7 @@ describe('handleAwaitingApproval', () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } };
     seedFunctionAwaitingApproval(
       rec,
-      { prepared: [{ route: 'dispatch', call: fc }], executed: {} },
+      { prepared: [{ route: 'trigger', call: fc }], executed: {} },
       [{ function_call_id: 'fc-1', function_id: 'shell::run' }],
     );
 
@@ -177,7 +177,7 @@ describe('handleAwaitingApproval', () => {
     seedFunctionAwaitingApproval(
       rec,
       {
-        prepared: [{ route: 'dispatch', call: fc }],
+        prepared: [{ route: 'trigger', call: fc }],
         executed: {
           'fc-1': {
             call: fc,
@@ -197,7 +197,7 @@ describe('handleAwaitingApproval', () => {
 
     await handleAwaitingApproval(iii, rec);
 
-    // No second execution: the target was never dispatched again.
+    // No second execution: the target was never triggered again.
     const trigger = iii.trigger as unknown as ReturnType<typeof vi.fn>;
     const shellCalls = trigger.mock.calls.filter(
       (call: [{ function_id: string }]) => call[0].function_id === 'shell::run',
@@ -218,7 +218,7 @@ describe('handleAwaitingApproval', () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     seedFunctionAwaitingApproval(
       rec,
-      { prepared: [{ route: 'dispatch', call: fc }], executed: {} },
+      { prepared: [{ route: 'trigger', call: fc }], executed: {} },
       [{ function_call_id: 'fc-1', function_id: 'shell::run' }],
     );
     installMockTurnStore();
@@ -241,9 +241,9 @@ describe('handleAwaitingApproval', () => {
       rec,
       {
         prepared: [
-          { route: 'dispatch', call: fc1 },
-          { route: 'dispatch', call: fc2 },
-          { route: 'dispatch', call: fc3 },
+          { route: 'trigger', call: fc1 },
+          { route: 'trigger', call: fc2 },
+          { route: 'trigger', call: fc3 },
         ],
         executed: {
           'fc-1': {

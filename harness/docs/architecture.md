@@ -26,8 +26,8 @@ deterministic idempotent entry ids, streams assistant content via
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*` / `harness::provider::{register,resolve,list}`. Owns the provider registry + the `harness` entry in the `configuration` worker (credentials, settings, permissions — see [storage.md](harness/docs/storage.md)). | [workers/harness.md](harness/docs/workers/harness.md) |
-| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` pre_dispatch hook chokepoint; owns `harness::function::resolve` and the `harness::hook::pre-dispatch` / `harness::turn-completed` trigger types. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
-| approval-gate (external) | [approval-gate/ (repo root)](../../approval-gate/) | Standalone Rust worker: approval policy, pending inbox, decision RPCs. Binds `approval::gate` to the harness's pre_dispatch hook and settles holds via `harness::function::resolve`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
+| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `triggerWithHook` pre_trigger hook chokepoint; owns `harness::function::resolve` and the `harness::hook::pre-trigger` / `harness::turn-completed` trigger types. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
+| approval-gate (external) | [approval-gate/ (repo root)](../../approval-gate/) | Standalone Rust worker: approval policy, pending inbox, decision RPCs. Binds `approval::gate` to the harness's pre_trigger hook and settles holds via `harness::function::resolve`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
 | models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Model-capability catalogue in iii state (provider-registered only; no embedded seed or fallback), refreshed by `provider::<name>::refresh_models`. | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
@@ -81,7 +81,7 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "provider::*::stream" --> provLlama
-  turnOrch -- "pre_dispatch hook: approval::gate" --> approval
+  turnOrch -- "pre_trigger hook: approval::gate" --> approval
   approval -- "policy::check_permissions" --> harness
   turnOrch -- "session::ensure/append/update_message/set_status" --> sessionMgr
   turnOrch -- "state::* persistence" --> state
@@ -138,8 +138,8 @@ unexpectedly (unless it opts into queue retry via `TransientError`).
 
 ## Approval flow
 
-The orchestrator consults the `harness::hook::pre-dispatch` chain inside
-`dispatchWithHook` — bound hooks (the standalone approval-gate's
+The orchestrator consults the `harness::hook::pre-trigger` chain inside
+`triggerWithHook` — bound hooks (the standalone approval-gate's
 `approval::gate`) answer `continue`, `deny`, or `hold`. The approval policy
 itself (permission modes, allow-lists, `policy::check_permissions` fallback)
 lives in the gate worker; see
@@ -157,7 +157,7 @@ When the assistant message contains multiple tool calls, `runBatch` does not
 stop at the first `pending`. For each call in assistant tool order:
 
 - already in `work.executed` or listed in `awaiting_approval[]` → skip
-- hook `continue` (or inline hook `deny`) → dispatch, checkpoint, emit
+- hook `continue` (or inline hook `deny`) → trigger, checkpoint, emit
   `function_execution_end`
 - hook `hold` → emit `function_execution_start`, append the call
   to `awaiting_approval[]`, **continue** remaining siblings
@@ -204,9 +204,9 @@ sequenceDiagram
 
   Note over Turn: function_execute: runBatch walks all tool calls.<br/>held calls append to awaiting_approval[];<br/>allowed siblings execute in the same pass.
 
-  Turn->>Gate: pre_dispatch hook approval::gate (HookInput)
+  Turn->>Gate: pre_trigger hook approval::gate (HookInput)
   alt gate allows (mode / allow-lists / yaml allow)
-    Gate-->>Turn: continue → dispatch the call
+    Gate-->>Turn: continue → trigger the call
   else gate denies
     Gate-->>Turn: deny + reason → error FunctionResult
   else needs a human
@@ -303,7 +303,7 @@ dependants register:
 ```mermaid
 flowchart TD
   harness --> turnOrch
-  turnOrch --> approval["approval-gate (external; binds the pre_dispatch hook at boot)"]
+  turnOrch --> approval["approval-gate (external; binds the pre_trigger hook at boot)"]
   models[models-catalog] --> turnOrch
   sessionMgr["session-manager (external)"] --> turnOrch
   harness --> provAnth[provider-anthropic]

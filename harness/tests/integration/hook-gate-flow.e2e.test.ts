@@ -1,7 +1,7 @@
 /**
- * End-to-end pre_dispatch hook flow against the REAL chain (no
- * dispatchWithHook mocks): a fake `approval::gate` bound to
- * `harness::hook::pre-dispatch` holds/denies/allows calls, and
+ * End-to-end pre_trigger hook flow against the REAL chain (no
+ * triggerWithHook mocks): a fake `approval::gate` bound to
+ * `harness::hook::pre-trigger` holds/denies/allows calls, and
  * `harness::function::resolve` settles held ones — exactly the wire the
  * standalone approval-gate worker drives.
  */
@@ -13,7 +13,7 @@ import {
   makeAssistantWithCalls,
 } from './parallel-approval-harness.js';
 
-describe('pre_dispatch hook gate flow e2e', () => {
+describe('pre_trigger hook gate flow e2e', () => {
   it('hold parks the call with the gate-supplied HookInput, resolve-execute releases it without re-consulting', async () => {
     const h = createParallelApprovalHarness();
     // Default gate output is hold (1_800_000ms).
@@ -21,11 +21,11 @@ describe('pre_dispatch hook gate flow e2e', () => {
     h.seedExecute('sess-hold', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
     await h.runExecute('sess-hold');
 
-    // The gate saw one pre_dispatch HookInput with the routing envelope.
+    // The gate saw one pre_trigger HookInput with the routing envelope.
     expect(h.gateCalls).toHaveLength(1);
     const rec = h.loadTurnRecord('sess-hold');
     expect(h.gateCalls[0]).toMatchObject({
-      point: 'pre_dispatch',
+      point: 'pre_trigger',
       session_id: 'sess-hold',
       turn_id: rec?.turn_id,
       depth: 0,
@@ -75,7 +75,7 @@ describe('pre_dispatch hook gate flow e2e', () => {
     });
   });
 
-  it('gate continue lets the call dispatch straight through', async () => {
+  it('gate continue lets the call trigger straight through', async () => {
     const h = createParallelApprovalHarness();
     h.setGateOutput({ decision: 'continue' });
 

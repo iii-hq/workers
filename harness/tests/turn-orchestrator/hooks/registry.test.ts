@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk, TriggerConfig, TriggerHandler } from '../../../src/runtime/iii.js';
 import {
-  addPreDispatchBindingForTests,
-  registerPreDispatchTriggerType,
-  resetPreDispatchBindingsForTests,
+  addPreTriggerBindingForTests,
+  registerPreTriggerType,
+  resetPreTriggerBindingsForTests,
   snapshotBindings,
 } from '../../../src/turn-orchestrator/hooks/registry.js';
-import { PRE_DISPATCH_TRIGGER_TYPE } from '../../../src/turn-orchestrator/hooks/types.js';
+import { PRE_TRIGGER_TYPE } from '../../../src/turn-orchestrator/hooks/types.js';
 
 type CapturedHandler = TriggerHandler<unknown>;
 
@@ -14,7 +14,7 @@ function captureHandler(): { iii: ISdk; handler: () => CapturedHandler } {
   let handler: CapturedHandler | undefined;
   const iii = {
     registerTriggerType: vi.fn((input: { id: string }, h: CapturedHandler) => {
-      expect(input.id).toBe(PRE_DISPATCH_TRIGGER_TYPE);
+      expect(input.id).toBe(PRE_TRIGGER_TYPE);
       handler = h;
       return {};
     }),
@@ -33,13 +33,13 @@ function bindingConfig(id: string, function_id: string, config: unknown): Trigge
 }
 
 beforeEach(() => {
-  resetPreDispatchBindingsForTests();
+  resetPreTriggerBindingsForTests();
 });
 
-describe('pre_dispatch trigger type registry', () => {
+describe('pre_trigger trigger type registry', () => {
   it('registers and unregisters bindings through the engine handler', async () => {
     const { iii, handler } = captureHandler();
-    registerPreDispatchTriggerType(iii);
+    registerPreTriggerType(iii);
 
     await handler().registerTrigger(bindingConfig('b1', 'approval::gate', { functions: ['*'] }));
     expect(snapshotBindings('shell::run')).toHaveLength(1);
@@ -50,7 +50,7 @@ describe('pre_dispatch trigger type registry', () => {
 
   it('rejects a malformed binding config at registration (strict schema)', async () => {
     const { iii, handler } = captureHandler();
-    registerPreDispatchTriggerType(iii);
+    registerPreTriggerType(iii);
 
     await expect(
       handler().registerTrigger(bindingConfig('b1', 'approval::gate', { functoins: ['*'] })),
@@ -60,7 +60,7 @@ describe('pre_dispatch trigger type registry', () => {
 
   it('treats a null config as match-all with defaults', async () => {
     const { iii, handler } = captureHandler();
-    registerPreDispatchTriggerType(iii);
+    registerPreTriggerType(iii);
 
     await handler().registerTrigger(bindingConfig('b1', 'approval::gate', null));
     const [binding] = snapshotBindings('anything::at_all');
@@ -70,7 +70,7 @@ describe('pre_dispatch trigger type registry', () => {
   });
 
   it('narrows by functions globs', () => {
-    addPreDispatchBindingForTests({
+    addPreTriggerBindingForTests({
       id: 'b1',
       function_id: 'approval::gate',
       config: {
@@ -87,17 +87,17 @@ describe('pre_dispatch trigger type registry', () => {
   });
 
   it('orders the chain by priority, ties by function_id', () => {
-    addPreDispatchBindingForTests({
+    addPreTriggerBindingForTests({
       id: 'b-late',
       function_id: 'zeta::hook',
       config: { priority: 10, timeout_ms: 5_000, on_error: 'fail_closed' },
     });
-    addPreDispatchBindingForTests({
+    addPreTriggerBindingForTests({
       id: 'b-tie-2',
       function_id: 'beta::hook',
       config: { timeout_ms: 5_000, on_error: 'fail_closed' },
     });
-    addPreDispatchBindingForTests({
+    addPreTriggerBindingForTests({
       id: 'b-tie-1',
       function_id: 'alpha::hook',
       config: { timeout_ms: 5_000, on_error: 'fail_closed' },

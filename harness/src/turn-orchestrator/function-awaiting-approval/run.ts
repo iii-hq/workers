@@ -3,7 +3,7 @@
  * batch after each settled call.
  */
 
-import { finalizeBatch, dispatchContext, runOneCall } from '../function-execute/run.js';
+import { finalizeBatch, triggerContext, runOneCall } from '../function-execute/run.js';
 import type { FunctionExecutePorts } from '../function-execute/ports.js';
 import type { PreparedCall } from '../function-execute/types.js';
 import { isBatchComplete } from '../function-execute/types.js';
@@ -49,7 +49,7 @@ export async function processResolvedApprovals(
   const work = rec.work;
   let awaiting = [...rec.awaiting_approval];
   const executed = { ...work.executed };
-  const ctx = dispatchContext(rec);
+  const ctx = triggerContext(rec);
   let resolvedCount = 0;
 
   let resolvedThisPass = true;

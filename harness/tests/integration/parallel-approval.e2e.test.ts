@@ -29,9 +29,9 @@ function wakeEnqueues(
 }
 
 describe('parallel approval e2e', () => {
-  it('dispatches later calls while earlier ones park without blocking the batch', async () => {
+  it('triggers later calls while earlier ones park without blocking the batch', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -72,7 +72,7 @@ describe('parallel approval e2e', () => {
 
   it('executes one approved call immediately while a sibling stays pending', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -114,7 +114,7 @@ describe('parallel approval e2e', () => {
 
   it('resolves approvals out of order without waiting for batch order', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -150,7 +150,7 @@ describe('parallel approval e2e', () => {
 
   it('denies one pending call without affecting an unresolved sibling', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -190,7 +190,7 @@ describe('parallel approval e2e', () => {
 
   it('is idempotent when the same decision wake is delivered twice', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'pending',
       held_by: 'approval::gate',
       pending_timeout_ms: 1_800_000,
@@ -213,7 +213,7 @@ describe('parallel approval e2e', () => {
 
   it('resolves two approvals fired in parallel without double-executing or double-finalizing', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -250,7 +250,7 @@ describe('parallel approval e2e', () => {
 
   it('drains a sibling approved mid-execution even when its own wake is dropped', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -300,7 +300,7 @@ describe('parallel approval e2e', () => {
 
   it('re-enqueues a follow-up wake when a resolved call leaves siblings pending', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+    vi.spyOn(agentTriggerModule, 'triggerWithHook')
       .mockResolvedValueOnce({
         kind: 'pending',
         held_by: 'approval::gate',
@@ -331,7 +331,7 @@ describe('parallel approval e2e', () => {
 
   it('wakes the parked turn via harness::function::resolve and deletes the consumed row', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'pending',
       held_by: 'approval::gate',
       pending_timeout_ms: 1_800_000,
@@ -353,7 +353,7 @@ describe('parallel approval e2e', () => {
 
   it('answers {resolved: false} for an unknown call and a stale turn_id', async () => {
     const h = createParallelApprovalHarness();
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'pending',
       held_by: 'approval::gate',
       pending_timeout_ms: 1_800_000,

@@ -108,7 +108,7 @@ describe('approval-gate worker wire parity', () => {
 
   it('HookInput matches what approval::gate deserializes', () => {
     const input: HookInput = {
-      point: 'pre_dispatch',
+      point: 'pre_trigger',
       session_id: 's_1',
       turn_id: 't_1',
       step: 3,
@@ -116,7 +116,7 @@ describe('approval-gate worker wire parity', () => {
       call: { id: 'c_1', function_id: 'shell::run', arguments: { cmd: 'ls' } },
     };
     expect(JSON.parse(JSON.stringify(input))).toEqual({
-      point: 'pre_dispatch',
+      point: 'pre_trigger',
       session_id: 's_1',
       turn_id: 't_1',
       step: 3,

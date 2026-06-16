@@ -60,7 +60,7 @@ function fixture(): {
     rec.last_assistant = null;
     rec.work = {
       prepared: callIds.map((id) => ({
-        route: 'dispatch' as const,
+        route: 'trigger' as const,
         call: { id, function_id: 'shell::run', arguments: {} },
       })),
       executed: {},

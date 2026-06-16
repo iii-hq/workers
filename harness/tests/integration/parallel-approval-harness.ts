@@ -2,7 +2,7 @@
  * Integration harness for parallel approval flows: real TurnStore +
  * runTransition + harness::function::resolve, simulated iii
  * state/streams, and a scriptable fake `approval::gate` bound to the
- * real pre_dispatch hook chain.
+ * real pre_trigger hook chain.
  */
 
 import { vi } from 'vitest';
@@ -15,8 +15,8 @@ import {
   type FunctionResolveResult,
 } from '../../src/turn-orchestrator/function-resolve.js';
 import {
-  addPreDispatchBindingForTests,
-  resetPreDispatchBindingsForTests,
+  addPreTriggerBindingForTests,
+  resetPreTriggerBindingsForTests,
 } from '../../src/turn-orchestrator/hooks/registry.js';
 import type { HookOutput } from '../../src/turn-orchestrator/hooks/types.js';
 import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
@@ -132,8 +132,8 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
   };
 
   // Bind the fake gate to the REAL hook chain (module-global registry).
-  resetPreDispatchBindingsForTests();
-  addPreDispatchBindingForTests({
+  resetPreTriggerBindingsForTests();
+  addPreTriggerBindingForTests({
     id: 'test-gate',
     function_id: 'approval::gate',
     config: { functions: ['*'], timeout_ms: 5_000, on_error: 'fail_closed' },

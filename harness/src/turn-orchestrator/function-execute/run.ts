@@ -6,7 +6,7 @@ import type { AssistantMessage, FunctionResultMessage } from '../../types/agent-
 import type { FunctionCallContent } from '../../types/content.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import {
-  type DispatchContext,
+  type TriggerContext,
   TOOL_NAME,
   isErrorResult,
   missingFunctionResult,
@@ -55,7 +55,7 @@ function toPreparedCall(block: FunctionCallContent): PreparedCall {
   if (!unwrapped.function_id) {
     return { route: 'synthetic', call: unwrapped, result: missingFunctionResult() };
   }
-  return { route: 'dispatch', call: unwrapped };
+  return { route: 'trigger', call: unwrapped };
 }
 
 /** Set fields expected when entering `function_execute` (mirrors assistant_streaming finalize). */
@@ -74,7 +74,7 @@ export function enterFunctionExecute(rec: TurnStateRecord, asst: AssistantMessag
 }
 
 /** Hook-chain context for one batch, derived from the FSM record. */
-export function dispatchContext(rec: FunctionBatchTurnRecord): DispatchContext {
+export function triggerContext(rec: FunctionBatchTurnRecord): TriggerContext {
   return {
     session_id: rec.session_id,
     turn_id: rec.turn_id,
@@ -86,7 +86,7 @@ export function dispatchContext(rec: FunctionBatchTurnRecord): DispatchContext {
 async function resolvePreparedCall(
   ports: FunctionExecutePorts,
   prepared: PreparedCall,
-  ctx: DispatchContext,
+  ctx: TriggerContext,
 ): Promise<ResolveCallResult> {
   switch (prepared.route) {
     case 'synthetic':
@@ -95,8 +95,8 @@ async function resolvePreparedCall(
       const result = await ports.triggerPreApproved(prepared.call);
       return { kind: 'resolved', result, is_error: isErrorResult(result) };
     }
-    case 'dispatch': {
-      const out = await ports.dispatch(prepared.call, ctx);
+    case 'trigger': {
+      const out = await ports.trigger(prepared.call, ctx);
       if (out.kind === 'pending') {
         return { kind: 'pending' };
       }
@@ -112,7 +112,7 @@ export type RunOneCallOptions = {
 
 export async function runOneCall(
   ports: FunctionExecutePorts,
-  ctx: DispatchContext,
+  ctx: TriggerContext,
   prepared: PreparedCall,
   executed: Record<string, ExecutedCall>,
   opts?: RunOneCallOptions,
@@ -155,7 +155,7 @@ export async function runBatch(
   const executed = { ...rec.work.executed };
   const awaitingIds = new Set(rec.awaiting_approval.map((entry) => entry.function_call_id));
   const newPending: PendingApproval[] = [];
-  const ctx = dispatchContext(rec);
+  const ctx = triggerContext(rec);
 
   for (const item of prepared) {
     const callId = preparedCallId(item);

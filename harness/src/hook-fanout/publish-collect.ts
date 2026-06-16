@@ -108,7 +108,7 @@ function deliverReply(c: Collector, payload: unknown): void {
 
 /**
  * Stream trigger handler. Fires on every `stream::set` to
- * `agent::hook_reply`. Dispatches the reply to the pending Collector for
+ * `agent::hook_reply`. Delivers the reply to the pending Collector for
  * this `group_id`; ignores frames for unknown event_ids (e.g. late
  * arrivals after a publish_collect already exited).
  *
@@ -182,7 +182,7 @@ export async function execute(
       }, effective_timeout);
 
       // Publish AFTER the collector is installed so an early reply can't
-      // miss the Map lookup. iii::durable::publish enqueues; dispatch is
+      // miss the Map lookup. iii::durable::publish enqueues; delivery is
       // async on the bus, so there is no real race either way — but
       // installed-first is unambiguously correct.
       (async () => {

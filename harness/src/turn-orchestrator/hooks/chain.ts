@@ -1,5 +1,5 @@
 /**
- * The pre_dispatch hook chain. Consults every bound hook (in priority
+ * The pre_trigger hook chain. Consults every bound hook (in priority
  * order) for one agent function call:
  *
  *   - `continue` → next hook (all continue ⇒ allow)
@@ -11,7 +11,7 @@
  * binding's `on_error`: `fail_closed` (default) denies — a crashed gate
  * must not wave calls through; `fail_open` logs and skips the hook.
  *
- * Zero matching bindings ⇒ allow: hooks narrow the dispatch policy,
+ * Zero matching bindings ⇒ allow: hooks narrow the trigger policy,
  * never widen it. A deployment without a gate worker is ungated.
  */
 
@@ -26,7 +26,7 @@ export type HookOutcome =
   | { kind: 'deny'; denial: DenialEnvelope }
   | { kind: 'hold'; held_by: string; pending_timeout_ms: number };
 
-export async function consultPreDispatch(iii: ISdk, input: HookInput): Promise<HookOutcome> {
+export async function consultPreTrigger(iii: ISdk, input: HookInput): Promise<HookOutcome> {
   const chain = snapshotBindings(input.call.function_id);
 
   for (const binding of chain) {
@@ -40,14 +40,14 @@ export async function consultPreDispatch(iii: ISdk, input: HookInput): Promise<H
     } catch (err) {
       const failure = `hook ${binding.function_id} unavailable: ${String(err)}`;
       if (binding.config.on_error === 'fail_open') {
-        logger.warn('pre_dispatch hook failed; fail_open skips it', {
+        logger.warn('pre_trigger hook failed; fail_open skips it', {
           hook: binding.function_id,
           function_id: input.call.function_id,
           err: String(err),
         });
         continue;
       }
-      logger.warn('pre_dispatch hook failed; failing closed', {
+      logger.warn('pre_trigger hook failed; failing closed', {
         hook: binding.function_id,
         function_id: input.call.function_id,
         err: String(err),
@@ -62,7 +62,7 @@ export async function consultPreDispatch(iii: ISdk, input: HookInput): Promise<H
     if (!parsed.success) {
       const failure = `hook ${binding.function_id} returned an unparseable decision`;
       if (binding.config.on_error === 'fail_open') {
-        logger.warn('pre_dispatch hook reply unparseable; fail_open skips it', {
+        logger.warn('pre_trigger hook reply unparseable; fail_open skips it', {
           hook: binding.function_id,
           function_id: input.call.function_id,
         });

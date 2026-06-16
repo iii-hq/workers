@@ -1,8 +1,8 @@
 /**
- * Agent function-call dispatcher + hook chokepoint.
+ * Agent function-call trigger + hook chokepoint.
  *
- * `dispatchWithHook` is the single chokepoint for FSM-issued calls: every
- * agent function call consults the `harness::hook::pre-dispatch` chain
+ * `triggerWithHook` is the single chokepoint for FSM-issued calls: every
+ * agent function call consults the `harness::hook::pre-trigger` chain
  * before reaching the inner trigger. `triggerFunctionCall` is the shared
  * trigger/decode/error path used by both the hook gate and released
  * (pre-approved) resume execution.
@@ -12,21 +12,21 @@ import { IIIInvocationError, type ISdk } from '../runtime/iii.js';
 import { z } from 'zod';
 import type { ContentBlock } from '../types/content.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
-import { consultPreDispatch } from './hooks/chain.js';
+import { consultPreTrigger } from './hooks/chain.js';
 import { type DenialEnvelope, denialResult, gateUnavailableEnvelope } from './hooks/denial.js';
 import type { HookInput } from './hooks/types.js';
 
 export const TOOL_NAME = 'agent_trigger';
 
 /** Turn/session identity threaded from the FSM record into the hook chain. */
-export type DispatchContext = {
+export type TriggerContext = {
   session_id: string;
   turn_id: string;
   step?: number;
   metadata?: Record<string, unknown>;
 };
 
-export type DispatchResult =
+export type TriggerResult =
   | { kind: 'result'; result: FunctionResult }
   | { kind: 'pending'; held_by: string; pending_timeout_ms: number };
 
@@ -81,7 +81,7 @@ export function agentTriggerTool(): unknown {
       properties: {
         function: {
           type: 'string',
-          description: "iii function id to dispatch, e.g. 'shell::fs::ls'.",
+          description: "iii function id to trigger, e.g. 'shell::fs::ls'.",
         },
         payload: {
           type: 'object',
@@ -349,7 +349,7 @@ export async function triggerFunctionCall(
 
 /**
  * `function_call` carries the routing envelope (session id + call identity) that
- * the pre_dispatch hooks and policy worker read. `targetCall` is what actually
+ * the pre_trigger hooks and policy worker read. `targetCall` is what actually
  * reaches the target function. They differ on purpose: the envelope spreads
  * routing fields (including `function_id` = the TARGET id) at the top level,
  * which would otherwise CLOBBER a same-named argument in the caller's payload —
@@ -358,14 +358,14 @@ export async function triggerFunctionCall(
  * itself. The hooks need the envelope; the target must get the caller's
  * untouched arguments. Defaults to `function_call` for callers that don't split.
  */
-export async function dispatchWithHook(
+export async function triggerWithHook(
   iii: ISdk,
-  ctx: DispatchContext,
+  ctx: TriggerContext,
   function_call: FunctionCall,
   targetCall: FunctionCall = function_call,
-): Promise<DispatchResult> {
+): Promise<TriggerResult> {
   const input: HookInput = {
-    point: 'pre_dispatch',
+    point: 'pre_trigger',
     session_id: ctx.session_id,
     turn_id: ctx.turn_id,
     step: ctx.step,
@@ -377,7 +377,7 @@ export async function dispatchWithHook(
       arguments: function_call.arguments,
     },
   };
-  const outcome = await consultPreDispatch(iii, input);
+  const outcome = await consultPreTrigger(iii, input);
   if (outcome.kind === 'deny') {
     return { kind: 'result', result: denialResult(outcome.denial) };
   }

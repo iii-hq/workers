@@ -1,5 +1,5 @@
 /**
- * Denial envelope shapes shared by the pre_dispatch hook chain and the
+ * Denial envelope shapes shared by the pre_trigger hook chain and the
  * generic trigger failure path. The full approval policy (permission
  * modes, allow-lists, yaml rules, redaction) lives in the standalone
  * approval-gate worker; the harness only renders denial outcomes into
@@ -36,7 +36,7 @@ export function gateUnavailableEnvelope(function_id: string, reason: string): De
 }
 
 /**
- * Denial returned by a pre_dispatch hook. The hook wire carries only
+ * Denial returned by a pre_trigger hook. The hook wire carries only
  * `{ decision: "deny", reason }` — the hook owner renders its full
  * envelope into `reason`; harness-side we keep `status: 'denied'` so
  * downstream rendering (`[PERMISSION_DENIED]` in types/wire.ts) and

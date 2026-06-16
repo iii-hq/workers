@@ -66,7 +66,7 @@ function agentTriggerCall(
 
 describe('handleExecute new flow', () => {
   it('runs the prepared batch from work', async () => {
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
         content: [{ type: 'text' as const, text: 'ok' }],
@@ -99,7 +99,7 @@ describe('handleExecute new flow', () => {
     const rec: TurnStateRecord = newRecord('s1');
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     seedFunctionExecute(rec, {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -125,7 +125,7 @@ describe('handleExecute new flow', () => {
     vi.spyOn(events, 'emit').mockImplementation(async (_iii, _sid, ev: never) => {
       emitted.push(ev as { type: string; function_call_id?: string });
     });
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
     });
@@ -135,8 +135,8 @@ describe('handleExecute new flow', () => {
     const fc2 = { id: 'fc-2', function_id: 'shell::run', arguments: {} };
     seedFunctionExecute(rec, {
       prepared: [
-        { route: 'dispatch', call: fc1 },
-        { route: 'dispatch', call: fc2 },
+        { route: 'trigger', call: fc1 },
+        { route: 'trigger', call: fc2 },
       ],
       executed: {
         'fc-1': {
@@ -178,7 +178,7 @@ describe('handleExecute new flow', () => {
       ],
       executed: {},
     });
-    const consultSpy = vi.spyOn(chainModule, 'consultPreDispatch');
+    const consultSpy = vi.spyOn(chainModule, 'consultPreTrigger');
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
@@ -230,7 +230,7 @@ describe('handleExecute new flow', () => {
     expect(String(details?.reason)).toContain('S210');
   });
 
-  it('emits denial result without dispatching when route is synthetic', async () => {
+  it('emits denial result without triggering when route is synthetic', async () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -259,8 +259,8 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('assistant_streaming');
   });
 
-  it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.executed)', async () => {
-    const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
+  it('replays persisted executed calls without re-triggering (re-entry with pre-populated work.executed)', async () => {
+    const triggerWithHookSpy = vi.spyOn(agentTriggerModule, 'triggerWithHook');
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec = newRecord('s1');
@@ -271,7 +271,7 @@ describe('handleExecute new flow', () => {
     };
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     seedFunctionExecute(rec, {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -285,12 +285,12 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    expect(dispatchSpy).not.toHaveBeenCalled();
+    expect(triggerWithHookSpy).not.toHaveBeenCalled();
     expect(rec.state).toBe('assistant_streaming');
   });
 
-  it('resumes to assistant_streaming after a successful hook dispatch', async () => {
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+  it('resumes to assistant_streaming after a successful hook trigger', async () => {
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
         content: [{ type: 'text' as const, text: 'ok' }],
@@ -327,7 +327,7 @@ describe('handleExecute new flow', () => {
     seedFunctionExecute(
       rec,
       {
-        prepared: [{ route: 'dispatch', call: fc }],
+        prepared: [{ route: 'trigger', call: fc }],
         executed: {
           'fc-1': {
             call: fc,
@@ -380,7 +380,7 @@ describe('handleExecute new flow', () => {
     );
 
     vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValue({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValue({
       kind: 'result',
       result: existingResult,
     });
@@ -391,7 +391,7 @@ describe('handleExecute new flow', () => {
     seedFunctionExecute(
       rec,
       {
-        prepared: [{ route: 'dispatch', call: fc }],
+        prepared: [{ route: 'trigger', call: fc }],
         executed: {
           toolu_01: {
             call: fc,
