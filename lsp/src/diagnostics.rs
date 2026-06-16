@@ -514,7 +514,7 @@ fn check_trigger_call(
         diagnostics.push(Diagnostic {
             range: call.function_id_range,
             severity: Some(DiagnosticSeverity::HINT),
-            source: Some("iii-lsp".to_string()),
+            source: Some("lsp".to_string()),
             message: format!(
                 "Function ID '{}' should use namespace format 'namespace::name'",
                 call.function_id
@@ -530,7 +530,7 @@ fn check_trigger_call(
                 diagnostics.push(Diagnostic {
                     range: call.function_id_range,
                     severity: Some(DiagnosticSeverity::WARNING),
-                    source: Some("iii-lsp".to_string()),
+                    source: Some("lsp".to_string()),
                     message: format!("Unknown function '{}'", call.function_id),
                     ..Default::default()
                 });
@@ -555,7 +555,7 @@ fn check_trigger_call(
                     diagnostics.push(Diagnostic {
                         range: call.payload_range,
                         severity: Some(DiagnosticSeverity::ERROR),
-                        source: Some("iii-lsp".to_string()),
+                        source: Some("lsp".to_string()),
                         message: format!(
                             "Missing required property '{}' for '{}'",
                             name, call.function_id
@@ -579,7 +579,7 @@ fn check_register_trigger_call(
         diagnostics.push(Diagnostic {
             range: call.function_id_range,
             severity: Some(DiagnosticSeverity::HINT),
-            source: Some("iii-lsp".to_string()),
+            source: Some("lsp".to_string()),
             message: format!(
                 "Function ID '{}' should use namespace format 'namespace::name'",
                 call.function_id
@@ -592,7 +592,7 @@ fn check_register_trigger_call(
         diagnostics.push(Diagnostic {
             range: call.function_id_range,
             severity: Some(DiagnosticSeverity::WARNING),
-            source: Some("iii-lsp".to_string()),
+            source: Some("lsp".to_string()),
             message: format!("Unknown function '{}'", call.function_id),
             ..Default::default()
         });
@@ -602,7 +602,7 @@ fn check_register_trigger_call(
         diagnostics.push(Diagnostic {
             range: call.trigger_type_range,
             severity: Some(DiagnosticSeverity::WARNING),
-            source: Some("iii-lsp".to_string()),
+            source: Some("lsp".to_string()),
             message: format!("Unknown trigger type '{}'", call.trigger_type),
             ..Default::default()
         });
@@ -622,7 +622,7 @@ fn check_register_trigger_call(
                             diagnostics.push(Diagnostic {
                                 range: call.config_range,
                                 severity: Some(DiagnosticSeverity::ERROR),
-                                source: Some("iii-lsp".to_string()),
+                                source: Some("lsp".to_string()),
                                 message: format!(
                                     "Missing required config property '{}' for trigger type '{}'",
                                     name, call.trigger_type
@@ -642,7 +642,7 @@ fn check_register_trigger_call(
                 diagnostics.push(Diagnostic {
                     range: call.config_range,
                     severity: Some(DiagnosticSeverity::WARNING),
-                    source: Some("iii-lsp".to_string()),
+                    source: Some("lsp".to_string()),
                     message: format!(
                         "Invalid HTTP method '{}'. Expected one of: {}",
                         value,
@@ -663,7 +663,7 @@ fn check_register_trigger_call(
                     diagnostics.push(Diagnostic {
                         range: call.config_range,
                         severity: Some(DiagnosticSeverity::ERROR),
-                        source: Some("iii-lsp".to_string()),
+                        source: Some("lsp".to_string()),
                         message: format!(
                             "Cron expression must have 6 fields (sec min hour day month weekday), got {}",
                             fields.len()

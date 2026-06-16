@@ -1,11 +1,11 @@
 iii: v1
-name: iii-lsp
+name: lsp
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-lsp
+bin: lsp
 description: III Language Server — autocompletion and hover for III engine functions and triggers
-# Opt out of the interface boot smoke. iii-lsp is a stdio language server:
+# Opt out of the interface boot smoke. lsp is a stdio language server:
 # it exits on stdin EOF (so it cannot stay alive while backgrounded) and it
 # only consumes engine discovery — it registers no functions or trigger
 # types, so there is no interface to collect.

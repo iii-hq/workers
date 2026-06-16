@@ -19,7 +19,7 @@ on:
           - email
           - harness
           - iii-directory
-          - iii-lsp
+          - lsp
           - iii-lsp-vscode
           - image-resize
           - llm-router

@@ -711,25 +711,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-lsp"
-version = "0.1.2"
-dependencies = [
- "clap",
- "dashmap",
- "iii-sdk",
- "serde",
- "serde_json",
- "tokio",
- "tower-lsp-server",
- "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
-]
-
-[[package]]
 name = "iii-observability"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -877,6 +858,25 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lsp"
+version = "0.1.2"
+dependencies = [
+ "clap",
+ "dashmap",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-lsp-server",
+ "tracing",
+ "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
 ]
 
 [[package]]

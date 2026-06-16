@@ -13,7 +13,7 @@ mod engine_introspection;
 mod hover;
 
 #[derive(ClapParser, Debug)]
-#[command(name = "iii-lsp", about = "Language Server for the III engine")]
+#[command(name = "lsp", about = "Language Server for the III engine")]
 struct Cli {
     /// WebSocket URL of the III engine
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
@@ -81,7 +81,7 @@ impl LanguageServer for Backend {
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name: "iii-lsp".to_string(),
+                name: "lsp".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
             ..Default::default()
@@ -96,7 +96,7 @@ impl LanguageServer for Backend {
                 .log_message(
                     MessageType::INFO,
                     format!(
-                        "iii-lsp: connected to engine ({} functions, {} trigger types)",
+                        "lsp: connected to engine ({} functions, {} trigger types)",
                         self.engine.functions.len(),
                         self.engine.trigger_types.len()
                     ),
@@ -106,7 +106,7 @@ impl LanguageServer for Backend {
             self.client
                 .log_message(
                     MessageType::WARNING,
-                    "iii-lsp: engine not running, completions will be empty until engine starts",
+                    "lsp: engine not running, completions will be empty until engine starts",
                 )
                 .await;
         }
@@ -199,7 +199,7 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-    tracing::info!("starting iii-lsp, connecting to {}", cli.url);
+    tracing::info!("starting lsp, connecting to {}", cli.url);
 
     let engine = engine_client::EngineClient::new(&cli.url);
 

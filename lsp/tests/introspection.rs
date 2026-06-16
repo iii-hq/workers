@@ -5,7 +5,7 @@
 //! so a future engine/SDK bump that drifts the payload fails here instead
 //! of silently leaving the LSP caches empty.
 
-use iii_lsp::engine_introspection::{TriggerInfo, TriggerTypeInfo};
+use lsp::engine_introspection::{TriggerInfo, TriggerTypeInfo};
 use serde_json::json;
 
 /// `engine::triggers::list` returns trigger TYPES:
