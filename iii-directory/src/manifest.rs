@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::config::{DEFAULT_REGISTRY_URL, DEFAULT_SKILLS_FOLDER};
+use crate::config::{DEFAULT_LOCAL_SKILLS_FOLDER, DEFAULT_REGISTRY_URL, DEFAULT_SKILLS_FOLDER};
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -22,9 +22,12 @@ pub fn build_manifest() -> ModuleManifest {
             .to_string(),
         default_config: serde_json::json!({
             "skills_folder": DEFAULT_SKILLS_FOLDER,
+            "local_skills_folder": DEFAULT_LOCAL_SKILLS_FOLDER,
             "registry_url": DEFAULT_REGISTRY_URL,
             "download_timeout_ms": 60_000,
             "registry_cache_ttl_ms": 60_000,
+            "filter_unregistered": true,
+            "auto_download": true,
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }

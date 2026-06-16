@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use iii_sdk::III;
 
-use crate::config::SkillsConfig;
+use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source::{self, SourceKind};
 use crate::trigger_types::{RegisteredTriggerTypes, SubscriberSet};
 
@@ -47,12 +47,7 @@ impl From<&RegisteredTriggerTypes> for Subscribers {
     }
 }
 
-/// Register every function the worker exposes against `iii`.
-pub fn register_all(
-    iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
-    trigger_types: &RegisteredTriggerTypes,
-) {
+pub fn register_all(iii: &Arc<III>, cfg: &SharedConfig, trigger_types: &RegisteredTriggerTypes) {
     skills::register(iii, cfg);
     prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
@@ -66,19 +61,18 @@ pub fn register_all(
     );
 }
 
-/// Register all functions with a pre-built registered-workers cache.
-/// Used when the cache is shared with auto-download event handlers.
 pub fn register_all_with_cache(
     iii: &Arc<III>,
-    cfg: &Arc<SkillsConfig>,
+    cfg: &SharedConfig,
     trigger_types: &RegisteredTriggerTypes,
     cache: &std::sync::Arc<skills::RegisteredWorkersCache>,
+    registry_cache: registry::RegistryCache,
 ) {
     skills::register_with_cache(iii, cfg, cache);
     prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
     download::register(iii, cfg, &subs);
-    registry::register(iii, cfg);
+    registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* (list + get + index), \

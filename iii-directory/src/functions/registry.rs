@@ -32,6 +32,7 @@
 //!   * `GET {base}/w/{slug}/skills?version=…` →
 //!     `{ name, version, skills: [{path, content}], prompts: [{name, description?, args_schema?, content}] }`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::config::SkillsConfig;
+use crate::config::{SharedConfig, SkillsConfig};
 use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
 use crate::sources::build_http_client;
 use crate::sources::registry::validate_worker_name;
@@ -240,7 +241,9 @@ pub struct WorkerInfoOutput {
 #[derive(Clone)]
 pub struct RegistryCache {
     inner: Arc<RwLock<std::collections::HashMap<String, CacheEntry>>>,
-    ttl: Duration,
+    /// Live TTL in ms, shared with the worker-list cache and updated on a
+    /// `configuration:updated` reload (see `configuration::apply_config`).
+    ttl_ms: Arc<AtomicU64>,
 }
 
 struct CacheEntry {
@@ -249,17 +252,24 @@ struct CacheEntry {
 }
 
 impl RegistryCache {
+    /// Construct with a fixed TTL (used by unit tests).
     pub fn new(ttl: Duration) -> Self {
+        Self::new_shared(Arc::new(AtomicU64::new(ttl.as_millis() as u64)))
+    }
+
+    /// Construct sharing a live TTL cell with the rest of the worker.
+    pub fn new_shared(ttl_ms: Arc<AtomicU64>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            ttl,
+            ttl_ms,
         }
     }
 
     pub async fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         let map = self.inner.read().await;
         let entry = map.get(key)?;
-        if entry.inserted_at.elapsed() > self.ttl {
+        let ttl = Duration::from_millis(self.ttl_ms.load(Ordering::Relaxed));
+        if entry.inserted_at.elapsed() > ttl {
             return None;
         }
         serde_json::from_value(entry.value.clone()).ok()
@@ -286,19 +296,26 @@ impl RegistryCache {
 
 // ---------- registration ----------
 
-pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
-    let cache = RegistryCache::new(Duration::from_millis(cfg.registry_cache_ttl_ms));
+pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
+    let ttl_ms = cfg.load().registry_cache_ttl_ms;
+    let cache = RegistryCache::new(Duration::from_millis(ttl_ms));
+    register_with_cache(iii, cfg, cache);
+}
+
+/// Register the registry proxy functions against a shared cache so a
+/// `configuration:updated` reload can clear it (and repoint `registry_url`).
+pub fn register_with_cache(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache) {
     register_worker_list(iii, cfg, cache.clone());
     register_worker_info(iii, cfg, cache);
 }
 
-fn register_worker_list(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: RegistryCache) {
+fn register_worker_list(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache) {
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
         "directory::registry::workers::list",
         RegisterFunction::new_async(move |req: WorkerListInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             async move {
                 worker_list(&cfg, &cache, req)
@@ -319,13 +336,13 @@ fn register_worker_list(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
     );
 }
 
-fn register_worker_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: RegistryCache) {
+fn register_worker_info(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache) {
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
         "directory::registry::workers::info",
         RegisterFunction::new_async(move |req: WorkerInfoInput| {
-            let cfg = cfg_inner.clone();
+            let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             async move {
                 worker_info(&cfg, &cache, req)
@@ -1023,5 +1040,26 @@ mod tests {
         cache.clear().await;
         let v: Option<serde_json::Value> = cache.get("k").await;
         assert!(v.is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_cache_ttl_is_live_via_shared_cell() {
+        // The TTL is read from a shared cell on every `get`, so a
+        // `configuration:updated` reload that stores a new value changes the
+        // effective freshness window in place (no cache rebuild).
+        let ttl = Arc::new(AtomicU64::new(60_000));
+        let cache = RegistryCache::new_shared(ttl.clone());
+        cache.put("k".into(), &json!({ "x": 1 })).await;
+        let fresh: Option<serde_json::Value> = cache.get("k").await;
+        assert!(fresh.is_some(), "entry should be fresh under the 60s TTL");
+
+        // Shrink the shared TTL to 0 → the same entry is now stale.
+        ttl.store(0, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let stale: Option<serde_json::Value> = cache.get("k").await;
+        assert!(
+            stale.is_none(),
+            "entry should be stale after TTL shrinks to 0"
+        );
     }
 }

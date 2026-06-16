@@ -78,24 +78,50 @@ npx skills add iii-hq/workers --all
 
 ## Configuration
 
+Runtime settings live in the **`configuration` worker** under id
+**`iii-directory`** (the same pattern `database` and `storage` use). At boot
+the worker registers its JSON Schema, reads the live value via
+`configuration::get` (the configuration worker env-expands `${VAR}`), and binds
+a `configuration` trigger so it re-fetches on change.
+
+Persisted values default to `./data/configuration/iii-directory.yaml` (fs
+adapter). Edit that file directly, call `configuration::set id=iii-directory`,
+or use the console Workers tab — all three propagate without a redeploy.
+
+### Fields
+
 ```yaml
-# Folder that backs every read (`directory::skills::list`,
-# `directory::skills::get`, `directory::prompts::*`) and every write
-# from `directory::skills::download`. Relative paths are resolved
-# against the process current working directory; absolute paths are
-# used as-is.
-skills_folder: ./skills
+# TOPOLOGY — changing any of these requires a worker restart.
+skills_folder: ~/.iii/skills          # read/write root for skills + prompts
+local_skills_folder: ./.iii/skills    # project-scoped overrides (whole-namespace local-wins)
+auto_download: true                   # subscribe to worker-add + run the boot reconcile
 
-# Workers registry base URL — used by `directory::skills::download`
-# and the `directory::registry::*` proxies when a `worker=` source is
-# specified. Override for self-hosted deployments.
-registry_url: https://api.workers.iii.dev
-
-# Timeout for a single download (`git clone` or HTTP request) in ms.
-download_timeout_ms: 60000
+# TUNABLE — hot-reload live on `configuration:updated`.
+registry_url: https://api.workers.iii.dev   # workers registry base URL
+download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
+registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
+filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
 ```
 
-The folder is created on first download if it doesn't exist.
+The `skills_folder` is created on first download if it doesn't exist.
+
+### Zero-config default + seed
+
+With no seed and no stored value the worker uses built-in defaults
+(`skills_folder: ~/.iii/skills`, `registry_url: https://api.workers.iii.dev`).
+Pass `--config <path>` to supply a YAML seed: when present and no value is
+stored yet, its contents become `initial_value` on `configuration::register`
+(see [`config.yaml.example`](config.yaml.example)). Engine-managed deployments
+inline the config under the worker entry; the engine delivers it via `--config`.
+
+### Hot reload
+
+On `configuration::set` (or an external edit to the persisted file), the worker
+re-fetches the authoritative value. Tunable changes apply in place and the
+registry caches are cleared so a repointed `registry_url` takes effect
+immediately. Topology changes (`skills_folder` / `local_skills_folder` /
+`auto_download`) are refused with a "restart required" log; the previous
+configuration is kept until the worker restarts.
 
 ---
 
@@ -265,7 +291,9 @@ block on downstream latency.
 ### Run from source
 
 ```bash
-cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
+# --config is an optional YAML seed (see config.yaml.example); omit it to
+# rely on the value stored in the `configuration` worker (or built-in defaults).
+cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml.example
 ```
 
 ### Tests
