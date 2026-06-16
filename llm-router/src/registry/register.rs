@@ -20,11 +20,14 @@ use crate::config::schema::{default_provider_schema, validate_custom_schema};
 use crate::registry::store::RegistryStore;
 use crate::triggers;
 
-#[derive(Deserialize)]
-struct RegisterInput {
+/// Input of the `router::provider::register` iii function: a provider's
+/// self-declaration plus an optional re-registration `token`. `pub` so the
+/// boot wiring can publish its JSON Schema (`wire_schema`).
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct RegisterInput {
     #[serde(flatten)]
-    declaration: ProviderDeclaration,
-    token: Option<String>,
+    pub declaration: ProviderDeclaration,
+    pub token: Option<String>,
 }
 
 fn valid_id(id: &str) -> bool {

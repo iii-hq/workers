@@ -14,3 +14,4 @@ pub mod state;
 pub mod testkit;
 pub mod triggers;
 pub mod types;
+pub mod wire_schema;

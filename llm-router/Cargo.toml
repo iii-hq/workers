@@ -21,6 +21,9 @@ path = "src/lib.rs"
 iii-sdk = "=0.19.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Same schemars major as iii-sdk 0.19.2 so the schemas we derive here are the
+# exact draft-07 shapes the SDK publishes for typed handlers (see wire_schema).
+schemars = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 async-trait = "0.1"
 thiserror = "2"

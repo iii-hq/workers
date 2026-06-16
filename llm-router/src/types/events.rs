@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::messages::AssistantMessage;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     End,
@@ -12,7 +12,7 @@ pub enum StopReason {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
     AuthExpired,
@@ -29,7 +29,7 @@ impl ErrorKind {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Usage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<u64>,
@@ -47,7 +47,7 @@ pub struct Usage {
 
 /// The frozen 15-variant streaming vocabulary (README § Streaming events).
 /// New frame types are a contract revision, not a provider choice.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantMessageEvent {
     Start {

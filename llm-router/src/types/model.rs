@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 
 /// "minimal" requests the lowest reasoning effort and needs only `thinking`
 /// support; levels map to provider-native knobs via `Model::thinking_budgets`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
     Minimal,
@@ -13,7 +15,7 @@ pub enum ThinkingLevel {
     Xhigh,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Pricing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<f64>,
@@ -26,7 +28,7 @@ pub struct Pricing {
 }
 
 /// The capability record (README § Model descriptor).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Model {
     pub id: String,
     pub provider: String,
@@ -57,7 +59,7 @@ pub struct Model {
 /// Function invocation schema — what a provider sees as a `tools` array entry
 /// (README § Function invocation schema; adapter boundary). These describe iii
 /// functions exposed to the model, not provider-native tools.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentFunction {
     pub name: String,
     pub description: String,

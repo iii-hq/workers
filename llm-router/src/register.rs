@@ -25,12 +25,21 @@ use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::default_provider_schema;
 use crate::registry::availability::{make_on_worker_available, make_provider_list};
-use crate::registry::register::make_provider_register;
+use crate::registry::register::{make_provider_register, RegisterInput};
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::settings::{parse_settings, RouterSettings};
 use crate::triggers;
 use crate::types::errors::{RouterCode, RouterError};
+use crate::types::router::{
+    AbortRequest, AbortResponse, ChatRequest, ChatResponse, CompleteRequest, CompleteResponse,
+    ConfigChangedEvent, ModelsGetRequest, ModelsGetResponse, ModelsListRequest, ModelsListResponse,
+    ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse,
+    OkResponse, ProviderListRequest, ProviderListResponse, ProviderRegisterResponse,
+    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse,
+    UpdateCredentialRequest, WorkerAvailableEvent,
+};
+use crate::wire_schema::{schema_of, with_schemas};
 
 pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
@@ -64,95 +73,120 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
         iii.register_function(
             "router::chat",
-            RegisterFunction::new_async(move |raw: Value| {
-                let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
-                async move {
-                    let writer_ref = serde_json::from_value(
-                        raw.get("writer_ref").cloned().unwrap_or(Value::Null),
-                    )
-                    .map_err(|_| {
-                        IIIError::from(RouterError::new(
-                            RouterCode::InvalidRequest,
-                            "writer_ref (direction write) is required",
-                        ))
-                    })?;
-                    let call: ChatCall = serde_json::from_value(raw).map_err(|e| {
-                        IIIError::from(RouterError::new(RouterCode::InvalidRequest, e.to_string()))
-                    })?;
-                    let sink = open_sink(&iii, &writer_ref).await?;
-                    let result = pipeline.run(call, sink.clone()).await;
-                    sink.close(); // the handler owns closing the caller's channel
-                    result.map(|r| serde_json::to_value(r).expect("serializable response"))
-                }
-            }),
+            with_schemas::<ChatRequest, ChatResponse>(RegisterFunction::new_async(
+                move |raw: Value| {
+                    let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
+                    async move {
+                        let writer_ref = serde_json::from_value(
+                            raw.get("writer_ref").cloned().unwrap_or(Value::Null),
+                        )
+                        .map_err(|_| {
+                            IIIError::from(RouterError::new(
+                                RouterCode::InvalidRequest,
+                                "writer_ref (direction write) is required",
+                            ))
+                        })?;
+                        let call: ChatCall = serde_json::from_value(raw).map_err(|e| {
+                            IIIError::from(RouterError::new(
+                                RouterCode::InvalidRequest,
+                                e.to_string(),
+                            ))
+                        })?;
+                        let sink = open_sink(&iii, &writer_ref).await?;
+                        let result = pipeline.run(call, sink.clone()).await;
+                        sink.close(); // the handler owns closing the caller's channel
+                        result.map(|r| serde_json::to_value(r).expect("serializable response"))
+                    }
+                },
+            )),
         );
     }
     iii.register_function(
         "router::complete",
-        RegisterFunction::new_async(make_complete(iii.clone(), pipeline.clone())),
+        with_schemas::<CompleteRequest, CompleteResponse>(RegisterFunction::new_async(
+            make_complete(iii.clone(), pipeline.clone()),
+        )),
     );
     iii.register_function(
         "router::abort",
-        RegisterFunction::new_async(make_abort(inflight.clone())),
+        with_schemas::<AbortRequest, AbortResponse>(RegisterFunction::new_async(make_abort(
+            inflight.clone(),
+        ))),
     );
     iii.register_function(
         "router::models::list",
-        RegisterFunction::new_async(make_models_list(catalog.clone())),
+        with_schemas::<ModelsListRequest, ModelsListResponse>(RegisterFunction::new_async(
+            make_models_list(catalog.clone()),
+        )),
     );
     iii.register_function(
         "router::models::get",
-        RegisterFunction::new_async(make_models_get(catalog.clone())),
+        // Answers `{ model }` when the model is registered, or a bare `null`
+        // when it is not (the cold-window signal); publish that union.
+        RegisterFunction::new_async(make_models_get(catalog.clone()))
+            .request_format(schema_of::<ModelsGetRequest>())
+            .response_format(json!({
+                "anyOf": [schema_of::<ModelsGetResponse>(), { "type": "null" }]
+            })),
     );
     iii.register_function(
         "router::models::supports",
-        RegisterFunction::new_async(make_models_supports(catalog.clone())),
+        with_schemas::<ModelsSupportsRequest, ModelsSupportsResponse>(RegisterFunction::new_async(
+            make_models_supports(catalog.clone()),
+        )),
     );
     iii.register_function(
         "router::provider::list",
-        RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone())),
+        with_schemas::<ProviderListRequest, ProviderListResponse>(RegisterFunction::new_async(
+            make_provider_list(iii.clone(), registry.clone()),
+        )),
     );
     iii.register_function(
         "router::route",
-        RegisterFunction::new_async(crate::routing::make_route(
-            registry.clone(),
-            catalog.clone(),
-            settings.clone(),
+        with_schemas::<RouteRequest, RouteResponse>(RegisterFunction::new_async(
+            crate::routing::make_route(registry.clone(), catalog.clone(), settings.clone()),
         )),
     );
     iii.register_function(
         "router::provider::register",
-        RegisterFunction::new_async(make_provider_register(
-            iii.clone(),
-            registry.clone(),
-            catalog.clone(),
-            entry_lock.clone(),
+        with_schemas::<RegisterInput, ProviderRegisterResponse>(RegisterFunction::new_async(
+            make_provider_register(
+                iii.clone(),
+                registry.clone(),
+                catalog.clone(),
+                entry_lock.clone(),
+            ),
         )),
     );
     iii.register_function(
         "router::provider::resolve",
-        RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone())),
+        with_schemas::<ProviderResolveRequest, ProviderResolveResponse>(
+            RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone())),
+        ),
     );
     iii.register_function(
         "router::provider::update_credential",
-        RegisterFunction::new_async(make_update_credential(
-            iii.clone(),
-            registry.clone(),
-            entry_lock,
+        with_schemas::<UpdateCredentialRequest, OkResponse>(RegisterFunction::new_async(
+            make_update_credential(iii.clone(), registry.clone(), entry_lock),
         )),
     );
     iii.register_function(
         "router::models::reconcile",
-        RegisterFunction::new_async(make_models_reconcile(
-            iii.clone(),
-            registry.clone(),
-            catalog.clone(),
-        )),
+        with_schemas::<ModelsReconcileRequest, ModelsReconcileResponse>(
+            RegisterFunction::new_async(make_models_reconcile(
+                iii.clone(),
+                registry.clone(),
+                catalog.clone(),
+            )),
+        ),
     );
 
     // 5. bound triggers: topology + configuration change (paste-a-key)
     iii.register_function(
         "router::on_worker_available",
-        RegisterFunction::new_async(make_on_worker_available(iii.clone(), registry.clone())),
+        with_schemas::<WorkerAvailableEvent, ()>(RegisterFunction::new_async(
+            make_on_worker_available(iii.clone(), registry.clone()),
+        )),
     );
     let _ = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "subscribe".into(),
@@ -175,11 +209,8 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         });
         iii.register_function(
             "router::on_config_changed",
-            RegisterFunction::new_async(make_on_config_changed(
-                iii.clone(),
-                lookup,
-                settings.clone(),
-                2000,
+            with_schemas::<ConfigChangedEvent, ()>(RegisterFunction::new_async(
+                make_on_config_changed(iii.clone(), lookup, settings.clone(), 2000),
             )),
         );
     }

@@ -5,7 +5,11 @@ use crate::discovery::{make_refresh_models, refresh_models};
 use crate::stream_fn::make_stream;
 use crate::{router_client, state, PROVIDER_ID};
 use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
-use llm_router::types::router::{ProviderDeclaration, ProviderDefaults};
+use llm_router::types::router::{
+    NoParams, ProviderAck, ProviderDeclaration, ProviderDefaults, ProviderStreamInput,
+    RefreshModelsAck,
+};
+use llm_router::wire_schema::with_schemas;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -107,11 +111,16 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
 
     iii.register_function(
         "provider::anthropic::stream",
-        RegisterFunction::new_async(make_stream(iii.clone(), http.clone())),
+        with_schemas::<ProviderStreamInput, ProviderAck>(RegisterFunction::new_async(make_stream(
+            iii.clone(),
+            http.clone(),
+        ))),
     );
     iii.register_function(
         "provider::anthropic::refresh_models",
-        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone())),
+        with_schemas::<NoParams, RefreshModelsAck>(RegisterFunction::new_async(
+            make_refresh_models(iii.clone(), http.clone()),
+        )),
     );
 
     // Re-declare when the router restarts: router::ready rides iii-pubsub.
@@ -120,13 +129,15 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
         let http_ready = http.clone();
         iii.register_function(
             "provider::anthropic::on_router_ready",
-            RegisterFunction::new_async(move |_raw: Value| {
-                let (iii, http) = (iii_ready.clone(), http_ready.clone());
-                async move {
-                    tokio::spawn(declare_and_refresh(iii, http));
-                    Ok(json!({ "ok": true }))
-                }
-            }),
+            with_schemas::<NoParams, ProviderAck>(RegisterFunction::new_async(
+                move |_raw: Value| {
+                    let (iii, http) = (iii_ready.clone(), http_ready.clone());
+                    async move {
+                        tokio::spawn(declare_and_refresh(iii, http));
+                        Ok(json!({ "ok": true }))
+                    }
+                },
+            )),
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {
