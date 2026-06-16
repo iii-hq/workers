@@ -1,0 +1,33 @@
+{
+  "function_id": "session::on-config-change",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Internal `session::on-config-change` trigger payload. The handler re-fetches the authoritative configuration, so this carries only the (advisory) configuration id; a struct (not `Value`) keeps the request schema concrete and unknown fields are ignored.",
+    "properties": {
+      "id": {
+        "default": null,
+        "description": "Configuration id that changed (advisory; the handler re-fetches the value).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "OnConfigChangeEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Ack returned by the internal `session::on-config-change` handler.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "OnConfigChangeResponse",
+    "type": "object"
+  }
+}

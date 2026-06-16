@@ -8,10 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::router::{ProviderDeclaration, ProviderRegisterResponse};
+use crate::types::router::{ProviderRegisterRequest, ProviderRegisterResponse};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::catalog::store::CatalogStore;
@@ -19,13 +18,6 @@ use crate::config::entry::{register_entry, EntryWriteLock};
 use crate::config::schema::{default_provider_schema, validate_custom_schema};
 use crate::registry::store::RegistryStore;
 use crate::triggers;
-
-#[derive(Deserialize)]
-struct RegisterInput {
-    #[serde(flatten)]
-    declaration: ProviderDeclaration,
-    token: Option<String>,
-}
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -40,8 +32,11 @@ pub fn make_provider_register(
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
     entry_lock: EntryWriteLock,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ProviderRegisterRequest) -> BoxFuture<'static, Result<ProviderRegisterResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |input: ProviderRegisterRequest| {
         let (iii, registry, catalog, entry_lock) = (
             iii.clone(),
             registry.clone(),
@@ -49,9 +44,6 @@ pub fn make_provider_register(
             entry_lock.clone(),
         );
         Box::pin(async move {
-            let input: RegisterInput = serde_json::from_value(raw).map_err(|e| {
-                IIIError::from(RouterError::new(RouterCode::InvalidRequest, e.to_string()))
-            })?;
             let declaration = input.declaration;
 
             if !valid_id(&declaration.id) {
@@ -139,12 +131,11 @@ pub fn make_provider_register(
                 }
             }
 
-            Ok(serde_json::to_value(ProviderRegisterResponse {
+            Ok(ProviderRegisterResponse {
                 ok: true,
                 id,
                 registration_token: token,
             })
-            .expect("serializable response"))
         })
     }
 }

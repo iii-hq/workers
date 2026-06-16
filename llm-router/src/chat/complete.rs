@@ -11,7 +11,6 @@ use crate::types::events::AssistantMessageEvent;
 use crate::types::router::CompleteResponse;
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
-use serde_json::Value;
 
 use super::chat::{ChatCall, ChatPipeline};
 use super::relay::ReadEvent;
@@ -20,13 +19,11 @@ use crate::channels::create_router_channel;
 pub fn make_complete(
     iii: III,
     pipeline: Arc<ChatPipeline>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ChatCall) -> BoxFuture<'static, Result<CompleteResponse, IIIError>> + Send + Sync + 'static
+{
+    move |call: ChatCall| {
         let (iii, pipeline) = (iii.clone(), pipeline.clone());
         Box::pin(async move {
-            let call: ChatCall = serde_json::from_value(raw).map_err(|e| {
-                IIIError::from(RouterError::new(RouterCode::InvalidRequest, e.to_string()))
-            })?;
             let channel = create_router_channel(&iii).await?;
             let mut reader = channel.reader;
             let mut chat_task = {
@@ -84,13 +81,12 @@ pub fn make_complete(
                 }
             };
             let usage = message.usage.clone().or(response.usage);
-            Ok(serde_json::to_value(CompleteResponse {
+            Ok(CompleteResponse {
                 message,
                 usage,
                 provider: response.provider,
                 model: response.model,
             })
-            .expect("serializable response"))
         })
     }
 }

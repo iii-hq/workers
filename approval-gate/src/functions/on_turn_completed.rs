@@ -6,9 +6,9 @@
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::{purge, Deps};
+use crate::types::EventAck;
 
 /// `harness::turn-completed` payload (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -19,12 +19,12 @@ pub struct TurnCompletedEvent {
 pub async fn handle(
     deps: &Deps,
     event: TurnCompletedEvent,
-) -> Result<Value, crate::error::ApprovalError> {
+) -> Result<EventAck, crate::error::ApprovalError> {
     let purged = purge::purge_matching(deps, |r| r.turn_id == event.turn_id).await;
     if purged > 0 {
         tracing::info!(turn_id = %event.turn_id, purged, "terminal turn: pending approvals purged");
     }
-    Ok(Value::Null)
+    Ok(EventAck { ok: true })
 }
 
 #[cfg(test)]

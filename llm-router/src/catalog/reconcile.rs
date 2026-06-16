@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::model::Model;
+use crate::types::router::{ModelsReconcileRequest, ModelsReconcileResponse};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::catalog::store::CatalogStore;
 use crate::registry::store::RegistryStore;
@@ -17,29 +17,19 @@ pub fn make_models_reconcile(
     iii: III,
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ModelsReconcileRequest) -> BoxFuture<'static, Result<ModelsReconcileResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |req: ModelsReconcileRequest| {
         let (iii, registry, catalog) = (iii.clone(), registry.clone(), catalog.clone());
         Box::pin(async move {
-            let provider = raw
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let token = raw.get("token").and_then(Value::as_str).map(String::from);
+            let provider = req.provider;
             registry
-                .verify_token(&provider, token.as_deref())
+                .verify_token(&provider, req.token.as_deref())
                 .await
                 .map_err(IIIError::from)?;
-            let models: Vec<Model> = serde_json::from_value(
-                raw.get("models").cloned().unwrap_or(Value::Null),
-            )
-            .map_err(|e| {
-                IIIError::from(RouterError::new(
-                    RouterCode::InvalidRequest,
-                    format!("models must be an array of Model: {e}"),
-                ))
-            })?;
+            let models = req.models;
             for m in &models {
                 if m.provider != provider {
                     return Err(RouterError::new(
@@ -60,7 +50,7 @@ pub fn make_models_reconcile(
                 json!({ "provider": provider, "count": count }),
             )
             .await;
-            Ok(json!({ "provider": provider, "count": count }))
+            Ok(ModelsReconcileResponse { provider, count })
         })
     }
 }

@@ -1,0 +1,55 @@
+{
+  "description": "List registered providers with their configured/available status.",
+  "function_id": "router::provider::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::provider::list` — takes no arguments. A struct (rather than `Value`) keeps the request schema concrete; unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
+    "title": "ProviderListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ProviderInfo": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "supports_model_listing": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available",
+          "configured",
+          "display_name",
+          "id",
+          "supports_model_listing"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "providers": {
+        "items": {
+          "$ref": "#/definitions/ProviderInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "providers"
+    ],
+    "title": "ProviderListResponse",
+    "type": "object"
+  }
+}

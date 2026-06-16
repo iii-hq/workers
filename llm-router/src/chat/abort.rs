@@ -3,22 +3,20 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use iii_sdk::IIIError;
-use serde_json::{json, Value};
+
+use crate::types::router::{AbortRequest, AbortResponse};
 
 use super::inflight::InflightMap;
 
 pub fn make_abort(
     inflight: Arc<InflightMap>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(AbortRequest) -> BoxFuture<'static, Result<AbortResponse, IIIError>> + Send + Sync + 'static
+{
+    move |req: AbortRequest| {
         let inflight = inflight.clone();
         Box::pin(async move {
-            let aborted = raw
-                .get("request_id")
-                .and_then(Value::as_str)
-                .map(|id| inflight.abort(id))
-                .unwrap_or(false);
-            Ok(json!({ "aborted": aborted }))
+            let aborted = inflight.abort(&req.request_id);
+            Ok(AbortResponse { aborted })
         })
     }
 }
@@ -27,26 +25,23 @@ pub fn make_abort(
 mod tests {
     use super::*;
     use crate::chat::inflight::InflightMap;
-    use serde_json::json;
     use std::sync::Arc;
 
+    fn req(id: &str) -> AbortRequest {
+        AbortRequest {
+            request_id: id.to_string(),
+        }
+    }
+
     #[tokio::test]
-    async fn aborts_known_requests_once_and_tolerates_garbage() {
+    async fn aborts_known_requests_once_and_ignores_unknown() {
         let inflight = Arc::new(InflightMap::default());
         inflight.insert("r1");
         let abort = make_abort(inflight);
-        assert_eq!(
-            abort(json!({ "request_id": "r1" })).await.unwrap(),
-            json!({ "aborted": true })
-        );
-        assert_eq!(
-            abort(json!({ "request_id": "r1" })).await.unwrap(),
-            json!({ "aborted": false })
-        );
-        assert_eq!(abort(json!({})).await.unwrap(), json!({ "aborted": false }));
-        assert_eq!(
-            abort(json!(null)).await.unwrap(),
-            json!({ "aborted": false })
-        );
+        // First abort of a known request succeeds, the second is a no-op
+        // (idempotent), and an unknown id reports `aborted: false`.
+        assert!(abort(req("r1")).await.unwrap().aborted);
+        assert!(!abort(req("r1")).await.unwrap().aborted);
+        assert!(!abort(req("unknown")).await.unwrap().aborted);
     }
 }

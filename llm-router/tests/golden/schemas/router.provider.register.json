@@ -1,0 +1,245 @@
+{
+  "description": "Provider self-declaration at attach time (token-gated upsert); composes the configuration entry schema and reconciles static models.",
+  "function_id": "router::provider::register",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Model": {
+        "description": "The capability record (README § Model descriptor).",
+        "properties": {
+          "context_window": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_limit": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Pricing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "supports_cache": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_structured_output": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_thinking": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_tools": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_vision": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_xhigh": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "thinking_budgets": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "context_window",
+          "id",
+          "max_output_tokens",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "Pricing": {
+        "properties": {
+          "cache_read": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ProviderDefaults": {
+        "additionalProperties": true,
+        "properties": {
+          "api_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Input of `router::provider::register` — a provider worker's declaration plus the optional re-registration token.",
+    "properties": {
+      "config_schema": true,
+      "credential_env_var": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "defaults": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ProviderDefaults"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "display_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "type": "string"
+      },
+      "models": {
+        "items": {
+          "$ref": "#/definitions/Model"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "supports_model_listing": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "token": {
+        "description": "Registration token proving ownership on re-register (omit on first declare).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "worker_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "ProviderRegisterRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "registration_token: spec adaptation — the engine exposes no caller identity, so identity binding is a bearer token; only its sha256 hash is persisted.",
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "registration_token": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "ok",
+      "registration_token"
+    ],
+    "title": "ProviderRegisterResponse",
+    "type": "object"
+  }
+}

@@ -41,4 +41,5 @@ pub mod resync;
 pub mod runtime;
 pub mod service;
 pub mod store;
+pub mod surface;
 pub mod types;

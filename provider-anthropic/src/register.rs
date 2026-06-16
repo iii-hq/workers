@@ -2,10 +2,14 @@
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models};
+use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
+use crate::surface;
 use crate::{router_client, state, PROVIDER_ID};
 use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
-use llm_router::types::router::{ProviderDeclaration, ProviderDefaults};
+use llm_router::types::router::{
+    ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -106,12 +110,17 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
         .expect("reqwest client");
 
     iii.register_function(
-        "provider::anthropic::stream",
-        RegisterFunction::new_async(make_stream(iii.clone(), http.clone())),
+        surface::STREAM_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_stream(iii.clone(), http.clone()),
+            invalid_request_from_serde,
+        )
+        .description(surface::STREAM_DESC),
     );
     iii.register_function(
-        "provider::anthropic::refresh_models",
-        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone())),
+        surface::REFRESH_MODELS_ID,
+        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone()))
+            .description(surface::REFRESH_MODELS_DESC),
     );
 
     // Re-declare when the router restarts: router::ready rides iii-pubsub.
@@ -119,19 +128,20 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
         iii.register_function(
-            "provider::anthropic::on_router_ready",
-            RegisterFunction::new_async(move |_raw: Value| {
+            surface::ON_ROUTER_READY_ID,
+            RegisterFunction::new_async(move |_event: RouterReadyEvent| {
                 let (iii, http) = (iii_ready.clone(), http_ready.clone());
                 async move {
                     tokio::spawn(declare_and_refresh(iii, http));
-                    Ok(json!({ "ok": true }))
+                    Ok::<_, IIIError>(ProviderReadyAck { ok: true })
                 }
-            }),
+            })
+            .description(surface::ON_ROUTER_READY_DESC),
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "subscribe".into(),
-        function_id: "provider::anthropic::on_router_ready".into(),
+        function_id: surface::ON_ROUTER_READY_ID.into(),
         config: json!({ "topic": "router::ready" }),
         metadata: None,
     });

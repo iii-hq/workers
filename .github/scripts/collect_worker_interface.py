@@ -13,6 +13,34 @@ from build_publish_payload import (
 )
 
 
+# A real JSON Schema carries at least one of these schema-defining keywords. The
+# permissive schema `schemars` emits for an untyped `serde_json::Value` handler
+# is `{"$schema": ..., "title": "AnyValue"}` (no keyword below) and a missing
+# schema normalizes to `{}` — both surface as "unknown" request/response schemas
+# in the registry. This mirrors the per-worker Rust invariant in
+# `tests/schemas.rs` (`assert_typed_schema`).
+SCHEMA_DEFINING_KEYS = frozenset(
+    {"type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum", "items", "const"}
+)
+
+
+def _schema_is_typed(schema: object) -> bool:
+    return isinstance(schema, dict) and any(k in schema for k in SCHEMA_DEFINING_KEYS)
+
+
+def _typed_schema_violations(functions: list[dict[str, object]]) -> list[str]:
+    """Return `"<name>.<field>"` for every function whose request/response schema
+    is the permissive AnyValue/empty ("unknown") schema."""
+    violations: list[str] = []
+    for fn in functions:
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name") or fn.get("function_id") or "<unknown>"
+        for field in ("request_schema", "response_schema"):
+            if not _schema_is_typed(fn.get(field)):
+                violations.append(f"{name}.{field}")
+    return violations
+
 
 def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
     completed = subprocess.run(
@@ -93,6 +121,12 @@ def main() -> int:
         help="after writing --out, assert payload['functions'] is non-empty",
     )
     parser.add_argument(
+        "--assert-typed-schemas",
+        action="store_true",
+        help="assert every function has a typed (non-AnyValue/non-empty) "
+        "request_schema and response_schema — blocks 'unknown' schemas at publish",
+    )
+    parser.add_argument(
         "--assert-file",
         help="path to an already-written interface JSON to assert; bypasses collection",
     )
@@ -100,20 +134,35 @@ def main() -> int:
 
     # Standalone assertion mode — bypass collection entirely.
     if args.assert_file:
-        if not args.assert_non_empty:
-            print("--assert-file requires --assert-non-empty", file=sys.stderr)
+        if not (args.assert_non_empty or args.assert_typed_schemas):
+            print(
+                "--assert-file requires --assert-non-empty and/or --assert-typed-schemas",
+                file=sys.stderr,
+            )
             return 1
         try:
             data = json.loads(pathlib.Path(args.assert_file).read_text())
         except Exception as e:
             print(f"could not read {args.assert_file}: {e}", file=sys.stderr)
             return 1
-        if not data.get("functions"):
+        functions = data.get("functions") or []
+        if args.assert_non_empty and not functions:
             print(
                 f"::error::no worker functions in {args.assert_file} (empty)",
                 file=sys.stderr,
             )
             return 1
+        if args.assert_typed_schemas:
+            violations = _typed_schema_violations(functions)
+            if violations:
+                print(
+                    "::error::untyped (AnyValue/empty) schemas in "
+                    f"{args.assert_file}: {', '.join(violations)}. Register the "
+                    "handler with a typed struct deriving schemars::JsonSchema "
+                    "(see docs/sops/binary-worker.md).",
+                    file=sys.stderr,
+                )
+                return 1
         return 0
 
     if not args.worker:
@@ -150,12 +199,24 @@ def main() -> int:
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))
 
-    if args.assert_non_empty and not args.assert_file:
+    if (args.assert_non_empty or args.assert_typed_schemas) and not args.assert_file:
         with open(args.out) as f:
             data = json.load(f)
-        if not data.get("functions"):
+        functions = data.get("functions") or []
+        if args.assert_non_empty and not functions:
             print(f"::error::no worker functions in {args.out} (empty)", file=sys.stderr)
             return 1
+        if args.assert_typed_schemas:
+            violations = _typed_schema_violations(functions)
+            if violations:
+                print(
+                    f"::error::untyped (AnyValue/empty) schemas in {args.out}: "
+                    f"{', '.join(violations)}. Register the handler with a typed "
+                    "struct deriving schemars::JsonSchema (see "
+                    "docs/sops/binary-worker.md).",
+                    file=sys.stderr,
+                )
+                return 1
 
     return 0
 

@@ -18,7 +18,7 @@ use crate::catalog::reconcile::make_models_reconcile;
 use crate::catalog::store::CatalogStore;
 use crate::channels::open_sink;
 use crate::chat::abort::make_abort;
-use crate::chat::chat::{ChatCall, ChatPipeline};
+use crate::chat::chat::{ChatFnInput, ChatPipeline};
 use crate::chat::complete::make_complete;
 use crate::chat::inflight::InflightMap;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
@@ -29,8 +29,9 @@ use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::settings::{parse_settings, RouterSettings};
+use crate::surface;
 use crate::triggers;
-use crate::types::errors::{RouterCode, RouterError};
+use crate::types::errors::invalid_request_from_serde;
 
 pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
@@ -63,100 +64,108 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
         iii.register_function(
-            "router::chat",
-            RegisterFunction::new_async(move |raw: Value| {
-                let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
-                async move {
-                    let writer_ref = serde_json::from_value(
-                        raw.get("writer_ref").cloned().unwrap_or(Value::Null),
-                    )
-                    .map_err(|_| {
-                        IIIError::from(RouterError::new(
-                            RouterCode::InvalidRequest,
-                            "writer_ref (direction write) is required",
-                        ))
-                    })?;
-                    let call: ChatCall = serde_json::from_value(raw).map_err(|e| {
-                        IIIError::from(RouterError::new(RouterCode::InvalidRequest, e.to_string()))
-                    })?;
-                    let sink = open_sink(&iii, &writer_ref).await?;
-                    let result = pipeline.run(call, sink.clone()).await;
-                    sink.close(); // the handler owns closing the caller's channel
-                    result.map(|r| serde_json::to_value(r).expect("serializable response"))
-                }
-            }),
+            surface::CHAT_ID,
+            RegisterFunction::new_async_with_bad_request(
+                move |input: ChatFnInput| {
+                    let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
+                    async move {
+                        let sink = open_sink(&iii, &input.writer_ref).await?;
+                        let result = pipeline.run(input.call, sink.clone()).await;
+                        sink.close(); // the handler owns closing the caller's channel
+                        result
+                    }
+                },
+                invalid_request_from_serde,
+            )
+            .description(surface::CHAT_DESC),
         );
     }
     iii.register_function(
-        "router::complete",
-        RegisterFunction::new_async(make_complete(iii.clone(), pipeline.clone())),
+        surface::COMPLETE_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_complete(iii.clone(), pipeline.clone()),
+            invalid_request_from_serde,
+        )
+        .description(surface::COMPLETE_DESC),
     );
     iii.register_function(
-        "router::abort",
-        RegisterFunction::new_async(make_abort(inflight.clone())),
+        surface::ABORT_ID,
+        RegisterFunction::new_async(make_abort(inflight.clone())).description(surface::ABORT_DESC),
     );
     iii.register_function(
-        "router::models::list",
-        RegisterFunction::new_async(make_models_list(catalog.clone())),
+        surface::MODELS_LIST_ID,
+        RegisterFunction::new_async(make_models_list(catalog.clone()))
+            .description(surface::MODELS_LIST_DESC),
     );
     iii.register_function(
-        "router::models::get",
-        RegisterFunction::new_async(make_models_get(catalog.clone())),
+        surface::MODELS_GET_ID,
+        RegisterFunction::new_async(make_models_get(catalog.clone()))
+            .description(surface::MODELS_GET_DESC),
     );
     iii.register_function(
-        "router::models::supports",
-        RegisterFunction::new_async(make_models_supports(catalog.clone())),
+        surface::MODELS_SUPPORTS_ID,
+        RegisterFunction::new_async(make_models_supports(catalog.clone()))
+            .description(surface::MODELS_SUPPORTS_DESC),
     );
     iii.register_function(
-        "router::provider::list",
-        RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone())),
+        surface::PROVIDER_LIST_ID,
+        RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone()))
+            .description(surface::PROVIDER_LIST_DESC),
     );
     iii.register_function(
-        "router::route",
+        surface::ROUTE_ID,
         RegisterFunction::new_async(crate::routing::make_route(
             registry.clone(),
             catalog.clone(),
             settings.clone(),
-        )),
+        ))
+        .description(surface::ROUTE_DESC),
     );
     iii.register_function(
-        "router::provider::register",
-        RegisterFunction::new_async(make_provider_register(
-            iii.clone(),
-            registry.clone(),
-            catalog.clone(),
-            entry_lock.clone(),
-        )),
+        surface::PROVIDER_REGISTER_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_provider_register(
+                iii.clone(),
+                registry.clone(),
+                catalog.clone(),
+                entry_lock.clone(),
+            ),
+            invalid_request_from_serde,
+        )
+        .description(surface::PROVIDER_REGISTER_DESC),
     );
     iii.register_function(
-        "router::provider::resolve",
-        RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone())),
+        surface::PROVIDER_RESOLVE_ID,
+        RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone()))
+            .description(surface::PROVIDER_RESOLVE_DESC),
     );
     iii.register_function(
-        "router::provider::update_credential",
+        surface::UPDATE_CREDENTIAL_ID,
         RegisterFunction::new_async(make_update_credential(
             iii.clone(),
             registry.clone(),
             entry_lock,
-        )),
+        ))
+        .description(surface::UPDATE_CREDENTIAL_DESC),
     );
     iii.register_function(
-        "router::models::reconcile",
-        RegisterFunction::new_async(make_models_reconcile(
-            iii.clone(),
-            registry.clone(),
-            catalog.clone(),
-        )),
+        surface::MODELS_RECONCILE_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_models_reconcile(iii.clone(), registry.clone(), catalog.clone()),
+            invalid_request_from_serde,
+        )
+        .description(surface::MODELS_RECONCILE_DESC),
     );
 
     // 5. bound triggers: topology + configuration change (paste-a-key)
     iii.register_function(
-        "router::on_worker_available",
-        RegisterFunction::new_async(make_on_worker_available(iii.clone(), registry.clone())),
+        surface::ON_WORKER_AVAILABLE_ID,
+        RegisterFunction::new_async(make_on_worker_available(iii.clone(), registry.clone()))
+            .description(surface::ON_WORKER_AVAILABLE_DESC),
     );
     let _ = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "subscribe".into(),
-        function_id: "router::on_worker_available".into(),
+        function_id: surface::ON_WORKER_AVAILABLE_ID.into(),
         config: json!({ "topic": "engine::workers-available" }),
         metadata: None,
     });
@@ -174,18 +183,19 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
             })
         });
         iii.register_function(
-            "router::on_config_changed",
+            surface::ON_CONFIG_CHANGED_ID,
             RegisterFunction::new_async(make_on_config_changed(
                 iii.clone(),
                 lookup,
                 settings.clone(),
                 2000,
-            )),
+            ))
+            .description(surface::ON_CONFIG_CHANGED_DESC),
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "configuration".into(),
-        function_id: "router::on_config_changed".into(),
+        function_id: surface::ON_CONFIG_CHANGED_ID.into(),
         config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
         metadata: None,
     });

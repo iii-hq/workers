@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::types::content::ContentBlock;
@@ -5,35 +6,35 @@ use crate::types::events::{ErrorKind, StopReason, Usage};
 
 /// Single-variant role tags: exact-match on deserialize, correct wire string on
 /// serialize, and they let `AgentMessage` be an untagged union.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum UserRoleTag {
     #[serde(rename = "user")]
     User,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum AssistantRoleTag {
     #[serde(rename = "assistant")]
     Assistant,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum FunctionResultRoleTag {
     #[serde(rename = "function_result")]
     FunctionResult,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum CustomRoleTag {
     #[serde(rename = "custom")]
     Custom,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UserMessage {
     pub role: UserRoleTag,
     pub content: Vec<ContentBlock>,
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AssistantMessage {
     pub role: AssistantRoleTag,
     pub content: Vec<ContentBlock>,
@@ -53,7 +54,7 @@ pub struct AssistantMessage {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FunctionResultMessage {
     pub role: FunctionResultRoleTag,
     pub function_call_id: String,
@@ -64,7 +65,7 @@ pub struct FunctionResultMessage {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CustomMessage {
     pub role: CustomRoleTag,
     pub custom_type: String, // app-defined discriminator
@@ -78,7 +79,7 @@ pub struct CustomMessage {
 
 /// The canonical transcript message union. Untagged: the single-variant role
 /// tags disambiguate deserialization.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum AgentMessage {
     Assistant(AssistantMessage),

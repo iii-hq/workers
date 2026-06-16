@@ -1,0 +1,73 @@
+{
+  "function_id": "session::set-status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "reason": {
+        "description": "Short cause stored as `status_reason` — kept on `error`, cleared on any other status.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SessionStatus"
+          }
+        ],
+        "description": "Target status: `idle` / `working` / `done` / `error`."
+      }
+    },
+    "required": [
+      "session_id",
+      "status"
+    ],
+    "title": "SetStatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "previous_status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "status": {
+        "$ref": "#/definitions/SessionStatus"
+      }
+    },
+    "required": [
+      "previous_status",
+      "status"
+    ],
+    "title": "SetStatusResponse",
+    "type": "object"
+  }
+}

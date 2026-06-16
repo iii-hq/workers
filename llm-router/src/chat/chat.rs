@@ -11,7 +11,8 @@ use std::sync::{Arc, RwLock};
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
 use crate::types::router::{ChatResponse, ErrorShape};
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::{IIIError, StreamChannelRef, TriggerRequest, III};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -33,20 +34,46 @@ use super::synthesize::{synthesize_aborted, synthesize_error};
 
 /// ChatRequest minus writer_ref (the sink arrives separately — the function
 /// handler wraps the looked-up writer, complete wraps its own).
-#[derive(Debug, Deserialize)]
+///
+/// `messages` / `tools` / `response_format` / `thinking_level` /
+/// `provider_options` stay `Value`: they are forwarded to the provider verbatim,
+/// so the router intentionally does not re-validate their shape. The struct
+/// still derives `JsonSchema` so the SDK emits a real request schema (the
+/// freeform sub-fields surface as permissive sub-schemas).
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChatCall {
+    #[serde(default)]
     pub request_id: Option<String>,
     pub model: String,
+    #[serde(default)]
     pub provider: Option<String>,
+    #[serde(default)]
     pub system_prompt: Option<String>,
     pub messages: Value, // forwarded verbatim; validated to be an array
+    #[serde(default)]
     pub tools: Option<Value>,
+    #[serde(default)]
     pub response_format: Option<Value>,
+    #[serde(default)]
     pub thinking_level: Option<Value>,
+    #[serde(default)]
     pub max_output_tokens: Option<u64>,
+    #[serde(default)]
     pub provider_options: Option<Value>,
     #[allow(dead_code)]
+    #[serde(default)]
     pub metadata: Option<Value>,
+}
+
+/// Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's
+/// write channel. The handler relays assistant frames to `writer_ref` and also
+/// returns the terminal [`ChatResponse`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ChatFnInput {
+    /// The caller's write channel (direction "write"); frames are relayed here.
+    pub writer_ref: StreamChannelRef,
+    #[serde(flatten)]
+    pub call: ChatCall,
 }
 
 pub struct ChatPipeline {

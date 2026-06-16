@@ -4,10 +4,10 @@
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::{purge, Deps};
 use crate::settings;
+use crate::types::EventAck;
 
 /// `session::deleted` payload (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -18,7 +18,7 @@ pub struct SessionDeletedEvent {
 pub async fn handle(
     deps: &Deps,
     event: SessionDeletedEvent,
-) -> Result<Value, crate::error::ApprovalError> {
+) -> Result<EventAck, crate::error::ApprovalError> {
     if let Err(e) = settings::clear(
         deps.iii.as_ref(),
         &event.session_id,
@@ -30,7 +30,7 @@ pub async fn handle(
     }
     let purged = purge::purge_matching(deps, |r| r.session_id == event.session_id).await;
     tracing::info!(session_id = %event.session_id, purged, "session deleted: approval records purged");
-    Ok(Value::Null)
+    Ok(EventAck { ok: true })
 }
 
 #[cfg(test)]

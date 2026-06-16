@@ -308,6 +308,29 @@ where
     }
 }
 
+/// Internal `session::on-config-change` trigger payload. The handler re-fetches
+/// the authoritative configuration, so this carries only the (advisory)
+/// configuration id; a struct (not `Value`) keeps the request schema concrete
+/// and unknown fields are ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnConfigChangeEvent {
+    /// Configuration id that changed (advisory; the handler re-fetches the value).
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Ack returned by the internal `session::on-config-change` handler.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OnConfigChangeResponse {
+    pub ok: bool,
+}
+
+/// Input of `session::config-status` — takes no arguments. A struct (not
+/// `Value`) keeps the request schema concrete; the engine-injected
+/// `_caller_worker_id` (and any other unknown field) is ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ConfigStatusRequest {}
+
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger. On `configuration:updated` the handler rebuilds and swaps the
 /// runtime (or just the list limits) from the authoritative value.
@@ -315,11 +338,11 @@ pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIErro
     let st = state.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let st = st.clone();
             async move {
                 on_config_change(&st).await.map_err(IIIError::Handler)?;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
@@ -348,15 +371,14 @@ pub fn register_config_status(iii: &III, state: AppState) {
     let st = state.clone();
     iii.register_function(
         CONFIG_STATUS_FN_ID,
-        // Ignore the payload: a no-arg call, and the engine-injected
-        // `_caller_worker_id` would break a typed param.
-        RegisterFunction::new_async(move |_payload: Value| {
+        // No-arg call: the empty `ConfigStatusRequest` tolerates the
+        // engine-injected `_caller_worker_id` (serde ignores unknown fields)
+        // while still emitting a concrete request schema.
+        RegisterFunction::new_async(move |_req: ConfigStatusRequest| {
             let st = st.clone();
             async move {
                 let status = { st.reload_status.read().await.clone() };
-                Ok::<Value, IIIError>(
-                    serde_json::to_value(status).expect("ReloadStatus serializes"),
-                )
+                Ok::<ReloadStatus, IIIError>(status)
             }
         })
         .description(

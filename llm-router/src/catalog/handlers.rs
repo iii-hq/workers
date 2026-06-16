@@ -5,62 +5,59 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use iii_sdk::IIIError;
-use serde_json::{json, Value};
+
+use crate::types::router::{
+    ModelGetRequest, ModelGetResponse, ModelsListRequest, ModelsListResponse,
+    ModelsSupportsRequest, ModelsSupportsResponse,
+};
 
 use super::queries::{models_get, models_list, models_supports};
 use super::store::CatalogStore;
 
 pub fn make_models_list(
     catalog: Arc<CatalogStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ModelsListRequest) -> BoxFuture<'static, Result<ModelsListResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |req: ModelsListRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let models = models_list(
-                &catalog,
-                raw.get("provider").and_then(Value::as_str),
-                raw.get("capability").and_then(Value::as_str),
-            )
-            .await;
-            Ok(json!({ "models": models }))
+            let models =
+                models_list(&catalog, req.provider.as_deref(), req.capability.as_deref()).await;
+            Ok(ModelsListResponse { models })
         })
     }
 }
 
 pub fn make_models_get(
     catalog: Arc<CatalogStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ModelGetRequest) -> BoxFuture<'static, Result<Option<ModelGetResponse>, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |req: ModelGetRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let model = models_get(
-                &catalog,
-                raw.get("provider").and_then(Value::as_str).unwrap_or(""),
-                raw.get("id").and_then(Value::as_str).unwrap_or(""),
-            )
-            .await;
-            Ok(match model {
-                Some(m) => json!({ "model": m }),
-                None => Value::Null, // null when unregistered (the cold-window signal)
-            })
+            let model = models_get(&catalog, &req.provider, &req.id).await;
+            // null when unregistered (the cold-window signal)
+            Ok(model.map(|model| ModelGetResponse { model }))
         })
     }
 }
 
 pub fn make_models_supports(
     catalog: Arc<CatalogStore>,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
-    move |raw: Value| {
+) -> impl Fn(ModelsSupportsRequest) -> BoxFuture<'static, Result<ModelsSupportsResponse, IIIError>>
+       + Send
+       + Sync
+       + 'static {
+    move |req: ModelsSupportsRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let supported = models_supports(
-                &catalog,
-                raw.get("provider").and_then(Value::as_str).unwrap_or(""),
-                raw.get("id").and_then(Value::as_str).unwrap_or(""),
-                raw.get("capability").and_then(Value::as_str).unwrap_or(""),
-            )
-            .await;
-            Ok(json!({ "supported": supported }))
+            let supported =
+                models_supports(&catalog, &req.provider, &req.id, &req.capability).await;
+            Ok(ModelsSupportsResponse { supported })
         })
     }
 }

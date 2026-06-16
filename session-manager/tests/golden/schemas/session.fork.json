@@ -1,0 +1,124 @@
+{
+  "function_id": "session::fork",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "entry_id": {
+        "description": "Fork point: the root -> entry path is copied (copy-on-fork, fresh entry ids) and becomes the new session's active path.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Source session.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Title for the new session (default: the source's title).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "entry_id",
+      "session_id"
+    ],
+    "title": "ForkRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionMeta": {
+        "description": "A session's metadata record.",
+        "properties": {
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "forked_from": {
+            "description": "Source session id when created by `session::fork`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "description": "Number of `kind: \"message\"` entries (custom entries are bookkeeping and not counted).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` and every trigger config can filter on.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/SessionStatus"
+          },
+          "status_reason": {
+            "description": "Short cause, set on `error`, cleared on any other status.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "description",
+          "message_count",
+          "session_id",
+          "status",
+          "title",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "meta": {
+        "$ref": "#/definitions/SessionMeta"
+      },
+      "session_id": {
+        "description": "The new session's id (`forked_from` is set on its meta).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "meta",
+      "session_id"
+    ],
+    "title": "ForkResponse",
+    "type": "object"
+  }
+}

@@ -1,0 +1,200 @@
+{
+  "function_id": "session::update-message",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentBlock": {
+        "description": "The atomic unit of message content. A message's `content` is an ordered array of these.",
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "description": "Base64-encoded image bytes.",
+                "type": "string"
+              },
+              "mime": {
+                "description": "MIME type, e.g. `image/png`.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": {
+                "default": null,
+                "description": "Model-produced arguments (JSON)."
+              },
+              "function_id": {
+                "description": "The iii function id to invoke.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Unique per call, echoed by the result.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "content": {
+                "items": {
+                  "$ref": "#/definitions/ContentBlock"
+                },
+                "type": "array"
+              },
+              "function_call_id": {
+                "type": "string"
+              },
+              "is_error": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "function_result"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "function_call_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "content": {
+        "description": "New content for the message (full replacement).",
+        "items": {
+          "$ref": "#/definitions/ContentBlock"
+        },
+        "type": "array"
+      },
+      "details": {
+        "description": "New `details` — only for `function_result` / `custom` messages."
+      },
+      "entry_id": {
+        "type": "string"
+      },
+      "expected_revision": {
+        "description": "Optimistic concurrency: when supplied and it does not match the entry's current revision, nothing is written and `{ updated: false, revision }` returns the current revision.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "origin": {
+        "additionalProperties": true,
+        "description": "Opaque correlation echoed on the event.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "entry_id",
+      "session_id"
+    ],
+    "title": "UpdateMessageRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "revision": {
+        "description": "The entry's revision after this call (unchanged on a mismatch).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "updated": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "revision",
+      "updated"
+    ],
+    "title": "UpdateMessageResponse",
+    "type": "object"
+  }
+}

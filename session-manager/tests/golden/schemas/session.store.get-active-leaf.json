@@ -1,0 +1,30 @@
+{
+  "function_id": "session::store::get-active-leaf",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SessionIdRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "entry_id": {
+        "description": "`null` when the session has no active leaf.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ActiveLeafResponse",
+    "type": "object"
+  }
+}

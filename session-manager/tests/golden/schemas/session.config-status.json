@@ -1,0 +1,58 @@
+{
+  "function_id": "session::config-status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `session::config-status` — takes no arguments. A struct (not `Value`) keeps the request schema concrete; the engine-injected `_caller_worker_id` (and any other unknown field) is ignored.",
+    "title": "ConfigStatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ReloadOutcome": {
+        "description": "Outcome of the most recent hot-reload attempt, exposed via `session::config-status`.",
+        "oneOf": [
+          {
+            "description": "The live runtime reflects the most recent configuration the worker loaded.",
+            "enum": [
+              "applied"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The most recent `configuration:updated` delivered a value the worker could NOT build (e.g. an unreadable `data_dir` or a self-referential bridge url); the previous runtime is still active and the central store has DIVERGED from what this worker is running.",
+            "enum": [
+              "rejected"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "Operator-visible hot-reload status. `rejected_reloads > 0` (or `last_outcome == Rejected`) means a stored config was refused and the worker is running an older adapter than the central store — actionable divergence.",
+    "properties": {
+      "last_error": {
+        "description": "Build error from the most recent rejected reload (why it was refused).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "last_outcome": {
+        "$ref": "#/definitions/ReloadOutcome"
+      },
+      "rejected_reloads": {
+        "description": "Cumulative count of rejected reloads since boot (never reset).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "last_outcome",
+      "rejected_reloads"
+    ],
+    "title": "ReloadStatus",
+    "type": "object"
+  }
+}

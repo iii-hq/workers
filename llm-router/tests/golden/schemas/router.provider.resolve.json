@@ -1,0 +1,139 @@
+{
+  "description": "Resolve a provider's effective credential + api_url + max_tokens (token-gated).",
+  "function_id": "router::provider::resolve",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::provider::resolve`.",
+    "properties": {
+      "id": {
+        "default": "",
+        "description": "Provider id to resolve credentials/config for.",
+        "type": "string"
+      },
+      "token": {
+        "description": "Registration token gating the resolve (optional).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ProviderResolveRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Credential": {
+        "oneOf": [
+          {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "api_key"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "access_token": {
+                "type": "string"
+              },
+              "expires_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "provider_extra": true,
+              "refresh_token": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "oauth"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "access_token",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CredentialSource": {
+        "enum": [
+          "config",
+          "env",
+          "none"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Output of the `router::provider::resolve` iii function.",
+    "properties": {
+      "api_url": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "configured": {
+        "type": "boolean"
+      },
+      "credential": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Credential"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "max_tokens": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "source": {
+        "$ref": "#/definitions/CredentialSource"
+      }
+    },
+    "required": [
+      "configured",
+      "source"
+    ],
+    "title": "ProviderResolveResponse",
+    "type": "object"
+  }
+}

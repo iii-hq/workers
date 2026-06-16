@@ -1,0 +1,45 @@
+{
+  "description": "Read-only routing preview: resolve {model, provider?} to the chosen provider + ordered candidates without streaming.",
+  "function_id": "router::route",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::route` — the read-only routing preview.",
+    "properties": {
+      "model": {
+        "default": "",
+        "description": "Model id to route.",
+        "type": "string"
+      },
+      "provider": {
+        "description": "Pin an explicit provider, bypassing heuristics (optional).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "RouteRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of `router::route`.",
+    "properties": {
+      "candidates": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "provider": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "candidates",
+      "provider"
+    ],
+    "title": "RouteResponse",
+    "type": "object"
+  }
+}

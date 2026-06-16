@@ -1,0 +1,37 @@
+{
+  "description": "Internal: configuration-change handler (paste-a-key) that refreshes settings and fans out provider model discovery.",
+  "function_id": "router::on_config_changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Configuration-change event delivered to `router::on_config_changed` via the engine's `configuration` trigger (paste-a-key flow).",
+    "properties": {
+      "id": {
+        "description": "Configuration id; the handler only acts on `llm-router`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "new_value": {
+        "default": null,
+        "description": "The new authoritative configuration value."
+      }
+    },
+    "title": "ConfigChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Generic acknowledgement returned by trigger-bound handlers whose result is not consumed by callers (kept typed so the response schema is concrete).",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "RouterAck",
+    "type": "object"
+  }
+}

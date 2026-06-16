@@ -1,0 +1,34 @@
+{
+  "function_id": "session::set-active-leaf",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "entry_id": {
+        "description": "The entry the active path should end at. Subsequent `session::append` without `parent_id` chains from here.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "entry_id",
+      "session_id"
+    ],
+    "title": "SetActiveLeafRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "active_leaf": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "active_leaf"
+    ],
+    "title": "SetActiveLeafResponse",
+    "type": "object"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "description": "Check whether a model supports a capability flag (fails open for unknown models).",
+  "function_id": "router::models::supports",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::models::supports`.",
+    "properties": {
+      "capability": {
+        "default": "",
+        "description": "Capability flag to check (e.g. `structured_output`, `vision`).",
+        "type": "string"
+      },
+      "id": {
+        "default": "",
+        "description": "Model id to check.",
+        "type": "string"
+      },
+      "provider": {
+        "default": "",
+        "description": "Provider id that owns the model.",
+        "type": "string"
+      }
+    },
+    "title": "ModelsSupportsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of `router::models::supports`.",
+    "properties": {
+      "supported": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "supported"
+    ],
+    "title": "ModelsSupportsResponse",
+    "type": "object"
+  }
+}

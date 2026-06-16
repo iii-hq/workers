@@ -21,6 +21,16 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "AnyValue"
+    "description": "Acknowledgement returned by the internal trigger-bound handlers (`on-config-change`, `on-session-deleted`, `on-turn-completed`) whose result is not consumed by callers — kept typed so the response schema is concrete rather than the permissive `AnyValue` (\"unknown\") schema a `Value` return would emit.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "EventAck",
+    "type": "object"
   }
 }
