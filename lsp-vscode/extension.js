@@ -6,6 +6,7 @@ const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { ensureServerBinary } = require("./installer");
 
 let client;
+const CONFIG_SECTION = "iii-lsp";
 
 // Resolve the server binary on PATH, preferring the new `lsp` name and
 // falling back to the legacy `iii-lsp` name for older installs.
@@ -39,7 +40,7 @@ function resolvePathBinary() {
 }
 
 async function activate(context) {
-  const config = vscode.workspace.getConfiguration("iii-lsp");
+  const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const engineUrl = config.get("engineUrl") || "ws://127.0.0.1:49134";
   let serverPath;
 

@@ -5,7 +5,7 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     changed_workers (alias `all`) : all workers with any change
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
-    vscode_changed                : bool, did iii-lsp-vscode/ change
+    vscode_changed                : bool, did lsp-vscode/ change
     any                           : bool, any worker or vscode change
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ METADATA_GLOBS = (
 IGNORE_DIRS = {".git", ".github", "registry", "target", "node_modules"}
 
 # Special non-worker dir tracked separately for the vscode-changed gate.
-VSCODE_DIR = "iii-lsp-vscode"
+VSCODE_DIR = "lsp-vscode"
 
 # Source changes in this worker fan out: every in-repo dep listed in its
 # iii.worker.yaml joins the changed-workers matrix so the rust lint+test

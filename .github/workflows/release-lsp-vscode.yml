@@ -1,13 +1,13 @@
-name: Release LSP
+name: Release LSP VS Code
 
 on:
   push:
     tags:
-      - 'iii-lsp-vscode/v*'
+      - 'lsp-vscode/v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., iii-lsp-vscode/v1.0.0)'
+        description: 'Tag to release (e.g., lsp-vscode/v1.0.0)'
         required: true
         type: string
 
@@ -41,7 +41,7 @@ jobs:
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          VERSION="${TAG#iii-lsp-vscode/v}"
+          VERSION="${TAG#lsp-vscode/v}"
 
           if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
             echo "dry_run=true" >> "$GITHUB_OUTPUT"
@@ -55,7 +55,7 @@ jobs:
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::iii-lsp-vscode release -- tag=$TAG version=$VERSION"
+          echo "::notice::lsp-vscode release -- tag=$TAG version=$VERSION"
 
   publish:
     name: Package & Publish
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: iii-lsp-vscode
+        working-directory: lsp-vscode
     steps:
       - uses: actions/checkout@v4
 
@@ -86,7 +86,7 @@ jobs:
             exit 1
           fi
 
-          echo "::notice::iii-lsp-vscode package version set to ${ACTUAL_VERSION}"
+          echo "::notice::lsp-vscode package version set to ${ACTUAL_VERSION}"
 
       - name: Package VSIX
         run: npx @vscode/vsce package --out iii-lsp-${{ needs.setup.outputs.version }}.vsix
@@ -108,8 +108,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
-          name: iii-lsp-vscode ${{ needs.setup.outputs.version }}
+          name: lsp-vscode ${{ needs.setup.outputs.version }}
           draft: false
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
-          files: iii-lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix
+          files: lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix

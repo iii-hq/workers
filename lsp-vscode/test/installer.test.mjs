@@ -48,7 +48,7 @@ function createFakeVscode(initialServerPath = '') {
   };
 }
 
-describe('iii-lsp-vscode installer', () => {
+describe('lsp-vscode installer', () => {
   test('supported platform mapping', () => {
     const cases = [
       ['darwin', 'arm64', 'aarch64-apple-darwin'],
@@ -68,48 +68,48 @@ describe('iii-lsp-vscode installer', () => {
 
   test('unsupported platform error', () => {
     expect(() => installer.getPlatformTarget('freebsd', 'x64')).toThrow(
-      /Unsupported iii-lsp platform: freebsd\/x64/
+      /Unsupported lsp platform: freebsd\/x64/
     );
   });
 
   test('archive extension by platform', () => {
     expect(installer.getArchiveName('aarch64-apple-darwin', 'darwin')).toBe(
-      'iii-lsp-aarch64-apple-darwin.tar.gz'
+      'lsp-aarch64-apple-darwin.tar.gz'
     );
     expect(installer.getArchiveName('x86_64-unknown-linux-gnu', 'linux')).toBe(
-      'iii-lsp-x86_64-unknown-linux-gnu.tar.gz'
+      'lsp-x86_64-unknown-linux-gnu.tar.gz'
     );
     expect(installer.getArchiveName('x86_64-pc-windows-msvc', 'win32')).toBe(
-      'iii-lsp-x86_64-pc-windows-msvc.zip'
+      'lsp-x86_64-pc-windows-msvc.zip'
     );
   });
 
   test('binary filename by platform', () => {
-    expect(installer.getBinaryName('win32')).toBe('iii-lsp.exe');
-    expect(installer.getBinaryName('linux')).toBe('iii-lsp');
+    expect(installer.getBinaryName('win32')).toBe('lsp.exe');
+    expect(installer.getBinaryName('linux')).toBe('lsp');
   });
 
   test('pinned release url', () => {
-    expect(installer.SERVER_VERSION).toBe('0.1.2');
-    expect(installer.RELEASE_TAG).toBe('iii-lsp/v0.1.2');
+    expect(installer.SERVER_VERSION).toBe('0.1.3');
+    expect(installer.RELEASE_TAG).toBe('lsp/v0.1.3');
     expect(installer.RELEASE_BASE_URL).toBe(
-      'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.2'
+      'https://github.com/iii-hq/workers/releases/download/lsp/v0.1.3'
     );
   });
 
   test('checksum and download url', () => {
     expect(installer.getChecksumName('aarch64-apple-darwin')).toBe(
-      'iii-lsp-aarch64-apple-darwin.sha256'
+      'lsp-aarch64-apple-darwin.sha256'
     );
-    expect(installer.getDownloadUrl('iii-lsp-aarch64-apple-darwin.tar.gz')).toBe(
-      'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.2/iii-lsp-aarch64-apple-darwin.tar.gz'
+    expect(installer.getDownloadUrl('lsp-aarch64-apple-darwin.tar.gz')).toBe(
+      'https://github.com/iii-hq/workers/releases/download/lsp/v0.1.3/lsp-aarch64-apple-darwin.tar.gz'
     );
   });
 
   test('parses sha256 files from GitHub release assets', () => {
     expect(
       normalizeChecksum(
-        '04dc683db6f30a983017e71ed7f4aa3ccb7fc5124261274d3a733a8e77c66da4  iii-lsp-aarch64-apple-darwin.tar.gz\n'
+        '04dc683db6f30a983017e71ed7f4aa3ccb7fc5124261274d3a733a8e77c66da4  lsp-aarch64-apple-darwin.tar.gz\n'
       )
     ).toBe('04dc683db6f30a983017e71ed7f4aa3ccb7fc5124261274d3a733a8e77c66da4');
   });
@@ -119,8 +119,8 @@ describe('iii-lsp-vscode installer', () => {
   });
 
   test('fileExists requires a regular executable binary on non-win32', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
-    const tempFile = path.join(tempDir, 'iii-lsp');
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lsp-vscode-test-'));
+    const tempFile = path.join(tempDir, 'lsp');
 
     await fs.mkdir(path.join(tempDir, 'subdir'), { recursive: true });
     await fs.writeFile(tempFile, 'fake binary');
@@ -140,14 +140,14 @@ describe('iii-lsp-vscode installer', () => {
       return;
     }
 
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lsp-vscode-test-'));
     const archiveDir = path.join(tempDir, 'archive');
     const installDir = path.join(tempDir, 'install');
-    const archivePath = path.join(tempDir, 'iii-lsp-linux.tar.gz');
-    const binaryPath = path.join(archiveDir, 'iii-lsp');
+    const archivePath = path.join(tempDir, 'lsp-linux.tar.gz');
+    const binaryPath = path.join(archiveDir, 'lsp');
 
     await fs.mkdir(archiveDir, { recursive: true });
-    await fs.writeFile(binaryPath, '#!/bin/sh\necho iii-lsp\n');
+    await fs.writeFile(binaryPath, '#!/bin/sh\necho lsp\n');
     await fs.chmod(binaryPath, 0o644);
     await tar.c(
       {
@@ -155,19 +155,19 @@ describe('iii-lsp-vscode installer', () => {
         cwd: archiveDir,
         file: archivePath,
       },
-      ['iii-lsp']
+      ['lsp']
     );
 
     const extractedPath = await extractArchive(archivePath, installDir, 'linux');
     const extractedStat = await fs.stat(extractedPath);
 
-    expect(extractedPath).toBe(path.join(installDir, 'iii-lsp'));
+    expect(extractedPath).toBe(path.join(installDir, 'lsp'));
     expect(await fileExists(extractedPath)).toBe(true);
     expect((extractedStat.mode & 0o111) !== 0).toBe(true);
   });
 
   test('installs missing binary and saves global serverPath', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lsp-vscode-test-'));
     const fakeVscode = createFakeVscode();
     const downloaded = [];
     const checksum = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
@@ -181,9 +181,9 @@ describe('iii-lsp-vscode installer', () => {
         fileExists: async () => false,
         downloadText: async (url) => {
           expect(url).toBe(
-            'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.2/iii-lsp-aarch64-apple-darwin.sha256'
+            'https://github.com/iii-hq/workers/releases/download/lsp/v0.1.3/lsp-aarch64-apple-darwin.sha256'
           );
-          return `${checksum}  iii-lsp-aarch64-apple-darwin.tar.gz\n`;
+          return `${checksum}  lsp-aarch64-apple-darwin.tar.gz\n`;
         },
         downloadFile: async (url, destination) => {
           downloaded.push([url, destination]);
@@ -191,7 +191,7 @@ describe('iii-lsp-vscode installer', () => {
         },
         sha256File: async () => checksum,
         extractArchive: async (_archivePath, installDir) => {
-          const installedPath = path.join(installDir, 'iii-lsp');
+          const installedPath = path.join(installDir, 'lsp');
           await fs.mkdir(installDir, { recursive: true });
           await fs.writeFile(installedPath, 'fake binary');
           return installedPath;
@@ -200,14 +200,14 @@ describe('iii-lsp-vscode installer', () => {
     );
 
     expect(binaryPath).toBe(
-      path.join(tempDir, 'server', SERVER_VERSION, 'aarch64-apple-darwin', 'iii-lsp')
+      path.join(tempDir, 'server', SERVER_VERSION, 'aarch64-apple-darwin', 'lsp')
     );
-    expect(downloaded[0][0]).toBe(getDownloadUrl('iii-lsp-aarch64-apple-darwin.tar.gz'));
+    expect(downloaded[0][0]).toBe(getDownloadUrl('lsp-aarch64-apple-darwin.tar.gz'));
     expect(fakeVscode.updates).toEqual([['serverPath', binaryPath, 'global']]);
   });
 
   test('uses valid configured serverPath without downloading', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lsp-vscode-test-'));
     const configuredPath = path.join(tempDir, 'configured-server');
     await fs.writeFile(configuredPath, 'fake binary');
     const fakeVscode = createFakeVscode(configuredPath);
@@ -244,7 +244,7 @@ describe('iii-lsp-vscode installer', () => {
   });
 
   test('rejects archives whose checksum does not match', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lsp-vscode-test-'));
     const fakeVscode = createFakeVscode();
     const expectedChecksum = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const actualChecksum = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -257,7 +257,7 @@ describe('iii-lsp-vscode installer', () => {
           platform: 'linux',
           arch: 'x64',
           fileExists: async () => false,
-          downloadText: async () => `${expectedChecksum}  iii-lsp-x86_64-unknown-linux-gnu.tar.gz\n`,
+          downloadText: async () => `${expectedChecksum}  lsp-x86_64-unknown-linux-gnu.tar.gz\n`,
           downloadFile: async (_url, destination) => {
             await fs.writeFile(destination, '');
           },
