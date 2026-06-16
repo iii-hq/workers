@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - acp
+          - approval-gate
           - claude-code
           - coder
           - codex
