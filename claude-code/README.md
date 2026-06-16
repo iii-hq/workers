@@ -68,11 +68,11 @@ iii trigger claude::run --help
 
 A turn from the CLI and the session record it leaves behind:
 
-![iii trigger claude::run returning the result with usage and cost](assets/cli-run.png)
+![iii trigger claude::run returning the result with usage and cost](https://raw.githubusercontent.com/iii-hq/workers/main/claude-code/assets/cli-run.png)
 
-![iii trigger claude::status showing the stored session record](assets/cli-status.png)
+![iii trigger claude::status showing the stored session record](https://raw.githubusercontent.com/iii-hq/workers/main/claude-code/assets/cli-status.png)
 
-![iii trigger claude::run --help printing the published request schema as a parameter table](assets/cli-help.png)
+![iii trigger claude::run --help printing the published request schema as a parameter table](https://raw.githubusercontent.com/iii-hq/workers/main/claude-code/assets/cli-help.png)
 
 Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically.
 
@@ -171,7 +171,7 @@ With `approval_gate: true` and the harness worker installed, every Claude Code t
 
 Every `claude::run` is an ordinary traced invocation on the engine: the trace carries the full input payload (prompt, cwd, caller worker id) and the output (result, stop reason, token usage, cost) as span events, with per-function p50/p95/p99 in the console's trace explorer — no extra instrumentation in the worker.
 
-![claude::run invocations in the iii console trace explorer, with input and output payloads](assets/console-traces.png)
+![claude::run invocations in the iii console trace explorer, with input and output payloads](https://raw.githubusercontent.com/iii-hq/workers/main/claude-code/assets/console-traces.png)
 
 ## How it maps
 
