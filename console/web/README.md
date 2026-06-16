@@ -65,7 +65,7 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   Transcripts hydrate from `session::messages` and stream live from
   `session::message-added` / `session::message-updated` snapshots —
   localStorage keeps only UI affordances (active id, last model).
-  Double-click a row to rename inline (writes through `session::set_meta`);
+  Double-click a row to rename inline (writes through `session::set-meta`);
   hover to reveal the delete affordance (`session::delete`).
 - **Light / dark theme** toggle, persisted under `iii-theme` and applied
   pre-paint to avoid a flash.

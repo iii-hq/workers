@@ -19,6 +19,7 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { emit } from './events.js';
+import { deleteResolution } from './function-resolve.js';
 import { RunAbortPayloadSchema, type RunAbortPayload, type RunAbortResult } from './schemas.js';
 import { createTurnStatePorts } from './state-runtime/ports.js';
 import { createTurnStore } from './state-runtime/store.js';
@@ -60,6 +61,11 @@ export async function execute(iii: ISdk, payload: RunAbortPayload): Promise<RunA
   const ports = createTurnStatePorts(iii, store);
   const msg = syntheticAssistant({ stop_reason: 'aborted', text: 'run aborted by user' });
   rec.last_assistant = msg;
+  // Best-effort: drop any unconsumed resolution rows for the calls being
+  // unparked, so a decision that raced the abort doesn't linger.
+  for (const entry of rec.awaiting_approval ?? []) {
+    await deleteResolution(iii, session_id, entry.function_call_id).catch(() => {});
+  }
   rec.awaiting_approval = [];
   (rec as TurnStateRecord).work = undefined;
 

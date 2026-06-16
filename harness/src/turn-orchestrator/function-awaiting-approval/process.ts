@@ -1,43 +1,22 @@
 /**
- * Read approval decisions, execute resolved calls individually, and register the FSM step.
+ * Apply pending `function_resolutions` rows to parked calls and register
+ * the FSM step. Wakes arrive directly from `harness::function::resolve`
+ * (no state trigger): the resolve handler enqueues
+ * `turn::function_awaiting_approval` after persisting the decision.
  */
 
-import { TriggerAction, type ISdk } from '../../runtime/iii.js';
-import { logger } from '../../runtime/otel.js';
+import type { ISdk } from '../../runtime/iii.js';
 import { createPorts } from '../function-execute/ports.js';
+import { enqueueAwaitingApprovalWake } from '../function-resolve.js';
 import { runTransition } from '../run-transition.js';
 import {
-  ApprovalDecisionEventSchema,
   TurnStepPayloadSchema,
   parseFunctionBatchRecord,
   type TurnStepPayload,
 } from '../schemas.js';
-import { TURN_STEP_QUEUE } from '../state-runtime/store.js';
 import type { TurnStateRecord } from '../state.js';
 import { createAwaitingApprovalPorts } from './ports.js';
 import { processResolvedApprovals, routeAfterApprovalProcessing } from './run.js';
-
-/** Enqueue one `turn::function_awaiting_approval` wake on the turn-step queue. */
-async function enqueueAwaitingApprovalWake(iii: ISdk, session_id: string): Promise<void> {
-  await iii.trigger({
-    function_id: 'turn::function_awaiting_approval',
-    payload: { session_id },
-    action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
-  });
-}
-
-export async function handleApprovalStateWrite(iii: ISdk, event: unknown): Promise<void> {
-  const parsed = ApprovalDecisionEventSchema.safeParse(event);
-  if (!parsed.success) return;
-  try {
-    await enqueueAwaitingApprovalWake(iii, parsed.data.session_id);
-  } catch (err) {
-    logger.warn('turn::on_approval: wake failed', {
-      session_id: parsed.data.session_id,
-      err: String(err),
-    });
-  }
-}
 
 export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   const batch = parseFunctionBatchRecord(rec);
@@ -68,22 +47,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state function_awaiting_approval: execute each call as its approval decision arrives.',
+        'Run one durable FSM transition for session in state function_awaiting_approval: execute each call as its resolution arrives via harness::function::resolve.',
     },
   );
-
-  iii.registerFunction(
-    'turn::on_approval',
-    async (event: unknown) => handleApprovalStateWrite(iii, event),
-    {
-      description:
-        'State trigger on scope=approvals; enqueues turn::function_awaiting_approval when a decision is written.',
-    },
-  );
-
-  iii.registerTrigger({
-    type: 'state',
-    function_id: 'turn::on_approval',
-    config: { scope: 'approvals' },
-  });
 }

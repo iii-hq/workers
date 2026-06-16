@@ -10,7 +10,7 @@ Feature: --manifest registry contract
     When I run the worker binary with --manifest
     Then the manifest has every required registry field
     And the response field "name" is "session-manager"
-    And the response field "default_config.backend" is "fs"
-    And the response field "default_config.backend_config.data_dir" is "~/.iii/data/session-manager"
+    And the response field "default_config.adapter.name" is "fs"
+    And the response field "default_config.adapter.config.data_dir" is "~/.iii/data/session-manager"
     And the response field "default_config.default_list_limit" is 50
     And the response field "default_config.max_list_limit" is 500

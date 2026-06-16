@@ -268,6 +268,19 @@ You may **additionally** cover `--manifest` by spawning the binary from
 `tests/manifest.rs` (pattern A, section 9); that is optional if unit tests
 already enforce the JSON contract.
 
+### Reactive config via the `configuration` worker
+
+The static `config.yaml` + `load_config` pattern above is the baseline. When a
+worker needs a **schema-validated, observable, hot-reloadable** config that
+other workers and the operator console can read and edit on a live bus,
+migrate its block to the built-in **`configuration` worker** instead: register
+a JSON Schema, fetch the authoritative value at boot, and hot-reload on change.
+`config.yaml` then becomes a SEED, not the source of truth, and `src/config.rs`
+gains `json_schema()` / `to_json` / `from_json` / `boot_signature()` alongside
+`load_config`. See [`configuration.md`](configuration.md) for the full recipe;
+`session-manager`, `context-manager`, `shell`, `storage`, `database`, and
+`coder` follow it.
+
 ## 6. `src/main.rs`: the entry point
 
 The entry point must:

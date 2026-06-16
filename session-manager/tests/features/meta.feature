@@ -1,7 +1,7 @@
 @pure
-Feature: session::set_meta — update title, description and metadata
+Feature: session::set-meta — update title, description and metadata
 
-  Contract (session-manager.md § session::set_meta): updates
+  Contract (session-manager.md § session::set-meta): updates
   title/description/metadata (e.g. once a titling worker generates them
   from the first exchange). Does not change status or messages. Fires
   session::meta-updated so consumers render new titles live instead of
@@ -21,7 +21,7 @@ Feature: session::set_meta — update title, description and metadata
       {}
       """
     Given the clock advances by 250 ms
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_001", "title": "Weather question", "description": "asks about rain" }
       """
@@ -38,7 +38,7 @@ Feature: session::set_meta — update title, description and metadata
   # Prevents: metadata being merged instead of replaced — stale tenancy
   # keys surviving a replace is a security hazard.
   Scenario: a supplied metadata object replaces the stored one wholesale
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_001", "metadata": { "owner": "u_2" } }
       """
@@ -47,7 +47,7 @@ Feature: session::set_meta — update title, description and metadata
 
   # Prevents: partial updates clobbering fields that were not supplied.
   Scenario: omitted fields keep their current values
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_001", "title": "only title changed" }
       """
@@ -61,7 +61,7 @@ Feature: session::set_meta — update title, description and metadata
       """
       {}
       """
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_001" }
       """
@@ -71,12 +71,12 @@ Feature: session::set_meta — update title, description and metadata
 
   # Prevents: set_meta bleeding into status or messages.
   Scenario: set_meta never touches status or messages
-    Given I call "session::set_status" with:
+    Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
       """
     And a user message "hi" appended to "s_001"
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_001", "title": "T2" }
       """
@@ -91,7 +91,7 @@ Feature: session::set_meta — update title, description and metadata
       """
       { "metadata": { "owner": "u_2" } }
       """
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_001", "metadata": { "owner": "u_2" } }
       """
@@ -100,7 +100,7 @@ Feature: session::set_meta — update title, description and metadata
 
   # Prevents: updating sessions that don't exist.
   Scenario: set_meta on an unknown session is rejected
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "s_404", "title": "x" }
       """

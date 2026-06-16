@@ -22,7 +22,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'session',
-    label: 'session::update_message',
+    label: 'session::update-message',
     title: 'the transcript streams',
     desc: 'deltas persist as they arrive; the console renders snapshots last-write-wins by revision. thinking content renders as a collapsible block, function calls as live cards.',
     event: 'session::message-updated',
@@ -45,7 +45,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'session',
-    label: 'session::set_status done',
+    label: 'session::set-status done',
     title: 'the turn closes, fully traceable',
     desc: 'the spinner stops on the status event, and the session id deep-links into the trace explorer — every hop of the turn (send, assemble, generate, dispatch) is a span you can open.',
     event: 'harness::turn_completed',

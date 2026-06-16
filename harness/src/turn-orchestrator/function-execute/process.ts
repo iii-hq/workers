@@ -29,6 +29,10 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       merged.push(pending);
     }
     batch.awaiting_approval = merged;
+    // The transition save enqueues one post-persist scan wake (see
+    // shouldWakeStep): it drains any resolution that landed while this
+    // batch was still executing — that resolve's own wake stale-skipped
+    // against the not-yet-parked record.
     transitionTo(batch, 'function_awaiting_approval');
     return;
   }
@@ -45,7 +49,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state function_execute: dispatch prepared calls and finalize results.',
+        'Run one durable FSM transition for session in state function_execute: trigger prepared calls and finalize results.',
     },
   );
 }

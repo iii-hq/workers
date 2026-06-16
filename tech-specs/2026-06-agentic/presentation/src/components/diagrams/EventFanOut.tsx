@@ -51,7 +51,7 @@ export function EventFanOut({ className }: { className?: string }) {
           {/* the write */}
           <rect x={24} y={100} width={230} height={64} strokeWidth={1.25} className="fill-bg stroke-ink" />
           <text x={139} y={127} textAnchor="middle" fontSize="12.5" fontWeight={600} className="fill-ink">
-            session::update_message
+            session::update-message
           </text>
           <text x={139} y={146} textAnchor="middle" fontSize="9.5" letterSpacing="0.05em" className="fill-ink-ghost">
             revision 7 — one write, no publish step

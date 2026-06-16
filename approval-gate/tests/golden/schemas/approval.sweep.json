@@ -1,0 +1,12 @@
+{
+  "description": "Internal: cron handler (expire pending records past expires_at).",
+  "function_id": "approval::sweep",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AnyValue"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AnyValue"
+  }
+}

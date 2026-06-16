@@ -60,10 +60,10 @@ From [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml):
   `iii-stream ^0.11.0`, `iii-bridge ^0.11.0`, `iii-http ^0.11.0`,
   `iii-sandbox ^0.11.0`, `iii-directory ^0.5.1`.
 - harness siblings: `turn-orchestrator`, `models-catalog`,
-  `provider-anthropic`, `provider-openai`, `approval-gate`, `session`,
+  `provider-anthropic`, `provider-openai`, `session`,
   `hook-fanout`, `llm-budget` (all `^0.2.0`).
 - iii engine built-in: `configuration` (the harness `configuration` entry
-  holds provider credentials/settings + permissions — see
+  holds provider credentials/settings — see
   [storage.md](../storage.md)).
 - Rust workers: `shell ^0.3.0` (for `harness::fs::read_inline`).
 

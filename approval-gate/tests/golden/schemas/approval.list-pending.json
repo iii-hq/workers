@@ -1,0 +1,143 @@
+{
+  "description": "The pending inbox across sessions, with tenancy filters; the catch-up path for notification workers after a restart.",
+  "function_id": "approval::list-pending",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cursor": {
+        "default": null,
+        "description": "Opaque.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "default": null,
+        "description": "Default 50.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "default": null,
+        "description": "Equality match against `session_metadata` (tenancy).",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ListPendingRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PendingApprovalRecord": {
+        "description": "The inbox payload — shared by both triggers, `list_pending`, and `get_pending`. Self-describing (all ids inside the value) and notification-safe (arguments pass through redaction).",
+        "properties": {
+          "arguments_excerpt": {
+            "default": null,
+            "description": "Redacted — safe to forward to notification channels."
+          },
+          "assistant_excerpt": {
+            "description": "First text block of the assistant message that contained this function_call. Best-effort; not derivable from `pre_trigger` `HookInput` in v1, so always omitted today.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "default": 0,
+            "description": "Sub-agent depth (0 = top-level), from `HookInput`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "expires_at": {
+            "description": "`pending_at + pending_timeout_ms`",
+            "format": "int64",
+            "type": "integer"
+          },
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "pending_at": {
+            "description": "ms epoch",
+            "format": "int64",
+            "type": "integer"
+          },
+          "session_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_metadata": {
+            "additionalProperties": true,
+            "description": "Tenancy + routing (trigger config filter target).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "function_call_id",
+          "function_id",
+          "pending_at",
+          "session_id",
+          "turn_id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "next_cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "pending": {
+        "description": "Ordered by pending_at ascending.",
+        "items": {
+          "$ref": "#/definitions/PendingApprovalRecord"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "pending"
+    ],
+    "title": "ListPendingResponse",
+    "type": "object"
+  }
+}

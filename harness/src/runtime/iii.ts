@@ -17,6 +17,9 @@ export type {
   RegisterFunctionInput,
   RegisterFunctionOptions,
   RegisterTriggerInput,
+  RegisterTriggerTypeInput,
   RemoteFunctionHandler,
   EnqueueResult,
+  TriggerConfig,
+  TriggerHandler,
 } from 'iii-sdk';

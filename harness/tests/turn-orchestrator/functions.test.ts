@@ -1,13 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
-import * as hookModule from '../../src/turn-orchestrator/hook.js';
+import * as chainModule from '../../src/turn-orchestrator/hooks/chain.js';
 import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
-import { parseApprovalDecision } from '../../src/turn-orchestrator/function-awaiting-approval/ports.js';
 import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
 import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
 import type { FunctionBatchWork } from '../../src/turn-orchestrator/function-execute/types.js';
@@ -45,39 +44,6 @@ function makeAssistant(
   };
 }
 
-describe('parseApprovalDecision', () => {
-  it('accepts allow/deny/aborted with nullable reason (stored approval shape)', () => {
-    expect(parseApprovalDecision({ decision: 'allow', reason: null })).toEqual({
-      decision: 'allow',
-      reason: null,
-    });
-    expect(parseApprovalDecision({ decision: 'deny', reason: 'policy' })).toEqual({
-      decision: 'deny',
-      reason: 'policy',
-    });
-    expect(parseApprovalDecision({ decision: 'aborted', reason: 'session_aborted' })).toEqual({
-      decision: 'aborted',
-      reason: 'session_aborted',
-    });
-  });
-
-  it('rejects speculative wrapper envelopes no caller stores', () => {
-    expect(parseApprovalDecision({ data: { decision: 'allow', reason: null } })).toBeNull();
-    expect(parseApprovalDecision({ payload: { decision: 'allow', reason: null } })).toBeNull();
-  });
-
-  it.each([
-    ['null', null],
-    ['undefined', undefined],
-    ['missing decision', { reason: null }],
-    ['empty decision', { decision: '', reason: null }],
-    ['unknown decision', { decision: 'needs_approval', reason: null }],
-    ['numeric reason', { decision: 'allow', reason: 7 }],
-  ] as const)('rejects bad shape: %s', (_label, value) => {
-    expect(parseApprovalDecision(value)).toBeNull();
-  });
-});
-
 /** Seed required function-batch invariants before handleExecute. */
 function seedFunctionExecute(
   rec: TurnStateRecord,
@@ -100,7 +66,7 @@ function agentTriggerCall(
 
 describe('handleExecute new flow', () => {
   it('runs the prepared batch from work', async () => {
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
         content: [{ type: 'text' as const, text: 'ok' }],
@@ -133,7 +99,7 @@ describe('handleExecute new flow', () => {
     const rec: TurnStateRecord = newRecord('s1');
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     seedFunctionExecute(rec, {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -159,7 +125,7 @@ describe('handleExecute new flow', () => {
     vi.spyOn(events, 'emit').mockImplementation(async (_iii, _sid, ev: never) => {
       emitted.push(ev as { type: string; function_call_id?: string });
     });
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
     });
@@ -169,8 +135,8 @@ describe('handleExecute new flow', () => {
     const fc2 = { id: 'fc-2', function_id: 'shell::run', arguments: {} };
     seedFunctionExecute(rec, {
       prepared: [
-        { route: 'dispatch', call: fc1 },
-        { route: 'dispatch', call: fc2 },
+        { route: 'trigger', call: fc1 },
+        { route: 'trigger', call: fc2 },
       ],
       executed: {
         'fc-1': {
@@ -199,7 +165,7 @@ describe('handleExecute new flow', () => {
     expect(fc1Ends).toHaveLength(0);
   });
 
-  it('skips consultBefore on pre_approved entries and uses triggerFunctionCall', async () => {
+  it('skips the hook chain on pre_approved entries and uses triggerFunctionCall', async () => {
     const triggerSpy = vi.fn().mockResolvedValue({ ok: true });
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -212,12 +178,12 @@ describe('handleExecute new flow', () => {
       ],
       executed: {},
     });
-    const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
+    const consultSpy = vi.spyOn(chainModule, 'consultPreTrigger');
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
 
-    expect(consultBeforeSpy).not.toHaveBeenCalled();
+    expect(consultSpy).not.toHaveBeenCalled();
     const triggerCalls = triggerSpy.mock.calls.map(
       (call) => (call[0] as { function_id: string }).function_id,
     );
@@ -264,7 +230,7 @@ describe('handleExecute new flow', () => {
     expect(String(details?.reason)).toContain('S210');
   });
 
-  it('emits denial result without dispatching when route is synthetic', async () => {
+  it('emits denial result without triggering when route is synthetic', async () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -293,8 +259,8 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('assistant_streaming');
   });
 
-  it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.executed)', async () => {
-    const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
+  it('replays persisted executed calls without re-triggering (re-entry with pre-populated work.executed)', async () => {
+    const triggerWithHookSpy = vi.spyOn(agentTriggerModule, 'triggerWithHook');
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec = newRecord('s1');
@@ -305,7 +271,7 @@ describe('handleExecute new flow', () => {
     };
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     seedFunctionExecute(rec, {
-      prepared: [{ route: 'dispatch', call: fc }],
+      prepared: [{ route: 'trigger', call: fc }],
       executed: {
         'fc-1': {
           call: fc,
@@ -319,12 +285,12 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    expect(dispatchSpy).not.toHaveBeenCalled();
+    expect(triggerWithHookSpy).not.toHaveBeenCalled();
     expect(rec.state).toBe('assistant_streaming');
   });
 
-  it('resumes to assistant_streaming after a successful hook dispatch', async () => {
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+  it('resumes to assistant_streaming after a successful hook trigger', async () => {
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
         content: [{ type: 'text' as const, text: 'ok' }],
@@ -361,7 +327,7 @@ describe('handleExecute new flow', () => {
     seedFunctionExecute(
       rec,
       {
-        prepared: [{ route: 'dispatch', call: fc }],
+        prepared: [{ route: 'trigger', call: fc }],
         executed: {
           'fc-1': {
             call: fc,
@@ -414,7 +380,7 @@ describe('handleExecute new flow', () => {
     );
 
     vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValue({
+    vi.spyOn(agentTriggerModule, 'triggerWithHook').mockResolvedValue({
       kind: 'result',
       result: existingResult,
     });
@@ -425,7 +391,7 @@ describe('handleExecute new flow', () => {
     seedFunctionExecute(
       rec,
       {
-        prepared: [{ route: 'dispatch', call: fc }],
+        prepared: [{ route: 'trigger', call: fc }],
         executed: {
           toolu_01: {
             call: fc,

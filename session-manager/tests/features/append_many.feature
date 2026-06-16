@@ -1,7 +1,7 @@
 @pure
-Feature: session::append_many — append several message entries in order
+Feature: session::append-many — append several message entries in order
 
-  Contract (session-manager.md § session::append_many): messages are
+  Contract (session-manager.md § session::append-many): messages are
   appended in request order, each chained to the previous; one
   session::message-added fires per entry, in order; the response carries
   every entry id plus last_entry_id; the batch is NOT idempotent (use
@@ -17,7 +17,7 @@ Feature: session::append_many — append several message entries in order
       """
       {}
       """
-    When I call "session::append_many" with:
+    When I call "session::append-many" with:
       """
       { "session_id": "s_001", "messages": [
           { "role": "user", "content": [{ "type": "text", "text": "one" }], "timestamp": 1 },
@@ -46,13 +46,13 @@ Feature: session::append_many — append several message entries in order
   # chaining onto the active leaf.
   Scenario: a batch chains onto the current active leaf
     Given a user message "root" appended to "s_001"
-    When I call "session::append_many" with:
+    When I call "session::append-many" with:
       """
       { "session_id": "s_001", "messages": [
           { "role": "user", "content": [], "timestamp": 2 }
         ] }
       """
-    And I call "session::get_message" with:
+    And I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002" }
       """
@@ -60,7 +60,7 @@ Feature: session::append_many — append several message entries in order
 
   # Prevents: a batch landing under a parent that does not exist.
   Scenario: a batch under an unknown parent is rejected
-    When I call "session::append_many" with:
+    When I call "session::append-many" with:
       """
       { "session_id": "s_001", "parent_id": "ghost", "messages": [
           { "role": "user", "content": [], "timestamp": 1 }
@@ -70,7 +70,7 @@ Feature: session::append_many — append several message entries in order
 
   # Prevents: an empty batch fabricating a last_entry_id out of thin air.
   Scenario: an empty batch is rejected
-    When I call "session::append_many" with:
+    When I call "session::append-many" with:
       """
       { "session_id": "s_001", "messages": [] }
       """
@@ -79,13 +79,13 @@ Feature: session::append_many — append several message entries in order
   # Prevents: anyone assuming append_many dedupes — it must not; the
   # documented redelivery-safe path is append with entry_id.
   Scenario: append_many is not idempotent by design
-    When I call "session::append_many" with:
+    When I call "session::append-many" with:
       """
       { "session_id": "s_001", "messages": [
           { "role": "user", "content": [{ "type": "text", "text": "dup" }], "timestamp": 1 }
         ] }
       """
-    And I call "session::append_many" with:
+    And I call "session::append-many" with:
       """
       { "session_id": "s_001", "messages": [
           { "role": "user", "content": [{ "type": "text", "text": "dup" }], "timestamp": 1 }

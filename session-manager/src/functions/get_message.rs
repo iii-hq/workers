@@ -1,4 +1,4 @@
-//! `session::get_message` — read a single entry by id.
+//! `session::get-message` — read a single entry by id.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { uuidLike } from '../runtime/ids.js';
 import type { Model } from '../types/model.js';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
@@ -40,6 +41,14 @@ export type { ExecutedCall, FunctionBatchWork, PreparedCall };
 
 type TurnStateRecordCore = {
   session_id: string;
+  /**
+   * Unique id for this run, generated at `newRecord`. Threaded through the
+   * pre_trigger hook contract, `harness::function::resolve`, and
+   * `harness::turn-completed` so sibling workers (the approval-gate) can key
+   * their records to one turn. Never contains `/` (reserved state-key
+   * separator on the sibling side).
+   */
+  turn_id: string;
   turn_count: number;
   max_turns?: number;
   /**
@@ -119,7 +128,14 @@ const TurnStateRecordSchema = z
 
 export function parseTurnStateRecord(raw: unknown): TurnStateRecord | null {
   const result = TurnStateRecordSchema.safeParse(raw);
-  return result.success ? (result.data as TurnStateRecord) : null;
+  if (!result.success) return null;
+  const rec = result.data as TurnStateRecord;
+  // Records persisted before turn_id existed: backfill deterministically
+  // (stable across re-parses) so in-flight turns survive the deploy.
+  if (typeof rec.turn_id !== 'string' || rec.turn_id.length === 0) {
+    rec.turn_id = `legacy-${rec.session_id}`;
+  }
+  return rec;
 }
 
 export function newRecord(
@@ -130,6 +146,7 @@ export function newRecord(
   const now = Date.now();
   return {
     session_id,
+    turn_id: `t_${uuidLike()}`,
     state: 'provisioning',
     turn_count: 0,
     max_turns,

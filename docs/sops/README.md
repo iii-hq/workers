@@ -7,6 +7,7 @@ YAML, **the workflow wins** — update these docs.
 |---|---|
 | [`new-worker.md`](new-worker.md) | First read when adding any worker — naming, repo wiring, CI, release checklist |
 | [`binary-worker.md`](binary-worker.md) | Scaffolding a Rust `deploy: binary` daemon (layout, functions, triggers, tests) |
+| [`configuration.md`](configuration.md) | Integrating a worker with the `configuration` worker (schema-validated, hot-reloadable, shared config) |
 | [`release.md`](release.md) | Cutting a version, re-running a failed release, troubleshooting publish |
 
 ## Typical flow

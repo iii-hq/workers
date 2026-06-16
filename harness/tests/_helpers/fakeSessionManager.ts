@@ -42,11 +42,11 @@ export class FakeSessionManager {
         return this.ensure(p);
       case 'session::append':
         return this.append(p);
-      case 'session::update_message':
+      case 'session::update-message':
         return this.updateMessage(p);
       case 'session::messages':
         return this.messages(p);
-      case 'session::set_status':
+      case 'session::set-status':
         return this.setStatus(p);
       default:
         throw new Error(`fake session-manager: unhandled ${function_id}`);

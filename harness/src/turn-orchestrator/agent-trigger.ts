@@ -1,21 +1,34 @@
 /**
- * Agent function-call dispatcher + approval chokepoint.
+ * Agent function-call trigger + hook chokepoint.
  *
- * `dispatchWithHook` is the single chokepoint for FSM-issued calls: every
- * agent function call goes through `consultBefore` before reaching the inner
- * trigger. `triggerFunctionCall` is the shared trigger/decode/error path
- * used by both the hook gate and pre-approved resume execution.
+ * `triggerWithHook` is the single chokepoint for FSM-issued calls: every
+ * agent function call consults the `harness::hook::pre-trigger` chain
+ * before reaching the inner trigger. `triggerFunctionCall` is the shared
+ * trigger/decode/error path used by both the hook gate and released
+ * (pre-approved) resume execution.
  */
 
 import { IIIInvocationError, type ISdk } from '../runtime/iii.js';
 import { z } from 'zod';
 import type { ContentBlock } from '../types/content.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
-import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './hook.js';
+import { consultPreTrigger } from './hooks/chain.js';
+import { type DenialEnvelope, denialResult, gateUnavailableEnvelope } from './hooks/denial.js';
+import type { HookInput } from './hooks/types.js';
 
 export const TOOL_NAME = 'agent_trigger';
 
-export type DispatchResult = { kind: 'result'; result: FunctionResult } | { kind: 'pending' };
+/** Turn/session identity threaded from the FSM record into the hook chain. */
+export type TriggerContext = {
+  session_id: string;
+  turn_id: string;
+  step?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type TriggerResult =
+  | { kind: 'result'; result: FunctionResult }
+  | { kind: 'pending'; held_by: string; pending_timeout_ms: number };
 
 export function missingFunctionResult(): FunctionResult {
   return errorResult({
@@ -68,7 +81,7 @@ export function agentTriggerTool(): unknown {
       properties: {
         function: {
           type: 'string',
-          description: "iii function id to dispatch, e.g. 'shell::fs::ls'.",
+          description: "iii function id to trigger, e.g. 'shell::fs::ls'.",
         },
         payload: {
           type: 'object',
@@ -86,14 +99,6 @@ export function agentTriggerTool(): unknown {
 function errorResult(envelope: Record<string, unknown>): FunctionResult {
   const text: ContentBlock = { type: 'text', text: JSON.stringify(envelope) };
   return { content: [text], details: envelope, terminate: false };
-}
-
-function denialResult(denial: DenialEnvelope): FunctionResult {
-  return {
-    content: [{ type: 'text', text: denial.reason }],
-    details: denial,
-    terminate: false,
-  };
 }
 
 function decodeOrPassthrough(value: unknown): FunctionResult {
@@ -344,26 +349,44 @@ export async function triggerFunctionCall(
 
 /**
  * `function_call` carries the routing envelope (session id + call identity) that
- * the approval hook and policy worker read. `targetCall` is what actually
+ * the pre_trigger hooks and policy worker read. `targetCall` is what actually
  * reaches the target function. They differ on purpose: the envelope spreads
  * routing fields (including `function_id` = the TARGET id) at the top level,
  * which would otherwise CLOBBER a same-named argument in the caller's payload —
  * e.g. `engine::functions::info { function_id: "sandbox::create" }` would arrive
  * as `function_id: "engine::functions::info"` and the engine would describe
- * itself. The hook needs the envelope; the target must get the caller's
+ * itself. The hooks need the envelope; the target must get the caller's
  * untouched arguments. Defaults to `function_call` for callers that don't split.
  */
-export async function dispatchWithHook(
+export async function triggerWithHook(
   iii: ISdk,
+  ctx: TriggerContext,
   function_call: FunctionCall,
   targetCall: FunctionCall = function_call,
-): Promise<DispatchResult> {
-  const outcome = await consultBefore(iii, function_call);
+): Promise<TriggerResult> {
+  const input: HookInput = {
+    point: 'pre_trigger',
+    session_id: ctx.session_id,
+    turn_id: ctx.turn_id,
+    step: ctx.step,
+    depth: 0,
+    metadata: ctx.metadata,
+    call: {
+      id: function_call.id,
+      function_id: function_call.function_id,
+      arguments: function_call.arguments,
+    },
+  };
+  const outcome = await consultPreTrigger(iii, input);
   if (outcome.kind === 'deny') {
     return { kind: 'result', result: denialResult(outcome.denial) };
   }
-  if (outcome.kind === 'pending') {
-    return { kind: 'pending' };
+  if (outcome.kind === 'hold') {
+    return {
+      kind: 'pending',
+      held_by: outcome.held_by,
+      pending_timeout_ms: outcome.pending_timeout_ms,
+    };
   }
 
   const result = await triggerFunctionCall(iii, targetCall);

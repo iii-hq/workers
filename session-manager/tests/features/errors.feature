@@ -10,22 +10,22 @@ Feature: error codes — stable session/* codes on the bus
   # Prevents: unknown-session errors mutating into panics, silent
   # successes, or code drift across the mutation surface.
   Scenario: every mutation on an unknown session reports session/not_found
-    When I call "session::set_meta" with:
+    When I call "session::set-meta" with:
       """
       { "session_id": "ghost", "title": "x" }
       """
     Then the call fails with code "session/not_found"
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "ghost", "status": "working" }
       """
     Then the call fails with code "session/not_found"
-    When I call "session::append_many" with:
+    When I call "session::append-many" with:
       """
       { "session_id": "ghost", "messages": [ { "role": "user", "content": [], "timestamp": 1 } ] }
       """
     Then the call fails with code "session/not_found"
-    When I call "session::update_message" with:
+    When I call "session::update-message" with:
       """
       { "session_id": "ghost", "entry_id": "e", "content": [] }
       """
@@ -40,7 +40,7 @@ Feature: error codes — stable session/* codes on the bus
       { "session_id": "ghost", "entry_id": "e" }
       """
     Then the call fails with code "session/not_found"
-    When I call "session::set_active_leaf" with:
+    When I call "session::set-active-leaf" with:
       """
       { "session_id": "ghost", "entry_id": "e" }
       """
@@ -55,7 +55,7 @@ Feature: error codes — stable session/* codes on the bus
     Then the call succeeds
     And the response is null
     Given a bare session
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "ghost" }
       """
@@ -79,7 +79,7 @@ Feature: error codes — stable session/* codes on the bus
   # Prevents: unknown enum values (status, role, order) being coerced.
   Scenario: unknown enum values are rejected
     Given a bare session
-    When I call "session::set_status" with:
+    When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "halted" }
       """

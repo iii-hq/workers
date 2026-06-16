@@ -1,4 +1,4 @@
-//! `session::append_many` — append several message entries in order.
+//! `session::append-many` — append several message entries in order.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

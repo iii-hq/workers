@@ -39,7 +39,7 @@ Feature: session::fork — copy history up to an entry into a new session
     And the response field "messages.0.entry_id" is "e_004"
     And the response field "messages.0.message.content.0.text" is "one"
     And the response field "messages.1.entry_id" is "e_005"
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_002", "entry_id": "e_005" }
       """
@@ -88,7 +88,7 @@ Feature: session::fork — copy history up to an entry into a new session
       { "session_id": "s_001", "entry_id": "e_002" }
       """
     When I append a user message "only in source" to "s_001"
-    And I call "session::update_message" with:
+    And I call "session::update-message" with:
       """
       { "session_id": "s_002", "entry_id": "e_004",
         "content": [{ "type": "text", "text": "edited only in fork" }] }
@@ -99,7 +99,7 @@ Feature: session::fork — copy history up to an entry into a new session
       """
     Then the response field "messages" has length 2
     And the response field "messages.0.message.content.0.text" is "edited only in fork"
-    When I call "session::get_message" with:
+    When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -131,7 +131,7 @@ Feature: session::fork — copy history up to an entry into a new session
   # Prevents: forking from a mid-path entry dragging along entries from
   # sibling branches that are not on the root -> entry path.
   Scenario: only the path to the fork point is copied
-    Given I call "session::set_active_leaf" with:
+    Given I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }
       """
@@ -151,7 +151,7 @@ Feature: session::fork — copy history up to an entry into a new session
   # Prevents: forks copying live revision counters — fresh copies start
   # a fresh revision space at 0.
   Scenario: copied entries restart their revision at 0
-    Given I call "session::update_message" with:
+    Given I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_002",
         "content": [{ "type": "text", "text": "rev1" }] }
@@ -160,7 +160,7 @@ Feature: session::fork — copy history up to an entry into a new session
       """
       { "session_id": "s_001", "entry_id": "e_002" }
       """
-    And I call "session::get_message" with:
+    And I call "session::get-message" with:
       """
       { "session_id": "s_002", "entry_id": "e_005" }
       """

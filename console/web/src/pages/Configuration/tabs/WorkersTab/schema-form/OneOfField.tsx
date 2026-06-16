@@ -13,7 +13,13 @@ import {
   nullableUnionInner,
   stripProperty,
 } from './oneof-shape'
-import { resolveSchema, schemaDefault, schemaTypes } from './ref-resolver'
+import { resolveSchema } from './ref-resolver'
+import {
+  isSingleStringEnumVariant,
+  matchVariantIndex,
+  variantDefault,
+  variantLabel,
+} from './variant-match'
 
 /**
  * `oneOf` / `anyOf` dispatcher.
@@ -38,9 +44,13 @@ import { resolveSchema, schemaDefault, schemaTypes } from './ref-resolver'
  *    of the chosen branch. Matching the active branch by the discriminator
  *    value (not by JSON type) is what makes switching branches stick.
  *
- * 3. **Heterogeneous variants** — different types or shapes. Variant
- *    `Select` + recursive `FieldDispatch` for the chosen sub-schema, with a
- *    best-effort match-on-load that falls back to the first variant.
+ * 3. **Heterogeneous variants** — different types or shapes that don't form
+ *    a clean discriminated union. Variant `Select` + recursive
+ *    `FieldDispatch` for the chosen sub-schema. Match-on-load prefers a
+ *    discriminated tag (a tagged enum's single-value `name`/`type`
+ *    property — e.g. an adapter `{ name: "bridge" }`), then falls back to
+ *    structural `type` matching, then to the first variant so the operator
+ *    can always change it. See [`./variant-match`].
  */
 export function OneOfField(props: FieldProps) {
   const { label, schema, value, onChange, required, rootSchema } = props
@@ -145,7 +155,7 @@ export function OneOfField(props: FieldProps) {
   function handleVariantChange(nextKey: string) {
     const nextIdx = Number.parseInt(nextKey, 10)
     if (!Number.isFinite(nextIdx)) return
-    onChange(schemaDefault(variants[nextIdx]))
+    onChange(variantDefault(variants[nextIdx], rootSchema))
   }
 
   return (
@@ -175,85 +185,4 @@ export function OneOfField(props: FieldProps) {
       </div>
     </div>
   )
-}
-
-function isSingleStringEnumVariant(variant: JsonSchema): boolean {
-  if (!Array.isArray(variant.enum) || variant.enum.length !== 1) return false
-  const types = schemaTypes(variant)
-  // Accept either explicit `type: string` or an unspecified type with a
-  // string-typed enum value (some schemars outputs omit `type`).
-  if (types.length > 0 && !types.includes('string')) return false
-  return typeof (variant.enum as unknown[])[0] === 'string'
-}
-
-function variantLabel(variant: JsonSchema, idx: number): string {
-  if (typeof variant.title === 'string') return variant.title
-  if (Array.isArray(variant.enum) && variant.enum.length === 1) {
-    const single = (variant.enum as unknown[])[0]
-    if (typeof single === 'string') return single
-  }
-  const types = schemaTypes(variant)
-  if (types.length > 0) return types.join(' | ')
-  return `variant ${idx + 1}`
-}
-
-/**
- * Best-effort match of the current value to one of the variant schemas.
- * Returns the index of the first matching variant, or 0 when no variant
- * fits (so the dispatcher always has something to render).
- */
-function matchVariantIndex(
-  variants: JsonSchema[],
-  value: JsonValue | undefined,
-): number {
-  for (let i = 0; i < variants.length; i++) {
-    if (valueMatchesSchema(value, variants[i])) return i
-  }
-  return 0
-}
-
-function valueMatchesSchema(
-  value: JsonValue | undefined,
-  schema: JsonSchema,
-): boolean {
-  if (Array.isArray(schema.enum)) {
-    return (schema.enum as JsonValue[]).some((v) => deepEqual(v, value))
-  }
-  const types = schemaTypes(schema)
-  if (types.length === 0) return false
-  const actual = jsonType(value)
-  return types.includes(actual)
-}
-
-function jsonType(value: JsonValue | undefined): string {
-  if (value === null || value === undefined) return 'null'
-  if (Array.isArray(value)) return 'array'
-  if (Number.isInteger(value as number)) return 'integer'
-  return typeof value
-}
-
-function deepEqual(
-  a: JsonValue | undefined,
-  b: JsonValue | undefined,
-): boolean {
-  if (a === b) return true
-  if (a === null || b === null) return false
-  if (typeof a !== typeof b) return false
-  if (Array.isArray(a) !== Array.isArray(b)) return false
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false
-    return a.every((x, i) => deepEqual(x, b[i]))
-  }
-  if (typeof a === 'object' && typeof b === 'object') {
-    const ak = Object.keys(a as object)
-    const bk = Object.keys(b as object)
-    if (ak.length !== bk.length) return false
-    return ak.every((k) =>
-      deepEqual(
-        (a as Record<string, JsonValue>)[k],
-        (b as Record<string, JsonValue>)[k],
-      ),
-    )
-  }
-  return false
 }

@@ -3,7 +3,7 @@
  *
  * The driver loop (integration.md §10): append an empty assistant entry with
  * a deterministic id before the provider stream starts, replace its content
- * via `session::update_message` per coalesced delta batch, and land the final
+ * via `session::update-message` per coalesced delta batch, and land the final
  * content with a last strict update. Step re-entry reuses the same entry
  * (idempotent append) instead of duplicating it.
  */

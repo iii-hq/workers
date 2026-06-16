@@ -26,7 +26,7 @@ pub enum SessionError {
     #[error("session/details_not_supported: {0}")]
     DetailsNotSupported(String),
 
-    /// `session::append_many` requires at least one message.
+    /// `session::append-many` requires at least one message.
     #[error("session/empty_batch: {0}")]
     EmptyBatch(String),
 

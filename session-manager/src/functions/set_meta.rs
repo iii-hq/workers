@@ -1,4 +1,4 @@
-//! `session::set_meta` — update title/description/metadata.
+//! `session::set-meta` — update title/description/metadata.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

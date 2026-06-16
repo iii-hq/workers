@@ -40,7 +40,7 @@ sequenceDiagram
   H->>S: session::append (user message)
   H-->>C: {session_id, turn_id}
   Note over H: enqueue harness::turn (durable)
-  H->>S: session::set_status working
+  H->>S: session::set-status working
   H->>S: session::messages
   H->>X: context::assemble
   opt assemble compacted the head
@@ -48,7 +48,7 @@ sequenceDiagram
   end
   H->>R: router::chat (over channel)
   R-->>H: AssistantMessageEvent frames
-  H->>S: session::append (assistant) then session::update_message (stream deltas)
+  H->>S: session::append (assistant) then session::update-message (stream deltas)
   alt assistant requested function calls
     H->>F: iii.trigger(function_id, args)
     F-->>H: result
@@ -57,7 +57,7 @@ sequenceDiagram
   else pending dispatch (e.g. harness::spawn)
     Note over H: park turn — child session runs its own loop;<br/>harness::function::resolve re-enqueues
   else no function calls
-    H->>S: session::set_status done
+    H->>S: session::set-status done
   end
 ```
 
@@ -71,10 +71,10 @@ with the call held open until the turn ends; [`harness::spawn`](#harnessspawn) s
 session through the same CAS. The loop runs as durable enqueued
 steps so a crash or restart resumes mid-turn (see
 [Durability & idempotency](#durability--idempotency)). Every `session::append` /
-`session::update_message` the loop issues carries `origin: { turn_id }`, so session events are
+`session::update-message` the loop issues carries `origin: { turn_id }`, so session events are
 attributable to a turn. One `harness::turn` step does:
 
-1. Mark working: `session::set_status working` and emit
+1. Mark working: `session::set-status working` and emit
    [`harness::turn_started`](#trigger-types-emitted) (first step of a turn), then run the
    `pre_turn` [hook chain](#hooks) — a `deny` ends the turn (`failed`, with the hook's reason)
    before any model spend.
@@ -97,7 +97,7 @@ attributable to a turn. One `harness::turn` step does:
    the turn record as `stream_request_id` for [`harness::stop`](#harnessstop)) and — when the
    [output contract](#output-contract) rides provider-native structured output —
    `response_format`; `session::append` an
-   assistant message, then `session::update_message` as deltas arrive (each fires
+   assistant message, then `session::update-message` as deltas arrive (each fires
    `session::message-updated`). Deltas may be batched to throttle update frequency; the final update
    writes the complete `AssistantMessage`. After the final update, run the read-only
    `post_generate` [hook chain](#hooks) (usage accounting, safety logging).
@@ -120,7 +120,7 @@ attributable to a turn. One `harness::turn` step does:
    `watermark_entry_id` (see [Concurrency & steering](#concurrency--steering)); if present, continue
    with another generate step. Otherwise finalise: resolve the turn `result` per the
    [output contract](#output-contract) (a schema-bearing contract with no valid result yet nudges
-   instead, bounded), mark the turn `completed`, `session::set_status done`, emit
+   instead, bounded), mark the turn `completed`, `session::set-status done`, emit
    [`harness::turn_completed`](#trigger-types-emitted), and — for a sub-agent turn — resolve the
    parent's pending call (see [Sub-agents](#sub-agents-harnessspawn)).
 
@@ -129,7 +129,7 @@ is cooperative *between* steps and explicit *during* generation: `harness::stop`
 the next step checks, and when a stream is in flight it also calls
 [`router::abort`](llm-router.md#routerabort) with the `stream_request_id` recorded on the turn
 record. The generate step then finalises the partial assistant message (`stop_reason: "aborted"`),
-records `TurnStatus` `cancelled`, and sets `session::set_status done`. When the turn has live
+records `TurnStatus` `cancelled`, and sets `session::set-status done`. When the turn has live
 spawned children, the stop cascades to them before the turn finalises (see
 [Sub-agents](#sub-agents-harnessspawn)).
 
@@ -178,7 +178,7 @@ step must tolerate it. The rules:
   message of a generate step is `e_<turn_id>_<step>_assistant`; a `function_result` is
   `e_<turn_id>_<function_call_id>`. A redelivered step therefore writes into the same entries
   instead of duplicating them: if the deterministic assistant entry already exists, the resumed
-  generate step streams into it via `session::update_message` rather than appending a second
+  generate step streams into it via `session::update-message` rather than appending a second
   message — a crash never yields two assistant messages.
 - **Per-call checkpoints.** The turn record carries
   `calls: Record<function_call_id, { state: "dispatched" | "pending" | "done"; entry_id?: string;
@@ -193,7 +193,7 @@ step must tolerate it. The rules:
   (`"interrupted: executed at most once, result unknown (restart during execution)"`) and lets the
   model decide whether to retry. Step delivery is at-least-once; function side effects are
   at-most-once.
-- **Status writes** (`session::set_status`, turn record transitions) are naturally idempotent —
+- **Status writes** (`session::set-status`, turn record transitions) are naturally idempotent —
   re-setting the same value is a no-op and fires no event.
 
 ## Concurrency & steering
@@ -877,7 +877,7 @@ type TurnStepResult = {
 ```
 
 Failure handling: an unexpected throw marks the turn `failed`, appends a `custom`
-(`custom_type: "error"`) entry so the UI sees the reason, sets `session::set_status error` with a
+(`custom_type: "error"`) entry so the UI sees the reason, sets `session::set-status error` with a
 short `reason`, and emits [`harness::turn_completed`](#trigger-types-emitted)
 (`status: "failed"`) — resolving the parent's pending call with `is_error: true` when the turn is a
 sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). A step may opt into queue retry/backoff for
@@ -980,7 +980,7 @@ Request cancellation. Sets an abort flag the next `harness::turn` step observes,
 in-flight stream via [`router::abort`](llm-router.md#routerabort) using the `stream_request_id` on
 the turn record. Non-terminal spawned children recorded in `calls` are stopped first, recursively —
 each resolves its parent call with `is_error: true` (see [Sub-agents](#sub-agents-harnessspawn)).
-The turn record transitions to `cancelled` before `session::set_status done`, and
+The turn record transitions to `cancelled` before `session::set-status done`, and
 [`harness::turn_completed`](#trigger-types-emitted) fires with `status: "cancelled"`.
 
 - Invocation: **sync**
@@ -1032,7 +1032,7 @@ pattern [approval-gate](approval-gate.md#state-lifecycle) mandates for its own s
 
 ## Dependencies
 
-- `session-manager` (`session::*`) — persist messages, stream content via `session::update_message`,
+- `session-manager` (`session::*`) — persist messages, stream content via `session::update-message`,
   and set status. Required.
 - `llm-router` (`router::chat`) — generation. Required.
 - `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.

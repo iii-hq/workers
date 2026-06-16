@@ -187,7 +187,7 @@ mod tests {
         let store = BridgeStore::new(remote.clone(), 300);
         let err = store.get_meta("s_x").await.unwrap_err();
         assert!(
-            err.0.contains("session::store::get_meta"),
+            err.0.contains("session::store::get-meta"),
             "error should name the failing protocol call: {}",
             err.0
         );

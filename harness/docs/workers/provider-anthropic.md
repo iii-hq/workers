@@ -14,7 +14,7 @@ Messages API request, parses the SSE response into
 caller-supplied channel. The terminal event is either `Done` or `Error`,
 followed by a `close` on the writer.
 
-The orchestrator dispatches via `provider::anthropic::stream` (the modern
+The orchestrator triggers via `provider::anthropic::stream` (the modern
 channel-writer surface); `provider::anthropic::complete` is the legacy
 non-streaming shim that internally drains the stream and returns the
 final `AssistantMessage`.

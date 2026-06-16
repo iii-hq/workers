@@ -26,7 +26,7 @@
 //! [`EventEnvelope`]; every bridged instance subscribes a relay to it
 //! at boot ([`attach_bridge_relay`]). A bridged instance never emits
 //! locally at mutation time — its [`RemotePublisher`] sends the
-//! envelopes to the main (`session::store::publish_events`), the main
+//! envelopes to the main (`session::store::publish-events`), the main
 //! runs them through its own [`Emitter`] (local subscribers + envelope
 //! fan-out to *all* bridges, originator included), and each bridge's
 //! relay re-emits through its local `Emitter`. One canonical path, no
@@ -845,7 +845,7 @@ impl Emitter {
     }
 
     /// Ingest path for externally-produced envelopes (the main's
-    /// `session::store::publish_events` and the bridges' relays).
+    /// `session::store::publish-events` and the bridges' relays).
     /// Returns the number of well-formed envelopes processed; malformed
     /// ones are skipped with a warning.
     pub async fn emit_envelopes(&self, envelopes: &[EventEnvelope]) -> usize {
@@ -912,7 +912,7 @@ impl EventSink for Emitter {
 }
 
 /// Bridge-mode sink: batch the mutation's events into one
-/// `session::store::publish_events` call to the main instance.
+/// `session::store::publish-events` call to the main instance.
 /// Failures are logged and swallowed (same best-effort stance as the
 /// fire-and-forget local fan-out): the mutation itself already
 /// succeeded against the main store.
