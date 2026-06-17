@@ -42,10 +42,10 @@ The binary speaks LSP over stdio; spawn it from your editor's LSP client.
 
 ### VS Code / Cursor
 
-Use the bundled VS Code extension, which downloads the matching `iii-lsp` binary on first activation:
+Use the bundled VS Code extension, which downloads the matching `lsp` binary on first activation:
 
-- Source: [iii-lsp-vscode/](../iii-lsp-vscode/)
-- Marketplace: see [iii-lsp-vscode/README.md](../iii-lsp-vscode/README.md) for install instructions.
+- Source: [lsp-vscode/](../lsp-vscode/)
+- Marketplace: see [lsp-vscode/README.md](../lsp-vscode/README.md) for install instructions.
 
 ### Neovim (built-in LSP)
 
@@ -63,5 +63,5 @@ Configure the client to launch the `lsp` binary over stdio for the supported fil
 
 ## See also
 
-- [iii-lsp-vscode/README.md](../iii-lsp-vscode/README.md) — VS Code extension that wraps this binary.
+- [lsp-vscode/README.md](../lsp-vscode/README.md) — VS Code extension that wraps this binary.
 - [docs/sops/new-worker.md](../docs/sops/new-worker.md) — monorepo conventions and release flow.

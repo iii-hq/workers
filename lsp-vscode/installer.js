@@ -11,8 +11,9 @@ const { pipeline } = require('node:stream/promises');
 const extractZip = require('extract-zip');
 const tar = require('tar');
 
-const SERVER_VERSION = '0.1.2';
-const RELEASE_TAG = `iii-lsp/v${SERVER_VERSION}`;
+const CONFIG_SECTION = 'iii-lsp';
+const SERVER_VERSION = '0.1.3';
+const RELEASE_TAG = `lsp/v${SERVER_VERSION}`;
 const RELEASE_BASE_URL = `https://github.com/iii-hq/workers/releases/download/${RELEASE_TAG}`;
 
 const PLATFORM_TARGETS = {
@@ -31,22 +32,22 @@ function getPlatformTarget(platform = process.platform, arch = process.arch) {
   const target = PLATFORM_TARGETS[key];
 
   if (!target) {
-    throw new Error(`Unsupported iii-lsp platform: ${key}`);
+    throw new Error(`Unsupported lsp platform: ${key}`);
   }
 
   return target;
 }
 
 function getArchiveName(target, platform = process.platform) {
-  return `iii-lsp-${target}${platform === 'win32' ? '.zip' : '.tar.gz'}`;
+  return `lsp-${target}${platform === 'win32' ? '.zip' : '.tar.gz'}`;
 }
 
 function getBinaryName(platform = process.platform) {
-  return platform === 'win32' ? 'iii-lsp.exe' : 'iii-lsp';
+  return platform === 'win32' ? 'lsp.exe' : 'lsp';
 }
 
 function getChecksumName(target) {
-  return `iii-lsp-${target}.sha256`;
+  return `lsp-${target}.sha256`;
 }
 
 function getDownloadUrl(assetName) {
@@ -187,7 +188,7 @@ async function ensureServerBinary(context, vscodeApi, options = {}) {
   const downloadFileImpl = options.downloadFile ?? downloadFile;
   const sha256FileImpl = options.sha256File ?? sha256File;
   const extractArchiveImpl = options.extractArchive ?? extractArchive;
-  const configuration = vscodeApi.workspace.getConfiguration('iii-lsp');
+  const configuration = vscodeApi.workspace.getConfiguration(CONFIG_SECTION);
   const configuredServerPath = configuration.get('serverPath') ?? '';
   const installPaths = getInstallPaths(context, platform, arch);
 
@@ -232,6 +233,7 @@ module.exports = {
   SERVER_VERSION,
   RELEASE_TAG,
   RELEASE_BASE_URL,
+  CONFIG_SECTION,
   downloadFile,
   downloadText,
   ensureServerBinary,

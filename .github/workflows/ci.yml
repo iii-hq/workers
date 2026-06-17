@@ -62,7 +62,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
-  # Runs once per changed worker (excluding iii-lsp-vscode).
+  # Runs once per changed worker (excluding lsp-vscode).
   # ──────────────────────────────────────────────────────────────
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
@@ -454,16 +454,16 @@ jobs:
         run: pytest -q
 
   # ──────────────────────────────────────────────────────────────
-  # iii-lsp-vscode: special-case (VS Code extension, not a standard worker)
+  # lsp-vscode: special-case (VS Code extension, not a standard worker)
   # ──────────────────────────────────────────────────────────────
-  iii-lsp-vscode:
-    name: "iii-lsp-vscode: lint + test"
+  lsp-vscode:
+    name: "lsp-vscode: lint + test"
     needs: discover
     if: needs.discover.outputs.vscode_changed == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: iii-lsp-vscode
+        working-directory: lsp-vscode
     steps:
       - uses: actions/checkout@v4
 

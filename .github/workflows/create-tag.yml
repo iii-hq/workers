@@ -21,7 +21,7 @@ on:
           - harness
           - iii-directory
           - lsp
-          - iii-lsp-vscode
+          - lsp-vscode
           - image-resize
           - llm-router
           - mcp
@@ -95,8 +95,8 @@ jobs:
           WORKER: ${{ inputs.worker }}
         run: |
           set -euo pipefail
-          # iii-lsp-vscode has no iii.worker.yaml (special VS Code extension flow).
-          if [[ "$WORKER" == "iii-lsp-vscode" ]]; then
+          # lsp-vscode has no iii.worker.yaml (special VS Code extension flow).
+          if [[ "$WORKER" == "lsp-vscode" ]]; then
             echo "manifest=package.json" >> "$GITHUB_OUTPUT"
             exit 0
           fi

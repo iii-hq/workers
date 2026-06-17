@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 
-const { ensureServerBinary } = require("./installer");
+const { ensureServerBinary, CONFIG_SECTION } = require("./installer");
 
 let client;
 
@@ -39,7 +39,7 @@ function resolvePathBinary() {
 }
 
 async function activate(context) {
-  const config = vscode.workspace.getConfiguration("iii-lsp");
+  const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const engineUrl = config.get("engineUrl") || "ws://127.0.0.1:49134";
   let serverPath;
 

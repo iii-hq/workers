@@ -1,6 +1,6 @@
 .PHONY: image install test package-check build install-cursor clean
 
-IMAGE ?= iii-lsp-vscode-dev
+IMAGE ?= lsp-vscode-dev
 VSIX ?= iii-lsp.vsix
 NPM_CACHE ?= /tmp/npm-cache
 

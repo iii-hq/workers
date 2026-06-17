@@ -2,7 +2,7 @@
   "name": "iii-lsp",
   "displayName": "iii Language Server",
   "description": "Autocompletion and hover for iii engine functions and triggers",
-  "version": "0.1.0",
+  "version": "0.2.6",
   "publisher": "iii-hq",
   "engines": {
     "vscode": "^1.75.0"
@@ -25,7 +25,7 @@
         "iii-lsp.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the iii-lsp binary. If empty, looks for 'iii-lsp' on PATH."
+          "description": "Path to the lsp binary. If empty, installs lsp or looks for 'lsp' on PATH."
         },
         "iii-lsp.engineUrl": {
           "type": "string",
@@ -47,6 +47,7 @@
     "iii language server",
     "language server",
     "lsp",
+    "lsp-vscode",
     "autocomplete",
     "hover",
     "diagnostics"
@@ -55,7 +56,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/iii-hq/workers.git",
-    "directory": "iii-lsp-vscode"
+    "directory": "lsp-vscode"
   },
   "license": "ISC",
   "type": "commonjs",
