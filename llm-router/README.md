@@ -127,11 +127,11 @@ within seconds — no restart.
 
 ## Events
 
-The router publishes three events over the engine's `iii-pubsub` worker. Bind
-an iii function to a topic with the engine's `subscribe` trigger type; the
-handler receives the payload verbatim (no envelope).
+The router registers three custom trigger types and fans out to every bound
+handler. Bind with the standard two-step pattern; the handler receives the
+payload verbatim (no envelope).
 
-| Topic | Fires when | Payload |
+| Trigger type | Fires when | Payload |
 |---|---|---|
 | `router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
 | `router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
@@ -144,9 +144,9 @@ iii.registerFunction({ id: 'my-worker::onModelsChanged' }, async (payload) => {
 });
 
 iii.registerTrigger({
-  type: 'subscribe',
+  type: 'router::models::changed',
   function_id: 'my-worker::onModelsChanged',
-  config: { topic: 'router::models::changed' },
+  config: {},
 });
 ```
 

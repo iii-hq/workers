@@ -15,17 +15,17 @@ use serde_json::json;
 
 use crate::registry::resolve::resolve_provider_config;
 use crate::registry::store::RegistryStore;
-use crate::triggers;
+use crate::triggers::{self, RouterEvents};
 
 pub fn make_on_worker_available(
-    iii: III,
     registry: Arc<RegistryStore>,
+    events: Arc<RouterEvents>,
 ) -> impl Fn(WorkerAvailableEvent) -> BoxFuture<'static, Result<RouterAck, IIIError>>
        + Send
        + Sync
        + 'static {
     move |event: WorkerAvailableEvent| {
-        let (iii, registry) = (iii.clone(), registry.clone());
+        let (registry, events) = (registry.clone(), events.clone());
         Box::pin(async move {
             let Some(worker_id) = event.worker_id.as_deref() else {
                 return Ok(RouterAck { ok: true }); // unknown shapes are ignored
@@ -38,12 +38,12 @@ pub fn make_on_worker_available(
             let available = !event_name.contains("disconnect");
             for id in providers {
                 if registry.set_availability(&id, available).await {
-                    triggers::publish(
-                        &iii,
-                        triggers::PROVIDER_CHANGED,
-                        json!({ "provider": id, "op": if available { "available" } else { "unavailable" } }),
-                    )
-                    .await;
+                    events
+                        .emit(
+                            triggers::PROVIDER_CHANGED,
+                            json!({ "provider": id, "op": if available { "available" } else { "unavailable" } }),
+                        )
+                        .await;
                 }
             }
             Ok(RouterAck { ok: true })

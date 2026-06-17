@@ -11,7 +11,7 @@ chat/reasoning families ∪ curated capability snapshot →
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` pubsub topic.
+  backoff until acked, and re-declares on the `router::ready` trigger type.
   The declaration ships a static curated `models` slice (no cold-catalog
   hole) and `credential_env_var: OPENAI_API_KEY`.
 - **Identity binding:** the router returns a `registration_token` on first

@@ -6,23 +6,23 @@ use std::sync::Arc;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{ModelsReconcileRequest, ModelsReconcileResponse};
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::IIIError;
 use serde_json::json;
 
 use crate::catalog::store::CatalogStore;
 use crate::registry::store::RegistryStore;
-use crate::triggers;
+use crate::triggers::{self, RouterEvents};
 
 pub fn make_models_reconcile(
-    iii: III,
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
+    events: Arc<RouterEvents>,
 ) -> impl Fn(ModelsReconcileRequest) -> BoxFuture<'static, Result<ModelsReconcileResponse, IIIError>>
        + Send
        + Sync
        + 'static {
     move |req: ModelsReconcileRequest| {
-        let (iii, registry, catalog) = (iii.clone(), registry.clone(), catalog.clone());
+        let (registry, catalog, events) = (registry.clone(), catalog.clone(), events.clone());
         Box::pin(async move {
             let provider = req.provider;
             registry
@@ -44,12 +44,12 @@ pub fn make_models_reconcile(
             }
             let count = models.len();
             catalog.set_slice(&provider, models).await?;
-            triggers::publish(
-                &iii,
-                triggers::MODELS_CHANGED,
-                json!({ "provider": provider, "count": count }),
-            )
-            .await;
+            events
+                .emit(
+                    triggers::MODELS_CHANGED,
+                    json!({ "provider": provider, "count": count }),
+                )
+                .await;
             Ok(ModelsReconcileResponse { provider, count })
         })
     }
