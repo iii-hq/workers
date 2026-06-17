@@ -3,6 +3,7 @@
 **Sources of truth:**
 [`.github/workflows/create-tag.yml`](../../.github/workflows/create-tag.yml),
 [`.github/workflows/release.yml`](../../.github/workflows/release.yml),
+[`.github/workflows/release-lsp-vscode.yml`](../../.github/workflows/release-lsp-vscode.yml),
 [`.github/workflows/_rust-binary.yml`](../../.github/workflows/_rust-binary.yml),
 [`.github/workflows/_container.yml`](../../.github/workflows/_container.yml),
 [`.github/workflows/_bundle.yml`](../../.github/workflows/_bundle.yml),
@@ -133,10 +134,33 @@ Actions → **Publish worker skills** — worker must be in
 `ALLOWED_WORKERS` ([`parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py)).
 No version bump; updates skill markdown on the registry channel you pick.
 
-### Not via this pipeline
+### LSP VS Code extension
 
-`iii-lsp-vscode` uses [`release-lsp.yml`](../../.github/workflows/release-lsp.yml)
-(VS Code extension packaging, separate tag pattern `iii-lsp-vscode/v*`).
+`lsp-vscode` uses
+[`release-lsp-vscode.yml`](../../.github/workflows/release-lsp-vscode.yml)
+(VS Code extension packaging, separate tag pattern `lsp-vscode/v*`). The
+Marketplace/OpenVSX package name remains `iii-lsp`.
+
+The extension release workflow packages the VSIX once and then publishes it via
+separate jobs:
+
+| Job | External side effect |
+|---|---|
+| `publish-vscode` | Publishes the VSIX to VS Code Marketplace |
+| `publish-openvsx` | Publishes the same VSIX to OpenVSX |
+| `github-release` | Uploads the VSIX to the GitHub Release |
+
+If only one target fails, do **not** create another version bump. Either use
+GitHub Actions "Re-run failed jobs" for the same run, or dispatch **Release LSP
+VS Code** manually with the existing tag and the failed target:
+
+| Input | Example |
+|---|---|
+| `tag` | `lsp-vscode/v0.2.7` |
+| `publish_target` | `openvsx`, `vscode-marketplace`, or `github-release` |
+
+Use `publish_target=all` only for the first publish attempt or when all targets
+are known to be safe to run again.
 
 ## Troubleshooting
 
