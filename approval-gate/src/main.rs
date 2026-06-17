@@ -145,6 +145,12 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering approval-gate configuration schema")?;
+    // Backfill the stored entry with the default `rules` when an operator
+    // value predates the field, so the console editor is pre-filled. Best
+    // effort: the in-memory defaults stand if this can't persist.
+    if let Err(e) = configuration::ensure_rules_seeded(&iii).await {
+        tracing::warn!(error = %e, "configuration rules backfill failed; using in-memory defaults");
+    }
     let cfg = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)

@@ -1,75 +1,55 @@
-//! Built-in permission rules — copy of the shipped [`iii-permissions.yaml`](../../iii-permissions.yaml).
+//! Built-in permission rules for step 5 of `approval::gate` when the
+//! `approval-gate` configuration entry omits `rules` (or they fail to
+//! compile). First match wins; no match → **hold**.
+//!
+//! The shipped defaults deny **only this worker's `approval::*` surface**
+//! (the 12 registered functions — see `functions::catalog`). Every
+//! other function_id holds until the operator adds custom `rules`.
 
+/// Shorthand rule strings compiled into [`super::default_permissions`].
 pub fn default_rule_strings() -> Vec<&'static str> {
-    vec![
-        "!approval::resolve",
-        "!policy::check_permissions",
-        "!hook-fanout::publish_collect",
-        "!state::set",
-        "!state::update",
-        "!state::delete",
-        "!stream::set",
-        "!iii::durable::publish",
-        "!router::provider::resolve",
-        "!router::provider::register",
-        "!router::provider::update_credential",
-        "!router::models::reconcile",
-        "!router::chat",
-        "!router::complete",
-        "!router::abort",
-        "!router::route",
-        "!router::on_worker_available",
-        "!router::on_config_changed",
-        "!provider::*",
-        "!configuration::get",
-        "!configuration::set",
-        "!configuration::register",
-        "!shell::on-config-change",
-        "!shell::config-status",
-        "!oauth::anthropic::login",
-        "!oauth::openai-codex::login",
-        "!run::start",
-        "!session::store::*",
-        "!session::create",
-        "!session::ensure",
-        "!session::set-meta",
-        "!session::set-status",
-        "!session::delete",
-        "!session::append",
-        "!session::append-many",
-        "!session::update-message",
-        "!session::fork",
-        "!session::set-active-leaf",
-        "!session::config-status",
-        "!context::assemble",
-        "!context::compact",
-        "!storage::on-config-change",
-        "!database::on-config-change",
-        "!session::on-config-change",
-        "state::get",
-        "state::list",
-        "router::models::list",
-        "router::models::get",
-        "router::models::supports",
-        "router::provider::list",
-        "oauth::anthropic::status",
-        "oauth::openai-codex::status",
-        "engine::functions::list",
-        "engine::functions::info",
-        "engine::triggers::list",
-        "engine::triggers::info",
-        "engine::workers::list",
-        "engine::workers::info",
-        "engine::registered-triggers::list",
-        "engine::registered-triggers::info",
-        "worker::list",
-        "directory::registry::workers::list",
-        "directory::registry::workers::info",
-        "coder::info",
-        "coder::read-file",
-        "coder::search",
-        "coder::list-folder",
-        "coder::tree",
-        "web::fetch",
-    ]
+    vec!["!approval::*"]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::functions::catalog;
+    use crate::permissions::{default_permissions, Decision};
+
+    fn catalog_function_ids() -> Vec<&'static str> {
+        catalog().iter().map(|s| s.function_id).collect()
+    }
+
+    #[test]
+    fn default_rule_is_single_glob_over_registered_surface() {
+        assert_eq!(default_rule_strings(), ["!approval::*"]);
+    }
+
+    #[test]
+    fn default_rules_deny_every_registered_function() {
+        let p = default_permissions();
+        for fid in catalog_function_ids() {
+            assert!(
+                matches!(p.check(fid, &serde_json::json!({})), Decision::Deny { .. }),
+                "{fid} should deny"
+            );
+        }
+    }
+
+    #[test]
+    fn default_rules_hold_other_workers() {
+        let p = default_permissions();
+        for fid in [
+            "shell::run",
+            "web::fetch",
+            "provider::anthropic::chat",
+            "configuration::set",
+        ] {
+            assert!(
+                matches!(p.check(fid, &serde_json::json!({})), Decision::NeedsApproval),
+                "{fid} should hold"
+            );
+        }
+    }
 }

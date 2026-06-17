@@ -11,7 +11,7 @@ For maintainers changing this worker. The integration contract lives in
 | `types.rs` | Every wire type (serde + schemars), id validation (`/` is the reserved key separator), `metadata_matches` subset-equality. |
 | `state.rs` / `harness.rs` / `session.rs` | Thin per-target `iii.trigger` wrappers (state kv, `harness::function::resolve`, `session::get`). No transport abstraction; tests run against a real engine via `testkit/engine.rs`. |
 | `decision.rs` | **Pure** evaluation order (no I/O): human-only prefix check, mode/allow-list short-circuits, `*`-glob matching. |
-| `permissions/` | Inline rule compiler + evaluator (first match wins; no match → needs_approval). Built-in defaults mirror shipped `iii-permissions.yaml`. |
+| `permissions/` | Inline rule compiler + evaluator (first match wins; no match → hold). Built-in default: deny `approval::*` only. |
 | `denial.rs` | `DenialEnvelope` assembly + text rendering; reason strings ported verbatim from the prior art. |
 | `redact.rs` | Recursive argument redaction (pure port of the proven `redact.ts`). |
 | `settings.rs` | Effective-settings computation, lazy seeding, immutable mutation helpers, tolerant vs strict reads. |
@@ -115,11 +115,13 @@ Mutation helpers are immutable: `with_grant` (idempotent on exact
 mirroring `context-manager` / `session-manager`. `register_config` registers
 the `WorkerConfig` JSON Schema and seeds `WorkerConfig::default()` as
 `initial_value` only when no value is stored yet (re-registration preserves the
-stored value); `fetch_config` reads the authoritative, env-expanded value at
-boot. Both are **required** — a failed register/fetch aborts boot, so the gate
-always runs on a known, authoritative policy surface (never a guessed one).
-When nothing is stored, the built-in defaults (`manual`, `[]`, the shipped
-rules, the `*` hook) are what gets seeded and used.
+stored value); `ensure_rules_seeded` then backfills a missing `rules` field
+into an already-stored value (a pre-rules config) without clobbering operator
+edits; `fetch_config` reads the authoritative, env-expanded value at boot. The
+register/fetch pair is **required** — a failed register/fetch aborts boot, so
+the gate always runs on a known, authoritative policy surface (never a guessed
+one). When nothing is stored, the built-in defaults (`manual`, `[]`, the
+shipped `!approval::*` rules, the `*` hook) are what gets seeded and used.
 
 The live value is held in a `ConfigCell` (`Arc<RwLock<Arc<WorkerConfig>>>`)
 that every handler snapshots per call. `register_config_trigger` registers the

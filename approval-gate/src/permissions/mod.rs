@@ -201,18 +201,18 @@ mod tests {
     }
 
     #[test]
-    fn glob_provider_deny() {
+    fn glob_provider_needs_approval_by_default() {
         assert!(matches!(
             default_permissions().check("provider::anthropic::chat", &json!({})),
-            Decision::Deny { .. }
+            Decision::NeedsApproval
         ));
     }
 
     #[test]
-    fn default_allows_web_fetch() {
+    fn web_fetch_needs_approval_by_default() {
         assert!(matches!(
             default_permissions().check("web::fetch", &json!({})),
-            Decision::Allow { .. }
+            Decision::NeedsApproval
         ));
     }
 

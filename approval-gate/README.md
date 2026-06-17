@@ -76,11 +76,12 @@ unchanged from the proven implementation):
 5. fall through to configuration **`rules`** (first match wins):
    `allow` → allow · `deny` → deny · no match → **hold**
 
-When the configuration entry omits `rules`, the gate uses a built-in default
-list (a copy of the shipped `iii-permissions.yaml`). **Interim divergence:**
-harness turns use these config rules; other callers (e.g. claude-code) that
-still invoke `policy::check_permissions` on the harness worker read the YAML
-file until a follow-up unifies them.
+When the configuration entry omits `rules`, the gate denies only this
+worker's own `approval::*` surface; every other call **holds**. On startup the
+worker seeds/backfills the stored entry so `rules` are editable in the console.
+**Interim divergence:** harness turns use these config rules; other callers
+(e.g. claude-code) that still invoke `policy::check_permissions` on the harness
+worker read the YAML file until a follow-up unifies them.
 
 ## Custom trigger types
 
@@ -99,8 +100,9 @@ restart, reconcile with one `approval::list-pending` call.
 The whole config — runtime wiring **and** deployment approval defaults — lives
 in the single engine configuration entry **`approval-gate`** (operator-edited
 via the console's Configuration screen; reactive reload, no polling). There is
-**no committed `config.yaml`**; defaults are seeded into the entry on first
-registration.
+**no committed `config.yaml`**. On first boot the worker seeds the entry with
+the built-in defaults (including `rules`) so the editor is pre-filled; existing
+stored values are never overwritten except to add a missing `rules` field.
 
 ```jsonc
 {
@@ -114,9 +116,8 @@ registration.
   "harness_timeout_ms": 10000,
   "default_mode": "manual",        // manual | auto | full — sessions with no stored settings
   "always_allow_seed": [],         // auto-mode trust profile (function ids / globs)
-  "rules": [                       // optional; omit to use built-in shipped defaults
-    "*",
-    "!shell::run"
+  "rules": [                       // first match wins; no match → hold
+    "!approval::*"
   ]
 }
 ```

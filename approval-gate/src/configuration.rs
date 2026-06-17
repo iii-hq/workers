@@ -104,6 +104,51 @@ async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
     }
 }
 
+/// Persist `value` as the stored configuration entry.
+async fn set_config_value(iii: &III, value: Value) -> Result<(), String> {
+    trigger_with_retry(iii, "configuration::set", json!({ "id": CONFIG_ID, "value": value }))
+        .await
+        .map(|_| ())
+}
+
+/// Pure decision for [`ensure_rules_seeded`]: given the currently stored
+/// value, return the value to persist, or `None` when nothing needs
+/// writing. Only an object that lacks a `rules` key is backfilled; a null /
+/// non-object value is left to `register_config` + the in-memory defaults,
+/// and an object that already has `rules` (even `[]`) is operator data and
+/// untouched.
+fn rules_backfill(stored: &Value) -> Option<Value> {
+    let obj = stored.as_object()?;
+    if obj.contains_key("rules") {
+        return None;
+    }
+    let mut next = obj.clone();
+    next.insert(
+        "rules".into(),
+        Value::Array(crate::config::default_rules_value()),
+    );
+    Some(Value::Object(next))
+}
+
+/// Backfill the stored entry with the default `rules` when an operator
+/// value predates the field, so the console Configuration editor is
+/// pre-filled with the shipped list. First-boot seeding is handled by
+/// [`register_config`]'s `initial_value`; this covers only the migration
+/// case where a value is already stored but carries no `rules` key. A
+/// stored value that already has `rules` (even `[]`) is left untouched —
+/// operator data wins. Idempotent.
+pub async fn ensure_rules_seeded(iii: &III) -> Result<(), String> {
+    let Some(stored) = try_get_config_value(iii).await? else {
+        // Nothing stored — `register_config` already seeded the default.
+        return Ok(());
+    };
+    if let Some(next) = rules_backfill(&stored) {
+        set_config_value(iii, next).await?;
+        tracing::info!("approval-gate configuration backfilled with default rules");
+    }
+    Ok(())
+}
+
 /// Swap the config snapshot under the write lock. Per-call tuning knobs
 /// take effect on the next read; any trigger re-bind is done by the caller
 /// before this swap.
@@ -306,6 +351,26 @@ async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Res
 mod tests {
     use super::*;
     use crate::types::PermissionMode;
+
+    #[test]
+    fn rules_backfill_only_touches_objects_missing_rules() {
+        use serde_json::json;
+        // An object without `rules` gets the shipped defaults added, other
+        // fields preserved.
+        let out = rules_backfill(&json!({ "default_mode": "auto" })).unwrap();
+        assert_eq!(
+            out["rules"],
+            Value::Array(crate::config::default_rules_value())
+        );
+        assert_eq!(out["default_mode"], json!("auto"));
+        // An object that already carries `rules` (even empty) is operator
+        // data — left untouched.
+        assert!(rules_backfill(&json!({ "rules": [] })).is_none());
+        assert!(rules_backfill(&json!({ "rules": ["*"] })).is_none());
+        // Null / non-object values are not backfilled here.
+        assert!(rules_backfill(&Value::Null).is_none());
+        assert!(rules_backfill(&json!("garbage")).is_none());
+    }
 
     #[tokio::test]
     async fn apply_config_swaps_snapshot() {
