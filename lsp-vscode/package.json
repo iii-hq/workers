@@ -2,7 +2,7 @@
   "name": "iii-lsp",
   "displayName": "iii Language Server",
   "description": "Autocompletion and hover for iii engine functions and triggers",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "iii-hq",
   "engines": {
     "vscode": "^1.75.0"
