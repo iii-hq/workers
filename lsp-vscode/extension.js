@@ -3,10 +3,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 
-const { ensureServerBinary } = require("./installer");
+const { ensureServerBinary, CONFIG_SECTION } = require("./installer");
 
 let client;
-const CONFIG_SECTION = "iii-lsp";
 
 // Resolve the server binary on PATH, preferring the new `lsp` name and
 // falling back to the legacy `iii-lsp` name for older installs.
