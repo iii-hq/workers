@@ -1,6 +1,6 @@
 use super::{
-    build_system_prompt, prompt_family, resolve_system_prompt, select_identity_prompt,
-    variants, Mode, PromptFamily, SystemPromptOpts,
+    build_system_prompt, prompt_family, resolve_system_prompt, select_identity_prompt, variants,
+    Mode, PromptFamily, SystemPromptOpts,
 };
 
 fn default_prompt() -> String {
@@ -195,10 +195,7 @@ fn mode_plan_prepends_before_identity() {
         provider: "",
     });
     assert!(out.contains("operating in plan mode"));
-    assert!(
-        out.find("operating in plan mode")
-            < out.find("You are an iii agent worker")
-    );
+    assert!(out.find("operating in plan mode") < out.find("You are an iii agent worker"));
 }
 
 #[test]
@@ -208,10 +205,7 @@ fn mode_ask_prepends_before_identity() {
         provider: "",
     });
     assert!(out.contains("operating in ask mode"));
-    assert!(
-        out.find("operating in ask mode")
-            < out.find("You are an iii agent worker")
-    );
+    assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
 }
 
 #[test]
@@ -221,10 +215,7 @@ fn mode_agent_prepends_before_identity() {
         provider: "",
     });
     assert!(out.contains("operating in agent mode"));
-    assert!(
-        out.find("operating in agent mode")
-            < out.find("You are an iii agent worker")
-    );
+    assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
 }
 
 #[test]
@@ -293,11 +284,17 @@ fn variant_invariants_shared() {
         let out = select_identity_prompt(provider);
         assert!(out.starts_with("You are an iii agent worker."), "{label}");
         assert!(out.contains("agent_trigger"), "{label}");
-        assert!(out.contains("directory::registry::workers::list"), "{label}");
+        assert!(
+            out.contains("directory::registry::workers::list"),
+            "{label}"
+        );
         assert!(out.contains("coder::move"), "{label}");
         assert!(out.contains("the FIRST line of worker code"), "{label}");
         assert!(out.contains("email::send"), "{label}");
-        assert!(out.contains("I am installing the \"email\" worker"), "{label}");
+        assert!(
+            out.contains("I am installing the \"email\" worker"),
+            "{label}"
+        );
         assert!(out.contains("<example>"), "{label}");
         for id in extract_directory_ids(out) {
             assert!(
@@ -313,11 +310,13 @@ fn capability_ladder_ordering() {
     for provider in ["anthropic", "openai", "kimi", "lmstudio"] {
         let out = select_identity_prompt(provider);
         assert!(
-            out.find("directory::registry::workers::list")
-                < out.find("registerWorker"),
+            out.find("directory::registry::workers::list") < out.find("registerWorker"),
             "{provider}"
         );
-        assert!(out.find("coder::") < out.find("registerWorker"), "{provider}");
+        assert!(
+            out.find("coder::") < out.find("registerWorker"),
+            "{provider}"
+        );
     }
 }
 
