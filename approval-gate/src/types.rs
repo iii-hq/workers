@@ -152,8 +152,6 @@ pub struct PendingApprovalRecord {
     pub arguments_excerpt: Value,
     /// ms epoch
     pub pending_at: i64,
-    /// `pending_at + pending_timeout_ms`
-    pub expires_at: i64,
 
     // Denormalized session context — soft-fetched via session::get at
     // hold time; omitted when the fetch fails or session-manager is absent.
@@ -181,7 +179,6 @@ pub struct PendingApprovalRecord {
 pub enum ResolvedOutcome {
     Allow,
     Deny,
-    Timeout,
     Aborted,
 }
 
@@ -413,10 +410,10 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(HookOutput::Hold {
-                pending_timeout_ms: 1_800_000
+                pending_timeout_ms: 0
             })
             .unwrap(),
-            json!({ "decision": "hold", "pending_timeout_ms": 1_800_000 })
+            json!({ "decision": "hold", "pending_timeout_ms": 0 })
         );
     }
 
@@ -489,7 +486,6 @@ mod tests {
             function_id: "shell::run".into(),
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
-            expires_at: 200,
             session_title: None,
             session_description: None,
             session_metadata: None,

@@ -14,7 +14,6 @@ pub mod on_turn_completed;
 pub mod purge;
 pub mod resolve;
 pub mod set_mode;
-pub mod sweep;
 
 pub mod add_always_allow;
 pub mod remove_always_allow;
@@ -78,9 +77,6 @@ pub const ON_SESSION_DELETED_DESC: &str =
 pub const ON_TURN_COMPLETED_ID: &str = "approval::on-turn-completed";
 pub const ON_TURN_COMPLETED_DESC: &str =
     "Internal: harness::turn-completed handler (purge the turn's pending records).";
-
-pub const SWEEP_ID: &str = "approval::sweep";
-pub const SWEEP_DESC: &str = "Internal: cron handler (expire pending records past expires_at).";
 
 /// Everything a function handler needs.
 pub struct Deps {
@@ -200,9 +196,6 @@ pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
         ON_TURN_COMPLETED_DESC,
         |d, r| async move { on_turn_completed::handle(&d, r).await },
     );
-    register(iii, deps, SWEEP_ID, SWEEP_DESC, |d, r| async move {
-        sweep::handle(&d, r).await
-    });
 
     tracing::info!("all approval::* functions registered");
 }
@@ -275,7 +268,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ClearSettingsRequest, ClearSettingsResponse>(CLEAR_SETTINGS_ID, CLEAR_SETTINGS_DESC),
         spec::<SessionDeletedEvent, EventAck>(ON_SESSION_DELETED_ID, ON_SESSION_DELETED_DESC),
         spec::<TurnCompletedEvent, EventAck>(ON_TURN_COMPLETED_ID, ON_TURN_COMPLETED_DESC),
-        spec::<sweep::SweepRequest, sweep::SweepResponse>(SWEEP_ID, SWEEP_DESC),
     ]
 }
 

@@ -24,17 +24,17 @@ rows, and the exactly-once emission contract are all pinned by tests.
 approval-gate decides, for one function call at a time, whether a human must
 be involved — and routes the human's answer back to the parked turn. It is a
 `pre_trigger` hook (`approval::gate`) that answers `continue` / `deny` /
-`hold` from a per-session permission model (mode + two allow-lists) with a
-yaml-policy fallback; a decision plane (`approval::resolve` + settings RPCs,
+`hold` from a per-session permission model (mode + two allow-lists) with an
+inline config-`rules` fallback; a decision plane (`approval::resolve` + settings RPCs,
 human/console-only); and an **ephemeral** pending inbox (state scope
 `approval_pending`, two custom trigger types) that exists only while calls
 are held. It never executes the held function itself — on allow it asks the
 harness to release the call through its own trigger pipeline
-(`harness::function::resolve`, `action: "execute"`); on deny/timeout it
+(`harness::function::resolve`, `action: "execute"`); on deny it
 delivers an `is_error` result. No decision history is kept: the transcript
 and the `pending_resolved` event are the audit trail, and every state record
-this worker writes has an explicit deletion path plus a cron sweep as GC
-backstop.
+this worker writes has an explicit deletion path (resolve, turn abort,
+session delete). Holds do not expire.
 
 ```mermaid
 flowchart LR
@@ -47,7 +47,6 @@ flowchart LR
   R -- "delete (emit gate)" --> S
   R -. "pending_resolved" .-> N
   C[(configuration entry\napproval-gate)] -. "reactive reload" .-> G
-  CR[cron ~60s] --> SW[approval::sweep] --> S
 ```
 
 ## Vocabulary

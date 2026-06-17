@@ -109,48 +109,6 @@ async fn resolve_allow_releases_and_deny_delivers_through_the_fake_harness() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_expires_records_and_emits_timeout_exactly_once() {
-    with_stack(BootOpts::needs_approval(), |stack| async move {
-        let iii = &stack.iii;
-
-        call(
-            iii,
-            "state::set",
-            json!({ "scope": "approval_pending", "key": "s_9/c_9", "value": {
-                "session_id": "s_9",
-                "turn_id": "t_9",
-                "function_call_id": "c_9",
-                "function_id": "shell::run",
-                "arguments_excerpt": {},
-                "pending_at": 100,
-                "expires_at": 200,
-                "depth": 0,
-            }}),
-        )
-        .await
-        .unwrap();
-
-        let swept = call(iii, "approval::sweep", json!({})).await.unwrap();
-        assert_eq!(swept["swept"], json!(1));
-
-        let harness = log_snapshot(&stack.harness_calls);
-        assert_eq!(harness.len(), 1);
-        assert_eq!(harness[0]["details"]["status"], json!("timeout"));
-
-        let swept = call(iii, "approval::sweep", json!({})).await.unwrap();
-        assert_eq!(swept["swept"], json!(0));
-
-        assert!(
-            wait_for(3_000, || !log_snapshot(&stack.resolved).is_empty()).await,
-            "timeout event should reach the recorder"
-        );
-        settle().await;
-        assert_eq!(log_snapshot(&stack.resolved).len(), 1);
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn configuration_set_reloads_defaults_reactively() {
     with_stack(BootOpts::needs_approval(), |stack| async move {
         let iii = &stack.iii;

@@ -63,11 +63,6 @@
             "format": "int64",
             "type": "integer"
           },
-          "expires_at": {
-            "description": "`pending_at + pending_timeout_ms`",
-            "format": "int64",
-            "type": "integer"
-          },
           "function_call_id": {
             "type": "string"
           },
@@ -107,7 +102,6 @@
           }
         },
         "required": [
-          "expires_at",
           "function_call_id",
           "function_id",
           "pending_at",

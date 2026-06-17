@@ -112,7 +112,6 @@ mod tests {
             "function_id": "shell::run",
             "arguments_excerpt": {},
             "pending_at": pending_at,
-            "expires_at": pending_at + 1000,
             "depth": 0,
         });
         if let Some(owner) = owner {

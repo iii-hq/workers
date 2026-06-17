@@ -181,58 +181,70 @@ pub async fn require_engine() -> Option<Engine> {
 
 pub type CallLog = Arc<Mutex<Vec<Value>>>;
 
+/// How the booted stack's inline permission `rules` are set. The gate
+/// evaluates `WorkerConfig::rules` directly (no policy worker), so a test
+/// drives it by overriding that list in the config snapshot.
 #[derive(Clone)]
-pub enum PolicyStub {
-    Reply(Value),
-    Error(String),
-    Absent,
+pub enum RulesOverride {
+    /// Keep the shipped built-in rules seeded into the configuration entry.
+    Shipped,
+    /// No rules — every call falls through to `needs_approval`.
+    Empty,
+    /// An explicit rule list (string shorthands or rule objects).
+    Custom(Vec<Value>),
 }
 
-impl Default for PolicyStub {
-    fn default() -> Self {
-        Self::Reply(json!({ "decision": "needs_approval" }))
-    }
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct BootOpts {
-    pub policy: PolicyStub,
+    pub rules: RulesOverride,
+}
+
+impl Default for BootOpts {
+    fn default() -> Self {
+        Self::needs_approval()
+    }
 }
 
 impl BootOpts {
+    /// Empty rules: every call needs approval (the default test posture).
     pub fn needs_approval() -> Self {
         Self {
-            policy: PolicyStub::Reply(json!({ "decision": "needs_approval" })),
+            rules: RulesOverride::Empty,
         }
     }
 
+    /// Allow everything (`["*"]`).
     pub fn allow() -> Self {
         Self {
-            policy: PolicyStub::Reply(json!({ "decision": "allow" })),
+            rules: RulesOverride::Custom(vec![json!("*")]),
         }
     }
 
-    pub fn deny() -> Self {
+    /// Allow exactly one function id / glob.
+    pub fn allow_function(function_id: impl Into<String>) -> Self {
         Self {
-            policy: PolicyStub::Reply(json!({ "decision": "deny", "rule_id": "test" })),
+            rules: RulesOverride::Custom(vec![json!(function_id.into())]),
         }
     }
 
-    pub fn policy_reply(value: Value) -> Self {
+    /// Deny exactly one function id / glob (`!`-prefixed shorthand).
+    pub fn deny_function(function_id: impl Into<String>) -> Self {
         Self {
-            policy: PolicyStub::Reply(value),
+            rules: RulesOverride::Custom(vec![json!(format!("!{}", function_id.into()))]),
         }
     }
 
-    pub fn policy_error(message: impl Into<String>) -> Self {
+    /// An explicit rule list.
+    pub fn with_rules(rules: Vec<Value>) -> Self {
         Self {
-            policy: PolicyStub::Error(message.into()),
+            rules: RulesOverride::Custom(rules),
         }
     }
 
-    pub fn no_policy() -> Self {
+    /// The shipped built-in rules from configuration defaults.
+    pub fn shipped_rules() -> Self {
         Self {
-            policy: PolicyStub::Absent,
+            rules: RulesOverride::Shipped,
         }
     }
 }
@@ -271,9 +283,17 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     configuration::register_config(&iii, None)
         .await
         .expect("register approval-gate configuration schema");
-    let cfg = configuration::fetch_config(&iii)
+    let mut cfg = configuration::fetch_config(&iii)
         .await
         .expect("fetch approval-gate configuration");
+    // Drive the gate's inline permission rules from the boot options. The
+    // gate compiles `WorkerConfig::rules` per call, so overriding the list
+    // here is all a test needs to choose allow / deny / hold behaviour.
+    match &opts.rules {
+        RulesOverride::Shipped => {}
+        RulesOverride::Empty => cfg.rules = Vec::new(),
+        RulesOverride::Custom(rules) => cfg.rules = rules.clone(),
+    }
     let config: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
     let sets = events::register_trigger_types(&iii);
@@ -283,29 +303,6 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         config: config.clone(),
     });
     functions::register_all(&iii, &deps);
-
-    let policy = opts.policy;
-    match policy {
-        PolicyStub::Reply(decision) => {
-            iii.register_function(
-                "policy::check_permissions",
-                RegisterFunction::new_async(move |_req: Value| {
-                    let decision = decision.clone();
-                    async move { Ok::<_, iii_sdk::IIIError>(decision) }
-                }),
-            );
-        }
-        PolicyStub::Error(message) => {
-            iii.register_function(
-                "policy::check_permissions",
-                RegisterFunction::new_async(move |_req: Value| {
-                    let message = message.clone();
-                    async move { Err::<Value, _>(iii_sdk::IIIError::Handler(message)) }
-                }),
-            );
-        }
-        PolicyStub::Absent => {}
-    }
 
     let harness_calls: CallLog = Arc::default();
     {
@@ -383,11 +380,10 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
 
     // The typed, re-fetching config-change handler + its `configuration`
     // trigger binding (mirrors the production boot order: last). The test
-    // engine has no harness hook / cron to bind, so the re-bindable handles
-    // start empty; reactive reload of the per-call knobs still applies.
+    // engine has no harness hook to bind, so the re-bindable handle starts
+    // empty; reactive reload of the per-call knobs still applies.
     let handles = Arc::new(TriggerHandles {
         hook: Mutex::new(None),
-        sweep: Mutex::new(None),
     });
     configuration::register_config_trigger(&iii, config.clone(), handles)
         .expect("register configuration change trigger");

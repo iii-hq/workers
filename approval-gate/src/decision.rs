@@ -8,7 +8,7 @@
 //!   2. mode full → allow
 //!   3. approved_always hit → allow (every mode)
 //!   4. mode auto AND always_allow hit → allow (dormant under manual)
-//!   5. fall through to the yaml policy (policy.rs)
+//!   5. fall through to configuration `rules` (permissions module)
 
 use crate::types::{AlwaysAllowEntry, ApprovalSettings, PermissionMode};
 
@@ -17,7 +17,7 @@ use crate::types::{AlwaysAllowEntry, ApprovalSettings, PermissionMode};
 /// defense). Prefix match deliberately broadens the prior art's
 /// six-function list.
 pub fn is_human_only(function_id: &str) -> bool {
-    function_id.starts_with("approval::") || function_id.starts_with("configuration::")
+    function_id.starts_with("approval::")
 }
 
 /// `*`-glob match with an equality fast-path. Globs exist because
@@ -58,8 +58,8 @@ fn list_matches(entries: &[AlwaysAllowEntry], function_id: &str) -> bool {
         .any(|entry| glob_match(&entry.function_id, function_id))
 }
 
-/// Steps 2-4: the pre-policy short-circuits over one settings snapshot.
-/// `false` = no short-circuit — fall through to the yaml policy.
+/// Steps 2-4: the pre-rules short-circuits over one settings snapshot.
+/// `false` = no short-circuit — fall through to configuration rules.
 pub fn pre_policy_allow(settings: &ApprovalSettings, function_id: &str) -> bool {
     if settings.mode == PermissionMode::Full {
         return true;
@@ -102,10 +102,10 @@ mod tests {
     }
 
     #[test]
-    fn human_only_covers_approval_and_configuration_prefixes() {
+    fn human_only_covers_approval_prefix() {
         assert!(is_human_only("approval::set-mode"));
         assert!(is_human_only("approval::resolve"));
-        assert!(is_human_only("configuration::set"));
+        assert!(!is_human_only("configuration::set"));
         assert!(!is_human_only("shell::run"));
         assert!(!is_human_only("approvals::other"));
     }

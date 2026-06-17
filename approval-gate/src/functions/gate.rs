@@ -15,7 +15,7 @@ use crate::decision;
 use crate::denial::{gate_unavailable_envelope, human_only_denial, permissions_deny_envelope};
 use crate::error::ApprovalError;
 use crate::pending;
-use crate::policy::{self, PolicyOutcome};
+use crate::permissions::Decision;
 use crate::redact::redact;
 use crate::session;
 use crate::settings;
@@ -31,7 +31,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
     };
 
     // 1. Human-only defense — before the settings snapshot, before
-    //    policy, and regardless of mode (even `full`).
+    //    config rules, and regardless of mode (even `full`).
     if decision::is_human_only(&call.function_id) {
         let envelope = human_only_denial(&call.function_id, &call.arguments);
         return Ok(deny(&envelope.reason));
@@ -61,17 +61,11 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
         return Ok(HookOutput::Continue);
     }
 
-    // 6. Yaml policy fallback.
-    match policy::check(
-        deps.iii.as_ref(),
-        &call.function_id,
-        &call.arguments,
-        cfg.policy_timeout_ms,
-    )
-    .await
-    {
-        PolicyOutcome::Allow => Ok(HookOutput::Continue),
-        PolicyOutcome::Deny {
+    // 6. Config rules fallback — evaluate the inline permission rules
+    //    (first match wins; no match → hold for human approval).
+    match cfg.permissions().check(&call.function_id, &call.arguments) {
+        Decision::Allow { .. } => Ok(HookOutput::Continue),
+        Decision::Deny {
             rule_id,
             matched_constraint,
         } => {
@@ -83,11 +77,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
             );
             Ok(deny(&envelope.reason))
         }
-        PolicyOutcome::Unavailable(why) => {
-            let envelope = gate_unavailable_envelope(&call.function_id, &why);
-            Ok(deny(&envelope.reason))
-        }
-        PolicyOutcome::NeedsApproval => Ok(hold(deps, &input, &call, &cfg).await),
+        Decision::NeedsApproval => Ok(hold(deps, &input, &call, &cfg).await),
     }
 }
 
@@ -102,14 +92,18 @@ fn deny(reason: &str) -> HookOutput {
 /// inbox. Write failure → fail-closed deny, never hold blind.
 /// `pending_created` emits asynchronously after the record is written —
 /// notification fan-out never blocks the trigger hot path.
+///
+/// Holds never expire: the hook returns `pending_timeout_ms: 0` and the
+/// record carries no deadline. A held call stays held until a human
+/// resolves it or turn/session cleanup collects it.
 async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfig) -> HookOutput {
     let iii = deps.iii.as_ref();
 
     // Idempotency: a redelivered step re-holds the same call.
     match pending::get(iii, &input.session_id, &call.id, cfg.state_timeout_ms).await {
-        Ok(Some(existing)) => {
+        Ok(Some(_existing)) => {
             return HookOutput::Hold {
-                pending_timeout_ms: (existing.expires_at - existing.pending_at).max(0),
+                pending_timeout_ms: 0,
             };
         }
         Ok(None) => {}
@@ -133,7 +127,6 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfi
         function_id: call.function_id.clone(),
         arguments_excerpt: redact(&call.arguments),
         pending_at,
-        expires_at: pending_at + cfg.pending_timeout_ms,
         session_title,
         session_description,
         session_metadata,
@@ -152,7 +145,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfi
         // Lost a write race with a concurrent duplicate hold: the first
         // writer's record (and emission) stands.
         Ok(Some(_prior)) => HookOutput::Hold {
-            pending_timeout_ms: cfg.pending_timeout_ms,
+            pending_timeout_ms: 0,
         },
         Ok(None) => {
             let sink = deps.sink.clone();
@@ -160,7 +153,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfi
                 sink.pending_created(&record).await;
             });
             HookOutput::Hold {
-                pending_timeout_ms: cfg.pending_timeout_ms,
+                pending_timeout_ms: 0,
             }
         }
     }
@@ -231,7 +224,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn full_mode_allows_without_consulting_policy() {
+    async fn full_mode_allows_without_consulting_rules() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             seed_settings(
                 &stack.iii,
@@ -296,39 +289,42 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn policy_allow_continues() {
-        with_stack(
-            BootOpts::policy_reply(json!({ "decision": "allow", "rule_id": "r1" })),
-            |stack| async move {
-                assert_eq!(
-                    handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
-                    HookOutput::Continue
-                );
-            },
-        )
+    async fn config_rules_allow_continues() {
+        with_stack(BootOpts::allow(), |stack| async move {
+            assert_eq!(
+                handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                HookOutput::Continue
+            );
+        })
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn policy_transport_failure_fails_closed() {
-        with_stack(
-            BootOpts::policy_error("connection refused"),
-            |stack| async move {
-                assert!(matches!(
-                    handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
-                    HookOutput::Deny { .. }
-                ));
-            },
-        )
-        .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn missing_policy_worker_fails_closed() {
-        with_stack(BootOpts::no_policy(), |stack| async move {
+    async fn config_rules_deny_denies() {
+        with_stack(BootOpts::deny_function("shell::run"), |stack| async move {
             assert!(matches!(
                 handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
                 HookOutput::Deny { .. }
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_rules_hold_under_manual_mode() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_settings(
+                &stack.iii,
+                "s_1",
+                &ApprovalSettings {
+                    mode: PermissionMode::Manual,
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(matches!(
+                handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                HookOutput::Hold { .. }
             ));
         })
         .await;

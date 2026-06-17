@@ -56,7 +56,6 @@ mod tests {
                     "function_call_id": "c_1",
                     "function_id": "shell::run",
                     "pending_at": 1,
-                    "expires_at": 2,
                 }),
             )
             .await;

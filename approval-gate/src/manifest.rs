@@ -18,22 +18,9 @@ pub fn build_manifest() -> ModuleManifest {
         description:
             "Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session permission settings, and two notification trigger types."
                 .to_string(),
-        // Mirrors config::WorkerConfig::default() field-for-field.
-        default_config: serde_json::json!({
-            "hook": {
-                "functions": ["*"],
-                "timeout_ms": 5000,
-                "on_error": "fail_closed",
-            },
-            "sweep_expression": "0 0 0 * * *",
-            "policy_timeout_ms": 5000,
-            "session_fetch_timeout_ms": 1000,
-            "state_timeout_ms": 5000,
-            "harness_timeout_ms": 10000,
-            "default_mode": "manual",
-            "always_allow_seed": [],
-            "pending_timeout_ms": 1800000,
-        }),
+        // The shipped configuration defaults, straight from the source of
+        // truth so the published manifest can never drift from the worker.
+        default_config: crate::config::WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }

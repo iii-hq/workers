@@ -46,7 +46,7 @@ fn trigger_spec_to_pretty_json(spec: &TriggerSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 13 registered functions, in
+/// The catalog must cover exactly the 12 registered functions, in
 /// registration order (kept in lockstep with `register_all`). The internal
 /// `approval::on-config-change` handler is registered separately via
 /// `configuration::register_config_trigger` (mirroring session-manager /
@@ -69,7 +69,6 @@ fn catalog_lists_all_functions_in_registration_order() {
             "approval::clear-settings",
             "approval::on-session-deleted",
             "approval::on-turn-completed",
-            "approval::sweep",
         ]
     );
 }

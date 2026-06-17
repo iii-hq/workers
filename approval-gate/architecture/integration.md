@@ -21,7 +21,7 @@ operational contract).
 | `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. |
 | `approval::get-settings` | console | Effective settings + `source: "stored" \| "defaults"`. Never writes. |
 | `approval::clear-settings` | console | Drop the stored record; revert to deployment defaults. |
-| `approval::on-config-change` / `on-session-deleted` / `on-turn-completed` / `approval::sweep` | trigger handlers | Internal — never call directly. |
+| `approval::on-config-change` / `on-session-deleted` / `on-turn-completed` | trigger handlers | Internal — never call directly. |
 
 Errors use `code: message` with codes `approval/invalid_payload`,
 `approval/state_unavailable`, `approval/harness_unavailable`. An unknown
@@ -43,7 +43,7 @@ hook returns `hold` — never on the trigger hot path.
 
 Payload: the `PendingApprovalRecord` plus `status: "pending"` — ids
 (`session_id`, `turn_id`, `function_call_id`, `function_id`), redacted
-`arguments_excerpt`, `pending_at` / `expires_at`, denormalized
+`arguments_excerpt`, `pending_at`, denormalized
 `session_title` / `session_description` / `session_metadata` (omitted when
 session-manager was unreachable at hold time), sub-agent `depth`.
 Self-sufficient for notification copy — no follow-up reads needed, and safe
@@ -53,7 +53,7 @@ to forward to push/Slack payloads (arguments are redacted and clipped).
 
 A pending call left the inbox. Emitted **exactly once per record** — your
 badge-clearing logic can trust it. Payload: ids plus
-`outcome: "allow" | "deny" | "timeout" | "aborted"`, operator `reason` (deny
+`outcome: "allow" | "deny" | "aborted"`, operator `reason` (deny
 only), `session_metadata`, `resolved_at`.
 
 ### Binding config (both types)
@@ -76,7 +76,7 @@ sequenceDiagram
   participant UI as console
   participant N as notify worker
   H->>AG: approval::gate (pre_trigger hook)
-  AG-->>H: { decision: "hold", pending_timeout_ms }
+  AG-->>H: { decision: "hold", pending_timeout_ms: 0 }
   AG--)N: approval::pending-created
   UI->>AG: approval::resolve { decision: "allow" }
   AG->>H: harness::function::resolve { action: "execute" }
@@ -116,24 +116,18 @@ gated sets a broad trigger policy and lets the gate hold/deny.
 
 ## Deployment notes
 
-- **Sweep requires `iii-cron`** (`iii worker add iii-cron`). The binding
-  config key is `expression` (6-field cron, default `"0 * * * * *"`).
-- **Policy worker** (`policy::check_permissions`): soft dependency with a
-  sharp consequence — absent, every non-short-circuited call denies as
-  `gate_unavailable`. Deploy a trivial "everything needs_approval" policy
-  worker or rely on modes/allow-lists.
 - **session-manager** (soft): provides hold-time context and the
   `session::deleted` cascade. Without it, records carry no session context
   and settings cleanup relies on `approval::clear-settings`.
 - **Configuration (required)**: the worker's entire config — the `hook`
-  binding, `sweep_expression`, the per-call `*_timeout_ms` budgets, and the
-  approval defaults (`default_mode`, `always_allow_seed`, `pending_timeout_ms`)
-  — lives in the `approval-gate` configuration entry; there is **no
-  `config.yaml`**. It is a required boot dependency: a failed register/fetch
-  aborts startup. `configuration::set` replaces the **whole** value —
-  read-merge-write to edit one field. Every field hot-reloads (no restart):
-  `hook` and `sweep_expression` re-bind their triggers live; the rest swap the
-  in-memory snapshot.
+  binding, the per-call `*_timeout_ms` budgets, and the approval defaults
+  (`default_mode`, `always_allow_seed`, `rules`) — lives in the
+  `approval-gate` configuration entry; there is **no `config.yaml`**. It is a
+  required boot dependency: a failed register/fetch aborts startup.
+  `configuration::set` replaces the **whole** value — read-merge-write to edit
+  one field. When `rules` is omitted, the built-in shipped defaults apply.
+  Every field hot-reloads (no restart): `hook` re-binds its trigger live; the
+  rest swap the in-memory snapshot.
 
 ## What not to do
 

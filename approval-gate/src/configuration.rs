@@ -5,15 +5,14 @@
 //!
 //! Every field hot-reloads — nothing requires a restart:
 //!
-//! - `hook` and `sweep_expression` are the STRUCTURAL fields (the two
-//!   trigger bindings). On a change the config handler **re-binds** the
-//!   affected trigger live — it registers the new binding, then
-//!   `unregister()`s the old (a fail-safe overlap; the gate is idempotent,
-//!   so a brief double-fire is harmless) — keeping the [`Trigger`] handle
-//!   in [`TriggerHandles`].
+//! - `hook` is the STRUCTURAL field (the harness hook binding). On a
+//!   change the config handler **re-binds** the hook live — it registers
+//!   the new binding, then `unregister()`s the old (a fail-safe overlap;
+//!   the gate is idempotent, so a brief double-fire is harmless) — keeping
+//!   the [`Trigger`] handle in [`TriggerHandles`].
 //! - Every OTHER field is a per-call tuning knob (the `*_timeout_ms`
 //!   budgets and the approval defaults `default_mode` / `always_allow_seed`
-//!   / `pending_timeout_ms`), read from the live snapshot per call via
+//!   / `rules`), read from the live snapshot per call via
 //!   [`Deps::config`](crate::functions::Deps::config); a change swaps the
 //!   snapshot.
 //!
@@ -54,10 +53,10 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Approval Gate",
-        "description": "Policy and decision surface settings: the harness hook binding and \
-                        expiry-sweep schedule, the RPC timeout budgets, and the deployment \
-                        approval defaults (permission mode for new sessions, the auto-mode \
-                        trust seed, and the pending-hold timeout).",
+        "description": "Policy and decision surface settings: the harness hook binding, the \
+                        RPC timeout budgets, the deployment approval defaults (permission \
+                        mode for new sessions and the auto-mode trust seed), and the agent \
+                        permission rules.",
         "schema": WorkerConfig::json_schema(),
     });
     if let Some(seed) = seed {
@@ -112,13 +111,11 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Live handles for the two hot-reloadable trigger bindings — the harness
-/// hook and the cron sweep. The config handler re-binds them on a `hook` /
-/// `sweep_expression` change (register the new binding, then
-/// `unregister()` the old), so neither needs a restart.
+/// Live handle for the hot-reloadable harness hook binding. The config
+/// handler re-binds it on a `hook` change (register the new binding, then
+/// `unregister()` the old), so it never needs a restart.
 pub struct TriggerHandles {
     pub hook: std::sync::Mutex<Option<Trigger>>,
-    pub sweep: std::sync::Mutex<Option<Trigger>>,
 }
 
 /// Register a best-effort binding and return its handle. The trigger type
@@ -157,16 +154,6 @@ pub fn bind_hook(iii: &III, cfg: &WorkerConfig) -> Option<Trigger> {
     )
 }
 
-/// (Re)bind the cron expiry sweep from the current config.
-pub fn bind_sweep(iii: &III, cfg: &WorkerConfig) -> Option<Trigger> {
-    bind(
-        iii,
-        "cron",
-        "approval::sweep",
-        json!({ "expression": cfg.sweep_expression }),
-    )
-}
-
 /// Store the freshly-registered handle, then unregister the old one
 /// (register-new-then-unregister-old: a fail-safe overlap — the gate is
 /// never left unbound). A `None` new handle means the re-registration
@@ -202,10 +189,10 @@ pub struct OnConfigChangeResponse {
 }
 
 /// Register the internal config-change handler and bind a `configuration`
-/// trigger. `handles` holds the live hook + cron `Trigger`s the handler
-/// re-binds when `hook` / `sweep_expression` change. The handler re-fetches
-/// via `configuration::get` and ignores the trigger payload, so a direct
-/// call can never inject config.
+/// trigger. `handles` holds the live hook `Trigger` the handler re-binds
+/// when `hook` changes. The handler re-fetches via `configuration::get`
+/// and ignores the trigger payload, so a direct call can never inject
+/// config.
 pub fn register_config_trigger(
     iii: &III,
     cell: ConfigCell,
@@ -227,8 +214,8 @@ pub fn register_config_trigger(
         })
         .description(
             "Internal: hot-reload approval-gate from the authoritative configuration when it \
-             changes — re-binds the harness hook / cron sweep on a hook or sweep_expression \
-             change and swaps the per-call snapshot (timeouts + approval defaults) otherwise.",
+             changes — re-binds the harness hook on a hook change and swaps the per-call \
+             snapshot (timeouts + approval defaults) otherwise.",
         ),
     );
 
@@ -252,7 +239,7 @@ pub fn register_config_trigger(
 /// config without updating persisted state. Re-fetch the stored value via
 /// `configuration::get` instead.
 ///
-/// `hook` / `sweep_expression` changes re-bind the affected trigger live
+/// A `hook` change re-binds the harness hook live
 /// (register-new-then-unregister-old); every other field hot-applies via
 /// the snapshot swap. The previous config is always kept on a fetch
 /// failure.
@@ -268,18 +255,12 @@ async fn on_config_change(iii: &III, cell: &ConfigCell, handles: &TriggerHandles
         }
     };
 
-    // Re-bind only the structural binding(s) that actually changed, so an
-    // unrelated tuning change never churns the security hook.
+    // Re-bind the hook only when it actually changed, so an unrelated
+    // tuning change never churns the security hook.
     let old = cell.read().await.clone();
     if old.boot_signature() != cfg.boot_signature() {
-        if old.hook != cfg.hook {
-            rebind_slot(&handles.hook, bind_hook(iii, &cfg));
-            tracing::info!("approval-gate hook re-bound (hook config changed)");
-        }
-        if old.sweep_expression != cfg.sweep_expression {
-            rebind_slot(&handles.sweep, bind_sweep(iii, &cfg));
-            tracing::info!("approval-gate sweep re-bound (sweep_expression changed)");
-        }
+        rebind_slot(&handles.hook, bind_hook(iii, &cfg));
+        tracing::info!("approval-gate hook re-bound (hook config changed)");
     }
 
     apply_config(cell, cfg).await;

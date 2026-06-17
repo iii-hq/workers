@@ -16,7 +16,7 @@ where
     let records = match pending::list_all(iii, cfg.state_timeout_ms).await {
         Ok(records) => records,
         Err(e) => {
-            tracing::warn!(error = %e, "purge: pending list failed; sweep will retry");
+            tracing::warn!(error = %e, "purge: pending list failed; retry on next event");
             return 0;
         }
     };
@@ -53,7 +53,7 @@ where
                     session_id = %record.session_id,
                     function_call_id = %record.function_call_id,
                     error = %e,
-                    "purge: delete failed; sweep will collect the record"
+                    "purge: delete failed; retry or turn/session cleanup will collect the record"
                 );
             }
         }

@@ -9,8 +9,9 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
+use crate::permissions::{default_rule_specs, parse_rules_from_config, Permissions, RuleSpec};
 use crate::types::PermissionMode;
 
 fn default_hook_functions() -> Vec<String> {
@@ -53,16 +54,6 @@ impl Default for HookBinding {
     }
 }
 
-fn default_sweep_expression() -> String {
-    // 6-field cron (engine cron worker, config key "expression"): once
-    // daily at midnight.
-    "0 0 0 * * *".to_string()
-}
-
-fn default_policy_timeout_ms() -> u64 {
-    5_000
-}
-
 fn default_session_fetch_timeout_ms() -> u64 {
     1_000
 }
@@ -75,37 +66,60 @@ fn default_harness_timeout_ms() -> u64 {
     10_000
 }
 
-fn default_pending_timeout_ms() -> i64 {
-    1_800_000
+/// The shipped permission rules as a JSON array of shorthand strings — the
+/// serde default for [`WorkerConfig::rules`] and the value seeded into the
+/// configuration entry on first boot. Sourced from
+/// [`crate::permissions::default_rule_specs`] so the in-memory defaults and
+/// the console-editable list never drift.
+pub fn default_rules_value() -> Vec<Value> {
+    default_rule_specs()
+        .into_iter()
+        .filter_map(|r| match r {
+            RuleSpec::Shorthand(s) => Some(Value::String(s)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn default_rules() -> Vec<Value> {
+    default_rules_value()
+}
+
+/// JSON Schema for the `rules` array — string shorthands the console
+/// renders as an editable list. Matches what the gate actually evaluates:
+/// `parse_rules_from_config` reads each entry as a shorthand.
+fn rules_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    serde_json::from_value(json!({
+        "type": "array",
+        "description": "Permission rules for the gate hook (first match wins). Each entry is a string: bare id/glob → allow; prefix ! → deny; no match → hold for human approval.\n\nExamples:\n• \"state::get\" — allow reads\n• \"shell::*\" — allow any shell worker call\n• \"!approval::*\" — deny the approval decision plane (shipped default)\n• \"!state::set\" — deny state writes\n• \"*\" — allow everything not denied above (order matters)",
+        "items": {
+            "type": "string",
+            "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+        },
+        "default": default_rules_value(),
+    }))
+    .expect("rules JSON Schema is valid")
 }
 
 /// The worker's single configuration entry — runtime wiring AND deployment
 /// approval defaults in one schema-validated value. Split on a live update
 /// into:
 ///
-/// - The BOOT SIGNATURE (`hook` + `sweep_expression`): consumed ONCE at
-///   startup to bind the `harness::hook::pre-trigger` hook and the cron
-///   sweep. A config change that alters either is REFUSED on hot-reload
-///   (logged "restart required", the previous snapshot kept).
+/// - The BOOT SIGNATURE (`hook`): consumed ONCE at startup to bind the
+///   `harness::hook::pre-trigger` hook. A config change that alters it is
+///   re-bound live (register the new binding, then unregister the old —
+///   see [`crate::configuration`]).
 /// - Every OTHER field is a per-call tuning knob (the `*_timeout_ms`
 ///   budgets and the approval defaults `default_mode` / `always_allow_seed`
-///   / `pending_timeout_ms`). When a freshly-fetched config's boot
-///   signature matches, the snapshot is swapped live; handlers read the
-///   current snapshot per call via [`Deps::config`](crate::functions::Deps::config).
+///   / `rules`). When a freshly-fetched config's boot signature matches,
+///   the snapshot is swapped live; handlers read the current snapshot per
+///   call via [`Deps::config`](crate::functions::Deps::config).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// The `harness::hook::pre-trigger` binding (restart-required).
     #[serde(default)]
     pub hook: HookBinding,
-    /// 6-field cron expression for the expiry sweep (restart-required).
-    #[serde(default = "default_sweep_expression")]
-    pub sweep_expression: String,
-
-    /// Fail-closed budget for the synchronous `policy::check_permissions`
-    /// consult.
-    #[serde(default = "default_policy_timeout_ms")]
-    pub policy_timeout_ms: u64,
     /// Best-effort `session::get` budget inside the hook (record context
     /// fields are omitted when this is exceeded).
     #[serde(default = "default_session_fetch_timeout_ms")]
@@ -125,10 +139,12 @@ pub struct WorkerConfig {
     /// copied into a session's settings on its first mutation.
     #[serde(default)]
     pub always_allow_seed: Vec<String>,
-    /// Hold deadline in milliseconds; drives `expires_at` on pending
-    /// records.
-    #[serde(default = "default_pending_timeout_ms")]
-    pub pending_timeout_ms: i64,
+    /// Agent permission rules evaluated inline by the gate (first match
+    /// wins; no match → the call is held for human approval). String
+    /// shorthands: bare id/glob → allow, `!`-prefixed → deny.
+    #[serde(default = "default_rules")]
+    #[schemars(schema_with = "rules_schema")]
+    pub rules: Vec<Value>,
 }
 
 impl WorkerConfig {
@@ -159,6 +175,14 @@ impl WorkerConfig {
         serde_json::to_value(self).expect("WorkerConfig serializes")
     }
 
+    /// Compile the configured `rules` into the inline permission matcher.
+    /// Tolerant: invalid entries are skipped and an empty list yields a
+    /// matcher that holds every call (fail-closed, never fail-open).
+    pub fn permissions(&self) -> Permissions {
+        let specs = parse_rules_from_config(&Value::Array(self.rules.clone()));
+        Permissions::compile_tolerant(&specs)
+    }
+
     /// The JSON Schema registered with the `configuration` worker. Field
     /// doc-comments become property descriptions; the shipped defaults
     /// are attached as a top-level `example`.
@@ -178,42 +202,37 @@ impl WorkerConfig {
         schema
     }
 
-    /// The **structural** fields — the two trigger bindings. `hook` backs
-    /// the `harness::hook::pre-trigger` binding and `sweep_expression` the
-    /// cron sweep; a live change re-binds the affected trigger on the fly
-    /// (register the new binding, then unregister the old — see
-    /// [`crate::configuration`]), so neither needs a restart. Every other
-    /// field is a per-call tuning knob read from the live snapshot.
+    /// The **structural** field — the `harness::hook::pre-trigger` binding.
+    /// A live change re-binds the hook on the fly (register the new
+    /// binding, then unregister the old — see [`crate::configuration`]), so
+    /// it needs no restart. Every other field is a per-call tuning knob
+    /// read from the live snapshot.
     pub fn boot_signature(&self) -> BootSignature {
         BootSignature {
             hook: self.hook.clone(),
-            sweep_expression: self.sweep_expression.clone(),
         }
     }
 }
 
-/// Signature of the structural config fields — the two trigger bindings
-/// (see [`WorkerConfig::boot_signature`]). An equal signature means only
-/// per-call knobs changed (swap the snapshot); a different signature
-/// re-binds the changed trigger(s) live.
+/// Signature of the structural config field — the `harness::hook::pre-trigger`
+/// binding (see [`WorkerConfig::boot_signature`]). An equal signature means
+/// only per-call knobs changed (swap the snapshot); a different signature
+/// re-binds the hook live.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BootSignature {
     pub hook: HookBinding,
-    pub sweep_expression: String,
 }
 
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             hook: HookBinding::default(),
-            sweep_expression: default_sweep_expression(),
-            policy_timeout_ms: default_policy_timeout_ms(),
             session_fetch_timeout_ms: default_session_fetch_timeout_ms(),
             state_timeout_ms: default_state_timeout_ms(),
             harness_timeout_ms: default_harness_timeout_ms(),
             default_mode: PermissionMode::default(),
             always_allow_seed: Vec::new(),
-            pending_timeout_ms: default_pending_timeout_ms(),
+            rules: default_rules(),
         }
     }
 }
@@ -257,14 +276,12 @@ mod tests {
         assert_eq!(cfg.hook.functions, vec!["*".to_string()]);
         assert_eq!(cfg.hook.timeout_ms, 5_000);
         assert_eq!(cfg.hook.on_error, "fail_closed");
-        assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
-        assert_eq!(cfg.policy_timeout_ms, 5_000);
         assert_eq!(cfg.session_fetch_timeout_ms, 1_000);
         assert_eq!(cfg.state_timeout_ms, 5_000);
         assert_eq!(cfg.harness_timeout_ms, 10_000);
         assert_eq!(cfg.default_mode, PermissionMode::Manual);
         assert!(cfg.always_allow_seed.is_empty());
-        assert_eq!(cfg.pending_timeout_ms, 1_800_000);
+        assert!(!cfg.rules.is_empty());
     }
 
     #[test]
@@ -297,14 +314,12 @@ mod tests {
             .expect("schema has a properties object");
         for field in [
             "hook",
-            "sweep_expression",
-            "policy_timeout_ms",
             "session_fetch_timeout_ms",
             "state_timeout_ms",
             "harness_timeout_ms",
             "default_mode",
             "always_allow_seed",
-            "pending_timeout_ms",
+            "rules",
         ] {
             assert!(
                 props.get(field).is_some(),
@@ -336,14 +351,29 @@ mod tests {
         let json = serde_json::json!({
             "default_mode": "auto",
             "always_allow_seed": ["state::get"],
-            "pending_timeout_ms": 60_000,
+            "rules": ["shell::run", "!state::set"],
         });
         let cfg = WorkerConfig::from_json(&json).unwrap();
         assert_eq!(cfg.default_mode, PermissionMode::Auto);
         assert_eq!(cfg.always_allow_seed, vec!["state::get".to_string()]);
-        assert_eq!(cfg.pending_timeout_ms, 60_000);
+        assert_eq!(cfg.rules, vec![json!("shell::run"), json!("!state::set")]);
         // Unspecified fields fall back to serde defaults.
         assert_eq!(cfg.state_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn empty_rules_hold_every_call() {
+        let cfg = WorkerConfig {
+            rules: Vec::new(),
+            ..WorkerConfig::default()
+        };
+        assert_eq!(cfg.permissions().rule_count(), 0);
+    }
+
+    #[test]
+    fn default_rules_compile_into_a_matcher() {
+        let cfg = WorkerConfig::default();
+        assert!(cfg.permissions().rule_count() > 0);
     }
 
     #[test]
@@ -356,11 +386,11 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var() {
-        std::env::set_var("APPROVAL_GATE_TEST_SWEEP", "*/5 * * * * *");
+        std::env::set_var("APPROVAL_GATE_TEST_SEED", "state::get");
         let cfg =
-            WorkerConfig::from_yaml("sweep_expression: \"${APPROVAL_GATE_TEST_SWEEP}\"\n").unwrap();
-        assert_eq!(cfg.sweep_expression, "*/5 * * * * *");
-        std::env::remove_var("APPROVAL_GATE_TEST_SWEEP");
+            WorkerConfig::from_yaml("always_allow_seed: [\"${APPROVAL_GATE_TEST_SEED}\"]\n").unwrap();
+        assert_eq!(cfg.always_allow_seed, vec!["state::get".to_string()]);
+        std::env::remove_var("APPROVAL_GATE_TEST_SEED");
     }
 
     #[test]
@@ -368,20 +398,15 @@ mod tests {
         let base = WorkerConfig::default();
         let tuned = WorkerConfig {
             default_mode: PermissionMode::Auto,
-            pending_timeout_ms: base.pending_timeout_ms + 1,
-            policy_timeout_ms: base.policy_timeout_ms + 1,
+            rules: vec![json!("*")],
             ..base.clone()
         };
         assert_eq!(base.boot_signature(), tuned.boot_signature());
     }
 
     #[test]
-    fn boot_signature_differs_on_structural_fields() {
+    fn boot_signature_differs_on_the_hook_binding() {
         let base = WorkerConfig::default();
-        let rebound = WorkerConfig {
-            sweep_expression: "*/30 * * * * *".to_string(),
-            ..base.clone()
-        };
         let rehooked = WorkerConfig {
             hook: HookBinding {
                 functions: vec!["shell::*".to_string()],
@@ -389,7 +414,6 @@ mod tests {
             },
             ..base.clone()
         };
-        assert_ne!(base.boot_signature(), rebound.boot_signature());
         assert_ne!(base.boot_signature(), rehooked.boot_signature());
     }
 }

@@ -13,12 +13,12 @@
 //!   4. Register the two custom trigger types (`approval::pending-created`,
 //!      `approval::pending-resolved`) — first, because the function
 //!      handlers capture the subscriber sets they fan out to.
-//!   5. Register the 13 `approval::*` functions (each reads the live config
+//!   5. Register the 12 `approval::*` functions (each reads the live config
 //!      snapshot per call).
-//!   6. Bind the gate hook + the session/turn/cron triggers, all
-//!      best-effort (in a standalone deployment some of these trigger types
-//!      don't exist yet; the worker still boots and serves its RPCs). The
-//!      hook globs and sweep schedule come from the fetched config.
+//!   6. Bind the gate hook + the session/turn triggers, all best-effort
+//!      (in a standalone deployment some of these trigger types don't exist
+//!      yet; the worker still boots and serves its RPCs). The hook globs
+//!      come from the fetched config.
 //!   7. Bind the `configuration` change trigger LAST so its handler closes
 //!      over the fully-built snapshot cell + boot signature.
 //!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly.
@@ -164,14 +164,13 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // The gate's own hook binding + the cron sweep are the two STRUCTURAL
-    // bindings — installing the worker is installing the hook
-    // (approval-gate.md § The approval::gate hook). Retain their Trigger
-    // handles so a `hook` / `sweep_expression` change re-binds them live
-    // (no restart; see configuration::register_config_trigger).
+    // The gate's own hook binding is the STRUCTURAL binding — installing
+    // the worker is installing the hook (approval-gate.md § The
+    // approval::gate hook). Retain its Trigger handle so a `hook` change
+    // re-binds it live (no restart; see
+    // configuration::register_config_trigger).
     let handles = Arc::new(TriggerHandles {
         hook: std::sync::Mutex::new(configuration::bind_hook(&iii, &cfg)),
-        sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
     });
 
     // These two carry no config and are never re-bound — best-effort only.
@@ -194,7 +193,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types");
+    tracing::info!("approval-gate ready: 12 approval::* functions + 2 custom trigger types");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("approval-gate shutting down");

@@ -31,6 +31,7 @@ async-trait = "0.1"
 # `RegisterTriggerType::trigger_request_format`.
 schemars = "0.8"
 base64 = "0.22"
+regex = "1"
 
 [features]
 # Test-only seam: exposes `testkit` (engine bootstrap for the engine-backed
