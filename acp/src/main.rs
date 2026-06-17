@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use clap::Parser;
 use acp::handler::{AcpHandler, BrainConfig, DEFAULT_BRAIN_FN};
 use acp::transport;
+use clap::Parser;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
