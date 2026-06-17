@@ -59,6 +59,56 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
     return json.loads(completed.stdout)
 
 
+def _fetch_function_detail(function_id: str) -> dict[str, object] | None:
+    """`engine::functions::info` for one function, or None on any failure.
+
+    Unlike `engine::functions::list` (a `FunctionSummary`: id + worker_name +
+    description), `::info` returns the `FunctionDetail` that carries the typed
+    `request_schema`/`response_schema`. Best-effort: a failed lookup leaves the
+    row schema-less, which the `--assert-typed-schemas` check then flags."""
+    try:
+        return run_iii("engine::functions::info", {"function_id": function_id})
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+    ) as exc:
+        print(
+            f"::warning::could not fetch engine::functions::info for {function_id}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def enrich_functions_with_schemas(
+    functions: list[dict[str, object]],
+    target_function_ids: list[str],
+    *,
+    fetch_detail=_fetch_function_detail,
+) -> list[dict[str, object]]:
+    """Merge each target function's typed schemas into its `::list` row in place.
+
+    `engine::functions::list` omits request/response schemas; only
+    `engine::functions::info` exposes them (as `request_schema`/`response_schema`,
+    plus `metadata`). Without this enrichment every collected schema normalizes
+    to the empty `{}` that blocks publish."""
+    rows_by_id = {
+        f.get("function_id"): f for f in functions if isinstance(f, dict)
+    }
+    for function_id in target_function_ids:
+        row = rows_by_id.get(function_id)
+        if row is None:
+            continue
+        detail = fetch_detail(function_id)
+        if not isinstance(detail, dict):
+            continue
+        for key in ("request_schema", "response_schema", "metadata", "description"):
+            value = detail.get(key)
+            if value is not None:
+                row[key] = value
+    return functions
+
+
 def wait_for_worker(
     worker_name: str,
     wait_seconds: int,
@@ -186,6 +236,29 @@ def main() -> int:
         args.wait_seconds,
         workers_baseline_json=workers_baseline_json,
     )
+
+    # `engine::functions::list` carries no schemas — pull each target function's
+    # typed request/response schema from `engine::functions::info` and merge it
+    # into the rows before normalizing. Best-effort worker resolution here;
+    # normalize_worker_interface remains the authority (and raises) if the
+    # worker can't be matched.
+    all_functions = functions_json.get("functions") or []
+    if isinstance(all_functions, list):
+        try:
+            target_worker_names = _resolve_target_worker_names(
+                workers=workers_json.get("workers") or [],
+                worker_name=args.worker,
+                functions=all_functions,
+                baseline_workers_json=workers_baseline_json,
+            )
+            target_function_ids = _function_ids_for_workers(
+                all_functions, target_worker_names
+            )
+        except ValueError:
+            target_function_ids = []
+        if target_function_ids:
+            enrich_functions_with_schemas(all_functions, target_function_ids)
+
     trigger_types_json = collect_trigger_types()
 
     interface = normalize_worker_interface(
