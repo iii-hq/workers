@@ -50,7 +50,7 @@ const EDGES: MapEdge[] = [
   { id: 'assemble', from: 'harness', to: 'context-manager', d: 'M 540 260 L 540 326', label: 'context::assemble', lx: 548, ly: 298, anchor: 'start', dur: 1.6 },
   { id: 'generate', from: 'harness', to: 'llm-router', d: 'M 635 200 L 796 200', label: 'router::chat', lx: 712, ly: 192, dur: 1.8 },
   { id: 'providers', from: 'llm-router', to: 'providers', d: 'M 900 228 L 900 296', label: 'provider::<id>::stream', lx: 908, ly: 266, anchor: 'start', dur: 1.6 },
-  { id: 'hook', from: 'harness', to: 'approval-gate', d: 'M 638 176 C 716 142, 750 84, 796 60', label: 'hook: pre_dispatch', lx: 712, ly: 94, dashed: true, dur: 2.2 },
+  { id: 'hook', from: 'harness', to: 'approval-gate', d: 'M 638 176 C 716 142, 750 84, 796 60', label: 'hook: pre_trigger', lx: 712, ly: 94, dashed: true, dur: 2.2 },
   { id: 'resolve', from: 'approval-gate', to: 'harness', d: 'M 798 76 C 730 102, 690 142, 640 188', label: 'function::resolve', lx: 758, ly: 134, anchor: 'start', dashed: true, dur: 2.2 },
   { id: 'dispatch', from: 'harness', to: 'substrate', d: 'M 455 260 C 400 320, 340 400, 300 458', label: 'agent_trigger → any allowed function', lx: 312, ly: 392, anchor: 'start', dur: 2.4 },
   { id: 'callback', from: 'substrate', to: 'chat', d: 'M 250 462 L 250 134 C 250 116, 240 104, 214 98', label: 'functions can call consumers back', lx: 258, ly: 286, anchor: 'start', dur: 3 },

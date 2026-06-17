@@ -88,7 +88,12 @@ src/
       types.ts           #     wire types (SessionMeta, TranscriptItem, events)
     backend/             # ← the seam. ChatBackend interface + impls
       types.ts           #     StreamEvent, ChatBackend, ChatStreamOptions
-      real.ts            #     harness::trigger kickoff + agent::events (approvals)
+      harness-send.ts    #     harness::send / stop / status wire helpers
+      system-prompt.ts   #     per-mode + identity system prompt
+      turn-events-live.ts     # harness::turn-completed subscription
+      approval-events-live.ts # approval::pending-* subscription + list-pending
+      translate.ts       #     trigger payloads → StreamEvent
+      real.ts            #     harness::send kickoff + turn/approval triggers
       index.ts           #     getDefaultBackend()
   types/chat.ts          # Conversation, Message, Mode, ModelId, Attachment
   hooks/

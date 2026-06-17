@@ -14,7 +14,7 @@ worker** rather than living in the harness. Approval gating, spend budgets, and 
 subscribe around it (see [Out of scope](#out-of-scope-future-sibling-workers)). Three extension
 surfaces do live here, because they need the loop's durability machinery: **deferred function
 results** (a dispatch may park the turn and resolve later — see
-[Deferred dispatch](#deferred-dispatch-pending-function-results)), **sub-agent spawning** built on
+[Deferred trigger](#deferred-trigger-pending-function-results)), **sub-agent spawning** built on
 top of it (see [Sub-agents](#sub-agents-harnessspawn)), and **hooks** (the synchronous points where
 siblings veto, hold, or mutate in-path — see [Hooks](#hooks)). Children are ordinary harness
 sessions/turns; orchestration beyond spawn/join stays out of scope, and hook *logic* (the policy
@@ -54,7 +54,7 @@ sequenceDiagram
     F-->>H: result
     H->>S: session::append (function_result)
     Note over H: re-enqueue harness::turn
-  else pending dispatch (e.g. harness::spawn)
+  else pending trigger (e.g. harness::spawn)
     Note over H: park turn — child session runs its own loop;<br/>harness::function::resolve re-enqueues
   else no function calls
     H->>S: session::set-status done
@@ -104,17 +104,17 @@ attributable to a turn. One `harness::turn` step does:
 5. If the message has `function_call` content: a `submit_result` call (present only when an
    [output contract](#output-contract) is active) is consumed by the harness itself — validate,
    record the result on the turn record, and finalise as in step 6. Everything else is an
-   `agent_trigger` call: unwrap each, dispatch via `harness::function::dispatch` sequentially in
-   content order (the schema declares `execution_mode: "sequential"`) — each dispatch runs the
-   glob policy, then the `pre_dispatch` [hook chain](#hooks), then the target, then the
-   `post_dispatch` chain over the result — and append each
+   `agent_trigger` call: unwrap each, trigger via `harness::function::trigger` sequentially in
+   content order (the schema declares `execution_mode: "sequential"`) — each trigger runs the
+   glob policy, then the `pre_trigger` [hook chain](#hooks), then the target, then the
+   `post_trigger` chain over the result — and append each
    `function_result` — checkpointing per call (see
-   [Durability & idempotency](#durability--idempotency)). A dispatch may report **pending** instead
-   of returning a result (a `pre_dispatch` *hold*, or e.g.
+   [Durability & idempotency](#durability--idempotency)). A trigger may report **pending** instead
+   of returning a result (a `pre_trigger` *hold*, or e.g.
    [`harness::spawn`](#harnessspawn)): the call checkpoints as
-   `pending` and, once the dispatch pass ends, the turn **parks** — the step ends without
+   `pending` and, once the trigger pass ends, the turn **parks** — the step ends without
    re-enqueueing, and [`harness::function::resolve`](#harnessfunctionresolve) resumes the loop
-   later (see [Deferred dispatch](#deferred-dispatch-pending-function-results)). With no pending
+   later (see [Deferred trigger](#deferred-trigger-pending-function-results)). With no pending
    calls, re-enqueue `harness::turn` to let the model react.
 6. Else, steering check: re-read `session::messages` for user-role entries after the turn record's
    `watermark_entry_id` (see [Concurrency & steering](#concurrency--steering)); if present, continue
@@ -172,7 +172,7 @@ step must tolerate it. The rules:
   idle timeout bounds — see
   [llm-router.md § Stream liveness](llm-router.md#stream-liveness-and-cancellation)). [Hook](#hooks)
   chains run inside the step, so their `timeout_ms` budgets count toward this bound too; a
-  `pre_dispatch` *hold* does not — it parks the turn instead of blocking the step.
+  `pre_trigger` *hold* does not — it parks the turn instead of blocking the step.
 - **Deterministic entry ids.** Every entry a step writes uses a deterministic id supplied via
   `session::append`'s `entry_id` (idempotent: appending an existing id is a no-op). The assistant
   message of a generate step is `e_<turn_id>_<step>_assistant`; a `function_result` is
@@ -181,14 +181,14 @@ step must tolerate it. The rules:
   generate step streams into it via `session::update-message` rather than appending a second
   message — a crash never yields two assistant messages.
 - **Per-call checkpoints.** The turn record carries
-  `calls: Record<function_call_id, { state: "dispatched" | "pending" | "done"; entry_id?: string;
-  child_session_id?: string; child_turn_id?: string; held_by?: string }>`. The dispatch loop
-  checkpoints `dispatched`
-  *before* invoking the target function, `pending` when the dispatch defers its result (see
-  [Deferred dispatch](#deferred-dispatch-pending-function-results)), and `done` *after* the
+  `calls: Record<function_call_id, { state: "triggered" | "pending" | "done"; entry_id?: string;
+  child_session_id?: string; child_turn_id?: string; held_by?: string }>`. The trigger loop
+  checkpoints `triggered`
+  *before* invoking the target function, `pending` when the trigger defers its result (see
+  [Deferred trigger](#deferred-trigger-pending-function-results)), and `done` *after* the
   `function_result` entry is appended. On redelivery: `done` calls are skipped; `pending` calls stay
   parked (their result arrives via `harness::function::resolve`, idempotent on the deterministic
-  entry id); a call found `dispatched` but not `done` is **not re-invoked** — the side effect may or
+  entry id); a call found `triggered` but not `done` is **not re-invoked** — the side effect may or
   may not have happened, so the harness appends a synthetic `function_result` with `is_error: true`
   (`"interrupted: executed at most once, result unknown (restart during execution)"`) and lets the
   model decide whether to retry. Step delivery is at-least-once; function side effects are
@@ -231,8 +231,8 @@ The harness:
   so the model can trigger any allowed function via `{ function, payload }` (per-function schemas
   in native exposure mode — see [Exposure modes](#functions-the-white-box) below).
 - On `function_call` content: unwraps `agent_trigger` → target `function_id` + `payload`, enforces
-  the dispatch policy below, dispatches via `iii.trigger({ function_id, payload })` through
-  `harness::function::dispatch`, and captures the result as a `function_result` message.
+  the dispatch policy below, triggers via `iii.trigger({ function_id, payload })` through
+  `harness::function::trigger`, and captures the result as a `function_result` message.
 
 The dispatch policy is **fail-closed**: a call is dispatched only if the target matches an `allow`
 glob and no `deny` glob (see `harness::send` options). When `options.functions` is omitted entirely,
@@ -269,25 +269,25 @@ A function can do anything an iii function can, including calling back to the co
 
 Terminology: see [README.md § Terminology](README.md#terminology).
 
-## Deferred dispatch (pending function results)
+## Deferred trigger (pending function results)
 
 Some calls cannot resolve inside a dispatch: a sub-agent that runs for minutes, or an approval that
 waits for a human. Holding the queue step open would break the durability contract (the visibility
 timeout must exceed the worst-case step duration) and would serialise independent work. Dispatch
 may therefore defer:
 
-- `harness::function::dispatch` may return `{ pending: true }` instead of a result. The dispatch
+- `harness::function::trigger` may return `{ pending: true }` instead of a result. The dispatch
   loop checkpoints the call as `state: "pending"` and continues with the remaining calls in the
   message.
-- When the dispatch pass ends with unresolved pending calls, the turn **parks**: the step ends
+- When the trigger pass ends with unresolved pending calls, the turn **parks**: the step ends
   *without* re-enqueueing `harness::turn`, the turn stays `awaiting_functions`, and **no queue step
   is held** while the deferred work runs — pending calls never stretch the visibility-timeout
   bound.
 - [`harness::function::resolve`](#harnessfunctionresolve) settles the call later — either
-  **delivering** a result (appended under the same deterministic entry id a direct dispatch would
+  **delivering** a result (appended under the same deterministic entry id a direct trigger would
   have used, `e_<turn_id>_<function_call_id>`, checkpoint flipped to `done`) or, for hook-held
   calls, **releasing** it for execution (`action: "execute"` — on resume the loop runs the call
-  through the remaining dispatch pipeline). When it settled the last pending call — or a release
+  through the remaining trigger pipeline). When it settled the last pending call — or a release
   needs the loop — it re-enqueues `harness::turn` so the model reacts. Duplicate resolves hit the
   existing entry id and are no-ops.
 - Every pending call carries a `pending_timeout_ms` (default 30 minutes). A periodic sweep resolves
@@ -298,9 +298,9 @@ may therefore defer:
 - Steering still works while parked: user messages appended in the meantime sit after the
   watermark and fold in on resume (see [Concurrency & steering](#concurrency--steering)).
 
-[`harness::spawn`](#sub-agents-harnessspawn) is the built-in pending dispatch. The mechanism is
+[`harness::spawn`](#sub-agents-harnessspawn) is the built-in pending trigger. The mechanism is
 deliberately general: an approval sibling implements *hold* by returning `hold` from a
-pre-dispatch hook and calling `harness::function::resolve` on the human decision (`execute` to
+pre-trigger hook and calling `harness::function::resolve` on the human decision (`execute` to
 release the call, `deliver` to answer it with a denial) — no new loop machinery (see
 [approval-gate.md](approval-gate.md)).
 
@@ -371,7 +371,7 @@ shared — see [README § Output contract](README.md#output-contract).
     invocation schema (its `parameters` are the output schema) alongside the normal exposure mode.
     The model ends the job by calling it; the harness validates the arguments, records them as the
     turn result, and finalises — the call is consumed by the harness, never dispatched through
-    `iii.trigger`. `submit_result` is terminal: other calls in the same message dispatch first
+    `iii.trigger`. `submit_result` is terminal: other calls in the same message trigger first
     (their results still land in the transcript), then the turn finalises.
   - **Validation retries** — if the model stops without a valid result (no `submit_result`, schema
     mismatch, unparseable JSON), the harness appends a synthetic user nudge carrying the validation
@@ -401,14 +401,14 @@ to the hot path — events are always the cheaper tool.
 | `pre_turn` | first step of a turn, after `working` is set, before any model spend | veto (`deny` ends the turn with the reason) |
 | `pre_generate` | after `context::assemble`, before `router::chat` | replace/extend `system_prompt`; **append-only** message injection; veto |
 | `post_generate` | after the final `AssistantMessage` update of a generate step | observe only (usage accounting, safety logging) |
-| `pre_dispatch` | after the fail-closed glob policy passes, before the target is invoked | `deny` (is_error result), `hold` (park via deferred dispatch), rewrite `arguments` |
-| `post_dispatch` | after the target returns, before the `function_result` is appended | rewrite result `content` / `details` / `is_error` (redaction, truncation) |
+| `pre_trigger` | after the fail-closed glob policy passes, before the target is invoked | `deny` (is_error result), `hold` (park via deferred trigger), rewrite `arguments` |
+| `post_trigger` | after the target returns, before the `function_result` is appended | rewrite result `content` / `details` / `is_error` (redaction, truncation) |
 
 The asymmetries are deliberate:
 
 - `post_generate` cannot mutate — the message already streamed to consumers
   (`session::message-updated` fired per delta); redacting after the fact would lie to the UI. Strip
-  secrets where they *enter* instead: `post_dispatch` runs before the result is persisted, so the
+  secrets where they *enter* instead: `post_trigger` runs before the result is persisted, so the
   transcript and the model both see the rewritten version.
 - `pre_generate` injection is **append-only** (plus the system prompt): rewriting history would
   break the call/result pairing invariants `context::assemble` guarantees (see
@@ -417,13 +417,13 @@ The asymmetries are deliberate:
   token budget (default `min(20000, 10% of context_window)` — see
   [context-manager.md § Token budget model](context-manager.md#token-budget-model)); keep it small
   and bounded.
-- `pre_dispatch` runs **after** the allow/deny globs: a hook can narrow the policy, never bypass it.
+- `pre_trigger` runs **after** the allow/deny globs: a hook can narrow the policy, never bypass it.
 
 ### Registration
 
 Hooks are **iii triggers**. The harness registers one custom trigger type per hook point —
 `harness::hook::pre_turn`, `harness::hook::pre_generate`, `harness::hook::post_generate`,
-`harness::hook::pre_dispatch`, `harness::hook::post_dispatch` — alongside its async
+`harness::hook::pre_trigger`, `harness::hook::post_trigger` — alongside its async
 [turn events](#trigger-types-emitted), and a sibling binds a hook with the standard two-step
 pattern (see [README § Reactive pattern](README.md#reactive-pattern)): register the hook function,
 then register a trigger of the point's type. A sibling wires itself at startup — installing the
@@ -432,13 +432,13 @@ worker is installing the hook; there is no hook block in any configuration entry
 ```typescript
 iii.registerFunction("approval::gate", gateHandler);
 iii.registerTrigger({
-  type: "harness::hook::pre_dispatch",
+  type: "harness::hook::pre_trigger",
   function_id: "approval::gate",
   config: { functions: ["shell::*", "harness::spawn"], timeout_ms: 5000 },
 });
 
 iii.registerTrigger({
-  type: "harness::hook::post_dispatch",
+  type: "harness::hook::post_trigger",
   function_id: "redactor::scrub",
   config: {},
 });
@@ -466,12 +466,12 @@ brick the loop silently: every hook invocation is bounded by its `timeout_ms` an
 ### Contract
 
 ```typescript
-type HookPoint = "pre_turn" | "pre_generate" | "post_generate" | "pre_dispatch" | "post_dispatch";
+type HookPoint = "pre_turn" | "pre_generate" | "post_generate" | "pre_trigger" | "post_trigger";
 
 // the `config` of a `harness::hook::<point>` trigger binding;
 // the binding's function_id is the hook the harness calls (sync)
 type HookTriggerConfig = {
-  functions?: string[];               // pre/post_dispatch only: target function_id globs
+  functions?: string[];               // pre/post_trigger only: target function_id globs
   priority?: number;                  // chain order: ascending, ties by function_id (default 0)
   timeout_ms?: number;                // default 5_000
   on_error?: "fail_closed" | "fail_open"; // default: fail_closed for pre_*, fail_open for post_*
@@ -487,8 +487,8 @@ type HookInput = {
   // point-specific payload (pre_turn carries only the envelope):
   generate?: { system_prompt: string; messages: AgentMessage[]; model: string; provider: string };
   generated?: { message: AssistantMessage };                       // post_generate (read-only)
-  call?: { id: string; function_id: string; arguments: unknown };  // pre_dispatch
-  result?: { function_call_id: string; function_id: string;        // post_dispatch
+  call?: { id: string; function_id: string; arguments: unknown };  // pre_trigger
+  result?: { function_call_id: string; function_id: string;        // post_trigger
              content: ContentBlock[]; is_error: boolean; details?: unknown };
 };
 
@@ -497,14 +497,14 @@ type HookOutput =
       mutations?: {
         system_prompt?: string;           // pre_generate
         append_messages?: AgentMessage[]; // pre_generate (appended after the candidate window)
-        arguments?: unknown;              // pre_dispatch
-        content?: ContentBlock[];         // post_dispatch
-        details?: unknown;                // post_dispatch
-        is_error?: boolean;               // post_dispatch
+        arguments?: unknown;              // pre_trigger
+        content?: ContentBlock[];         // post_trigger
+        details?: unknown;                // post_trigger
+        is_error?: boolean;               // post_trigger
       };
       annotations?: Record<string, unknown> } // merged into the written entry's origin (audit trail)
-  | { decision: "deny"; reason: string }      // pre_turn / pre_generate / pre_dispatch
-  | { decision: "hold"; pending_timeout_ms?: number } // pre_dispatch only
+  | { decision: "deny"; reason: string }      // pre_turn / pre_generate / pre_trigger
+  | { decision: "hold"; pending_timeout_ms?: number } // pre_trigger only
   | void;                                     // = continue, no changes
 ```
 
@@ -515,15 +515,15 @@ type HookOutput =
   previous one; the first `deny` or `hold` short-circuits the rest. Mutations from different hooks
   can conflict — keep chains short and set `priority` deliberately.
 - **Deny.** At `pre_turn` / `pre_generate` the turn ends `failed` with the hook's `reason` (a
-  `custom` error entry + `harness::turn_completed`, like any failure). At `pre_dispatch` the call
+  `custom` error entry + `harness::turn_completed`, like any failure). At `pre_trigger` the call
   is answered with an `is_error` function_result carrying the reason — the model sees it and can
   adapt.
-- **Hold** (`pre_dispatch` only) reuses
-  [deferred dispatch](#deferred-dispatch-pending-function-results) wholesale: the call checkpoints
+- **Hold** (`pre_trigger` only) reuses
+  [deferred trigger](#deferred-trigger-pending-function-results) wholesale: the call checkpoints
   as `pending` with `held_by: <hook function_id>`, the turn parks, and whoever owns the decision
   calls [`harness::function::resolve`](#harnessfunctionresolve) — `action: "execute"` to release
-  the call through the remaining dispatch pipeline, or `deliver` to answer it (e.g. a denial). The
-  pending sweep timeout still applies. An approval gate is exactly this: a `pre_dispatch` hook that
+  the call through the remaining trigger pipeline, or `deliver` to answer it (e.g. a denial). The
+  pending sweep timeout still applies. An approval gate is exactly this: a `pre_trigger` hook that
   returns `hold`, a decision UI, and a `resolve` call — no loop changes (see
   [approval-gate.md](approval-gate.md)).
 - **Failure policy.** A hook that throws, times out (`timeout_ms`, default 5s), or is unavailable
@@ -565,10 +565,10 @@ For operators wiring hooks and developers writing them:
 - `harness::send` — Entry point: persist the incoming message and kick off a turn; returns fast.
 - `harness::run` — `send` with the call held open until the turn ends; returns the result (the
   backend/automation entry point).
-- `harness::spawn` — Spawn a sub-agent in a child session; the model-facing pending dispatch (see
+- `harness::spawn` — Spawn a sub-agent in a child session; the model-facing pending trigger (see
   [Sub-agents](#sub-agents-harnessspawn)).
 - `harness::turn` — Internal durable loop step (enqueued); not called directly by consumers.
-- `harness::function::dispatch` — Internal: unwrap an `agent_trigger` call and invoke the target iii
+- `harness::function::trigger` — Internal: unwrap an `agent_trigger` call and invoke the target iii
   function; capture its result — or report it `pending`.
 - `harness::function::resolve` — Internal: deliver a pending call's result and resume the parked
   turn.
@@ -581,7 +581,7 @@ Deny-by-default for in-run agents (see [README § Security model](README.md#secu
 
 - **Deny:** `harness::send` and `harness::run` — self-invocation: a model that can start arbitrary
   turns can fork unbounded loops outside any `max_turns` guard (the prior deployment denies
-  `run::start` for the same reason); `harness::turn` (internal); `harness::function::dispatch`
+  `run::start` for the same reason); `harness::turn` (internal); `harness::function::trigger`
   (forged call ids, policy re-entry); `harness::function::resolve` (forged results for parked
   calls); `harness::stop`.
 - **Allow (gated):** `harness::spawn` — the controlled alternative to `send`: the harness itself
@@ -638,8 +638,8 @@ loop guard is the consumer's:** `max_turns` bounds one turn, not a chain of turn
 
 ### Hook trigger types (synchronous)
 
-The five `harness::hook::*` types — `pre_turn`, `pre_generate`, `post_generate`, `pre_dispatch`,
-`post_dispatch` — are registered trigger types too, but binding one puts the function **in-path**:
+The five `harness::hook::*` types — `pre_turn`, `pre_generate`, `post_generate`, `pre_trigger`,
+`post_trigger` — are registered trigger types too, but binding one puts the function **in-path**:
 the harness invokes it synchronously at the hook point, in `priority` order, and acts on its
 return value (veto / hold / mutate), under the per-binding timeout and `on_error` policy. Config
 shape, chain order, and failure semantics are specified in [Hooks](#hooks); the async types above
@@ -697,7 +697,7 @@ Shared types (`AgentMessage`, `ContentBlock`, `AssistantMessage`, `AgentFunction
 ```typescript
 type TurnStatus =
   | "running"              // generating or between durable steps
-  | "awaiting_functions"   // dispatching function calls / parked on pending results
+  | "awaiting_functions"   // triggering function calls / parked on pending results
   | "completed"            // turn finished normally (incl. max_turns cap)
   | "cancelled"            // harness::stop observed
   | "failed";              // unexpected error; turn record carries reason
@@ -815,7 +815,7 @@ Example:
 
 Spawn a sub-agent in a child session (see [Sub-agents](#sub-agents-harnessspawn)). Designed to be
 called **by the model** through `agent_trigger` — the controlled, guarded alternative to exposing
-`harness::send`. Dispatched from a turn, the dispatch layer records the child linkage and reports
+`harness::send`. Triggered from a turn, the trigger layer records the child linkage and reports
 the call `pending`; the child's result arrives as the call's `function_result` when it finishes.
 (Called directly by a consumer, it simply starts a linked child and returns — `send` and `run` are
 usually what consumers want.)
@@ -842,7 +842,7 @@ type SpawnRequest = {
     pending_timeout_ms?: number;  // parent-side wait guard for this child (default 1_800_000)
   };
   // Parent linkage (parent_session_id / parent_turn_id / function_call_id / depth) is injected by
-  // the dispatching harness from the turn record — never trusted from model-supplied arguments.
+  // the triggering harness from the turn record — never trusted from model-supplied arguments.
 };
 type SpawnResponse = {
   child_session_id: string;
@@ -884,7 +884,7 @@ sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). A step may opt into queu
 transient provider errors instead of failing the turn (subject to
 [Durability & idempotency](#durability--idempotency)).
 
-### `harness::function::dispatch`
+### `harness::function::trigger`
 
 Invoke a single iii function and return a normalised result. The loop unwraps `agent_trigger` before
 calling this; it can also be called directly with an already-unwrapped target `function_id` +
@@ -918,37 +918,37 @@ type FunctionDispatchResponse =
     };
 ```
 
-Dispatch is a pipeline: the fail-closed allow/deny globs first, then the `pre_dispatch`
+Dispatch is a pipeline: the fail-closed allow/deny globs first, then the `pre_trigger`
 [hook chain](#hooks) (deny -> `is_error` result; hold -> `pending`; argument rewrite), then the
-target invocation, then the `post_dispatch` chain over the result (redaction, truncation) before it
+target invocation, then the `post_trigger` chain over the result (redaction, truncation) before it
 is returned and appended. Policy denials and the synthetic "interrupted" results from redelivery
-skip `post_dispatch` — nothing executed. A dispatch therefore either returns the (possibly
+skip `post_trigger` — nothing executed. A trigger therefore either returns the (possibly
 rewritten) result inline or reports the call **pending** (see
-[Deferred dispatch](#deferred-dispatch-pending-function-results)): `harness::spawn` is the built-in
-pending dispatch, and a `pre_dispatch` hook returning `hold` is the pluggable one — an approval
+[Deferred trigger](#deferred-trigger-pending-function-results)): `harness::spawn` is the built-in
+pending trigger, and a `pre_trigger` hook returning `hold` is the pluggable one — an approval
 gate is that hook plus a `harness::function::resolve` call on the decision (see
 [approval-gate.md](approval-gate.md)).
 
 ### `harness::function::resolve`
 
 Settle a `pending` call and resume the parked turn (see
-[Deferred dispatch](#deferred-dispatch-pending-function-results)). Called by the harness itself
+[Deferred trigger](#deferred-trigger-pending-function-results)). Called by the harness itself
 (child completion) or by a trusted sibling (an approval decision — see
 [approval-gate.md](approval-gate.md)); denied to in-run agents. Two actions:
 
 - **`deliver`** (default) — the caller supplies the call's result: the harness appends the
   `function_result` under the deterministic entry id and flips the checkpoint to `done`. This is
   how child completions, approval denials, and timeout sweeps settle a call.
-- **`execute`** — valid only for calls held by a `pre_dispatch` hook (`held_by` set): the caller
+- **`execute`** — valid only for calls held by a `pre_trigger` hook (`held_by` set): the caller
   supplies no result; the harness marks the call *released* and re-enqueues the turn, and the loop
-  step runs the call through the **remaining dispatch pipeline** — the `pre_dispatch` chain
+  step runs the call through the **remaining trigger pipeline** — the `pre_trigger` chain
   resumes after the holding hook (the glob policy and earlier hooks already passed), the target is
-  invoked with the original call's provenance, the `post_dispatch` chain runs over the result, and
+  invoked with the original call's provenance, the `post_trigger` chain runs over the result, and
   the result is appended as if the call had never been held. The checkpoint flips
-  `pending → dispatched → done`, so the at-most-once redelivery rule applies unchanged (see
+  `pending → triggered → done`, so the at-most-once redelivery rule applies unchanged (see
   [Durability & idempotency](#durability--idempotency)). This is how an approval *allow* releases
-  a held call without the approver re-implementing dispatch — invoking the target itself would
-  bypass `post_dispatch` redaction, the per-call checkpoints, and provenance.
+  a held call without the approver re-implementing trigger — invoking the target itself would
+  bypass `post_trigger` redaction, the per-call checkpoints, and provenance.
 
 Idempotent in both modes: `deliver` writes the deterministic entry id
 (`e_<turn_id>_<function_call_id>`), so duplicates change nothing; a duplicate `execute` finds the
@@ -1021,7 +1021,7 @@ type StatusResponse = {
 
 | Scope | Key | Value | Purpose |
 |---|---|---|---|
-| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, per-send options (incl. output contract), per-call checkpoints (`dispatched` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::run` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). |
+| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, per-send options (incl. output contract), per-call checkpoints `(`triggered` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::run` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). |
 | `harness_idem` | `<idempotency_key>` | `{ session_id, turn_id, entry_id, ts }` | `harness::send` webhook dedupe (TTL ~24h). |
 
 Transcript truth lives in [session-manager](session-manager.md); the harness keeps only loop
@@ -1052,7 +1052,7 @@ Kept out to preserve thinness; each is a clean add-on that wraps the loop or sub
 
 - **approval-gate** — the *policy and decision surface* for holding function calls: which calls
   need a human, who may approve, where decisions land. Specified in
-  [approval-gate.md](approval-gate.md). The mechanics are already in core — a `pre_dispatch`
+  [approval-gate.md](approval-gate.md). The mechanics are already in core — a `pre_trigger`
   [hook](#hooks) returning `hold` plus
   [`harness::function::resolve`](#harnessfunctionresolve) on the decision (`execute` to release,
   `deliver` to deny); the sibling ships the hook function and its trigger binding, the pending
@@ -1081,7 +1081,7 @@ to sit *inside* the critical path bind a [hook](#hooks); everything else binds e
   three.
 - Does **not** gate approvals, meter cost, or schedule compaction in v1 — it provides the
   [hook points](#hooks) and the
-  [deferred dispatch](#deferred-dispatch-pending-function-results) primitive; the policy logic
+  [deferred trigger](#deferred-trigger-pending-function-results) primitive; the policy logic
   (who approves, how much to spend) always lives in the sibling that registers the hook.
 - Does **not** orchestrate beyond spawn/join: `harness::spawn` bounds the multi-agent surface to
   child sessions that resolve a single parent call; messaging, blackboards, and workflow graphs are

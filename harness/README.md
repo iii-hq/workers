@@ -1,66 +1,137 @@
-# The iii harness
+# harness
 
-**The harness is not a layer on top of your backend. On iii, it is the backend.**
+`harness` is the thin, durable turn loop that turns a model plus a few iii
+workers into an agent. It takes an incoming message, persists it, assembles a
+context, streams a completion, runs any function calls the model requests, and
+repeats until the turn stops — all as durable, resumable steps so a crash or
+restart picks up mid-turn. It wires [`session-manager`](../session-manager)
+(transcript), [`context-manager`](../context-manager) (token budgeting, soft
+dependency), and [`llm-router`](../llm-router) (generation); install those
+alongside it for the full loop.
 
-Many setups keep the agent loop in one process and everything else (queues, HTTP, state, traces) in another. Tool calls cross that boundary; retries and traces rarely line up.
+## Install
 
-On iii, agents are workers. Tools are functions. Handoffs use the same triggers and queues as the rest of the system.
+```bash
+iii worker add harness
+```
 
-This package is the production harness for that model: turn orchestration, approvals, sessions, providers, context compaction, and budgets, all as iii workers next to shell, storage, database, and whatever you add.
+`iii worker add` fetches the binary, registers the `harness` configuration
+entry, and the engine starts the worker on the next `iii start`. Add the
+workers it wires so the loop has something to call:
 
-Read [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend-mike-piccolo-2aocf/) by Mike Piccolo for the full argument.
+```bash
+iii worker add session-manager
+iii worker add llm-router
+iii worker add context-manager
+```
 
----
-
-## What you get
-
-**One trace.** Each hop is a `trigger()` on the bus. Trace IDs propagate across workers, languages, and queue steps. You debug one runtime, not separate logs aligned by timestamp.
-
-**Live discovery.** Workers register functions on connect; the engine keeps a catalog. Agents and the console see what the system can do today, including workers added without redeploying the orchestrator. Providers self-register; the model catalog fills from discovery, not a hardcoded seed.
-
-**Composition, not frameworks.** Thin vs thick harnesses map to how many functions you register and how you wire triggers. Fewer functions for a lean loop; approval rules and extra workers for more structure.
-
-**New capability, new worker.** When the harness needs something else (shell, database, coder, another provider), you add a worker, not a fork of the orchestrator. Published workers install from the [iii worker registry](https://workers.iii.dev) with `iii worker add <name>`; they register on the iii engine and show up in the live catalog.
-
-**Turns, approvals, budgets.** Seven-state durable turn FSM with queue-backed steps. A `harness::hook::pre-trigger` trigger type gates every agent function call — the standalone [approval-gate worker](../approval-gate/) binds its policy there (permission modes, YAML rules, pending inbox) and settles holds via `harness::function::resolve`; the chain fails closed when a bound hook is unreachable. Parallel tool batches, pending state across reload. Workspace and agent budget caps. Five provider workers behind one registry.
-
-**Context compaction.** Long sessions exceed model windows. The `context-compaction` worker compacts history as turns accumulate and backs the console `/compact` command.
-
----
-
-## What ships here
-
-One folder per worker, one feature per file:
-
-| Concern | Workers |
-| --- | --- |
-| Orchestration | `turn-orchestrator` (durable turn FSM, pre_trigger hook point, `harness::function::resolve`), `hook-fanout` |
-| Governance | `harness` (yaml policy rules, UI fanout) |
-| Context | `context-compaction` (keeps long sessions inside the model window) |
-| Models | `models-catalog`, `provider-anthropic`, `provider-openai`, `provider-kimi`, `provider-lmstudio`, `provider-llamacpp` |
-| Cost | `llm-budget` |
-
-Rust workers (`shell`, `iii-directory`, `session-manager` — the durable, reactive conversation store the harness drives through `session::*`, and `approval-gate` — the standalone approval policy worker at the repo root) and engine builtins (`state::*`, `stream::*`, `iii::durable::*`) stay on the same bus; this package does not reimplement them.
-
----
+The harness enqueues turn steps on the engine's built-in `default` queue, provided
+by the `iii-queue` worker (see [`engine.config.yaml`](engine.config.yaml)).
 
 ## Quickstart
 
-1. Install iii: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`
-2. Verify the install: `iii --version`
-3. Add the harness, session-manager, and console workers: `iii worker add harness session-manager console coder`
-4. Start the engine: `iii --config config.yaml`
-5. Open the [console](https://workers.iii.dev/workers/console) at `http://127.0.0.1:3113`
+Send a message and let the loop run; render the conversation by binding
+`session-manager`'s triggers, and observe turn boundaries with
+`harness::turn-completed`.
 
-Chat, approve/deny, model picker, and trace explorer ship in one binary ([console](https://workers.iii.dev/workers/console)).
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
 
-Tools, orchestration, governance, and observability use the same worker, trigger, and function model as the rest of iii.
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
----
+    // Fire-and-return: persists the user message and kicks off a turn.
+    let accepted = iii
+        .trigger(TriggerRequest {
+            function_id: "harness::send".into(),
+            payload: json!({
+                "message": "Summarise the repo README",
+                "model": "claude-sonnet-4",
+                "provider": "anthropic",
+                "options": { "functions": { "allow": ["shell::*", "fs::*"] } }
+            }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await?;
+    println!("{accepted:#?}"); // { session_id, turn_id, accepted: true }
+    Ok(())
+}
+```
 
-## Further reading
+Prefer to call an agent like a function and get a typed result back? Use
+`harness::run` (held open until the turn ends) with an output contract:
 
-- [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend-mike-piccolo-2aocf/)
-- [console worker](https://workers.iii.dev/workers/console)
-- [iii worker registry](https://workers.iii.dev)
-- [iii engine](https://github.com/iii-hq/iii)
+```rust
+let result = iii
+    .trigger(TriggerRequest {
+        function_id: "harness::run".into(),
+        payload: json!({
+            "message": "Classify: 'Refund not received after 14 days'",
+            "model": "claude-sonnet-4",
+            "provider": "anthropic",
+            "options": { "output": { "type": "json", "schema": {
+                "type": "object",
+                "properties": { "category": { "type": "string" }, "urgency": { "type": "string" } },
+                "required": ["category"]
+            } } }
+        }),
+        action: None,
+        timeout_ms: Some(300_000),
+    })
+    .await?;
+// { status: "completed", result: { "category": "billing", "urgency": "high" }, ... }
+```
+
+The agent-facing function surface is deny-by-default: with no `functions.allow`
+globs, every model-requested call is refused and the harness is a plain chat
+loop. Allow functions in per-send (`options.functions.allow`) and gate them
+with the optional [`approval-gate`](../approval-gate) sibling.
+
+The full function reference (every `harness::*` id and its request/response
+schema) lives in the code and `iii worker info harness`.
+
+Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
+any event-driven loop on top of the harness? Start with the integration
+contract in
+[`architecture/integration.md`](architecture/integration.md): the functions to
+trigger, the triggers to bind, and the canonical consumer patterns.
+
+## Configuration
+
+The `harness` configuration entry is owned by the `configuration` worker; every
+field hot-reloads (no restart). The fields a deployment is most likely to tune:
+
+```yaml
+default_max_turns: 16            # per-turn generate-step cap when a send omits it
+default_pending_timeout_ms: 1800000  # parked pending-call (sub-agent / hold) wait guard
+max_depth: 3                     # sub-agent depth budget
+max_children: 5                  # sub-agent fan-out budget
+sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
+```
+
+Other keys (RPC timeouts, stream coalescing, idempotency TTL, validation
+retries) and their defaults live in [`src/config.rs`](src/config.rs).
+
+## Custom trigger types
+
+The harness emits two async orchestration trigger types siblings and consumers
+bind to, and registers five synchronous hook points operator-trusted siblings
+plug into in-path. Bind with the standard two-step pattern.
+
+| Trigger type | Kind | Fires / runs |
+|---|---|---|
+| `harness::turn-started` | async event | A turn began executing (first loop step). |
+| `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result. |
+| `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
+| `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. |
+| `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |
+| `harness::hook::pre-trigger` | sync hook | After the allow/deny policy passes, before the target runs. May deny, hold, or rewrite arguments. |
+| `harness::hook::post-trigger` | sync hook | After the target returns, before the result is persisted. May rewrite the result. |
+
+Event configs accept `{ session_id?, parent_session_id? }`; hook configs accept
+`{ functions?, priority?, timeout_ms?, on_error? }`. See the spec at
+[`tech-specs/2026-06-agentic/harness.md`](../tech-specs/2026-06-agentic/harness.md)
+for the hook contract and chain semantics.

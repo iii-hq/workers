@@ -198,7 +198,7 @@ describe('applyEntryUpsert', () => {
     expect(row.output?.error?.message).toBe('boom')
   })
 
-  it('absorbs a locally-created fcall row (agent::events) into the entry segment', () => {
+  it('absorbs a locally-created fcall row (pending approval) into the entry segment', () => {
     // The live approval flow appended a local row before the assistant
     // snapshot arrived.
     const local: Message = {

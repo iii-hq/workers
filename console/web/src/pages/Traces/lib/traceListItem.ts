@@ -87,7 +87,7 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
  * The flat-list TRACES view is one row per trace. A plain `engine::traces::list`
  * already returns root spans only, but the SEARCH path passes
  * `search_all_spans: true`, which returns EVERY span of each matching trace
- * (so a query like `harness::trigger` matches a child span and the engine
+ * (so a query like `harness::send` matches a child span and the engine
  * hands back the whole turn). Collapsing here keeps the list one-row-per-trace
  * regardless, and is a no-op for the non-search response (already roots).
  */

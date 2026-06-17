@@ -45,8 +45,8 @@ flowchart LR
   %% Sub-agents (spawn/join)
   harness -->|"harness::spawn<br/>child sessions"| harness
 
-  %% Optional approval sibling (pre_dispatch hook + resolve)
-  harness -.->|"pre_dispatch hook"| gate
+  %% Optional approval sibling (pre_trigger hook + resolve)
+  harness -.->|"pre_trigger hook"| gate
   gate -.->|"function::resolve"| harness
 
   %% LLM routing
@@ -81,7 +81,7 @@ flowchart LR
   exists at runtime via `engine::functions::list` (through the `agent_trigger` invocation surface by
   default — see [Terminology](#terminology)). There is no separate "tools" worker.
 - **Dashed** (`approval-gate`) is an **optional policy sibling**, specified in
-  [approval-gate.md](approval-gate.md): it plugs into the harness via a `pre_dispatch` hook and
+  [approval-gate.md](approval-gate.md): it plugs into the harness via a `pre_trigger` hook and
   `harness::function::resolve` — the four core workers run with or without it.
 
 ## The four workers
@@ -490,7 +490,7 @@ Everything callable over the bus is callable by the model through `agent_trigger
 deployment property, not an option:
 
 - **Provenance.** Every `iii.trigger` issued on behalf of a model (i.e. from
-  `harness::function::dispatch`) carries agent provenance in its invocation metadata, and the engine
+  `harness::function::trigger`) carries agent provenance in its invocation metadata, and the engine
   MUST propagate that mark through nested triggers — a function the agent calls cannot launder a
   call by re-triggering. `iii-permissions.yaml` rules apply to any call whose chain carries the
   mark; worker- and user-initiated calls bypass them. Without provenance propagation, agent-gating
@@ -542,7 +542,7 @@ streaming contract but is not bound to the current package's structure.
 | `context-compaction` (`compact_now`, `prune_tool_outputs`) | [context-manager](context-manager.md) (`context::*`, storage-agnostic) |
 | `models-catalog` (`models::*`) + the orchestrator's provider routing | [llm-router](llm-router.md) (`router::*`) |
 | `provider-*` workers | same protocol shape, re-pointed at `router::provider::*` |
-| `approval-gate` (`approval::*` + `consultBefore` / `turn::on_approval` in `turn-orchestrator`) | [approval-gate](approval-gate.md): the `approval::gate` `pre_dispatch` hook + `harness::function::resolve`; drops the write-only `approvals` state scope (see [approval-gate.md § Prior art & migration](approval-gate.md#prior-art--migration)) |
+| `approval-gate` (`approval::*` + `consultBefore` / `turn::on_approval` in `turn-orchestrator`) | [approval-gate](approval-gate.md): the `approval::gate` `pre_trigger` hook + `harness::function::resolve`; drops the write-only `approvals` state scope (see [approval-gate.md § Prior art & migration](approval-gate.md#prior-art--migration)) |
 | `llm-budget`, `hook-fanout` | [harness hooks](harness.md#hooks) + sibling policy/decision workers (see [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers)); `hook-fanout`'s async side maps to the `harness::turn_*` events |
 
 Function prefixes do not collide, so both stacks can run side by side during migration — with one

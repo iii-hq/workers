@@ -1,0 +1,258 @@
+{
+  "function_id": "harness::function::trigger",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TriggerCall": {
+        "properties": {
+          "arguments": true,
+          "function_id": {
+            "description": "The iii function to invoke (already unwrapped from `agent_trigger`).",
+            "type": "string"
+          },
+          "id": {
+            "description": "function_call id, echoed into the result.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "arguments",
+          "function_id",
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "call": {
+        "$ref": "#/definitions/TriggerCall"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "call",
+      "session_id"
+    ],
+    "title": "FunctionTriggerRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/TriggerResultResponse"
+      },
+      {
+        "$ref": "#/definitions/TriggerPendingResponse"
+      }
+    ],
+    "definitions": {
+      "ContentBlock": {
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Opaque redacted thinking payload — replayed verbatim on the wire.",
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "redacted_thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": true,
+              "function_id": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "content": {
+                "items": {
+                  "$ref": "#/definitions/ContentBlock"
+                },
+                "type": "array"
+              },
+              "function_call_id": {
+                "type": "string"
+              },
+              "is_error": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "function_result"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "function_call_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TriggerPendingResponse": {
+        "properties": {
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "pending": {
+            "type": "boolean"
+          },
+          "pending_timeout_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "function_call_id",
+          "function_id",
+          "pending"
+        ],
+        "type": "object"
+      },
+      "TriggerResultResponse": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "details": true,
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "details",
+          "duration_ms",
+          "function_call_id",
+          "function_id",
+          "is_error"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "FunctionTriggerResponse"
+  }
+}

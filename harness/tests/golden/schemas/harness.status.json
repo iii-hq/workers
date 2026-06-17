@@ -1,0 +1,126 @@
+{
+  "function_id": "harness::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "StatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/StatusReport"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "ChildRef": {
+        "properties": {
+          "function_call_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_call_id",
+          "session_id",
+          "turn_id"
+        ],
+        "type": "object"
+      },
+      "StatusReport": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/definitions/ChildRef"
+            },
+            "type": "array"
+          },
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_turns": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pending_function_calls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "result": true,
+          "result_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/TurnStatus"
+          },
+          "step": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turn_count": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "children",
+          "depth",
+          "max_turns",
+          "pending_function_calls",
+          "session_id",
+          "status",
+          "step",
+          "turn_count"
+        ],
+        "type": "object"
+      },
+      "TurnStatus": {
+        "description": "The coarse, harness-internal turn lifecycle (harness.md § API Reference). Finer-grained than the session's `status`, which the loop derives from it.",
+        "enum": [
+          "running",
+          "awaiting_functions",
+          "completed",
+          "cancelled",
+          "failed"
+        ],
+        "type": "string"
+      }
+    },
+    "title": "Nullable_StatusReport"
+  }
+}

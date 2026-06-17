@@ -17,7 +17,7 @@ const INSTALL_LINES: Array<
   { kind: 'out', text: 'context-manager connected' },
   { kind: 'out', text: 'harness connected — the loop is live' },
   { kind: 'cmd', text: 'iii worker add approval-gate', comment: '# optional' },
-  { kind: 'out', text: 'approval-gate bound to harness::hook::pre_dispatch' },
+  { kind: 'out', text: 'approval-gate bound to harness::hook::pre_trigger' },
 ]
 
 function InstallTerminal() {

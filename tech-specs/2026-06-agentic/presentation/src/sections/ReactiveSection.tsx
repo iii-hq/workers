@@ -82,7 +82,7 @@ export function ReactiveSection() {
               </SpecRow>
               <SpecRow name="must block or change? bind a hook" type="sync, in-path">
                 five points — pre_turn, pre_generate, post_generate,
-                pre_dispatch, post_dispatch — run inside the loop in
+                pre_trigger, post_trigger — run inside the loop in
                 deterministic order and can veto, hold, or rewrite.
               </SpecRow>
               <SpecRow name="hooks are operator code" type="never model-reachable">

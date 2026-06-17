@@ -14,7 +14,7 @@ export const STATIC_FUNCTIONS: FunctionEntry[] = [
   { id: 'directory::index', description: 'index a worker skill bundle' },
   { id: 'directory::resolve', description: 'resolve an iii:// link' },
   {
-    id: 'context-compaction::compact_session',
+    id: 'context::compact',
     description: 'compact a session now',
   },
   {

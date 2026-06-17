@@ -67,7 +67,7 @@ function fakeClient() {
     on,
     registerTrigger,
     addConnectionStateListener: vi.fn(() => vi.fn()),
-    call: vi.fn(),
+    trigger: vi.fn(),
     dispose: vi.fn(async () => {}),
   } as unknown as IiiClient
 
@@ -177,7 +177,7 @@ describe('isAppendableTraceList', () => {
   })
 
   it('refetches (no append) when a search is active', () => {
-    expect(isAppendableTraceList({}, 'harness::trigger')).toBe(false)
+    expect(isAppendableTraceList({}, 'harness::send')).toBe(false)
   })
 
   it('refetches when any content filter is set', () => {

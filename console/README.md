@@ -31,9 +31,9 @@
 A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives in [`web/src/components/chat/`](web/src/components/chat).
 
 - **Three modes** — `plan`, `ask`, and `agent` toggle right in the composer
-- **Live model picker** — provider-grouped from `models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
+- **Live model picker** — provider-grouped from `router::models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
 - **`@`-mentions** — fuzzy-search every function registered against the engine
-- **`/compact` slash command** — summarises conversation history via `context-compaction::compact_session` (a thin wrapper over the `context-manager` worker's `context::compact`); the durable transcript is untouched — a compaction bookkeeping entry is added and the summary anchors future turns
+- **`/compact` slash command** — summarises conversation history via the `context-manager` worker's `context::compact`, then persists a `compaction` custom session entry; the durable transcript is untouched — the marker renders from that entry and the summary anchors future turns
 - **Attachments** — multi-file picker with text/image previews
 - **Function calls** — running / pending / error cards, consecutive calls grouped, with **approve/deny** gating for pending approvals (`approval::resolve`)
 - **Streaming** — abortable mid-flight; thinking shimmer; collapsible thought messages
@@ -60,7 +60,7 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 The composer's `@`-mentions and the model picker pull from the engine in real time.
 
 - `engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
-- `models::list` — provider-grouped model catalog → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
+- `router::models::list` — provider-grouped model catalog, refreshed live off the `router::models::changed` pubsub topic → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
 
 ### Theming
 
@@ -94,12 +94,14 @@ open http://127.0.0.1:3113
 
 The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocket — one origin, no CORS, no API base URL to configure.
 
-Chat needs two more workers on the engine: `harness` (turn orchestration)
-and `session-manager` (the durable conversation store the sidebar,
-transcripts, and live token rendering are backed by):
+Chat needs the harness loop and its siblings on the engine: `harness` (the
+durable turn loop), `session-manager` (the conversation store the sidebar,
+transcripts, and live token rendering are backed by), `llm-router`
+(generation + the model catalog), and — for context compaction and
+human-in-the-loop approvals — `context-manager` and `approval-gate`:
 
 ```bash
-iii worker add harness session-manager
+iii worker add harness session-manager llm-router context-manager approval-gate
 ```
 
 <details>

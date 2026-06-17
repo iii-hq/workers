@@ -1,0 +1,36 @@
+{
+  "function_id": "harness::stop",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "turn_id": {
+        "description": "Omit to stop the current turn.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "StopRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "stopping": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "stopping"
+    ],
+    "title": "StopResponse",
+    "type": "object"
+  }
+}

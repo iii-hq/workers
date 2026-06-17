@@ -4,7 +4,7 @@ export function makeCatalogModelKey(provider: string, modelId: string): string {
   return `${provider}${CATALOG_MODEL_KEY_SEP}${modelId}`
 }
 
-/** Parse `provider::id` returned from models-catalog into run::start fields. */
+/** Parse `provider::id` from the router catalog into harness::send fields. */
 export function parseCatalogModelKey(
   model: string,
 ): { provider: string; id: string } | null {

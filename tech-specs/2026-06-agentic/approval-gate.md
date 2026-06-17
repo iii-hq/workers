@@ -6,7 +6,7 @@ Worker prefix: `approval::*`
 
 `approval-gate` is the **policy and decision surface for human-held function calls**: which calls
 need a human, how the human answers, and how the decision reaches the parked turn. It is an
-optional sibling of the [harness](harness.md) — the harness ships the mechanics (a `pre_dispatch`
+optional sibling of the [harness](harness.md) — the harness ships the mechanics (a `pre_trigger`
 [hook](harness.md#hooks) that can *hold* a call, and
 [`harness::function::resolve`](harness.md#harnessfunctionresolve) to deliver or release it); this
 worker ships the policy, the decision RPCs, the pending inbox, and the notification triggers. The
@@ -15,8 +15,8 @@ harness never embeds approval logic (see
 
 Three surfaces, one worker:
 
-1. **The gate** — `approval::gate`, a `pre_dispatch` hook the worker binds itself at startup as
-   an iii trigger on the harness's `harness::hook::pre_dispatch` trigger type. It evaluates
+1. **The gate** — `approval::gate`, a `pre_trigger` hook the worker binds itself at startup as
+   an iii trigger on the harness's `harness::hook::pre_trigger` trigger type. It evaluates
    per-session mode, allow-lists, and the yaml policy, and answers `continue`, `deny`, or `hold`.
 2. **The decision plane** — `approval::resolve` plus the per-session settings RPCs
    (`set_mode`, `add_always_allow`, `approve_always`, …). Human/console-only.
@@ -36,7 +36,7 @@ keeps its own log.
 The gate sits *outside* the loop. It is called synchronously at one hook point, and it talks back
 to the harness through exactly one function (`harness::function::resolve`). It never mutates the
 turn record, never appends to the session, and never executes the held function itself — on
-approval, the **harness** runs the released call through its own dispatch pipeline
+approval, the **harness** runs the released call through its own trigger pipeline
 (`action: "execute"`; see [Decision flow](#decision-flow-approvalresolve)).
 
 ```mermaid
@@ -47,9 +47,9 @@ sequenceDiagram
   participant UI as console / inbox UI
   participant N as notification worker
 
-  Note over H,AG: startup: registerTrigger harness::hook::pre_dispatch → approval::gate
+  Note over H,AG: startup: registerTrigger harness::hook::pre_trigger → approval::gate
   Note over AG,CFG: startup: configuration::register id "approval-gate"<br/>bind configuration trigger
-  H->>AG: pre_dispatch hook approval::gate
+  H->>AG: pre_trigger hook approval::gate
   alt policy allows
     AG-->>H: decision continue
   else policy denies
@@ -62,7 +62,7 @@ sequenceDiagram
     UI->>AG: approval::resolve {decision}
     alt allow
       AG->>H: harness::function::resolve {action: "execute"}
-      Note over H: re-enqueue turn; run released call through<br/>remaining dispatch pipeline
+      Note over H: re-enqueue turn; run released call through<br/>remaining trigger pipeline
     else deny
       AG->>H: harness::function::resolve {action: "deliver", is_error}
     end
@@ -103,7 +103,7 @@ call):
 
 ```mermaid
 flowchart TD
-  start["approval::gate (pre_dispatch)"] --> humanOnly{"target is approval::* or configuration::*?"}
+  start["approval::gate (pre_trigger)"] --> humanOnly{"target is approval::* or configuration::*?"}
   humanOnly -->|yes| deny1["deny (human_only_function)"]
   humanOnly -->|no| snapshot["effective settings = stored record ?? configuration defaults"]
   snapshot --> full{"mode full?"}
@@ -133,14 +133,14 @@ policy outage degrades to **deny**, never to allow or to an unattended hold.
 
 ## The `approval::gate` hook
 
-One function, bound to the harness's `pre_dispatch` point as an iii trigger. The worker registers
+One function, bound to the harness's `pre_trigger` point as an iii trigger. The worker registers
 the binding itself at startup — installing the gate is installing the hook (see
 [harness.md § Hooks › Registration](harness.md#registration)):
 
 ```typescript
 iii.registerFunction("approval::gate", gate);
 iii.registerTrigger({
-  type: "harness::hook::pre_dispatch",
+  type: "harness::hook::pre_trigger",
   function_id: "approval::gate",
   config: {
     functions: ["shell::*", "harness::spawn"],
@@ -154,7 +154,7 @@ iii.registerTrigger({
 through. The `functions` globs narrow which dispatches consult the gate; omit them to consult on
 every call.
 
-**Ordering caveat.** `pre_dispatch` hooks run **after** the harness's fail-closed allow/deny globs —
+**Ordering caveat.** `pre_trigger` hooks run **after** the harness's fail-closed allow/deny globs —
 a hook narrows the policy, never widens it (see
 [harness.md § Hook points](harness.md#hook-points)). A call that matches no `allow` glob is denied
 before the gate ever sees it. A deployment that wants *everything* gated by approvals therefore
@@ -195,11 +195,11 @@ the harness needs), then:
 
 - **`decision: "allow"`** → `harness::function::resolve` with **`action: "execute"`** — the harness
   marks the held call *released*, re-enqueues the turn, and the loop runs it through the
-  **remaining dispatch pipeline**: the `pre_dispatch` chain resumes after the holding hook, the
-  target is invoked with the original call's provenance, `post_dispatch` hooks run over the result,
+  **remaining trigger pipeline**: the `pre_trigger` chain resumes after the holding hook, the
+  target is invoked with the original call's provenance, `post_trigger` hooks run over the result,
   and the checkpoint flips `pending → dispatched → done` with the existing at-most-once redelivery
   protection (see [harness.md § `harness::function::resolve`](harness.md#harnessfunctionresolve)).
-  The gate never invokes the target itself — doing so would bypass `post_dispatch` redaction, the
+  The gate never invokes the target itself — doing so would bypass `post_trigger` redaction, the
   per-call checkpoints, and provenance propagation.
 - **`decision: "deny"`** → `harness::function::resolve` with `action: "deliver"`,
   `is_error: true`, content rendering a [`DenialEnvelope`](#denialenvelope)
@@ -364,9 +364,9 @@ defaults only (schema-validated, operator-editable); per-session data lives in `
 
 ## Functions
 
-The gate (called by the harness only, via the `harness::hook::pre_dispatch` trigger binding):
+The gate (called by the harness only, via the `harness::hook::pre_trigger` trigger binding):
 
-- `approval::gate` — the `pre_dispatch` hook: evaluate the permission model, answer
+- `approval::gate` — the `pre_trigger` hook: evaluate the permission model, answer
   `continue` / `deny` / `hold`; writes the pending record on hold.
 
 Decision plane (human/console-only — see [Agent exposure](#agent-exposure)):
@@ -409,7 +409,7 @@ and unordered (see [README § Trigger delivery](README.md#trigger-delivery)); `l
 reconciliation read.
 
 - **`approval::pending_created`** — a call was held and its inbox record written. Fires
-  asynchronously after the hook returns `hold` — never on the dispatch hot path. Bind notification
+  asynchronously after the hook returns `hold` — never on the trigger hot path. Bind notification
   workers here (push, email, Slack, PagerDuty, …).
   - Payload: `PendingApprovalRecord & { status: "pending" }`.
 - **`approval::pending_resolved`** — a pending call left the inbox. Emitted exactly once per record
@@ -436,7 +436,7 @@ type PendingResolvedEvent = {
 Five bindings — the first is the gate itself; three of the rest exist to enforce the
 [state lifecycle](#state-lifecycle):
 
-- **`harness::hook::pre_dispatch`** ([harness](harness.md#hooks)) → `approval::gate` — the
+- **`harness::hook::pre_trigger`** ([harness](harness.md#hooks)) → `approval::gate` — the
   synchronous hook binding itself (`functions` filter, `timeout_ms`, `on_error: "fail_closed"`;
   see [The `approval::gate` hook](#the-approvalgate-hook)).
 - **`configuration`** on `configuration_id: "approval-gate"` → `approval::on_config_change` —
@@ -572,10 +572,10 @@ type PendingApprovalRecord = {
 
 ### `approval::gate`
 
-The `pre_dispatch` hook (see [The `approval::gate` hook](#the-approvalgate-hook)). Called by the
+The `pre_trigger` hook (see [The `approval::gate` hook](#the-approvalgate-hook)). Called by the
 harness only; input/output are the harness hook contract.
 
-- Invocation: **sync** (in the harness dispatch path; budget = the binding's `timeout_ms`)
+- Invocation: **sync** (in the harness trigger path; budget = the binding's `timeout_ms`)
 
 ### `approval::resolve`
 
@@ -717,7 +717,7 @@ All `approval::*` and `configuration::*` functions are operator surfaces — an 
 2. **Inside the gate** (backstop): `approval::gate` unconditionally denies any dispatch targeting
    `approval::*` or `configuration::*` with rule `human_only_function` — even under `mode: "full"`
    and even when the dispatch policy is `allow: ["*"]`. The settings RPCs are reached only through
-   user-initiated console calls, which never pass through the dispatch pipeline.
+   user-initiated console calls, which never pass through the trigger pipeline.
 
 ## Yaml policy dependency
 
@@ -748,14 +748,14 @@ every layer.
 | `approval_settings` | `<session_id>` | [`ApprovalSettings`](#wire-types) | first user mutation (lazy — reads never write) | `session::deleted` · `approval::clear_settings` |
 
 The legacy `approvals` decision scope is gone (see [Decision flow](#decision-flow-approvalresolve));
-pending **dispatch** mechanics (`calls[id].state = "pending"`, `held_by`) live on the harness turn
+pending **trigger** mechanics (`calls[id].state = "pending"`, `held_by`) live on the harness turn
 record, which remains the loop's source of truth (see
 [harness.md § State](harness.md#state)) — the inbox is a denormalized index over it, authoritative
 only for "what needs human attention right now".
 
 ## Dependencies
 
-- `harness` — the `harness::hook::pre_dispatch` trigger type (the gate's binding) and
+- `harness` — the `harness::hook::pre_trigger` trigger type (the gate's binding) and
   [`harness::function::resolve`](harness.md#harnessfunctionresolve) (`execute` on allow, `deliver`
   on deny/timeout). Binds [`harness::turn_completed`](harness.md#trigger-types-emitted) for
   terminal-turn cleanup.
@@ -794,7 +794,7 @@ Deny-by-default for in-run agents (see [README § Security model](README.md#secu
   and treats the rule engine as a sibling surface.
 - Does **not** send notifications — it emits triggers; notification workers compose on top (see
   [Standalone use](#standalone-use-notification-workers)).
-- Does **not** widen the dispatch policy — `pre_dispatch` runs after the harness's fail-closed
+- Does **not** widen the dispatch policy — `pre_trigger` runs after the harness's fail-closed
   globs; gating "everything" is a dispatch-policy choice (`allow: ["*"]`), not a gate feature.
 
 ## Prior art & migration
@@ -808,11 +808,11 @@ superseded by this spec.
 
 | Current implementation | Greenfield |
 |---|---|
-| `consultBefore` inline in turn-orchestrator | `approval::gate` `pre_dispatch` hook, bound as a `harness::hook::pre_dispatch` trigger |
+| `consultBefore` inline in turn-orchestrator | `approval::gate` `pre_trigger` hook, bound as a `harness::hook::pre_trigger` trigger |
 | `approval::resolve` → `state::set approvals/<sid>/<cid>` (write-only scope, **never deleted**) | `approval::resolve` → `harness::function::resolve`; **no decision records** |
-| `turn::on_approval` state trigger + `function_awaiting_approval` FSM wake | harness deferred dispatch + `action: "execute"` release |
+| `turn::on_approval` state trigger + `function_awaiting_approval` FSM wake | harness deferred trigger + `action: "execute"` release |
 | `awaiting_approval[]` on the turn record | `calls[id].state = "pending", held_by` on the harness turn record |
-| Approved call executed by the orchestrator's FSM | released call executed by the harness dispatch pipeline (`post_dispatch` hooks included) |
+| Approved call executed by the orchestrator's FSM | released call executed by the harness trigger pipeline (`post_trigger` hooks included) |
 | `harness.permissions.default_mode` (implementation-era harness entry) + `approval::on_harness_config` | own `approval-gate` configuration entry + `approval::on_config_change` |
 | Settings record written eagerly with defaults | lazy seeding — first mutation writes; reads never write |
 | Console `clearApprovalSettings` helper (defined, never wired) | `session::deleted` trigger binding purges settings + pending records |

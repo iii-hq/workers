@@ -70,7 +70,7 @@ export async function getApprovalSettings(
   sessionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::get-settings', {
+  const raw = await client.trigger('approval::get-settings', {
     session_id: sessionId,
   })
   return coerceSettings(raw)
@@ -81,7 +81,7 @@ export async function setApprovalMode(
   mode: PermissionMode,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::set-mode', {
+  const raw = await client.trigger('approval::set-mode', {
     session_id: sessionId,
     mode,
   })
@@ -93,7 +93,7 @@ export async function addAlwaysAllow(
   functionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::add-always-allow', {
+  const raw = await client.trigger('approval::add-always-allow', {
     session_id: sessionId,
     function_id: functionId,
   })
@@ -105,7 +105,7 @@ export async function removeAlwaysAllow(
   functionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::remove-always-allow', {
+  const raw = await client.trigger('approval::remove-always-allow', {
     session_id: sessionId,
     function_id: functionId,
   })
@@ -117,7 +117,7 @@ export async function approveAlways(
   functionId: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
-  const raw = await client.call('approval::approve-always', {
+  const raw = await client.trigger('approval::approve-always', {
     session_id: sessionId,
     function_id: functionId,
   })
@@ -127,7 +127,7 @@ export async function approveAlways(
 export async function clearApprovalSettings(sessionId: string): Promise<void> {
   const client = await getIiiClient()
   await client
-    .call('approval::clear-settings', { session_id: sessionId })
+    .trigger('approval::clear-settings', { session_id: sessionId })
     .catch(() => {
       /* best-effort cleanup on conversation deletion */
     })

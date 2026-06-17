@@ -12,7 +12,10 @@ export interface CatalogModelRow {
 
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
   const client = await getIiiClient()
-  const res = await client.call<{ models?: unknown }>('router::models::list', {})
+  const res = await client.trigger<{ models?: unknown }>(
+    'router::models::list',
+    {},
+  )
   const rows = res?.models
   if (!Array.isArray(rows)) return []
   const out: CatalogModelRow[] = []
@@ -58,45 +61,55 @@ export async function refreshProviderModels(
   const client = await getIiiClient()
   await Promise.allSettled(
     providers.map((p) =>
-      client.call(`provider::${p}::refresh_models`, {}).catch(() => undefined),
+      client
+        .trigger(`provider::${p}::refresh_models`, {})
+        .catch(() => undefined),
     ),
   )
 }
 
+/** iii:: prefix → engine-internal → delivery spans stay out of the Traces view. */
+const MODELS_CHANGED_FN = 'iii::console::models_changed'
+/** The llm-router pubsub topic the picker reacts to. */
+const MODELS_CHANGED_TOPIC = 'router::models::changed'
+
 /**
- * Subscribe to the harness `ui::models::changed` fanout so the picker can
- * re-pull the catalog the instant a provider's models change — credential
- * added/removed, `refresh_models`, or a provider added/removed via the CLI.
+ * Subscribe to the llm-router `router::models::changed` pubsub topic so the
+ * picker can re-pull the catalog the instant a provider's models change —
+ * credential added/removed, `refresh_models`, or a provider added/removed via
+ * the CLI.
  *
- * Registers a browser-local handler plus `ui::models::subscribe` (separate
- * from the session subscription so the agent-events pump can't evict it) so
- * the harness `models-changed` pump targets this browser. Returns a disposer
- * that unregisters the handler and drops the subscription.
+ * Registers a browser-local handler plus an engine `subscribe` trigger bound
+ * to the topic (`llm-router/README.md` § Events). Returns a disposer that
+ * unregisters the handler and drops the subscription.
  */
 export async function subscribeModelChanges(
   onChange: () => void,
 ): Promise<() => void> {
   const client = await getIiiClient()
-  await client.call('ui::models::subscribe', {
-    browser_id: client.browserId,
-  })
-  const offHandler = client.on('ui::models::changed', () => {
+  const offHandler = client.on(MODELS_CHANGED_FN, () => {
     onChange()
+  })
+  // `on()` registers under `<fn>::<browserId>`; the trigger targets that id.
+  const offTrigger = client.registerTrigger({
+    type: 'subscribe',
+    function_id: `${MODELS_CHANGED_FN}::${client.browserId}`,
+    config: { topic: MODELS_CHANGED_TOPIC },
   })
   let disposed = false
   return () => {
     if (disposed) return
     disposed = true
     offHandler()
-    void client
-      .call('ui::models::unsubscribe', {
-        browser_id: client.browserId,
-      })
-      .catch(() => {})
+    try {
+      offTrigger()
+    } catch {
+      // SDK already disposed; nothing to do.
+    }
   }
 }
 
-/** A provider declared to the harness, from `router::provider::list`. */
+/** A provider declared to the router, from `router::provider::list`. */
 export interface ProviderListEntry {
   id: string
   display_name: string
@@ -104,13 +117,13 @@ export interface ProviderListEntry {
 }
 
 /**
- * List providers present as harness workers (regardless of whether they have
+ * List providers present as worker processes (regardless of whether they have
  * a credential). Used so the picker can surface a present-but-unconfigured
- * provider with a gear that opens its harness configuration.
+ * provider with a gear that opens its configuration.
  */
 export async function fetchProviderList(): Promise<ProviderListEntry[]> {
   const client = await getIiiClient()
-  const res = await client.call<{ providers?: unknown }>(
+  const res = await client.trigger<{ providers?: unknown }>(
     'router::provider::list',
     {},
   )

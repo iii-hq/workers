@@ -1,7 +1,7 @@
-node_modules/
-dist/
-*.tsbuildinfo
+/target
 .DS_Store
 *.log
 .env
 .env.local
+# Path B: no committed config.yaml (the configuration worker is authoritative).
+config.yaml

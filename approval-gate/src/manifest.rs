@@ -25,7 +25,7 @@ pub fn build_manifest() -> ModuleManifest {
                 "timeout_ms": 5000,
                 "on_error": "fail_closed",
             },
-            "sweep_expression": "0 * * * * *",
+            "sweep_expression": "0 0 0 * * *",
             "policy_timeout_ms": 5000,
             "session_fetch_timeout_ms": 1000,
             "state_timeout_ms": 5000,

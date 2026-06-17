@@ -10,7 +10,7 @@ hook:
   on_error: fail_closed
 
 # 6-field cron expression for the expiry sweep (engine cron trigger).
-sweep_expression: "0 * * * * *"
+sweep_expression: "0 0 0 * * *"
 
 # Fail-closed budget for the synchronous policy::check_permissions consult.
 policy_timeout_ms: 5000

@@ -19,19 +19,13 @@ import type { FunctionEntry } from '@/lib/functions'
 const HIDDEN_PREFIXES: ReadonlyArray<string> = [
   // Tier 1 — orchestration plumbing.
   'state::',
-  'policy::',
-  'turn::',
   'session::',
   'session-tree::',
   'session-inbox::',
   'approval::',
-  'hook-fanout::',
   'iii::durable::',
   'ui::',
   // Tier 2 — runtime services / introspection.
-  'models-catalog::',
-  'llm-budget::',
-  'context-compaction::',
   'engine::',
   'functions::',
   'directory::',
