@@ -105,6 +105,22 @@ async fn same_count(world: &mut ContextWorld) {
     assert_eq!(messages.len(), world.messages.len());
 }
 
+/// context::assemble must never strip the model-facing context down to
+/// nothing: the provider rejects an empty messages array ("messages: at
+/// least one message is required").
+#[then("the response messages are not empty")]
+async fn messages_not_empty(world: &mut ContextWorld) {
+    if world.soft_skipped {
+        return;
+    }
+    let messages = response_messages(world);
+    assert!(
+        !messages.is_empty(),
+        "context::assemble returned an empty messages array — the provider \
+         rejects it (\"messages: at least one message is required\")"
+    );
+}
+
 #[then(regex = r#"^response message (\d+) text is "([^"]*)"$"#)]
 async fn message_text_is(world: &mut ContextWorld, idx: usize, expected: String) {
     if world.soft_skipped {

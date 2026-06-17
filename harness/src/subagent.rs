@@ -12,6 +12,7 @@ use crate::functions::send::normalize_message;
 use crate::functions::spawn::SpawnRequest;
 use crate::ids;
 use crate::policy;
+use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
@@ -176,8 +177,13 @@ async fn seed_child(
         stream_request_id: None,
         options: TurnOptions {
             model,
-            provider,
-            system_prompt: req.options.as_ref().and_then(|o| o.system_prompt.clone()),
+            provider: provider.clone(),
+            system_prompt: prompt::resolve_system_prompt(
+                req.options.as_ref().and_then(|o| o.system_prompt.clone()),
+                req.options.as_ref().and_then(|o| o.mode),
+                provider.as_deref(),
+            ),
+            mode: req.options.as_ref().and_then(|o| o.mode),
             max_turns,
             thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
             output: req

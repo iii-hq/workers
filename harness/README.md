@@ -115,6 +115,16 @@ sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 Other keys (RPC timeouts, stream coalescing, idempotency TTL, validation
 retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
+## System prompt
+
+When `options.system_prompt` is omitted (or empty), the harness assembles the
+engine-grounded identity prompt at send time: four provider-specific variants
+(`anthropic`, `openai` → gpt, `kimi`, and a step-by-step default for local
+runtimes) selected from `provider`, plus an optional `mode` (`plan` | `ask` |
+`agent`) that prepends a short operating-mode paragraph. A non-empty
+`system_prompt` override wins verbatim. Prompt bodies live in
+[`prompts/`](prompts/) and are tested in [`src/prompt/tests.rs`](src/prompt/tests.rs).
+
 ## Custom trigger types
 
 The harness emits two async orchestration trigger types siblings and consumers

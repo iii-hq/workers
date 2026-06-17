@@ -1,7 +1,9 @@
 /**
  * iii-browser-sdk + harness turn kickoff. Deployment permission rules live in
  * the `approval-gate` configuration entry; the console derives the harness
- * structural floor from those rules on each send.
+ * structural floor from those rules on each send. Operating mode is passed to
+ * the harness, which assembles the provider-specific identity prompt when
+ * `system_prompt` is omitted.
  *
  * Transcript content (tokens, message snapshots, function-call cards, results)
  * renders from session-manager events reconciled by the conversations layer
@@ -30,7 +32,6 @@ import {
   sendTurn,
   stopTurn,
 } from './harness-send'
-import { buildModeSystemPrompt } from './system-prompt'
 import {
   isTerminalSource,
   type TurnSourceEvent,
@@ -176,7 +177,7 @@ async function* realStream(
       idempotency_key: messageId,
       session: { metadata: { surface: 'console' } },
       options: {
-        system_prompt: buildModeSystemPrompt(mode, provider),
+        mode,
         functions: functionPolicy,
         ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
         metadata: { session_id: sessionId, message_id: messageId },

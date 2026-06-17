@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::prompt::Mode;
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 
@@ -62,6 +63,8 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
     pub max_turns: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
@@ -213,6 +216,7 @@ mod tests {
                 model: "m".into(),
                 provider: None,
                 system_prompt: None,
+                mode: None,
                 max_turns: 16,
                 thinking_level: None,
                 output: OutputContract::Text,

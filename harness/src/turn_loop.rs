@@ -190,6 +190,22 @@ pub async fn run_step(
     };
     let mut gen_messages = assembled.messages.clone();
     gen_messages.extend(appended);
+
+    // Never hand the provider an empty messages array (Anthropic 400:
+    // "messages: at least one message is required"). Assembly's own guards
+    // make this unreachable in practice; if it still happens (e.g. a
+    // transcript with no user message at all), fail the turn with a clear
+    // harness error instead of emitting a cryptic provider error.
+    if gen_messages.is_empty() {
+        return finalize_failed(
+            deps,
+            &session,
+            &mut record,
+            "assembled context is empty; refusing to call the provider with no messages",
+        )
+        .await;
+    }
+
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
     // Generate: append an empty assistant under a deterministic id, stream
@@ -926,11 +942,22 @@ async fn assemble_context(
                         .await;
                 }
             }
-            let messages = out
+            let mut messages: Vec<Value> = out
                 .messages
                 .iter()
                 .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
                 .collect();
+            // Defensive: context::assemble must never strip the model-facing
+            // context down to nothing (the provider rejects an empty messages
+            // array). If it somehow does, fall back to the raw candidate
+            // window — which still begins at a user message.
+            if messages.is_empty() && !candidate_values.is_empty() {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    "context::assemble returned empty messages; using raw candidate window"
+                );
+                messages = candidate_values.clone();
+            }
             Ok(Assembled {
                 system_prompt: Some(out.system_prompt),
                 messages,

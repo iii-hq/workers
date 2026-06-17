@@ -186,31 +186,50 @@ impl SessionClient {
         Ok(resp.get("revision").and_then(Value::as_u64).unwrap_or(0))
     }
 
-    /// Load the active path, oldest first. `include_custom` interleaves
-    /// `kind: custom` entries (where the compaction record lives).
+    /// Load the **entire** active path, oldest first. `include_custom`
+    /// interleaves `kind: custom` entries (where the compaction record lives).
+    ///
+    /// `session::messages` is paginated (session-manager caps a single page at
+    /// `max_list_limit`, default 500, and serves `default_list_limit`, default
+    /// 50, when no `limit` is given). The turn loop needs the full transcript —
+    /// otherwise it assembles context from a stale oldest-N window and never
+    /// sees recent messages or the latest compaction marker (which lives at the
+    /// tail). So we request the max page size and follow `next_cursor` to the
+    /// end, mirroring the console transcript reader.
     pub async fn messages(
         &self,
         session_id: &str,
         include_custom: bool,
     ) -> Result<Vec<LoadedEntry>, HarnessError> {
-        let resp = self
-            .call(
-                "session::messages",
-                json!({ "session_id": session_id, "include_custom": include_custom }),
-            )
-            .await?;
-        let arr = resp
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut out = Vec::with_capacity(arr.len());
-        for item in arr {
-            match serde_json::from_value::<LoadedEntry>(item) {
-                Ok(entry) => out.push(entry),
-                Err(e) => {
-                    tracing::warn!(session_id, error = %e, "skipping unparseable session entry")
+        const PAGE_LIMIT: u64 = 500;
+        let mut out: Vec<LoadedEntry> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut payload = json!({
+                "session_id": session_id,
+                "include_custom": include_custom,
+                "limit": PAGE_LIMIT,
+            });
+            if let Some(c) = &cursor {
+                payload["cursor"] = json!(c);
+            }
+            let resp = self.call("session::messages", payload).await?;
+            let arr = resp
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for item in arr {
+                match serde_json::from_value::<LoadedEntry>(item) {
+                    Ok(entry) => out.push(entry),
+                    Err(e) => {
+                        tracing::warn!(session_id, error = %e, "skipping unparseable session entry")
+                    }
                 }
+            }
+            match resp.get("next_cursor").and_then(Value::as_str) {
+                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                _ => break,
             }
         }
         Ok(out)

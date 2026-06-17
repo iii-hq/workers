@@ -384,6 +384,15 @@
         ],
         "description": "`message` is either a plain string (sugar for a user text message) or a full `AgentMessage`."
       },
+      "Mode": {
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt.",
+        "enum": [
+          "plan",
+          "ask",
+          "agent"
+        ],
+        "type": "string"
+      },
       "OutputContract": {
         "description": "Free text by default; `json` constrains the final answer to a JSON value, validated against `schema` when supplied.",
         "oneOf": [
@@ -442,6 +451,16 @@
           },
           "metadata": {
             "description": "Tracing passthrough."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Mode"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "output": {
             "anyOf": [

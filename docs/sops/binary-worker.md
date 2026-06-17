@@ -135,7 +135,7 @@ name = "<worker>"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.11.3"
+iii-sdk = "=0.19.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -156,8 +156,8 @@ Non-obvious requirements:
   isolated cargo workspace; without it, cargo will walk up to the parent
   directory and try to merge with whatever it finds. The CI runner builds each
   worker from inside its own folder; do not rely on a parent workspace.
-- `iii-sdk = "=0.11.3"` — pin the exact version. All workers in this repo are
-  on `0.11.3`; bump in lockstep, never drift.
+- `iii-sdk = "=0.19.4"` — pin the exact version. All workers in this repo are
+  on `0.19.4`; bump in lockstep, never drift.
 - The four tokio features (`rt-multi-thread`, `macros`, `sync`, `signal`) are
   the minimum to power `#[tokio::main]`, the SDK's internals, and
   `tokio::signal::ctrl_c()`. Add `time`, `fs`, or others when your handlers need
@@ -349,12 +349,11 @@ The entry point must:
    registry rely on a stable identity line for your process:
 
    ```rust
-   use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
+   use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 
    let iii = register_worker(
        &cli.url,
        InitOptions {
-           otel: Some(OtelConfig::default()),
            metadata: Some(WorkerMetadata {
                runtime: "rust".to_string(),
                version: env!("CARGO_PKG_VERSION").to_string(),
@@ -479,7 +478,8 @@ fn register_create(iii: &Arc<III>, config: &Arc<<Worker>Config>) {
     let iii_inner = iii.clone();
     let cfg_inner = config.clone();
     iii.register_function(
-        RegisterFunction::new_async("<worker>::create", move |req: CreateInput| {
+        "<worker>::create",
+        RegisterFunction::new_async(move |req: CreateInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.clone();
             async move {
@@ -1036,7 +1036,7 @@ name = "<worker>"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.11.3"
+iii-sdk = "=0.19.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -1075,7 +1075,7 @@ greeting: "hello"
 ```rust
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{InitOptions, OtelConfig, RegisterTriggerInput, WorkerMetadata, register_worker};
+use iii_sdk::{InitOptions, RegisterTriggerInput, WorkerMetadata, register_worker};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -1125,7 +1125,6 @@ async fn main() -> Result<()> {
     let iii = register_worker(
         &cli.url,
         InitOptions {
-            otel: Some(OtelConfig::default()),
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1276,7 +1275,8 @@ pub fn register_all(iii: &Arc<III>, config: &Arc<WorkerConfig>) {
 fn register_echo(iii: &Arc<III>, config: &Arc<WorkerConfig>) {
     let cfg = config.clone();
     iii.register_function(
-        RegisterFunction::new_async("<worker>::echo", move |req: echo::EchoInput| {
+        "<worker>::echo",
+        RegisterFunction::new_async(move |req: echo::EchoInput| {
             let cfg = cfg.clone();
             async move {
                 Ok::<_, IIIError>(echo::EchoOutput {

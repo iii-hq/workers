@@ -102,6 +102,23 @@ async fn run_stream_call(
     let thinking_build = build_thinking_config(input.thinking_level, model_meta.as_ref());
     warnings.extend(thinking_build.warnings);
 
+    // Defense in depth: never POST an empty messages array — Anthropic rejects
+    // it with a 400 ("messages: at least one message is required"). Surface a
+    // clear provider error frame instead of a cryptic upstream failure. The
+    // harness/context-manager guards make this unreachable in practice.
+    if input.messages.is_empty() {
+        let _ = send_event(
+            sink,
+            &synthetic_error_event(
+                "refusing to call anthropic with an empty messages array \
+                 (messages: at least one message is required)",
+                &model,
+                ErrorKind::Permanent,
+            ),
+        );
+        return;
+    }
+
     let body = build_body(&BodyArgs {
         model: cfg.model.clone(),
         max_tokens: cfg.max_tokens,

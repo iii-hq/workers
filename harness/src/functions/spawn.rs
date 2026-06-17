@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::functions::send::MessageInput;
+use crate::prompt::Mode;
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::FunctionPolicy;
@@ -16,6 +17,8 @@ use crate::types::turn::FunctionPolicy;
 pub struct SpawnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
     /// Capped at the parent's remaining turn budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
