@@ -36,7 +36,7 @@ export async function fetchFunctionsCatalog(): Promise<FunctionEntry[]> {
   }
 
   const client = await getIiiClient()
-  const res = await client.call<unknown>(FUNCTIONS_LIST_RPC, {})
+  const res = await client.trigger<unknown>(FUNCTIONS_LIST_RPC, {})
   const entries = parseFunctionsCatalogResponse(res)
   cache = { entries, fetchedAt: now }
   return entries

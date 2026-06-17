@@ -19,8 +19,14 @@ export const MODES: { id: Mode; label: string }[] = [
 
 export const DEFAULT_MODE: Mode = 'agent'
 
-/** Reasoning effort sent to run::start as `thinking_level`; 'off' is omitted. */
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+/** Reasoning effort sent to harness::send as `thinking_level`; 'off' is omitted. */
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
 
 export const THINKING_LEVELS: ThinkingLevel[] = [
   'off',
@@ -138,7 +144,7 @@ export interface Conversation {
   /**
    * The engine session_id (`console-<uuid>` for console-created chats).
    * Conversations are backed by the session-manager worker; this id is used
-   * verbatim for `session::*` calls and `harness::trigger`.
+   * verbatim for `session::*` triggers and `harness::send`.
    */
   id: string
   title: string

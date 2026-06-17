@@ -53,10 +53,11 @@ export type StreamEvent =
   | { kind: 'assistant-end' }
   | {
       /**
-       * Server-side context-compaction finished rewriting the session's
-       * flat-state. ChatView consumes this to append a compaction marker
-       * into the conversation so the CTX bar drops to the post-compaction
-       * count without wiping the user's transcript.
+       * A compaction finished. ChatView consumes this to append a compaction
+       * marker into the conversation so the CTX bar drops to the
+       * post-compaction count without wiping the user's transcript. On the
+       * real backend the marker renders from the session's `compaction` custom
+       * entry instead; this event is emitted by mock/playground backends.
        */
       kind: 'compaction'
       /** 'async' = post-TurnEnd background; 'sync' = pre-flight in-turn. */
@@ -84,9 +85,9 @@ export type StreamEvent =
 export interface ChatStreamOptions {
   signal?: AbortSignal
   /**
-   * Reasoning/thinking level for the turn. Sent to `run::start` as
-   * `thinking_level`; omitted when 'off' or absent. The provider degrades
-   * with a warning when the model can't honor it.
+   * Reasoning/thinking level for the turn. Sent to `harness::send` as
+   * `options.thinking_level`; omitted when 'off' or absent. The provider
+   * degrades with a warning when the model can't honor it.
    */
   thinkingLevel?: import('@/types/chat').ThinkingLevel
   /** mean delay between assistant tokens, in ms */
@@ -104,16 +105,11 @@ export interface ChatStreamOptions {
    * for the same conversation must pass the same value so the engine
    * groups every turn under one session in the traces UI.
    *
-   * The real backend uses it as the `group_id` of its scoped `agent::events`
-   * stream trigger and as `session_id` in `harness::trigger`; the mock backend
-   * ignores it. When omitted, the real
-   * backend falls back to a fresh `console-<uuid>` so callers that
-   * haven't been updated yet still work (with the pre-fix behavior of
-   * one session per send).
-   *
-   * Mirrors the `harness/web` strategy: see
-   * `workers/harness/web/src/App.tsx` `newSessionId()` and the
-   * `active ?? draftId ?? newSessionId()` plumbing.
+   * The real backend uses it as the `session_id` in `harness::send` and as
+   * the config filter on its scoped `harness::turn-completed` / `approval::*`
+   * trigger subscriptions; the mock backend ignores it. When omitted, the
+   * real backend falls back to a fresh `console-<uuid>` (one session per
+   * send) so callers that haven't been updated yet still work.
    */
   sessionId?: string
 }
@@ -150,9 +146,9 @@ export interface ChatBackend {
     decision: 'allow' | 'deny',
   ): Promise<void>
   /**
-   * Server-side cancel of the session's in-flight turn (`run::abort`).
+   * Server-side cancel of the session's in-flight turn (`harness::stop`).
    * The client-side AbortSignal only stops rendering; without this the
-   * server keeps running and `run::start` rejects new messages as busy.
+   * harness keeps running the turn to completion.
    */
   abortRun?(sessionId: string): Promise<void>
   /**

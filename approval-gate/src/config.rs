@@ -45,9 +45,9 @@ impl Default for HookBinding {
 }
 
 fn default_sweep_expression() -> String {
-    // 6-field cron (engine cron worker, config key "expression"): every
-    // minute at second 0.
-    "0 * * * * *".to_string()
+    // 6-field cron (engine cron worker, config key "expression"): once
+    // daily at midnight.
+    "0 0 0 * * *".to_string()
 }
 
 fn default_policy_timeout_ms() -> u64 {
@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(cfg.hook.functions, vec!["*".to_string()]);
         assert_eq!(cfg.hook.timeout_ms, 5_000);
         assert_eq!(cfg.hook.on_error, "fail_closed");
-        assert_eq!(cfg.sweep_expression, "0 * * * * *");
+        assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
         assert_eq!(cfg.policy_timeout_ms, 5_000);
         assert_eq!(cfg.session_fetch_timeout_ms, 1_000);
     }

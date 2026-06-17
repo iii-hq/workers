@@ -30,7 +30,7 @@ const STEPS: SeqStep[] = [
   {
     from: 'harness',
     to: 'gate',
-    label: 'pre_dispatch → hold',
+    label: 'pre_trigger → hold',
     title: 'a risky call pauses',
     desc: 'the model asked for something the policy routes to a human. the call parks, and the pending record fires an event the console inbox is bound to.',
     event: 'approval::pending_created',
@@ -40,7 +40,7 @@ const STEPS: SeqStep[] = [
     to: 'gate',
     label: 'approval::resolve',
     title: 'approve / deny — inline in the chat',
-    desc: 'the held call renders as a card with the arguments, right where the conversation is. one click resolves it; the released call executes through the normal dispatch pipeline.',
+    desc: 'the held call renders as a card with the arguments, right where the conversation is. one click resolves it; the released call executes through the normal trigger pipeline.',
   },
   {
     from: 'harness',

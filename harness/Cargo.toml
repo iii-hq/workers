@@ -1,0 +1,41 @@
+[workspace]
+
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "harness"
+path = "src/main.rs"
+
+[lib]
+name = "harness"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.19.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+# Must stay on the same schemars major as iii-sdk so the derived
+# `JsonSchema` impls satisfy `RegisterFunction::new_async`.
+schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }
+# Fail-closed allow/deny matching for the dispatch policy.
+globset = "0.4"
+# Output-contract JSON Schema validation (json contracts with a schema).
+jsonschema = { version = "0.18", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }

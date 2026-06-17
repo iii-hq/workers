@@ -6,8 +6,9 @@
  * - A single-segment entry (user message, custom entry) renders as one UI
  *   message whose id IS the `entry_id`. The optimistic user message the
  *   console appends on send uses the predicted entry id
- *   (`<message_id>-user-0`, the harness's deterministic scheme), so the
- *   `message-added` snapshot replaces it in place.
+ *   (`e_idem_<message_id>`, derived from the `idempotency_key` the harness
+ *   uses to seed the user entry), so the `message-added` snapshot replaces it
+ *   in place.
  * - An assistant entry splits per content block into segments with ids
  *   `<entry_id>:<block_index>` (thinking → thought, text → assistant,
  *   function_call → function-call row). Each `message-updated` snapshot
@@ -277,7 +278,7 @@ export function applyEntryUpsert(
   let segments = entrySegments(item, opts?.sessionId)
 
   // Carry over transient/local state for function-call segments and drop the
-  // locally-created rows they replace (agent::events fallback rows, which
+  // locally-created rows they replace (pending-approval fallback rows, which
   // have non-entry ids).
   const absorbedLocalIds = new Set<string>()
   segments = segments.map((segment) => {

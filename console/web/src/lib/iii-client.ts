@@ -14,7 +14,7 @@
  *      browser's own scoped stream subscriptions and the harness sessions
  *      fan-out — deliver to this specific browser's connection.
  *
- * Once `_clientPromise` is resolved, every other call (`call`, `on`,
+ * Once `_clientPromise` is resolved, every other call (`trigger`, `on`,
  * `dispose`) goes over the single WS connection.
  */
 
@@ -30,7 +30,12 @@ export type { IIIConnectionState, RegisterTriggerInput }
 
 export interface IiiClient {
   browserId: string
-  call<T = unknown>(
+  /**
+   * Invoke an iii bus function and await its result. In the iii ecosystem
+   * every bus invocation is a *trigger* — there is no separate "call"
+   * concept. Thin wrapper over the SDK's `trigger({ function_id, payload })`.
+   */
+  trigger<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
   ): Promise<T>
@@ -123,7 +128,7 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // unregister still releases the engine-side binding on dispose().
   const triggerUnregisters = new Set<() => void>()
 
-  function call<T>(
+  function trigger<T>(
     functionId: string,
     payload: Record<string, unknown> = {},
   ): Promise<T> {
@@ -195,7 +200,7 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
 
   return {
     browserId,
-    call,
+    trigger,
     on,
     registerTrigger,
     addConnectionStateListener,

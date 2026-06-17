@@ -7,7 +7,7 @@
  * identical, so the engine contract is unchanged.
  *
  * Timeout note: motia passes per-RPC timeouts to `sdk.trigger`. Our
- * `IiiClient.call` wrapper does not yet expose `timeoutMs`, so calls
+ * `IiiClient.trigger` wrapper does not yet expose `timeoutMs`, so calls
  * here use the SDK's default invocation timeout (30s). If this becomes
  * a latency problem (long list requests, slow tree requests), extend
  * the wrapper rather than reaching past it.
@@ -146,7 +146,10 @@ export async function fetchTraces(
 
   try {
     const client = await getIiiClient()
-    return await client.call<TracesResponse>(TRACES_RPC_FUNCTIONS.list, payload)
+    return await client.trigger<TracesResponse>(
+      TRACES_RPC_FUNCTIONS.list,
+      payload,
+    )
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {
       return { spans: [], total: 0, offset, limit }
@@ -160,7 +163,7 @@ export async function fetchTraceTree(
 ): Promise<TraceTreeResponse> {
   try {
     const client = await getIiiClient()
-    return await client.call<TraceTreeResponse>(TRACES_RPC_FUNCTIONS.tree, {
+    return await client.trigger<TraceTreeResponse>(TRACES_RPC_FUNCTIONS.tree, {
       trace_id: traceId,
     })
   } catch (err) {
@@ -174,7 +177,7 @@ export async function fetchTraceTree(
 export async function clearTraces(): Promise<{ success: boolean }> {
   try {
     const client = await getIiiClient()
-    await client.call(TRACES_RPC_FUNCTIONS.clear, {})
+    await client.trigger(TRACES_RPC_FUNCTIONS.clear, {})
     return { success: true }
   } catch (err) {
     throw asError(err, 'Failed to clear traces')
@@ -187,7 +190,7 @@ export async function fetchTracesGroupBy(
   const payload = stripUndefined({ ...params })
   try {
     const client = await getIiiClient()
-    return await client.call<TracesGroupByResponse>(
+    return await client.trigger<TracesGroupByResponse>(
       TRACES_RPC_FUNCTIONS.groupBy,
       payload,
     )

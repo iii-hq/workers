@@ -15,7 +15,7 @@ const LIST_PAGE_LIMIT = 200
 
 export async function listSessions(): Promise<SessionMeta[]> {
   const client = await getIiiClient()
-  const resp = await client.call<{
+  const resp = await client.trigger<{
     sessions?: SessionMeta[]
     next_cursor?: string | null
   }>('session::list', { limit: LIST_PAGE_LIMIT, order: 'updated_desc' })
@@ -26,9 +26,10 @@ export async function getSession(
   sessionId: string,
 ): Promise<SessionMeta | null> {
   const client = await getIiiClient()
-  const resp = await client.call<{ meta: SessionMeta } | null>('session::get', {
-    session_id: sessionId,
-  })
+  const resp = await client.trigger<{ meta: SessionMeta } | null>(
+    'session::get',
+    { session_id: sessionId },
+  )
   return resp?.meta ?? null
 }
 
@@ -42,7 +43,7 @@ export async function ensureSession(input: {
   metadata?: Record<string, unknown>
 }): Promise<{ meta: SessionMeta; created: boolean }> {
   const client = await getIiiClient()
-  return client.call('session::ensure', input)
+  return client.trigger('session::ensure', input)
 }
 
 /**
@@ -56,14 +57,14 @@ export async function setSessionMeta(input: {
   metadata?: Record<string, unknown>
 }): Promise<{ meta: SessionMeta }> {
   const client = await getIiiClient()
-  return client.call('session::set-meta', input)
+  return client.trigger('session::set-meta', input)
 }
 
 export async function deleteSession(
   sessionId: string,
 ): Promise<{ deleted: boolean }> {
   const client = await getIiiClient()
-  return client.call('session::delete', { session_id: sessionId })
+  return client.trigger('session::delete', { session_id: sessionId })
 }
 
 export async function setSessionStatus(
@@ -72,10 +73,30 @@ export async function setSessionStatus(
   reason?: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.call('session::set-status', {
+  await client.trigger('session::set-status', {
     session_id: sessionId,
     status,
     ...(reason ? { reason } : {}),
+  })
+}
+
+/**
+ * Append a `kind: "custom"` bookkeeping entry (e.g. the `/compact` marker).
+ * Idempotent on `entry_id`. Mirrors how the harness persists its own
+ * compaction record, so the entry renders identically and future turns can
+ * anchor on it. The `data` surfaces back as `custom.data` on reads/events.
+ */
+export async function appendCustomEntry(input: {
+  session_id: string
+  custom_type: string
+  data: unknown
+  entry_id?: string
+}): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('session::append', {
+    session_id: input.session_id,
+    custom: { custom_type: input.custom_type, data: input.data },
+    ...(input.entry_id ? { entry_id: input.entry_id } : {}),
   })
 }
 
@@ -90,7 +111,7 @@ export async function fetchTranscript(
   const items: TranscriptItem[] = []
   let cursor: string | undefined
   for (;;) {
-    const resp = await client.call<{
+    const resp = await client.trigger<{
       messages?: TranscriptItem[]
       next_cursor?: string | null
     }>('session::messages', {

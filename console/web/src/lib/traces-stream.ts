@@ -4,7 +4,7 @@
  * model. The engine observability worker pushes span data onto two ephemeral
  * iii streams via `stream::send`; the browser subscribes with scoped
  * `type:'stream'` triggers and merges pushed spans into state, the same
- * "engine pushes data, client appends" pattern as `session-events-live.ts`.
+ * "engine pushes data, client appends" pattern as `lib/sessions/events.ts`.
  *
  *   - `iii:devtools:trace-rows` / group `all`     → root rows for the LIST
  *     (one global firehose; every list view joins the single `all` group).

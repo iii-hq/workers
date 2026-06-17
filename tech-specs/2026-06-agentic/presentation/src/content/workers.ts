@@ -36,13 +36,13 @@ export const WORKERS: Record<string, WorkerInfo> = {
       { id: 'harness::spawn', desc: 'start a sub-agent in a child session; the parent call resolves with its result.' },
       { id: 'harness::stop', desc: 'cancel an in-flight turn; cascades to spawned children.' },
       { id: 'harness::status', desc: 'point-in-time read of a session\u2019s turn.' },
-      { id: 'harness::function::dispatch', desc: 'internal — run one model-requested call through policy, hooks, target.' },
+      { id: 'harness::function::trigger', desc: 'internal — run one model-requested call through policy, hooks, target.' },
       { id: 'harness::function::resolve', desc: 'internal — settle a parked call and resume the turn.' },
     ],
     emits: [
       { id: 'harness::turn_started', desc: 'a turn began executing.' },
       { id: 'harness::turn_completed', desc: 'terminal status + typed result. the orchestration surface.' },
-      { id: 'harness::hook::*', desc: 'five synchronous in-path points: pre_turn, pre_generate, post_generate, pre_dispatch, post_dispatch.' },
+      { id: 'harness::hook::*', desc: 'five synchronous in-path points: pre_turn, pre_generate, post_generate, pre_trigger, post_trigger.' },
     ],
     notes: [
       'depends softly on the other three: without context-manager it sends raw history; with no allow-list it is a plain chat loop.',
@@ -128,7 +128,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
       'optional by design — the four core workers run with or without it. installing the worker is installing the policy.',
     install: 'iii worker add approval-gate',
     functions: [
-      { id: 'approval::gate', desc: 'the pre_dispatch hook: answer continue, deny, or hold.' },
+      { id: 'approval::gate', desc: 'the pre_trigger hook: answer continue, deny, or hold.' },
       { id: 'approval::resolve', desc: 'apply a human decision — release the call or answer it with a denial.' },
       { id: 'approval::list_pending / get_pending', desc: 'the pending inbox, with tenancy filters.' },
       { id: 'approval::set_mode / approve_always', desc: 'per-session permission modes and standing grants.' },

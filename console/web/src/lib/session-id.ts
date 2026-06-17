@@ -2,9 +2,11 @@
  * Message ID helper.
  *
  * One fresh `msg-<uuid>` per send. It flows into the engine via baggage so
- * the traces UI can "Group by message", and the harness derives the user
- * message's session-manager entry id from it (`<message_id>-user-0`) — which
- * is also how the console's optimistic user row reconciles in place.
+ * the traces UI can "Group by message", and rides `harness::send` as the
+ * `idempotency_key`, from which the harness derives the user message's
+ * session-manager entry id (`e_idem_<message_id>`) — which is also how the
+ * console's optimistic user row reconciles in place (see
+ * `predictedUserEntryId` in lib/backend/harness-send.ts).
  *
  * (Conversation ids are minted with the `console-` prefix directly in
  * use-conversations and double as the engine session_id, so there is no

@@ -1,163 +1,81 @@
 /**
- * Pure translator from iii `AgentEvent` (the wire shape on `agent::events`)
- * to console/web's `StreamEvent` contract.
+ * Pure translator from the harness/approval trigger payloads the console binds
+ * around a turn to console/web's `StreamEvent` contract.
  *
- * Since the session-manager integration, transcript CONTENT (thought/text
- * tokens, full message snapshots) renders from `session::message-added` /
- * `session::message-updated` events reconciled by the conversations layer —
- * NOT from this translator. `agent::events` remains the channel for
- * ephemeral turn state only:
+ * Transcript CONTENT (assistant text, thinking, function-call blocks, function
+ * results) renders from `session::message-added` / `session::message-updated`
+ * reconciled by the conversations layer — NOT from this translator. These
+ * trigger events carry only the ephemeral turn surface:
  *
- *   - `turn_state_changed` → pending-approval `fcall-start` (stateful).
- *   - `function_execution_start` → `fcall-start` (running, with args).
- *   - `function_execution_end`   → `fcall-end` (result + duration).
- *   - `message_complete` with a non-`end` stop_reason → `stop-reason`.
- *   - `agent_end` → `assistant-end` (turn-over signal).
- *   - `message_update` / `compaction_done` / `turn_end` → no UI signal
- *     (tokens and compaction markers arrive via session events).
+ *   - `approval::pending-created`  → `fcall-start { pendingApproval: true }`
+ *   - `approval::pending-resolved` → `fcall-approval-cleared`
+ *   - `harness::turn-completed`    → `assistant-end` (+ `stop-reason` when the
+ *                                    turn failed / was cancelled)
+ *
+ * The translator is stateless: the new gate triggers are already discrete
+ * create/resolve events, so no list-diffing (the old `turn_state_changed`
+ * mirror) is needed.
  */
 
 import type {
-  AgentEvent,
-  ContentBlock,
-  FunctionResult,
+  PendingApprovalRecord,
+  PendingResolvedEvent,
+  TurnCompletedEvent,
 } from '@/types/iii-agent-event'
-import { diffPending, type PendingApproval } from './pending-approvals-store'
-import { pendingApprovalsFromTurnState } from './turn-state-mirror'
 import type { StreamEvent } from './types'
 
-export function createAgentEventTranslator(): {
-  translate(event: AgentEvent, sessionId?: string): StreamEvent[]
-} {
-  const mirrors = new Map<string, PendingApproval[]>()
+/** The discriminated union of trigger events `realStream` feeds the translator. */
+export type TurnSourceEvent =
+  | { kind: 'approval-created'; record: PendingApprovalRecord }
+  | { kind: 'approval-resolved'; event: PendingResolvedEvent }
+  | { kind: 'turn-completed'; event: TurnCompletedEvent }
 
-  function translateTurnStateChanged(
-    event: Extract<AgentEvent, { type: 'turn_state_changed' }>,
-    sessionId: string,
-  ): StreamEvent[] {
-    const prev = mirrors.get(sessionId) ?? []
-    const next = pendingApprovalsFromTurnState(event.new_value)
-    mirrors.set(sessionId, next)
-    const { added, removed } = diffPending(prev, next)
-    const out: StreamEvent[] = added.map((entry) => ({
-      kind: 'fcall-start' as const,
-      functionId: entry.function_id,
-      input: entry.args,
-      pendingApproval: true,
-      functionCallId: entry.function_call_id,
-      sessionId,
-    }))
-    for (const entry of removed) {
-      out.push({
-        kind: 'fcall-approval-cleared',
-        functionCallId: entry.function_call_id,
-      })
-    }
-    return out
-  }
-
-  function translate(event: AgentEvent, sessionId?: string): StreamEvent[] {
-    switch (event.type) {
-      case 'turn_state_changed':
-        return sessionId ? translateTurnStateChanged(event, sessionId) : []
-
-      case 'message_complete':
-        return translateMessageComplete(event.message)
-
-      case 'message_update':
-        // Transcript content arrives via session::message-updated snapshots.
-        return []
-
-      case 'function_execution_start':
-        return [
-          {
-            kind: 'fcall-start',
-            functionId: event.function_id,
-            input: event.args,
-            functionCallId: event.function_call_id,
-            sessionId,
-          },
-        ]
-
-      case 'function_execution_end':
-        return [
-          {
-            kind: 'fcall-end',
-            output: event.is_error
-              ? wrapErrorOutput(event.result)
-              : event.result,
-            durationMs: event.duration_ms,
-            functionCallId: event.function_call_id,
-          },
-        ]
-
-      case 'agent_end':
-        return [{ kind: 'assistant-end' }]
-
-      case 'turn_end':
-        return []
-
-      case 'compaction_done':
-        // The compaction marker renders from the session's custom entry
-        // (session::message-added); no separate UI signal needed here.
-        return []
-    }
-  }
-
-  return { translate }
+/** True once this event ends the turn (the generator should stop after it). */
+export function isTerminalSource(event: TurnSourceEvent): boolean {
+  return event.kind === 'turn-completed'
 }
 
-function translateMessageComplete(
-  message: Extract<AgentEvent, { type: 'message_complete' }>['message'],
-): StreamEvent[] {
-  if (message.role !== 'assistant') {
-    return []
+export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
+  switch (event.kind) {
+    case 'approval-created':
+      return [
+        {
+          kind: 'fcall-start',
+          functionId: event.record.function_id,
+          input: event.record.arguments_excerpt ?? {},
+          pendingApproval: true,
+          functionCallId: event.record.function_call_id,
+          sessionId: event.record.session_id,
+        },
+      ]
+
+    case 'approval-resolved':
+      // The released call's result (or deny error) arrives via the session
+      // transcript; here we only clear the pending prompt on its card.
+      return [
+        {
+          kind: 'fcall-approval-cleared',
+          functionCallId: event.event.function_call_id,
+        },
+      ]
+
+    case 'turn-completed':
+      return translateTurnCompleted(event.event)
   }
+}
+
+function translateTurnCompleted(event: TurnCompletedEvent): StreamEvent[] {
   const out: StreamEvent[] = []
-  const stop = message.stop_reason as
-    | 'end'
-    | 'length'
-    | 'error'
-    | 'aborted'
-    | 'function_call'
-    | undefined
-  if (stop === 'length' || stop === 'error' || stop === 'aborted') {
+  if (event.status === 'cancelled') {
+    out.push({ kind: 'stop-reason', reason: 'aborted', message: event.reason })
+  } else if (event.status === 'failed') {
+    const message = event.result_error ?? event.reason
     out.push({
       kind: 'stop-reason',
-      reason: stop,
-      message:
-        typeof message.error_message === 'string' &&
-        message.error_message.length > 0
-          ? message.error_message
-          : undefined,
+      reason: 'error',
+      message: message && message.length > 0 ? message : undefined,
     })
   }
+  out.push({ kind: 'assistant-end' })
   return out
-}
-
-function wrapErrorOutput(result: FunctionResult): {
-  error: {
-    kind: string
-    message: string
-    details: unknown
-    content: ContentBlock[]
-  }
-} {
-  return {
-    error: {
-      kind: 'function_error',
-      message: deriveErrorMessage(result.content),
-      details: result.details,
-      content: result.content,
-    },
-  }
-}
-
-function deriveErrorMessage(content: ContentBlock[]): string {
-  for (const block of content) {
-    if (block.type === 'text' && block.text.length > 0) {
-      return block.text.replace(/\s+/g, ' ').trim()
-    }
-  }
-  return 'function returned an error'
 }

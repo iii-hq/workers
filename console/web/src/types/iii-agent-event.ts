@@ -1,220 +1,92 @@
 /**
- * Hand-written TypeScript shapes for the iii agent event stream.
+ * Wire payloads for the reactive surface the console binds around a harness
+ * turn. The Rust harness no longer publishes an `agent::events` firehose;
+ * instead it emits async turn-boundary triggers, and approval-gate owns the
+ * human-in-the-loop inbox triggers. These hand-written shapes mirror the
+ * golden schemas so the translator (`lib/backend/translate.ts`) can consume
+ * the trigger JSON without a generated client:
  *
- * These mirror the Rust types in
- * `harness/crates/harness-types/src/{agent_event,agent_message,content,function}.rs`
- * so console/web's translator (`lib/backend/translate.ts`) can consume the
- * wire JSON without depending on a generated client. Keep this file in
- * lock-step with the Rust enums when new variants land — the translator's
- * exhaustive switch will catch most drifts, but new optional fields slip
- * through silently.
+ *   - `harness::turn-started` / `harness::turn-completed`
+ *     (`harness/src/events.rs`)
+ *   - `approval::pending-created` / `approval::pending-resolved`
+ *     (`approval-gate/tests/golden/schemas/approval.pending-*.json`)
  *
- * Wire conventions:
- *   - `AgentEvent`     is tagged with `type` (snake_case).
- *   - `AgentMessage`   is tagged with `role` (snake_case).
- *   - `ContentBlock`   is tagged with `type` (camelCase, e.g. `functionCall`).
- *   - Legacy aliases (`tool_call_id`, `tool_name`, `tool_execution_*`,
- *     `toolCall`, `tool_result`) are tolerated by the Rust enums via
- *     serde aliases; we type the canonical fields only.
+ * Transcript CONTENT (assistant text, thinking, function-call blocks, function
+ * results) is NOT carried here — it renders from `session::message-added` /
+ * `session::message-updated` reconciled by the conversations layer
+ * (`lib/sessions/*`). These trigger payloads carry only turn lifecycle and
+ * approval state.
  */
 
-/** Free-form text block. */
-export interface TextContent {
-  text: string
+/** Parent linkage on a sub-agent turn (set only for spawned children). */
+export interface TurnParentLink {
+  session_id: string
+  turn_id: string
+  function_call_id: string
 }
 
-/** Base64 image block. */
-export interface ImageContent {
-  /** MIME type like `image/png`. */
-  mime: string
-  /** Base64-encoded bytes. */
-  data: string
-}
-
-/** Extended-thinking content block (Anthropic, OpenAI reasoning, etc.). */
-export interface ThinkingContent {
-  text: string
-  signature?: unknown
-}
-
-/** A content block inside `AgentMessage.content`. */
-export type ContentBlock =
-  | ({ type: 'text' } & TextContent)
-  | ({ type: 'image' } & ImageContent)
-  | {
-      type: 'functionCall'
-      id: string
-      function_id: string
-      arguments: unknown
-    }
-  | {
-      type: 'functionResult'
-      function_call_id: string
-      content: ContentBlock[]
-      is_error: boolean
-    }
-  | ({ type: 'thinking' } & ThinkingContent)
-
-export interface UserMessage {
-  role: 'user'
-  content: ContentBlock[]
+/** `harness::turn-started` — a turn began executing (first loop step). */
+export interface TurnStartedEvent {
+  session_id: string
+  turn_id: string
   timestamp: number
+  parent?: TurnParentLink
 }
 
-export interface AssistantMessage {
-  role: 'assistant'
-  content: ContentBlock[]
-  stop_reason: string
-  error_message?: string
-  error_kind?: string
-  usage?: unknown
-  model: string
-  provider: string
+/**
+ * `harness::turn-completed` — a turn reached a terminal status, carrying its
+ * result (or the failure reason). The session's coarse status flips in
+ * lock-step (`done` for completed/cancelled, `error` for failed).
+ */
+export interface TurnCompletedEvent {
+  session_id: string
+  turn_id: string
+  status: 'completed' | 'cancelled' | 'failed'
+  /** Present on a turn with an output contract. */
+  result?: unknown
+  /** Present when the turn `failed`. */
+  result_error?: string
+  /** Short human-readable reason (failed / cancelled). */
+  reason?: string
   timestamp: number
+  parent?: TurnParentLink
 }
 
-export interface FunctionResultMessage {
-  role: 'function_result'
+/** Outcome of a resolved approval (approval-gate `ResolvedOutcome`). */
+export type ResolvedOutcome = 'allow' | 'deny' | 'timeout' | 'aborted'
+
+/**
+ * `approval::pending-created` payload (the `PendingApprovalRecord`). A model
+ * function call was held for a human. `arguments_excerpt` is redacted and
+ * clipped — safe to render, but the un-redacted input also arrives via the
+ * session transcript's `function_call` block.
+ */
+export interface PendingApprovalRecord {
   function_call_id: string
   function_id: string
-  content: ContentBlock[]
-  details: unknown
-  is_error: boolean
-  timestamp: number
+  session_id: string
+  turn_id: string
+  arguments_excerpt?: unknown
+  assistant_excerpt?: string | null
+  depth?: number
+  pending_at: number
+  expires_at: number
+  session_title?: string | null
+  session_description?: string | null
+  session_metadata?: Record<string, unknown> | null
+  /** Always `"pending"` on the create event; absent on `list-pending` rows. */
+  status?: 'pending'
 }
 
-export interface CustomMessage {
-  role: 'custom'
-  custom_type: string
-  content: unknown
-  display?: string
-  details?: unknown
-  timestamp: number
-}
-
-export type AgentMessage =
-  | UserMessage
-  | AssistantMessage
-  | FunctionResultMessage
-  | CustomMessage
-
-/** Function call request emitted by an assistant message. */
-export interface FunctionCall {
-  id: string
+/** `approval::pending-resolved` payload — a held call left the inbox. */
+export interface PendingResolvedEvent {
+  function_call_id: string
   function_id: string
-  arguments: unknown
+  session_id: string
+  turn_id: string
+  outcome: ResolvedOutcome
+  /** Operator-supplied on deny. */
+  reason?: string | null
+  session_metadata?: Record<string, unknown> | null
+  resolved_at: number
 }
-
-/** Result of executing a function. */
-export interface FunctionResult {
-  content: ContentBlock[]
-  details: unknown
-  terminate?: boolean
-}
-
-/**
- * Provider-side streaming event. Mirrors the Rust enum
- * `harness/crates/harness-types/src/stream_event.rs::AssistantMessageEvent`.
- *
- * The orchestrator forwards each event verbatim inside an
- * `AgentEvent::MessageUpdate` so the frontend can render token-by-token
- * (Phase 2.A). `Done`/`Error` are terminal — the orchestrator emits
- * `message_complete` after them.
- */
-export type AssistantMessageEvent =
-  | { type: 'start'; partial: AssistantMessage }
-  | { type: 'text_start'; partial: AssistantMessage }
-  | { type: 'text_delta'; partial: AssistantMessage; delta: string }
-  | { type: 'text_end'; partial: AssistantMessage }
-  | { type: 'thinking_start'; partial: AssistantMessage }
-  | { type: 'thinking_delta'; partial: AssistantMessage; delta: string }
-  | { type: 'thinking_end'; partial: AssistantMessage }
-  | { type: 'functioncall_start'; partial: AssistantMessage }
-  | { type: 'functioncall_delta'; partial: AssistantMessage; delta: string }
-  | { type: 'functioncall_end'; partial: AssistantMessage }
-  | {
-      type: 'usage'
-      input: number
-      output: number
-      cache_read?: number
-      cache_write?: number
-      cost_usd?: number | null
-    }
-  | {
-      type: 'stop'
-      stop_reason: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
-      error_message?: string
-      error_kind?:
-        | 'auth_expired'
-        | 'rate_limited'
-        | 'context_overflow'
-        | 'transient'
-        | 'permanent'
-    }
-  | { type: 'done'; message: AssistantMessage }
-  | { type: 'error'; error: AssistantMessage }
-
-/**
- * Discriminated `AgentEvent` matching the wire shape on `agent::events`.
- */
-export type AgentEvent =
-  | { type: 'agent_end'; messages: AgentMessage[] }
-  | {
-      type: 'turn_end'
-      message: AgentMessage
-      function_results: FunctionResultMessage[]
-    }
-  | {
-      type: 'message_update'
-      message: AgentMessage
-      llm_event: AssistantMessageEvent
-    }
-  | {
-      type: 'message_complete'
-      message: AgentMessage
-      /** When true, text/thinking were already delivered via message_update. */
-      body_streamed?: boolean
-    }
-  | {
-      type: 'function_execution_start'
-      function_call_id: string
-      function_id: string
-      args: unknown
-    }
-  | {
-      type: 'function_execution_end'
-      function_call_id: string
-      function_id: string
-      result: FunctionResult
-      is_error: boolean
-      /** Wall-clock ms between the matching function_execution_start and end,
-       *  measured by the harness's turn-orchestrator. Surfaced through the
-       *  StreamEvent contract as `fcall-end.durationMs`. */
-      duration_ms: number
-    }
-  | {
-      type: 'turn_state_changed'
-      event_type: 'state:created' | 'state:updated'
-      new_value: Record<string, unknown>
-      old_value?: Record<string, unknown>
-    }
-  | {
-      /**
-       * Emitted by the harness-node context-compaction worker after a
-       * successful flat-state rewrite. Lets the UI insert a marker into
-       * the rendered transcript and re-estimate context usage so the
-       * CTX bar reflects post-compaction reality.
-       */
-      type: 'compaction_done'
-      /** 'async' = TurnEnd background; 'sync' = pre-flight in-turn. */
-      mode: 'async' | 'sync'
-      summary_text: string
-      tokens_before: number
-      compaction_entry_id: string
-      tail_start_id: string | null
-    }
-
-export type TurnStateChangedEvent = Extract<
-  AgentEvent,
-  { type: 'turn_state_changed' }
->

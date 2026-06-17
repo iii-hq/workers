@@ -13,6 +13,7 @@ import {
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import type { ChatBackend } from '@/lib/backend'
+import { predictedUserEntryId } from '@/lib/backend/harness-send'
 import type { CompactResult } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatStopReason } from '@/lib/format-stop-reason'
@@ -214,12 +215,13 @@ export function ChatView({
         }
       }
 
-      // The harness appends the user message with the deterministic entry id
-      // `<messageId>-user-0`; using the same id here lets the
+      // `harness::send` carries `idempotency_key: messageId`, so the harness
+      // appends the user message with the deterministic entry id
+      // `e_idem_<messageId>`; using the same id here lets the
       // session::message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
       const userMsg: UserMessage = {
-        id: `${messageId}-user-0`,
+        id: predictedUserEntryId(messageId),
         role: 'user',
         content: payload.text,
         attachments:

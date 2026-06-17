@@ -1,0 +1,70 @@
+{
+  "function_id": "harness::turn",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The enqueued `harness::turn` step payload.",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "step",
+      "turn_id"
+    ],
+    "title": "TurnStepPayload",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TurnStatus": {
+        "description": "The coarse, harness-internal turn lifecycle (harness.md § API Reference). Finer-grained than the session's `status`, which the loop derives from it.",
+        "enum": [
+          "running",
+          "awaiting_functions",
+          "completed",
+          "cancelled",
+          "failed"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "next_step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "skipped": {
+        "default": false,
+        "description": "True when a redelivered/stale step was acked and dropped.",
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/definitions/TurnStatus"
+      }
+    },
+    "required": [
+      "session_id",
+      "status"
+    ],
+    "title": "TurnStepResult",
+    "type": "object"
+  }
+}

@@ -84,7 +84,7 @@ export async function fetchOtelLogs(
 
   try {
     const client = await getIiiClient()
-    return await client.call<OtelLogsResponse>(FN_LOGS_LIST, payload)
+    return await client.trigger<OtelLogsResponse>(FN_LOGS_LIST, payload)
   } catch (err) {
     if (isLogsUnavailable(err)) {
       return { logs: [], total: 0, timestamp: Date.now() }
@@ -96,7 +96,7 @@ export async function fetchOtelLogs(
 export async function clearOtelLogs(): Promise<{ success: boolean }> {
   try {
     const client = await getIiiClient()
-    await client.call(FN_LOGS_CLEAR, {})
+    await client.trigger(FN_LOGS_CLEAR, {})
     return { success: true }
   } catch (err) {
     throw asError(err, 'Failed to clear OTEL logs')

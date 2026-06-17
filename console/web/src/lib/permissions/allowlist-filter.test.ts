@@ -24,14 +24,11 @@ describe('filterAllowlistCandidates', () => {
     const input = [
       entry('state::set'),
       entry('state::get'),
-      entry('policy::check_permissions'),
-      entry('turn::function_execute'),
       entry('session::ensure'),
       entry('session-tree::compactions'),
       entry('session-inbox::push'),
       entry('approval::resolve'),
       entry('approval::set_mode'),
-      entry('hook-fanout::publish_collect'),
       entry('iii::durable::publish'),
       entry('ui::subscribe'),
       entry('ui::session::event'),
@@ -41,9 +38,6 @@ describe('filterAllowlistCandidates', () => {
 
   it('hides Tier 2 runtime services + provider workers', () => {
     const input = [
-      entry('models-catalog::list'),
-      entry('llm-budget::record'),
-      entry('context-compaction::compact_session'),
       entry('engine::echo'),
       entry('functions::list'),
       entry('directory::index'),

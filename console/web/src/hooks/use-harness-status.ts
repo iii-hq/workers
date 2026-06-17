@@ -15,7 +15,7 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
  *      `iii worker add harness` run in the operator's own terminal (this is the
  *      educational, "you can do this in the CLI too" angle).
  *
- * `install()` calls `worker::add` for the registry `harness` source. The call
+ * `install()` triggers `worker::add` for the registry `harness` source. It
  * resolves with a terminal outcome, but the per-stage progress
  * (started -> downloading -> downloaded -> done) only arrives through the
  * `worker` trigger, so we render that as a small console. When the trigger type
@@ -118,7 +118,7 @@ function toStage(evt: WorkerEvent): InstallStage {
 }
 
 async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
-  const res = await client.call<{ workers?: Array<{ name?: unknown }> }>(
+  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
     'engine::workers::list',
     {},
   )
@@ -209,7 +209,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     void (async () => {
       const client = await getIiiClient()
       try {
-        await client.call('worker::add', {
+        await client.trigger('worker::add', {
           source: { kind: 'registry', name: HARNESS_WORKER_NAME },
           wait: true,
         })
@@ -250,9 +250,9 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
 }
 
 /**
- * Whether harness-owned bus functions (`models::list`, `approval::*`, etc.)
- * are registered and safe to call. False during the initial presence probe
- * and while the worker is absent.
+ * Whether harness-owned bus functions (`router::models::list`, `approval::*`,
+ * etc.) are registered and safe to trigger. False during the initial presence
+ * probe and while the worker is absent.
  */
 export function isHarnessAvailable(status: HarnessStatus): boolean {
   return status.present && !status.loading

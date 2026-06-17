@@ -1,0 +1,139 @@
+//! The canonical transcript message union (README § Messages). Untagged,
+//! disambiguated by single-variant role tags — wire-identical to
+//! `session-manager` / `llm-router`.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::types::content::ContentBlock;
+use crate::types::event::{ErrorKind, StopReason, Usage};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum UserRoleTag {
+    #[serde(rename = "user")]
+    User,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum AssistantRoleTag {
+    #[serde(rename = "assistant")]
+    Assistant,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum FunctionResultRoleTag {
+    #[serde(rename = "function_result")]
+    FunctionResult,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum CustomRoleTag {
+    #[serde(rename = "custom")]
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UserMessage {
+    pub role: UserRoleTag,
+    pub content: Vec<ContentBlock>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AssistantMessage {
+    pub role: AssistantRoleTag,
+    pub content: Vec<ContentBlock>,
+    pub stop_reason: StopReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_stop_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    pub model: String,
+    pub provider: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionResultMessage {
+    pub role: FunctionResultRoleTag,
+    pub function_call_id: String,
+    pub function_id: String,
+    pub content: Vec<ContentBlock>,
+    pub details: serde_json::Value,
+    pub is_error: bool,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CustomMessage {
+    pub role: CustomRoleTag,
+    pub custom_type: String,
+    pub content: Vec<ContentBlock>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    pub timestamp: i64,
+}
+
+/// The canonical transcript message union. Untagged: the single-variant
+/// role tags disambiguate deserialization (assistant/function_result/custom
+/// are tried before user so their required fields gate the match).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AgentMessage {
+    Assistant(AssistantMessage),
+    FunctionResult(FunctionResultMessage),
+    Custom(CustomMessage),
+    User(UserMessage),
+}
+
+impl AgentMessage {
+    /// Current epoch milliseconds — the timestamp every message the loop
+    /// writes carries.
+    pub fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    /// A user text message (the `harness::send` string-sugar form).
+    pub fn user_text(text: impl Into<String>) -> Self {
+        AgentMessage::User(UserMessage {
+            role: UserRoleTag::User,
+            content: vec![ContentBlock::text(text)],
+            timestamp: Self::now_ms(),
+        })
+    }
+
+    pub fn role_str(&self) -> &'static str {
+        match self {
+            AgentMessage::User(_) => "user",
+            AgentMessage::Assistant(_) => "assistant",
+            AgentMessage::FunctionResult(_) => "function_result",
+            AgentMessage::Custom(_) => "custom",
+        }
+    }
+}
+
+/// An empty assistant message to stream into (deterministic-id append
+/// before deltas arrive).
+pub fn empty_assistant(provider: &str, model: &str) -> AssistantMessage {
+    AssistantMessage {
+        role: AssistantRoleTag::Assistant,
+        content: vec![],
+        stop_reason: StopReason::End,
+        native_stop_reason: None,
+        error_message: None,
+        error_kind: None,
+        warnings: None,
+        usage: None,
+        model: model.to_string(),
+        provider: provider.to_string(),
+        timestamp: AgentMessage::now_ms(),
+    }
+}

@@ -12,7 +12,7 @@
  *   session (`config.session_id` filter applied engine-side).
  *
  * Handler ids carry the `iii::` prefix so delivery spans are tagged internal
- * and hidden from the Traces view (same convention as session-events-live).
+ * and hidden from the Traces view (same convention as turn-events-live).
  */
 
 import type { IiiClient } from '@/lib/iii-client'

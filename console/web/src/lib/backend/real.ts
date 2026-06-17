@@ -1,22 +1,41 @@
 /**
  * iii-browser-sdk + harness turn kickoff. Permissions live in the harness's
- * iii-permissions.yaml; the console only ships the mode.
+ * iii-permissions.yaml; the console ships the per-mode system prompt and the
+ * dispatch policy on each send.
  *
- * Transcript content (tokens, message snapshots) renders from
- * session-manager events reconciled by the conversations layer
- * (lib/sessions/*); this stream carries only the ephemeral turn surface
- * from `agent::events`: approvals (turn_state_changed), function-call
- * lifecycle (running + duration), stop-reason notices, and the agent_end
- * turn-over signal.
+ * Transcript content (tokens, message snapshots, function-call cards, results)
+ * renders from session-manager events reconciled by the conversations layer
+ * (lib/sessions/*). This stream carries only the ephemeral turn surface from
+ * the harness/approval triggers: pending approvals (approval::pending-*),
+ * stop-reason notices, and the turn-over signal (harness::turn-completed).
  */
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId } from '@/lib/session-id'
+import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
+import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
+import type { AgentMessage } from '@/lib/sessions/types'
 import type { Mode, ModelId } from '@/types/chat'
-import type { AgentEvent } from '@/types/iii-agent-event'
-import { startSessionEventsSubscription } from './session-events-live'
-import { createAgentEventTranslator } from './translate'
+import {
+  listPendingApprovals,
+  startApprovalEventsSubscription,
+} from './approval-events-live'
+import {
+  getTurnStatus,
+  type HarnessFunctionPolicy,
+  type HarnessThinkingLevel,
+  isTurnActive,
+  sendTurn,
+  stopTurn,
+} from './harness-send'
+import { buildModeSystemPrompt } from './system-prompt'
+import {
+  isTerminalSource,
+  type TurnSourceEvent,
+  translateTurnSource,
+} from './translate'
+import { startTurnEventsSubscription } from './turn-events-live'
 import type {
   ChatBackend,
   ChatStreamOptions,
@@ -27,6 +46,16 @@ import type {
 interface RunParams {
   provider: string
   model: string
+}
+
+/**
+ * The chat composer is a general-purpose agent surface: expose the whole bus
+ * via `agent_trigger`. The harness's `iii-permissions.yaml` and the
+ * approval-gate remain the safety layer (deny-by-default plumbing, human gate).
+ */
+const CHAT_FUNCTION_POLICY: HarnessFunctionPolicy = {
+  allow: ['*'],
+  expose: 'agent_trigger',
 }
 
 function resolveRunParams(model: ModelId): RunParams {
@@ -42,6 +71,13 @@ function resolveRunParams(model: ModelId): RunParams {
   return { provider, model }
 }
 
+/** The harness omits `thinking_level` entirely when the user picks 'off'. */
+function toThinkingLevel(
+  level: ChatStreamOptions['thinkingLevel'],
+): HarnessThinkingLevel | undefined {
+  return level && level !== 'off' ? level : undefined
+}
+
 async function* realStream(
   prompt: string,
   mode: Mode,
@@ -53,135 +89,122 @@ async function* realStream(
   const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
   const messageId = opts?.messageId ?? newMessageId()
 
-  const queue: AgentEvent[] = []
+  const queue: TurnSourceEvent[] = []
   let resolveNext: (() => void) | null = null
   const wake = () => {
     const r = resolveNext
     resolveNext = null
     r?.()
   }
+  const push = (event: TurnSourceEvent) => {
+    queue.push(event)
+    wake()
+  }
 
-  const stopSubscription = startSessionEventsSubscription(
+  // Dedupe pending approvals seen by both the catch-up read and the live
+  // trigger (at-least-once, and the two can race on start).
+  const seenPending = new Set<string>()
+  const pushPending = (functionCallId: string, event: TurnSourceEvent) => {
+    if (seenPending.has(functionCallId)) return
+    seenPending.add(functionCallId)
+    push(event)
+  }
+
+  const stopTurnEvents = startTurnEventsSubscription(client, sessionId, {
+    onCompleted: (event) => push({ kind: 'turn-completed', event }),
+  })
+  const stopApprovalEvents = startApprovalEventsSubscription(
     client,
     sessionId,
-    (event) => {
-      queue.push(event)
-      wake()
+    {
+      onCreated: (record) =>
+        pushPending(record.function_call_id, {
+          kind: 'approval-created',
+          record,
+        }),
+      onResolved: (event) => push({ kind: 'approval-resolved', event }),
     },
   )
 
   const onAbort = () => wake()
   signal?.addEventListener('abort', onAbort, { once: true })
 
+  let kickoffError: Error | null = null
   try {
-    const { translate } = createAgentEventTranslator()
-
-    client
-      .call<Record<string, unknown> | null>('turn::get_state', {
-        session_id: sessionId,
-      })
-      .then((record) => {
-        if (!record) return
-        queue.push({
-          type: 'turn_state_changed',
-          event_type: 'state:created',
-          new_value: record,
-        })
-        wake()
-      })
-      .catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn('[real-backend] turn::get_state recovery failed', err)
-        }
-      })
-
     const { provider, model: modelId } = resolveRunParams(model)
 
-    let kickoffError: Error | null = null
-    let sessionBusy = false
-    client
-      .call<{ status_code?: number; body?: { started?: boolean } }>(
-        'harness::trigger',
-        {
-          session_id: sessionId,
-          message_id: messageId,
-          payload: {
-            session_id: sessionId,
-            message_id: messageId,
-            provider,
-            model: modelId,
-            mode,
-            ...(opts?.thinkingLevel && opts.thinkingLevel !== 'off'
-              ? { thinking_level: opts.thinkingLevel }
-              : {}),
-            messages: [
-              {
-                role: 'user',
-                content: [{ type: 'text', text: prompt }],
-                timestamp: Date.now(),
-              },
-            ],
-          },
-        },
-      )
-      .then((res) => {
-        if (res?.body?.started === false) {
-          sessionBusy = true
-          wake()
+    // Reconnect recovery: rebuild any pending-approval cards a prior turn left
+    // held (e.g. resending after a reload). Best-effort.
+    void listPendingApprovals(client, sessionId)
+      .then((records) => {
+        for (const record of records) {
+          pushPending(record.function_call_id, {
+            kind: 'approval-created',
+            record,
+          })
         }
       })
       .catch((err) => {
-        kickoffError = err instanceof Error ? err : new Error(String(err))
         if (import.meta.env.DEV) {
-          console.warn('[real-backend] harness::trigger failed', err)
+          console.warn('[real-backend] approval::list-pending recovery', err)
         }
-        wake()
       })
+
+    const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
+
+    // Kick off (or steer) the turn. A turn already running for this session
+    // folds the message in (merge) rather than rejecting — no busy error.
+    void sendTurn(client, {
+      session_id: sessionId,
+      message: prompt,
+      model: modelId,
+      provider,
+      idempotency_key: messageId,
+      session: { metadata: { surface: 'console' } },
+      options: {
+        system_prompt: buildModeSystemPrompt(mode, provider),
+        functions: CHAT_FUNCTION_POLICY,
+        ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+        metadata: { session_id: sessionId, message_id: messageId },
+      },
+    }).catch((err) => {
+      kickoffError = err instanceof Error ? err : new Error(String(err))
+      if (import.meta.env.DEV) {
+        console.warn('[real-backend] harness::send failed', err)
+      }
+      wake()
+    })
 
     while (true) {
       if (signal?.aborted) return
-      if (sessionBusy) {
-        yield {
-          kind: 'stop-reason',
-          reason: 'error',
-          message:
-            'A turn is still running in this session — your message was not sent. Stop the current turn (or answer its pending approval), then resend.',
-        }
-        yield { kind: 'assistant-end' }
-        return
-      }
       if (kickoffError) {
         const err = kickoffError as Error
         yield {
-          kind: 'assistant-token',
-          token: `harness::trigger failed — ${err.message}`,
+          kind: 'stop-reason',
+          reason: 'error',
+          message: `harness::send failed — ${err.message}`,
         }
         yield { kind: 'assistant-end' }
         return
       }
-      while (
-        queue.length === 0 &&
-        !kickoffError &&
-        !sessionBusy &&
-        !signal?.aborted
-      ) {
+      while (queue.length === 0 && !kickoffError && !signal?.aborted) {
         await new Promise<void>((resolve) => {
           resolveNext = resolve
         })
       }
       if (signal?.aborted) return
-      if (kickoffError || sessionBusy) continue
+      if (kickoffError) continue
       const event = queue.shift()
       if (!event) continue
-      const streamEvents = translate(event, sessionId)
-      for (const streamEvent of streamEvents) {
+      for (const streamEvent of translateTurnSource(event)) {
         yield streamEvent
       }
-      if (event.type === 'agent_end') return
+      if (isTerminalSource(event)) return
     }
   } finally {
     signal?.removeEventListener('abort', onAbort)
-    stopSubscription()
+    stopTurnEvents()
+    stopApprovalEvents()
   }
 }
 
@@ -191,7 +214,7 @@ async function realResolveApproval(
   decision: 'allow' | 'deny',
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.call('approval::resolve', {
+  await client.trigger('approval::resolve', {
     session_id: sessionId,
     function_call_id: functionCallId,
     decision,
@@ -200,9 +223,29 @@ async function realResolveApproval(
 
 async function realAbortRun(sessionId: string): Promise<void> {
   const client = await getIiiClient()
-  await client.call('run::abort', { session_id: sessionId })
+  await stopTurn(client, sessionId)
 }
 
+/** `context::compact` response, discriminated on `status`. */
+type CompactResponse =
+  | {
+      status: 'ok'
+      summary: string
+      tail_start_index: number | null
+      tokens_before: number
+      tokens_after: number
+      used_prior_summary: boolean
+    }
+  | { status: 'busy' }
+  | { status: 'empty' }
+  | { status: 'overflow' }
+
+/**
+ * `/compact` — caller-owned compaction (harness.md / context-manager.md): read
+ * the transcript, summarise the head via `context::compact`, then persist a
+ * `compaction` custom entry the same way the harness does so the marker renders
+ * and future turns anchor on it. Refuses while a turn is live.
+ */
 async function realCompactSession(
   sessionId: string,
   model: ModelId,
@@ -211,59 +254,80 @@ async function realCompactSession(
   const { provider, model: modelId } = resolveRunParams(model)
   const client = await getIiiClient()
   try {
+    // Don't compact under a live turn — the harness owns the active path.
+    const status = await getTurnStatus(client, sessionId).catch(() => null)
+    if (status && isTurnActive(status.status)) return { status: 'busy' }
+
+    const items = (await fetchTranscript(sessionId)).filter(
+      (item): item is typeof item & { message: AgentMessage } =>
+        item.message !== undefined,
+    )
+    if (items.length === 0) return { status: 'empty' }
+    const messages = items.map((item) => item.message)
+
     const DEFAULT_MAX_OUTPUT = 4_096
-    const modelPayload: {
+    const modelInput: {
       id: string
-      providerID: string
-      limit?: { context: number; input: number; output: number }
-    } = { id: modelId, providerID: provider }
+      provider?: string
+      limits?: { context_window: number; max_output_tokens: number }
+    } = { id: modelId, provider }
     if (typeof contextWindow === 'number' && contextWindow > 0) {
-      modelPayload.limit = {
-        context: contextWindow,
-        input: contextWindow,
-        output: DEFAULT_MAX_OUTPUT,
+      modelInput.limits = {
+        context_window: contextWindow,
+        max_output_tokens: DEFAULT_MAX_OUTPUT,
       }
     }
 
-    const resp = await client.call<{
-      status?: string
-      tail_start_id?: string | null
-      tokens_before?: number
-      auto_continued?: boolean
-      summary_text?: string
-      message?: string
-      reason?: string
-    }>('context-compaction::compact_session', {
-      session_id: sessionId,
-      model: modelPayload,
+    const resp = await client.trigger<CompactResponse>('context::compact', {
+      messages,
+      model: modelInput,
+      // Serialise concurrent compactions of the same conversation.
+      options: { lease_key: sessionId },
     })
+
     if (resp?.status === 'ok') {
-      const tokensBefore =
-        typeof resp.tokens_before === 'number' ? resp.tokens_before : 0
-      if (tokensBefore === 0) return { status: 'empty' }
-      const summaryText =
-        typeof resp.summary_text === 'string' && resp.summary_text.length > 0
-          ? resp.summary_text
-          : '[prior conversation compacted by the engine]'
+      const tailStartEntryId =
+        typeof resp.tail_start_index === 'number' &&
+        items[resp.tail_start_index]
+          ? items[resp.tail_start_index].entry_id
+          : null
+      // Persist the marker the same shape the harness writes, so it renders
+      // (session::message-added → conversations layer) and the next turn's
+      // assemble reads `summary` + `tail_start_entry_id` to anchor.
+      await appendCustomEntry({
+        session_id: sessionId,
+        custom_type: COMPACTION_CUSTOM_TYPE,
+        data: {
+          summary: resp.summary,
+          tail_start_entry_id: tailStartEntryId,
+          tokens_before: resp.tokens_before,
+          timestamp: Date.now(),
+        },
+      }).catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn('[real-backend] persist compaction entry failed', err)
+        }
+      })
       return {
         status: 'ok',
-        tokensBefore,
-        autoContinued: Boolean(resp.auto_continued),
-        summaryText,
+        tokensBefore: resp.tokens_before,
+        autoContinued: false,
+        summaryText:
+          resp.summary.length > 0
+            ? resp.summary
+            : '[prior conversation compacted]',
       }
     }
     if (resp?.status === 'busy') return { status: 'busy' }
-    if (resp?.status === 'overflow') {
-      const message =
-        typeof resp.message === 'string'
-          ? resp.message
-          : 'unknown summariser error'
-      return { status: 'overflow', message }
-    }
     if (resp?.status === 'empty') return { status: 'empty' }
+    if (resp?.status === 'overflow') {
+      return { status: 'overflow', message: 'compaction unavailable' }
+    }
     return {
       status: 'error',
-      message: `unexpected status: ${String(resp?.status ?? 'null')}`,
+      message: `unexpected status: ${String(
+        (resp as { status?: unknown })?.status ?? 'null',
+      )}`,
     }
   } catch (err) {
     return {

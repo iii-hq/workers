@@ -1,0 +1,105 @@
+//! `context-manager` client: `context::assemble`. Soft dependency — when the
+//! worker is absent (function not found) the caller degrades to raw history
+//! plus the base system prompt.
+
+use std::sync::Arc;
+
+use iii_sdk::{TriggerRequest, III};
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use crate::types::message::AgentMessage;
+use crate::types::model::ThinkingLevel;
+
+/// The budgeted context returned by `context::assemble`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AssembleOutput {
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub messages: Vec<AgentMessage>,
+    #[serde(default)]
+    pub applied: Applied,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Applied {
+    #[serde(default)]
+    pub compacted: bool,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub tail_start_index: Option<i64>,
+}
+
+pub struct AssembleParams {
+    pub messages: Vec<Value>,
+    pub model_id: String,
+    pub provider: Option<String>,
+    pub system_prompt: Option<String>,
+    pub previous_summary: Option<String>,
+    pub lease_key: String,
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+#[derive(Clone)]
+pub struct ContextClient {
+    iii: Arc<III>,
+    timeout_ms: u64,
+}
+
+impl ContextClient {
+    pub fn new(iii: Arc<III>, timeout_ms: u64) -> Self {
+        Self { iii, timeout_ms }
+    }
+
+    /// Assemble a model-ready context. Returns `Ok(None)` when the worker is
+    /// unreachable (soft dependency → raw-history fallback).
+    pub async fn assemble(&self, params: AssembleParams) -> Result<Option<AssembleOutput>, String> {
+        let mut model = json!({ "id": params.model_id });
+        if let Some(p) = &params.provider {
+            model["provider"] = json!(p);
+        }
+        let mut options = json!({ "lease_key": params.lease_key });
+        if let Some(s) = &params.previous_summary {
+            options["previous_summary"] = json!(s);
+        }
+        if let Some(tl) = &params.thinking_level {
+            options["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
+        }
+        let mut payload = json!({
+            "messages": params.messages,
+            "model": model,
+            "options": options,
+        });
+        if let Some(sp) = &params.system_prompt {
+            payload["system_prompt"] = json!(sp);
+        }
+
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "context::assemble".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
+
+        match resp {
+            Ok(v) => serde_json::from_value::<AssembleOutput>(v)
+                .map(Some)
+                .map_err(|e| format!("context::assemble parse: {e}")),
+            Err(e) if is_unroutable(&e.to_string()) => {
+                tracing::info!("context-manager absent; using raw history");
+                Ok(None)
+            }
+            Err(e) => Err(format!("context::assemble: {e}")),
+        }
+    }
+}
+
+fn is_unroutable(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("function_not_found") || m.contains("not found") || m.contains("no function")
+}

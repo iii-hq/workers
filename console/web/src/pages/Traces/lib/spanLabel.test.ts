@@ -157,7 +157,7 @@ describe('isEngineRoutingSpan', () => {
     // engine routing would sweep up legitimate harness spans.
     expect(
       isEngineRoutingSpan({
-        name: 'call turn::get_state',
+        name: 'call harness::status',
         service_name: 'harness',
         attributes: {},
       }),

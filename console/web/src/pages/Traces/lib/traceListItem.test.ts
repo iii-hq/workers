@@ -33,23 +33,23 @@ function makeSpan(overrides: Partial<StoredSpan> = {}): StoredSpan {
 
 describe('dedupeToTraceRoots', () => {
   it('collapses a search_all_spans flood to one root per trace', () => {
-    // What the engine returns for a `harness::trigger` search: the whole turn.
+    // What the engine returns for a `harness::send` search: the whole turn.
     const spans = [
       makeSpan({
         span_id: 'root',
-        name: 'handle_invocation harness::trigger',
+        name: 'handle_invocation harness::send',
         start_time_unix_nano: 100,
       }),
       makeSpan({
         span_id: 'call',
         parent_span_id: 'root',
-        name: 'call harness::trigger',
+        name: 'call harness::send',
         start_time_unix_nano: 110,
       }),
       makeSpan({
         span_id: 'child',
         parent_span_id: 'call',
-        name: 'run::start',
+        name: 'harness::turn',
         start_time_unix_nano: 120,
       }),
     ]
