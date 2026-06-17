@@ -19,12 +19,9 @@ pub async fn handle(
     deps: &Deps,
     event: SessionDeletedEvent,
 ) -> Result<EventAck, crate::error::ApprovalError> {
-    if let Err(e) = settings::clear(
-        deps.iii.as_ref(),
-        &event.session_id,
-        deps.cfg.state_timeout_ms,
-    )
-    .await
+    let cfg = deps.config().await;
+    if let Err(e) =
+        settings::clear(deps.iii.as_ref(), &event.session_id, cfg.state_timeout_ms).await
     {
         tracing::warn!(session_id = %event.session_id, error = %e, "settings purge failed");
     }

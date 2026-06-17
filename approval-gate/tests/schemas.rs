@@ -46,8 +46,11 @@ fn trigger_spec_to_pretty_json(spec: &TriggerSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 14 registered functions, in
-/// registration order (kept in lockstep with `register_all`).
+/// The catalog must cover exactly the 13 registered functions, in
+/// registration order (kept in lockstep with `register_all`). The internal
+/// `approval::on-config-change` handler is registered separately via
+/// `configuration::register_config_trigger` (mirroring session-manager /
+/// context-manager), so it is not part of this public catalog.
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
@@ -64,7 +67,6 @@ fn catalog_lists_all_functions_in_registration_order() {
             "approval::approve-always",
             "approval::get-settings",
             "approval::clear-settings",
-            "approval::on-config-change",
             "approval::on-session-deleted",
             "approval::on-turn-completed",
             "approval::sweep",
@@ -154,7 +156,6 @@ fn schemas_carry_field_descriptions() {
         "approval::resolve",
         "approval::list-pending",
         "approval::get-pending",
-        "approval::on-config-change",
         "approval::on-session-deleted",
         "approval::on-turn-completed",
     ];

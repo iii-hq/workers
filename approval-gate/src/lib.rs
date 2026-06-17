@@ -17,12 +17,12 @@
 //! those bindings are best-effort so the worker also boots standalone.
 
 pub mod config;
+pub mod configuration;
 pub mod decision;
 pub mod denial;
 pub mod error;
 pub mod events;
 pub mod functions;
-pub mod gate_config;
 pub mod harness;
 pub mod manifest;
 pub mod pending;

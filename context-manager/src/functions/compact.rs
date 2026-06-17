@@ -99,13 +99,9 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
         .clone()
         .unwrap_or_else(|| lease::default_lease_key(&messages));
     let ttl_ms = (config.lease_ttl_secs * 1_000) as i64;
-    let Some(nonce) = lease::acquire(
-        deps.leases.as_ref(),
-        deps.clock.as_ref(),
-        &lease_key,
-        ttl_ms,
-    )
-    .await
+    let leases = deps.leases().await;
+    let Some(nonce) =
+        lease::acquire(leases.as_ref(), deps.clock.as_ref(), &lease_key, ttl_ms).await
     else {
         return Ok(CompactResponse::Busy);
     };
@@ -121,7 +117,7 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
     )
     .await;
 
-    lease::release(deps.leases.as_ref(), &lease_key, &nonce).await;
+    lease::release(leases.as_ref(), &lease_key, &nonce).await;
     Ok(outcome)
 }
 

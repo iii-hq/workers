@@ -6,8 +6,8 @@
 use iii_sdk::III;
 use serde_json::Value;
 
+use crate::config::WorkerConfig;
 use crate::error::ApprovalError;
-use crate::gate_config::GateDefaults;
 use crate::state;
 use crate::types::{
     now_ms, validate_id, AlwaysAllowEntry, ApprovalSettings, GrantedBy, SettingsSource,
@@ -32,11 +32,11 @@ pub fn parse_settings(value: &Value) -> Option<ApprovalSettings> {
 }
 
 /// The in-memory settings a session with no stored record runs on:
-/// deployment defaults, seed entries marked `granted_by: "seed"`.
-pub fn seeded_from(defaults: &GateDefaults, granted_at: i64) -> ApprovalSettings {
+/// configuration defaults, seed entries marked `granted_by: "seed"`.
+pub fn seeded_from(cfg: &WorkerConfig, granted_at: i64) -> ApprovalSettings {
     ApprovalSettings {
-        mode: defaults.default_mode,
-        always_allow: defaults
+        mode: cfg.default_mode,
+        always_allow: cfg
             .always_allow_seed
             .iter()
             .map(|function_id| AlwaysAllowEntry {
@@ -52,11 +52,11 @@ pub fn seeded_from(defaults: &GateDefaults, granted_at: i64) -> ApprovalSettings
 
 pub fn effective(
     stored: Option<ApprovalSettings>,
-    defaults: &GateDefaults,
+    cfg: &WorkerConfig,
 ) -> (ApprovalSettings, SettingsSource) {
     match stored {
         Some(settings) => (settings, SettingsSource::Stored),
-        None => (seeded_from(defaults, 0), SettingsSource::Defaults),
+        None => (seeded_from(cfg, 0), SettingsSource::Defaults),
     }
 }
 
@@ -99,7 +99,7 @@ pub async fn read_strict(
 pub async fn materialize_and<F>(
     iii: &III,
     session_id: &str,
-    defaults: &GateDefaults,
+    cfg: &WorkerConfig,
     timeout_ms: u64,
     mutate: F,
 ) -> Result<ApprovalSettings, ApprovalError>
@@ -110,7 +110,7 @@ where
     let now = now_ms();
     let base = read_strict(iii, session_id, timeout_ms)
         .await?
-        .unwrap_or_else(|| seeded_from(defaults, now));
+        .unwrap_or_else(|| seeded_from(cfg, now));
     let next = mutate(base, now);
     state::set(
         iii,
@@ -170,11 +170,11 @@ mod tests {
     use crate::types::PermissionMode;
     use serde_json::json;
 
-    fn defaults_with_seed() -> GateDefaults {
-        GateDefaults {
+    fn defaults_with_seed() -> WorkerConfig {
+        WorkerConfig {
             default_mode: PermissionMode::Auto,
             always_allow_seed: vec!["state::get".into(), "engine::functions::list".into()],
-            pending_timeout_ms: 1_800_000,
+            ..WorkerConfig::default()
         }
     }
 

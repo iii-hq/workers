@@ -30,6 +30,9 @@ pub fn build_manifest() -> ModuleManifest {
             "session_fetch_timeout_ms": 1000,
             "state_timeout_ms": 5000,
             "harness_timeout_ms": 10000,
+            "default_mode": "manual",
+            "always_allow_seed": [],
+            "pending_timeout_ms": 1800000,
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }

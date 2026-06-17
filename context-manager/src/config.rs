@@ -119,28 +119,25 @@ impl WorkerConfig {
         schema
     }
 
-    /// The restart-required fields: everything consumed ONCE at boot
-    /// rather than per call. `summarizer_timeout_ms` is baked into the
-    /// `RouterSummarizer` and `lease_dir` into the `FsLeaseStore`; a live
-    /// config update that changes either is refused on hot-reload (logged
-    /// "restart required", the previous snapshot kept). Every OTHER field
-    /// is a per-call tuning knob that hot-applies.
+    /// The single **structural** field: `lease_dir` backs the
+    /// `FsLeaseStore`. A live change rebuilds + swaps the store on the fly
+    /// (see [`crate::configuration`]) — no restart. Every other field is a
+    /// per-call tuning knob read from the live snapshot, including
+    /// `summarizer_timeout_ms` (the `RouterSummarizer` reads it per call).
     pub fn boot_signature(&self) -> BootSignature {
         BootSignature {
             lease_dir: self.lease_dir.clone(),
-            summarizer_timeout_ms: self.summarizer_timeout_ms,
         }
     }
 }
 
-/// Signature of the config fields consumed at boot (see
-/// [`WorkerConfig::boot_signature`]). Two configs with an equal signature
-/// differ only in per-call tuning knobs that can be hot-applied; any
-/// other difference requires a worker restart.
+/// Signature of the structural config fields (see
+/// [`WorkerConfig::boot_signature`]). An equal signature means only
+/// per-call tuning knobs changed (swap the snapshot); a different
+/// signature rebuilds the affected adapter and swaps it in.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BootSignature {
     pub lease_dir: String,
-    pub summarizer_timeout_ms: u64,
 }
 
 fn default_reserved_tokens_cap() -> u64 {
@@ -242,12 +239,6 @@ impl Default for WorkerConfig {
     }
 }
 
-pub fn load_config(path: &str) -> Result<WorkerConfig> {
-    let contents = std::fs::read_to_string(path)?;
-    let cfg: WorkerConfig = serde_yaml::from_str(&contents)?;
-    Ok(cfg)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,12 +298,6 @@ mod tests {
     fn unknown_root_key_is_rejected_at_parse() {
         let err = serde_yaml::from_str::<WorkerConfig>("tail_truns: 3").unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
-    }
-
-    #[test]
-    fn committed_config_yaml_parses_to_defaults() {
-        let cfg = load_config(concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml")).unwrap();
-        assert_eq!(cfg, WorkerConfig::default());
     }
 
     #[test]
@@ -400,17 +385,19 @@ mod tests {
     }
 
     #[test]
-    fn boot_signature_differs_on_restart_required_fields() {
+    fn boot_signature_differs_only_on_lease_dir() {
         let base = WorkerConfig::default();
         let moved_dir = WorkerConfig {
             lease_dir: "/tmp/other".to_string(),
             ..base.clone()
         };
+        // summarizer_timeout_ms is a per-call knob now (read live), so it
+        // must NOT alter the structural signature — only lease_dir does.
         let new_timeout = WorkerConfig {
             summarizer_timeout_ms: base.summarizer_timeout_ms + 1,
             ..base.clone()
         };
         assert_ne!(base.boot_signature(), moved_dir.boot_signature());
-        assert_ne!(base.boot_signature(), new_timeout.boot_signature());
+        assert_eq!(base.boot_signature(), new_timeout.boot_signature());
     }
 }

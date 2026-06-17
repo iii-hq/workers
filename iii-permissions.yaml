@@ -100,6 +100,8 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  - '!context::on-config-change'
+  - '!approval::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

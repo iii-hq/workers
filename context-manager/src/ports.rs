@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
@@ -88,6 +89,18 @@ pub trait LeaseStore: Send + Sync {
     ) -> Result<Option<LeaseRecord>, String>;
 }
 
+/// Hot-swappable lease store. A `lease_dir` config change rebuilds the
+/// `FsLeaseStore` and swaps it here on the fly (see
+/// [`crate::configuration`]), so the field hot-reloads — no restart.
+pub type LeaseCell = Arc<RwLock<Arc<dyn LeaseStore>>>;
+
+/// Wrap a lease store in a [`LeaseCell`]. Used at boot and on a
+/// `lease_dir` change (the store is rebuilt and swapped). Callers pass an
+/// `Arc::new(FsLeaseStore::new(..)?)` (or any `Arc<dyn LeaseStore>`).
+pub fn lease_cell(store: Arc<dyn LeaseStore>) -> LeaseCell {
+    Arc::new(RwLock::new(store))
+}
+
 /// Wall clock, faked in tests to drive lease TTL expiry.
 pub trait Clock: Send + Sync {
     /// Milliseconds since epoch.
@@ -113,7 +126,8 @@ pub struct Deps {
     pub config: ConfigCell,
     pub resolver: Arc<dyn ModelResolver>,
     pub summarizer: Arc<dyn Summarizer>,
-    pub leases: Arc<dyn LeaseStore>,
+    /// Hot-swappable lease store: rebuilt + swapped on a `lease_dir` change.
+    pub leases: LeaseCell,
     pub clock: Arc<dyn Clock>,
 }
 
@@ -124,5 +138,12 @@ impl Deps {
     /// snapshots already taken.
     pub async fn config(&self) -> Arc<WorkerConfig> {
         self.config.read().await.clone()
+    }
+
+    /// Take a cheap snapshot of the current lease store. A concurrent
+    /// `lease_dir` reload swaps the cell without disturbing a snapshot
+    /// already taken.
+    pub async fn leases(&self) -> Arc<dyn LeaseStore> {
+        self.leases.read().await.clone()
     }
 }

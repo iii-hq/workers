@@ -38,11 +38,11 @@ async fn boot() -> Option<Harness> {
     sleep(Duration::from_millis(800)).await;
 
     let worker_bin = env!("CARGO_BIN_EXE_context-manager");
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{manifest_dir}/config.yaml");
 
+    // Path B: the authoritative config lives in the engine's `configuration`
+    // worker; no `--config` seed is passed.
     let worker = Command::new(worker_bin)
-        .args(["--url", ENGINE_WS, "--config", &config_path])
+        .args(["--url", ENGINE_WS])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

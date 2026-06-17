@@ -19,9 +19,10 @@ iii worker add context-manager
 `iii worker add` fetches the binary and the engine starts the worker on the
 next `iii start`. Runtime configuration lives in the `configuration` worker
 (enabled by default in the engine): at boot the worker registers its schema and
-fetches the authoritative value, and it hot-reloads on change (the `lease_dir`
-and `summarizer_timeout_ms` fields are read once at boot and need a restart). An
-optional `--config <file>.yaml` only seeds the first registration.
+fetches the authoritative value, and it hot-reloads on change — every field,
+with no restart (`summarizer_timeout_ms` is read per call; a `lease_dir` change
+rebuilds and swaps the lease store). An optional `--config <file>.yaml` only
+seeds the first registration.
 
 ## Quickstart
 

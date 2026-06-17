@@ -21,8 +21,8 @@ Three surfaces, one worker:
 2. **The decision plane** — `approval::resolve` plus the per-session settings RPCs
    (`set_mode`, `add_always_allow`, `approve_always`, …). Human/console-only.
 3. **The pending inbox** — a denormalized, **ephemeral** index of held calls
-   (`approval::list_pending` / `approval::get_pending`) plus two trigger types
-   (`approval::pending_created` / `approval::pending_resolved`) that notification workers and UIs
+   (`approval::list-pending` / `approval::get-pending`) plus two trigger types
+   (`approval::pending-created` / `approval::pending-resolved`) that notification workers and UIs
    bind to.
 
 The inbox is deliberately ephemeral: a record exists only while a call is held. Every record has an
@@ -58,7 +58,7 @@ sequenceDiagram
     AG->>AG: write approval_pending record (sync, in-hook)
     AG-->>H: decision hold + pending_timeout_ms
     Note over H: call checkpoints pending, held_by approval::gate;<br/>turn parks
-    AG--)N: approval::pending_created (async)
+    AG--)N: approval::pending-created (async)
     UI->>AG: approval::resolve {decision}
     alt allow
       AG->>H: harness::function::resolve {action: "execute"}
@@ -67,7 +67,7 @@ sequenceDiagram
       AG->>H: harness::function::resolve {action: "deliver", is_error}
     end
     AG->>AG: delete approval_pending record
-    AG--)N: approval::pending_resolved (async)
+    AG--)N: approval::pending-resolved (async)
   end
   UI->>CFG: configuration::set "approval-gate" entry
   CFG--)AG: configuration:updated trigger
@@ -174,7 +174,7 @@ Contract (maps `HookInput` → `HookOutput`, both defined in
   fallback). Before returning `hold`, the gate **synchronously writes** the
   [`PendingApprovalRecord`](#pendingapprovalrecord) — a held call must never be invisible to the
   inbox. If that state write fails, the gate returns `deny` (`gate_unavailable`) instead: fail
-  closed, never hold blind. `approval::pending_created` emits asynchronously *after* the record is
+  closed, never hold blind. `approval::pending-created` emits asynchronously *after* the record is
   written — notification fan-out never blocks the hot path.
 
 The hook runs inside the harness's at-least-once steps and MUST be idempotent: a redelivered step
@@ -207,7 +207,7 @@ the harness needs), then:
   `details`.
 
 Then, in order: delete the pending record (the [emit-once gate](#deletion-is-the-emit-gate)), and
-emit `approval::pending_resolved` with `outcome: "allow" | "deny"`.
+emit `approval::pending-resolved` with `outcome: "allow" | "deny"`.
 
 **No decision record is persisted — by design.** The prior implementation wrote every decision to a
 state row (`approvals/<session_id>/<function_call_id>` via `harness/src/approval-gate/resolve.ts`)
@@ -239,7 +239,7 @@ flowchart TD
   write --> emit["emit pending_created (async)"]
   emit --> live["record live in inbox"]
   live -->|"approval::resolve allow / deny"| del1["function::resolve, then delete record"]
-  live -->|"harness::turn_completed (turn went terminal)"| del2["purge turn's records"]
+  live -->|"harness::turn-completed (turn went terminal)"| del2["purge turn's records"]
   live -->|"session::deleted"| del3["purge session's records + settings"]
   live -->|"sweep: now past expires_at"| del4["function::resolve is_error timeout, delete record"]
   del1 --> emitR["emit pending_resolved (once, gated on delete)"]
@@ -255,7 +255,7 @@ flowchart TD
 - **Deleted** (any one of):
   1. **`approval::resolve`** — the primary path, immediately after `harness::function::resolve`
      succeeds.
-  2. **`harness::turn_completed`** — the record's turn went terminal
+  2. **`harness::turn-completed`** — the record's turn went terminal
      (`cancelled` / `failed`, e.g. `harness::stop` cascaded an abort). Purge every record carrying
      that `turn_id`; emit `pending_resolved` with `outcome: "aborted"`. (A `completed` turn has no
      live holds by construction; the purge is a harmless stale-record cleanup if any survived a
@@ -273,7 +273,7 @@ each record with `expires_at <= now`:
    `{ resolved: false }` when the harness's own pending sweep or another path already resolved the
    call.
 2. Delete the record.
-3. Emit `approval::pending_resolved` with `outcome: "timeout"` (gated on the delete, below).
+3. Emit `approval::pending-resolved` with `outcome: "timeout"` (gated on the delete, below).
 
 `expires_at = pending_at + pending_timeout_ms` — the same value the hook returned on `hold`, so the
 gate's sweep and the harness's pending sweep fire on the same deadline and coexist idempotently
@@ -291,7 +291,7 @@ between resolve and delete — which is why no delete path needs to be transacti
   `granted_by: "seed"` — and the mutation is applied; from then on the stored record wins (a later
   seed change does not retroactively edit it).
 - **Deleted** on `session::deleted` (the trigger binding replaces the prior deployment's unwired
-  console-side cleanup), or explicitly via `approval::clear_settings`.
+  console-side cleanup), or explicitly via `approval::clear-settings`.
 
 ### Deletion is the emit gate
 
@@ -304,7 +304,7 @@ for UIs.
 ### Why this matters operationally
 
 Aggressive deletion is not just hygiene — it is what keeps the worker cheap. `state::list` returns
-a whole scope, values-only, with no pagination or prefix queries; `approval::list_pending` is a
+a whole scope, values-only, with no pagination or prefix queries; `approval::list-pending` is a
 full-scope scan filtered in the worker. That stays O(live holds) — typically a handful — precisely
 *because* fulfilled approvals are deleted the moment they resolve. Records are fully
 self-describing (ids live inside the value) so the scan needs no key material.
@@ -312,7 +312,7 @@ self-describing (ids live inside the value) so the scan needs no key material.
 | Record | Created | Deleted by | Backstop |
 |---|---|---|---|
 | `approval_pending/<sid>/<cid>` | in-hook, before `hold` returns | resolve · turn terminal · session deleted | sweep on `expires_at` |
-| `approval_settings/<sid>` | first user mutation (lazy; reads never write) | `session::deleted` · `approval::clear_settings` | none needed — ≤1 row per session, dies with the session |
+| `approval_settings/<sid>` | first user mutation (lazy; reads never write) | `session::deleted` · `approval::clear-settings` | none needed — ≤1 row per session, dies with the session |
 | decision records | — none in greenfield — | — | — |
 
 ## Configuration
@@ -345,10 +345,10 @@ registration, not configuration (see [The `approval::gate` hook](#the-approvalga
 Reactive reload — no polling:
 
 ```typescript
-iii.registerFunction("approval::on_config_change", async () => reloadDefaults());
+iii.registerFunction("approval::on-config-change", async () => reloadDefaults());
 iii.registerTrigger({
   type: "configuration",
-  function_id: "approval::on_config_change",
+  function_id: "approval::on-config-change",
   config: {
     configuration_id: "approval-gate",
     event_types: ["configuration:registered", "configuration:updated"],
@@ -373,25 +373,25 @@ Decision plane (human/console-only — see [Agent exposure](#agent-exposure)):
 
 - `approval::resolve` — apply a human decision to a held call: release it for execution (`allow`)
   or deliver a denial (`deny`); deletes the pending record and emits `pending_resolved`.
-- `approval::set_mode` — set the session's permission mode (`manual` / `auto` / `full`).
-- `approval::add_always_allow` / `approval::remove_always_allow` — curate the session's auto-mode
+- `approval::set-mode` — set the session's permission mode (`manual` / `auto` / `full`).
+- `approval::add-always-allow` / `approval::remove-always-allow` — curate the session's auto-mode
   trust list (idempotent add / remove).
-- `approval::approve_always` — record a per-session "approve always" grant (honoured in every mode).
-- `approval::get_settings` — read the session's *effective* settings (stored record or
+- `approval::approve-always` — record a per-session "approve always" grant (honoured in every mode).
+- `approval::get-settings` — read the session's *effective* settings (stored record or
   configuration defaults); never writes.
-- `approval::clear_settings` — drop the session's stored settings record.
+- `approval::clear-settings` — drop the session's stored settings record.
 
 Inbox reads (operator/console):
 
-- `approval::list_pending` — the pending inbox across sessions, with tenancy filters; the catch-up
+- `approval::list-pending` — the pending inbox across sessions, with tenancy filters; the catch-up
   path for notification workers after a restart.
-- `approval::get_pending` — read one pending record; `null` when resolved or unknown.
+- `approval::get-pending` — read one pending record; `null` when resolved or unknown.
 
 Internal (trigger handlers; not called directly):
 
-- `approval::on_config_change` — configuration trigger handler (reload deployment defaults).
-- `approval::on_session_deleted` — `session::deleted` handler (purge settings + pending records).
-- `approval::on_turn_completed` — `harness::turn_completed` handler (purge the turn's pending
+- `approval::on-config-change` — configuration trigger handler (reload deployment defaults).
+- `approval::on-session-deleted` — `session::deleted` handler (purge settings + pending records).
+- `approval::on-turn-completed` — `harness::turn-completed` handler (purge the turn's pending
   records).
 - `approval::sweep` — cron handler (expire pending records past `expires_at`).
 
@@ -408,11 +408,11 @@ binds to only its own sessions (same convention as the
 and unordered (see [README § Trigger delivery](README.md#trigger-delivery)); `list_pending` is the
 reconciliation read.
 
-- **`approval::pending_created`** — a call was held and its inbox record written. Fires
-  asynchronously after the hook returns `hold` — never on the trigger hot path. Bind notification
+- **`approval::pending-created`** — a call was held and its inbox record written. Fires
+  asynchronously after the hook returns `hold` — never on the dispatch hot path. Bind notification
   workers here (push, email, Slack, PagerDuty, …).
   - Payload: `PendingApprovalRecord & { status: "pending" }`.
-- **`approval::pending_resolved`** — a pending call left the inbox. Emitted exactly once per record
+- **`approval::pending-resolved`** — a pending call left the inbox. Emitted exactly once per record
   (gated on the record delete — see
   [Deletion is the emit gate](#deletion-is-the-emit-gate)). Lets UIs clear badges and notification
   workers send "resolved" follow-ups.
@@ -439,16 +439,16 @@ Five bindings — the first is the gate itself; three of the rest exist to enfor
 - **`harness::hook::pre_trigger`** ([harness](harness.md#hooks)) → `approval::gate` — the
   synchronous hook binding itself (`functions` filter, `timeout_ms`, `on_error: "fail_closed"`;
   see [The `approval::gate` hook](#the-approvalgate-hook)).
-- **`configuration`** on `configuration_id: "approval-gate"` → `approval::on_config_change` —
+- **`configuration`** on `configuration_id: "approval-gate"` → `approval::on-config-change` —
   reload deployment defaults reactively (replaces the prior deployment's
   `approval::on_harness_config` binding on the harness entry).
 - **`session::deleted`** ([session-manager](session-manager.md#trigger-types-emitted)) →
-  `approval::on_session_deleted` — purge `approval_settings/<sid>` and every
+  `approval::on-session-deleted` — purge `approval_settings/<sid>` and every
   `approval_pending/<sid>/*` record. This is the cascade the prior deployment lacked (its
   console-side `clearApprovalSettings` helper was never wired to a delete flow); session-manager
   needs no change — the event already exists.
-- **`harness::turn_completed`** ([harness](harness.md#trigger-types-emitted)) →
-  `approval::on_turn_completed` — purge the turn's pending records when it goes terminal; covers
+- **`harness::turn-completed`** ([harness](harness.md#trigger-types-emitted)) →
+  `approval::on-turn-completed` — purge the turn's pending records when it goes terminal; covers
   `harness::stop` cancellation cascades and failed turns without polling `harness::status`.
 - **`cron`** (engine trigger, ~60s) → `approval::sweep` — the expiry backstop.
 
@@ -459,7 +459,7 @@ worker:
 
 ```typescript
 // notify-worker: bind at startup
-iii.registerFunction("notify::on_approval_pending", async (evt) => {
+iii.registerFunction("notify::on-approval-pending", async (evt) => {
   // evt is PendingApprovalRecord — self-sufficient for notification copy:
   // function id, redacted args excerpt, session title, expiry.
   await sendPush({
@@ -470,14 +470,14 @@ iii.registerFunction("notify::on_approval_pending", async (evt) => {
   });
 });
 iii.registerTrigger({
-  type: "approval::pending_created",
-  function_id: "notify::on_approval_pending",
+  type: "approval::pending-created",
+  function_id: "notify::on-approval-pending",
   config: { metadata: { owner: "u_1" } },   // optional tenancy filter
 });
 ```
 
 After a restart (missed events), a notification worker reconciles with one
-`approval::list_pending` call. Records carry everything a row needs (title, function, redacted
+`approval::list-pending` call. Records carry everything a row needs (title, function, redacted
 args, expiry) — no per-row round-trips.
 
 ---
@@ -600,7 +600,7 @@ Errors: `approval/invalid_payload` (bad shape, or `/` in ids). An unknown
 `{ session_id, function_call_id }` is **not** an error — it returns `{ resolved: false }`
 (duplicate decisions race benignly; see idempotency notes above).
 
-### `approval::list_pending`
+### `approval::list-pending`
 
 The pending inbox. Filters apply worker-side over the live scope (cheap — the scope only ever
 holds live records). `metadata` is an equality match against `session_metadata` (tenancy, same
@@ -621,7 +621,7 @@ type ListPendingResponse = {
 };
 ```
 
-### `approval::get_pending`
+### `approval::get-pending`
 
 - Invocation: **sync**
 
@@ -630,7 +630,7 @@ type GetPendingRequest = { session_id: string; function_call_id: string };
 type GetPendingResponse = { pending: PendingApprovalRecord } | null;  // null: resolved or unknown
 ```
 
-### `approval::set_mode`
+### `approval::set-mode`
 
 Set the session's permission mode. First mutation materializes the settings record from the
 current configuration defaults (see
@@ -643,7 +643,7 @@ type SetModeRequest = { session_id: string; mode: PermissionMode };
 type SetModeResponse = { settings: ApprovalSettings };
 ```
 
-### `approval::add_always_allow` / `approval::remove_always_allow`
+### `approval::add-always-allow` / `approval::remove-always-allow`
 
 Curate the session's auto-mode trust list. Add is idempotent on `function_id`; remove of an absent
 entry is a no-op. Removing a `granted_by: "seed"` entry works like any other — the stored record
@@ -656,7 +656,7 @@ type AlwaysAllowMutationRequest = { session_id: string; function_id: string };
 type AlwaysAllowMutationResponse = { settings: ApprovalSettings };
 ```
 
-### `approval::approve_always`
+### `approval::approve-always`
 
 Record a per-session "approve always" grant (honoured in **every** mode). Typically called by the
 console from an approval prompt, immediately before `approval::resolve { decision: "allow" }`.
@@ -668,7 +668,7 @@ type ApproveAlwaysRequest = { session_id: string; function_id: string };
 type ApproveAlwaysResponse = { settings: ApprovalSettings };
 ```
 
-### `approval::get_settings`
+### `approval::get-settings`
 
 Read the session's **effective** settings. Never writes (lazy seeding happens on mutation, not on
 read).
@@ -683,10 +683,10 @@ type GetSettingsResponse = {
 };
 ```
 
-### `approval::clear_settings`
+### `approval::clear-settings`
 
 Drop the session's stored settings record (the session reverts to configuration defaults). Also
-invoked internally by `approval::on_session_deleted`.
+invoked internally by `approval::on-session-deleted`.
 
 - Invocation: **sync**
 
@@ -710,7 +710,7 @@ notification channels (push payloads, Slack messages) without leaking call argum
 ## Human-only defense
 
 All `approval::*` and `configuration::*` functions are operator surfaces — an agent that could call
-`approval::set_mode` or `approval::resolve` would approve its own calls. Defense in depth:
+`approval::set-mode` or `approval::resolve` would approve its own calls. Defense in depth:
 
 1. **Agent exposure** (primary): deny all `approval::*` and `configuration::*` to in-run agents
    (below).
@@ -745,7 +745,7 @@ every layer.
 | Scope | Key | Value | Written | Deleted |
 |---|---|---|---|---|
 | `approval_pending` | `<session_id>/<function_call_id>` | [`PendingApprovalRecord`](#pendingapprovalrecord) | in-hook, before `hold` returns | resolve · turn terminal · session deleted · sweep (`expires_at`) — see [State lifecycle](#state-lifecycle) |
-| `approval_settings` | `<session_id>` | [`ApprovalSettings`](#wire-types) | first user mutation (lazy — reads never write) | `session::deleted` · `approval::clear_settings` |
+| `approval_settings` | `<session_id>` | [`ApprovalSettings`](#wire-types) | first user mutation (lazy — reads never write) | `session::deleted` · `approval::clear-settings` |
 
 The legacy `approvals` decision scope is gone (see [Decision flow](#decision-flow-approvalresolve));
 pending **trigger** mechanics (`calls[id].state = "pending"`, `held_by`) live on the harness turn
@@ -757,16 +757,16 @@ only for "what needs human attention right now".
 
 - `harness` — the `harness::hook::pre_trigger` trigger type (the gate's binding) and
   [`harness::function::resolve`](harness.md#harnessfunctionresolve) (`execute` on allow, `deliver`
-  on deny/timeout). Binds [`harness::turn_completed`](harness.md#trigger-types-emitted) for
+  on deny/timeout). Binds [`harness::turn-completed`](harness.md#trigger-types-emitted) for
   terminal-turn cleanup.
 - `iii-state` — the two scopes above.
 - `configuration` (soft) — the `approval-gate` entry; built-in defaults apply without it.
 - `session-manager` (soft) — `session::get` for denormalized context at hold time;
   [`session::deleted`](session-manager.md#trigger-types-emitted) for cascade cleanup. Without it,
-  records carry no session context and settings rely on `approval::clear_settings` for cleanup.
+  records carry no session context and settings rely on `approval::clear-settings` for cleanup.
 - `policy::check_permissions` (soft) — the yaml rule engine; unreachable → fail-closed deny.
 - Engine `cron` trigger — the sweep.
-- Registers two custom trigger types (`approval::pending_created`, `approval::pending_resolved`)
+- Registers two custom trigger types (`approval::pending-created`, `approval::pending-resolved`)
   and emits through the engine (see [README § Trigger delivery](README.md#trigger-delivery)).
 
 ## Agent exposure
@@ -778,7 +778,7 @@ Deny-by-default for in-run agents (see [README § Security model](README.md#secu
   invokes it, via the configured hook binding), and the internal trigger handlers.
 - **Deny: `configuration::*`** — the `approval-gate` entry is operator-controlled deployment
   policy.
-- **Operator reads, not agent reads:** `approval::list_pending` / `approval::get_pending` are
+- **Operator reads, not agent reads:** `approval::list-pending` / `approval::get-pending` are
   console/notification surfaces. Read-only and redacted, but they enumerate held calls across
   sessions — the same multi-tenant leak caveat as
   [`session::list`](session-manager.md#agent-exposure); keep them off agent allow-lists.
@@ -812,10 +812,10 @@ superseded by this spec.
 | `approval::resolve` → `state::set approvals/<sid>/<cid>` (write-only scope, **never deleted**) | `approval::resolve` → `harness::function::resolve`; **no decision records** |
 | `turn::on_approval` state trigger + `function_awaiting_approval` FSM wake | harness deferred trigger + `action: "execute"` release |
 | `awaiting_approval[]` on the turn record | `calls[id].state = "pending", held_by` on the harness turn record |
-| Approved call executed by the orchestrator's FSM | released call executed by the harness trigger pipeline (`post_trigger` hooks included) |
-| `harness.permissions.default_mode` (implementation-era harness entry) + `approval::on_harness_config` | own `approval-gate` configuration entry + `approval::on_config_change` |
+| Approved call executed by the orchestrator's FSM | released call executed by the harness dispatch pipeline (`post_dispatch` hooks included) |
+| `harness.permissions.default_mode` (implementation-era harness entry) + `approval::on_harness_config` | own `approval-gate` configuration entry + `approval::on-config-change` |
 | Settings record written eagerly with defaults | lazy seeding — first mutation writes; reads never write |
 | Console `clearApprovalSettings` helper (defined, never wired) | `session::deleted` trigger binding purges settings + pending records |
-| No pending signal; console derives from `turn_state_changed` + `awaiting_approval[]` | `approval::pending_created` / `pending_resolved` triggers + `approval_pending` inbox |
-| No global pending list | `approval::list_pending` / `approval::get_pending` |
+| No pending signal; console derives from `turn_state_changed` + `awaiting_approval[]` | `approval::pending-created` / `pending_resolved` triggers + `approval_pending` inbox |
+| No global pending list | `approval::list-pending` / `approval::get-pending` |
 | No timeout for abandoned holds (parked turns stuck forever) | `expires_at` + gate sweep, harness pending sweep as second backstop |

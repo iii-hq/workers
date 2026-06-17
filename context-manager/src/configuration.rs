@@ -4,19 +4,17 @@
 //! [`database`](../../database/src/configuration.rs) /
 //! [`coder`](../../coder/src/configuration.rs).
 //!
-//! context-manager's config splits into two halves on a live update:
+//! Every field hot-reloads — nothing requires a restart:
 //!
-//! - The BOOT SIGNATURE (`lease_dir` + `summarizer_timeout_ms`) is
-//!   everything consumed ONCE at startup: `lease_dir` builds the
-//!   `FsLeaseStore` and `summarizer_timeout_ms` the `RouterSummarizer`.
-//!   A config change that alters either is REFUSED on hot-reload (logged
-//!   "restart required", the previous snapshot kept) — those adapters are
-//!   built once at boot and never rebuilt.
-//! - Every OTHER field is a per-call tuning knob (token reserves, prune
-//!   thresholds, compaction tail, lease TTL). When a freshly-fetched
-//!   config's boot signature matches the boot-time signature, the
-//!   snapshot is swapped live; handlers read the current snapshot per
-//!   call via [`Deps::config`](crate::ports::Deps::config).
+//! - `summarizer_timeout_ms` and the other numeric/threshold knobs are
+//!   read from the live snapshot per call (the `RouterSummarizer` reads
+//!   its timeout from the [`ConfigCell`]); a change takes effect on the
+//!   next call once the snapshot is swapped.
+//! - `lease_dir` is the one STRUCTURAL field (the boot signature): a
+//!   change rebuilds the `FsLeaseStore` and swaps it into the shared
+//!   [`LeaseCell`](crate::ports::LeaseCell) on the fly. A rebuild that
+//!   fails (an unopenable dir) keeps the previous store + config
+//!   (last-good); it never refuses with "restart required".
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +23,9 @@ use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, 
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use crate::config::{BootSignature, WorkerConfig};
+use crate::adapters::fs_lease::FsLeaseStore;
+use crate::config::WorkerConfig;
+use crate::ports::{LeaseCell, LeaseStore};
 
 /// Hot-swappable config snapshot shared with every handler. The
 /// `Arc<RwLock<Arc<WorkerConfig>>>` shape lets a handler take a
@@ -101,54 +101,57 @@ async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
     }
 }
 
-/// Swap the config snapshot under the write lock. No adapter rebuild —
-/// the boot signature is unchanged by construction (the caller has
-/// already passed [`reloadable`]).
+/// Swap the config snapshot under the write lock. Tuning knobs take effect
+/// on the next per-call read; any structural rebuild (the lease store) is
+/// done by the caller before this swap.
 pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Decide whether a freshly-fetched config can be hot-applied. Returns
-/// the config when its boot signature matches the boot-time signature
-/// (only per-call tuning knobs changed), or an error describing the
-/// restart-required change.
-fn reloadable(cfg: WorkerConfig, boot_sig: &BootSignature) -> Result<WorkerConfig, String> {
-    if cfg.boot_signature() != *boot_sig {
-        return Err(
-            "configuration change alters lease_dir or summarizer_timeout_ms — these are \
-             consumed once at boot (the FsLeaseStore and RouterSummarizer are built then and \
-             never rebuilt); a worker restart is required to apply them"
-                .to_string(),
-        );
-    }
-    Ok(cfg)
+/// Internal `context::on-config-change` trigger payload. The handler
+/// re-fetches the authoritative configuration, so this carries only the
+/// (advisory) configuration id; a struct (not `Value`) keeps the request
+/// schema concrete and unknown fields are ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnConfigChangeEvent {
+    /// Configuration id that changed (advisory; the handler re-fetches the value).
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Ack returned by the internal `context::on-config-change` handler.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OnConfigChangeResponse {
+    pub ok: bool,
 }
 
 /// Register the internal config-change handler and bind a `configuration`
-/// trigger. `boot_sig` is the signature captured at startup; any reload
-/// that would change it is refused (those require a worker restart).
+/// trigger. `leases` is the live lease-store cell the handler rebuilds and
+/// swaps when `lease_dir` changes; every other field is read per call, so
+/// nothing requires a restart.
 pub fn register_config_trigger(
     iii: &III,
     cell: ConfigCell,
-    boot_sig: BootSignature,
+    leases: LeaseCell,
 ) -> Result<(), IIIError> {
     let cell_for_fn = cell.clone();
+    let leases_for_fn = leases.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let cell = cell_for_fn.clone();
+            let leases = leases_for_fn.clone();
             let engine = engine.clone();
-            let boot_sig = boot_sig.clone();
             async move {
-                on_config_change(&engine, &cell, &boot_sig).await;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                on_config_change(&engine, &cell, &leases).await;
+                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
-            "Internal: reload context-manager's tuning knobs from the authoritative \
-             configuration when it changes; lease_dir / summarizer_timeout_ms changes require \
-             a restart.",
+            "Internal: hot-reload context-manager from the authoritative configuration when it \
+             changes — rebuilds the compaction lease store on a lease_dir change and swaps the \
+             per-call tuning snapshot otherwise.",
         ),
     );
 
@@ -164,15 +167,19 @@ pub fn register_config_trigger(
     Ok(())
 }
 
-/// Reload tuning knobs from the AUTHORITATIVE configuration.
+/// Reload from the AUTHORITATIVE configuration.
 ///
 /// The caller-supplied trigger payload is intentionally ignored:
 /// `context::on-config-change` is a discoverable bus function, so trusting
 /// `payload.new_value` would let any caller inject arbitrary config without
 /// updating persisted state. Re-fetch the stored value via
-/// `configuration::get` instead. A restart-required change is refused; the
-/// previous snapshot is always kept on any failure path.
-async fn on_config_change(iii: &III, cell: &ConfigCell, boot_sig: &BootSignature) {
+/// `configuration::get` instead.
+///
+/// When `lease_dir` changed, rebuild the `FsLeaseStore` and swap it in
+/// before swapping the snapshot. A rebuild failure (an unopenable dir)
+/// keeps the previous store AND config (last-good) so the live snapshot's
+/// `lease_dir` never diverges from the store actually in use.
+async fn on_config_change(iii: &III, cell: &ConfigCell, leases: &LeaseCell) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -183,18 +190,27 @@ async fn on_config_change(iii: &III, cell: &ConfigCell, boot_sig: &BootSignature
             return;
         }
     };
-    let cfg = match reloadable(cfg, boot_sig) {
-        Ok(cfg) => cfg,
-        Err(reason) => {
-            tracing::warn!(
-                reason = %reason,
-                "config-change refused: restart required; keeping previous config"
-            );
-            return;
+
+    let lease_dir_changed = cell.read().await.boot_signature() != cfg.boot_signature();
+    if lease_dir_changed {
+        match FsLeaseStore::new(cfg.resolved_lease_dir()) {
+            Ok(store) => {
+                let store: Arc<dyn LeaseStore> = Arc::new(store);
+                *leases.write().await = store;
+                tracing::info!("context-manager lease store rebuilt (lease_dir changed)");
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "config-change: rebuilding the lease store failed; keeping the previous store and config (last-good)"
+                );
+                return;
+            }
         }
-    };
+    }
+
     apply_config(cell, cfg).await;
-    tracing::info!("context-manager tuning knobs reloaded (boot signature unchanged)");
+    tracing::info!("context-manager configuration reloaded");
 }
 
 async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
@@ -236,41 +252,6 @@ async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Res
 mod tests {
     use super::*;
 
-    #[test]
-    fn reloadable_allows_tuning_only_change() {
-        let boot = WorkerConfig::default();
-        let boot_sig = boot.boot_signature();
-        let next = WorkerConfig {
-            tail_turns: boot.tail_turns + 1,
-            reserved_pct: boot.reserved_pct + 1,
-            ..boot.clone()
-        };
-        let applied = reloadable(next, &boot_sig).expect("tuning-only change is reloadable");
-        assert_eq!(applied.tail_turns, boot.tail_turns + 1);
-    }
-
-    #[test]
-    fn reloadable_refuses_lease_dir_change() {
-        let boot = WorkerConfig::default();
-        let boot_sig = boot.boot_signature();
-        let moved = WorkerConfig {
-            lease_dir: "/tmp/somewhere-else".to_string(),
-            ..boot.clone()
-        };
-        assert!(reloadable(moved, &boot_sig).is_err());
-    }
-
-    #[test]
-    fn reloadable_refuses_summarizer_timeout_change() {
-        let boot = WorkerConfig::default();
-        let boot_sig = boot.boot_signature();
-        let retimed = WorkerConfig {
-            summarizer_timeout_ms: boot.summarizer_timeout_ms + 1,
-            ..boot.clone()
-        };
-        assert!(reloadable(retimed, &boot_sig).is_err());
-    }
-
     #[tokio::test]
     async fn apply_config_swaps_snapshot() {
         let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
@@ -285,5 +266,25 @@ mod tests {
         };
         apply_config(&cell, tuned).await;
         assert_eq!(cell.read().await.tail_turns, 9);
+    }
+
+    #[tokio::test]
+    async fn lease_dir_change_swaps_the_store() {
+        // The structural reload path swaps the live lease store in place
+        // (a `lease_dir` change rebuilds the FsLeaseStore) rather than
+        // refusing — no restart.
+        let d1 = tempfile::tempdir().unwrap();
+        let d2 = tempfile::tempdir().unwrap();
+        let leases = crate::ports::lease_cell(Arc::new(FsLeaseStore::new(d1.path()).unwrap()));
+        let before = leases.read().await.clone();
+
+        let next: Arc<dyn LeaseStore> = Arc::new(FsLeaseStore::new(d2.path()).unwrap());
+        *leases.write().await = next;
+
+        let after = leases.read().await.clone();
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "lease store must be swapped on a lease_dir change"
+        );
     }
 }

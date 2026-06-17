@@ -34,8 +34,9 @@ short-lived compaction **leases** written as files under its own `lease_dir`
 summarise the same logical history at once. Summarisation
 and model-limit lookups go through `llm-router` when installed; token counting
 and pruning are fully standalone. Its own runtime configuration is registered
-with and fetched from the `configuration` worker and hot-reloads on change
-(except `lease_dir` / `summarizer_timeout_ms`, which are restart-required).
+with and fetched from the `configuration` worker and hot-reloads on change —
+every field, with no restart (`summarizer_timeout_ms` is read per call; a
+`lease_dir` change rebuilds and swaps the lease store).
 That deliberate statelessness is what makes
 it reusable — a chat harness, a document summariser, a RAG pre-flight, or
 another team's bespoke agent can all call `context::assemble` without adopting

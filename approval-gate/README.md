@@ -26,12 +26,13 @@ event are the audit trail.
 This worker codes against the greenfield harness contracts
 (`harness::hook::pre-trigger`, `harness::function::resolve`,
 `harness::turn-completed` — see harness.md § Hooks / § API Reference), which
-are **not implemented by the current harness yet**. All trigger bindings are
-best-effort: on an engine without those trigger types the worker still boots,
-serves its RPCs, registers its configuration entry, and logs
-`trigger_type_not_found` for the absent bindings (restart it after the
-sibling appears to re-bind). The integration suite exercises the harness
-surface against in-process fakes until harness 1.0 lands.
+are **not implemented by the current harness yet**. The harness/session
+trigger bindings are best-effort: on an engine without those trigger types the
+worker still boots, serves its RPCs, and logs `trigger_type_not_found` for the
+absent bindings (restart it after the sibling appears to re-bind). The
+`configuration` worker is the one hard dependency — it is enabled by default in
+the engine, and a failed register/fetch aborts boot. The integration suite
+exercises the harness surface against in-process fakes until harness 1.0 lands.
 
 ## Install
 
@@ -47,8 +48,12 @@ exists — remains the second backstop).
 
 ```bash
 cargo build
-./target/debug/approval-gate --url ws://127.0.0.1:49134 --config ./config.yaml
+./target/debug/approval-gate --url ws://127.0.0.1:49134
 ```
+
+The authoritative config lives in the engine's `configuration` worker (no
+committed `config.yaml`); pass `--config <file>.yaml` only to seed the entry on
+its very first registration.
 
 Hold → decide → release, from any client:
 
@@ -95,23 +100,38 @@ restart, reconcile with one `approval::list-pending` call.
 
 ## Configuration
 
-Deployment defaults live in the engine configuration entry **`approval-gate`**
-(operator-edited via the console's Configuration screen; reactive reload, no
-polling):
+The whole config — runtime wiring **and** deployment approval defaults — lives
+in the single engine configuration entry **`approval-gate`** (operator-edited
+via the console's Configuration screen; reactive reload, no polling). There is
+**no committed `config.yaml`**; defaults are seeded into the entry on first
+registration.
 
 ```jsonc
 {
+  "hook": {                        // harness::hook::pre-trigger binding (re-bound live on change)
+    "functions": ["*"],            //   pre_trigger globs the gate consults on
+    "timeout_ms": 5000,
+    "on_error": "fail_closed"
+  },
+  "sweep_expression": "0 * * * * *",   // 6-field cron for the expiry sweep (re-bound live on change)
+  "policy_timeout_ms": 5000,           // per-call budgets (hot-reloadable)
+  "session_fetch_timeout_ms": 1000,
+  "state_timeout_ms": 5000,
+  "harness_timeout_ms": 10000,
   "default_mode": "manual",        // manual | auto | full — sessions with no stored settings
   "always_allow_seed": [],         // auto-mode trust profile (function ids / globs)
   "pending_timeout_ms": 1800000    // hold deadline; drives expires_at (default 30 min)
 }
 ```
 
-Without the configuration worker the gate runs on those built-in defaults —
-fail-safe, never fail-open.
-
-`config.yaml` carries runtime wiring only (hook binding globs/budget, sweep
-cron expression, per-call timeouts) — see the file's comments.
+`configuration` is a **required boot dependency**: the worker registers the
+schema and fetches the authoritative value at startup, and a failed
+register/fetch aborts boot (the gate must run on a known, authoritative policy
+surface, never a guessed one). When no value is stored yet the built-in
+defaults above are seeded and used. **Every field hot-reloads on
+`configuration::set` — nothing requires a restart**: `hook` and
+`sweep_expression` re-bind their triggers live (register the new binding, then
+unregister the old); the rest swap the in-memory snapshot.
 
 ## Agent exposure
 

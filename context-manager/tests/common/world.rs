@@ -101,7 +101,9 @@ impl ContextWorld {
             config: Arc::new(RwLock::new(Arc::new(self.config.clone()))),
             resolver: self.resolver.clone(),
             summarizer: self.summarizer.clone(),
-            leases: self.leases.clone(),
+            // Wrap the shared in-memory store in a cell; the concrete
+            // `self.leases` stays the assertion handle (same Arc inside).
+            leases: context_manager::ports::lease_cell(self.leases.clone()),
             clock: self.clock.clone(),
         }
     }

@@ -24,12 +24,13 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
     validate_id("session_id", &req.session_id)?;
     validate_id("function_call_id", &req.function_call_id)?;
 
+    let cfg = deps.config().await;
     let iii = deps.iii.as_ref();
     let Some(record) = pending::get(
         iii,
         &req.session_id,
         &req.function_call_id,
-        deps.cfg.state_timeout_ms,
+        cfg.state_timeout_ms,
     )
     .await
     .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?
@@ -83,7 +84,7 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
 
     // The record is kept on failure so the decision stays resolvable
     // (or sweepable) — never delete before the harness acknowledged.
-    let reply = harness::function_resolve(iii, payload, Some(deps.cfg.harness_timeout_ms))
+    let reply = harness::function_resolve(iii, payload, Some(cfg.harness_timeout_ms))
         .await
         .map_err(|e| {
             ApprovalError::HarnessUnavailable(format!("harness::function::resolve failed: {e}"))
@@ -96,7 +97,7 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         iii,
         &req.session_id,
         &req.function_call_id,
-        deps.cfg.state_timeout_ms,
+        cfg.state_timeout_ms,
     )
     .await
     {

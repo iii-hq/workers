@@ -11,8 +11,9 @@ pub async fn purge_matching<F>(deps: &Deps, predicate: F) -> usize
 where
     F: Fn(&PendingApprovalRecord) -> bool,
 {
+    let cfg = deps.config().await;
     let iii = deps.iii.as_ref();
-    let records = match pending::list_all(iii, deps.cfg.state_timeout_ms).await {
+    let records = match pending::list_all(iii, cfg.state_timeout_ms).await {
         Ok(records) => records,
         Err(e) => {
             tracing::warn!(error = %e, "purge: pending list failed; sweep will retry");
@@ -26,7 +27,7 @@ where
             iii,
             &record.session_id,
             &record.function_call_id,
-            deps.cfg.state_timeout_ms,
+            cfg.state_timeout_ms,
         )
         .await
         {

@@ -209,10 +209,12 @@ configuration worker yet (e.g. `todo-worker`, unreleased scaffolds):
 - **No** `load_config()` in the production boot path
 - `--config` is `Option<String>` (no default path); optional one-time seed only
 - `register_config` + `fetch_config` are **required** boot dependencies
-- Choose reload tier: ConfigCell-only vs full runtime swap (+ resync)
+- Choose reload tier (see [`configuration.md`](configuration.md) §6): ConfigCell
+  + targeted rebuild/re-bind vs full runtime swap (+ resync). **Hot-reload is the
+  default — no field should require a restart.**
 
 Reference: `session-manager` (Path B, full runtime + resync), `context-manager`
-(Path B, ConfigCell-only).
+and `approval-gate` (Path B, ConfigCell + targeted rebuild/re-bind).
 
 ### `config.yaml` (Path A only)
 
@@ -302,9 +304,10 @@ Path B **does not ship** `config.yaml`. Defaults live in
 nothing is stored yet. `src/config.rs` gains `json_schema()` / `to_json` /
 `from_json` / `boot_signature()`; production boot does not call `load_config()`.
 See [`configuration.md`](configuration.md) for reload tiers and boot order;
-`session-manager`, `context-manager`, `shell`, `storage`, `database`, and
-`coder` follow Path B (some older workers still ship a legacy seed file — do
-not mirror that for new integrations).
+`session-manager`, `context-manager`, `approval-gate`, `shell`, `storage`,
+`database`, and `coder` follow Path B. `session-manager`, `context-manager`,
+and `approval-gate` ship **no** `config.yaml`; some older workers still ship a
+legacy seed file — do not mirror that for new integrations.
 
 ## 6. `src/main.rs`: the entry point
 
@@ -423,11 +426,12 @@ final messages can be lost.
 
 Function IDs are `<worker>::<verb>` (e.g. `shell::exec`, `context::assemble`).
 Each segment is lowercase, and **multi-word segments use kebab-case, never
-snake_case** — `context::count-tokens` and `shell::on-config-change`, not
-`context::count_tokens`. The id is the public wire surface other workers and
+snake_case** — `context::count-tokens`, `approval::list-pending`, and
+`shell::on-config-change`, not `context::count_tokens` or
+`approval::pending_created`. The id is the public wire surface other workers and
 agents call, so renaming it later is a breaking change. The same rule applies
 to a trigger's target `function_id` and to any custom `trigger_type` string
-(§8).
+(§8) — e.g. `approval::pending-created`, not `approval::pending_created`.
 
 ### Layout
 

@@ -239,9 +239,9 @@ async fn try_compact(
     estimator: &dyn Estimator,
 ) -> Option<CompactionOutcome> {
     let config = deps.config().await;
+    let leases = deps.leases().await;
     let ttl_ms = (config.lease_ttl_secs * 1_000) as i64;
-    let nonce =
-        lease::acquire(deps.leases.as_ref(), deps.clock.as_ref(), lease_key, ttl_ms).await?;
+    let nonce = lease::acquire(leases.as_ref(), deps.clock.as_ref(), lease_key, ttl_ms).await?;
 
     let outcome = async {
         let budget = preserve_recent_budget(usable_budget, None);
@@ -278,6 +278,6 @@ async fn try_compact(
     }
     .await;
 
-    lease::release(deps.leases.as_ref(), lease_key, &nonce).await;
+    lease::release(leases.as_ref(), lease_key, &nonce).await;
     outcome
 }

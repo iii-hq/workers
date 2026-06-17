@@ -20,7 +20,7 @@ use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
 use context_manager::config::WorkerConfig;
 use context_manager::functions;
-use context_manager::ports::{Deps, SystemClock};
+use context_manager::ports::{lease_cell, Deps, SystemClock};
 
 static REGISTERED: OnceCell<()> = OnceCell::const_new();
 
@@ -29,24 +29,23 @@ pub async fn register_all(iii: &Arc<III>) {
     REGISTERED
         .get_or_init(|| async {
             let cfg = WorkerConfig::default();
+            let cell = Arc::new(RwLock::new(Arc::new(cfg)));
+            let leases = lease_cell(Arc::new(
+                FsLeaseStore::new(
+                    std::env::temp_dir()
+                        .join(format!("context-manager-bdd-leases-{}", std::process::id())),
+                )
+                .expect("create bdd lease dir"),
+            ));
             let deps = Arc::new(Deps {
                 resolver: Arc::new(RouterModelResolver::new(iii.clone())),
-                summarizer: Arc::new(RouterSummarizer::new(
-                    iii.clone(),
-                    // Keep the @engine compact-overflow scenario fast:
-                    // router::chat is absent, so only the trigger error
-                    // path runs and a long stream budget buys nothing.
-                    5_000,
-                )),
-                leases: Arc::new(
-                    FsLeaseStore::new(
-                        std::env::temp_dir()
-                            .join(format!("context-manager-bdd-leases-{}", std::process::id())),
-                    )
-                    .expect("create bdd lease dir"),
-                ),
+                // The summariser reads its timeout from the live snapshot per
+                // call; router::chat is absent on the test engine, so only the
+                // trigger error path runs anyway.
+                summarizer: Arc::new(RouterSummarizer::new(iii.clone(), cell.clone())),
+                leases,
                 clock: Arc::new(SystemClock),
-                config: Arc::new(RwLock::new(Arc::new(cfg))),
+                config: cell,
             });
             functions::register_all(iii, &deps);
 

@@ -5,7 +5,6 @@
 
 use super::Deps;
 use crate::error::ApprovalError;
-use crate::gate_config::snapshot;
 use crate::settings::{self, with_grant};
 use crate::types::{ApprovalSettings, ApproveAlwaysRequest, SettingsResponse};
 
@@ -18,12 +17,12 @@ pub async fn handle(
             "function_id must be a non-empty string".to_string(),
         ));
     }
-    let defaults = snapshot(&deps.defaults);
+    let cfg = deps.config().await;
     let settings = settings::materialize_and(
         deps.iii.as_ref(),
         &req.session_id,
-        &defaults,
-        deps.cfg.state_timeout_ms,
+        &cfg,
+        cfg.state_timeout_ms,
         |base, now| ApprovalSettings {
             approved_always: with_grant(&base.approved_always, &req.function_id, now),
             ..base
