@@ -17,11 +17,11 @@ operational contract).
 | `approval::list-pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
 | `approval::get-pending` | console | One record or `null`. |
 | `approval::set-mode` | console (human-only) | `manual` / `auto` / `full`. |
-| `approval::add-always-allow` / `remove_always_allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). |
+| `approval::add-always-allow` / `remove-always-allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). |
 | `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. |
 | `approval::get-settings` | console | Effective settings + `source: "stored" \| "defaults"`. Never writes. |
 | `approval::clear-settings` | console | Drop the stored record; revert to deployment defaults. |
-| `approval::on-config-change` / `on_session_deleted` / `on_turn_completed` / `approval::sweep` | trigger handlers | Internal — never call directly. |
+| `approval::on-config-change` / `on-session-deleted` / `on-turn-completed` / `approval::sweep` | trigger handlers | Internal — never call directly. |
 
 Errors use `code: message` with codes `approval/invalid_payload`,
 `approval/state_unavailable`, `approval/harness_unavailable`. An unknown
@@ -96,9 +96,10 @@ assumes, faked today by `tests/integration.rs`:
 
 - **`harness::hook::pre-trigger` trigger type.** The worker binds
   `approval::gate` at startup with
-  `{ functions, timeout_ms, on_error: "fail_closed" }` from its
-  `config.yaml`. The hook is an ordinary registered function: the harness
-  invokes it synchronously and treats the return value as `HookOutput`.
+  `{ functions, timeout_ms, on_error: "fail_closed" }` from the `hook` block of
+  its `approval-gate` configuration entry. The hook is an ordinary registered
+  function: the harness invokes it synchronously and treats the return value as
+  `HookOutput`.
 - **`harness::function::resolve`** accepting
   `{ session_id, turn_id, function_call_id, action: "execute" }` (release a
   held call) and `{ ..., action: "deliver", is_error, content, details }`
@@ -124,10 +125,15 @@ gated sets a broad trigger policy and lets the gate hold/deny.
 - **session-manager** (soft): provides hold-time context and the
   `session::deleted` cascade. Without it, records carry no session context
   and settings cleanup relies on `approval::clear-settings`.
-- **Configuration**: deployment defaults live in the `approval-gate`
-  configuration entry (`default_mode`, `always_allow_seed`,
-  `pending_timeout_ms`); `configuration::set` replaces the **whole** value —
-  read-merge-write to edit one field.
+- **Configuration (required)**: the worker's entire config — the `hook`
+  binding, `sweep_expression`, the per-call `*_timeout_ms` budgets, and the
+  approval defaults (`default_mode`, `always_allow_seed`, `pending_timeout_ms`)
+  — lives in the `approval-gate` configuration entry; there is **no
+  `config.yaml`**. It is a required boot dependency: a failed register/fetch
+  aborts startup. `configuration::set` replaces the **whole** value —
+  read-merge-write to edit one field. Every field hot-reloads (no restart):
+  `hook` and `sweep_expression` re-bind their triggers live; the rest swap the
+  in-memory snapshot.
 
 ## What not to do
 

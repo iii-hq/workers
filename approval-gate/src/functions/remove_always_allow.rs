@@ -5,7 +5,6 @@
 
 use super::Deps;
 use crate::error::ApprovalError;
-use crate::gate_config::snapshot;
 use crate::settings::{self, without_grant};
 use crate::types::{AlwaysAllowMutationRequest, ApprovalSettings, SettingsResponse};
 
@@ -13,12 +12,12 @@ pub async fn handle(
     deps: &Deps,
     req: AlwaysAllowMutationRequest,
 ) -> Result<SettingsResponse, ApprovalError> {
-    let defaults = snapshot(&deps.defaults);
+    let cfg = deps.config().await;
     let settings = settings::materialize_and(
         deps.iii.as_ref(),
         &req.session_id,
-        &defaults,
-        deps.cfg.state_timeout_ms,
+        &cfg,
+        cfg.state_timeout_ms,
         |base, _now| ApprovalSettings {
             always_allow: without_grant(&base.always_allow, &req.function_id),
             ..base
@@ -30,22 +29,21 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::gate_config::{replace, GateDefaults};
+    use crate::config::WorkerConfig;
     use crate::testkit::{with_stack, BootOpts};
     use crate::types::PermissionMode;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn removes_seed_entries_from_the_materialized_record() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            replace(
-                &stack.defaults,
-                GateDefaults {
-                    default_mode: PermissionMode::Auto,
-                    always_allow_seed: vec!["state::get".into(), "shell::run".into()],
-                    pending_timeout_ms: 1_800_000,
-                },
-            );
+            *stack.config.write().await = Arc::new(WorkerConfig {
+                default_mode: PermissionMode::Auto,
+                always_allow_seed: vec!["state::get".into(), "shell::run".into()],
+                ..WorkerConfig::default()
+            });
             let res = handle(
                 &stack.deps,
                 AlwaysAllowMutationRequest {

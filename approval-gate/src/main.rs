@@ -1,32 +1,39 @@
 //! `approval-gate` binary entry.
 //!
 //! Boot sequence:
-//!   1. Parse CLI / load YAML config (a missing file falls back to
-//!      defaults; a file that exists but doesn't parse is fatal).
+//!   1. Parse CLI. An optional `--config` YAML file is only a SEED for the
+//!      first registration; the authoritative config lives in the
+//!      `configuration` worker.
 //!   2. Connect to the local iii engine over WebSocket.
-//!   3. Register the two custom trigger types (`approval::pending-created`,
+//!   3. Register the config schema (+ seed) with the `configuration` worker
+//!      and fetch the authoritative, env-expanded value. `configuration`
+//!      is a required boot dependency: a failed register/fetch aborts
+//!      startup — the gate must run on a known, authoritative policy
+//!      surface, never a guessed one.
+//!   4. Register the two custom trigger types (`approval::pending-created`,
 //!      `approval::pending-resolved`) — first, because the function
 //!      handlers capture the subscriber sets they fan out to.
-//!   4. Register the 14 `approval::*` functions.
-//!   5. Bind triggers, all best-effort (`harness::hook::pre-trigger`,
-//!      `configuration`, `session::deleted`, `harness::turn-completed`,
-//!      `cron`) — in a standalone deployment some of these trigger types
-//!      don't exist yet; the worker still boots and serves its RPCs.
-//!   6. Register the `approval-gate` configuration entry and read the
-//!      deployment defaults once (the configuration trigger keeps them
-//!      fresh from then on).
-//!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!   5. Register the 13 `approval::*` functions (each reads the live config
+//!      snapshot per call).
+//!   6. Bind the gate hook + the session/turn/cron triggers, all
+//!      best-effort (in a standalone deployment some of these trigger types
+//!      don't exist yet; the worker still boots and serves its RPCs). The
+//!      hook globs and sweep schedule come from the fetched config.
+//!   7. Bind the `configuration` change trigger LAST so its handler closes
+//!      over the fully-built snapshot cell + boot signature.
+//!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput, WorkerMetadata, III};
 use serde_json::json;
+use tokio::sync::RwLock;
 
+use approval_gate::configuration::{self, ConfigCell, TriggerHandles};
 use approval_gate::events::{self, Emitter};
 use approval_gate::functions::{self, Deps};
-use approval_gate::gate_config::{self, replace, shared_defaults};
 use approval_gate::{config, manifest};
 
 #[derive(Parser, Debug)]
@@ -35,8 +42,11 @@ use approval_gate::{config, manifest};
     about = "Policy and decision surface for human-held function calls."
 )]
 struct Cli {
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// Optional seed config.yaml used to populate `initial_value` on the
+    /// first registration. The AUTHORITATIVE config is always fetched from
+    /// the `configuration` worker afterward; this file only seeds it.
+    #[arg(long)]
+    config: Option<String>,
 
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
@@ -100,21 +110,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let cfg = match config::load_config(&cli.config) {
-        Ok(c) => c,
-        Err(e)
-            if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            tracing::warn!(path = %cli.config, "config file not found, using defaults");
-            config::WorkerConfig::default()
-        }
-        Err(e) => {
-            return Err(e.context(format!("invalid config {} — refusing to start", cli.config)));
-        }
-    };
-    let cfg = Arc::new(cfg);
-
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
@@ -123,41 +118,63 @@ async fn main() -> Result<()> {
         },
     ));
 
+    // A `--config` file only SEEDS the first registration; a failed parse
+    // WARNS and falls through to None (the authoritative value comes from
+    // the configuration worker). The seed IS env-expanded (`${VAR}`).
+    let seed = match cli.config.as_deref() {
+        Some(path) => match config::WorkerConfig::from_file(path) {
+            Ok(c) => {
+                tracing::info!(path = %path, "loaded seed config for initial registration");
+                Some(c)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path,
+                    error = %e,
+                    "failed to load seed config; relying on the stored configuration entry"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Register the schema (+ optional seed) and fetch the authoritative,
+    // env-expanded config. `configuration` is a required boot dependency.
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering approval-gate configuration schema")?;
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading approval-gate configuration")?;
+
     // Trigger types first: the handlers capture the subscriber sets.
     let sets = events::register_trigger_types(&iii);
-
     let sink = Arc::new(Emitter::new(sets, iii.clone()));
-    let defaults = shared_defaults();
+
+    // The hot-swappable snapshot shared with every handler.
+    let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
     let deps = Arc::new(Deps {
         iii: iii.clone(),
         sink,
-        defaults: defaults.clone(),
-        cfg: cfg.clone(),
+        config: cell.clone(),
     });
 
     functions::register_all(&iii, &deps);
 
-    // The gate's own hook binding — installing the worker is installing
-    // the hook (approval-gate.md § The approval::gate hook).
-    bind_best_effort(
-        &iii,
-        "harness::hook::pre-trigger",
-        "approval::gate",
-        json!({
-            "functions": cfg.hook.functions,
-            "timeout_ms": cfg.hook.timeout_ms,
-            "on_error": cfg.hook.on_error,
-        }),
-    );
-    bind_best_effort(
-        &iii,
-        "configuration",
-        "approval::on-config-change",
-        json!({
-            "configuration_id": gate_config::ENTRY_ID,
-            "event_types": ["configuration:registered", "configuration:updated"],
-        }),
-    );
+    // The gate's own hook binding + the cron sweep are the two STRUCTURAL
+    // bindings — installing the worker is installing the hook
+    // (approval-gate.md § The approval::gate hook). Retain their Trigger
+    // handles so a `hook` / `sweep_expression` change re-binds them live
+    // (no restart; see configuration::register_config_trigger).
+    let handles = Arc::new(TriggerHandles {
+        hook: std::sync::Mutex::new(configuration::bind_hook(&iii, &cfg)),
+        sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
+    });
+
+    // These two carry no config and are never re-bound — best-effort only.
     bind_best_effort(
         &iii,
         "session::deleted",
@@ -170,22 +187,14 @@ async fn main() -> Result<()> {
         "approval::on-turn-completed",
         json!({}),
     );
-    bind_best_effort(
-        &iii,
-        "cron",
-        "approval::sweep",
-        json!({ "expression": cfg.sweep_expression }),
-    );
 
-    // Configuration entry: register (no initial_value — operator values
-    // survive re-register), then one initial read; the configuration
-    // trigger above keeps the defaults fresh reactively.
-    if let Err(e) = gate_config::register_entry(&iii).await {
-        tracing::info!(error = %e, "configuration worker unavailable; running on built-in defaults");
-    }
-    replace(&defaults, gate_config::read_defaults(&iii).await);
+    // LAST: bind the configuration-change trigger so its handler closes over
+    // the snapshot cell + the trigger handles it re-binds on a structural
+    // change.
+    configuration::register_config_trigger(&iii, cell, handles)
+        .context("registering the configuration change trigger")?;
 
-    tracing::info!("approval-gate ready: 14 approval::* functions + 2 custom trigger types");
+    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("approval-gate shutting down");

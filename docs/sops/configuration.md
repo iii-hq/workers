@@ -8,7 +8,8 @@ edit on a live bus.
 This is the **advanced** alternative to the baseline static-config pattern in
 [`binary-worker.md`](binary-worker.md) §5 Path A. Reach for it when config must
 be observable, hot-reloadable, or shared. Reference implementations:
-`session-manager`, `context-manager`, `shell`, `storage`, `database`, `coder`.
+`session-manager`, `context-manager`, `approval-gate`, `shell`, `storage`,
+`database`, `coder`.
 
 ## 1. What the `configuration` worker is
 
@@ -101,9 +102,11 @@ Keep the `WorkerConfig` struct + `serde(default)` + `default_*()` +
 - `to_json(&self) -> Value` and `json_schema() -> Value` (a
   `schemars::schema_for!` with the shipped defaults attached as `example`).
 - `boot_signature(&self) -> BootSignature` — a **comparison key** for the
-  adapter/topology half of config (see §6). On reload: equal signature → cheap
-  tuning-only path; different signature → runtime rebuild (if supported) or
-  refuse (if not).
+  *structural* half of config (adapters, topology, trigger bindings; see §6). On
+  reload: equal signature → cheap tuning-only snapshot swap; different signature
+  → rebuild the affected adapter / re-bind the affected trigger and swap.
+  **Hot-reload is the default** — refusing a change (restart required) is a
+  last-resort exception that must be justified in the worker's docs (§6).
 
 Path B workers do **not** need `load_config()` in the production boot path.
 
@@ -111,13 +114,19 @@ Path B workers do **not** need `load_config()` in the production boot path.
 
 Pick a **reload tier** (§6) and mirror the matching reference:
 
-**Tier 1 — ConfigCell-only** ([`context-manager/src/configuration.rs`](../../context-manager/src/configuration.rs)):
+**Tier 1 — ConfigCell + targeted rebuild/re-bind** ([`context-manager/src/configuration.rs`](../../context-manager/src/configuration.rs), [`approval-gate/src/configuration.rs`](../../approval-gate/src/configuration.rs)):
 
 - `pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>`
 - `register_config(iii, seed)`, `fetch_config(iii)`
-- `apply_config(cell, cfg)` / `reloadable(cfg, boot_sig)` — swap the snapshot;
-  **refuse** boot-signature changes (restart required for adapter/topology).
-- `register_config_trigger(iii, cell, boot_sig)`
+- `apply_config(cell, cfg)` — swap the snapshot; tuning knobs take effect on the
+  next per-call read.
+- On a **structural** change, rebuild + swap the one affected resource rather
+  than refuse: `context-manager` rebuilds its `FsLeaseStore` on a `lease_dir`
+  change; `approval-gate` re-binds its `harness::hook::pre-trigger` / `cron`
+  bindings on a `hook` / `sweep_expression` change (register the new binding,
+  then `unregister()` the old — a fail-safe overlap). Read `summarizer_timeout_ms`
+  and other numeric knobs from the live snapshot per call so they need no rebuild.
+- `register_config_trigger(iii, cell, <resource(s) to rebuild/re-bind>)`
 
 **Tier 2 — Full runtime swap** ([`session-manager/src/configuration.rs`](../../session-manager/src/configuration.rs), [`shell/src/configuration.rs`](../../shell/src/configuration.rs)):
 
@@ -142,9 +151,16 @@ Common to both tiers:
 - `fetch_config(iii)` — read the authoritative, env-expanded value
   (`NOT_FOUND` ⇒ built-in default).
 - `register_config_trigger` — register `<worker>::on-config-change` and bind a
-  `configuration` trigger (see §5). The handler **re-fetches** via
-  `configuration::get` and ignores the trigger payload, so a direct call can
-  never inject config.
+  `configuration` trigger (see §5). Register it **exactly like `session-manager`**:
+  a **typed** `RegisterFunction::new_async` over a small event struct
+  (`OnConfigChangeEvent { id }`) returning a typed ack
+  (`OnConfigChangeResponse { ok }`) — **never a `serde_json::Value` handler**
+  ([`binary-worker.md`](binary-worker.md) §7 forbids untyped handlers, and this
+  one is no exception just because it is internal). The handler **re-fetches**
+  via `configuration::get` and ignores the trigger payload, so a direct call can
+  never inject config. `session-manager`, `context-manager`, and `approval-gate`
+  all follow this shape; register the handler here (not in `functions::register_all`),
+  so it stays off the public `catalog()`.
 
 ### c. `src/main.rs` — boot order
 
@@ -189,17 +205,23 @@ Seeding options (pick one):
    before the worker starts.
 
 A local seed file for development may exist but should stay **uncommitted** or
-live under docs/examples — it is not loaded by default at runtime. Some older
-workers (e.g. `coder`) still ship a `config.yaml`; treat that as legacy, not the
-pattern for new integrations.
+live under docs/examples — it is not loaded by default at runtime.
+`session-manager`, `context-manager`, and `approval-gate` ship **zero**
+`config.yaml` — that is the canonical pattern. Some older workers (e.g. `coder`,
+and `shell` / `storage` pending migration) still ship one; treat that as legacy,
+not a precedent for new or freshly-migrated integrations.
 
 ### e. `iii-permissions.yaml` — deny reload hooks
 
 Add defense-in-depth denies next to the existing storage/database/shell entries:
 
-- `'!<worker>::on-config-change'` — must never be agent-callable.
-- `'!<worker>::config-status'` — operator/automation health signal, not an
-  agent tool (precedent: `session-manager`, `shell`).
+- `'!<worker>::on-config-change'` — must never be agent-callable. Required for
+  **every** integrated worker (the live deny list includes `session::`,
+  `context::`, `approval::`, `storage::`, `database::`, and `shell::`).
+- `'!<worker>::config-status'` — only when the worker exposes one (Tier 2;
+  precedent: `session-manager`, `shell`). Tier 1 ConfigCell-only workers
+  (`context-manager`, `approval-gate`) do not register a `config-status`
+  surface, so there is nothing to deny.
 
 ## 5. Reactive triggers
 
@@ -225,11 +247,20 @@ should react.
 
 ## 6. Hot-reload tiers and outcomes
 
+**Hot-reload is the default.** Every config field should take effect without a
+restart: read numeric/string knobs from the live snapshot per call, rebuild and
+swap cheap adapters, and re-bind triggers live (register the new binding, then
+`unregister()` the old). A field may require a restart **only** when it
+genuinely cannot be rebound or rebuilt safely at runtime — a rare exception that
+must be called out explicitly in the worker's README/architecture docs. The
+workers below have **no** restart-required fields.
+
 ### Reload tiers by worker
 
-| Worker | Tier | Adapter / topology hot reload |
-|--------|------|-------------------------------|
-| `context-manager` | ConfigCell-only | restart required |
+| Worker | Tier | Structural hot reload |
+|--------|------|-----------------------|
+| `context-manager` | ConfigCell + rebuild | `lease_dir` rebuilds the `FsLeaseStore`; `summarizer_timeout_ms` + other knobs read per call |
+| `approval-gate` | ConfigCell + re-bind | `hook` / `sweep_expression` re-bind the harness-hook / cron triggers live; timeouts + approval defaults read per call |
 | `storage` | partial runtime | topology frozen; connection settings reload |
 | `shell`, `database` | full runtime swap | yes |
 | **`session-manager`** | full runtime + **resync** | yes (fs/bridge, `data_dir`, bridge `url`/`timeout_ms`) |
@@ -258,9 +289,12 @@ sequenceDiagram
 1. **Applied** — the live runtime reflects the fetched config.
 2. **Tuning-only reload** — boot signature unchanged; `ConfigCell` swap only
    (Tier 1, or Tier 2 list-limit fields).
-3. **Runtime rebuild** — boot signature changed; `build_runtime` + swap (+ resync
-   when subscribers reconcile from triggers).
-4. **Rejected** — build failed; previous runtime kept (last-good); surfaced via
+3. **Structural reload** — boot signature changed; rebuild the affected adapter
+   (`build_runtime` / `FsLeaseStore`) or re-bind the affected trigger, then swap
+   (+ resync when subscribers reconcile from triggers).
+4. **Rejected** — a rebuild **failed** (e.g. an unbuildable adapter config); the
+   previous runtime/snapshot is kept (last-good). This is a failure path, not a
+   "restart required" design choice; Tier 2 surfaces it via
    `<worker>::config-status` (`last_outcome: rejected`, `last_error`, cumulative
    `rejected_reloads`).
 
@@ -283,14 +317,23 @@ the lock so overlapping events converge to the latest authoritative value.
       `from_yaml`/`from_file`/`from_json`/`to_json`/`json_schema`/`boot_signature`.
 - [ ] **No committed `config.yaml`**; `WorkerConfig::default()` seeds first boot.
 - [ ] `src/configuration.rs` implements the chosen reload tier (Tier 1:
-      `ConfigCell` + `reloadable`; Tier 2: `AppState` + `build_runtime` +
-      `reload_serialized` + optional resync).
+      `ConfigCell` + targeted rebuild/re-bind; Tier 2: `AppState` +
+      `build_runtime` + `reload_serialized` + optional resync).
+- [ ] **Every field hot-reloads** (per-call read / rebuild+swap / live trigger
+      re-bind). No field is "restart required" unless it genuinely cannot be
+      hot-applied — and any such exception is documented in the worker's docs.
 - [ ] `main.rs`: connect → register+fetch (fatal) → build runtime → register
       functions → bind configuration trigger (+ `config-status` for Tier 2) last.
-- [ ] `'!<worker>::on-config-change'` and `'!<worker>::config-status'` denied in
-      `iii-permissions.yaml`.
+- [ ] `<worker>::on-config-change` is a **typed** `RegisterFunction::new_async`
+      (event struct → ack struct, never a `Value` handler) that **re-fetches**
+      via `configuration::get`, registered in `configuration.rs` (off the public
+      `catalog()`) — exactly like `session-manager` / `context-manager` /
+      `approval-gate`.
+- [ ] `'!<worker>::on-config-change'` denied in `iii-permissions.yaml` (always);
+      `'!<worker>::config-status'` denied too when the worker exposes one (Tier 2).
 - [ ] README "Configuration" section documents the id, reload tier, persistence
       path, and operator risks.
-- [ ] Unit tests cover `boot_signature` (tuning-only vs adapter change), JSON
-      round-trip, and (Tier 2) adapter rebuild / rejected reload keeps runtime /
-      resync emits triggers; they run engine-free in CI.
+- [ ] Unit tests cover `boot_signature` (tuning-only vs structural change), JSON
+      round-trip, and the structural-change path (adapter rebuild / trigger
+      re-bind; Tier 2 also: rejected reload keeps runtime / resync emits
+      triggers); they run engine-free in CI.

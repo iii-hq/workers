@@ -3,7 +3,6 @@
 
 use super::Deps;
 use crate::error::ApprovalError;
-use crate::gate_config::snapshot;
 use crate::settings;
 use crate::types::{validate_id, GetSettingsRequest, GetSettingsResponse};
 
@@ -12,14 +11,10 @@ pub async fn handle(
     req: GetSettingsRequest,
 ) -> Result<GetSettingsResponse, ApprovalError> {
     validate_id("session_id", &req.session_id)?;
-    let defaults = snapshot(&deps.defaults);
-    let stored = settings::read_strict(
-        deps.iii.as_ref(),
-        &req.session_id,
-        deps.cfg.state_timeout_ms,
-    )
-    .await?;
-    let (settings, source) = settings::effective(stored, &defaults);
+    let cfg = deps.config().await;
+    let stored =
+        settings::read_strict(deps.iii.as_ref(), &req.session_id, cfg.state_timeout_ms).await?;
+    let (settings, source) = settings::effective(stored, &cfg);
     Ok(GetSettingsResponse { settings, source })
 }
 

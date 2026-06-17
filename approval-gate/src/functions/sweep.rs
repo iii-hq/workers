@@ -30,10 +30,11 @@ pub struct SweepResponse {
 }
 
 pub async fn handle(deps: &Deps, _req: SweepRequest) -> Result<SweepResponse, ApprovalError> {
+    let cfg = deps.config().await;
     let iii = deps.iii.as_ref();
     let now = now_ms();
 
-    let records = match pending::list_all(iii, deps.cfg.state_timeout_ms).await {
+    let records = match pending::list_all(iii, cfg.state_timeout_ms).await {
         Ok(records) => records,
         Err(e) => {
             tracing::warn!(error = %e, "sweep: pending list failed; retrying next tick");
@@ -50,7 +51,7 @@ pub async fn handle(deps: &Deps, _req: SweepRequest) -> Result<SweepResponse, Ap
         // harness sweep remains the backstop for the parked turn.
         let resolve_payload = timeout_resolve_payload(&record);
         if let Err(e) =
-            harness::function_resolve(iii, resolve_payload, Some(deps.cfg.harness_timeout_ms)).await
+            harness::function_resolve(iii, resolve_payload, Some(cfg.harness_timeout_ms)).await
         {
             tracing::warn!(
                 session_id = %record.session_id,
@@ -64,7 +65,7 @@ pub async fn handle(deps: &Deps, _req: SweepRequest) -> Result<SweepResponse, Ap
             iii,
             &record.session_id,
             &record.function_call_id,
-            deps.cfg.state_timeout_ms,
+            cfg.state_timeout_ms,
         )
         .await
         {

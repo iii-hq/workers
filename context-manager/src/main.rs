@@ -12,11 +12,12 @@
 //!   4. Wire production adapters behind the ports: model limits via
 //!      `router::models::get` and the summariser via `router::chat`
 //!      (both soft — only compaction degrades without `llm-router`), plus
-//!      compaction leases on the local filesystem (`lease_dir`).
-//!      `lease_dir` and `summarizer_timeout_ms` are read once here and are
-//!      restart-required.
+//!      compaction leases on the local filesystem (`lease_dir`). The
+//!      summariser reads `summarizer_timeout_ms` from the live snapshot per
+//!      call; the lease store is rebuilt + swapped on a `lease_dir` change.
 //!   5. Register the four `context::*` functions, then bind a
-//!      `configuration` trigger that hot-reloads the per-call tuning knobs.
+//!      `configuration` trigger that hot-reloads every field (snapshot swap,
+//!      lease-store rebuild) — nothing requires a restart.
 //!   6. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
@@ -29,7 +30,7 @@ use tokio::sync::RwLock;
 use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
 use context_manager::configuration::{self, ConfigCell};
-use context_manager::ports::{Deps, SystemClock};
+use context_manager::ports::{lease_cell, Deps, SystemClock};
 use context_manager::{config, functions, manifest};
 
 #[derive(Parser, Debug)]
@@ -118,38 +119,34 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading context-manager configuration")?;
 
-    // Capture the restart-required signature before moving cfg into the cell.
-    let boot_sig = cfg.boot_signature();
+    // The hot-swappable snapshot shared with every handler.
+    let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
 
-    // Boot-time adapters read the restart-required fields ONCE here:
-    // summarizer_timeout_ms -> RouterSummarizer, lease_dir -> FsLeaseStore. A
-    // later change to either is refused on hot-reload. A lease dir we can't
-    // create is boot-fatal — leasing must never silently no-op.
-    let summarizer = Arc::new(RouterSummarizer::new(
-        iii.clone(),
-        cfg.summarizer_timeout_ms,
-    ));
-    let leases = Arc::new(
+    // The summariser reads its timeout from the live snapshot per call, so a
+    // summarizer_timeout_ms change hot-applies with no rebuild.
+    let summarizer = Arc::new(RouterSummarizer::new(iii.clone(), cell.clone()));
+
+    // The lease store is the one structural adapter: rebuilt + swapped on a
+    // lease_dir change (see configuration::register_config_trigger). A lease
+    // dir we can't create is boot-fatal — leasing must never silently no-op.
+    let leases = lease_cell(Arc::new(
         FsLeaseStore::new(cfg.resolved_lease_dir())
             .map_err(|e| anyhow::anyhow!("opening the compaction lease directory: {e}"))?,
-    );
-
-    // The hot-swappable snapshot shared with every handler.
-    let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
+    ));
 
     let deps = Arc::new(Deps {
         config: cell.clone(),
         resolver: Arc::new(RouterModelResolver::new(iii.clone())),
         summarizer,
-        leases,
+        leases: leases.clone(),
         clock: Arc::new(SystemClock),
     });
 
     functions::register_all(&iii, &deps);
 
     // LAST: bind the configuration-change trigger so its handler closes over
-    // the fully-built snapshot cell + boot signature.
-    configuration::register_config_trigger(&iii, cell, boot_sig)
+    // the snapshot cell + the lease cell it rebuilds on a lease_dir change.
+    configuration::register_config_trigger(&iii, cell, leases)
         .context("registering the configuration change trigger")?;
 
     tracing::info!("context-manager ready: 4 context::* functions");

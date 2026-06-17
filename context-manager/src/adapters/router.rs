@@ -14,6 +14,7 @@ use iii_sdk::helpers::create_channel;
 use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::{json, Value};
 
+use crate::configuration::ConfigCell;
 use crate::ports::{ModelResolver, SummarizeError, SummarizeRequest, Summarizer};
 use crate::types::Model;
 
@@ -76,14 +77,18 @@ impl ModelResolver for RouterModelResolver {
 /// `router::chat` — one summariser turn streamed over a channel the
 /// adapter creates; the summary text comes from the terminal `done`
 /// event (accumulated `text_delta`s as fallback).
+///
+/// Holds the live [`ConfigCell`] rather than a captured timeout, so a
+/// `summarizer_timeout_ms` change hot-applies on the next call with no
+/// rebuild.
 pub struct RouterSummarizer {
     iii: Arc<III>,
-    timeout_ms: u64,
+    config: ConfigCell,
 }
 
 impl RouterSummarizer {
-    pub fn new(iii: Arc<III>, timeout_ms: u64) -> Self {
-        Self { iii, timeout_ms }
+    pub fn new(iii: Arc<III>, config: ConfigCell) -> Self {
+        Self { iii, config }
     }
 }
 
@@ -127,13 +132,16 @@ impl Summarizer for RouterSummarizer {
             payload["provider"] = json!(p);
         }
 
+        // Read the outer budget from the live snapshot so a
+        // summarizer_timeout_ms change takes effect without a restart.
+        let timeout_ms = self.config.read().await.summarizer_timeout_ms;
         let trigger_result = self
             .iii
             .trigger(TriggerRequest {
                 function_id: "router::chat".to_string(),
                 payload,
                 action: None,
-                timeout_ms: Some(self.timeout_ms),
+                timeout_ms: Some(timeout_ms),
             })
             .await;
 

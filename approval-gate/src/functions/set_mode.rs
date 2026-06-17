@@ -4,17 +4,16 @@
 
 use super::Deps;
 use crate::error::ApprovalError;
-use crate::gate_config::snapshot;
 use crate::settings;
 use crate::types::{ApprovalSettings, SetModeRequest, SettingsResponse};
 
 pub async fn handle(deps: &Deps, req: SetModeRequest) -> Result<SettingsResponse, ApprovalError> {
-    let defaults = snapshot(&deps.defaults);
+    let cfg = deps.config().await;
     let settings = settings::materialize_and(
         deps.iii.as_ref(),
         &req.session_id,
-        &defaults,
-        deps.cfg.state_timeout_ms,
+        &cfg,
+        cfg.state_timeout_ms,
         |base, now| ApprovalSettings {
             mode: req.mode,
             mode_set_at: now,

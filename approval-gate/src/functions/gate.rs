@@ -10,10 +10,10 @@
 //! no-op on the existing record (and emits no second `pending_created`).
 
 use super::Deps;
+use crate::config::WorkerConfig;
 use crate::decision;
 use crate::denial::{gate_unavailable_envelope, human_only_denial, permissions_deny_envelope};
 use crate::error::ApprovalError;
-use crate::gate_config::{snapshot, GateDefaults};
 use crate::pending;
 use crate::policy::{self, PolicyOutcome};
 use crate::redact::redact;
@@ -48,17 +48,13 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
         )));
     }
 
-    // 2. One settings snapshot per call (race-safe). A state outage
-    //    degrades to the configuration defaults: safe, because the
+    // 2. One config + settings snapshot per call (race-safe). A state
+    //    outage degrades to the configuration defaults: safe, because the
     //    default never widens beyond what the deployment configured.
-    let defaults = snapshot(&deps.defaults);
-    let stored = settings::read_tolerant(
-        deps.iii.as_ref(),
-        &input.session_id,
-        deps.cfg.state_timeout_ms,
-    )
-    .await;
-    let (effective, _) = settings::effective(stored, &defaults);
+    let cfg = deps.config().await;
+    let stored =
+        settings::read_tolerant(deps.iii.as_ref(), &input.session_id, cfg.state_timeout_ms).await;
+    let (effective, _) = settings::effective(stored, &cfg);
 
     // 3-5. Mode / allow-list short-circuits.
     if decision::pre_policy_allow(&effective, &call.function_id) {
@@ -70,7 +66,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
         deps.iii.as_ref(),
         &call.function_id,
         &call.arguments,
-        deps.cfg.policy_timeout_ms,
+        cfg.policy_timeout_ms,
     )
     .await
     {
@@ -91,7 +87,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
             let envelope = gate_unavailable_envelope(&call.function_id, &why);
             Ok(deny(&envelope.reason))
         }
-        PolicyOutcome::NeedsApproval => Ok(hold(deps, &input, &call, &defaults).await),
+        PolicyOutcome::NeedsApproval => Ok(hold(deps, &input, &call, &cfg).await),
     }
 }
 
@@ -106,16 +102,11 @@ fn deny(reason: &str) -> HookOutput {
 /// inbox. Write failure → fail-closed deny, never hold blind.
 /// `pending_created` emits asynchronously after the record is written —
 /// notification fan-out never blocks the trigger hot path.
-async fn hold(
-    deps: &Deps,
-    input: &HookInput,
-    call: &HookCall,
-    defaults: &GateDefaults,
-) -> HookOutput {
+async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfig) -> HookOutput {
     let iii = deps.iii.as_ref();
 
     // Idempotency: a redelivered step re-holds the same call.
-    match pending::get(iii, &input.session_id, &call.id, deps.cfg.state_timeout_ms).await {
+    match pending::get(iii, &input.session_id, &call.id, cfg.state_timeout_ms).await {
         Ok(Some(existing)) => {
             return HookOutput::Hold {
                 pending_timeout_ms: (existing.expires_at - existing.pending_at).max(0),
@@ -132,7 +123,7 @@ async fn hold(
     }
 
     let (session_title, session_description, session_metadata) =
-        fetch_session_context(deps, &input.session_id).await;
+        fetch_session_context(deps, &input.session_id, cfg.session_fetch_timeout_ms).await;
 
     let pending_at = now_ms();
     let record = PendingApprovalRecord {
@@ -142,7 +133,7 @@ async fn hold(
         function_id: call.function_id.clone(),
         arguments_excerpt: redact(&call.arguments),
         pending_at,
-        expires_at: pending_at + defaults.pending_timeout_ms,
+        expires_at: pending_at + cfg.pending_timeout_ms,
         session_title,
         session_description,
         session_metadata,
@@ -150,7 +141,7 @@ async fn hold(
         assistant_excerpt: None,
     };
 
-    match pending::put(iii, &record, deps.cfg.state_timeout_ms).await {
+    match pending::put(iii, &record, cfg.state_timeout_ms).await {
         Err(e) => {
             let envelope = gate_unavailable_envelope(
                 &call.function_id,
@@ -161,7 +152,7 @@ async fn hold(
         // Lost a write race with a concurrent duplicate hold: the first
         // writer's record (and emission) stands.
         Ok(Some(_prior)) => HookOutput::Hold {
-            pending_timeout_ms: defaults.pending_timeout_ms,
+            pending_timeout_ms: cfg.pending_timeout_ms,
         },
         Ok(None) => {
             let sink = deps.sink.clone();
@@ -169,7 +160,7 @@ async fn hold(
                 sink.pending_created(&record).await;
             });
             HookOutput::Hold {
-                pending_timeout_ms: defaults.pending_timeout_ms,
+                pending_timeout_ms: cfg.pending_timeout_ms,
             }
         }
     }
@@ -181,11 +172,12 @@ async fn hold(
 async fn fetch_session_context(
     deps: &Deps,
     session_id: &str,
+    session_fetch_timeout_ms: u64,
 ) -> (Option<String>, Option<String>, Option<JsonMap>) {
     let reply = session::get(
         deps.iii.as_ref(),
         session_id,
-        Some(deps.cfg.session_fetch_timeout_ms),
+        Some(session_fetch_timeout_ms),
     )
     .await;
     let Ok(reply) = reply else {
@@ -219,8 +211,8 @@ mod tests {
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
     use crate::testkit::{
-        boot, hook_input as test_hook_input, log_snapshot, require_engine, settle, state_get,
-        state_set, with_stack, BootOpts,
+        hook_input as test_hook_input, log_snapshot, settle, state_get, state_set, with_stack,
+        BootOpts,
     };
     use crate::types::{ApprovalSettings, PermissionMode};
 
@@ -333,14 +325,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn missing_policy_worker_fails_closed() {
-        let Some(engine) = require_engine().await else {
-            return;
-        };
-        let stack = boot(&engine, BootOpts::no_policy()).await;
-        assert!(matches!(
-            handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
-            HookOutput::Deny { .. }
-        ));
+        with_stack(BootOpts::no_policy(), |stack| async move {
+            assert!(matches!(
+                handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
+                HookOutput::Deny { .. }
+            ));
+        })
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

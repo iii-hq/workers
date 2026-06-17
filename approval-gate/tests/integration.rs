@@ -3,7 +3,6 @@
 
 use serde_json::json;
 
-use approval_gate::gate_config::snapshot;
 use approval_gate::testkit::{
     call, hook_input, log_snapshot, settle, wait_for, with_stack, BootOpts,
 };
@@ -175,10 +174,14 @@ async fn configuration_set_reloads_defaults_reactively() {
 
         assert!(
             wait_for(5_000, || {
-                snapshot(&stack.defaults).default_mode == PermissionMode::Full
+                stack
+                    .config
+                    .try_read()
+                    .map(|cfg| cfg.default_mode == PermissionMode::Full)
+                    .unwrap_or(false)
             })
             .await,
-            "defaults should reload reactively"
+            "config should reload reactively"
         );
 
         let out = call(

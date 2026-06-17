@@ -16,12 +16,14 @@ For maintainers changing this worker. The integration contract lives in
 | `redact.rs` | Recursive argument redaction (pure port of the proven `redact.ts`). |
 | `settings.rs` | Effective-settings computation, lazy seeding, immutable mutation helpers, tolerant vs strict reads. |
 | `pending.rs` | Inbox record store: `get`/`put`/`list_all` and **`delete_with_gate`** — the single deletion helper. |
-| `gate_config.rs` | The `approval-gate` configuration entry: schema, field-wise tolerant parse, `Arc<RwLock<GateDefaults>>`. |
+| `config.rs` | The single `WorkerConfig` (Path B): serde + schemars schema, `from_yaml`/`from_json`/`to_json`/`json_schema`/`boot_signature` (`hook` + `sweep_expression` are the structural fields — re-bound live on change). |
+| `configuration.rs` | `configuration` worker integration: `register_config` / `fetch_config`, the `ConfigCell` snapshot, `reloadable`, and the typed, re-fetching `approval::on-config-change` trigger handler. |
 | `events.rs` | The two custom trigger types, `SubscriberSet`s, binding filters, the `EventSink` trait + `Emitter` (Void-action fan-out). |
 | `functions/` | One file per `approval::*` function; `mod.rs` holds `Deps` and the typed registration helper. |
-| `main.rs` | Boot order: trigger types → functions → best-effort bindings → configuration entry + initial read. |
+| `main.rs` | Boot order: register+fetch config (fatal) → trigger types → functions → best-effort hook/cron/session bindings → `register_config_trigger` (last). |
 
-Every handler takes `Deps { iii, sink, defaults, cfg }` and reaches siblings
+Every handler takes `Deps { iii, sink, config }` — a `ConfigCell` it snapshots
+once per call via `deps.config().await` — and reaches siblings
 through the thin wrapper modules. Pure-logic modules are unit-tested with no
 engine; the `approval::*` handlers are driven against a real spawned engine
 via `testkit::engine` (see Testing).
@@ -39,9 +41,10 @@ adapt to).
    deny `human_only_function`. Runs **before** the settings snapshot, even
    under `full` — self-escalation defense. (Deliberately broader than the
    prior art's six-id list.)
-3. **One** settings snapshot: `state::get approval_settings/<sid>` (tolerant —
-   an outage degrades to configuration defaults, which never widen beyond
-   what the operator configured) merged with the in-memory `GateDefaults`.
+3. **One** config + settings snapshot: `deps.config().await` for the live
+   `WorkerConfig`, then `state::get approval_settings/<sid>` (tolerant — an
+   outage degrades to configuration defaults, which never widen beyond what the
+   operator configured).
 4. Pure short-circuits (`decision::pre_policy_allow`): `full` → continue;
    `approved_always` hit → continue (every mode); `auto` + `always_allow`
    hit → continue. Allow-list entries match by equality fast-path or `*`
@@ -96,8 +99,9 @@ deployment with no harness at all.
 
 ## Settings: lazy seeding
 
-`effective(stored, defaults)`: a stored record wins; otherwise the settings
-are computed in memory from `GateDefaults` (seed entries carry
+`effective(stored, cfg)`: a stored record wins; otherwise the settings
+are computed in memory from the live `WorkerConfig` (`default_mode` +
+`always_allow_seed`; seed entries carry
 `granted_by: "seed"`). Reads — including the gate's hot path and
 `get_settings` — never write. The first mutation materializes the record
 from the **current** defaults, applies the change, and writes the whole
@@ -112,16 +116,32 @@ Mutation helpers are immutable: `with_grant` (idempotent on exact
 
 ## Configuration reload
 
-`gate_config.rs` registers entry `approval-gate` **without** `initial_value`
-(llm-router precedent: operator-stored values survive every re-register);
-built-in defaults (`manual`, `[]`, 30 min) apply in memory whenever the
-entry value is null or the configuration worker is absent. Parsing is
-field-wise tolerant — one malformed field degrades to its default, never
-fails the gate open. `approval::on-config-change` guards on
-`id == "approval-gate"` and swaps the shared `RwLock`. Boot order: bind the
-configuration trigger, register the entry, then one initial
-`configuration::get` — an update landing in the gap is caught by either the
-read or the trigger.
+`configuration.rs` owns the `configuration` worker integration — Path B,
+mirroring `context-manager` / `session-manager`. `register_config` registers
+the `WorkerConfig` JSON Schema and seeds `WorkerConfig::default()` as
+`initial_value` only when no value is stored yet (re-registration preserves the
+stored value); `fetch_config` reads the authoritative, env-expanded value at
+boot. Both are **required** — a failed register/fetch aborts boot, so the gate
+always runs on a known, authoritative policy surface (never a guessed one).
+When nothing is stored, the built-in defaults (`manual`, `[]`, 30 min, the `*`
+hook, the per-minute sweep) are what gets seeded and used.
+
+The live value is held in a `ConfigCell` (`Arc<RwLock<Arc<WorkerConfig>>>`)
+that every handler snapshots per call. `register_config_trigger` registers the
+**typed** `approval::on-config-change` handler (`OnConfigChangeEvent` →
+`OnConfigChangeResponse` — never a `Value` handler, registered off the public
+`catalog()`) and binds the `configuration` trigger. On `configuration:updated`
+it **re-fetches** via `configuration::get` (ignoring the trigger payload, so a
+direct call can't inject config) and swaps the cell. A change to the boot
+signature (`hook` or `sweep_expression`) **re-binds** the affected trigger live:
+`register_config_trigger` retains the `Trigger` handles in `TriggerHandles`, and
+the handler registers the new binding then `unregister()`s the old (a fail-safe
+overlap — the gate is idempotent, so a brief double-fire is harmless), so no
+field requires a restart; every other field hot-applies. The config parse is **strict**
+(`deny_unknown_fields`): an unparseable stored value is rejected and the
+last-good snapshot kept, so a typo'd operator edit can't silently widen
+access. (Per-session settings records keep their own tolerant read — see
+*Settings: lazy seeding*.)
 
 ## Redaction (`redact.rs`)
 

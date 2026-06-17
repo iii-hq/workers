@@ -9,7 +9,6 @@ pub mod gate;
 pub mod get_pending;
 pub mod get_settings;
 pub mod list_pending;
-pub mod on_config_change;
 pub mod on_session_deleted;
 pub mod on_turn_completed;
 pub mod purge;
@@ -29,9 +28,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::config::WorkerConfig;
+use crate::configuration::ConfigCell;
 use crate::error::ApprovalError;
 use crate::events::EventSink;
-use crate::gate_config::SharedDefaults;
 
 // ---------------------------------------------------------------------------
 // Function ID + description constants — single source of truth consumed by
@@ -72,10 +71,6 @@ pub const CLEAR_SETTINGS_ID: &str = "approval::clear-settings";
 pub const CLEAR_SETTINGS_DESC: &str =
     "Drop the session's stored settings record (revert to configuration defaults).";
 
-pub const ON_CONFIG_CHANGE_ID: &str = "approval::on-config-change";
-pub const ON_CONFIG_CHANGE_DESC: &str =
-    "Internal: configuration trigger handler (reload deployment defaults).";
-
 pub const ON_SESSION_DELETED_ID: &str = "approval::on-session-deleted";
 pub const ON_SESSION_DELETED_DESC: &str =
     "Internal: session::deleted handler (purge the session's settings and pending records).";
@@ -91,8 +86,19 @@ pub const SWEEP_DESC: &str = "Internal: cron handler (expire pending records pas
 pub struct Deps {
     pub iii: Arc<III>,
     pub sink: Arc<dyn EventSink>,
-    pub defaults: SharedDefaults,
-    pub cfg: Arc<WorkerConfig>,
+    /// Hot-swappable config snapshot, sourced from the `configuration`
+    /// worker and reloaded live (see [`crate::configuration`]).
+    pub config: ConfigCell,
+}
+
+impl Deps {
+    /// Take a cheap snapshot of the current config. Handlers call this
+    /// once at the top of a request and read fields off the returned
+    /// `Arc`; a concurrent hot-reload swaps the cell without disturbing
+    /// snapshots already taken.
+    pub async fn config(&self) -> Arc<WorkerConfig> {
+        self.config.read().await.clone()
+    }
 }
 
 /// Register one typed handler under `id`, mapping `ApprovalError` into
@@ -183,13 +189,6 @@ pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
     register(
         iii,
         deps,
-        ON_CONFIG_CHANGE_ID,
-        ON_CONFIG_CHANGE_DESC,
-        |d, r| async move { on_config_change::handle(&d, r).await },
-    );
-    register(
-        iii,
-        deps,
         ON_SESSION_DELETED_ID,
         ON_SESSION_DELETED_DESC,
         |d, r| async move { on_session_deleted::handle(&d, r).await },
@@ -254,7 +253,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         GetSettingsResponse, HookInput, HookOutput, ListPendingRequest, ListPendingResponse,
         ResolveRequest, ResolveResponse, SetModeRequest, SettingsResponse,
     };
-    use on_config_change::ConfigChangeEvent;
     use on_session_deleted::SessionDeletedEvent;
     use on_turn_completed::TurnCompletedEvent;
 
@@ -275,7 +273,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ApproveAlwaysRequest, SettingsResponse>(APPROVE_ALWAYS_ID, APPROVE_ALWAYS_DESC),
         spec::<GetSettingsRequest, GetSettingsResponse>(GET_SETTINGS_ID, GET_SETTINGS_DESC),
         spec::<ClearSettingsRequest, ClearSettingsResponse>(CLEAR_SETTINGS_ID, CLEAR_SETTINGS_DESC),
-        spec::<ConfigChangeEvent, EventAck>(ON_CONFIG_CHANGE_ID, ON_CONFIG_CHANGE_DESC),
         spec::<SessionDeletedEvent, EventAck>(ON_SESSION_DELETED_ID, ON_SESSION_DELETED_DESC),
         spec::<TurnCompletedEvent, EventAck>(ON_TURN_COMPLETED_ID, ON_TURN_COMPLETED_DESC),
         spec::<sweep::SweepRequest, sweep::SweepResponse>(SWEEP_ID, SWEEP_DESC),

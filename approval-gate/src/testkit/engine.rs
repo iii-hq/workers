@@ -9,12 +9,11 @@ use iii_sdk::{
     register_worker, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerRequest, III,
 };
 use serde_json::{json, Value};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, RwLock};
 
-use crate::config::WorkerConfig;
+use crate::configuration::{self, ConfigCell, TriggerHandles};
 use crate::events::{self, Emitter, PENDING_CREATED, PENDING_RESOLVED};
 use crate::functions::{self, Deps};
-use crate::gate_config::{self, replace, shared_defaults, SharedDefaults, ENTRY_ID};
 
 pub struct Engine {
     pub url: String,
@@ -61,6 +60,11 @@ pub async fn spawn_engine() -> Option<Engine> {
         Instant::now().elapsed().as_nanos()
     ));
     std::fs::create_dir_all(&dir).ok()?;
+    // The configuration worker's fs adapter writes one YAML file per id
+    // under this directory; create it up front so register/get never race
+    // a missing path (approval-gate now treats configuration as a required
+    // boot dependency).
+    std::fs::create_dir_all(dir.join("configuration")).ok()?;
 
     let config = format!(
         r#"workers:
@@ -106,9 +110,14 @@ pub async fn spawn_engine() -> Option<Engine> {
 
     let url = format!("ws://127.0.0.1:{port}");
     let probe = register_worker(&url, InitOptions::default());
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let ready = probe
+        // The engine core must be up AND the configuration worker must be
+        // serving — approval-gate treats configuration as a required boot
+        // dependency, so a test that boots before it is ready would fail
+        // spuriously. Probe a dummy id and accept any response (including
+        // NOT_FOUND) as "the worker is up".
+        let core_ready = probe
             .trigger(TriggerRequest {
                 function_id: "engine::workers::list".into(),
                 payload: json!({}),
@@ -117,6 +126,19 @@ pub async fn spawn_engine() -> Option<Engine> {
             })
             .await
             .is_ok();
+        let ready = core_ready
+            && match probe
+                .trigger(TriggerRequest {
+                    function_id: "configuration::get".into(),
+                    payload: json!({ "id": "__readiness_probe__" }),
+                    action: None,
+                    timeout_ms: Some(1000),
+                })
+                .await
+            {
+                Ok(_) => true,
+                Err(e) => e.to_string().to_ascii_uppercase().contains("NOT_FOUND"),
+            };
         if ready {
             break;
         }
@@ -218,7 +240,10 @@ impl BootOpts {
 pub struct TestStack {
     pub iii: Arc<III>,
     pub deps: Arc<Deps>,
-    pub defaults: SharedDefaults,
+    /// The live config snapshot the handlers read (same cell as
+    /// `deps.config`); write to it to drive per-call tuning knobs and
+    /// approval defaults in tests.
+    pub config: ConfigCell,
     /// Requests received by the fake `harness::function::resolve`.
     pub harness_calls: CallLog,
     /// `approval::pending-created` deliveries.
@@ -240,13 +265,22 @@ pub fn log_snapshot(log: &CallLog) -> Vec<Value> {
 pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
 
+    // `configuration` is a required boot dependency: register the schema
+    // (seeding built-in defaults on first boot) and fetch the authoritative
+    // value, exactly as the production binary does.
+    configuration::register_config(&iii, None)
+        .await
+        .expect("register approval-gate configuration schema");
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .expect("fetch approval-gate configuration");
+    let config: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
+
     let sets = events::register_trigger_types(&iii);
-    let defaults = shared_defaults();
     let deps = Arc::new(Deps {
         iii: iii.clone(),
         sink: Arc::new(Emitter::new(sets, iii.clone())),
-        defaults: defaults.clone(),
-        cfg: Arc::new(WorkerConfig::default()),
+        config: config.clone(),
     });
     functions::register_all(&iii, &deps);
 
@@ -347,24 +381,21 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     })
     .expect("bind pending_resolved");
 
-    let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: "approval::on-config-change".to_string(),
-        config: json!({
-            "configuration_id": ENTRY_ID,
-            "event_types": ["configuration:registered", "configuration:updated"],
-        }),
-        metadata: None,
+    // The typed, re-fetching config-change handler + its `configuration`
+    // trigger binding (mirrors the production boot order: last). The test
+    // engine has no harness hook / cron to bind, so the re-bindable handles
+    // start empty; reactive reload of the per-call knobs still applies.
+    let handles = Arc::new(TriggerHandles {
+        hook: Mutex::new(None),
+        sweep: Mutex::new(None),
     });
-    if let Err(e) = gate_config::register_entry(&iii).await {
-        tracing::debug!(error = %e, "configuration entry register skipped");
-    }
-    replace(&defaults, gate_config::read_defaults(&iii).await);
+    configuration::register_config_trigger(&iii, config.clone(), handles)
+        .expect("register configuration change trigger");
 
     TestStack {
         iii,
         deps,
-        defaults,
+        config,
         harness_calls,
         created,
         resolved,
@@ -436,12 +467,20 @@ pub async fn wait_for(deadline_ms: u64, mut predicate: impl FnMut() -> bool) -> 
 }
 
 /// Run `f` against a freshly booted stack; skip when no engine is available.
+///
+/// The boot lock is held for the WHOLE test, not just the spawn: each
+/// engine-backed test runs its own engine, and approval-gate now depends
+/// on the configuration worker being responsive at boot. Serializing the
+/// tests keeps that worker from being starved under parallel load (the
+/// suite is local-only — it self-skips in CI where `iii` is absent).
 pub async fn with_stack<F, Fut>(opts: BootOpts, f: F)
 where
     F: FnOnce(TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let Some(engine) = require_engine().await else {
+    let _guard = boot_lock().await;
+    let Some(engine) = spawn_engine().await else {
+        eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
         return;
     };
     let stack = boot(&engine, opts).await;
