@@ -19,7 +19,7 @@ name = "acp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "acp"
+name = "iii-acp"
 path = "src/main.rs"
 
 [dependencies]

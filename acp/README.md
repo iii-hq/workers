@@ -164,7 +164,7 @@ acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropi
   "agent_servers": {
     "acp": {
       "type": "custom",
-      "command": "/path/to/acp",
+      "command": "/path/to/iii-acp",
       "args": [],
       "env": {
         "IIIACP_ENGINE_URL": "ws://localhost:49134",
