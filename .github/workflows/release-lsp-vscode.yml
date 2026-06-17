@@ -10,12 +10,22 @@ on:
         description: 'Tag to release (e.g., lsp-vscode/v1.0.0)'
         required: true
         type: string
+      publish_target:
+        description: 'Publish target to run for an existing tag'
+        required: true
+        type: choice
+        options:
+          - all
+          - vscode-marketplace
+          - openvsx
+          - github-release
+        default: all
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-vscode-${{ github.ref }}
+  group: release-lsp-vscode-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -27,20 +37,28 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
+      publish_target: ${{ steps.resolve.outputs.publish_target }}
     steps:
       - name: Resolve tag
         id: resolve
         env:
           RAW_TAG: ${{ inputs.tag || github.ref_name }}
+          RAW_PUBLISH_TARGET: ${{ inputs.publish_target || 'all' }}
         run: |
           TAG=$(echo "$RAW_TAG" | xargs)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish_target=$RAW_PUBLISH_TARGET" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata from tag
         id: meta
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
+          if [[ ! "$TAG" =~ ^lsp-vscode/v[0-9]+\.[0-9]+\.[0-9]+([-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid lsp-vscode release tag: $TAG"
+            exit 1
+          fi
+
           VERSION="${TAG#lsp-vscode/v}"
 
           if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
@@ -57,8 +75,8 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "::notice::lsp-vscode release -- tag=$TAG version=$VERSION"
 
-  publish:
-    name: Package & Publish
+  package:
+    name: Package VSIX
     needs: [setup]
     runs-on: ubuntu-latest
     defaults:
@@ -66,6 +84,8 @@ jobs:
         working-directory: lsp-vscode
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
 
       - uses: actions/setup-node@v4
         with:
@@ -91,20 +111,88 @@ jobs:
       - name: Package VSIX
         run: npx @vscode/vsce package --out iii-lsp-${{ needs.setup.outputs.version }}.vsix
 
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
+          path: lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix
+          if-no-files-found: error
+
+  publish-vscode:
+    name: Publish VS Code Marketplace
+    needs: [setup, package]
+    if: needs.setup.outputs.dry_run != 'true' && (needs.setup.outputs.publish_target == 'all' || needs.setup.outputs.publish_target == 'vscode-marketplace')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lsp-vscode
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
+          path: lsp-vscode/dist
+
       - name: Publish to VS Code Marketplace
-        if: needs.setup.outputs.dry_run != 'true'
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx @vscode/vsce publish --pat "$VSCE_PAT"
+        run: npx @vscode/vsce publish --pat "$VSCE_PAT" --packagePath dist/iii-lsp-${{ needs.setup.outputs.version }}.vsix
+
+  publish-openvsx:
+    name: Publish OpenVSX
+    needs: [setup, package]
+    if: needs.setup.outputs.dry_run != 'true' && (needs.setup.outputs.publish_target == 'all' || needs.setup.outputs.publish_target == 'openvsx')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lsp-vscode
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
+          path: lsp-vscode/dist
 
       - name: Publish to OpenVSX
-        if: needs.setup.outputs.dry_run != 'true'
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx ovsx publish iii-lsp-${{ needs.setup.outputs.version }}.vsix --pat "$OVSX_PAT"
+        run: npx ovsx publish dist/iii-lsp-${{ needs.setup.outputs.version }}.vsix --pat "$OVSX_PAT"
+
+  github-release:
+    name: Upload GitHub Release
+    needs: [setup, package]
+    if: needs.setup.outputs.dry_run != 'true' && (needs.setup.outputs.publish_target == 'all' || needs.setup.outputs.publish_target == 'github-release')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
+          path: lsp-vscode/dist
 
       - name: Upload VSIX to GitHub Release
-        if: needs.setup.outputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -112,4 +200,4 @@ jobs:
           draft: false
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
-          files: lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix
+          files: lsp-vscode/dist/iii-lsp-${{ needs.setup.outputs.version }}.vsix
