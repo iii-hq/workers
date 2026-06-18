@@ -70,39 +70,47 @@ export async function refreshProviderModels(
 
 /** iii:: prefix → engine-internal → delivery spans stay out of the Traces view. */
 const MODELS_CHANGED_FN = 'iii::console::models_changed'
-/** The llm-router pubsub topic the picker reacts to. */
-const MODELS_CHANGED_TOPIC = 'router::models::changed'
+/** llm-router custom trigger type (worker-owned fan-out, not pubsub). */
+const MODELS_CHANGED_TRIGGER = 'router::models::changed'
 
 /**
- * Subscribe to the llm-router `router::models::changed` pubsub topic so the
- * picker can re-pull the catalog the instant a provider's models change —
- * credential added/removed, `refresh_models`, or a provider added/removed via
- * the CLI.
+ * Subscribe to the llm-router `router::models::changed` trigger so the picker
+ * re-pulls the catalog when a provider reconciles — credential added/removed,
+ * `refresh_models`, or a provider worker added/removed.
  *
- * Registers a browser-local handler plus an engine `subscribe` trigger bound
- * to the topic (`llm-router/README.md` § Events). Returns a disposer that
- * unregisters the handler and drops the subscription.
+ * Registers a browser-local handler plus the router-owned trigger type
+ * (`llm-router/README.md` § Events). Returns a disposer; on failure (e.g.
+ * llm-router absent) the binding is dropped silently and callers rely on
+ * manual refresh / config-save hooks.
  */
 export async function subscribeModelChanges(
   onChange: () => void,
 ): Promise<() => void> {
   const client = await getIiiClient()
-  const offHandler = client.on(MODELS_CHANGED_FN, () => {
-    onChange()
-  })
-  // `on()` registers under `<fn>::<browserId>`; the trigger targets that id.
-  const offTrigger = client.registerTrigger({
-    type: 'subscribe',
-    function_id: `${MODELS_CHANGED_FN}::${client.browserId}`,
-    config: { topic: MODELS_CHANGED_TOPIC },
-  })
+  let offHandler: (() => void) | undefined
+  let offTrigger: (() => void) | undefined
+  try {
+    // `on()` registers `<fn>::<browserId>`; the trigger targets the same id.
+    offHandler = client.on(MODELS_CHANGED_FN, () => {
+      onChange()
+    })
+    offTrigger = client.registerTrigger({
+      type: MODELS_CHANGED_TRIGGER,
+      function_id: `${MODELS_CHANGED_FN}::${client.browserId}`,
+      config: {},
+    })
+  } catch {
+    offTrigger?.()
+    offHandler?.()
+    return () => {}
+  }
   let disposed = false
   return () => {
     if (disposed) return
     disposed = true
-    offHandler()
+    offHandler?.()
     try {
-      offTrigger()
+      offTrigger?.()
     } catch {
       // SDK already disposed; nothing to do.
     }
