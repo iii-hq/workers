@@ -5,3 +5,7 @@ deploy: binary
 manifest: Cargo.toml
 bin: context-manager
 description: Turns a raw conversation history plus a target model into a model-ready context — token counting, function-result pruning, and history compaction.
+
+dependencies:
+  configuration: "^0.19.0"
+  llm-router: "^1.0.0"
