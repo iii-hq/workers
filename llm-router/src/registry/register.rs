@@ -17,7 +17,7 @@ use crate::catalog::store::CatalogStore;
 use crate::config::entry::{register_entry, EntryWriteLock};
 use crate::config::schema::{default_provider_schema, validate_custom_schema};
 use crate::registry::store::RegistryStore;
-use crate::triggers;
+use crate::triggers::{self, RouterEvents};
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -32,16 +32,18 @@ pub fn make_provider_register(
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
     entry_lock: EntryWriteLock,
+    events: Arc<RouterEvents>,
 ) -> impl Fn(ProviderRegisterRequest) -> BoxFuture<'static, Result<ProviderRegisterResponse, IIIError>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderRegisterRequest| {
-        let (iii, registry, catalog, entry_lock) = (
+        let (iii, registry, catalog, entry_lock, events) = (
             iii.clone(),
             registry.clone(),
             catalog.clone(),
             entry_lock.clone(),
+            events.clone(),
         );
         Box::pin(async move {
             let declaration = input.declaration;
@@ -98,23 +100,23 @@ pub fn make_provider_register(
                 register_entry(&iii, &provider_schemas).await?;
             }
 
-            triggers::publish(
-                &iii,
-                triggers::PROVIDER_CHANGED,
-                json!({ "provider": id, "op": "register" }),
-            )
-            .await;
+            events
+                .emit(
+                    triggers::PROVIDER_CHANGED,
+                    json!({ "provider": id, "op": "register" }),
+                )
+                .await;
 
             // A down provider coming back up via re-registration is an
             // availability transition; emit it explicitly so subscribers tracking
             // op:"available"/"unavailable" don't stay stuck on the prior down state.
             if availability_recovered {
-                triggers::publish(
-                    &iii,
-                    triggers::PROVIDER_CHANGED,
-                    json!({ "provider": id, "op": "available" }),
-                )
-                .await;
+                events
+                    .emit(
+                        triggers::PROVIDER_CHANGED,
+                        json!({ "provider": id, "op": "available" }),
+                    )
+                    .await;
             }
 
             // Static catalog slice: reconciled at registration (spec § register).
@@ -122,12 +124,12 @@ pub fn make_provider_register(
                 if !models.is_empty() {
                     let count = models.len();
                     catalog.set_slice(&id, models).await?;
-                    triggers::publish(
-                        &iii,
-                        triggers::MODELS_CHANGED,
-                        json!({ "provider": id, "count": count }),
-                    )
-                    .await;
+                    events
+                        .emit(
+                            triggers::MODELS_CHANGED,
+                            json!({ "provider": id, "count": count }),
+                        )
+                        .await;
                 }
             }
 

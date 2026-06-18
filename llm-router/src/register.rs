@@ -1,12 +1,12 @@
-//! Wiring: boot order per the design doc — load stores → register iii
-//! functions → bind triggers → register the configuration entry → read
-//! settings → publish `router::ready`.
+//! Wiring: boot order per the design doc — load stores → register trigger
+//! types → register iii functions → bind triggers → register the configuration
+//! entry → read settings → emit `router::ready`.
 //!
 //! Every registration below is a direct `iii_sdk` call:
 //! `iii.register_function(id, RegisterFunction::new_async(...))` for the
 //! function surface and `iii.register_trigger(RegisterTriggerInput { .. })`
-//! for trigger bindings. Router events go out over the engine's `iii-pubsub`
-//! worker (`triggers::publish`).
+//! for trigger bindings. Router events fan out via worker-owned trigger types
+//! (`triggers::RouterEvents`).
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -30,7 +30,7 @@ use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::settings::{parse_settings, RouterSettings};
 use crate::surface;
-use crate::triggers;
+use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
 
 pub struct RouterRefs {
@@ -47,10 +47,11 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     registry.load().await?;
     catalog.load().await?;
 
-    // 3. shared settings + inflight
+    // 3. shared settings + inflight + router event fan-out
     let settings = Arc::new(RwLock::new(RouterSettings::default()));
     let inflight = Arc::new(InflightMap::default());
     let entry_lock = EntryWriteLock::default();
+    let events = RouterEvents::register(&iii);
 
     let pipeline = Arc::new(ChatPipeline {
         iii: iii.clone(),
@@ -58,6 +59,7 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         catalog: catalog.clone(),
         inflight: inflight.clone(),
         settings: settings.clone(),
+        events: events.clone(),
     });
 
     // 4. function surface
@@ -129,6 +131,7 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
                 registry.clone(),
                 catalog.clone(),
                 entry_lock.clone(),
+                events.clone(),
             ),
             invalid_request_from_serde,
         )
@@ -151,7 +154,7 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
         RegisterFunction::new_async_with_bad_request(
-            make_models_reconcile(iii.clone(), registry.clone(), catalog.clone()),
+            make_models_reconcile(registry.clone(), catalog.clone(), events.clone()),
             invalid_request_from_serde,
         )
         .description(surface::MODELS_RECONCILE_DESC),
@@ -160,7 +163,7 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     // 5. bound triggers: topology + configuration change (paste-a-key)
     iii.register_function(
         surface::ON_WORKER_AVAILABLE_ID,
-        RegisterFunction::new_async(make_on_worker_available(iii.clone(), registry.clone()))
+        RegisterFunction::new_async(make_on_worker_available(registry.clone(), events.clone()))
             .description(surface::ON_WORKER_AVAILABLE_DESC),
     );
     let _ = iii.register_trigger(RegisterTriggerInput {
@@ -214,7 +217,7 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     *settings.write().unwrap() = parse_settings(&read_entry_value(&iii).await);
 
     // 7. ready — providers re-declare on this
-    triggers::publish(&iii, triggers::READY, json!({})).await;
+    events.emit(crate::triggers::READY, json!({})).await;
 
     Ok(RouterRefs {
         registry,

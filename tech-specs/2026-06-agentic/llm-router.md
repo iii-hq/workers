@@ -187,10 +187,10 @@ Provider protocol (router side):
 
 ## Triggers
 
-### Events published (pubsub topics)
+### Trigger types emitted
 
-The router publishes its events over the engine's `iii-pubsub` worker; handlers receive the
-payload verbatim (no envelope).
+The router registers three custom trigger types and fans out to bound handlers;
+payloads are delivered verbatim (no envelope).
 
 - **`router::models::changed`** — fires when the catalog changes (a provider reconciles). Payload:
   `{ provider: string; count: number }`. Lets pickers refresh reactively.
@@ -200,8 +200,8 @@ payload verbatim (no envelope).
   re-declare, so a router restart re-populates the registry without manual intervention (see
   [Registration lifecycle](#registration-lifecycle)).
 
-Bind any of these the standard two-step way (see [README § Reactive pattern](README.md#reactive-pattern))
-with the engine's `subscribe` trigger type: `{ type: "subscribe", config: { topic: "<event>" } }`.
+Bind any of these the standard two-step way (see [README § Reactive pattern](README.md#reactive-pattern)):
+`{ type: "router::models::changed", config: {} }` (and likewise for the other two types).
 
 ### Triggers bound
 

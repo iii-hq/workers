@@ -219,7 +219,7 @@ pub struct RefreshModelsResponse {
 }
 
 /// Event delivered to a provider's `provider::<id>::on_router_ready` (the
-/// `router::ready` pubsub payload, currently `{}`). Unknown fields are ignored.
+/// `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouterReadyEvent {}
 
@@ -231,14 +231,14 @@ pub struct ProviderReadyAck {
 
 // ── event payloads ──────────────────────────────────────────────────────────
 
-/// Payload published on the `router::models::changed` pubsub topic.
+/// Payload emitted on the `router::models::changed` trigger type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsChangedPayload {
     pub provider: String,
     pub count: usize,
 }
 
-/// Payload published on the `router::provider::changed` pubsub topic.
+/// Payload emitted on the `router::provider::changed` trigger type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderChangedPayload {
     pub provider: String,

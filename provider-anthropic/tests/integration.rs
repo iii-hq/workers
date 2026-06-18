@@ -489,7 +489,7 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready (pubsub) → provider re-declares with its persisted token
+    // router::ready trigger → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(&router2, "router::provider::list", json!({}))

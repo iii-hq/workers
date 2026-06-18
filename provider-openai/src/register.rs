@@ -123,7 +123,7 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
             .description(surface::REFRESH_MODELS_DESC),
     );
 
-    // Re-declare when the router restarts: router::ready rides iii-pubsub.
+    // Re-declare when the router restarts: bind to the router::ready trigger type.
     {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
@@ -140,9 +140,9 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "subscribe".into(),
+        trigger_type: "router::ready".into(),
         function_id: surface::ON_ROUTER_READY_ID.into(),
-        config: json!({ "topic": "router::ready" }),
+        config: json!({}),
         metadata: None,
     });
 
