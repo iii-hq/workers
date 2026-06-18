@@ -3,19 +3,9 @@
 //! changes. Mirrors [`context-manager`](../../context-manager/src/configuration.rs) /
 //! [`session-manager`](../../session-manager/src/configuration.rs).
 //!
-//! Every field hot-reloads — nothing requires a restart:
-//!
-//! - `hook` and `sweep_expression` are the STRUCTURAL fields (the two
-//!   trigger bindings). On a change the config handler **re-binds** the
-//!   affected trigger live — it registers the new binding, then
-//!   `unregister()`s the old (a fail-safe overlap; the gate is idempotent,
-//!   so a brief double-fire is harmless) — keeping the [`Trigger`] handle
-//!   in [`TriggerHandles`].
-//! - Every OTHER field is a per-call tuning knob (the `*_timeout_ms`
-//!   budgets and the approval defaults `default_mode` / `always_allow_seed`
-//!   / `pending_timeout_ms`), read from the live snapshot per call via
-//!   [`Deps::config`](crate::functions::Deps::config); a change swaps the
-//!   snapshot.
+//! Every configuration field hot-reloads via a snapshot swap — nothing
+//! requires a restart. The harness `pre_trigger` hook binding is fixed at
+//! worker startup (consult on all calls, fail closed).
 //!
 //! `configuration` is a REQUIRED boot dependency: a failed register/fetch
 //! aborts startup (the gate must run on a known, authoritative policy
@@ -24,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, Trigger, TriggerRequest, III};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -39,11 +29,16 @@ pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
 pub const CONFIG_ID: &str = "approval-gate";
 const CONFIG_FN_ID: &str = "approval::on-config-change";
-const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries; multiplied by the
 /// attempt number for a linear backoff (250ms, 500ms, …).
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
+
+/// Fixed `harness::hook::pre-trigger` binding — approval-gate consults on
+/// every function call.
+const HOOK_FUNCTIONS: &[&str] = &["*"];
+const HOOK_TIMEOUT_MS: u64 = 5_000;
+const HOOK_ON_ERROR: &str = "fail_closed";
 
 /// Register the `approval-gate` configuration schema with the
 /// configuration worker. When `seed` is present, its value is installed
@@ -54,10 +49,10 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Approval Gate",
-        "description": "Policy and decision surface settings: the harness hook binding and \
-                        expiry-sweep schedule, the RPC timeout budgets, and the deployment \
-                        approval defaults (permission mode for new sessions, the auto-mode \
-                        trust seed, and the pending-hold timeout).",
+        "description": "Policy and decision surface settings: the deployment \
+                        approval defaults (permission mode for new sessions \
+                        and the auto-mode trust seed) and the agent permission \
+                        rules.",
         "schema": WorkerConfig::json_schema(),
     });
     if let Some(seed) = seed {
@@ -105,82 +100,34 @@ async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
     }
 }
 
-/// Swap the config snapshot under the write lock. Per-call tuning knobs
-/// take effect on the next read; any trigger re-bind is done by the caller
-/// before this swap.
+/// Swap the config snapshot under the write lock.
 pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Live handles for the two hot-reloadable trigger bindings — the harness
-/// hook and the cron sweep. The config handler re-binds them on a `hook` /
-/// `sweep_expression` change (register the new binding, then
-/// `unregister()` the old), so neither needs a restart.
-pub struct TriggerHandles {
-    pub hook: std::sync::Mutex<Option<Trigger>>,
-    pub sweep: std::sync::Mutex<Option<Trigger>>,
-}
-
-/// Register a best-effort binding and return its handle. The trigger type
-/// may not exist yet (standalone deployment); that surfaces later as an
-/// async `trigger_type_not_found` log, never an `Err` here, so a `None`
-/// means "no handle to retain" rather than a hard failure.
-fn bind(iii: &III, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
+/// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
+pub fn bind_hook(iii: &III) {
     match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
-        config,
+        trigger_type: "harness::hook::pre-trigger".to_string(),
+        function_id: "approval::gate".to_string(),
+        config: json!({
+            "functions": HOOK_FUNCTIONS,
+            "timeout_ms": HOOK_TIMEOUT_MS,
+            "on_error": HOOK_ON_ERROR,
+        }),
         metadata: None,
     }) {
-        Ok(handle) => {
-            tracing::info!(trigger_type, function_id, "trigger binding requested");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed (sibling absent?)");
-            None
-        }
-    }
-}
-
-/// (Re)bind the `harness::hook::pre-trigger` hook from the current config.
-pub fn bind_hook(iii: &III, cfg: &WorkerConfig) -> Option<Trigger> {
-    bind(
-        iii,
-        "harness::hook::pre-trigger",
-        "approval::gate",
-        json!({
-            "functions": cfg.hook.functions,
-            "timeout_ms": cfg.hook.timeout_ms,
-            "on_error": cfg.hook.on_error,
-        }),
-    )
-}
-
-/// (Re)bind the cron expiry sweep from the current config.
-pub fn bind_sweep(iii: &III, cfg: &WorkerConfig) -> Option<Trigger> {
-    bind(
-        iii,
-        "cron",
-        "approval::sweep",
-        json!({ "expression": cfg.sweep_expression }),
-    )
-}
-
-/// Store the freshly-registered handle, then unregister the old one
-/// (register-new-then-unregister-old: a fail-safe overlap — the gate is
-/// never left unbound). A `None` new handle means the re-registration
-/// didn't produce one; keep the old binding rather than tearing it down.
-fn rebind_slot(slot: &std::sync::Mutex<Option<Trigger>>, new: Option<Trigger>) {
-    let Some(new) = new else {
-        return;
-    };
-    let old = slot
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .replace(new);
-    if let Some(old) = old {
-        old.unregister();
+        Ok(_) => tracing::info!(
+            trigger_type = "harness::hook::pre-trigger",
+            function_id = "approval::gate",
+            "trigger binding requested"
+        ),
+        Err(e) => tracing::warn!(
+            trigger_type = "harness::hook::pre-trigger",
+            function_id = "approval::gate",
+            error = %e,
+            "trigger binding failed (sibling absent?)"
+        ),
     }
 }
 
@@ -202,33 +149,24 @@ pub struct OnConfigChangeResponse {
 }
 
 /// Register the internal config-change handler and bind a `configuration`
-/// trigger. `handles` holds the live hook + cron `Trigger`s the handler
-/// re-binds when `hook` / `sweep_expression` change. The handler re-fetches
-/// via `configuration::get` and ignores the trigger payload, so a direct
-/// call can never inject config.
-pub fn register_config_trigger(
-    iii: &III,
-    cell: ConfigCell,
-    handles: Arc<TriggerHandles>,
-) -> Result<(), IIIError> {
+/// trigger. The handler re-fetches via `configuration::get` and ignores the
+/// trigger payload, so a direct call can never inject config.
+pub fn register_config_trigger(iii: &III, cell: ConfigCell) -> Result<(), IIIError> {
     let cell_for_fn = cell.clone();
-    let handles_for_fn = handles.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let cell = cell_for_fn.clone();
-            let handles = handles_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell, &handles).await;
+                on_config_change(&engine, &cell).await;
                 Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
             "Internal: hot-reload approval-gate from the authoritative configuration when it \
-             changes — re-binds the harness hook / cron sweep on a hook or sweep_expression \
-             change and swaps the per-call snapshot (timeouts + approval defaults) otherwise.",
+             changes — swaps the per-call snapshot (timeouts + approval defaults).",
         ),
     );
 
@@ -251,12 +189,7 @@ pub fn register_config_trigger(
 /// trusting `payload.new_value` would let any caller inject arbitrary
 /// config without updating persisted state. Re-fetch the stored value via
 /// `configuration::get` instead.
-///
-/// `hook` / `sweep_expression` changes re-bind the affected trigger live
-/// (register-new-then-unregister-old); every other field hot-applies via
-/// the snapshot swap. The previous config is always kept on a fetch
-/// failure.
-async fn on_config_change(iii: &III, cell: &ConfigCell, handles: &TriggerHandles) {
+async fn on_config_change(iii: &III, cell: &ConfigCell) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -267,20 +200,6 @@ async fn on_config_change(iii: &III, cell: &ConfigCell, handles: &TriggerHandles
             return;
         }
     };
-
-    // Re-bind only the structural binding(s) that actually changed, so an
-    // unrelated tuning change never churns the security hook.
-    let old = cell.read().await.clone();
-    if old.boot_signature() != cfg.boot_signature() {
-        if old.hook != cfg.hook {
-            rebind_slot(&handles.hook, bind_hook(iii, &cfg));
-            tracing::info!("approval-gate hook re-bound (hook config changed)");
-        }
-        if old.sweep_expression != cfg.sweep_expression {
-            rebind_slot(&handles.sweep, bind_sweep(iii, &cfg));
-            tracing::info!("approval-gate sweep re-bound (sweep_expression changed)");
-        }
-    }
 
     apply_config(cell, cfg).await;
     tracing::info!("approval-gate configuration reloaded");
@@ -294,7 +213,7 @@ async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Res
                 function_id: function_id.to_string(),
                 payload: payload.clone(),
                 action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                timeout_ms: None,
             })
             .await
         {
@@ -337,32 +256,5 @@ mod tests {
         };
         apply_config(&cell, tuned).await;
         assert_eq!(cell.read().await.default_mode, PermissionMode::Full);
-    }
-
-    #[test]
-    fn rebind_slot_registers_new_then_unregisters_old() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        // The old handle's unregister closure bumps a counter, proving
-        // register-new-then-unregister-old tears the old binding down only
-        // after the new one is stored.
-        let unregistered = Arc::new(AtomicUsize::new(0));
-        let counter = unregistered.clone();
-        let old = Trigger::new(Arc::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
-        let slot = std::sync::Mutex::new(Some(old));
-
-        rebind_slot(&slot, Some(Trigger::new(Arc::new(|| {}))));
-        assert_eq!(
-            unregistered.load(Ordering::SeqCst),
-            1,
-            "the previous binding must be unregistered after the new one is stored"
-        );
-
-        // A `None` new handle (re-registration produced nothing) keeps the
-        // current binding untouched.
-        rebind_slot(&slot, None);
-        assert_eq!(unregistered.load(Ordering::SeqCst), 1);
     }
 }

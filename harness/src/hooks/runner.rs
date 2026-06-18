@@ -29,7 +29,7 @@ struct HookMutations {
 enum HookOutcome {
     Continue(HookMutations),
     Deny(String),
-    Hold(Option<u64>),
+    Hold,
 }
 
 /// Outcome of the `pre_generate` chain.
@@ -50,7 +50,6 @@ pub enum PreTriggerOutcome {
     },
     Deny(String),
     Hold {
-        pending_timeout_ms: Option<u64>,
         held_by: String,
         annotations: Map<String, Value>,
     },
@@ -78,7 +77,7 @@ impl HookRegistry {
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(_) => {}
                 HookOutcome::Deny(reason) => return Err(reason),
-                HookOutcome::Hold(_) => {}
+                HookOutcome::Hold => {}
             }
         }
         Ok(())
@@ -115,7 +114,7 @@ impl HookRegistry {
                     merge(&mut annotations, m.annotations);
                 }
                 HookOutcome::Deny(reason) => return PreGenerateOutcome::Deny(reason),
-                HookOutcome::Hold(_) => {}
+                HookOutcome::Hold => {}
             }
         }
         PreGenerateOutcome::Continue {
@@ -164,9 +163,8 @@ impl HookRegistry {
                     merge(&mut annotations, m.annotations);
                 }
                 HookOutcome::Deny(reason) => return PreTriggerOutcome::Deny(reason),
-                HookOutcome::Hold(pending_timeout_ms) => {
+                HookOutcome::Hold => {
                     return PreTriggerOutcome::Hold {
-                        pending_timeout_ms,
                         held_by: binding.function_id.clone(),
                         annotations,
                     }
@@ -265,7 +263,7 @@ fn parse_output(value: Value) -> HookOutcome {
                 .unwrap_or("denied by hook")
                 .to_string(),
         ),
-        Some("hold") => HookOutcome::Hold(value.get("pending_timeout_ms").and_then(Value::as_u64)),
+        Some("hold") => HookOutcome::Hold,
         _ => {
             let mut muts = HookMutations::default();
             if let Some(m) = value.get("mutations") {
@@ -341,10 +339,15 @@ mod tests {
             HookOutcome::Deny(r) => assert_eq!(r, "nope"),
             _ => panic!("expected deny"),
         }
-        match parse_output(json!({ "decision": "hold", "pending_timeout_ms": 1000 })) {
-            HookOutcome::Hold(Some(t)) => assert_eq!(t, 1000),
+        match parse_output(json!({ "decision": "hold" })) {
+            HookOutcome::Hold => {}
             _ => panic!("expected hold"),
         }
+        // Legacy hooks may still send pending_timeout_ms; it is ignored.
+        assert!(matches!(
+            parse_output(json!({ "decision": "hold", "pending_timeout_ms": 1000 })),
+            HookOutcome::Hold
+        ));
     }
 
     #[test]

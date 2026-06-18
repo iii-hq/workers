@@ -16,7 +16,7 @@ pub enum ApprovalError {
     StateUnavailable(String),
 
     /// `harness::function::resolve` failed; the pending record is kept
-    /// so the decision stays resolvable (or sweepable).
+    /// so the decision stays resolvable until turn/session cleanup.
     #[error("approval/harness_unavailable: {0}")]
     HarnessUnavailable(String),
 }

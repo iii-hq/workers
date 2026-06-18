@@ -12,15 +12,9 @@ pub async fn handle(
 ) -> Result<Option<GetPendingResponse>, ApprovalError> {
     validate_id("session_id", &req.session_id)?;
     validate_id("function_call_id", &req.function_call_id)?;
-    let cfg = deps.config().await;
-    let record = pending::get(
-        deps.iii.as_ref(),
-        &req.session_id,
-        &req.function_call_id,
-        cfg.state_timeout_ms,
-    )
-    .await
-    .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?;
+    let record = pending::get(deps.iii.as_ref(), &req.session_id, &req.function_call_id)
+        .await
+        .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?;
     Ok(record.map(|pending| GetPendingResponse { pending }))
 }
 
@@ -56,7 +50,6 @@ mod tests {
                     "function_call_id": "c_1",
                     "function_id": "shell::run",
                     "pending_at": 1,
-                    "expires_at": 2,
                 }),
             )
             .await;

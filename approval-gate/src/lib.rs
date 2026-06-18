@@ -26,7 +26,7 @@ pub mod functions;
 pub mod harness;
 pub mod manifest;
 pub mod pending;
-pub mod policy;
+pub mod permissions;
 pub mod redact;
 pub mod session;
 pub mod settings;

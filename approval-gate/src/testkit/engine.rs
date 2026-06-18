@@ -11,7 +11,7 @@ use iii_sdk::{
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::configuration::{self, ConfigCell, TriggerHandles};
+use crate::configuration::{self, ConfigCell};
 use crate::events::{self, Emitter, PENDING_CREATED, PENDING_RESOLVED};
 use crate::functions::{self, Deps};
 
@@ -181,58 +181,87 @@ pub async fn require_engine() -> Option<Engine> {
 
 pub type CallLog = Arc<Mutex<Vec<Value>>>;
 
+/// How the booted stack's inline permission `rules` are set. The gate
+/// evaluates `WorkerConfig::rules` directly (no policy worker), so a test
+/// drives it by overriding that list in the config snapshot.
 #[derive(Clone)]
-pub enum PolicyStub {
-    Reply(Value),
-    Error(String),
-    Absent,
+pub enum RulesOverride {
+    /// Keep the shipped built-in rules seeded into the configuration entry.
+    Shipped,
+    /// No rules — every call falls through to `needs_approval`.
+    Empty,
+    /// An explicit rule list (string shorthands or rule objects).
+    Custom(Vec<Value>),
 }
 
-impl Default for PolicyStub {
-    fn default() -> Self {
-        Self::Reply(json!({ "decision": "needs_approval" }))
-    }
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct BootOpts {
-    pub policy: PolicyStub,
+    pub rules: RulesOverride,
+    /// When true, spawn the real `harness` worker and skip the fake
+    /// `harness::function::resolve` stub.
+    pub real_harness: bool,
+}
+
+impl Default for BootOpts {
+    fn default() -> Self {
+        Self::needs_approval()
+    }
 }
 
 impl BootOpts {
+    /// Empty rules: every call needs approval (the default test posture).
     pub fn needs_approval() -> Self {
         Self {
-            policy: PolicyStub::Reply(json!({ "decision": "needs_approval" })),
+            rules: RulesOverride::Empty,
+            real_harness: false,
         }
     }
 
+    /// Like [`Self::needs_approval`] but boots the real harness worker.
+    pub fn needs_approval_with_harness() -> Self {
+        Self {
+            rules: RulesOverride::Empty,
+            real_harness: true,
+        }
+    }
+
+    /// Allow everything (`["*"]`).
     pub fn allow() -> Self {
         Self {
-            policy: PolicyStub::Reply(json!({ "decision": "allow" })),
+            rules: RulesOverride::Custom(vec![json!("*")]),
+            real_harness: false,
         }
     }
 
-    pub fn deny() -> Self {
+    /// Allow exactly one function id / glob.
+    pub fn allow_function(function_id: impl Into<String>) -> Self {
         Self {
-            policy: PolicyStub::Reply(json!({ "decision": "deny", "rule_id": "test" })),
+            rules: RulesOverride::Custom(vec![json!(function_id.into())]),
+            real_harness: false,
         }
     }
 
-    pub fn policy_reply(value: Value) -> Self {
+    /// Deny exactly one function id / glob (`!`-prefixed shorthand).
+    pub fn deny_function(function_id: impl Into<String>) -> Self {
         Self {
-            policy: PolicyStub::Reply(value),
+            rules: RulesOverride::Custom(vec![json!(format!("!{}", function_id.into()))]),
+            real_harness: false,
         }
     }
 
-    pub fn policy_error(message: impl Into<String>) -> Self {
+    /// An explicit rule list.
+    pub fn with_rules(rules: Vec<Value>) -> Self {
         Self {
-            policy: PolicyStub::Error(message.into()),
+            rules: RulesOverride::Custom(rules),
+            real_harness: false,
         }
     }
 
-    pub fn no_policy() -> Self {
+    /// The shipped built-in rules from configuration defaults.
+    pub fn shipped_rules() -> Self {
         Self {
-            policy: PolicyStub::Absent,
+            rules: RulesOverride::Shipped,
+            real_harness: false,
         }
     }
 }
@@ -250,6 +279,47 @@ pub struct TestStack {
     pub created: CallLog,
     /// `approval::pending-resolved` deliveries.
     pub resolved: CallLog,
+    harness_child: Option<std::process::Child>,
+}
+
+impl Drop for TestStack {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.harness_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
+    let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
+    std::process::Command::new(bin)
+        .arg("--url")
+        .arg(engine_url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+async fn wait_for_harness(iii: &III) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if iii
+            .trigger(TriggerRequest {
+                function_id: "harness::status".into(),
+                payload: json!({ "session_id": "__probe__" }),
+                action: None,
+                timeout_ms: Some(500),
+            })
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
 }
 
 pub fn log_push(log: &CallLog, value: Value) {
@@ -271,9 +341,17 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     configuration::register_config(&iii, None)
         .await
         .expect("register approval-gate configuration schema");
-    let cfg = configuration::fetch_config(&iii)
+    let mut cfg = configuration::fetch_config(&iii)
         .await
         .expect("fetch approval-gate configuration");
+    // Drive the gate's inline permission rules from the boot options. The
+    // gate compiles `WorkerConfig::rules` per call, so overriding the list
+    // here is all a test needs to choose allow / deny / hold behaviour.
+    match &opts.rules {
+        RulesOverride::Shipped => {}
+        RulesOverride::Empty => cfg.rules = Vec::new(),
+        RulesOverride::Custom(rules) => cfg.rules = rules.clone(),
+    }
     let config: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
     let sets = events::register_trigger_types(&iii);
@@ -284,31 +362,8 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     });
     functions::register_all(&iii, &deps);
 
-    let policy = opts.policy;
-    match policy {
-        PolicyStub::Reply(decision) => {
-            iii.register_function(
-                "policy::check_permissions",
-                RegisterFunction::new_async(move |_req: Value| {
-                    let decision = decision.clone();
-                    async move { Ok::<_, iii_sdk::IIIError>(decision) }
-                }),
-            );
-        }
-        PolicyStub::Error(message) => {
-            iii.register_function(
-                "policy::check_permissions",
-                RegisterFunction::new_async(move |_req: Value| {
-                    let message = message.clone();
-                    async move { Err::<Value, _>(iii_sdk::IIIError::Handler(message)) }
-                }),
-            );
-        }
-        PolicyStub::Absent => {}
-    }
-
     let harness_calls: CallLog = Arc::default();
-    {
+    if !opts.real_harness {
         let log = harness_calls.clone();
         iii.register_function(
             "harness::function::resolve",
@@ -381,16 +436,23 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     })
     .expect("bind pending_resolved");
 
+    configuration::bind_hook(&iii);
+
     // The typed, re-fetching config-change handler + its `configuration`
-    // trigger binding (mirrors the production boot order: last). The test
-    // engine has no harness hook / cron to bind, so the re-bindable handles
-    // start empty; reactive reload of the per-call knobs still applies.
-    let handles = Arc::new(TriggerHandles {
-        hook: Mutex::new(None),
-        sweep: Mutex::new(None),
-    });
-    configuration::register_config_trigger(&iii, config.clone(), handles)
+    // trigger binding (mirrors the production boot order: last).
+    configuration::register_config_trigger(&iii, config.clone())
         .expect("register configuration change trigger");
+
+    let harness_child = if opts.real_harness {
+        let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
+        assert!(
+            wait_for_harness(&iii).await,
+            "harness worker did not become ready"
+        );
+        Some(child)
+    } else {
+        None
+    };
 
     TestStack {
         iii,
@@ -399,6 +461,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         harness_calls,
         created,
         resolved,
+        harness_child,
     }
 }
 

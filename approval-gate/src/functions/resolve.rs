@@ -5,8 +5,8 @@
 //! with the resolution.
 //!
 //! Crash ordering: `harness::function::resolve` FIRST, then delete, then
-//! emit — a crash between the first two leaks one record until the sweep
-//! collects it; it can never lose a decision.
+//! emit — a crash between the first two leaks one record until turn/session
+//! cleanup; it can never lose a decision.
 
 use serde_json::json;
 
@@ -24,16 +24,10 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
     validate_id("session_id", &req.session_id)?;
     validate_id("function_call_id", &req.function_call_id)?;
 
-    let cfg = deps.config().await;
     let iii = deps.iii.as_ref();
-    let Some(record) = pending::get(
-        iii,
-        &req.session_id,
-        &req.function_call_id,
-        cfg.state_timeout_ms,
-    )
-    .await
-    .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?
+    let Some(record) = pending::get(iii, &req.session_id, &req.function_call_id)
+        .await
+        .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?
     else {
         // Unknown / already resolved is NOT an error — duplicate
         // decisions race benignly.
@@ -42,20 +36,6 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
             turn_resumed: None,
         });
     };
-
-    // An expired record belongs exclusively to the timeout sweep, which
-    // collects every record with `expires_at <= now` (see `sweep::handle`).
-    // Resolving it here would race that sweep: both paths would call
-    // `harness::function::resolve` for the same call, and a late timeout
-    // could clobber this human decision. Treat a post-deadline resolve as a
-    // benign no-op — the sweep delivers (or already delivered) the timeout.
-    // The boundary matches the sweep exactly, so no record is owned by both.
-    if record.expires_at <= now_ms() {
-        return Ok(ResolveResponse {
-            resolved: false,
-            turn_resumed: None,
-        });
-    }
 
     let payload = match req.decision {
         ResolveDecision::Allow => json!({
@@ -82,25 +62,16 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         }
     };
 
-    // The record is kept on failure so the decision stays resolvable
-    // (or sweepable) — never delete before the harness acknowledged.
-    let reply = harness::function_resolve(iii, payload, Some(cfg.harness_timeout_ms))
-        .await
-        .map_err(|e| {
-            ApprovalError::HarnessUnavailable(format!("harness::function::resolve failed: {e}"))
-        })?;
+    // The record is kept on failure so the decision stays resolvable —
+    // never delete before the harness acknowledged.
+    let reply = harness::function_resolve(iii, payload).await.map_err(|e| {
+        ApprovalError::HarnessUnavailable(format!("harness::function::resolve failed: {e}"))
+    })?;
     let turn_resumed = reply
         .get("turn_resumed")
         .and_then(serde_json::Value::as_bool);
 
-    match pending::delete_with_gate(
-        iii,
-        &req.session_id,
-        &req.function_call_id,
-        cfg.state_timeout_ms,
-    )
-    .await
-    {
+    match pending::delete_with_gate(iii, &req.session_id, &req.function_call_id).await {
         Ok(Some(deleted)) => {
             deps.sink
                 .pending_resolved(&PendingResolvedEvent {
@@ -125,13 +96,13 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         // emission is the gate's contract.
         Ok(None) => {}
         Err(e) => {
-            // The decision reached the harness; the orphaned record is
-            // sweep food. Never fail the resolve over cleanup.
+            // The decision reached the harness; retry or turn/session cleanup
+            // will collect the orphaned record. Never fail resolve over cleanup.
             tracing::warn!(
                 session_id = %req.session_id,
                 function_call_id = %req.function_call_id,
                 error = %e,
-                "pending record delete failed after resolve; sweep will collect it"
+                "pending record delete failed after resolve; retry or purge will collect it"
             );
         }
     }
@@ -159,9 +130,6 @@ mod tests {
             function_id: "shell::run".into(),
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
-            // Live record: deadline well in the future so the resolve path
-            // (not the sweep) owns it.
-            expires_at: now_ms() + 1_800_000,
             session_title: None,
             session_description: None,
             session_metadata: Some(serde_json::from_value(json!({ "owner": "u_1" })).unwrap()),
@@ -230,49 +198,6 @@ mod tests {
                 .unwrap();
             assert!(!res.resolved);
             assert!(log_snapshot(&stack.harness_calls).is_empty());
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn expired_record_is_left_for_the_sweep() {
-        with_stack(BootOpts::needs_approval(), |stack| async move {
-            // A record whose deadline has already passed belongs to the
-            // sweep, not to a late human resolve.
-            let record = PendingApprovalRecord {
-                session_id: "s_1".into(),
-                turn_id: "t_9".into(),
-                function_call_id: "c_1".into(),
-                function_id: "shell::run".into(),
-                arguments_excerpt: json!({ "cmd": "ls" }),
-                pending_at: 100,
-                expires_at: 200,
-                session_title: None,
-                session_description: None,
-                session_metadata: None,
-                depth: 0,
-                assistant_excerpt: None,
-            };
-            state_set(
-                &stack.iii,
-                PENDING_SCOPE,
-                "s_1/c_1",
-                serde_json::to_value(record).unwrap(),
-            )
-            .await;
-
-            let res = handle(&stack.deps, req(ResolveDecision::Allow, None))
-                .await
-                .unwrap();
-            assert!(!res.resolved, "expired record must not resolve here");
-            assert!(
-                log_snapshot(&stack.harness_calls).is_empty(),
-                "no harness call: the sweep owns expired records"
-            );
-            // Left intact for the sweep to collect.
-            assert!(!state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
-                .await
-                .is_null());
         })
         .await;
     }

@@ -87,7 +87,7 @@
             "type": "string"
           },
           {
-            "description": "Copied from the deployment's `always_allow_seed` on first mutation.",
+            "description": "Copied from deployment auto-scoped allow rules on first mutation.",
             "enum": [
               "seed"
             ],

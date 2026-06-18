@@ -7,7 +7,6 @@
         "enum": [
           "allow",
           "deny",
-          "timeout",
           "aborted"
         ],
         "type": "string"

@@ -12,7 +12,6 @@ version: 1
 rules:
   # Gate, state, auth, routing — agents must not call these directly.
   - '!approval::resolve'
-  - '!policy::check_permissions'
   - '!hook-fanout::publish_collect'
   - '!state::set'
   - '!state::update'

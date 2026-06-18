@@ -64,7 +64,7 @@ pub enum PermissionMode {
 #[serde(rename_all = "snake_case")]
 pub enum GrantedBy {
     UserClick,
-    /// Copied from the deployment's `always_allow_seed` on first mutation.
+    /// Copied from deployment auto-scoped allow rules on first mutation.
     Seed,
 }
 
@@ -152,8 +152,6 @@ pub struct PendingApprovalRecord {
     pub arguments_excerpt: Value,
     /// ms epoch
     pub pending_at: i64,
-    /// `pending_at + pending_timeout_ms`
-    pub expires_at: i64,
 
     // Denormalized session context — soft-fetched via session::get at
     // hold time; omitted when the fetch fails or session-manager is absent.
@@ -181,7 +179,6 @@ pub struct PendingApprovalRecord {
 pub enum ResolvedOutcome {
     Allow,
     Deny,
-    Timeout,
     Aborted,
 }
 
@@ -242,7 +239,7 @@ pub struct HookInput {
 pub enum HookOutput {
     Continue,
     Deny { reason: String },
-    Hold { pending_timeout_ms: i64 },
+    Hold,
 }
 
 // ---------------------------------------------------------------------------
@@ -412,11 +409,8 @@ mod tests {
             json!({ "decision": "deny", "reason": "nope" })
         );
         assert_eq!(
-            serde_json::to_value(HookOutput::Hold {
-                pending_timeout_ms: 1_800_000
-            })
-            .unwrap(),
-            json!({ "decision": "hold", "pending_timeout_ms": 1_800_000 })
+            serde_json::to_value(HookOutput::Hold).unwrap(),
+            json!({ "decision": "hold" })
         );
     }
 
@@ -489,7 +483,6 @@ mod tests {
             function_id: "shell::run".into(),
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
-            expires_at: 200,
             session_title: None,
             session_description: None,
             session_metadata: None,

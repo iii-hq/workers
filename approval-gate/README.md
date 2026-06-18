@@ -6,8 +6,8 @@ worker:
 
 1. **The gate** — `approval::gate`, a `pre_trigger` hook the worker binds
    itself at startup on the harness's `harness::hook::pre-trigger` trigger
-   type. It evaluates per-session mode, allow-lists, and the yaml policy, and
-   answers `continue`, `deny`, or `hold`.
+   type. It evaluates per-session mode, allow-lists, and inline config
+   `rules`, and answers `continue`, `deny`, or `hold`.
 2. **The decision plane** — `approval::resolve` plus the per-session settings
    RPCs (`set_mode`, `add_always_allow`, `approve_always`, …). Human/console
    only.
@@ -17,9 +17,10 @@ worker:
    notification workers and UIs bind to.
 
 The worker keeps **no resolved-approval history**: a record exists only while
-a call is held; every record has an explicit deletion path and a cron sweep as
-GC backstop. The transcript's `function_result` and the `pending_resolved`
-event are the audit trail.
+a call is held; every record has an explicit deletion path (resolve, turn
+abort, session delete). The transcript's `function_result` and the
+`pending_resolved` event are the audit trail. Holds do not expire — they wait
+until a human resolves or the turn/session is purged.
 
 ## Standalone caveat
 
@@ -39,10 +40,6 @@ exercises the harness surface against in-process fakes until harness 1.0 lands.
 ```bash
 iii worker add approval-gate
 ```
-
-The sweep needs the engine's cron worker: `iii worker add iii-cron`. Without
-it the expiry backstop never fires (the harness pending sweep — once it
-exists — remains the second backstop).
 
 ## Quickstart
 
@@ -76,22 +73,19 @@ unchanged from the proven implementation):
 2. mode `full` → allow
 3. `approved_always` hit → allow (**every** mode — remembered human decisions)
 4. mode `auto` **and** `always_allow` hit → allow (dormant under `manual`)
-5. fall through to `policy::check_permissions` (5s budget):
-   `allow` → allow · `deny` → deny · `needs_approval` → **hold** ·
-   unparseable reply → hold · transport failure/timeout → **deny**
-   (`gate_unavailable` — fail closed, never an unattended hold)
+5. fall through to configuration **`rules`** (first match wins):
+   `allow` → allow · `deny` → deny · no match → **hold**
 
-No `policy::check_permissions` worker deployed? Every non-short-circuited
-call is denied as `gate_unavailable`. Run a trivial policy worker (e.g.
-"everything `needs_approval`") or lean on `always_allow_seed` / per-session
-modes.
+When the configuration entry omits `rules`, the gate denies only this
+worker's own `approval::*` surface; every other call **holds**. On startup the
+worker seeds/backfills the stored entry so `rules` are editable in the console.
 
 ## Custom trigger types
 
 | Type | Fires | Payload |
 |---|---|---|
-| `approval::pending-created` | a call was held and its inbox record written (async, off the hot path) | `PendingApprovalRecord & { status: "pending" }` — redacted args, session context, expiry: self-sufficient for notification copy |
-| `approval::pending-resolved` | a pending call left the inbox (exactly once per record) | ids + `outcome: "allow" \| "deny" \| "timeout" \| "aborted"`, operator `reason` on deny |
+| `approval::pending-created` | a call was held and its inbox record written (async, off the hot path) | `PendingApprovalRecord & { status: "pending" }` — redacted args, session context: self-sufficient for notification copy |
+| `approval::pending-resolved` | a pending call left the inbox (exactly once per record) | ids + `outcome: "allow" \| "deny" \| "aborted"`, operator `reason` on deny |
 
 Binding config (both types): `{ session_id?, metadata? }` — `metadata` is a
 subset-equality match against the record's denormalized `session_metadata`,
@@ -103,24 +97,17 @@ restart, reconcile with one `approval::list-pending` call.
 The whole config — runtime wiring **and** deployment approval defaults — lives
 in the single engine configuration entry **`approval-gate`** (operator-edited
 via the console's Configuration screen; reactive reload, no polling). There is
-**no committed `config.yaml`**; defaults are seeded into the entry on first
-registration.
+**no committed `config.yaml`**. On first boot the worker seeds the entry with
+the built-in defaults (including `rules`) so the editor is pre-filled; existing
+stored values are never overwritten except to add a missing `rules` field.
 
 ```jsonc
 {
-  "hook": {                        // harness::hook::pre-trigger binding (re-bound live on change)
-    "functions": ["*"],            //   pre_trigger globs the gate consults on
-    "timeout_ms": 5000,
-    "on_error": "fail_closed"
-  },
-  "sweep_expression": "0 * * * * *",   // 6-field cron for the expiry sweep (re-bound live on change)
-  "policy_timeout_ms": 5000,           // per-call budgets (hot-reloadable)
-  "session_fetch_timeout_ms": 1000,
-  "state_timeout_ms": 5000,
-  "harness_timeout_ms": 10000,
   "default_mode": "manual",        // manual | auto | full — sessions with no stored settings
-  "always_allow_seed": [],         // auto-mode trust profile (function ids / globs)
-  "pending_timeout_ms": 1800000    // hold deadline; drives expires_at (default 30 min)
+  "rules": [                       // first match wins; no match → hold
+    "!approval::*",
+    { "function": "state::get", "action": "allow", "modes": ["auto"] }
+  ]
 }
 ```
 
@@ -129,9 +116,7 @@ schema and fetches the authoritative value at startup, and a failed
 register/fetch aborts boot (the gate must run on a known, authoritative policy
 surface, never a guessed one). When no value is stored yet the built-in
 defaults above are seeded and used. **Every field hot-reloads on
-`configuration::set` — nothing requires a restart**: `hook` and
-`sweep_expression` re-bind their triggers live (register the new binding, then
-unregister the old); the rest swap the in-memory snapshot.
+`configuration::set` — nothing requires a restart**.
 
 ## Agent exposure
 
@@ -154,8 +139,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
 PATH) with `configuration` + `iii-state`, registers the production surface
-in-process, and fakes the not-yet-built siblings
-(`policy::check_permissions`, `harness::function::resolve`, `session::get`).
+in-process, and fakes sibling RPCs where noted (`session::get`). With the
+harness binary available, `tests/harness_integration.rs` additionally boots the
+real harness worker for cross-worker hold / sweep / resolve checks.
 
 ## Architecture documentation
 

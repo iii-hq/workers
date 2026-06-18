@@ -244,6 +244,24 @@ pub async fn resolve_parent(
     }
 }
 
+/// Whether a pending checkpoint should be resolved by the expiry sweep.
+/// Approval/hook holds (`held_by`) never expire; sub-agent child pendings do.
+fn pending_call_expired(
+    cp: &crate::types::turn::CallCheckpoint,
+    default_timeout_ms: u64,
+    now: i64,
+) -> bool {
+    if cp.state != CallState::Pending {
+        return false;
+    }
+    if cp.held_by.is_some() {
+        return false;
+    }
+    let timeout = cp.pending_timeout_ms.unwrap_or(default_timeout_ms);
+    let pending_at = cp.pending_at.unwrap_or(now);
+    now.saturating_sub(pending_at) as u64 >= timeout
+}
+
 /// Resolve every pending call past its `pending_timeout_ms` with an error.
 pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
     let cfg = deps.cfg().await;
@@ -257,14 +275,7 @@ pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
             continue;
         }
         for (call_id, cp) in &record.calls {
-            if cp.state != CallState::Pending {
-                continue;
-            }
-            let timeout = cp
-                .pending_timeout_ms
-                .unwrap_or(cfg.default_pending_timeout_ms);
-            let pending_at = cp.pending_at.unwrap_or(now);
-            if now.saturating_sub(pending_at) as u64 >= timeout {
+            if pending_call_expired(cp, cfg.default_pending_timeout_ms, now) {
                 expired.push((
                     record.session_id.clone(),
                     record.turn_id.clone(),
@@ -306,5 +317,66 @@ fn render_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::turn::{CallCheckpoint, CallState};
+
+    fn cp(
+        state: CallState,
+        held_by: Option<&str>,
+        timeout_ms: Option<u64>,
+        pending_at: i64,
+    ) -> CallCheckpoint {
+        CallCheckpoint {
+            state,
+            function_id: Some("shell::run".into()),
+            entry_id: None,
+            child_session_id: if held_by.is_none() && timeout_ms.is_some() {
+                Some("child".into())
+            } else {
+                None
+            },
+            child_turn_id: if held_by.is_none() && timeout_ms.is_some() {
+                Some("t_child".into())
+            } else {
+                None
+            },
+            held_by: held_by.map(str::to_string),
+            pending_timeout_ms: timeout_ms,
+            pending_at: Some(pending_at),
+        }
+    }
+
+    #[test]
+    fn approval_hold_never_expires() {
+        let now = 1_000_000;
+        let checkpoint = cp(
+            CallState::Pending,
+            Some("approval::gate"),
+            None,
+            now - 999_999,
+        );
+        assert!(!pending_call_expired(&checkpoint, 1_800_000, now));
+    }
+
+    #[test]
+    fn sub_agent_pending_expires_past_wait_guard() {
+        let now = 1_000_000;
+        let fresh = cp(CallState::Pending, None, Some(60_000), now - 30_000);
+        assert!(!pending_call_expired(&fresh, 1_800_000, now));
+        let stale = cp(CallState::Pending, None, Some(60_000), now - 60_000);
+        assert!(pending_call_expired(&stale, 1_800_000, now));
+    }
+
+    #[test]
+    fn sub_agent_pending_uses_default_timeout_when_unset() {
+        let now = 1_000_000;
+        let default = 1_800_000;
+        let stale = cp(CallState::Pending, None, None, now - default as i64);
+        assert!(pending_call_expired(&stale, default, now));
     }
 }

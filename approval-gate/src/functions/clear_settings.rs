@@ -11,8 +11,7 @@ pub async fn handle(
     deps: &Deps,
     req: ClearSettingsRequest,
 ) -> Result<ClearSettingsResponse, ApprovalError> {
-    let cfg = deps.config().await;
-    let cleared = settings::clear(deps.iii.as_ref(), &req.session_id, cfg.state_timeout_ms).await?;
+    let cleared = settings::clear(deps.iii.as_ref(), &req.session_id).await?;
     Ok(ClearSettingsResponse { cleared })
 }
 
