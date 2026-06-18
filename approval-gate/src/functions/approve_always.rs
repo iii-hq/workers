@@ -18,17 +18,14 @@ pub async fn handle(
         ));
     }
     let cfg = deps.config().await;
-    let settings = settings::materialize_and(
-        deps.iii.as_ref(),
-        &req.session_id,
-        &cfg,
-        cfg.state_timeout_ms,
-        |base, now| ApprovalSettings {
-            approved_always: with_grant(&base.approved_always, &req.function_id, now),
-            ..base
-        },
-    )
-    .await?;
+    let settings =
+        settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, now| {
+            ApprovalSettings {
+                approved_always: with_grant(&base.approved_always, &req.function_id, now),
+                ..base
+            }
+        })
+        .await?;
     Ok(SettingsResponse { settings })
 }
 

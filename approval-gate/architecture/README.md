@@ -13,6 +13,7 @@ opening the source.
 |---|---|---|
 | [internals.md](internals.md) | Maintainers of this worker | You are changing approval-gate itself: the evaluation order, the pending-record lifecycle, the emit gate, redaction, configuration reload. |
 | [integration.md](integration.md) | Authors of other workers / clients | You are building something that calls `approval::*` or binds its trigger types — the console, a notification worker, the harness (once its hook surface lands). This file is the handoff contract. |
+| [permissions-source.md](permissions-source.md) | Operators / integrators | You need to know where permission truth lives and how harness and the console consume the single `approval-gate` rules list. |
 
 The unit suites beside each module and the engine-backed scenarios in
 [../tests/integration.rs](../tests/integration.rs) are the executable

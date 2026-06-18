@@ -10,7 +10,6 @@
 //! no-op on the existing record (and emits no second `pending_created`).
 
 use super::Deps;
-use crate::config::WorkerConfig;
 use crate::decision;
 use crate::denial::{gate_unavailable_envelope, human_only_denial, permissions_deny_envelope};
 use crate::error::ApprovalError;
@@ -52,8 +51,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
     //    outage degrades to the configuration defaults: safe, because the
     //    default never widens beyond what the deployment configured.
     let cfg = deps.config().await;
-    let stored =
-        settings::read_tolerant(deps.iii.as_ref(), &input.session_id, cfg.state_timeout_ms).await;
+    let stored = settings::read_tolerant(deps.iii.as_ref(), &input.session_id).await;
     let (effective, _) = settings::effective(stored, &cfg);
 
     // 3-5. Mode / allow-list short-circuits.
@@ -63,7 +61,10 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
 
     // 6. Config rules fallback — evaluate the inline permission rules
     //    (first match wins; no match → hold for human approval).
-    match cfg.permissions().check(&call.function_id, &call.arguments) {
+    match cfg
+        .permissions()
+        .check(&call.function_id, &call.arguments, effective.mode)
+    {
         Decision::Allow { .. } => Ok(HookOutput::Continue),
         Decision::Deny {
             rule_id,
@@ -77,7 +78,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
             );
             Ok(deny(&envelope.reason))
         }
-        Decision::NeedsApproval => Ok(hold(deps, &input, &call, &cfg).await),
+        Decision::NeedsApproval => Ok(hold(deps, &input, &call).await),
     }
 }
 
@@ -93,18 +94,16 @@ fn deny(reason: &str) -> HookOutput {
 /// `pending_created` emits asynchronously after the record is written —
 /// notification fan-out never blocks the trigger hot path.
 ///
-/// Holds never expire: the hook returns `pending_timeout_ms: 0` and the
-/// record carries no deadline. A held call stays held until a human
-/// resolves it or turn/session cleanup collects it.
-async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfig) -> HookOutput {
+/// Holds never expire: the hook returns `{ decision: "hold" }` with no
+/// timeout. A held call stays held until a human resolves it or turn/session
+/// cleanup collects it.
+async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
     let iii = deps.iii.as_ref();
 
     // Idempotency: a redelivered step re-holds the same call.
-    match pending::get(iii, &input.session_id, &call.id, cfg.state_timeout_ms).await {
+    match pending::get(iii, &input.session_id, &call.id).await {
         Ok(Some(_existing)) => {
-            return HookOutput::Hold {
-                pending_timeout_ms: 0,
-            };
+            return HookOutput::Hold;
         }
         Ok(None) => {}
         Err(e) => {
@@ -117,7 +116,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfi
     }
 
     let (session_title, session_description, session_metadata) =
-        fetch_session_context(deps, &input.session_id, cfg.session_fetch_timeout_ms).await;
+        fetch_session_context(deps, &input.session_id).await;
 
     let pending_at = now_ms();
     let record = PendingApprovalRecord {
@@ -134,7 +133,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfi
         assistant_excerpt: None,
     };
 
-    match pending::put(iii, &record, cfg.state_timeout_ms).await {
+    match pending::put(iii, &record).await {
         Err(e) => {
             let envelope = gate_unavailable_envelope(
                 &call.function_id,
@@ -144,35 +143,24 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, cfg: &WorkerConfi
         }
         // Lost a write race with a concurrent duplicate hold: the first
         // writer's record (and emission) stands.
-        Ok(Some(_prior)) => HookOutput::Hold {
-            pending_timeout_ms: 0,
-        },
+        Ok(Some(_prior)) => HookOutput::Hold,
         Ok(None) => {
             let sink = deps.sink.clone();
             tokio::spawn(async move {
                 sink.pending_created(&record).await;
             });
-            HookOutput::Hold {
-                pending_timeout_ms: 0,
-            }
+            HookOutput::Hold
         }
     }
 }
 
 /// Best-effort `session::get` — fields are omitted on any failure
-/// (session-manager absent, timeout, unknown session), within its own
-/// budget so it can't eat the hook's.
+/// (session-manager absent, timeout, unknown session).
 async fn fetch_session_context(
     deps: &Deps,
     session_id: &str,
-    session_fetch_timeout_ms: u64,
 ) -> (Option<String>, Option<String>, Option<JsonMap>) {
-    let reply = session::get(
-        deps.iii.as_ref(),
-        session_id,
-        Some(session_fetch_timeout_ms),
-    )
-    .await;
+    let reply = session::get(deps.iii.as_ref(), session_id).await;
     let Ok(reply) = reply else {
         return (None, None, None);
     };
@@ -257,7 +245,7 @@ mod tests {
             )
             .await;
             let out = handle(&stack.deps, hook_input("shell::run")).await.unwrap();
-            assert!(matches!(out, HookOutput::Hold { .. }));
+            assert!(matches!(out, HookOutput::Hold));
             let record = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
             assert_eq!(record["function_id"], json!("shell::run"));
         })
@@ -324,7 +312,7 @@ mod tests {
             .await;
             assert!(matches!(
                 handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
-                HookOutput::Hold { .. }
+                HookOutput::Hold
             ));
         })
         .await;
@@ -344,12 +332,12 @@ mod tests {
             .await;
             assert!(matches!(
                 handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
-                HookOutput::Hold { .. }
+                HookOutput::Hold
             ));
             let before = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
             assert!(matches!(
                 handle(&stack.deps, hook_input("shell::run")).await.unwrap(),
-                HookOutput::Hold { .. }
+                HookOutput::Hold
             ));
             assert_eq!(
                 state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await,

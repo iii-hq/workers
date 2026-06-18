@@ -9,18 +9,15 @@ use crate::types::{ApprovalSettings, SetModeRequest, SettingsResponse};
 
 pub async fn handle(deps: &Deps, req: SetModeRequest) -> Result<SettingsResponse, ApprovalError> {
     let cfg = deps.config().await;
-    let settings = settings::materialize_and(
-        deps.iii.as_ref(),
-        &req.session_id,
-        &cfg,
-        cfg.state_timeout_ms,
-        |base, now| ApprovalSettings {
-            mode: req.mode,
-            mode_set_at: now,
-            ..base
-        },
-    )
-    .await?;
+    let settings =
+        settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, now| {
+            ApprovalSettings {
+                mode: req.mode,
+                mode_set_at: now,
+                ..base
+            }
+        })
+        .await?;
     Ok(SettingsResponse { settings })
 }
 

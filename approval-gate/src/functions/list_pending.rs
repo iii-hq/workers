@@ -54,8 +54,7 @@ pub async fn handle(
     let after = req.cursor.as_deref().map(decode_cursor).transpose()?;
     let limit = req.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    let cfg = deps.config().await;
-    let mut records = pending::list_all(deps.iii.as_ref(), cfg.state_timeout_ms)
+    let mut records = pending::list_all(deps.iii.as_ref())
         .await
         .map_err(|e| ApprovalError::StateUnavailable(format!("pending list failed: {e}")))?;
 

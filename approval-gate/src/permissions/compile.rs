@@ -14,6 +14,8 @@ pub struct CompiledRule {
     pub function_id: String,
     pub glob: Option<Regex>,
     pub action: Action,
+    /// When set, the rule applies only in these session modes.
+    pub modes: Option<Vec<crate::types::PermissionMode>>,
     pub constraints: Vec<(String, CompiledConstraint)>,
 }
 
@@ -104,6 +106,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
                     function_id,
                     glob,
                     action: Action::Deny,
+                    modes: None,
                     constraints: Vec::new(),
                 });
             }
@@ -113,6 +116,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
                 function_id,
                 glob,
                 action: Action::Allow,
+                modes: None,
                 constraints: Vec::new(),
             })
         }
@@ -120,6 +124,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
             rule_id,
             function,
             action,
+            modes,
             args,
         } => {
             if function.is_empty() {
@@ -144,6 +149,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
                 function_id,
                 glob,
                 action: *action,
+                modes: modes.clone(),
                 constraints,
             })
         }

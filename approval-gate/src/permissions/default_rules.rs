@@ -16,6 +16,7 @@ mod tests {
     use super::*;
     use crate::functions::catalog;
     use crate::permissions::{default_permissions, Decision};
+    use crate::types::PermissionMode;
 
     fn catalog_function_ids() -> Vec<&'static str> {
         catalog().iter().map(|s| s.function_id).collect()
@@ -31,7 +32,10 @@ mod tests {
         let p = default_permissions();
         for fid in catalog_function_ids() {
             assert!(
-                matches!(p.check(fid, &serde_json::json!({})), Decision::Deny { .. }),
+                matches!(
+                    p.check(fid, &serde_json::json!({}), PermissionMode::Manual),
+                    Decision::Deny { .. }
+                ),
                 "{fid} should deny"
             );
         }
@@ -47,7 +51,10 @@ mod tests {
             "configuration::set",
         ] {
             assert!(
-                matches!(p.check(fid, &serde_json::json!({})), Decision::NeedsApproval),
+                matches!(
+                    p.check(fid, &serde_json::json!({}), PermissionMode::Manual),
+                    Decision::NeedsApproval
+                ),
                 "{fid} should hold"
             );
         }

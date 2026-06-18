@@ -96,8 +96,8 @@ assumes, faked today by `tests/integration.rs`:
 
 - **`harness::hook::pre-trigger` trigger type.** The worker binds
   `approval::gate` at startup with
-  `{ functions, timeout_ms, on_error: "fail_closed" }` from the `hook` block of
-  its `approval-gate` configuration entry. The hook is an ordinary registered
+  `{ functions: ["*"], timeout_ms: 5000, on_error: "fail_closed" }` at worker
+  startup (fixed — not in the configuration entry). The hook is an ordinary registered
   function: the harness invokes it synchronously and treats the return value as
   `HookOutput`.
 - **`harness::function::resolve`** accepting
@@ -119,15 +119,12 @@ gated sets a broad trigger policy and lets the gate hold/deny.
 - **session-manager** (soft): provides hold-time context and the
   `session::deleted` cascade. Without it, records carry no session context
   and settings cleanup relies on `approval::clear-settings`.
-- **Configuration (required)**: the worker's entire config — the `hook`
-  binding, the per-call `*_timeout_ms` budgets, and the approval defaults
-  (`default_mode`, `always_allow_seed`, `rules`) — lives in the
-  `approval-gate` configuration entry; there is **no `config.yaml`**. It is a
-  required boot dependency: a failed register/fetch aborts startup.
-  `configuration::set` replaces the **whole** value — read-merge-write to edit
-  one field. When `rules` is omitted, the built-in shipped defaults apply.
-  Every field hot-reloads (no restart): `hook` re-binds its trigger live; the
-  rest swap the in-memory snapshot.
+- **Configuration (required)**: the worker's config — the approval defaults
+  (`default_mode`, `rules`) — lives in the `approval-gate` configuration entry; there is **no
+  `config.yaml`**. It is a required boot dependency: a failed register/fetch
+  aborts startup. `configuration::set` replaces the **whole** value —
+  read-merge-write to edit one field. When `rules` is omitted, the built-in
+  shipped defaults apply. Every field hot-reloads via snapshot swap.
 
 ## What not to do
 

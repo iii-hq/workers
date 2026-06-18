@@ -21,6 +21,7 @@ async fn hold_writes_record_emits_once_and_is_idempotent() {
         .await
         .expect("gate call");
         assert_eq!(out["decision"], json!("hold"));
+        assert!(out.get("pending_timeout_ms").is_none());
 
         let record = call(
             iii,
@@ -62,6 +63,7 @@ async fn resolve_allow_releases_and_deny_delivers_through_the_fake_harness() {
                 .await
                 .unwrap();
             assert_eq!(out["decision"], json!("hold"));
+        assert!(out.get("pending_timeout_ms").is_none());
         }
 
         let res = call(
@@ -121,6 +123,7 @@ async fn configuration_set_reloads_defaults_reactively() {
         .await
         .unwrap();
         assert_eq!(out["decision"], json!("hold"));
+        assert!(out.get("pending_timeout_ms").is_none());
 
         call(
             iii,

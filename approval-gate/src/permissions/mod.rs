@@ -14,6 +14,32 @@ use compile::CompileError;
 use serde_json::Value;
 use tracing::warn;
 
+use crate::types::PermissionMode;
+
+pub fn rule_applies_in_mode(rule: &compile::CompiledRule, mode: PermissionMode) -> bool {
+    match &rule.modes {
+        None => true,
+        Some(modes) => modes.contains(&mode),
+    }
+}
+
+/// Globs from allow rules explicitly scoped to auto mode — seeds per-session
+/// `always_allow` on first mutation.
+pub fn auto_allow_seed_from_specs(specs: &[RuleSpec]) -> Vec<String> {
+    specs
+        .iter()
+        .filter_map(|spec| match spec {
+            RuleSpec::Structured {
+                function,
+                action: Action::Allow,
+                modes: Some(modes),
+                ..
+            } if modes.contains(&PermissionMode::Auto) => Some(function.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct Permissions {
     rules: Vec<CompiledRule>,
@@ -52,8 +78,11 @@ impl Permissions {
         }
     }
 
-    pub fn check(&self, function_id: &str, args: &Value) -> Decision {
+    pub fn check(&self, function_id: &str, args: &Value, mode: PermissionMode) -> Decision {
         for rule in &self.rules {
+            if !rule_applies_in_mode(rule, mode) {
+                continue;
+            }
             if !match_function_id(rule, function_id) {
                 continue;
             }
@@ -91,6 +120,20 @@ pub fn parse_rule_spec(value: &Value) -> Option<RuleSpec> {
         .get("rule_id")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let modes = obj.get("modes").and_then(|v| {
+        v.as_array().map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|s| match s {
+                    "manual" => Some(PermissionMode::Manual),
+                    "auto" => Some(PermissionMode::Auto),
+                    "full" => Some(PermissionMode::Full),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+    });
     let args = obj
         .get("args")
         .and_then(Value::as_object)
@@ -104,6 +147,7 @@ pub fn parse_rule_spec(value: &Value) -> Option<RuleSpec> {
         rule_id,
         function,
         action,
+        modes,
         args,
     })
 }
@@ -147,13 +191,15 @@ mod tests {
             .iter()
             .map(|s| RuleSpec::Shorthand((*s).to_string()))
             .collect();
-        Permissions::compile(&specs).unwrap().check(fid, &args)
+        Permissions::compile(&specs)
+            .unwrap()
+            .check(fid, &args, PermissionMode::Manual)
     }
 
     #[test]
     fn empty_permissions_gates_every_call() {
         assert!(matches!(
-            Permissions::empty().check("shell::exec", &json!({})),
+            Permissions::empty().check("shell::exec", &json!({}), PermissionMode::Manual),
             Decision::NeedsApproval
         ));
     }
@@ -203,7 +249,7 @@ mod tests {
     #[test]
     fn glob_provider_needs_approval_by_default() {
         assert!(matches!(
-            default_permissions().check("provider::anthropic::chat", &json!({})),
+            default_permissions().check("provider::anthropic::chat", &json!({}), PermissionMode::Manual),
             Decision::NeedsApproval
         ));
     }
@@ -211,7 +257,7 @@ mod tests {
     #[test]
     fn web_fetch_needs_approval_by_default() {
         assert!(matches!(
-            default_permissions().check("web::fetch", &json!({})),
+            default_permissions().check("web::fetch", &json!({}), PermissionMode::Manual),
             Decision::NeedsApproval
         ));
     }
@@ -219,7 +265,7 @@ mod tests {
     #[test]
     fn unknown_function_needs_approval() {
         assert!(matches!(
-            default_permissions().check("shell::run", &json!({})),
+            default_permissions().check("shell::run", &json!({}), PermissionMode::Manual),
             Decision::NeedsApproval
         ));
     }
@@ -230,15 +276,16 @@ mod tests {
             rule_id: None,
             function: "f".into(),
             action: Action::Allow,
+            modes: None,
             args: vec![("n".into(), ConstraintSpec::Equals(json!(0)))],
         }];
         let p = Permissions::compile(&specs).unwrap();
         assert!(matches!(
-            p.check("f", &json!({ "n": 0 })),
+            p.check("f", &json!({ "n": 0 }), PermissionMode::Manual),
             Decision::Allow { .. }
         ));
         assert!(matches!(
-            p.check("f", &json!({ "n": "0" })),
+            p.check("f", &json!({ "n": "0" }), PermissionMode::Manual),
             Decision::NeedsApproval
         ));
     }

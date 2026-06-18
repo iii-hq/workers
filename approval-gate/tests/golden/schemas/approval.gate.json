@@ -121,15 +121,10 @@
               "hold"
             ],
             "type": "string"
-          },
-          "pending_timeout_ms": {
-            "format": "int64",
-            "type": "integer"
           }
         },
         "required": [
-          "decision",
-          "pending_timeout_ms"
+          "decision"
         ],
         "type": "object"
       }

@@ -35,13 +35,11 @@ pub async fn get(
     iii: &III,
     session_id: &str,
     function_call_id: &str,
-    timeout_ms: u64,
 ) -> Result<Option<PendingApprovalRecord>, IIIError> {
     let reply = state::get(
         iii,
         PENDING_SCOPE,
         &pending_key(session_id, function_call_id),
-        Some(timeout_ms),
     )
     .await?;
     Ok(parse_record(&reply))
@@ -50,17 +48,12 @@ pub async fn get(
 /// Write the record. Returns the previous value when one existed (a
 /// concurrent duplicate hold lost the race — the caller must not emit a
 /// second `pending_created`).
-pub async fn put(
-    iii: &III,
-    record: &PendingApprovalRecord,
-    timeout_ms: u64,
-) -> Result<Option<Value>, IIIError> {
+pub async fn put(iii: &III, record: &PendingApprovalRecord) -> Result<Option<Value>, IIIError> {
     let reply = state::set(
         iii,
         PENDING_SCOPE,
         &pending_key(&record.session_id, &record.function_call_id),
         serde_json::to_value(record).unwrap_or(Value::Null),
-        Some(timeout_ms),
     )
     .await?;
     let old = reply.get("old_value").cloned().unwrap_or(Value::Null);
@@ -83,12 +76,11 @@ pub async fn delete_with_gate(
     iii: &III,
     session_id: &str,
     function_call_id: &str,
-    timeout_ms: u64,
 ) -> Result<Option<PendingApprovalRecord>, IIIError> {
     let key = pending_key(session_id, function_call_id);
-    let reply = state::set(iii, PENDING_SCOPE, &key, Value::Null, Some(timeout_ms)).await?;
+    let reply = state::set(iii, PENDING_SCOPE, &key, Value::Null).await?;
     let old = reply.get("old_value").cloned().unwrap_or(Value::Null);
-    if let Err(e) = state::delete(iii, PENDING_SCOPE, &key, Some(timeout_ms)).await {
+    if let Err(e) = state::delete(iii, PENDING_SCOPE, &key).await {
         // The null tombstone survives until the next delete attempt; it
         // is invisible to readers (parse_record skips nulls).
         tracing::warn!(key, error = %e, "tombstone cleanup failed");
@@ -98,8 +90,8 @@ pub async fn delete_with_gate(
 
 /// Full-scope scan, values-only (the engine's `state::list` contract).
 /// Malformed/null values are skipped.
-pub async fn list_all(iii: &III, timeout_ms: u64) -> Result<Vec<PendingApprovalRecord>, IIIError> {
-    let reply = state::list(iii, PENDING_SCOPE, Some(timeout_ms)).await?;
+pub async fn list_all(iii: &III) -> Result<Vec<PendingApprovalRecord>, IIIError> {
+    let reply = state::list(iii, PENDING_SCOPE).await?;
     let values = match reply {
         Value::Array(items) => items,
         Value::Null => Vec::new(),

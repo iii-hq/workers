@@ -13,17 +13,14 @@ pub async fn handle(
     req: AlwaysAllowMutationRequest,
 ) -> Result<SettingsResponse, ApprovalError> {
     let cfg = deps.config().await;
-    let settings = settings::materialize_and(
-        deps.iii.as_ref(),
-        &req.session_id,
-        &cfg,
-        cfg.state_timeout_ms,
-        |base, _now| ApprovalSettings {
-            always_allow: without_grant(&base.always_allow, &req.function_id),
-            ..base
-        },
-    )
-    .await?;
+    let settings =
+        settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, _now| {
+            ApprovalSettings {
+                always_allow: without_grant(&base.always_allow, &req.function_id),
+                ..base
+            }
+        })
+        .await?;
     Ok(SettingsResponse { settings })
 }
 
@@ -41,7 +38,10 @@ mod tests {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             *stack.config.write().await = Arc::new(WorkerConfig {
                 default_mode: PermissionMode::Auto,
-                always_allow_seed: vec!["state::get".into(), "shell::run".into()],
+                rules: vec![
+                    serde_json::json!({"function": "state::get", "action": "allow", "modes": ["auto"]}),
+                    serde_json::json!({"function": "shell::run", "action": "allow", "modes": ["auto"]}),
+                ],
                 ..WorkerConfig::default()
             });
             let res = handle(

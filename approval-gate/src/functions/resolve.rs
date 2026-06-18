@@ -24,16 +24,10 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
     validate_id("session_id", &req.session_id)?;
     validate_id("function_call_id", &req.function_call_id)?;
 
-    let cfg = deps.config().await;
     let iii = deps.iii.as_ref();
-    let Some(record) = pending::get(
-        iii,
-        &req.session_id,
-        &req.function_call_id,
-        cfg.state_timeout_ms,
-    )
-    .await
-    .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?
+    let Some(record) = pending::get(iii, &req.session_id, &req.function_call_id)
+        .await
+        .map_err(|e| ApprovalError::StateUnavailable(format!("pending record read failed: {e}")))?
     else {
         // Unknown / already resolved is NOT an error — duplicate
         // decisions race benignly.
@@ -70,23 +64,14 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
 
     // The record is kept on failure so the decision stays resolvable —
     // never delete before the harness acknowledged.
-    let reply = harness::function_resolve(iii, payload, Some(cfg.harness_timeout_ms))
-        .await
-        .map_err(|e| {
-            ApprovalError::HarnessUnavailable(format!("harness::function::resolve failed: {e}"))
-        })?;
+    let reply = harness::function_resolve(iii, payload).await.map_err(|e| {
+        ApprovalError::HarnessUnavailable(format!("harness::function::resolve failed: {e}"))
+    })?;
     let turn_resumed = reply
         .get("turn_resumed")
         .and_then(serde_json::Value::as_bool);
 
-    match pending::delete_with_gate(
-        iii,
-        &req.session_id,
-        &req.function_call_id,
-        cfg.state_timeout_ms,
-    )
-    .await
-    {
+    match pending::delete_with_gate(iii, &req.session_id, &req.function_call_id).await {
         Ok(Some(deleted)) => {
             deps.sink
                 .pending_resolved(&PendingResolvedEvent {

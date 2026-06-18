@@ -37,7 +37,7 @@ pub fn seeded_from(cfg: &WorkerConfig, granted_at: i64) -> ApprovalSettings {
     ApprovalSettings {
         mode: cfg.default_mode,
         always_allow: cfg
-            .always_allow_seed
+            .auto_allow_seed()
             .iter()
             .map(|function_id| AlwaysAllowEntry {
                 function_id: function_id.clone(),
@@ -63,12 +63,8 @@ pub fn effective(
 /// Hot-path read for the gate: any failure (state outage, absent record,
 /// garbage) degrades to `None` → configuration defaults. Safe because the
 /// default mode never widens beyond what the deployment configured.
-pub async fn read_tolerant(
-    iii: &III,
-    session_id: &str,
-    timeout_ms: u64,
-) -> Option<ApprovalSettings> {
-    let reply = state::get(iii, SETTINGS_SCOPE, session_id, Some(timeout_ms)).await;
+pub async fn read_tolerant(iii: &III, session_id: &str) -> Option<ApprovalSettings> {
+    let reply = state::get(iii, SETTINGS_SCOPE, session_id).await;
     match reply {
         Ok(value) => parse_settings(&value),
         Err(e) => {
@@ -83,9 +79,8 @@ pub async fn read_tolerant(
 pub async fn read_strict(
     iii: &III,
     session_id: &str,
-    timeout_ms: u64,
 ) -> Result<Option<ApprovalSettings>, ApprovalError> {
-    let reply = state::get(iii, SETTINGS_SCOPE, session_id, Some(timeout_ms))
+    let reply = state::get(iii, SETTINGS_SCOPE, session_id)
         .await
         .map_err(|e| ApprovalError::StateUnavailable(format!("settings read failed: {e}")))?;
     Ok(parse_settings(&reply))
@@ -100,7 +95,6 @@ pub async fn materialize_and<F>(
     iii: &III,
     session_id: &str,
     cfg: &WorkerConfig,
-    timeout_ms: u64,
     mutate: F,
 ) -> Result<ApprovalSettings, ApprovalError>
 where
@@ -108,7 +102,7 @@ where
 {
     validate_id("session_id", session_id)?;
     let now = now_ms();
-    let base = read_strict(iii, session_id, timeout_ms)
+    let base = read_strict(iii, session_id)
         .await?
         .unwrap_or_else(|| seeded_from(cfg, now));
     let next = mutate(base, now);
@@ -117,7 +111,6 @@ where
         SETTINGS_SCOPE,
         session_id,
         serde_json::to_value(&next).unwrap_or(Value::Null),
-        Some(timeout_ms),
     )
     .await
     .map_err(|e| ApprovalError::StateUnavailable(format!("settings write failed: {e}")))?;
@@ -126,9 +119,9 @@ where
 
 /// Drop the stored record (the session reverts to configuration
 /// defaults). Returns whether a record existed.
-pub async fn clear(iii: &III, session_id: &str, timeout_ms: u64) -> Result<bool, ApprovalError> {
+pub async fn clear(iii: &III, session_id: &str) -> Result<bool, ApprovalError> {
     validate_id("session_id", session_id)?;
-    let old = state::delete(iii, SETTINGS_SCOPE, session_id, Some(timeout_ms))
+    let old = state::delete(iii, SETTINGS_SCOPE, session_id)
         .await
         .map_err(|e| ApprovalError::StateUnavailable(format!("settings delete failed: {e}")))?;
     Ok(!old.is_null())
@@ -173,7 +166,14 @@ mod tests {
     fn defaults_with_seed() -> WorkerConfig {
         WorkerConfig {
             default_mode: PermissionMode::Auto,
-            always_allow_seed: vec!["state::get".into(), "engine::functions::list".into()],
+            rules: vec![
+                json!({ "function": "state::get", "action": "allow", "modes": ["auto"] }),
+                json!({
+                    "function": "engine::functions::list",
+                    "action": "allow",
+                    "modes": ["auto"]
+                }),
+            ],
             ..WorkerConfig::default()
         }
     }

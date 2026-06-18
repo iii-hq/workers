@@ -79,9 +79,6 @@ unchanged from the proven implementation):
 When the configuration entry omits `rules`, the gate denies only this
 worker's own `approval::*` surface; every other call **holds**. On startup the
 worker seeds/backfills the stored entry so `rules` are editable in the console.
-**Interim divergence:** harness turns use these config rules; other callers
-(e.g. claude-code) that still invoke `policy::check_permissions` on the harness
-worker read the YAML file until a follow-up unifies them.
 
 ## Custom trigger types
 
@@ -106,18 +103,10 @@ stored values are never overwritten except to add a missing `rules` field.
 
 ```jsonc
 {
-  "hook": {                        // harness::hook::pre-trigger binding (re-bound live on change)
-    "functions": ["*"],            //   pre_trigger globs the gate consults on
-    "timeout_ms": 5000,
-    "on_error": "fail_closed"
-  },
-  "session_fetch_timeout_ms": 1000,    // per-call budgets (hot-reloadable)
-  "state_timeout_ms": 5000,
-  "harness_timeout_ms": 10000,
   "default_mode": "manual",        // manual | auto | full — sessions with no stored settings
-  "always_allow_seed": [],         // auto-mode trust profile (function ids / globs)
   "rules": [                       // first match wins; no match → hold
-    "!approval::*"
+    "!approval::*",
+    { "function": "state::get", "action": "allow", "modes": ["auto"] }
   ]
 }
 ```
@@ -127,9 +116,7 @@ schema and fetches the authoritative value at startup, and a failed
 register/fetch aborts boot (the gate must run on a known, authoritative policy
 surface, never a guessed one). When no value is stored yet the built-in
 defaults above are seeded and used. **Every field hot-reloads on
-`configuration::set` — nothing requires a restart**: `hook` re-binds its
-trigger live (register the new binding, then unregister the old); the rest swap
-the in-memory snapshot.
+`configuration::set` — nothing requires a restart**.
 
 ## Agent exposure
 
@@ -152,8 +139,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
 PATH) with `configuration` + `iii-state`, registers the production surface
-in-process, and fakes the not-yet-built siblings
-(`harness::function::resolve`, `session::get`).
+in-process, and fakes sibling RPCs where noted (`session::get`). With the
+harness binary available, `tests/harness_integration.rs` additionally boots the
+real harness worker for cross-worker hold / sweep / resolve checks.
 
 ## Architecture documentation
 

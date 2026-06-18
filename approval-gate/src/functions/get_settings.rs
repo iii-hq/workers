@@ -12,8 +12,7 @@ pub async fn handle(
 ) -> Result<GetSettingsResponse, ApprovalError> {
     validate_id("session_id", &req.session_id)?;
     let cfg = deps.config().await;
-    let stored =
-        settings::read_strict(deps.iii.as_ref(), &req.session_id, cfg.state_timeout_ms).await?;
+    let stored = settings::read_strict(deps.iii.as_ref(), &req.session_id).await?;
     let (settings, source) = settings::effective(stored, &cfg);
     Ok(GetSettingsResponse { settings, source })
 }

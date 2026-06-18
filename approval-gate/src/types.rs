@@ -64,7 +64,7 @@ pub enum PermissionMode {
 #[serde(rename_all = "snake_case")]
 pub enum GrantedBy {
     UserClick,
-    /// Copied from the deployment's `always_allow_seed` on first mutation.
+    /// Copied from deployment auto-scoped allow rules on first mutation.
     Seed,
 }
 
@@ -239,7 +239,7 @@ pub struct HookInput {
 pub enum HookOutput {
     Continue,
     Deny { reason: String },
-    Hold { pending_timeout_ms: i64 },
+    Hold,
 }
 
 // ---------------------------------------------------------------------------
@@ -409,11 +409,8 @@ mod tests {
             json!({ "decision": "deny", "reason": "nope" })
         );
         assert_eq!(
-            serde_json::to_value(HookOutput::Hold {
-                pending_timeout_ms: 0
-            })
-            .unwrap(),
-            json!({ "decision": "hold", "pending_timeout_ms": 0 })
+            serde_json::to_value(HookOutput::Hold).unwrap(),
+            json!({ "decision": "hold" })
         );
     }
 

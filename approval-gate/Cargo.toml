@@ -46,4 +46,4 @@ testkit = []
 approval-gate = { path = ".", features = ["testkit"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
-tempfile = "3"
+harness = { path = "../harness" }

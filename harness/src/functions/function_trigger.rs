@@ -119,14 +119,12 @@ pub async fn handle(
                     elapsed(started),
                 ));
             }
-            PreTriggerOutcome::Hold {
-                pending_timeout_ms, ..
-            } => {
+            PreTriggerOutcome::Hold { .. } => {
                 return Ok(FunctionTriggerResponse::Pending(TriggerPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
                     pending: true,
-                    pending_timeout_ms,
+                    pending_timeout_ms: None,
                 }));
             }
         }

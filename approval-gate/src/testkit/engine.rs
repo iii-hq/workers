@@ -11,7 +11,7 @@ use iii_sdk::{
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::configuration::{self, ConfigCell, TriggerHandles};
+use crate::configuration::{self, ConfigCell};
 use crate::events::{self, Emitter, PENDING_CREATED, PENDING_RESOLVED};
 use crate::functions::{self, Deps};
 
@@ -197,6 +197,9 @@ pub enum RulesOverride {
 #[derive(Clone)]
 pub struct BootOpts {
     pub rules: RulesOverride,
+    /// When true, spawn the real `harness` worker and skip the fake
+    /// `harness::function::resolve` stub.
+    pub real_harness: bool,
 }
 
 impl Default for BootOpts {
@@ -210,6 +213,15 @@ impl BootOpts {
     pub fn needs_approval() -> Self {
         Self {
             rules: RulesOverride::Empty,
+            real_harness: false,
+        }
+    }
+
+    /// Like [`Self::needs_approval`] but boots the real harness worker.
+    pub fn needs_approval_with_harness() -> Self {
+        Self {
+            rules: RulesOverride::Empty,
+            real_harness: true,
         }
     }
 
@@ -217,6 +229,7 @@ impl BootOpts {
     pub fn allow() -> Self {
         Self {
             rules: RulesOverride::Custom(vec![json!("*")]),
+            real_harness: false,
         }
     }
 
@@ -224,6 +237,7 @@ impl BootOpts {
     pub fn allow_function(function_id: impl Into<String>) -> Self {
         Self {
             rules: RulesOverride::Custom(vec![json!(function_id.into())]),
+            real_harness: false,
         }
     }
 
@@ -231,6 +245,7 @@ impl BootOpts {
     pub fn deny_function(function_id: impl Into<String>) -> Self {
         Self {
             rules: RulesOverride::Custom(vec![json!(format!("!{}", function_id.into()))]),
+            real_harness: false,
         }
     }
 
@@ -238,6 +253,7 @@ impl BootOpts {
     pub fn with_rules(rules: Vec<Value>) -> Self {
         Self {
             rules: RulesOverride::Custom(rules),
+            real_harness: false,
         }
     }
 
@@ -245,6 +261,7 @@ impl BootOpts {
     pub fn shipped_rules() -> Self {
         Self {
             rules: RulesOverride::Shipped,
+            real_harness: false,
         }
     }
 }
@@ -262,6 +279,47 @@ pub struct TestStack {
     pub created: CallLog,
     /// `approval::pending-resolved` deliveries.
     pub resolved: CallLog,
+    harness_child: Option<std::process::Child>,
+}
+
+impl Drop for TestStack {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.harness_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
+    let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
+    std::process::Command::new(bin)
+        .arg("--url")
+        .arg(engine_url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+async fn wait_for_harness(iii: &III) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if iii
+            .trigger(TriggerRequest {
+                function_id: "harness::status".into(),
+                payload: json!({ "session_id": "__probe__" }),
+                action: None,
+                timeout_ms: Some(500),
+            })
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
 }
 
 pub fn log_push(log: &CallLog, value: Value) {
@@ -305,7 +363,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     functions::register_all(&iii, &deps);
 
     let harness_calls: CallLog = Arc::default();
-    {
+    if !opts.real_harness {
         let log = harness_calls.clone();
         iii.register_function(
             "harness::function::resolve",
@@ -378,15 +436,23 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     })
     .expect("bind pending_resolved");
 
+    configuration::bind_hook(&iii);
+
     // The typed, re-fetching config-change handler + its `configuration`
-    // trigger binding (mirrors the production boot order: last). The test
-    // engine has no harness hook to bind, so the re-bindable handle starts
-    // empty; reactive reload of the per-call knobs still applies.
-    let handles = Arc::new(TriggerHandles {
-        hook: Mutex::new(None),
-    });
-    configuration::register_config_trigger(&iii, config.clone(), handles)
+    // trigger binding (mirrors the production boot order: last).
+    configuration::register_config_trigger(&iii, config.clone())
         .expect("register configuration change trigger");
+
+    let harness_child = if opts.real_harness {
+        let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
+        assert!(
+            wait_for_harness(&iii).await,
+            "harness worker did not become ready"
+        );
+        Some(child)
+    } else {
+        None
+    };
 
     TestStack {
         iii,
@@ -395,6 +461,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         harness_calls,
         created,
         resolved,
+        harness_child,
     }
 }
 

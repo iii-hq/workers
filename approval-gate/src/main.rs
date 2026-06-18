@@ -15,12 +15,11 @@
 //!      handlers capture the subscriber sets they fan out to.
 //!   5. Register the 12 `approval::*` functions (each reads the live config
 //!      snapshot per call).
-//!   6. Bind the gate hook + the session/turn triggers, all best-effort
-//!      (in a standalone deployment some of these trigger types don't exist
-//!      yet; the worker still boots and serves its RPCs). The hook globs
-//!      come from the fetched config.
+//!   6. Bind the fixed gate hook + the session/turn triggers, all
+//!      best-effort (in a standalone deployment some of these trigger types
+//!      don't exist yet; the worker still boots and serves its RPCs).
 //!   7. Bind the `configuration` change trigger LAST so its handler closes
-//!      over the fully-built snapshot cell + boot signature.
+//!      over the fully-built snapshot cell.
 //!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
@@ -31,7 +30,7 @@ use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput, WorkerMetadata
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use approval_gate::configuration::{self, ConfigCell, TriggerHandles};
+use approval_gate::configuration::{self, ConfigCell};
 use approval_gate::events::{self, Emitter};
 use approval_gate::functions::{self, Deps};
 use approval_gate::{config, manifest};
@@ -145,12 +144,6 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering approval-gate configuration schema")?;
-    // Backfill the stored entry with the default `rules` when an operator
-    // value predates the field, so the console editor is pre-filled. Best
-    // effort: the in-memory defaults stand if this can't persist.
-    if let Err(e) = configuration::ensure_rules_seeded(&iii).await {
-        tracing::warn!(error = %e, "configuration rules backfill failed; using in-memory defaults");
-    }
     let cfg = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)
@@ -170,14 +163,7 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // The gate's own hook binding is the STRUCTURAL binding — installing
-    // the worker is installing the hook (approval-gate.md § The
-    // approval::gate hook). Retain its Trigger handle so a `hook` change
-    // re-binds it live (no restart; see
-    // configuration::register_config_trigger).
-    let handles = Arc::new(TriggerHandles {
-        hook: std::sync::Mutex::new(configuration::bind_hook(&iii, &cfg)),
-    });
+    configuration::bind_hook(&iii);
 
     // These two carry no config and are never re-bound — best-effort only.
     bind_best_effort(
@@ -194,9 +180,8 @@ async fn main() -> Result<()> {
     );
 
     // LAST: bind the configuration-change trigger so its handler closes over
-    // the snapshot cell + the trigger handles it re-binds on a structural
-    // change.
-    configuration::register_config_trigger(&iii, cell, handles)
+    // the snapshot cell.
+    configuration::register_config_trigger(&iii, cell)
         .context("registering the configuration change trigger")?;
 
     tracing::info!("approval-gate ready: 12 approval::* functions + 2 custom trigger types");

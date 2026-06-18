@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::types::MatchedConstraint;
+use crate::types::{MatchedConstraint, PermissionMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -28,6 +28,8 @@ pub enum RuleSpec {
         rule_id: Option<String>,
         function: String,
         action: Action,
+        /// When set, the rule applies only in these session modes. Omit for all modes.
+        modes: Option<Vec<PermissionMode>>,
         args: Vec<(String, ConstraintSpec)>,
     },
 }

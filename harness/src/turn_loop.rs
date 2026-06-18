@@ -350,15 +350,9 @@ pub async fn run_step(
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold {
-                    pending_timeout_ms,
-                    held_by,
-                    ..
-                } => {
+                crate::hooks::runner::PreTriggerOutcome::Hold { held_by, .. } => {
                     let info = trigger::PendingInfo {
-                        pending_timeout_ms: Some(
-                            pending_timeout_ms.unwrap_or(cfg.default_pending_timeout_ms),
-                        ),
+                        pending_timeout_ms: None,
                         held_by: Some(held_by),
                         child_session_id: None,
                         child_turn_id: None,
