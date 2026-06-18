@@ -1,0 +1,35 @@
+{
+  "description": "Receive Telegram updates; route commands, messages, and callbacks.",
+  "function_id": "telegram-bot::webhook",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "body": {
+        "default": null
+      },
+      "headers": {
+        "additionalProperties": true,
+        "default": null,
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    },
+    "title": "HttpTriggerRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "WebhookResponse",
+    "type": "object"
+  }
+}

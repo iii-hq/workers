@@ -6,7 +6,7 @@ import { UseCaseShell } from './UseCaseShell'
 
 const LANES: SeqLane[] = [
   { id: 'user', label: 'telegram user', x: 90 },
-  { id: 'tg', label: 'telegram-worker', x: 300 },
+  { id: 'tg', label: 'telegram-bot', x: 300 },
   { id: 'harness', label: 'harness', x: 520 },
   { id: 'session', label: 'session-manager', x: 720 },
   { id: 'router', label: 'llm-router', x: 900 },

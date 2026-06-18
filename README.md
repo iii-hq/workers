@@ -44,6 +44,7 @@ npx skills add iii-hq/iii --all
 | [`codex`](codex/) | Rust | OpenAI Codex as an iii worker — `codex::*` spawn the codex CLI for headless turns, mirror raw thread events onto `codex::events`, and stream AgentEvent frames onto `agent::events`. |
 | [`claude-code`](claude-code/) | Node | Claude Code as an iii worker — `claude::*` runs headless Claude Code turns, mirrors raw messages onto `claude::events`, and streams AgentEvent frames onto `agent::events`. |
 | [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |
+| [`telegram-bot`](telegram-bot/) | Rust | Telegram webhook bridge to the harness stack — live message edits, inline approval keyboards, and configurable verbosity. |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |

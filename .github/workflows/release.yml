@@ -22,6 +22,7 @@ on:
       - 'provider-anthropic/v*'
       - 'provider-openai/v*'
       - 'session-manager/v*'
+      - 'telegram-bot/v*'
       - 'shell/v*'
       - 'storage/v*'
   workflow_dispatch:

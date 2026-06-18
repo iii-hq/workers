@@ -1,0 +1,7 @@
+iii: v1
+name: telegram-bot
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: telegram-bot
+description: Telegram bridge to the harness stack — polling or webhook ingress, live message edits, approvals, and configurable verbosity.

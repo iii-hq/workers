@@ -1,0 +1,6 @@
+bot_token: "test:integration-token"
+updates:
+  name: polling
+  config: {}
+verbosity: none
+steering_mode: steering

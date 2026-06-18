@@ -1,0 +1,38 @@
+{
+  "description": "Clear the approval prompt when a held call is resolved.",
+  "function_id": "telegram-bot::on-pending-resolved",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "function_call_id": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "function_call_id",
+      "outcome",
+      "session_id"
+    ],
+    "title": "PendingResolvedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "BindingAck",
+    "type": "object"
+  }
+}

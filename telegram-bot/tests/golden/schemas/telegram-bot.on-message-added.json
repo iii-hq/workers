@@ -1,0 +1,155 @@
+{
+  "description": "Create a Telegram message for each new assistant or function_result entry.",
+  "function_id": "telegram-bot::on-message-added",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AgentMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "type": "object"
+      },
+      "ContentBlock": {
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": true,
+              "function_id": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "other"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "entry_id": {
+        "type": "string"
+      },
+      "message": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AgentMessage"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "parent_id": {
+        "default": null,
+        "description": "Parent entry in the session chain (authoritative append order).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "default": 0,
+        "description": "Append time in ms; used as the per-entry ordering key.",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "entry_id",
+      "session_id"
+    ],
+    "title": "MessageAddedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "BindingAck",
+    "type": "object"
+  }
+}

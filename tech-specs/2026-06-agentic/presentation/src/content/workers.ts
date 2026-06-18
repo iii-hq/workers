@@ -155,8 +155,8 @@ export const WORKERS: Record<string, WorkerInfo> = {
     ],
     notes: ['any worker or client can take this place — the surface is the contract.'],
   },
-  'telegram-worker': {
-    id: 'telegram-worker',
+  'telegram-bot': {
+    id: 'telegram-bot',
     kind: 'consumer',
     kindLabel: 'example consumer',
     role: 'a webhook bridge: telegram updates in, live message edits out.',

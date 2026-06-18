@@ -1,0 +1,147 @@
+{
+  "description": "Stream assistant edits into Telegram, throttled by revision.",
+  "function_id": "telegram-bot::on-message-updated",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AgentMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "type": "object"
+      },
+      "ContentBlock": {
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": true,
+              "function_id": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "other"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "entry_id": {
+        "type": "string"
+      },
+      "message": {
+        "$ref": "#/definitions/AgentMessage"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "default": 0,
+        "description": "Mutation time in ms; refines the per-entry ordering key (min wins).",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "entry_id",
+      "message",
+      "revision",
+      "session_id"
+    ],
+    "title": "MessageUpdatedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "BindingAck",
+    "type": "object"
+  }
+}

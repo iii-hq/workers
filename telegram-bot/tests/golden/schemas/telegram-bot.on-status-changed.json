@@ -1,0 +1,41 @@
+{
+  "description": "Send typing indicator while the session is working.",
+  "function_id": "telegram-bot::on-status-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "status_reason": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id",
+      "status"
+    ],
+    "title": "StatusChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "BindingAck",
+    "type": "object"
+  }
+}

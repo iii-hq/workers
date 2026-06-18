@@ -1,0 +1,63 @@
+use iii_sdk::{IIIError, TriggerRequest, III};
+use serde_json::{json, Value};
+
+pub async fn get(
+    iii: &III,
+    scope: &str,
+    key: &str,
+    timeout_ms: Option<u64>,
+) -> Result<Value, IIIError> {
+    iii.trigger(TriggerRequest {
+        function_id: "state::get".into(),
+        payload: json!({ "scope": scope, "key": key }),
+        action: None,
+        timeout_ms,
+    })
+    .await
+}
+
+pub async fn set(
+    iii: &III,
+    scope: &str,
+    key: &str,
+    value: Value,
+    timeout_ms: Option<u64>,
+) -> Result<Value, IIIError> {
+    iii.trigger(TriggerRequest {
+        function_id: "state::set".into(),
+        payload: json!({ "scope": scope, "key": key, "value": value }),
+        action: None,
+        timeout_ms,
+    })
+    .await
+}
+
+pub async fn delete(
+    iii: &III,
+    scope: &str,
+    key: &str,
+    timeout_ms: Option<u64>,
+) -> Result<Value, IIIError> {
+    iii.trigger(TriggerRequest {
+        function_id: "state::delete".into(),
+        payload: json!({ "scope": scope, "key": key }),
+        action: None,
+        timeout_ms,
+    })
+    .await
+}
+
+pub async fn get_string(iii: &III, scope: &str, key: &str, timeout_ms: u64) -> Option<String> {
+    match get(iii, scope, key, Some(timeout_ms)).await {
+        Ok(v) if v.is_string() => v.as_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+pub async fn get_i64(iii: &III, scope: &str, key: &str, timeout_ms: u64) -> Option<i64> {
+    match get(iii, scope, key, Some(timeout_ms)).await {
+        Ok(v) if v.is_i64() => v.as_i64(),
+        Ok(v) if v.is_u64() => v.as_u64().map(|n| n as i64),
+        _ => None,
+    }
+}

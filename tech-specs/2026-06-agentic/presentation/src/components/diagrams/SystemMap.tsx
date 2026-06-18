@@ -33,7 +33,7 @@ interface MapEdge {
 
 const NODES: MapNode[] = [
   { id: 'chat', x: 30, y: 60, w: 180, h: 56, title: 'chat', sub: 'console web app', kind: 'consumer' },
-  { id: 'telegram-worker', x: 30, y: 185, w: 180, h: 56, title: 'telegram-worker', sub: 'webhook bridge', kind: 'consumer' },
+  { id: 'telegram-bot', x: 30, y: 185, w: 180, h: 56, title: 'telegram-bot', sub: 'webhook bridge', kind: 'consumer' },
   { id: 'third-party', x: 30, y: 310, w: 180, h: 56, title: 'third-party-worker', sub: 'any worker', kind: 'consumer' },
   { id: 'session-manager', x: 425, y: 28, w: 210, h: 60, title: 'session-manager', sub: 'session::*', kind: 'core' },
   { id: 'harness', x: 425, y: 168, w: 210, h: 92, title: 'harness', sub: 'harness::* — the loop', kind: 'core' },
@@ -45,7 +45,7 @@ const NODES: MapNode[] = [
 const EDGES: MapEdge[] = [
   { id: 'chat-send', from: 'chat', to: 'harness', d: 'M 210 92 C 300 92, 340 196, 425 196', label: 'harness::send', lx: 308, ly: 132, dur: 2.2 },
   { id: 'session-events', from: 'session-manager', to: 'chat', d: 'M 425 50 C 340 50, 300 76, 214 84', label: 'live session events', lx: 318, ly: 42, dur: 2.2 },
-  { id: 'tg-send', from: 'telegram-worker', to: 'harness', d: 'M 210 213 C 300 213, 340 214, 425 214', label: 'harness::send', lx: 304, ly: 206, dur: 2.2 },
+  { id: 'tg-send', from: 'telegram-bot', to: 'harness', d: 'M 210 213 C 300 213, 340 214, 425 214', label: 'harness::send', lx: 304, ly: 206, dur: 2.2 },
   { id: 'persist', from: 'harness', to: 'session-manager', d: 'M 460 168 L 460 92', label: 'append / stream deltas', lx: 452, ly: 136, anchor: 'end', dur: 1.6 },
   { id: 'assemble', from: 'harness', to: 'context-manager', d: 'M 540 260 L 540 326', label: 'context::assemble', lx: 548, ly: 298, anchor: 'start', dur: 1.6 },
   { id: 'generate', from: 'harness', to: 'llm-router', d: 'M 635 200 L 796 200', label: 'router::chat', lx: 712, ly: 192, dur: 1.8 },
