@@ -3,6 +3,22 @@
 version = 4
 
 [[package]]
+name = "acp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dashmap",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -728,22 +744,6 @@ checksum = "3acae9609540aa318d1bc588455225fb2085b9ed0c4f6bd0d9d5bcd86f1a0344"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
-]
-
-[[package]]
-name = "iii-acp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dashmap",
- "iii-sdk",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

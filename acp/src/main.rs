@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
+use acp::handler::{AcpHandler, BrainConfig, DEFAULT_BRAIN_FN};
+use acp::transport;
 use clap::Parser;
-use iii_acp::handler::{AcpHandler, BrainConfig, DEFAULT_BRAIN_FN};
-use iii_acp::transport;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-acp")]
+#[command(name = "acp")]
 #[command(version)]
 #[command(about = "Agent Client Protocol worker for iii-engine")]
 struct Args {
@@ -37,7 +37,7 @@ struct Args {
     #[arg(
         long,
         env = "IIIACP_USE_CANONICAL_BRAIN",
-        help = "Shortcut for --brain-fn run::start_and_wait. Wires iii-acp \
+        help = "Shortcut for --brain-fn run::start_and_wait. Wires acp \
                 straight to turn-orchestrator. Ignored if --brain-fn is \
                 already set."
     )]
@@ -84,9 +84,9 @@ async fn main() -> anyhow::Result<()> {
     // Honor RUST_LOG when set (gives operators per-module control); fall
     // back to the --debug switch otherwise.
     let fallback = if args.debug {
-        "iii_acp=debug,iii_sdk=debug"
+        "acp=debug,iii_sdk=debug"
     } else {
-        "iii_acp=info,iii_sdk=warn"
+        "acp=info,iii_sdk=warn"
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(fallback));
 
@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
         .with(filter)
         .init();
 
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting iii-acp");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting acp");
 
     let mut init_opts = InitOptions::default();
     if let Some(tag) = args.rbac_tag.as_ref() {

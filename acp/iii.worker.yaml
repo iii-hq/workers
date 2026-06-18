@@ -4,4 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-acp
+# stdio JSON-RPC server: exits on stdin EOF when backgrounded, so it can't be
+# interface-smoked (same as lsp). Opt out of the CI boot smoke.
+interface_smoke: false
 description: Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions

@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "iii-acp"
+name = "acp"
 version = "0.1.0"
 edition = "2024"
 description = "Agent Client Protocol worker for iii-engine"
@@ -15,7 +15,7 @@ categories = ["command-line-utilities"]
 publish = false
 
 [lib]
-name = "iii_acp"
+name = "acp"
 path = "src/lib.rs"
 
 [[bin]]
