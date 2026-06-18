@@ -345,7 +345,7 @@ fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::E
 where
     D: Deserializer<'de>,
 {
-    Ok(Option::<u64>::deserialize(deserializer)?)
+    Option::<u64>::deserialize(deserializer)
 }
 
 impl From<WorkerConfigRaw> for WorkerConfig {
@@ -535,5 +535,13 @@ streaming:
         }))
         .unwrap();
         assert_eq!(cfg.timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn shipped_collect_config_boots_for_interface_collection() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.collect.yaml");
+        let cfg = WorkerConfig::from_file(path).expect("config.collect.yaml parses");
+        cfg.validate()
+            .expect("config.collect.yaml must boot for CI interface collection");
     }
 }

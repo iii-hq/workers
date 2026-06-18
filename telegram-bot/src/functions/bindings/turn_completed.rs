@@ -54,12 +54,14 @@ async fn handle(deps: &Deps, evt: TurnCompletedEvent) -> Result<BindingAck, IIIE
             let _ = stream::send_chat_message_in_order(
                 deps,
                 &cfg,
-                chat_id,
-                order_key,
-                &entry_id,
-                0,
-                &status_msg,
-                None,
+                stream::OrderedChatMessage {
+                    chat_id,
+                    order_key,
+                    entry_id: &entry_id,
+                    chunk_idx: 0,
+                    text: &status_msg,
+                    reply_markup: None,
+                },
             )
             .await;
         }

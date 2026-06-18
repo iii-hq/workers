@@ -43,7 +43,6 @@ fn markdown_to_html(text: &str) -> String {
     let parser = Parser::new_ext(text, options);
     let mut out = String::new();
     let mut list_stack: Vec<ListState> = Vec::new();
-    let mut in_table = false;
     let mut table_row_first = true;
 
     for event in parser {
@@ -97,9 +96,7 @@ fn markdown_to_html(text: &str) -> String {
                     out.push_str(&escape_attr(&dest_url));
                     out.push_str("\">");
                 }
-                Tag::Table(_) => {
-                    in_table = true;
-                }
+                Tag::Table(_) => {}
                 Tag::TableHead | Tag::TableRow => {
                     table_row_first = true;
                 }
@@ -137,7 +134,6 @@ fn markdown_to_html(text: &str) -> String {
                 TagEnd::Strikethrough => out.push_str("</s>"),
                 TagEnd::Link => out.push_str("</a>"),
                 TagEnd::Table => {
-                    in_table = false;
                     out.push('\n');
                 }
                 TagEnd::TableHead | TagEnd::TableRow => out.push('\n'),
@@ -146,11 +142,7 @@ fn markdown_to_html(text: &str) -> String {
                 _ => {}
             },
             Event::Text(text) => {
-                if in_table {
-                    out.push_str(&escape_html(&text));
-                } else {
-                    out.push_str(&escape_html(&text));
-                }
+                out.push_str(&escape_html(&text));
             }
             Event::Code(text) => {
                 out.push_str("<code>");

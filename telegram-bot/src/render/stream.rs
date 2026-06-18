@@ -44,9 +44,19 @@ pub async fn on_message_added(
             _ => return Ok(None),
         };
         let order_key = record_order_key(deps, session_id, entry_id, timestamp).await;
-        let id =
-            send_chat_message_in_order(deps, &cfg, chat_id, order_key, entry_id, 0, &text, None)
-                .await?;
+        let id = send_chat_message_in_order(
+            deps,
+            &cfg,
+            OrderedChatMessage {
+                chat_id,
+                order_key,
+                entry_id,
+                chunk_idx: 0,
+                text: &text,
+                reply_markup: None,
+            },
+        )
+        .await?;
         return Ok(Some(id));
     }
 
@@ -1025,26 +1035,31 @@ async fn record_order_key(deps: &Deps, session_id: &str, entry_id: &str, timesta
     key
 }
 
+/// Parameters for posting a new Telegram bubble in per-chat append order.
+pub struct OrderedChatMessage<'a> {
+    pub chat_id: i64,
+    pub order_key: i64,
+    pub entry_id: &'a str,
+    pub chunk_idx: u32,
+    pub text: &'a str,
+    pub reply_markup: Option<serde_json::Value>,
+}
+
 /// Post a new Telegram bubble in per-chat append order (for bindings outside
 /// the streaming path, e.g. function_result entries and turn status toasts).
 pub async fn send_chat_message_in_order(
     deps: &Deps,
     cfg: &WorkerConfig,
-    chat_id: i64,
-    order_key: i64,
-    entry_id: &str,
-    chunk_idx: u32,
-    text: &str,
-    reply_markup: Option<serde_json::Value>,
+    msg: OrderedChatMessage<'_>,
 ) -> Result<i64, IIIError> {
     send_in_order(
         deps,
-        chat_id,
-        order_key,
-        entry_id,
-        chunk_idx,
+        msg.chat_id,
+        msg.order_key,
+        msg.entry_id,
+        msg.chunk_idx,
         cfg.streaming.create_settle_ms,
-        || send_message_formatted(deps, chat_id, text, reply_markup.clone()),
+        || send_message_formatted(deps, msg.chat_id, msg.text, msg.reply_markup.clone()),
     )
     .await
 }
