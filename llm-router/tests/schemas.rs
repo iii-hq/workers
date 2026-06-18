@@ -32,7 +32,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 14 registered functions, in registration
+/// The catalog must cover exactly the 13 registered functions, in registration
 /// order (kept in lockstep with `register::register_router`).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
@@ -52,7 +52,6 @@ fn catalog_lists_all_functions_in_registration_order() {
             "router::provider::resolve",
             "router::provider::update_credential",
             "router::models::reconcile",
-            "router::on_worker_available",
             "router::on_config_changed",
         ]
     );

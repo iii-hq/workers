@@ -24,7 +24,7 @@ use crate::chat::inflight::InflightMap;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::default_provider_schema;
-use crate::registry::availability::{make_on_worker_available, make_provider_list};
+use crate::registry::availability::make_provider_list;
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
@@ -160,18 +160,7 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         .description(surface::MODELS_RECONCILE_DESC),
     );
 
-    // 5. bound triggers: topology + configuration change (paste-a-key)
-    iii.register_function(
-        surface::ON_WORKER_AVAILABLE_ID,
-        RegisterFunction::new_async(make_on_worker_available(registry.clone(), events.clone()))
-            .description(surface::ON_WORKER_AVAILABLE_DESC),
-    );
-    let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "subscribe".into(),
-        function_id: surface::ON_WORKER_AVAILABLE_ID.into(),
-        config: json!({ "topic": "engine::workers-available" }),
-        metadata: None,
-    });
+    // 5. bound trigger: configuration change (paste-a-key)
     {
         let registry_for_listing = registry.clone();
         let lookup: crate::config::on_changed::ListingLookup = Arc::new(move |id: &str| {

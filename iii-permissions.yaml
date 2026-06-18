@@ -32,7 +32,6 @@ rules:
   - '!router::complete'
   - '!router::abort'
   - '!router::route'
-  - '!router::on_worker_available'
   - '!router::on_config_changed'
   # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
   # bypass the router's accounting, budgets, and retry policy. The router
