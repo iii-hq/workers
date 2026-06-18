@@ -253,8 +253,17 @@ def normalize_worker_interface(
             {
                 "name": derive_registry_function_name(function_id, metadata),
                 "description": _string_or_empty(details.get("description")),
-                "request_schema": _schema_or_empty(details.get("request_format")),
-                "response_schema": _schema_or_empty(details.get("response_format")),
+                # `engine::functions::info` surfaces the typed schemas under
+                # `request_schema`/`response_schema`; `engine::functions::list`
+                # rows carry neither (and the legacy `request_format` key never
+                # existed on the engine output). Prefer the info-API names and
+                # fall back to `request_format` for any older caller shape.
+                "request_schema": _schema_or_empty(
+                    details.get("request_schema", details.get("request_format"))
+                ),
+                "response_schema": _schema_or_empty(
+                    details.get("response_schema", details.get("response_format"))
+                ),
                 "metadata": _metadata_or_empty(metadata),
             }
         )
