@@ -1,7 +1,7 @@
 /**
- * iii-browser-sdk + harness turn kickoff. Permissions live in the harness's
- * iii-permissions.yaml; the console ships the per-mode system prompt and the
- * dispatch policy on each send.
+ * iii-browser-sdk + harness turn kickoff. Deployment permission rules live in
+ * the `approval-gate` configuration entry; the console derives the harness
+ * structural floor from those rules on each send.
  *
  * Transcript content (tokens, message snapshots, function-call cards, results)
  * renders from session-manager events reconciled by the conversations layer
@@ -21,6 +21,7 @@ import {
   listPendingApprovals,
   startApprovalEventsSubscription,
 } from './approval-events-live'
+import { loadApprovalGateDefaults } from './approval-gate-config'
 import {
   getTurnStatus,
   type HarnessFunctionPolicy,
@@ -50,11 +51,12 @@ interface RunParams {
 
 /**
  * The chat composer is a general-purpose agent surface: expose the whole bus
- * via `agent_trigger`. The harness's `iii-permissions.yaml` and the
- * approval-gate remain the safety layer (deny-by-default plumbing, human gate).
+ * via `agent_trigger`. The approval-gate rules supply the structural floor;
+ * the gate hook remains the human decision surface.
  */
-const CHAT_FUNCTION_POLICY: HarnessFunctionPolicy = {
+const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
+  deny: ['approval::*', 'configuration::*'],
   expose: 'agent_trigger',
 }
 
@@ -152,6 +154,18 @@ async function* realStream(
 
     const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
 
+    let functionPolicy = FALLBACK_FUNCTION_POLICY
+    try {
+      functionPolicy = (await loadApprovalGateDefaults()).functionPolicy
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn(
+          '[real-backend] approval-gate config unavailable; using fallback policy',
+          err,
+        )
+      }
+    }
+
     // Kick off (or steer) the turn. A turn already running for this session
     // folds the message in (merge) rather than rejecting — no busy error.
     void sendTurn(client, {
@@ -163,7 +177,7 @@ async function* realStream(
       session: { metadata: { surface: 'console' } },
       options: {
         system_prompt: buildModeSystemPrompt(mode, provider),
-        functions: CHAT_FUNCTION_POLICY,
+        functions: functionPolicy,
         ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
         metadata: { session_id: sessionId, message_id: messageId },
       },

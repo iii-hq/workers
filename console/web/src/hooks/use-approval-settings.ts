@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { loadApprovalGateDefaults } from '@/lib/backend/approval-gate-config'
 import {
   type ApprovalSettings,
   DEFAULT_APPROVAL_SETTINGS,
@@ -9,7 +10,6 @@ import {
   removeAlwaysAllow as rpcRemoveAlwaysAllow,
   setApprovalMode,
 } from '@/lib/backend/approval-settings'
-import { loadDefaultAllowlist, loadDefaultPermissionMode } from '@/lib/storage'
 
 interface UseApprovalSettingsResult {
   settings: ApprovalSettings
@@ -60,16 +60,22 @@ export function useApprovalSettings(
         // conversations already in flight.
         const isFirstTouch = fetched.mode_set_at === 0
         if (isFirstTouch) {
-          const userDefault = loadDefaultPermissionMode()
-          const defaultAllowlist = loadDefaultAllowlist()
           let next = fetched
-          if (userDefault !== 'manual') {
-            next = await setApprovalMode(sessionId, userDefault)
-            if (cancelled || activeRef.current !== sessionId) return
-          }
-          for (const functionId of defaultAllowlist) {
-            next = await rpcAddAlwaysAllow(sessionId, functionId)
-            if (cancelled || activeRef.current !== sessionId) return
+          try {
+            const deployment = await loadApprovalGateDefaults()
+            if (deployment.defaultMode !== 'manual') {
+              next = await setApprovalMode(sessionId, deployment.defaultMode)
+              if (cancelled || activeRef.current !== sessionId) return
+            }
+            for (const functionId of deployment.allowlist) {
+              next = await rpcAddAlwaysAllow(sessionId, functionId)
+              if (cancelled || activeRef.current !== sessionId) return
+            }
+          } catch (err) {
+            console.error(
+              '[approval-settings] deployment defaults unavailable; seeding manual mode',
+              err,
+            )
           }
           setSettings(next)
         } else {

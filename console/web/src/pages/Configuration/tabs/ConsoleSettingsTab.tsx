@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { DefaultPermissionModePicker } from '@/components/permissions/DefaultPermissionModePicker'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
 import {
@@ -11,13 +11,13 @@ import { ModeToggle } from '@/components/ui/ModeToggle'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import type { Theme } from '@/hooks/use-theme'
 import { getDefaultBackend } from '@/lib/backend'
+import {
+  autoAllowSeedFromRules,
+  loadApprovalGateDefaults,
+  saveApprovalGateDefaults,
+} from '@/lib/backend/approval-gate-config'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
-import {
-  loadDefaultAllowlist,
-  loadDefaultPermissionMode,
-  saveDefaultAllowlist,
-} from '@/lib/storage'
 
 // Provider credentials + settings now live in the llm-router `configuration`
 // entry, edited via the schema-driven form on the workers tab.
@@ -41,34 +41,82 @@ export function ConsoleSettingsTab({
   theme,
   onThemeChange,
 }: ConsoleSettingsTabProps) {
-  // Controlled default-permission-mode + per-user allowlist. Both back to
-  // localStorage. The allowlist section only renders while mode === 'auto'
-  // (it has no effect under manual/full, so showing it would mislead).
-  const [defaultMode, setDefaultMode] = useState<PermissionMode>(() =>
-    loadDefaultPermissionMode(),
+  // Deployment defaults from the approval-gate configuration entry (single source).
+  const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
+  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const cfg = await loadApprovalGateDefaults()
+        if (cancelled) return
+        setDefaultMode(cfg.defaultMode)
+        setAllowlist(cfg.allowlist)
+      } catch (err) {
+        console.error(
+          '[console-settings] failed to load approval-gate config',
+          err,
+        )
+      } finally {
+        if (!cancelled) setLoaded(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const persistDefaults = useCallback(
+    async (mode: PermissionMode, list: string[]) => {
+      try {
+        const next = await saveApprovalGateDefaults(mode, list)
+        setDefaultMode(next.default_mode)
+        setAllowlist(autoAllowSeedFromRules(next.rules))
+      } catch (err) {
+        console.error(
+          '[console-settings] failed to save approval-gate config',
+          err,
+        )
+      }
+    },
+    [],
   )
-  const [allowlist, setAllowlist] = useState<string[]>(() =>
-    loadDefaultAllowlist(),
+
+  const handleModeChange = useCallback(
+    (next: PermissionMode) => {
+      setDefaultMode(next)
+      void persistDefaults(next, allowlist)
+    },
+    [allowlist, persistDefaults],
   )
+
+  const addAllow = useCallback(
+    (functionId: string) => {
+      setAllowlist((prev) => {
+        if (prev.includes(functionId)) return prev
+        const next = [...prev, functionId]
+        void persistDefaults(defaultMode, next)
+        return next
+      })
+    },
+    [defaultMode, persistDefaults],
+  )
+
+  const removeAllow = useCallback(
+    (functionId: string) => {
+      setAllowlist((prev) => {
+        if (!prev.includes(functionId)) return prev
+        const next = prev.filter((id) => id !== functionId)
+        void persistDefaults(defaultMode, next)
+        return next
+      })
+    },
+    [defaultMode, persistDefaults],
+  )
+
   const allowlistSet = useMemo(() => new Set(allowlist), [allowlist])
-
-  const addAllow = useCallback((functionId: string) => {
-    setAllowlist((prev) => {
-      if (prev.includes(functionId)) return prev
-      const next = [...prev, functionId]
-      saveDefaultAllowlist(next)
-      return next
-    })
-  }, [])
-
-  const removeAllow = useCallback((functionId: string) => {
-    setAllowlist((prev) => {
-      if (!prev.includes(functionId)) return prev
-      const next = prev.filter((id) => id !== functionId)
-      saveDefaultAllowlist(next)
-      return next
-    })
-  }, [])
 
   const { functionEntries } = useFunctionsCatalog(getDefaultBackend().id)
   const allowlistCandidates = useMemo(
@@ -102,14 +150,14 @@ export function ConsoleSettingsTab({
 
       <Section
         title="permissions"
-        description="default mode applied to NEW conversations only. existing ones keep their own mode."
+        description="default mode and auto allowlist stored in the approval-gate configuration entry. applies to NEW conversations only."
       >
         <Row
           label="default mode"
           control={
             <DefaultPermissionModePicker
-              value={defaultMode}
-              onChange={setDefaultMode}
+              value={loaded ? defaultMode : undefined}
+              onChange={handleModeChange}
             />
           }
           meta="manual prompts for everything · auto skips functions on your allowlist · full skips everything"
