@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use iii_observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::helpers::create_channel;
 use iii_sdk::{TriggerRequest, III};
 use serde_json::{json, Value};
@@ -131,17 +132,28 @@ impl RouterClient {
         }
 
         // Run the held-open trigger concurrently with frame consumption.
+        //
+        // Carry the caller's OTel context into the spawned task so the SDK
+        // injects the turn's traceparent and `router::chat` nests under
+        // `harness::turn` instead of rooting a detached trace. `with_context`
+        // (not `cx.attach()`) because the `ContextGuard` is `!Send` and can't
+        // be held across the `.await` inside `tokio::spawn` — the same idiom
+        // the SDK uses to attach a handler's context.
         let iii = self.iii.clone();
         let timeout_ms = self.timeout_ms;
-        let trigger = tokio::spawn(async move {
-            iii.trigger(TriggerRequest {
-                function_id: "router::chat".into(),
-                payload,
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
-            .await
-        });
+        let parent_cx = iii_observability::opentelemetry::Context::current();
+        let trigger = tokio::spawn(
+            async move {
+                iii.trigger(TriggerRequest {
+                    function_id: "router::chat".into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                })
+                .await
+            }
+            .with_context(parent_cx),
+        );
 
         let coalesce = Duration::from_millis(self.coalesce_ms);
         let mut last_emit = Instant::now()

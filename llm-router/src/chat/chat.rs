@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
 use crate::types::router::{ChatResponse, ErrorShape};
+use iii_observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::{IIIError, StreamChannelRef, TriggerRequest, III};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -272,20 +273,28 @@ impl ChatPipeline {
             let function_id = format!("provider::{provider}::stream");
             let closer = reader.closer();
             let timeout = settings.stream_timeout_ms;
-            let call_task = tokio::spawn(async move {
-                let out = iii
-                    .trigger(TriggerRequest {
-                        function_id,
-                        payload: stream_input,
-                        action: None,
-                        timeout_ms: Some(timeout),
-                    })
-                    .await;
-                if out.is_err() {
-                    closer();
+            // Carry the caller's OTel context into the spawned task so the
+            // provider stream nests under `router::chat` instead of rooting a
+            // detached trace. `with_context` (not `cx.attach()`) because the
+            // `ContextGuard` is `!Send` and can't cross the `.await` below.
+            let parent_cx = iii_observability::opentelemetry::Context::current();
+            let call_task = tokio::spawn(
+                async move {
+                    let out = iii
+                        .trigger(TriggerRequest {
+                            function_id,
+                            payload: stream_input,
+                            action: None,
+                            timeout_ms: Some(timeout),
+                        })
+                        .await;
+                    if out.is_err() {
+                        closer();
+                    }
+                    out
                 }
-                out
-            });
+                .with_context(parent_cx),
+            );
 
             let relay = relay_frames(
                 &mut reader,
