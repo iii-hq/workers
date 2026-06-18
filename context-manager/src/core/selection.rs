@@ -133,14 +133,12 @@ pub fn select(
         break;
     }
 
-    // Prefer the budget-fitting safe boundary found above (head non-empty).
+    // Prefer the budget-fitting safe boundary found above.
     if let Some(start) = keep {
-        if start > 0 {
-            return Selection {
-                head_len: start,
-                tail_start_index: Some(start),
-            };
-        }
+        return Selection {
+            head_len: start,
+            tail_start_index: Some(start),
+        };
     }
 
     // Nothing fit the recent-tail budget. Never summarise the *entire*
@@ -248,6 +246,21 @@ mod tests {
         // (head_len 0 → the caller skips compaction) instead of summarising
         // the whole history into an empty model context.
         let messages = vec![user("a", 1), assistant("b", 2)];
+        let sel = select(&messages, u64::MAX, 2, &HeuristicEstimator);
+        assert_eq!(sel.head_len, 0);
+        assert_eq!(sel.tail_start_index, Some(0));
+    }
+
+    #[test]
+    fn all_turns_fit_budget_keeps_full_history_verbatim() {
+        // Multiple turns that all fit the tail budget must not fall through
+        // to a later safe cut — keep from index 0 so the caller skips compaction.
+        let messages = vec![
+            user("old question", 1),
+            assistant("old answer", 2),
+            user("recent question", 3),
+            assistant("recent answer", 4),
+        ];
         let sel = select(&messages, u64::MAX, 2, &HeuristicEstimator);
         assert_eq!(sel.head_len, 0);
         assert_eq!(sel.tail_start_index, Some(0));
