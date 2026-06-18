@@ -2,7 +2,7 @@
 
 [package]
 name = "context-manager"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2021"
 publish = false
 
