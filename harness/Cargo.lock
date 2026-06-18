@@ -508,6 +508,7 @@ dependencies = [
  "async-trait",
  "clap",
  "globset",
+ "iii-observability",
  "iii-sdk",
  "jsonschema",
  "schemars",
