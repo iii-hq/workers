@@ -89,7 +89,6 @@ src/
     backend/             # ← the seam. ChatBackend interface + impls
       types.ts           #     StreamEvent, ChatBackend, ChatStreamOptions
       harness-send.ts    #     harness::send / stop / status wire helpers
-      system-prompt.ts   #     per-mode + identity system prompt
       turn-events-live.ts     # harness::turn-completed subscription
       approval-events-live.ts # approval::pending-* subscription + list-pending
       translate.ts       #     trigger payloads → StreamEvent

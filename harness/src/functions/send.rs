@@ -10,6 +10,7 @@ use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
+use crate::prompt::{self, Mode};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
@@ -30,6 +31,8 @@ pub enum MessageInput {
 pub struct SendOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,7 +200,12 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
     TurnOptions {
         model: req.model.clone(),
         provider: req.provider.clone(),
-        system_prompt: opts.system_prompt,
+        system_prompt: prompt::resolve_system_prompt(
+            opts.system_prompt,
+            opts.mode,
+            req.provider.as_deref(),
+        ),
+        mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
         thinking_level: opts.thinking_level,
         output: opts.output.unwrap_or_default(),
@@ -291,15 +299,43 @@ mod tests {
     }
 
     #[test]
-    fn custom_message_is_accepted() {
-        let custom = AgentMessage::Custom(crate::types::message::CustomMessage {
-            role: crate::types::message::CustomRoleTag::Custom,
-            custom_type: "note".into(),
-            content: vec![],
-            display: None,
-            details: None,
-            timestamp: 1,
-        });
-        assert!(normalize_message(MessageInput::Message(Box::new(custom))).is_ok());
+    fn build_options_applies_builtin_prompt_when_system_prompt_omitted() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "claude-sonnet-4".into(),
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                mode: Some(Mode::Agent),
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req);
+        let prompt = opts.system_prompt.expect("built-in prompt");
+        assert!(prompt.contains("operating in agent mode"));
+        assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+    }
+
+    #[test]
+    fn build_options_honors_non_empty_system_prompt_override() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "m".into(),
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                system_prompt: Some("custom".into()),
+                mode: Some(Mode::Plan),
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req);
+        assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 }

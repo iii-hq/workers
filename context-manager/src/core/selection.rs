@@ -133,12 +133,34 @@ pub fn select(
         break;
     }
 
-    match keep {
-        None | Some(0) => whole_head,
-        Some(start) => Selection {
+    // Prefer the budget-fitting safe boundary found above.
+    if let Some(start) = keep {
+        return Selection {
             head_len: start,
             tail_start_index: Some(start),
-        },
+        };
+    }
+
+    // Nothing fit the recent-tail budget. Never summarise the *entire*
+    // history: that hands the model an empty verbatim context, and the
+    // provider rejects an empty messages array ("messages: at least one
+    // message is required"). Keep the most recent whole turn that begins at a
+    // safe cut above index 0 — better slightly over budget than zero messages.
+    for turn in all.iter().rev() {
+        if turn.start > 0 && is_safe_cut(&messages[turn.start]) {
+            return Selection {
+                head_len: turn.start,
+                tail_start_index: Some(turn.start),
+            };
+        }
+    }
+
+    // A single turn (or no safe cut above index 0): nothing can be safely
+    // summarised, so do not compact — keep the whole history verbatim
+    // (head_len 0 makes the caller's `head.is_empty()` guard skip compaction).
+    Selection {
+        head_len: 0,
+        tail_start_index: Some(0),
     }
 }
 
@@ -219,14 +241,29 @@ mod tests {
 
     #[test]
     fn tail_covering_everything_means_no_compaction_head() {
-        // Both turns fit: keep.start == 0 → whole history is "head",
-        // i.e. the caller sees nothing to summarise... actually the
-        // selection reports the whole history as head (no tail), which
-        // compact turns into tokens_before over everything.
+        // A single turn that fits the budget: there is no safe cut above
+        // index 0 to summarise, so the selection keeps everything verbatim
+        // (head_len 0 → the caller skips compaction) instead of summarising
+        // the whole history into an empty model context.
         let messages = vec![user("a", 1), assistant("b", 2)];
         let sel = select(&messages, u64::MAX, 2, &HeuristicEstimator);
-        assert_eq!(sel.tail_start_index, None);
-        assert_eq!(sel.head_len, 2);
+        assert_eq!(sel.head_len, 0);
+        assert_eq!(sel.tail_start_index, Some(0));
+    }
+
+    #[test]
+    fn all_turns_fit_budget_keeps_full_history_verbatim() {
+        // Multiple turns that all fit the tail budget must not fall through
+        // to a later safe cut — keep from index 0 so the caller skips compaction.
+        let messages = vec![
+            user("old question", 1),
+            assistant("old answer", 2),
+            user("recent question", 3),
+            assistant("recent answer", 4),
+        ];
+        let sel = select(&messages, u64::MAX, 2, &HeuristicEstimator);
+        assert_eq!(sel.head_len, 0);
+        assert_eq!(sel.tail_start_index, Some(0));
     }
 
     #[test]
@@ -289,7 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn nothing_fits_summarises_everything() {
+    fn nothing_fits_keeps_the_last_turn_verbatim() {
+        // Even when no recent turn fits the budget, the selection must never
+        // summarise the whole history into an empty tail. It keeps the last
+        // whole turn verbatim and summarises everything before it.
         let messages = vec![
             user("q1", 1),
             assistant("a1", 2),
@@ -297,8 +337,26 @@ mod tests {
             assistant("a2", 4),
         ];
         let sel = select(&messages, 0, 2, &HeuristicEstimator);
-        assert_eq!(sel.tail_start_index, None);
-        assert_eq!(sel.head_len, 4);
+        assert_eq!(sel.tail_start_index, Some(2));
+        assert_eq!(sel.head_len, 2);
+    }
+
+    #[test]
+    fn multi_turn_over_budget_never_empties_the_tail() {
+        // A tool round (user → assistant call → result → assistant) whose
+        // turn cannot fit the budget still keeps the last turn verbatim,
+        // starting at its safe user-message boundary — never an empty tail.
+        let messages = vec![
+            user("q1", 1),
+            assistant("a1", 2),
+            user("q2", 3),
+            assistant_call("c1", 4),
+            result("c1", 4_000, 5),
+            assistant("done", 6),
+        ];
+        let sel = select(&messages, 0, 2, &HeuristicEstimator);
+        assert_eq!(sel.tail_start_index, Some(2));
+        assert!(sel.head_len > 0 && sel.head_len < messages.len());
     }
 
     #[test]

@@ -272,7 +272,8 @@ Full options:
     "metadata": { "owner": "u_1", "chat_id": 42 }   // tenancy: session triggers + list filter on it
   },
   "options": {
-    "system_prompt": "You are operating in agent mode…",  // the harness ships no built-in prompt
+    "mode": "agent",                       // plan | ask | agent — prepends a mode paragraph
+    "system_prompt": "…",                  // optional override; omit for the built-in identity prompt
     "max_turns": 16,
     "thinking_level": "medium",            // minimal | low | medium | high | xhigh
     "functions": { "allow": ["shell::*", "coder::*"], "deny": ["shell::rm"], "expose": "agent_trigger" },
@@ -385,7 +386,7 @@ this contract:
 | Concern | File |
 |---|---|
 | `harness::send` / `stop` / `status` wire helpers | [`console/web/src/lib/backend/harness-send.ts`](../../console/web/src/lib/backend/harness-send.ts) |
-| Per-mode + identity system prompt | [`console/web/src/lib/backend/system-prompt.ts`](../../console/web/src/lib/backend/system-prompt.ts) |
+| Per-mode + identity system prompt | Built into the harness (`harness/src/prompt/`); pass `options.mode` and omit `options.system_prompt` for the default |
 | `harness::turn-completed` subscription | [`console/web/src/lib/backend/turn-events-live.ts`](../../console/web/src/lib/backend/turn-events-live.ts) |
 | `approval::pending-*` subscription + `list-pending` catch-up | [`console/web/src/lib/backend/approval-events-live.ts`](../../console/web/src/lib/backend/approval-events-live.ts) |
 | Kickoff loop + recovery + `/compact` | [`console/web/src/lib/backend/real.ts`](../../console/web/src/lib/backend/real.ts) |

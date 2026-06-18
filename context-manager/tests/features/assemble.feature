@@ -134,6 +134,22 @@ Feature: context::assemble — the model-ready context pipeline
     And the summariser was invoked 1 time
     And no lease claim remains
 
+  # Prevents: an oversized final turn being summarised into an EMPTY
+  # model context. When no recent turn fits the verbatim-tail budget,
+  # compaction must keep the last turn rather than fold everything away —
+  # the provider rejects an empty messages array.
+  Scenario: an oversized final turn is kept verbatim, never emptied
+    Given inline model "small" with context window 5000 and max output 500
+    And the summariser returns "## Goal\n- keep going"
+    And a user message of ~3000 tokens
+    And an assistant message "r0"
+    And a user message of ~3000 tokens
+    When I assemble the history with model "small"
+    Then the call succeeds
+    And the response field "applied.compacted" is true
+    And the response messages are not empty
+    And the response messages start at request message 2
+
   # Prevents: both passes fighting instead of stacking — prune frees
   # the tool output, compaction then folds the rest of the head.
   Scenario: prune and compaction stack when one is not enough

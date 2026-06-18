@@ -37,9 +37,13 @@ export type HarnessOutputContract =
   | { type: 'text' }
   | { type: 'json'; schema?: unknown }
 
+/** Operating mode — the harness prepends a short paragraph before the identity prompt. */
+export type HarnessSendMode = 'plan' | 'ask' | 'agent'
+
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
   system_prompt?: string
+  mode?: HarnessSendMode
   max_turns?: number
   thinking_level?: HarnessThinkingLevel
   output?: HarnessOutputContract
