@@ -5,3 +5,6 @@ deploy: binary
 manifest: Cargo.toml
 bin: session-manager
 description: Durable, reactive, branching store of typed conversation entries with six emitted trigger types.
+
+dependencies:
+  configuration: "^0.19.0"
