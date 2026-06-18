@@ -17,7 +17,7 @@ use crate::types::router::{
     ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse,
     ProviderListRequest, ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
     ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
-    UpdateCredentialRequest, UpdateCredentialResponse, WorkerAvailableEvent,
+    UpdateCredentialRequest, UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
@@ -71,10 +71,6 @@ pub const UPDATE_CREDENTIAL_DESC: &str = "OAuth write-back: store a provider cre
 pub const MODELS_RECONCILE_ID: &str = "router::models::reconcile";
 pub const MODELS_RECONCILE_DESC: &str =
     "Replace a provider's catalog slice — the only catalog write path (token-gated).";
-
-pub const ON_WORKER_AVAILABLE_ID: &str = "router::on_worker_available";
-pub const ON_WORKER_AVAILABLE_DESC: &str =
-    "Internal: engine::workers-available subscriber that flips provider availability on connect/disconnect.";
 
 pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
@@ -140,7 +136,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
             MODELS_RECONCILE_ID,
             MODELS_RECONCILE_DESC,
         ),
-        spec::<WorkerAvailableEvent, RouterAck>(ON_WORKER_AVAILABLE_ID, ON_WORKER_AVAILABLE_DESC),
         spec::<ConfigChangedEvent, RouterAck>(ON_CONFIG_CHANGED_ID, ON_CONFIG_CHANGED_DESC),
     ]
 }

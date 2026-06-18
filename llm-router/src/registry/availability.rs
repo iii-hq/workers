@@ -1,55 +1,12 @@
-//! Topology handler (bound to the engine's `subscribe` trigger on the
-//! `engine::workers-available` topic) + the `router::provider::list` iii
-//! function. Topology payload shapes vary (`worker_metadata_updated`,
-//! connect/disconnect); we flip on any event naming a bound worker_id,
-//! treating *disconnect* as down. Disconnect coverage is a verification risk
-//! (design § risks) — dispatch-time flips in chat.rs are the fallback.
+//! `router::provider::list` — registered providers with configured/available status.
 use std::sync::Arc;
 
-use crate::types::router::{
-    ProviderInfo, ProviderListRequest, ProviderListResponse, RouterAck, WorkerAvailableEvent,
-};
+use crate::types::router::{ProviderInfo, ProviderListRequest, ProviderListResponse};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
-use serde_json::json;
 
 use crate::registry::resolve::resolve_provider_config;
 use crate::registry::store::RegistryStore;
-use crate::triggers::{self, RouterEvents};
-
-pub fn make_on_worker_available(
-    registry: Arc<RegistryStore>,
-    events: Arc<RouterEvents>,
-) -> impl Fn(WorkerAvailableEvent) -> BoxFuture<'static, Result<RouterAck, IIIError>>
-       + Send
-       + Sync
-       + 'static {
-    move |event: WorkerAvailableEvent| {
-        let (registry, events) = (registry.clone(), events.clone());
-        Box::pin(async move {
-            let Some(worker_id) = event.worker_id.as_deref() else {
-                return Ok(RouterAck { ok: true }); // unknown shapes are ignored
-            };
-            let providers = registry.providers_for_worker(worker_id).await;
-            if providers.is_empty() {
-                return Ok(RouterAck { ok: true }); // a worker with no registered provider creates nothing
-            }
-            let event_name = event.event.as_deref().unwrap_or("");
-            let available = !event_name.contains("disconnect");
-            for id in providers {
-                if registry.set_availability(&id, available).await {
-                    events
-                        .emit(
-                            triggers::PROVIDER_CHANGED,
-                            json!({ "provider": id, "op": if available { "available" } else { "unavailable" } }),
-                        )
-                        .await;
-                }
-            }
-            Ok(RouterAck { ok: true })
-        })
-    }
-}
 
 pub fn make_provider_list(
     iii: III,

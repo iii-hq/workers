@@ -380,19 +380,6 @@ pub struct ModelsReconcileRequest {
     pub models: Vec<Model>,
 }
 
-/// Topology event delivered to `router::on_worker_available` via the
-/// `engine::workers-available` subscribe trigger. Engine event shapes vary;
-/// only these two fields are read and unknown fields are ignored.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkerAvailableEvent {
-    /// The worker id the event concerns (absent shapes are ignored).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_id: Option<String>,
-    /// Event name; one containing "disconnect" marks the worker(s) down.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event: Option<String>,
-}
-
 /// Configuration-change event delivered to `router::on_config_changed` via the
 /// engine's `configuration` trigger (paste-a-key flow).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

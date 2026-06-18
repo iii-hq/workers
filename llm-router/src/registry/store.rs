@@ -68,10 +68,8 @@ fn build_record(
             .unwrap_or_else(|| hash_token(raw_token)),
         worker_id: worker_id.or_else(|| existing.and_then(|e| e.worker_id.clone())),
         // A (re)registering provider is connected and serving. Registration is
-        // the source of truth for "up"; the engine's topology events key
-        // workers by a per-connection UUID that never matches the declared
-        // worker_id, so they can't be relied on (see availability.rs). A
-        // dispatch-time function_not_found flips this back down (chat.rs).
+        // the source of truth for "up"; a dispatch-time function_not_found
+        // flips this back down (chat.rs).
         available: true,
         registered_at: existing.map(|e| e.registered_at).unwrap_or_else(now_ms),
         declaration,
@@ -126,16 +124,6 @@ impl RegistryStore {
     pub async fn ids(&self) -> Vec<String> {
         self.records.lock().await.keys().cloned().collect()
     }
-    pub async fn providers_for_worker(&self, worker_id: &str) -> Vec<String> {
-        self.records
-            .lock()
-            .await
-            .values()
-            .filter(|r| r.worker_id.as_deref() == Some(worker_id))
-            .map(|r| r.declaration.id.clone())
-            .collect()
-    }
-
     /// First register binds (mints a token, persists its hash); later
     /// registers must present the raw token. Returns the raw token — it
     /// exists nowhere else.
