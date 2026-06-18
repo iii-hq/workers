@@ -59,8 +59,9 @@ partial content, so consumers never hang on a half-open stream.
 | `router::models::supports` | Check one capability flag for one model. |
 | `router::provider::list` | Registered providers with `configured` / `available` status. |
 
-Agent exposure is restricted per `iii-permissions.yaml` to the read surface
-(`router::models::*`, `router::provider::list`).
+Only the read surface is agent-callable (`router::models::list` / `get` /
+`supports`, `router::provider::list`); everything else is denied to in-run
+agents — see [Security model](#security-model).
 
 ### Provider protocol
 
@@ -125,6 +126,25 @@ within seconds — no restart.
   key `registry`) and restart the affected providers to re-bind; pasted
   credentials in the configuration entry are unaffected.
 
+## Security model
+
+The agent-callable surface is governed by the engine-wide permission policy
+(repo-root [`iii-permissions.yaml`](../iii-permissions.yaml)), not a per-worker
+file. In-run agents may only **read** the catalog and provider list:
+
+- **Allowed:** `router::models::list`, `router::models::get`,
+  `router::models::supports`, `router::provider::list`.
+- **Denied to agents:** the chat/spend surface (`router::chat`,
+  `router::complete`, `router::abort`, `router::route`), the whole
+  provider/credential protocol (`router::provider::resolve` / `register` /
+  `update_credential`, `router::models::reconcile`), and direct `provider::*`
+  calls.
+
+Worker-to-worker calls bypass the agent gate, so the harness, context-manager,
+and provider workers reach the full surface — only in-run agents are
+restricted. Provider credentials live in the configuration entry and are never
+readable back through any allowed function.
+
 ## Events
 
 The router registers three custom trigger types and fans out to every bound
@@ -138,14 +158,14 @@ payload verbatim (no envelope).
 | `router::ready` | the router finishes booting; providers re-declare on it | `{}` |
 
 ```ts
-iii.registerFunction({ id: 'my-worker::onModelsChanged' }, async (payload) => {
+iii.registerFunction('my-worker::on-models-changed', async (payload) => {
   console.log('catalog changed:', payload); // { provider, count }
   return {};
 });
 
 iii.registerTrigger({
   type: 'router::models::changed',
-  function_id: 'my-worker::onModelsChanged',
+  function_id: 'my-worker::on-models-changed',
   config: {},
 });
 ```
