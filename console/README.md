@@ -60,7 +60,7 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 The composer's `@`-mentions and the model picker pull from the engine in real time.
 
 - `engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
-- `router::models::list` — provider-grouped model catalog, refreshed live off the `router::models::changed` pubsub topic → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
+- `router::models::list` — provider-grouped model catalog, refreshed live off the `router::models::changed` trigger type → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
 
 ### Theming
 
@@ -94,15 +94,22 @@ open http://127.0.0.1:3113
 
 The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocket — one origin, no CORS, no API base URL to configure.
 
-Chat needs the harness loop and its siblings on the engine: `harness` (the
-durable turn loop), `session-manager` (the conversation store the sidebar,
-transcripts, and live token rendering are backed by), `llm-router`
-(generation + the model catalog), and — for context compaction and
-human-in-the-loop approvals — `context-manager` and `approval-gate`:
+### Bring up the chat stack
+
+Chat runs on the [`harness`](../harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](../session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](../llm-router) (generation + the model catalog), [`context-manager`](../context-manager) (the `/compact` summariser), [`approval-gate`](../approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
 
 ```bash
-iii worker add harness session-manager llm-router context-manager approval-gate
+iii worker add harness
 ```
+
+### Add a provider key
+
+The provider workers install with the harness, but they need credentials before any model appears — until then the model picker reads **no models** and chat won't generate. Add a key either way:
+
+- **In the UI (recommended)** — open the model picker and use **configure anthropic** / **configure openai** to paste a key. It's written to that provider's slice of the `llm-router` configuration entry, and the catalog populates within seconds.
+- **From the environment** — `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process. See [`llm-router`](../llm-router#configuration) for the credential model.
+
+Pick a model in the composer and send — the turn streams back through the harness loop.
 
 <details>
 <summary><strong>Programmatic check from the SDK</strong></summary>
@@ -181,7 +188,7 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 |---|---|
 | Web server | [axum 0.7](https://github.com/tokio-rs/axum), [tokio](https://tokio.rs), [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite) |
 | Asset embedding | [`rust-embed` 8](https://docs.rs/rust-embed), [`mime_guess`](https://docs.rs/mime_guess) |
-| Worker SDK | [`iii-sdk` 0.12](https://docs.rs/iii-sdk) |
+| Worker SDK | [`iii-sdk` 0.19.4](https://docs.rs/iii-sdk) |
 | UI framework | [React 19](https://react.dev), [Vite 8](https://vitejs.dev), [TypeScript 6](https://www.typescriptlang.org) |
 | Styling | [Tailwind CSS v4](https://tailwindcss.com), [Radix UI](https://www.radix-ui.com), [`class-variance-authority`](https://cva.style), [lucide-react](https://lucide.dev) |
 | Editor | [Lexical 0.44](https://lexical.dev) |
