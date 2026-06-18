@@ -25,7 +25,7 @@ use crate::config::entry::read_entry_value;
 use crate::registry::store::RegistryStore;
 use crate::routing::{decide, DecideInput};
 use crate::settings::{provider_slices, RouterSettings};
-use crate::triggers;
+use crate::triggers::{self, RouterEvents};
 
 use super::inflight::InflightMap;
 use super::output_tokens::resolve_max_output_tokens;
@@ -83,6 +83,7 @@ pub struct ChatPipeline {
     pub catalog: Arc<CatalogStore>,
     pub inflight: Arc<InflightMap>,
     pub settings: Arc<RwLock<RouterSettings>>,
+    pub events: Arc<RouterEvents>,
 }
 
 fn now_ms() -> i64 {
@@ -393,12 +394,12 @@ impl ChatPipeline {
                             }
                             if is_function_not_found(&err) {
                                 if self.registry.set_availability(provider, false).await {
-                                    triggers::publish(
-                                        &self.iii,
-                                        triggers::PROVIDER_CHANGED,
-                                        json!({ "provider": provider, "op": "unavailable" }),
-                                    )
-                                    .await;
+                                    self.events
+                                        .emit(
+                                            triggers::PROVIDER_CHANGED,
+                                            json!({ "provider": provider, "op": "unavailable" }),
+                                        )
+                                        .await;
                                 }
                                 return Err(RouterError::new(
                                     RouterCode::ProviderUnavailable,
@@ -569,17 +570,20 @@ mod tests {
         use crate::registry::store::RegistryStore;
         use crate::settings::RouterSettings;
         use crate::testkit::fake_channels::FakeChannel;
+        use crate::triggers::RouterEvents;
         use std::sync::RwLock;
         use std::time::Duration;
 
         // empty registry + empty catalog → nothing routes "ghost-model".
         let iii = iii_sdk::register_worker("ws://127.0.0.1:0", iii_sdk::InitOptions::default());
+        let events = RouterEvents::register(&iii);
         let pipeline = ChatPipeline {
             iii: iii.clone(),
             registry: Arc::new(RegistryStore::new(iii.clone())),
             catalog: Arc::new(CatalogStore::new(iii.clone())),
             inflight: Arc::new(InflightMap::default()),
             settings: Arc::new(RwLock::new(RouterSettings::default())),
+            events,
         };
 
         let ch = FakeChannel::new();

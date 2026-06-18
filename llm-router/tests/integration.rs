@@ -855,7 +855,7 @@ async fn update_credential_persists_and_resolves_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn models_changed_event_reaches_a_pubsub_subscriber() {
+async fn models_changed_event_reaches_a_trigger_subscriber() {
     let engine = engine_or_skip!();
 
     let router_iii = register_worker(&engine.url, InitOptions::default());
@@ -863,8 +863,8 @@ async fn models_changed_event_reaches_a_pubsub_subscriber() {
         .await
         .expect("router boots");
 
-    // Probe worker bound to the topic through the engine's pubsub trigger type
-    // (README § Events): the handler must receive the raw payload, no envelope.
+    // Probe worker bound to the router-owned trigger type (README § Events):
+    // the handler must receive the raw payload, no envelope.
     let probe = register_worker(&engine.url, InitOptions::default());
     let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let sink = received.clone();
@@ -880,12 +880,12 @@ async fn models_changed_event_reaches_a_pubsub_subscriber() {
     );
     probe
         .register_trigger(iii_sdk::RegisterTriggerInput {
-            trigger_type: "subscribe".into(),
+            trigger_type: "router::models::changed".into(),
             function_id: "probe::on_models_changed".into(),
-            config: json!({ "topic": "router::models::changed" }),
+            config: json!({}),
             metadata: None,
         })
-        .expect("subscribe trigger registered");
+        .expect("router::models::changed trigger registered");
 
     // Declare already emits count=1 from the static model; reconcile two
     // models so the explicit-reconcile emission is unambiguous.
@@ -901,15 +901,20 @@ async fn models_changed_event_reaches_a_pubsub_subscriber() {
     .await
     .expect("reconcile accepted");
 
-    let want = json!({ "provider": "real", "count": 2 });
+    let want_provider = "real";
+    let want_count = 2;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if received.lock().unwrap().iter().any(|p| p == &want) {
+        let matched = received.lock().unwrap().iter().any(|p| {
+            p.get("provider").and_then(Value::as_str) == Some(want_provider)
+                && p.get("count").and_then(Value::as_u64) == Some(want_count)
+        });
+        if matched {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "router::models::changed never reached the pubsub subscriber; got {:?}",
+            "router::models::changed never reached the trigger subscriber; got {:?}",
             received.lock().unwrap()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
