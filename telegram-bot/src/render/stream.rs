@@ -1291,15 +1291,15 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum DraftFinalizeStep {
-        ClearDraftBeforeAnswer,
-        PostAnswer,
-        ClearDraftAfterAnswer,
+        ClearDraftBefore,
+        Post,
+        ClearDraftAfter,
     }
 
     const DRAFT_FINALIZE_STEPS: [DraftFinalizeStep; 3] = [
-        DraftFinalizeStep::ClearDraftBeforeAnswer,
-        DraftFinalizeStep::PostAnswer,
-        DraftFinalizeStep::ClearDraftAfterAnswer,
+        DraftFinalizeStep::ClearDraftBefore,
+        DraftFinalizeStep::Post,
+        DraftFinalizeStep::ClearDraftAfter,
     ];
 
     #[test]
@@ -1695,15 +1695,9 @@ mod tests {
 
     #[test]
     fn draft_finalize_clears_draft_before_posting_answer() {
-        assert_eq!(
-            DRAFT_FINALIZE_STEPS[0],
-            DraftFinalizeStep::ClearDraftBeforeAnswer
-        );
-        assert_eq!(DRAFT_FINALIZE_STEPS[1], DraftFinalizeStep::PostAnswer);
-        assert_eq!(
-            DRAFT_FINALIZE_STEPS[2],
-            DraftFinalizeStep::ClearDraftAfterAnswer
-        );
+        assert_eq!(DRAFT_FINALIZE_STEPS[0], DraftFinalizeStep::ClearDraftBefore);
+        assert_eq!(DRAFT_FINALIZE_STEPS[1], DraftFinalizeStep::Post);
+        assert_eq!(DRAFT_FINALIZE_STEPS[2], DraftFinalizeStep::ClearDraftAfter);
     }
 
     #[test]

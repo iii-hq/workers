@@ -217,10 +217,12 @@ mod tests {
 
     async fn deps_with_transport(transport: StreamTransport) -> Arc<Deps> {
         let runtime = Arc::new(RuntimeState::new());
-        let mut cfg = WorkerConfig::default();
-        cfg.streaming = StreamingConfig {
-            transport,
-            ..StreamingConfig::default()
+        let cfg = WorkerConfig {
+            streaming: StreamingConfig {
+                transport,
+                ..StreamingConfig::default()
+            },
+            ..WorkerConfig::default()
         };
         Arc::new(Deps {
             iii: Arc::new(iii_sdk::III::new("ws://127.0.0.1:1")),
