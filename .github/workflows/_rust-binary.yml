@@ -225,10 +225,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Workers live in subdirectories (no Cargo.toml at the repo root). Derive
+      # the worker's directory from manifest_path so rust-cache runs its
+      # `cargo metadata` there instead of the root.
+      - name: Resolve worker directory for cache
+        id: cache_workdir
+        shell: bash
+        run: printf 'dir=%s\n' "$(dirname '${{ inputs.manifest_path }}')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry & build
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ inputs.bin_name }}-${{ matrix.target }}
+          # Without this, rust-cache defaults to the repo root, where there is no
+          # Cargo.toml — its `cargo metadata` exits 101 and the cache is never
+          # found or saved, so every build of every target ships cold.
+          workspaces: ${{ steps.cache_workdir.outputs.dir }}
 
       - name: Rewrite [package].version (bundle coordinated release)
         if: inputs.version_override != ''
