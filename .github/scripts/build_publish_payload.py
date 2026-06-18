@@ -199,11 +199,23 @@ def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, 
 
 
 def _normalize_registry_trigger_type(trigger_type: dict[str, Any]) -> dict[str, Any]:
+    # `engine::triggers::info` exposes the typed schemas under
+    # `configuration_schema` (the binding config, registered via the SDK's
+    # `.trigger_request_format::<T>()`) and `request_schema` (the delivered-event
+    # payload, registered via `.call_request_format::<T>()`). `engine::triggers::list`
+    # rows carry neither — they must be enriched from `::info` first (see
+    # collect_worker_interface.enrich_trigger_types_with_schemas) or these
+    # collapse to the empty `{}` that renders as 'unknown' in the registry.
+    # Fall back to the pre-rename engine keys for any older caller shape.
     return {
         "name": _string_or_empty(trigger_type.get("id")),
         "description": _string_or_empty(trigger_type.get("description")),
-        "invocation_schema": _schema_or_empty(trigger_type.get("trigger_request_format")),
-        "return_schema": _schema_or_empty(trigger_type.get("call_request_format")),
+        "invocation_schema": _schema_or_empty(
+            trigger_type.get("configuration_schema", trigger_type.get("trigger_request_format"))
+        ),
+        "return_schema": _schema_or_empty(
+            trigger_type.get("request_schema", trigger_type.get("call_request_format"))
+        ),
         "metadata": {},
     }
 

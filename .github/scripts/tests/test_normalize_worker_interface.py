@@ -101,6 +101,122 @@ def test_surfaces_typed_schemas_from_info_enriched_rows() -> None:
     ]
 
 
+def _session_manager_args(trigger_types_json):
+    """Minimal workers/functions JSON so a session-manager trigger payload
+    resolves; the assertion under test is the triggers mapping."""
+    return {
+        "worker_name": "session-manager",
+        "workers_json": {
+            "workers": [{"id": "session-manager", "name": "session-manager", "runtime": "rust"}]
+        },
+        "functions_json": {
+            "functions": [
+                {
+                    "function_id": "session::append",
+                    "worker_name": "session-manager",
+                    "description": "append",
+                }
+            ]
+        },
+        "trigger_types_json": trigger_types_json,
+    }
+
+
+def test_surfaces_trigger_schemas_from_info_enriched_rows() -> None:
+    """`engine::triggers::list` rows carry no schemas — only `engine::triggers::info`
+    does, under `configuration_schema`/`request_schema`. Once the collector
+    enriches each row from `::info`, normalize must surface those typed schemas
+    (not the empty `{}` it produced when reading the never-present
+    `trigger_request_format`/`call_request_format` keys)."""
+    cfg = {
+        "type": "object",
+        "title": "CreatedBindingConfig",
+        "properties": {"session_id": {"type": "string"}},
+    }
+    req = {
+        "type": "object",
+        "title": "SessionEvent",
+        "properties": {"entry_id": {"type": "string"}},
+    }
+    interface = normalize_worker_interface(
+        **_session_manager_args(
+            {
+                "triggers": [
+                    {
+                        "id": "session::created",
+                        "worker_name": "session-manager",
+                        "description": "A new session exists.",
+                        "configuration_schema": cfg,
+                        "request_schema": req,
+                    }
+                ]
+            }
+        )
+    )
+
+    assert interface["triggers"] == [
+        {
+            "name": "session::created",
+            "description": "A new session exists.",
+            "invocation_schema": cfg,
+            "return_schema": req,
+            "metadata": {},
+        }
+    ]
+
+
+def test_untyped_trigger_surfaces_empty_schema() -> None:
+    """A trigger type registered without a binding config (e.g. iii-directory's
+    `directory::*::on-change`) has no schema in `::info` — normalize emits an
+    empty `{}`, which the publish step warns (not errors) about."""
+    interface = normalize_worker_interface(
+        **_session_manager_args(
+            {
+                "triggers": [
+                    {
+                        "id": "session::created",
+                        "worker_name": "session-manager",
+                        "description": "A new session exists.",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert interface["triggers"] == [
+        {
+            "name": "session::created",
+            "description": "A new session exists.",
+            "invocation_schema": {},
+            "return_schema": {},
+            "metadata": {},
+        }
+    ]
+
+
+def test_trigger_schema_falls_back_to_legacy_engine_keys() -> None:
+    """Older engine output named the schemas `trigger_request_format` /
+    `call_request_format`; normalize still reads them as a fallback so a mixed
+    engine version doesn't silently drop schemas."""
+    cfg = {"type": "object", "properties": {"session_id": {"type": "string"}}}
+    interface = normalize_worker_interface(
+        **_session_manager_args(
+            {
+                "triggers": [
+                    {
+                        "id": "session::created",
+                        "worker_name": "session-manager",
+                        "description": "A new session exists.",
+                        "trigger_request_format": cfg,
+                    }
+                ]
+            }
+        )
+    )
+
+    assert interface["triggers"][0]["invocation_schema"] == cfg
+
+
 def test_collects_single_worker_without_baseline() -> None:
     workers_json = {
         "workers": [{"id": "shell", "name": "shell", "runtime": "rust"}],
