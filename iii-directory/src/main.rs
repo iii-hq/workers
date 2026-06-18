@@ -197,6 +197,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// `worker` trigger payload for `directory::__on_worker_added`. Only `worker`
+/// is read; declared as a struct so the function publishes a typed schema.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+struct WorkerAddedEvent {
+    #[serde(default)]
+    worker: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct WorkerAddedAck {
+    ok: bool,
+}
+
 /// Register the internal `directory::__on_worker_added` handler and
 /// subscribe to the `worker` trigger type for `add` operations.
 fn setup_auto_download(
@@ -212,13 +225,13 @@ fn setup_auto_download(
     // Register the internal handler that fires on worker-add events.
     iii.register_function(
         "directory::__on_worker_added",
-        RegisterFunction::new_async(move |input: serde_json::Value| {
+        RegisterFunction::new_async(move |event: WorkerAddedEvent| {
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
             async move {
-                handle_worker_added(&cfg, &cache, &in_flight, &input).await;
-                Ok::<_, iii_sdk::IIIError>(json!({"ok": true}))
+                handle_worker_added(&cfg, &cache, &in_flight, &event).await;
+                Ok::<_, iii_sdk::IIIError>(WorkerAddedAck { ok: true })
             }
         })
         .description("Internal: auto-download skills on worker add event."),
@@ -265,9 +278,9 @@ async fn handle_worker_added(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
     in_flight: &Arc<InFlightGuard>,
-    payload: &serde_json::Value,
+    event: &WorkerAddedEvent,
 ) {
-    let worker = match payload.get("worker").and_then(|w| w.as_str()) {
+    let worker = match event.worker.as_deref() {
         Some(w) => w.to_string(),
         None => {
             tracing::debug!("worker add event missing 'worker' field; skipping");

@@ -130,6 +130,17 @@ pub async fn apply_config(state: &SharedState, cfg: SkillsConfig) {
     state.registered_cache.invalidate().await;
 }
 
+/// Trigger payload for `directory::on-config-change`. The handler ignores it
+/// (it re-fetches from the authoritative configuration); the empty struct
+/// exists so the function publishes a typed request schema rather than AnyValue.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+struct OnConfigChangeRequest {}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct OnConfigChangeResponse {
+    ok: bool,
+}
+
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger for `configuration:updated` on the `iii-directory` entry.
 pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIError> {
@@ -137,12 +148,12 @@ pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIE
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_req: OnConfigChangeRequest| {
             let st = st.clone();
             let engine = engine.clone();
             async move {
                 on_config_change(&engine, &st).await;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
