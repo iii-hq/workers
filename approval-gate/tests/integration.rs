@@ -63,7 +63,7 @@ async fn resolve_allow_releases_and_deny_delivers_through_the_fake_harness() {
                 .await
                 .unwrap();
             assert_eq!(out["decision"], json!("hold"));
-        assert!(out.get("pending_timeout_ms").is_none());
+            assert!(out.get("pending_timeout_ms").is_none());
         }
 
         let res = call(

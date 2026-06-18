@@ -249,7 +249,11 @@ mod tests {
     #[test]
     fn glob_provider_needs_approval_by_default() {
         assert!(matches!(
-            default_permissions().check("provider::anthropic::chat", &json!({}), PermissionMode::Manual),
+            default_permissions().check(
+                "provider::anthropic::chat",
+                &json!({}),
+                PermissionMode::Manual
+            ),
             Decision::NeedsApproval
         ));
     }

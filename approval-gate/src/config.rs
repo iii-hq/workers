@@ -193,8 +193,7 @@ mod tests {
 
     #[test]
     fn partial_yaml_fills_defaults() {
-        let cfg: WorkerConfig =
-            serde_yaml::from_str("default_mode: auto\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml::from_str("default_mode: auto\n").unwrap();
         assert_eq!(cfg.default_mode, PermissionMode::Auto);
     }
 
@@ -211,10 +210,7 @@ mod tests {
             .get("properties")
             .and_then(|p| p.as_object())
             .expect("schema has a properties object");
-        for field in [
-            "default_mode",
-            "rules",
-        ] {
+        for field in ["default_mode", "rules"] {
             assert!(
                 props.get(field).is_some(),
                 "missing schema property {field}"

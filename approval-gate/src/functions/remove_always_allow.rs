@@ -42,7 +42,6 @@ mod tests {
                     serde_json::json!({"function": "state::get", "action": "allow", "modes": ["auto"]}),
                     serde_json::json!({"function": "shell::run", "action": "allow", "modes": ["auto"]}),
                 ],
-                ..WorkerConfig::default()
             });
             let res = handle(
                 &stack.deps,

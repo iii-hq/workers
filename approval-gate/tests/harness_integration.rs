@@ -63,28 +63,25 @@ async fn seed_held_turn(
         },
         "calls": calls,
     });
-    state_set(
-        &stack.iii,
-        "harness_turn",
-        session_id,
-        record,
-    )
-    .await;
+    state_set(&stack.iii, "harness_turn", session_id, record).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn harness_held_call_survives_sweep_pending() {
-    with_harness_stack(BootOpts::needs_approval_with_harness(), |stack| async move {
-        seed_held_turn(&stack, "s_hold", "c_hold").await;
+    with_harness_stack(
+        BootOpts::needs_approval_with_harness(),
+        |stack| async move {
+            seed_held_turn(&stack, "s_hold", "c_hold").await;
 
-        let swept = call(&stack.iii, "harness::sweep-pending", json!({}))
-            .await
-            .expect("sweep");
-        assert_eq!(swept["resolved"], json!(0));
+            let swept = call(&stack.iii, "harness::sweep-pending", json!({}))
+                .await
+                .expect("sweep");
+            assert_eq!(swept["resolved"], json!(0));
 
-        let turn = state_get(&stack.iii, "harness_turn", "s_hold").await;
-        assert_eq!(turn["calls"]["c_hold"]["state"], json!("pending"));
-    })
+            let turn = state_get(&stack.iii, "harness_turn", "s_hold").await;
+            assert_eq!(turn["calls"]["c_hold"]["state"], json!("pending"));
+        },
+    )
     .await;
 }
 
@@ -155,72 +152,75 @@ async fn harness_pre_trigger_hold_then_resolve_allow() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_deny_delivers_is_error_through_harness() {
-    with_harness_stack(BootOpts::needs_approval_with_harness(), |stack| async move {
-        let iii = &stack.iii;
+    with_harness_stack(
+        BootOpts::needs_approval_with_harness(),
+        |stack| async move {
+            let iii = &stack.iii;
 
-        call(
-            iii,
-            "approval::gate",
-            hook_input("s_2", "c_deny", "shell::run"),
-        )
-        .await
-        .expect("gate hold");
+            call(
+                iii,
+                "approval::gate",
+                hook_input("s_2", "c_deny", "shell::run"),
+            )
+            .await
+            .expect("gate hold");
 
-        let res = call(
-            iii,
-            "approval::resolve",
-            json!({
-                "session_id": "s_2",
-                "function_call_id": "c_deny",
-                "decision": "deny",
-                "reason": "nope"
-            }),
-        )
-        .await
-        .expect("resolve");
-        assert_eq!(res["resolved"], json!(true));
+            let res = call(
+                iii,
+                "approval::resolve",
+                json!({
+                    "session_id": "s_2",
+                    "function_call_id": "c_deny",
+                    "decision": "deny",
+                    "reason": "nope"
+                }),
+            )
+            .await
+            .expect("resolve");
+            assert_eq!(res["resolved"], json!(true));
 
-        let turn = json!({
-            "turn_id": "t_1",
-            "session_id": "s_2",
-            "status": "awaiting_functions",
-            "step": 1,
-            "turn_count": 0,
-            "depth": 0,
-            "abort": false,
-            "options": {
-                "model": "test",
-                "max_turns": 8,
-                "output": { "type": "text" },
-                "functions": { "allow": ["*"], "expose": "agent_trigger" },
-                "max_validation_retries": 2,
-            },
-            "calls": {
-                "c_deny": {
-                    "state": "pending",
-                    "function_id": "shell::run",
-                    "held_by": "approval::gate",
-                }
-            },
-        });
-        state_set(iii, "harness_turn", "s_2", turn).await;
-
-        let deliver = call(
-            iii,
-            "harness::function::resolve",
-            json!({
-                "session_id": "s_2",
+            let turn = json!({
                 "turn_id": "t_1",
-                "function_call_id": "c_deny",
-                "action": "deliver",
-                "is_error": true,
-                "content": [{ "type": "text", "text": "denied" }],
-                "details": { "status": "denied", "denied_by": "user" },
-            }),
-        )
-        .await
-        .expect("harness resolve deliver");
-        assert_eq!(deliver["resolved"], json!(true));
-    })
+                "session_id": "s_2",
+                "status": "awaiting_functions",
+                "step": 1,
+                "turn_count": 0,
+                "depth": 0,
+                "abort": false,
+                "options": {
+                    "model": "test",
+                    "max_turns": 8,
+                    "output": { "type": "text" },
+                    "functions": { "allow": ["*"], "expose": "agent_trigger" },
+                    "max_validation_retries": 2,
+                },
+                "calls": {
+                    "c_deny": {
+                        "state": "pending",
+                        "function_id": "shell::run",
+                        "held_by": "approval::gate",
+                    }
+                },
+            });
+            state_set(iii, "harness_turn", "s_2", turn).await;
+
+            let deliver = call(
+                iii,
+                "harness::function::resolve",
+                json!({
+                    "session_id": "s_2",
+                    "turn_id": "t_1",
+                    "function_call_id": "c_deny",
+                    "action": "deliver",
+                    "is_error": true,
+                    "content": [{ "type": "text", "text": "denied" }],
+                    "details": { "status": "denied", "denied_by": "user" },
+                }),
+            )
+            .await
+            .expect("harness resolve deliver");
+            assert_eq!(deliver["resolved"], json!(true));
+        },
+    )
     .await;
 }

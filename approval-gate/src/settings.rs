@@ -174,7 +174,6 @@ mod tests {
                     "modes": ["auto"]
                 }),
             ],
-            ..WorkerConfig::default()
         }
     }
 

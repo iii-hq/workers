@@ -246,7 +246,11 @@ pub async fn resolve_parent(
 
 /// Whether a pending checkpoint should be resolved by the expiry sweep.
 /// Approval/hook holds (`held_by`) never expire; sub-agent child pendings do.
-fn pending_call_expired(cp: &crate::types::turn::CallCheckpoint, default_timeout_ms: u64, now: i64) -> bool {
+fn pending_call_expired(
+    cp: &crate::types::turn::CallCheckpoint,
+    default_timeout_ms: u64,
+    now: i64,
+) -> bool {
     if cp.state != CallState::Pending {
         return false;
     }
@@ -321,7 +325,12 @@ mod tests {
     use super::*;
     use crate::types::turn::{CallCheckpoint, CallState};
 
-    fn cp(state: CallState, held_by: Option<&str>, timeout_ms: Option<u64>, pending_at: i64) -> CallCheckpoint {
+    fn cp(
+        state: CallState,
+        held_by: Option<&str>,
+        timeout_ms: Option<u64>,
+        pending_at: i64,
+    ) -> CallCheckpoint {
         CallCheckpoint {
             state,
             function_id: Some("shell::run".into()),
@@ -345,7 +354,12 @@ mod tests {
     #[test]
     fn approval_hold_never_expires() {
         let now = 1_000_000;
-        let checkpoint = cp(CallState::Pending, Some("approval::gate"), None, now - 999_999);
+        let checkpoint = cp(
+            CallState::Pending,
+            Some("approval::gate"),
+            None,
+            now - 999_999,
+        );
         assert!(!pending_call_expired(&checkpoint, 1_800_000, now));
     }
 
