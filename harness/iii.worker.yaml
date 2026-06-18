@@ -13,5 +13,6 @@ dependencies:
   iii-directory: "^1.0.0"
   session-manager: "^1.0.0"
   context-manager: "^1.0.0"
-  llm-router: "^1.0.0"
   approval-gate: "^1.0.0"
+  provider-anthropic: "^1.0.0"
+  provider-openai: "^1.0.0"
