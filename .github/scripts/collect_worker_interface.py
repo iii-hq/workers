@@ -42,6 +42,33 @@ def _typed_schema_violations(functions: list[dict[str, object]]) -> list[str]:
     return violations
 
 
+def _untyped_trigger_names(triggers: list[dict[str, object]]) -> list[str]:
+    """Trigger names whose `invocation_schema` is the empty/AnyValue ('unknown')
+    schema. Unlike functions, a schema-less trigger is NOT a hard publish blocker:
+    some trigger types legitimately take no binding config (e.g. iii-directory's
+    `directory::*::on-change`), so callers warn rather than fail."""
+    names: list[str] = []
+    for trigger in triggers:
+        if not isinstance(trigger, dict):
+            continue
+        if not _schema_is_typed(trigger.get("invocation_schema")):
+            names.append(str(trigger.get("name") or "<unknown>"))
+    return names
+
+
+def _warn_untyped_triggers(triggers: list[dict[str, object]], source: str) -> None:
+    untyped = _untyped_trigger_names(triggers)
+    if untyped:
+        print(
+            f"::warning::triggers in {source} publishing without a typed "
+            f"invocation_schema (renders 'unknown' in the registry): "
+            f"{', '.join(untyped)}. If the trigger takes a binding config, "
+            "register it with .trigger_request_format::<T>() "
+            "(see session-manager/src/events.rs).",
+            file=sys.stderr,
+        )
+
+
 def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
     completed = subprocess.run(
         [
@@ -107,6 +134,61 @@ def enrich_functions_with_schemas(
             if value is not None:
                 row[key] = value
     return functions
+
+
+def _fetch_trigger_detail(trigger_id: str) -> dict[str, object] | None:
+    """`engine::triggers::info` for one trigger type, or None on any failure.
+
+    `engine::triggers::list` returns a `TriggerTypeSummary` (id + worker_name +
+    description only); only `::info` returns the `TriggerTypeDetail` carrying the
+    typed `configuration_schema`/`request_schema`/`response_schema`. Best-effort:
+    a failed lookup leaves the row schema-less, which publishes the empty
+    ("unknown") schema."""
+    try:
+        return run_iii("engine::triggers::info", {"id": trigger_id})
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+    ) as exc:
+        print(
+            f"::warning::could not fetch engine::triggers::info for {trigger_id}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def enrich_trigger_types_with_schemas(
+    trigger_types: list[dict[str, object]],
+    target_trigger_ids: list[str],
+    *,
+    fetch_detail=_fetch_trigger_detail,
+) -> list[dict[str, object]]:
+    """Merge each target trigger type's typed schemas into its `::list` row in place.
+
+    `engine::triggers::list` omits the schemas; only `engine::triggers::info`
+    exposes them (`configuration_schema`/`request_schema`/`response_schema`).
+    Without this enrichment every collected trigger schema normalizes to the
+    empty `{}` that surfaces as 'unknown' in the registry. Mirrors
+    `enrich_functions_with_schemas` for the trigger-type surface."""
+    rows_by_id = {t.get("id"): t for t in trigger_types if isinstance(t, dict)}
+    for trigger_id in target_trigger_ids:
+        row = rows_by_id.get(trigger_id)
+        if row is None:
+            continue
+        detail = fetch_detail(trigger_id)
+        if not isinstance(detail, dict):
+            continue
+        for key in (
+            "configuration_schema",
+            "request_schema",
+            "response_schema",
+            "description",
+        ):
+            value = detail.get(key)
+            if value is not None:
+                row[key] = value
+    return trigger_types
 
 
 def wait_for_worker(
@@ -213,6 +295,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
+            _warn_untyped_triggers(data.get("triggers") or [], args.assert_file)
         return 0
 
     if not args.worker:
@@ -261,6 +344,34 @@ def main() -> int:
 
     trigger_types_json = collect_trigger_types()
 
+    # `engine::triggers::list` carries no schemas — pull each publishable trigger
+    # type's typed schemas from `engine::triggers::info` and merge them into the
+    # rows before normalizing. Skip engine built-ins and trigger types already in
+    # the pre-worker baseline (they're dropped from the payload anyway), so we
+    # only spend `::info` calls on the worker's own trigger types.
+    if isinstance(trigger_types_json, dict):
+        collected_triggers = trigger_types_json.get("triggers")
+        if isinstance(collected_triggers, list):
+            baseline_trigger_ids = {
+                tt.get("id")
+                for tt in (
+                    baseline_json.get("triggers", [])
+                    if isinstance(baseline_json, dict)
+                    else []
+                )
+                if isinstance(tt, dict) and isinstance(tt.get("id"), str)
+            }
+            target_trigger_ids = [
+                tid
+                for t in collected_triggers
+                if isinstance(t, dict)
+                and isinstance((tid := t.get("id")), str)
+                and not tid.startswith("engine::")
+                and tid not in baseline_trigger_ids
+            ]
+            if target_trigger_ids:
+                enrich_trigger_types_with_schemas(collected_triggers, target_trigger_ids)
+
     interface = normalize_worker_interface(
         worker_name=args.worker,
         workers_json=workers_json,
@@ -290,6 +401,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
+            _warn_untyped_triggers(data.get("triggers") or [], args.out)
 
     return 0
 
