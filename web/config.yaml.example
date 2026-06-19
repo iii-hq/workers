@@ -1,0 +1,9 @@
+web:
+  default_timeout_ms: 30000
+  max_timeout_ms: 120000
+  default_response_bytes: 262144
+  max_response_bytes: 5242880
+  max_transform_bytes: 1048576
+  max_redirects: 5
+  user_agent: 'iii-harness/0.1 (+web::fetch)'
+  allow_loopback: true
