@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, WebConfig};
 use crate::fetch::execute_fetch;
-use crate::schemas::{request_schema, FetchPayload, TOOL_DESCRIPTION};
+use crate::schemas::{request_schema, response_schema, FetchPayload, TOOL_DESCRIPTION};
 
 /// Parse + validate + execute. Always returns an envelope (never errors).
 pub async fn handle(payload: Value, cfg: &WebConfig) -> Value {
@@ -46,7 +46,8 @@ pub fn register(iii: &Arc<III>, shared: &SharedConfig) {
             }
         })
         .description(TOOL_DESCRIPTION)
-        .request_format(request_schema()),
+        .request_format(request_schema())
+        .response_format(response_schema()),
     );
 }
 
