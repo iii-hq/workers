@@ -101,6 +101,28 @@ class TestValidateWorker:
         assert r.returncode != 0
         assert "deploy" in r.stdout + r.stderr
 
+    def test_binary_bin_name_mismatch_fails(self, tmp_path):
+        # A binary worker whose `bin` differs from the worker name ships a
+        # release archive the resolver can't find (web/v1.1.x regression).
+        repo = make_worker(tmp_path, "smoke", deploy="binary")
+        meta = repo / "smoke" / "iii.worker.yaml"
+        meta.write_text(meta.read_text() + "bin: iii-smoke\n")
+        init_git(repo)
+        r = run_script(repo, "smoke", source_changed=["smoke"])
+        assert r.returncode != 0, r.stdout + r.stderr
+        assert "iii-smoke" in r.stdout + r.stderr
+        assert "not found in archive" in r.stdout + r.stderr
+
+    def test_binary_bin_name_exception_allowlisted_passes(self, tmp_path):
+        # `acp` intentionally ships a user-facing `iii-acp` binary; the
+        # allowlist exempts it from the bin==name gate.
+        repo = make_worker(tmp_path, "acp", deploy="binary")
+        meta = repo / "acp" / "iii.worker.yaml"
+        meta.write_text(meta.read_text() + "bin: iii-acp\n")
+        init_git(repo)
+        r = run_script(repo, "acp", source_changed=["acp"])
+        assert r.returncode == 0, r.stdout + r.stderr
+
     def test_missing_name_field_fails(self, tmp_path):
         repo = make_worker(tmp_path, "smoke")
         meta = repo / "smoke" / "iii.worker.yaml"

@@ -3,7 +3,7 @@ name: web
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-web
+bin: web
 description: Outbound HTTP client on the iii bus (web::fetch).
 
 dependencies:
