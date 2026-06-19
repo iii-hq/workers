@@ -118,7 +118,7 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
       aria-label={`configuration ${entry.id}`}
     >
       <EditorHeader entry={entry} />
-      <div className="flex-1 overflow-y-auto flex flex-col">
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
         {valueQuery.isLoading ? <EditorLoading /> : null}
         {valueQuery.isError ? (
           <EditorError
@@ -129,7 +129,7 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
         ) : null}
         {!valueQuery.isLoading && !valueQuery.isError && draft !== undefined ? (
           <>
-            <div className="mx-auto max-w-3xl w-full px-6 py-8 flex-1">
+            <div className="mx-auto max-w-3xl w-full px-6 py-8">
               <SchemaForm
                 schema={entry.schema}
                 value={draft}

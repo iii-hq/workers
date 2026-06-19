@@ -66,6 +66,7 @@
   html,
   body {
     scrollbar-gutter: stable;
+    overflow: hidden;
   }
 
   body {

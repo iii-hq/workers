@@ -126,7 +126,8 @@ export function ConsoleSettingsTab({
   const [allowlistOpen, setAllowlistOpen] = useState(false)
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="mx-auto max-w-3xl px-6 py-10">
       <Section
         title="appearance"
         description="theme preference, stored per browser."
@@ -225,6 +226,7 @@ export function ConsoleSettingsTab({
           meta="credentials + settings live in the harness configuration (workers tab). the form's shape grows with each provider that registers; api keys are masked."
         />
       </Section>
+      </div>
     </div>
   )
 }
