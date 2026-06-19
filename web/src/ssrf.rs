@@ -4,7 +4,7 @@
 //! socket is pinned to the validated IP (see fetch.rs) to defeat DNS
 //! rebinding (TOCTOU between check and connect).
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::OnceLock;
 
 use ipnet::{Ipv4Net, Ipv6Net};
@@ -121,8 +121,6 @@ pub fn check_ip(addr: IpAddr, policy: &SsrfPolicy) -> Option<&'static str> {
     }
 }
 
-use std::net::SocketAddr;
-
 #[derive(Debug, Clone)]
 pub struct ResolvedTarget {
     pub address: IpAddr,
@@ -154,8 +152,8 @@ pub async fn check_target(
 ) -> Result<ResolvedTarget, SsrfReject> {
     let host = &target.hostname;
 
-    // Literal IP: skip DNS, check directly. `host_str()` already strips
-    // the brackets around a v6 literal.
+    // Literal IP short-circuit: skip DNS. Brackets were already stripped
+    // from IPv6 literals in parse_target.
     if let Ok(ip) = host.parse::<IpAddr>() {
         if let Some(label) = check_ip(ip, policy) {
             let hint = if label == "loopback" { loopback_hint(policy) } else { "" };

@@ -1,5 +1,5 @@
 //! Wire schema + tool description for `web::fetch`. `FetchPayload` derives
-//! `JsonSchema` (for `request_format`) and `Deserialize`. The handler takes
+//! `JsonSchema` (for `request_schema`) and `Deserialize`. The handler takes
 //! a raw `Value` and parses this so a bad payload returns `invalid_payload`
 //! rather than an SDK-level error (the SDK deserializes typed inputs before
 //! the handler runs).
