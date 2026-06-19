@@ -133,7 +133,7 @@ pub struct BootSignature {
 }
 
 fn default_max_turns() -> u32 {
-    16
+    500
 }
 fn default_pending_timeout_ms() -> u64 {
     1_800_000
@@ -223,7 +223,7 @@ mod tests {
     fn defaults_from_empty_object() {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         assert_eq!(cfg, WorkerConfig::default());
-        assert_eq!(cfg.default_max_turns, 16);
+        assert_eq!(cfg.default_max_turns, 500);
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 5);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
