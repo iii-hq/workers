@@ -321,7 +321,7 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
             // 3xx without Location: fall through and return the response.
         }
 
-        return shape_response(resp, page_format, response_format, &redirect_chain, cfg);
+        return shape_response(resp, page_format, response_format, &redirect_chain, cfg).await;
     }
 
     error_envelope(
@@ -330,7 +330,7 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
     )
 }
 
-fn shape_response(
+async fn shape_response(
     resp: RawResponse,
     page_format: Option<PageFormat>,
     response_format: ResponseFormat,
@@ -387,15 +387,23 @@ fn shape_response(
         let mut body = raw.clone();
         let mut transformed: Option<&str> = None;
         let within_cap = (resp.bytes.len() as u64) <= cfg.max_transform_bytes;
-        let depth_ok = within_cap && max_tag_depth(&raw) <= MAX_NESTING_DEPTH;
 
-        if is_html && within_cap && depth_ok && matches!(pf, PageFormat::Markdown | PageFormat::Text) {
-            let converted = match pf {
-                PageFormat::Markdown => html_to_markdown(&raw),
-                PageFormat::Text => Ok(extract_text(&raw)),
-                PageFormat::Html => unreachable!(),
-            };
-            if let Ok(text) = converted {
+        if is_html && within_cap && matches!(pf, PageFormat::Markdown | PageFormat::Text) {
+            let raw_clone = raw.clone();
+            let maybe_text: Option<String> = tokio::task::spawn_blocking(move || {
+                if max_tag_depth(&raw_clone) > MAX_NESTING_DEPTH {
+                    return None;
+                }
+                match pf {
+                    PageFormat::Markdown => html_to_markdown(&raw_clone).ok(),
+                    PageFormat::Text => Some(extract_text(&raw_clone)),
+                    PageFormat::Html => None,
+                }
+            })
+            .await
+            .unwrap_or(None);
+
+            if let Some(text) = maybe_text {
                 body = text;
                 transformed = Some(match pf {
                     PageFormat::Markdown => "markdown",
@@ -406,7 +414,7 @@ fn shape_response(
                     body.push_str("\n\n[Content truncated at max_bytes — the page continues beyond this point]");
                 }
             }
-            // On transform failure: keep raw body, leave transformed unset.
+            // On transform failure / over-depth / panic: keep raw body, leave transformed unset.
         }
 
         let mut out = json!({
