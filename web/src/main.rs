@@ -57,7 +57,14 @@ async fn main() -> Result<()> {
 
     // Optional YAML seed → initial_value on first registration.
     let seed = cli.config.as_deref().and_then(|path| {
-        match std::fs::read_to_string(path).ok().and_then(|s| serde_yaml::from_str::<serde_json::Value>(&s).ok()) {
+        let contents = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(path, error = %e, "failed to read seed config; ignoring");
+                return None;
+            }
+        };
+        match serde_yaml::from_str::<serde_json::Value>(&contents).ok() {
             Some(v) => match WebConfig::from_json(&v) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {

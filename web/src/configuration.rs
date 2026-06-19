@@ -125,6 +125,12 @@ async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Res
             Err(e) => {
                 last_err = e.to_string();
                 if attempt < CONFIG_RETRIES {
+                    tracing::warn!(
+                        function_id,
+                        attempt,
+                        error = %last_err,
+                        "configuration RPC failed; retrying"
+                    );
                     tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
                 }
             }
