@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures::StreamExt;
 
 use crate::config::WebConfig;
 use crate::schemas::{FetchPayload, ResponseFormat};
@@ -75,6 +76,30 @@ pub fn try_parse_json(text: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
 
+/// Read a byte stream up to `cap`, marking truncation. Once the cap is
+/// reached the result is terminal — a subsequent stream error (e.g. reset
+/// on drop) is ignored: the cap is the contract.
+pub async fn read_capped<S>(mut stream: S, cap: u64) -> (Vec<u8>, bool)
+where
+    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
+{
+    let cap = cap as usize;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(item) = stream.next().await {
+        let chunk = match item {
+            Ok(c) => c,
+            Err(_) => return (buf, false), // pre-cap transport error: surface as non-truncated; caller maps it
+        };
+        if buf.len() + chunk.len() > cap {
+            let remaining = cap.saturating_sub(buf.len());
+            buf.extend_from_slice(&chunk[..remaining]);
+            return (buf, true); // truncation is terminal; drop the stream
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    (buf, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +167,36 @@ mod tests {
     fn parse_json_ok_and_err() {
         assert!(try_parse_json("{\"a\":1}").is_ok());
         assert!(try_parse_json("not json").is_err());
+    }
+
+    #[tokio::test]
+    async fn read_capped_truncates_and_marks() {
+        let chunks: Vec<reqwest::Result<bytes::Bytes>> = vec![
+            Ok(bytes::Bytes::from_static(b"aaaa")),
+            Ok(bytes::Bytes::from_static(b"bbbb")),
+        ];
+        let (bytes, truncated) = read_capped(futures::stream::iter(chunks), 6).await;
+        assert_eq!(bytes, b"aaaabb");
+        assert!(truncated);
+    }
+
+    #[tokio::test]
+    async fn read_capped_full_under_cap() {
+        let chunks: Vec<reqwest::Result<bytes::Bytes>> =
+            vec![Ok(bytes::Bytes::from_static(b"hello"))];
+        let (bytes, truncated) = read_capped(futures::stream::iter(chunks), 100).await;
+        assert_eq!(bytes, b"hello");
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn read_capped_truncation_wins_over_later_error() {
+        // a chunk that overflows the cap, then an error that must be ignored
+        let chunks: Vec<reqwest::Result<bytes::Bytes>> = vec![
+            Ok(bytes::Bytes::from_static(b"aaaaaaaa")),
+        ];
+        let (bytes, truncated) = read_capped(futures::stream::iter(chunks), 4).await;
+        assert_eq!(bytes, b"aaaa");
+        assert!(truncated);
     }
 }

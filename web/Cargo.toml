@@ -34,6 +34,7 @@ htmd = "0.5"
 tl = { package = "astral-tl", version = "0.7" }
 ipnet = "2"
 base64 = "0.22"
+bytes = "1"
 
 [dev-dependencies]
 serde_json = "1"
@@ -41,3 +42,4 @@ tempfile = "3"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "net"] }
 futures = "0.3"
+bytes = "1"
