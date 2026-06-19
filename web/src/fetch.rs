@@ -4,12 +4,20 @@
 //! starts with the pure helpers.
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::StreamExt;
+use serde_json::{json, Value};
 
 use crate::config::WebConfig;
-use crate::schemas::{FetchPayload, ResponseFormat};
+use crate::convert::{
+    accept_header_for, extract_text, html_to_markdown, is_image_mime, is_viewable_image_mime,
+    max_tag_depth, ACCEPT_LANGUAGE, BROWSER_USER_AGENT, MAX_NESTING_DEPTH,
+};
+use crate::schemas::{FetchPayload, PageFormat, ResponseFormat};
+use crate::ssrf::{check_target, parse_target, SsrfPolicy};
 
 const DENY_ON_REDIRECT: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
@@ -98,6 +106,353 @@ where
         buf.extend_from_slice(&chunk);
     }
     (buf, false)
+}
+
+struct RawResponse {
+    status: u16,
+    status_text: String,
+    headers: BTreeMap<String, String>,
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+enum Outcome {
+    Response(RawResponse),
+    Timeout,
+    Transport(String),
+}
+
+fn error_envelope(code: &str, message: impl Into<String>) -> Value {
+    json!({ "ok": false, "error": code, "message": message.into() })
+}
+
+/// Flatten reqwest headers into a lower-cased string map, joining repeated
+/// headers (e.g. set-cookie) with ", ".
+fn flatten_headers(h: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (name, value) in h.iter() {
+        let k = name.as_str().to_lowercase();
+        let v = value.to_str().unwrap_or("").to_string();
+        out.entry(k)
+            .and_modify(|existing| {
+                existing.push_str(", ");
+                existing.push_str(&v);
+            })
+            .or_insert(v);
+    }
+    out
+}
+
+/// Drop any caller-supplied Host header so reqwest derives it from the URL.
+fn without_host(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("host"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// One HTTP request, pinned to `address`. SNI/cert/Host stay on the URL
+/// hostname; only the TCP target is overridden (DNS-rebinding defense).
+async fn perform_request(
+    target: &crate::ssrf::ParsedTarget,
+    address: SocketAddr,
+    method: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<&str>,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Outcome {
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(&target.hostname, address)
+        .pool_max_idle_per_host(0)
+        .timeout(timeout)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return Outcome::Transport(e.to_string()),
+    };
+
+    let m = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
+    let mut req = client.request(m, target.url.clone());
+    for (k, v) in without_host(headers) {
+        req = req.header(k, v);
+    }
+    if let Some(b) = body {
+        if method != "GET" && method != "HEAD" {
+            req = req.body(b.to_string());
+        }
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return if e.is_timeout() {
+                Outcome::Timeout
+            } else {
+                Outcome::Transport(e.to_string())
+            };
+        }
+    };
+
+    let status = resp.status().as_u16();
+    let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
+    let headers = flatten_headers(resp.headers());
+    // Box::pin so the `Unpin` bound on read_capped holds regardless of
+    // reqwest's internal stream type.
+    let (bytes, truncated) = read_capped(Box::pin(resp.bytes_stream()), max_bytes).await;
+    Outcome::Response(RawResponse { status, status_text, headers, bytes, truncated })
+}
+
+pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
+    let method = payload.normalized_method();
+    let follow_redirects = payload.follow_redirects.unwrap_or(true);
+    let page_format = payload.format;
+    let response_format = if page_format.is_some() {
+        ResponseFormat::Text
+    } else {
+        payload.response_format.unwrap_or(ResponseFormat::Text)
+    };
+    let timeout = Duration::from_millis(resolve_timeout(&payload, cfg));
+    let max_bytes = resolve_max_bytes(&payload, cfg);
+    let policy = SsrfPolicy { allow_loopback: cfg.allow_loopback };
+
+    let mut current_url = payload.url.clone();
+
+    // Build base headers: page mode injects a browser UA + Accept + Accept-Language
+    // for headers the caller didn't supply; otherwise the configured UA.
+    let caller_keys: std::collections::BTreeSet<String> = payload
+        .headers
+        .as_ref()
+        .map(|h| h.keys().map(|k| k.to_lowercase()).collect())
+        .unwrap_or_default();
+    let browser_ua_injected = page_format.is_some() && !caller_keys.contains("user-agent");
+
+    let mut base: BTreeMap<String, String> = BTreeMap::new();
+    base.insert(
+        "user-agent".to_string(),
+        if browser_ua_injected { BROWSER_USER_AGENT.to_string() } else { cfg.user_agent.clone() },
+    );
+    if let Some(f) = page_format {
+        if !caller_keys.contains("accept") {
+            base.insert("accept".to_string(), accept_header_for(f).to_string());
+        }
+        if !caller_keys.contains("accept-language") {
+            base.insert("accept-language".to_string(), ACCEPT_LANGUAGE.to_string());
+        }
+    }
+    if let Some(h) = &payload.headers {
+        for (k, v) in h {
+            base.insert(k.clone(), v.clone()); // caller wins
+        }
+    }
+    let (effective_body, mut current_headers) = apply_json_payload(&payload, base);
+
+    let mut redirect_chain: Vec<String> = Vec::new();
+
+    for hop in 0..=cfg.max_redirects {
+        let parsed = match parse_target(&current_url) {
+            Ok(p) => p,
+            Err(e) => return error_envelope("invalid_url", e),
+        };
+        let resolved = match check_target(&parsed, &policy).await {
+            Ok(r) => r,
+            Err(rej) => return error_envelope(rej.code, rej.message),
+        };
+        let socket = SocketAddr::new(resolved.address, resolved.port);
+
+        let mut outcome = perform_request(
+            &parsed, socket, &method, &current_headers, effective_body.as_deref(), timeout, max_bytes,
+        )
+        .await;
+
+        // Cloudflare cf-mitigated:challenge: retry the SAME hop once with the
+        // honest UA. Only when we injected the browser UA, GET/HEAD, 403+challenge.
+        if browser_ua_injected
+            && (method == "GET" || method == "HEAD")
+        {
+            if let Outcome::Response(r) = &outcome {
+                if r.status == 403 && r.headers.get("cf-mitigated").map(|s| s.as_str()) == Some("challenge") {
+                    let mut retry_headers = current_headers.clone();
+                    retry_headers.insert("user-agent".to_string(), cfg.user_agent.clone());
+                    outcome = perform_request(
+                        &parsed, socket, &method, &retry_headers, effective_body.as_deref(), timeout, max_bytes,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        let resp = match outcome {
+            Outcome::Timeout => {
+                return error_envelope(
+                    "timeout",
+                    format!("request timed out after {}ms (raise timeout_ms or shrink response with smaller max_bytes)", timeout.as_millis()),
+                );
+            }
+            Outcome::Transport(m) => return error_envelope("transport_error", m),
+            Outcome::Response(r) => r,
+        };
+
+        // Redirect handling.
+        if follow_redirects && (300..400).contains(&resp.status) {
+            if let Some(location) = resp.headers.get("location") {
+                let next = match parsed.url.join(location) {
+                    Ok(u) => u,
+                    Err(_) => {
+                        return error_envelope(
+                            "transport_error",
+                            format!("redirect target is not a valid URL: {location}"),
+                        );
+                    }
+                };
+                if hop == cfg.max_redirects {
+                    return error_envelope(
+                        "too_many_redirects",
+                        format!("exceeded max_redirects ({})", cfg.max_redirects),
+                    );
+                }
+                redirect_chain.push(current_url.clone());
+                current_headers = strip_cross_origin_auth(current_headers, &parsed.url, &next);
+                current_url = next.to_string();
+                continue;
+            }
+            // 3xx without Location: fall through and return the response.
+        }
+
+        return shape_response(resp, page_format, response_format, &redirect_chain, cfg);
+    }
+
+    error_envelope(
+        "too_many_redirects",
+        format!("exceeded max_redirects ({})", cfg.max_redirects),
+    )
+}
+
+fn shape_response(
+    resp: RawResponse,
+    page_format: Option<PageFormat>,
+    response_format: ResponseFormat,
+    redirect_chain: &[String],
+    cfg: &WebConfig,
+) -> Value {
+    if let Some(pf) = page_format {
+        let content_type = resp.headers.get("content-type").cloned().unwrap_or_default();
+        let mime = content_type.split(';').next().unwrap_or("").trim().to_lowercase();
+
+        if is_image_mime(&mime) {
+            let viewable = is_viewable_image_mime(&mime)
+                && (200..300).contains(&resp.status)
+                && !resp.truncated
+                && !resp.bytes.is_empty();
+            if viewable {
+                let mut details = json!({
+                    "ok": true,
+                    "status": resp.status,
+                    "status_text": resp.status_text,
+                    "content_type": mime,
+                    "bytes": resp.bytes.len(),
+                });
+                if !redirect_chain.is_empty() {
+                    details["redirect_chain"] = json!(redirect_chain);
+                }
+                return json!({
+                    "content": [
+                        { "type": "image", "mime": mime, "data": STANDARD.encode(&resp.bytes) },
+                        { "type": "text", "text": format!("Image fetched ({mime}, {} bytes)", resp.bytes.len()) },
+                    ],
+                    "details": details,
+                });
+            }
+            // Non-viewable image → base64 envelope.
+            let mut out = json!({
+                "ok": true,
+                "status": resp.status,
+                "status_text": resp.status_text,
+                "headers": resp.headers,
+                "body": STANDARD.encode(&resp.bytes),
+                "response_format": "base64",
+                "bytes_truncated": resp.truncated,
+                "content_type": mime,
+            });
+            if !redirect_chain.is_empty() {
+                out["redirect_chain"] = json!(redirect_chain);
+            }
+            return out;
+        }
+
+        let raw = String::from_utf8_lossy(&resp.bytes).into_owned();
+        let is_html = mime == "text/html" || mime == "application/xhtml+xml";
+        let mut body = raw.clone();
+        let mut transformed: Option<&str> = None;
+        let within_cap = (resp.bytes.len() as u64) <= cfg.max_transform_bytes;
+        let depth_ok = within_cap && max_tag_depth(&raw) <= MAX_NESTING_DEPTH;
+
+        if is_html && within_cap && depth_ok && matches!(pf, PageFormat::Markdown | PageFormat::Text) {
+            let converted = match pf {
+                PageFormat::Markdown => html_to_markdown(&raw),
+                PageFormat::Text => Ok(extract_text(&raw)),
+                PageFormat::Html => unreachable!(),
+            };
+            if let Ok(text) = converted {
+                body = text;
+                transformed = Some(match pf {
+                    PageFormat::Markdown => "markdown",
+                    PageFormat::Text => "text",
+                    PageFormat::Html => "html",
+                });
+                if resp.truncated {
+                    body.push_str("\n\n[Content truncated at max_bytes — the page continues beyond this point]");
+                }
+            }
+            // On transform failure: keep raw body, leave transformed unset.
+        }
+
+        let mut out = json!({
+            "ok": true,
+            "status": resp.status,
+            "status_text": resp.status_text,
+            "headers": resp.headers,
+            "body": body,
+            "response_format": "text",
+            "bytes_truncated": resp.truncated,
+            "content_type": mime,
+        });
+        if let Some(t) = transformed {
+            out["transformed"] = json!(t);
+        }
+        if !redirect_chain.is_empty() {
+            out["redirect_chain"] = json!(redirect_chain);
+        }
+        return out;
+    }
+
+    // Raw (non-page) mode.
+    let body = encode_body(&resp.bytes, response_format);
+    let mut out = json!({
+        "ok": true,
+        "status": resp.status,
+        "status_text": resp.status_text,
+        "headers": resp.headers,
+        "body": body,
+        "response_format": match response_format {
+            ResponseFormat::Text => "text",
+            ResponseFormat::Base64 => "base64",
+            ResponseFormat::Json => "json",
+        },
+        "bytes_truncated": resp.truncated,
+    });
+    if !redirect_chain.is_empty() {
+        out["redirect_chain"] = json!(redirect_chain);
+    }
+    if matches!(response_format, ResponseFormat::Json) && !resp.truncated {
+        match try_parse_json(&body) {
+            Ok(v) => out["json"] = v,
+            Err(e) => out["parse_error"] = json!(e),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
