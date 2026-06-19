@@ -19,7 +19,7 @@ on:
           - database
           - email
           - harness
-          - iii-directory
+          - directory
           - lsp
           - lsp-vscode
           - image-resize

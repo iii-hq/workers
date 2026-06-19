@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# End-to-end test for the iii-directory worker against REAL workers on
+# End-to-end test for the directory worker against REAL workers on
 # https://api.workers.iii.dev. Builds + installs the worker, generates an
 # absolute-path engine config from ./config.yaml, starts its own engine,
 # downloads real bundles, and ASSERTS every behavior. Exits 0 on all pass,
 # 1 otherwise.
 #
 #   ./run-tests.sh            # full run (builds + installs the worker first)
-#   ./run-tests.sh --no-build # reuse the iii-directory already in ~/.iii/workers
+#   ./run-tests.sh --no-build # reuse the directory already in ~/.iii/workers
 #   ./run-tests.sh --keep     # leave the engine running afterwards
 #   PORT=49210 ./run-tests.sh # use a non-default engine port
 set -uo pipefail
@@ -14,7 +14,7 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; cd "$ROOT_DIR"
 HERE="$ROOT_DIR"                                   # assertion body refers to $HERE / $GLOBAL
 PORT="${PORT:-49134}"
-# Worker source is two levels up: iii-directory/tests/e2e -> iii-directory.
+# Worker source is two levels up: directory/tests/e2e -> directory.
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 # Prefer iii on PATH, then the conventional install dir, then a local build.
 III="${III:-$(command -v iii 2>/dev/null \
@@ -50,11 +50,11 @@ iserr() { case "$2" in *Error:*|*'"type":"not_found"'*|*'invocation_failed'*) ok
 echo "==> setup"
 command -v jq >/dev/null 2>&1 || { echo "jq is required (brew install jq)"; exit 1; }
 if [ "$BUILD" = 1 ]; then
-  echo "    build + install iii-directory into $WORKERS_DIR"
+  echo "    build + install directory into $WORKERS_DIR"
   ( cd "$WORKER_SRC" && cargo build ) >"$REPORTS/build.log" 2>&1 || { echo "build failed:"; tail -20 "$REPORTS/build.log"; exit 1; }
-  mkdir -p "$WORKERS_DIR"; cp "$WORKER_SRC/target/debug/iii-directory" "$WORKERS_DIR/iii-directory"
+  mkdir -p "$WORKERS_DIR"; cp "$WORKER_SRC/target/debug/iii-directory" "$WORKERS_DIR/directory"
 fi
-[ -x "$WORKERS_DIR/iii-directory" ] || { echo "no iii-directory in $WORKERS_DIR (run without --no-build)"; exit 1; }
+[ -x "$WORKERS_DIR/directory" ] || { echo "no directory in $WORKERS_DIR (run without --no-build)"; exit 1; }
 
 # effective engine config: substitute this dir's ABSOLUTE path into config.yaml
 # (the engine doesn't guarantee the worker cwd, so skills_folder must be absolute).
@@ -93,14 +93,14 @@ ENGINE_PID=""
 teardown() {
   if [ "$KEEP" = 1 ]; then echo "    (--keep) engine left running pid=$ENGINE_PID on :$PORT"; return; fi
   [ -n "$ENGINE_PID" ] && kill "$ENGINE_PID" 2>/dev/null || true
-  pkill -f "$WORKERS_DIR/iii-directory" 2>/dev/null || true
+  pkill -f "$WORKERS_DIR/directory" 2>/dev/null || true
 }
 trap teardown EXIT INT TERM
 echo "    start engine: $III --config $ENGINE_CONFIG  (port $PORT)"
 "$III" --config "$ENGINE_CONFIG" >"$ENGINE_LOG" 2>&1 & ENGINE_PID=$!
 REG=no; for _ in $(seq 1 60); do trig directory::skills::list --json '{}' >/dev/null 2>&1 && { REG=yes; break; }; sleep 0.5; done
-[ "$REG" = yes ] || { echo "iii-directory did not register; engine log:"; tail -25 "$ENGINE_LOG"; exit 1; }
-echo "    iii-directory registered on :$PORT"
+[ "$REG" = yes ] || { echo "directory did not register; engine log:"; tail -25 "$ENGINE_LOG"; exit 1; }
+echo "    directory registered on :$PORT"
 
 # ── 0. boot reconcile: engine skill (iii) auto-downloaded on startup ─────────
 # auto_download:true makes the boot-reconcile task pull the engine's OWN `iii`
@@ -136,7 +136,7 @@ trig directory::skills::download worker=coder    >/dev/null
 [ -f "$GLOBAL/iii/SKILL.md" ]            && ok "on-disk: skills-home/iii/SKILL.md exists"        || no "on-disk: skills-home/iii/SKILL.md exists"
 [ ! -e "$GLOBAL/iii/skills/SKILL.md" ]  && ok "on-disk: NO skills-home/iii/skills/SKILL.md"     || no "on-disk: NO skills-home/iii/skills/SKILL.md"
 # the redundant-prefix bug would show as an IMMEDIATE <worker>/skills/ child (depth 2);
-# legit deep namespaces like iii-directory/directory/skills/ (depth 3) are fine.
+# legit deep namespaces like directory/directory/skills/ (depth 3) are fine.
 [ -z "$(find "$GLOBAL" -mindepth 2 -maxdepth 2 -type d -name skills 2>/dev/null)" ] && ok "on-disk: no redundant <worker>/skills/ prefix dirs" || no "on-disk: no redundant <worker>/skills/ prefix dirs"
 
 # ── 3. skills reads ──────────────────────────────────────────────────────────

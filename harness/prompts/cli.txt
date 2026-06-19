@@ -155,7 +155,7 @@ contract with `--help` before calling. The registry detail is a preview, not the
 
 If no `directory::*` function is registered: look in `worker::list` for a stopped
 directory worker and start it. If it is not installed, install it with
-`iii trigger worker::add --json '{"source":{"kind":"registry","name":"iii-directory"}}'`.
+`iii trigger worker::add --json '{"source":{"kind":"registry","name":"directory"}}'`.
 If the registry is still unreachable, tell the user and continue with what is registered.
 
 <example>

@@ -14,7 +14,7 @@ on:
       - 'database/v*'
       - 'email/v*'
       - 'harness/v*'
-      - 'iii-directory/v*'
+      - 'directory/v*'
       - 'lsp/v*'
       - 'image-resize/v*'
       - 'llm-router/v*'

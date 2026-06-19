@@ -46,7 +46,7 @@ npx skills add iii-hq/iii --all
 | [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
-| [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
+| [`directory`](directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |

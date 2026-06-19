@@ -16,7 +16,7 @@ after §2.
 - Pattern: `^[a-z0-9][a-z0-9_-]*$` (enforced by `TAG_RE` in
   [`.github/scripts/parse_release_tag.py`](../../.github/scripts/parse_release_tag.py)).
 - Do **not** prefix with `iii-` unless the worker itself is named that way
-  (e.g. `iii-directory`, `iii-lsp`).
+  (e.g. `directory`, `iii-lsp`).
 - Git release tags use the folder name: `<worker>/vX.Y.Z`.
 - **Function and trigger IDs** are `<worker>::<verb>`; multi-word segments use
   kebab-case, never snake_case (e.g. `context::count-tokens`,
@@ -106,7 +106,7 @@ step can fail **silently** (e.g. tag push triggers nothing).
 | 1 | [`.github/workflows/create-tag.yml`](../../.github/workflows/create-tag.yml) | Add worker to `inputs.worker.options` |
 | 2 | [`.github/workflows/release.yml`](../../.github/workflows/release.yml) | Add `'<worker>/v*'` to `on.push.tags` |
 | 3 | [`.github/scripts/parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py) | Add to `ALLOWED_WORKERS` **only if** the worker ships `skills/` and you want out-of-band skills publishing via [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) |
-| 4 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
+| 4 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `directory`) |
 
 **Worked example:** `session-manager` — added to `create-tag.yml` options and
 `release.yml` tag patterns. No `BOOTSTRAP_WORKERS` entry (not harness-bootstrapped).
@@ -137,7 +137,7 @@ Ship `skills/SKILL.md` when agents should discover **when** to use the worker
 (intent, boundaries, function catalogue — not JSON schemas). Author per
 [`DOCUMENTATION_GUIDELINES.md`](../../DOCUMENTATION_GUIDELINES.md).
 
-- **Bootstrap workers** (`shell`, `iii-directory`): `skills/SKILL.md` is
+- **Bootstrap workers** (`shell`, `directory`): `skills/SKILL.md` is
   **required** (≤ 256 KiB) — the harness stack expects these skills at boot.
 - **On release:** skills are auto-uploaded via `POST /w/<worker>/skills` when
   markdown is present; skipped cleanly when absent.

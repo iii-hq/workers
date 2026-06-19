@@ -1,5 +1,5 @@
 iii: v1
-name: iii-directory
+name: directory
 language: rust
 deploy: binary
 manifest: Cargo.toml

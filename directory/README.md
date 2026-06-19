@@ -1,4 +1,4 @@
-# iii-directory
+# directory
 
 Workers registry HTTP proxy and filesystem-backed skill + prompt
 reader for the [iii engine](https://github.com/iii-hq/iii). Every
@@ -50,7 +50,7 @@ registry view also surfaces publication metadata (`type`, `config`,
 ## Install
 
 ```bash
-iii worker add iii-directory
+iii worker add directory
 ```
 
 `iii worker add` fetches the binary, writes a config block into
@@ -61,10 +61,10 @@ iii worker add iii-directory
 
 ## Skills
 
-Install the `iii-directory` agent skill for Claude Code, Cursor, and 30+ other agents:
+Install the `directory` agent skill for Claude Code, Cursor, and 30+ other agents:
 
 ```bash
-npx skills add iii-hq/workers --skill iii-directory
+npx skills add iii-hq/workers --skill directory
 ```
 
 Browse or install every worker skill at once:
@@ -79,13 +79,13 @@ npx skills add iii-hq/workers --all
 ## Configuration
 
 Runtime settings live in the **`configuration` worker** under id
-**`iii-directory`** (the same pattern `database` and `storage` use). At boot
+**`directory`** (the same pattern `database` and `storage` use). At boot
 the worker registers its JSON Schema, reads the live value via
 `configuration::get` (the configuration worker env-expands `${VAR}`), and binds
 a `configuration` trigger so it re-fetches on change.
 
-Persisted values default to `./data/configuration/iii-directory.yaml` (fs
-adapter). Edit that file directly, call `configuration::set id=iii-directory`,
+Persisted values default to `./data/configuration/directory.yaml` (fs
+adapter). Edit that file directly, call `configuration::set id=directory`,
 or use the console Workers tab — all three propagate without a redeploy.
 
 ### Fields

@@ -16,7 +16,7 @@ Author per [`DOCUMENTATION_GUIDELINES.md`](../../DOCUMENTATION_GUIDELINES.md).
 
 | Case | Rule |
 |---|---|
-| Bootstrap workers (`shell`, `iii-directory`) | `skills/SKILL.md` **required**, non-empty, ≤ 256 KiB |
+| Bootstrap workers (`shell`, `directory`) | `skills/SKILL.md` **required**, non-empty, ≤ 256 KiB |
 | Other workers | Optional; validated only if present |
 
 Bootstrap list: `BOOTSTRAP_WORKERS` in

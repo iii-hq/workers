@@ -458,6 +458,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "directory"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "chrono",
+ "clap",
+ "cucumber",
+ "dirs",
+ "futures",
+ "glob",
+ "iii-sdk",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1070,34 +1098,6 @@ dependencies = [
  "same-file",
  "walkdir",
  "winapi-util",
-]
-
-[[package]]
-name = "iii-directory"
-version = "0.8.1"
-dependencies = [
- "anyhow",
- "arc-swap",
- "async-trait",
- "chrono",
- "clap",
- "cucumber",
- "dirs",
- "futures",
- "glob",
- "iii-sdk",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wiremock",
 ]
 
 [[package]]

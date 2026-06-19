@@ -1,6 +1,6 @@
 //! Step defs for `tests/features/read.feature`.
 //!
-//! Drives the read-side surface of the iii-directory worker
+//! Drives the read-side surface of the directory worker
 //! (`directory::skills::list`, `directory::skills::get`) against
 //! fixture files written directly into `skills_folder`. The legacy
 //! `iii://` URI scheme (rendered tree, function-backed sections,

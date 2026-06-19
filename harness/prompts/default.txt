@@ -129,7 +129,7 @@ Step 4. Check it worked: confirm the new function ids appear with
 
 If no `directory::*` function is registered: look in `worker::list` for a stopped
 directory worker and start it. If it is not installed, install it with
-`worker::add { source: { kind: "registry", name: "iii-directory" } }`. If the registry is
+`worker::add { source: { kind: "registry", name: "directory" } }`. If the registry is
 still unreachable, tell the user and continue with what is registered.
 
 <example>

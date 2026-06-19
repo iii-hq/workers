@@ -410,7 +410,7 @@ pub const ENGINE_NAMESPACE: &str = "iii";
 ///
 /// 1. It has no namespace separator (single-segment id like `index`) —
 ///    these are root/bundle docs that belong to everyone.
-/// 2. Its top namespace segment is `directory` — the iii-directory
+/// 2. Its top namespace segment is `directory` — the directory
 ///    worker's OWN docs namespace; always visible regardless of what
 ///    other workers are installed.
 /// 3. Its top namespace segment is `iii` — the engine's own skill
@@ -430,7 +430,7 @@ pub(crate) fn filter_to_registered(
             let top_seg = s.id.split('/').next().unwrap_or("");
             // Single-segment ids (no `/`) are root/bundle docs — always keep.
             !s.id.contains('/')
-                // The iii-directory worker's own docs namespace.
+                // The directory worker's own docs namespace.
                 || top_seg == "directory"
                 // The engine's own skill namespace (not a worker).
                 || top_seg == ENGINE_NAMESPACE
@@ -1914,7 +1914,7 @@ First paragraph.
     #[tokio::test]
     async fn get_suggests_nested_skill_id_on_two_segment_miss() {
         // Reported case: agent calls `directory::skills::get { id:
-        // "sandbox/exec" }` by analogy with the iii-directory layout
+        // "sandbox/exec" }` by analogy with the directory layout
         // (`directory/skills/get`), but the sandbox worker lays its
         // skills one folder deeper. The prose miss must name the
         // canonical id in its "Did you mean" list.
@@ -2351,8 +2351,8 @@ First paragraph.
                 "Memory tier.",
             ),
             entry(
-                "iii-directory/index",
-                "iii-directory",
+                "directory/index",
+                "directory",
                 Some("index"),
                 "Directory worker.",
             ),
@@ -2413,8 +2413,8 @@ First paragraph.
                 "Memory tier.",
             ),
             entry(
-                "iii-directory/index",
-                "iii-directory",
+                "directory/index",
+                "directory",
                 Some("index"),
                 "Directory worker.",
             ),
@@ -2425,14 +2425,14 @@ First paragraph.
             "expected exactly two `##` headings; got: {body}"
         );
         assert!(body.contains("\n## agent-memory\n"), "got: {body}");
-        assert!(body.contains("\n## iii-directory\n"), "got: {body}");
+        assert!(body.contains("\n## directory\n"), "got: {body}");
     }
 
     #[test]
     fn render_index_includes_description_paragraph() {
         let body = render_index_markdown(&[entry(
-            "iii-directory/index",
-            "iii-directory",
+            "directory/index",
+            "directory",
             Some("index"),
             "Engine introspection and filesystem-backed skill reader.",
         )]);
@@ -2440,7 +2440,7 @@ First paragraph.
         // separated by blank lines on either side.
         assert!(
             body.contains(
-                "\n## iii-directory\n\nEngine introspection and filesystem-backed skill reader.\n\nFull reference: call `directory::skills::get "
+                "\n## directory\n\nEngine introspection and filesystem-backed skill reader.\n\nFull reference: call `directory::skills::get "
             ),
             "description not framed correctly; got: {body}"
         );
@@ -2500,11 +2500,11 @@ First paragraph.
         // emits sections in the same order.
         let body = render_index_markdown(&[
             entry("agent-memory/index", "agent-memory", Some("index"), "a"),
-            entry("iii-directory/index", "iii-directory", Some("index"), "b"),
+            entry("directory/index", "directory", Some("index"), "b"),
             entry("resend/index", "resend", Some("index"), "c"),
         ]);
         let am = body.find("## agent-memory").expect("am missing");
-        let iii = body.find("## iii-directory").expect("iii missing");
+        let iii = body.find("## directory").expect("iii missing");
         let resend = body.find("## resend").expect("resend missing");
         assert!(
             am < iii && iii < resend,

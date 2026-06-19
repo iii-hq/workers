@@ -166,7 +166,7 @@ def test_surfaces_trigger_schemas_from_info_enriched_rows() -> None:
 
 
 def test_untyped_trigger_surfaces_empty_schema() -> None:
-    """A trigger type registered without a binding config (e.g. iii-directory's
+    """A trigger type registered without a binding config (e.g. directory's
     `directory::*::on-change`) has no schema in `::info` — normalize emits an
     empty `{}`, which the publish step warns (not errors) about."""
     interface = normalize_worker_interface(

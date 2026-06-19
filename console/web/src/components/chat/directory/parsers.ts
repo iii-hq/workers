@@ -1,7 +1,7 @@
 /**
- * Zod schemas for the `directory::*` namespace (iii-directory worker).
+ * Zod schemas for the `directory::*` namespace (directory worker).
  *
- * Wire source: `iii-directory/src/functions/*.rs`
+ * Wire source: `directory/src/functions/*.rs`
  *   - skills.rs        — directory::skills::list / get / index
  *   - download.rs      — directory::skills::download
  *   - prompts.rs       — directory::prompts::list / get

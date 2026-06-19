@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 /// User-agent string sent on every outbound HTTP request from this
-/// worker. Mirrors the `iii-directory/<version>` convention so the
+/// worker. Mirrors the `directory/<version>` convention so the
 /// registry can correlate traffic to a specific worker release.
 pub const HTTP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
