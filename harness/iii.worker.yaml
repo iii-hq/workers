@@ -19,4 +19,4 @@ dependencies:
   provider-anthropic: "^1.0.0"
   provider-openai: "^1.0.0"
   shell: "^0.5.0"
-  web: "^1.0.0"
+  web: "^1.1.1"
