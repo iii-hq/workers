@@ -5,6 +5,7 @@
 //! Standalone Rust port of the former `harness/src/web` TypeScript worker.
 
 pub mod config;
+pub mod convert;
 pub mod manifest;
 pub mod schemas;
 pub mod ssrf;
