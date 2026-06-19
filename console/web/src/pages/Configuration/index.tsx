@@ -46,7 +46,7 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
 
   return (
     <main
-      className="flex-1 overflow-y-auto flex flex-col min-h-0"
+      className="flex-1 overflow-hidden flex flex-col min-h-0"
       aria-label="configuration"
     >
       <div className="px-6 pt-8 pb-4 shrink-0">

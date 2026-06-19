@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import {
   mockValidate,
@@ -102,14 +102,6 @@ function WorkerConfigHarness() {
     }, SAVE_LATENCY_MS)
   }
 
-  useEffect(() => {
-    // we need to disable the overflow on the html element so the scrollbar is not shown
-    document.querySelector('html')?.style.setProperty('overflow', 'hidden')
-
-    return () => {
-      document.querySelector('html')?.style.setProperty('overflow', 'auto')
-    }
-  }, [])
 
   return (
     <div className="border border-rule bg-bg h-full">
@@ -149,8 +141,8 @@ function WorkerConfigHarness() {
                 </p>
               ) : null}
             </header>
-            <div className="flex-1 overflow-y-auto flex flex-col">
-              <div className="mx-auto max-w-3xl w-full px-6 py-8 flex-1">
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+              <div className="mx-auto max-w-3xl w-full px-6 py-8">
                 <SchemaForm
                   key={selectedView.id}
                   schema={selectedView.schema}
