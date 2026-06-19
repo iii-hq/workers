@@ -34,7 +34,10 @@ mod tests {
         assert_eq!(v["name"], env!("CARGO_PKG_NAME"));
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
         assert!(v["description"].as_str().is_some_and(|s| !s.is_empty()));
-        assert_eq!(v["default_config"]["user_agent"], "iii-harness/0.1 (+web::fetch)");
+        assert_eq!(
+            v["default_config"]["user_agent"],
+            "iii-harness/0.1 (+web::fetch)"
+        );
         assert!(!v["supported_targets"].as_array().unwrap().is_empty());
     }
 }

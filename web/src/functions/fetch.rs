@@ -18,7 +18,9 @@ use crate::schemas::{request_schema, FetchPayload, TOOL_DESCRIPTION};
 pub async fn handle(payload: Value, cfg: &WebConfig) -> Value {
     let parsed: FetchPayload = match serde_json::from_value(payload) {
         Ok(p) => p,
-        Err(e) => return json!({ "ok": false, "error": "invalid_payload", "message": e.to_string() }),
+        Err(e) => {
+            return json!({ "ok": false, "error": "invalid_payload", "message": e.to_string() })
+        }
     };
     if let Err(msg) = parsed.validate() {
         return json!({ "ok": false, "error": "invalid_payload", "message": msg });
@@ -62,13 +64,21 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_payload_bad_method() {
-        let out = handle(serde_json::json!({ "url": "https://x.test/", "method": "FETCH" }), &WebConfig::default()).await;
+        let out = handle(
+            serde_json::json!({ "url": "https://x.test/", "method": "FETCH" }),
+            &WebConfig::default(),
+        )
+        .await;
         assert_eq!(out["error"], "invalid_payload");
     }
 
     #[tokio::test]
     async fn invalid_url_scheme() {
-        let out = handle(serde_json::json!({ "url": "ftp://x.test/" }), &WebConfig::default()).await;
+        let out = handle(
+            serde_json::json!({ "url": "ftp://x.test/" }),
+            &WebConfig::default(),
+        )
+        .await;
         assert_eq!(out["error"], "invalid_url");
     }
 }

@@ -12,7 +12,10 @@ use web::config::WebConfig;
 use web::{configuration, functions, manifest};
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-web", about = "Outbound HTTP client on the iii bus (web::fetch).")]
+#[command(
+    name = "iii-web",
+    about = "Outbound HTTP client on the iii bus (web::fetch)."
+)]
 struct Cli {
     /// Optional YAML seed used to populate `initial_value` on first registration.
     #[arg(long)]
@@ -34,7 +37,10 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     if cli.manifest {
-        println!("{}", serde_json::to_string_pretty(&manifest::build_manifest()).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&manifest::build_manifest()).unwrap()
+        );
         return Ok(());
     }
 
@@ -93,8 +99,13 @@ async fn main() -> Result<()> {
 
     let shared = cfg.into_shared();
     functions::register_all(&iii, &shared);
-    configuration::register_config_trigger(&iii, configuration::SharedState { config: shared.clone() })
-        .context("registering configuration change trigger")?;
+    configuration::register_config_trigger(
+        &iii,
+        configuration::SharedState {
+            config: shared.clone(),
+        },
+    )
+    .context("registering configuration change trigger")?;
 
     tracing::info!("web ready: web::fetch + configuration hot-reload");
     tokio::signal::ctrl_c().await?;

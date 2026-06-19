@@ -23,7 +23,8 @@ pub struct ParsedTarget {
 
 /// Parse + validate scheme and host shape. No DNS.
 pub fn parse_target(raw: &str) -> Result<ParsedTarget, String> {
-    let url = reqwest::Url::parse(raw).map_err(|_| "url is not a valid absolute URL".to_string())?;
+    let url =
+        reqwest::Url::parse(raw).map_err(|_| "url is not a valid absolute URL".to_string())?;
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(format!(
@@ -42,7 +43,11 @@ pub fn parse_target(raw: &str) -> Result<ParsedTarget, String> {
     let port = url
         .port_or_known_default()
         .ok_or_else(|| "invalid port".to_string())?;
-    Ok(ParsedTarget { url, hostname, port })
+    Ok(ParsedTarget {
+        url,
+        hostname,
+        port,
+    })
 }
 
 static V4_BLOCKLIST: OnceLock<Vec<(Ipv4Net, &'static str)>> = OnceLock::new();
@@ -100,7 +105,11 @@ fn check_ipv6(addr: Ipv6Addr, policy: &SsrfPolicy) -> Option<&'static str> {
         return check_ipv4(v4, policy);
     }
     if addr == Ipv6Addr::LOCALHOST {
-        return if policy.allow_loopback { None } else { Some("loopback") };
+        return if policy.allow_loopback {
+            None
+        } else {
+            Some("loopback")
+        };
     }
     if addr == Ipv6Addr::UNSPECIFIED {
         return Some("unspecified");
@@ -156,25 +165,33 @@ pub async fn check_target(
     // from IPv6 literals in parse_target.
     if let Ok(ip) = host.parse::<IpAddr>() {
         if let Some(label) = check_ip(ip, policy) {
-            let hint = if label == "loopback" { loopback_hint(policy) } else { "" };
+            let hint = if label == "loopback" {
+                loopback_hint(policy)
+            } else {
+                ""
+            };
             return Err(SsrfReject {
                 code: "blocked_host",
                 message: format!("address {host} is in {label}{hint}"),
             });
         }
-        return Ok(ResolvedTarget { address: ip, hostname: host.clone(), port: target.port });
+        return Ok(ResolvedTarget {
+            address: ip,
+            hostname: host.clone(),
+            port: target.port,
+        });
     }
 
-    let resolved: Vec<SocketAddr> = match tokio::net::lookup_host((host.as_str(), target.port)).await
-    {
-        Ok(it) => it.collect(),
-        Err(e) => {
-            return Err(SsrfReject {
-                code: "blocked_host",
-                message: format!("dns lookup failed for {host}: {e}"),
-            });
-        }
-    };
+    let resolved: Vec<SocketAddr> =
+        match tokio::net::lookup_host((host.as_str(), target.port)).await {
+            Ok(it) => it.collect(),
+            Err(e) => {
+                return Err(SsrfReject {
+                    code: "blocked_host",
+                    message: format!("dns lookup failed for {host}: {e}"),
+                });
+            }
+        };
     if resolved.is_empty() {
         return Err(SsrfReject {
             code: "blocked_host",
@@ -184,7 +201,11 @@ pub async fn check_target(
 
     for sa in &resolved {
         if let Some(label) = check_ip(sa.ip(), policy) {
-            let hint = if label == "loopback" { loopback_hint(policy) } else { "" };
+            let hint = if label == "loopback" {
+                loopback_hint(policy)
+            } else {
+                ""
+            };
             return Err(SsrfReject {
                 code: "blocked_host",
                 message: format!(
@@ -208,12 +229,24 @@ mod tests {
     use std::net::IpAddr;
 
     fn blocked(ip: &str, allow_loopback: bool) -> Option<&'static str> {
-        check_ip(ip.parse::<IpAddr>().unwrap(), &SsrfPolicy { allow_loopback })
+        check_ip(
+            ip.parse::<IpAddr>().unwrap(),
+            &SsrfPolicy { allow_loopback },
+        )
     }
 
     #[test]
     fn blocks_private_v4_ranges() {
-        for ip in ["10.0.0.1", "172.16.5.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "240.0.0.1"] {
+        for ip in [
+            "10.0.0.1",
+            "172.16.5.5",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "240.0.0.1",
+        ] {
             assert!(blocked(ip, true).is_some(), "{ip} should be blocked");
         }
     }
@@ -267,7 +300,14 @@ mod tests {
     #[tokio::test]
     async fn check_target_literal_v4_public_ok() {
         let t = parse_target("http://1.1.1.1/").unwrap();
-        let r = check_target(&t, &SsrfPolicy { allow_loopback: true }).await.unwrap();
+        let r = check_target(
+            &t,
+            &SsrfPolicy {
+                allow_loopback: true,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(r.address, "1.1.1.1".parse::<std::net::IpAddr>().unwrap());
         assert_eq!(r.port, 80);
     }
@@ -275,14 +315,28 @@ mod tests {
     #[tokio::test]
     async fn check_target_literal_v4_private_blocked() {
         let t = parse_target("http://169.254.169.254/").unwrap();
-        let rej = check_target(&t, &SsrfPolicy { allow_loopback: true }).await.unwrap_err();
+        let rej = check_target(
+            &t,
+            &SsrfPolicy {
+                allow_loopback: true,
+            },
+        )
+        .await
+        .unwrap_err();
         assert_eq!(rej.code, "blocked_host");
     }
 
     #[tokio::test]
     async fn check_target_literal_v6_bracket_stripped_and_blocked() {
         let t = parse_target("http://[::1]/").unwrap();
-        let rej = check_target(&t, &SsrfPolicy { allow_loopback: false }).await.unwrap_err();
+        let rej = check_target(
+            &t,
+            &SsrfPolicy {
+                allow_loopback: false,
+            },
+        )
+        .await
+        .unwrap_err();
         assert_eq!(rej.code, "blocked_host");
         assert!(rej.message.contains("allow_loopback"));
     }

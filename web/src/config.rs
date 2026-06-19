@@ -88,7 +88,11 @@ mod tests {
 
     #[test]
     fn json_roundtrip() {
-        let c = WebConfig { max_redirects: 2, allow_loopback: false, ..WebConfig::default() };
+        let c = WebConfig {
+            max_redirects: 2,
+            allow_loopback: false,
+            ..WebConfig::default()
+        };
         let back = WebConfig::from_json(&c.to_json()).unwrap();
         assert_eq!(back.max_redirects, 2);
         assert!(!back.allow_loopback);

@@ -12,7 +12,14 @@ fn payload(j: serde_json::Value) -> FetchPayload {
 async fn refuses_when_resolution_is_private() {
     // A hostname that resolves to loopback; with allow_loopback=false it must be refused.
     let t = parse_target("http://localhost/").unwrap();
-    let rej = check_target(&t, &SsrfPolicy { allow_loopback: false }).await.unwrap_err();
+    let rej = check_target(
+        &t,
+        &SsrfPolicy {
+            allow_loopback: false,
+        },
+    )
+    .await
+    .unwrap_err();
     assert_eq!(rej.code, "blocked_host");
 }
 
@@ -24,7 +31,14 @@ async fn private_literal_blocked_end_to_end() {
         "http://[::1]/",
         "http://[::ffff:a9fe:a9fe]/",
     ] {
-        let out = execute_fetch(payload(json!({ "url": url })), &WebConfig { allow_loopback: false, ..WebConfig::default() }).await;
+        let out = execute_fetch(
+            payload(json!({ "url": url })),
+            &WebConfig {
+                allow_loopback: false,
+                ..WebConfig::default()
+            },
+        )
+        .await;
         assert_eq!(out["error"], "blocked_host", "{url} must be blocked");
     }
 }
@@ -36,10 +50,16 @@ async fn pinning_dials_validated_ip() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
     let server = MockServer::start().await;
-    Mock::given(method("GET")).and(path("/ok"))
+    Mock::given(method("GET"))
+        .and(path("/ok"))
         .respond_with(ResponseTemplate::new(200).set_body_string("pinned"))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
 
-    let out = execute_fetch(payload(json!({ "url": format!("{}/ok", server.uri()) })), &WebConfig::default()).await;
+    let out = execute_fetch(
+        payload(json!({ "url": format!("{}/ok", server.uri()) })),
+        &WebConfig::default(),
+    )
+    .await;
     assert_eq!(out["body"], "pinned");
 }

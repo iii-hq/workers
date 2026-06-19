@@ -87,7 +87,9 @@ pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIE
                 Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
-        .description("Internal: reload web settings from the authoritative configuration on change."),
+        .description(
+            "Internal: reload web settings from the authoritative configuration on change.",
+        ),
     );
 
     iii.register_trigger(RegisterTriggerInput {
@@ -136,5 +138,7 @@ async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Res
             }
         }
     }
-    Err(format!("{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"))
+    Err(format!(
+        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
+    ))
 }

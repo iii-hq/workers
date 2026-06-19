@@ -95,7 +95,8 @@ impl FetchPayload {
 }
 
 pub fn request_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(FetchPayload)).expect("FetchPayload schema serializes")
+    serde_json::to_value(schemars::schema_for!(FetchPayload))
+        .expect("FetchPayload schema serializes")
 }
 
 pub const TOOL_DESCRIPTION: &str = concat!(
@@ -139,21 +140,37 @@ mod tests {
 
     #[test]
     fn rejects_unknown_method() {
-        let p = payload(serde_json::json!({ "url": "https://x.test/", "method": "FETCH" })).unwrap();
+        let p =
+            payload(serde_json::json!({ "url": "https://x.test/", "method": "FETCH" })).unwrap();
         assert!(p.validate().is_err());
     }
 
     #[test]
     fn rejects_empty_url_and_nonpositive_caps() {
-        assert!(payload(serde_json::json!({ "url": "" })).unwrap().validate().is_err());
-        assert!(payload(serde_json::json!({ "url": "https://x/", "timeout_ms": 0 })).unwrap().validate().is_err());
-        assert!(payload(serde_json::json!({ "url": "https://x/", "max_bytes": 0 })).unwrap().validate().is_err());
+        assert!(payload(serde_json::json!({ "url": "" }))
+            .unwrap()
+            .validate()
+            .is_err());
+        assert!(
+            payload(serde_json::json!({ "url": "https://x/", "timeout_ms": 0 }))
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        assert!(
+            payload(serde_json::json!({ "url": "https://x/", "max_bytes": 0 }))
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
     fn rejects_unknown_enum_values() {
         assert!(payload(serde_json::json!({ "url": "https://x/", "format": "pdf" })).is_err());
-        assert!(payload(serde_json::json!({ "url": "https://x/", "response_format": "xml" })).is_err());
+        assert!(
+            payload(serde_json::json!({ "url": "https://x/", "response_format": "xml" })).is_err()
+        );
     }
 
     #[test]

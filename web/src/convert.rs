@@ -16,8 +16,25 @@ pub const MAX_NESTING_DEPTH: usize = 200;
 
 const SKIP_TAGS: [&str; 6] = ["script", "style", "noscript", "iframe", "object", "embed"];
 const BLOCK_TAGS: [&str; 19] = [
-    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "section", "article", "header",
-    "footer", "blockquote", "pre", "table", "ul", "ol",
+    "p",
+    "div",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "tr",
+    "section",
+    "article",
+    "header",
+    "footer",
+    "blockquote",
+    "pre",
+    "table",
+    "ul",
+    "ol",
 ];
 
 pub fn accept_header_for(format: PageFormat) -> &'static str {
@@ -37,7 +54,10 @@ pub fn is_image_mime(mime: &str) -> bool {
 }
 
 pub fn is_viewable_image_mime(mime: &str) -> bool {
-    matches!(mime, "image/jpeg" | "image/png" | "image/gif" | "image/webp")
+    matches!(
+        mime,
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+    )
 }
 
 /// Maximum tag-nesting depth, computed iteratively (no recursion, cannot
@@ -79,13 +99,20 @@ pub fn extract_text(html: &str) -> String {
     };
     let parser = dom.parser();
     let mut out = String::new();
-    let mut stack: Vec<Work> = dom.children().iter().rev().map(|h| Work::Enter(*h)).collect();
+    let mut stack: Vec<Work> = dom
+        .children()
+        .iter()
+        .rev()
+        .map(|h| Work::Enter(*h))
+        .collect();
 
     while let Some(item) = stack.pop() {
         match item {
             Work::CloseBlock => out.push('\n'),
             Work::Enter(handle) => {
-                let Some(node) = handle.get(parser) else { continue };
+                let Some(node) = handle.get(parser) else {
+                    continue;
+                };
                 match node {
                     tl::Node::Raw(bytes) => out.push_str(&bytes.as_utf8_str()),
                     tl::Node::Tag(tag) => {

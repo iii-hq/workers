@@ -23,7 +23,9 @@ const DENY_ON_REDIRECT: [&str; 3] = ["authorization", "cookie", "proxy-authoriza
 
 /// Default to `default_timeout_ms`, never exceed `max_timeout_ms`.
 pub fn resolve_timeout(p: &FetchPayload, cfg: &WebConfig) -> u64 {
-    p.timeout_ms.unwrap_or(cfg.default_timeout_ms).min(cfg.max_timeout_ms)
+    p.timeout_ms
+        .unwrap_or(cfg.default_timeout_ms)
+        .min(cfg.max_timeout_ms)
 }
 
 /// Raw fetches default to the hard ceiling; page mode defaults to the
@@ -46,7 +48,9 @@ pub fn apply_json_payload(
     let Some(json) = &p.json else {
         return (p.body.clone(), headers);
     };
-    let has_ct = headers.keys().any(|k| k.eq_ignore_ascii_case("content-type"));
+    let has_ct = headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("content-type"));
     if !has_ct {
         headers.insert("content-type".to_string(), "application/json".to_string());
     }
@@ -202,7 +206,13 @@ async fn perform_request(
     // Box::pin so the `Unpin` bound on read_capped holds regardless of
     // reqwest's internal stream type.
     let (bytes, truncated) = read_capped(Box::pin(resp.bytes_stream()), max_bytes).await;
-    Outcome::Response(RawResponse { status, status_text, headers, bytes, truncated })
+    Outcome::Response(RawResponse {
+        status,
+        status_text,
+        headers,
+        bytes,
+        truncated,
+    })
 }
 
 pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
@@ -216,7 +226,9 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
     };
     let timeout = Duration::from_millis(resolve_timeout(&payload, cfg));
     let max_bytes = resolve_max_bytes(&payload, cfg);
-    let policy = SsrfPolicy { allow_loopback: cfg.allow_loopback };
+    let policy = SsrfPolicy {
+        allow_loopback: cfg.allow_loopback,
+    };
 
     let mut current_url = payload.url.clone();
 
@@ -232,7 +244,11 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
     let mut base: BTreeMap<String, String> = BTreeMap::new();
     base.insert(
         "user-agent".to_string(),
-        if browser_ua_injected { BROWSER_USER_AGENT.to_string() } else { cfg.user_agent.clone() },
+        if browser_ua_injected {
+            BROWSER_USER_AGENT.to_string()
+        } else {
+            cfg.user_agent.clone()
+        },
     );
     if let Some(f) = page_format {
         if !caller_keys.contains("accept") {
@@ -263,21 +279,33 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
         let socket = SocketAddr::new(resolved.address, resolved.port);
 
         let mut outcome = perform_request(
-            &parsed, socket, &method, &current_headers, effective_body.as_deref(), timeout, max_bytes,
+            &parsed,
+            socket,
+            &method,
+            &current_headers,
+            effective_body.as_deref(),
+            timeout,
+            max_bytes,
         )
         .await;
 
         // Cloudflare cf-mitigated:challenge: retry the SAME hop once with the
         // honest UA. Only when we injected the browser UA, GET/HEAD, 403+challenge.
-        if browser_ua_injected
-            && (method == "GET" || method == "HEAD")
-        {
+        if browser_ua_injected && (method == "GET" || method == "HEAD") {
             if let Outcome::Response(r) = &outcome {
-                if r.status == 403 && r.headers.get("cf-mitigated").map(|s| s.as_str()) == Some("challenge") {
+                if r.status == 403
+                    && r.headers.get("cf-mitigated").map(|s| s.as_str()) == Some("challenge")
+                {
                     let mut retry_headers = current_headers.clone();
                     retry_headers.insert("user-agent".to_string(), cfg.user_agent.clone());
                     outcome = perform_request(
-                        &parsed, socket, &method, &retry_headers, effective_body.as_deref(), timeout, max_bytes,
+                        &parsed,
+                        socket,
+                        &method,
+                        &retry_headers,
+                        effective_body.as_deref(),
+                        timeout,
+                        max_bytes,
                     )
                     .await;
                 }
@@ -338,8 +366,17 @@ async fn shape_response(
     cfg: &WebConfig,
 ) -> Value {
     if let Some(pf) = page_format {
-        let content_type = resp.headers.get("content-type").cloned().unwrap_or_default();
-        let mime = content_type.split(';').next().unwrap_or("").trim().to_lowercase();
+        let content_type = resp
+            .headers
+            .get("content-type")
+            .cloned()
+            .unwrap_or_default();
+        let mime = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
 
         if is_image_mime(&mime) {
             let viewable = is_viewable_image_mime(&mime)
@@ -477,17 +514,38 @@ mod tests {
     #[test]
     fn timeout_defaults_and_caps() {
         let cfg = WebConfig::default();
-        assert_eq!(resolve_timeout(&p(serde_json::json!({"url":"x"})), &cfg), 30_000);
-        assert_eq!(resolve_timeout(&p(serde_json::json!({"url":"x","timeout_ms":5000})), &cfg), 5_000);
-        assert_eq!(resolve_timeout(&p(serde_json::json!({"url":"x","timeout_ms":999999})), &cfg), 120_000);
+        assert_eq!(
+            resolve_timeout(&p(serde_json::json!({"url":"x"})), &cfg),
+            30_000
+        );
+        assert_eq!(
+            resolve_timeout(&p(serde_json::json!({"url":"x","timeout_ms":5000})), &cfg),
+            5_000
+        );
+        assert_eq!(
+            resolve_timeout(&p(serde_json::json!({"url":"x","timeout_ms":999999})), &cfg),
+            120_000
+        );
     }
 
     #[test]
     fn max_bytes_defaults_by_page_mode() {
         let cfg = WebConfig::default();
-        assert_eq!(resolve_max_bytes(&p(serde_json::json!({"url":"x"})), &cfg), 5 * 1024 * 1024);
-        assert_eq!(resolve_max_bytes(&p(serde_json::json!({"url":"x","format":"markdown"})), &cfg), 256 * 1024);
-        assert_eq!(resolve_max_bytes(&p(serde_json::json!({"url":"x","max_bytes":999999999u64})), &cfg), 5 * 1024 * 1024);
+        assert_eq!(
+            resolve_max_bytes(&p(serde_json::json!({"url":"x"})), &cfg),
+            5 * 1024 * 1024
+        );
+        assert_eq!(
+            resolve_max_bytes(&p(serde_json::json!({"url":"x","format":"markdown"})), &cfg),
+            256 * 1024
+        );
+        assert_eq!(
+            resolve_max_bytes(
+                &p(serde_json::json!({"url":"x","max_bytes":999999999u64})),
+                &cfg
+            ),
+            5 * 1024 * 1024
+        );
     }
 
     #[test]
@@ -512,11 +570,23 @@ mod tests {
         let mut h = BTreeMap::new();
         h.insert("authorization".to_string(), "Bearer t".to_string());
         h.insert("cookie".to_string(), "s=1".to_string());
-        let same = strip_cross_origin_auth(h.clone(), &"https://a.test/".parse().unwrap(), &"https://a.test/2".parse().unwrap());
+        let same = strip_cross_origin_auth(
+            h.clone(),
+            &"https://a.test/".parse().unwrap(),
+            &"https://a.test/2".parse().unwrap(),
+        );
         assert!(same.contains_key("authorization"));
-        let cross = strip_cross_origin_auth(h.clone(), &"https://a.test/".parse().unwrap(), &"https://b.test/".parse().unwrap());
+        let cross = strip_cross_origin_auth(
+            h.clone(),
+            &"https://a.test/".parse().unwrap(),
+            &"https://b.test/".parse().unwrap(),
+        );
         assert!(!cross.contains_key("authorization"));
-        let downgrade = strip_cross_origin_auth(h, &"https://a.test/".parse().unwrap(), &"http://a.test/".parse().unwrap());
+        let downgrade = strip_cross_origin_auth(
+            h,
+            &"https://a.test/".parse().unwrap(),
+            &"http://a.test/".parse().unwrap(),
+        );
         assert!(!downgrade.contains_key("cookie"));
     }
 
@@ -555,9 +625,8 @@ mod tests {
     #[tokio::test]
     async fn read_capped_truncation_wins_over_later_error() {
         // a chunk that overflows the cap, then an error that must be ignored
-        let chunks: Vec<reqwest::Result<bytes::Bytes>> = vec![
-            Ok(bytes::Bytes::from_static(b"aaaaaaaa")),
-        ];
+        let chunks: Vec<reqwest::Result<bytes::Bytes>> =
+            vec![Ok(bytes::Bytes::from_static(b"aaaaaaaa"))];
         let (bytes, truncated) = read_capped(futures::stream::iter(chunks), 4).await;
         assert_eq!(bytes, b"aaaa");
         assert!(truncated);
