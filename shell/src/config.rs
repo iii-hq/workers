@@ -427,24 +427,35 @@ mod tests {
         assert!(err.contains("denylist"), "got: {err}");
     }
 
-    /// Loads the shipped `config.yaml` and asserts the default allowlist
-    /// preserves read-only env inspection (`printenv`) while rejecting the
-    /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
-    /// because `is_command_allowed` only checks argv[0]; with `env`
-    /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
-    /// Parses the YAML directly (skipping the fs-jail check,
-    /// which is unrelated to the allowlist policy under test).
+    /// Loads the shipped `config.yaml` and pins the permissive standard: an
+    /// empty allowlist means arbitrary commands are allowed (cargo/git/bash/…),
+    /// while the catastrophic-only denylist still trips on host-wrecking
+    /// patterns. Parses the YAML directly (skipping the fs-jail check, which is
+    /// unrelated to the exec policy under test).
     #[test]
-    fn shipped_config_blocks_env_exec_escape() {
+    fn shipped_config_is_open_exec_with_catastrophic_denylist() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
         let content = std::fs::read_to_string(path).expect("read config.yaml");
         let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
         c.compile_denylist().expect("denylist compiles");
-        assert!(c.is_command_allowed(&["printenv".into()]).is_ok());
+        // Empty allowlist == open: every command a coding agent needs is permitted.
+        assert!(c.allowlist.is_empty(), "shipped allowlist must be open (empty)");
+        for cmd in ["cargo", "git", "bash", "make", "node", "python3"] {
+            assert!(
+                c.is_command_allowed(&[cmd.into()]).is_ok(),
+                "open allowlist must permit {cmd}"
+            );
+        }
+        // The previously-blocked exec-escape (`env <cmd>`) is now permitted —
+        // the open allowlist is the point of this standard.
+        assert!(c
+            .is_command_allowed(&["env".into(), "nmap".into()])
+            .is_ok());
+        // The catastrophic denylist is still a live tripwire.
         let err = c
-            .is_command_allowed(&["env".into(), "nmap".into(), "host".into()])
-            .expect_err("env <cmd> must be rejected");
-        assert!(err.contains("not in allowlist"));
+            .is_command_allowed(&["rm".into(), "-rf".into(), "/".into()])
+            .expect_err("rm -rf / must still trip the denylist");
+        assert!(err.contains("denylist"), "got: {err}");
     }
 
     #[test]
