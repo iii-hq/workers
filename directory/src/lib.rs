@@ -1,4 +1,4 @@
-//! `iii-directory` — workers registry HTTP proxy and filesystem-backed
+//! `directory` — workers registry HTTP proxy and filesystem-backed
 //! skill + prompt reader. The binary in `src/main.rs` is a thin wrapper
 //! that wires the modules below to the iii engine.
 //!

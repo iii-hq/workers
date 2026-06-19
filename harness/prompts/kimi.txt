@@ -119,7 +119,7 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
    Registry detail is a preview, not the contract — fetch contracts via
    `engine::functions::info` as always. If no `directory::*` function is registered, check
    `worker::list` for a stopped directory worker and start it, or install it with
-   `worker::add { source: { kind: "registry", name: "iii-directory" } }`. If the registry is
+   `worker::add { source: { kind: "registry", name: "directory" } }`. If the registry is
    still unreachable, say so and continue with what is registered.
 5. When a task creates, edits, moves, or deletes code files, you MUST use the coder worker.
    Verify it with `engine::functions::list { prefix: "coder::" }`. If it is missing, install

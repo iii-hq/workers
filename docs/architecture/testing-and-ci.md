@@ -37,7 +37,7 @@ version/tests/README gates downgrade to GitHub notices.
 2. `iii.worker.yaml` parses with required fields
 3. Manifest version ≥ version on base branch
 4. `tests/` exists and is non-empty
-5. Bootstrap workers (`shell`, `iii-directory`): `skills/SKILL.md` present,
+5. Bootstrap workers (`shell`, `directory`): `skills/SKILL.md` present,
    non-empty, ≤ 256 KiB
 
 ## Language jobs

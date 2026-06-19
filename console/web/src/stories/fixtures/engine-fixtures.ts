@@ -67,7 +67,7 @@ export const engineFunctionsListDone = base(
 export const engineFunctionsListEmpty = base(
   'engine-fn-list-empty',
   'engine::functions::list',
-  { worker: 'iii-directory', search: 'nonexistent' },
+  { worker: 'directory', search: 'nonexistent' },
   { functions: [] },
 )
 
@@ -79,12 +79,12 @@ export const engineFunctionsListRaw = base(
     functions: [
       {
         function_id: 'directory::skills::download',
-        worker_name: 'iii-directory',
+        worker_name: 'directory',
         description: 'Download skill bundle from the registry',
       },
       {
         function_id: 'directory::skills::list',
-        worker_name: 'iii-directory',
+        worker_name: 'directory',
         // description intentionally omitted for visual variance
       },
     ],
@@ -193,13 +193,13 @@ export const engineTriggersListDone = base(
       },
       {
         id: 'directory::prompts::on-change',
-        worker_name: 'iii-directory',
+        worker_name: 'directory',
         description:
           'Fires after every successful directory::skills::download that wrote at least one prompt.',
       },
       {
         id: 'directory::skills::on-change',
-        worker_name: 'iii-directory',
+        worker_name: 'directory',
         description:
           'Fires after every successful directory::skills::download that wrote at least one skill.',
       },
@@ -251,14 +251,14 @@ export const engineRegisteredTriggersListDone = base(
 export const engineRegisteredTriggersListPlainSummary = base(
   'engine-reg-tr-plain',
   'engine::registered-triggers::list',
-  { worker: 'iii-directory' },
+  { worker: 'directory' },
   {
     registered_triggers: [
       {
         id: 'a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d',
         trigger_type: 'log',
         function_id: 'directory::log::watch',
-        worker_name: 'iii-directory',
+        worker_name: 'directory',
         config_summary: 'level=info, source=stdout',
       },
     ],
@@ -327,7 +327,7 @@ export const engineWorkersListDone = base(
       },
       {
         id: '00000000-0000-0000-0000-000000000aaa',
-        name: 'iii-directory',
+        name: 'directory',
         description: null,
         version: '0.1.5',
         runtime: 'rust',
@@ -365,7 +365,7 @@ export const engineWorkersListFiltered = base(
     workers: [
       {
         id: '00000000-0000-0000-0000-000000000aaa',
-        name: 'iii-directory',
+        name: 'directory',
         description: null,
         version: '0.1.5',
         runtime: 'rust',

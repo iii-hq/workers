@@ -22,7 +22,7 @@ use iii_sdk::III;
 use tokio::sync::OnceCell;
 use wiremock::MockServer;
 
-use iii_directory::{
+use directory::{
     config::SkillsConfig,
     functions,
     trigger_types::{self, RegisteredTriggerTypes},

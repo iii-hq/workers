@@ -45,7 +45,7 @@ def _typed_schema_violations(functions: list[dict[str, object]]) -> list[str]:
 def _untyped_trigger_names(triggers: list[dict[str, object]]) -> list[str]:
     """Trigger names whose `invocation_schema` is the empty/AnyValue ('unknown')
     schema. Unlike functions, a schema-less trigger is NOT a hard publish blocker:
-    some trigger types legitimately take no binding config (e.g. iii-directory's
+    some trigger types legitimately take no binding config (e.g. directory's
     `directory::*::on-change`), so callers warn rather than fail."""
     names: list[str] = []
     for trigger in triggers:

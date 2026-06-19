@@ -199,7 +199,7 @@ impl SkillsConfig {
     }
 
     /// JSON Schema registered with the `configuration` worker so the
-    /// console can render an editor for the `iii-directory` entry.
+    /// console can render an editor for the `directory` entry.
     pub fn json_schema() -> Value {
         let root = schemars::schema_for!(SkillsConfig);
         let mut schema =

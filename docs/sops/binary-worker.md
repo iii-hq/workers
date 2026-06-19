@@ -517,7 +517,7 @@ Every function's request **and** response must be a concrete type deriving
 SDK emit the permissive `AnyValue` schema, which ships to the registry as an
 **"unknown"** request/response schema — the exact failure this rule prevents.
 The reference shape is
-[`iii-directory/src/functions/download.rs`](../../iii-directory/src/functions/download.rs):
+[`directory/src/functions/download.rs`](../../directory/src/functions/download.rs):
 a typed input struct as the closure parameter (`move |req: RepoDownloadInput|`)
 plus a typed return type. (That file predates the `<worker>::<verb>` naming
 convention above; copy its *schema* pattern, not its function ids.)

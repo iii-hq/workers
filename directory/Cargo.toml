@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "iii-directory"
+name = "directory"
 version = "1.0.0"
 edition = "2021"
 publish = false
@@ -11,7 +11,7 @@ name = "iii-directory"
 path = "src/main.rs"
 
 [lib]
-name = "iii_directory"
+name = "directory"
 path = "src/lib.rs"
 
 [dependencies]

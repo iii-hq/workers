@@ -437,7 +437,7 @@ mod tests {
     fn write_response_dedupes_stale_index_when_skill_md_present() {
         let tmp = tempfile::tempdir().unwrap();
         let response = WorkerSkillsResponse {
-            name: Some("iii-directory".into()),
+            name: Some("directory".into()),
             version: None,
             skills: vec![
                 SkillEntry {
@@ -451,11 +451,11 @@ mod tests {
             ],
             prompts: vec![],
         };
-        let result = write_response("iii-directory", response, tmp.path()).unwrap();
-        assert!(tmp.path().join("iii-directory/SKILL.md").is_file());
-        assert!(!tmp.path().join("iii-directory/index.md").exists());
+        let result = write_response("directory", response, tmp.path()).unwrap();
+        assert!(tmp.path().join("directory/SKILL.md").is_file());
+        assert!(!tmp.path().join("directory/index.md").exists());
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("iii-directory/SKILL.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("directory/SKILL.md")).unwrap(),
             "# canonical\n"
         );
         assert_eq!(result.skills_written, vec!["SKILL.md"]);

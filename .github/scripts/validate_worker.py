@@ -8,7 +8,7 @@ Enforces:
     4. tests/ exists and is non-empty.
     5. For workers in BOOTSTRAP_WORKERS, skills/SKILL.md exists, is non-empty,
        and is within the 256 KiB cap — the harness bootstraps these onto disk via
-       iii-directory on first boot; a missing or oversized file breaks the
+       directory on first boot; a missing or oversized file breaks the
        chat surface's orientation.
 
 If `--worker` is not in `--source-changed`, requirements 1, 3, and 4 are
@@ -33,7 +33,7 @@ import _lib  # noqa: E402
 # skills/SKILL.md a hard PR gate. Keep in sync with what the harness
 # actually bootstraps.
 BOOTSTRAP_WORKERS = frozenset({
-    "iii-directory",
+    "directory",
     "shell",
 })
 

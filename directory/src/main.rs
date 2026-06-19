@@ -32,16 +32,14 @@ use iii_sdk::{
 };
 use serde_json::json;
 
-use iii_directory::config::{SharedConfig, SkillsConfig};
-use iii_directory::functions::download::{
-    download_worker_skills, reconcile_decision, InFlightGuard,
-};
-use iii_directory::functions::registry::RegistryCache;
-use iii_directory::functions::skills::{
+use directory::config::{SharedConfig, SkillsConfig};
+use directory::functions::download::{download_worker_skills, reconcile_decision, InFlightGuard};
+use directory::functions::registry::RegistryCache;
+use directory::functions::skills::{
     make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
-use iii_directory::sources::registry::VersionSpec;
-use iii_directory::{configuration, functions, manifest, trigger_types};
+use directory::sources::registry::VersionSpec;
+use directory::{configuration, functions, manifest, trigger_types};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -51,7 +49,7 @@ use iii_directory::{configuration, functions, manifest, trigger_types};
 struct Cli {
     /// Optional YAML seed used to populate `initial_value` on the first
     /// `configuration::register`. After first boot the authoritative config
-    /// lives in the `configuration` worker under id `iii-directory`.
+    /// lives in the `configuration` worker under id `directory`.
     #[arg(long)]
     config: Option<String>,
 
@@ -86,7 +84,7 @@ async fn main() -> Result<()> {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                name: "iii-directory".to_string(),
+                name: "directory".to_string(),
                 os: std::env::consts::OS.to_string(),
                 pid: Some(std::process::id()),
                 telemetry: None,
@@ -122,11 +120,11 @@ async fn main() -> Result<()> {
     configuration::register_config(&iii, seed.as_ref())
         .await
         .map_err(anyhow::Error::msg)
-        .context("registering iii-directory configuration schema")?;
+        .context("registering directory configuration schema")?;
     let cfg = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)
-        .context("loading iii-directory configuration")?;
+        .context("loading directory configuration")?;
 
     tracing::info!(
         skills_folder = %cfg.resolved_skills_folder().display(),
@@ -186,13 +184,13 @@ async fn main() -> Result<()> {
 
     let fn_count = if auto_download { 10 } else { 9 };
     tracing::info!(
-        "iii-directory ready: {} directory::* functions + 2 custom trigger types + \
+        "directory ready: {} directory::* functions + 2 custom trigger types + \
          configuration hot-reload",
         fn_count
     );
 
     tokio::signal::ctrl_c().await?;
-    tracing::info!("iii-directory shutting down");
+    tracing::info!("directory shutting down");
     iii.shutdown_async().await;
     Ok(())
 }

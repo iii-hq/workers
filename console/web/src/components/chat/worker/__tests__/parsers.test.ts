@@ -63,7 +63,7 @@ describe('worker::list', () => {
     const payload = {
       workers: [
         { name: 'iii-worker-manager', pid: null, running: true },
-        { name: 'iii-directory', pid: 19052, running: true, version: '0.5.2' },
+        { name: 'directory', pid: 19052, running: true, version: '0.5.2' },
         { name: 'iii-stream', pid: null, running: true, version: '0.11.6' },
       ],
     }

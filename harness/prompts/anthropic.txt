@@ -144,7 +144,7 @@ confirm the new function ids appear via `engine::functions::list { prefix: "<wor
 and fetch each contract with `engine::functions::info` as usual — registry detail is
 a preview, not the contract. If no `directory::*` function is registered, check
 `worker::list` for an installed-but-stopped directory worker and `worker::start` it;
-failing that, install it with `worker::add { source: { kind: "registry", name: "iii-directory" } }`.
+failing that, install it with `worker::add { source: { kind: "registry", name: "directory" } }`.
 If the registry is still unreachable, say so and continue with what is registered.
 
 <example>

@@ -1,4 +1,4 @@
-//! Function registrations for `iii-directory` (formerly `skills` / `engine-catalog`).
+//! Function registrations for `directory` (formerly `skills` / `engine-catalog`).
 //!
 //! All public functions sit under a single `directory::*` namespace,
 //! split into three sub-namespaces:
@@ -55,7 +55,7 @@ pub fn register_all(iii: &Arc<III>, cfg: &SharedConfig, trigger_types: &Register
     registry::register(iii, cfg);
     engine_fn::register(iii);
     tracing::info!(
-        "iii-directory registered 3 directory::skills::* (list + get + index), \
+        "directory registered 3 directory::skills::* (list + get + index), \
          2 directory::prompts::* (list + get), 1 directory::skills::download, \
          2 directory::registry::workers::*, and 1 directory::engine::functions::info"
     );
@@ -75,7 +75,7 @@ pub fn register_all_with_cache(
     registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
     tracing::info!(
-        "iii-directory registered 3 directory::skills::* (list + get + index), \
+        "directory registered 3 directory::skills::* (list + get + index), \
          2 directory::prompts::* (list + get), 1 directory::skills::download, \
          2 directory::registry::workers::*, and 1 directory::engine::functions::info"
     );

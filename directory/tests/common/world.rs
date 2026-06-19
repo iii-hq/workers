@@ -17,7 +17,7 @@ use cucumber::World;
 use iii_sdk::III;
 use serde_json::Value;
 
-use iii_directory::config::SkillsConfig;
+use directory::config::SkillsConfig;
 
 #[derive(World)]
 #[world(init = Self::new)]

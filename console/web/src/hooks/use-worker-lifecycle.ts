@@ -8,7 +8,7 @@ import { getIiiClient } from '@/lib/iii-client'
  * own terminal.
  *
  * IMPORTANT: the engine `worker` trigger filters on BOTH `operations` and
- * `stages`. The only working subscriber in the tree (the Rust `iii-directory`
+ * `stages`. The only working subscriber in the tree (the Rust `directory`
  * worker) always sets both; omitting `stages` matches no events, so this hook
  * always sends a stage filter (defaulting to the full lifecycle).
  *

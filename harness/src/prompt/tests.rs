@@ -126,7 +126,7 @@ fn registry_flow() {
 #[test]
 fn directory_bootstrap_degrade() {
     let out = default_prompt();
-    assert!(out.contains("name: \"iii-directory\""));
+    assert!(out.contains("name: \"directory\""));
     assert!(out.contains("continue with what is registered"));
 }
 
@@ -322,7 +322,7 @@ fn capability_ladder_ordering() {
 
 #[test]
 fn default_variant_matches_legacy_default_body() {
-    assert_eq!(variants::DEFAULT.len(), 12_005);
+    assert_eq!(variants::DEFAULT.len(), 12_001);
 }
 
 fn extract_directory_ids(text: &str) -> Vec<String> {

@@ -1,6 +1,6 @@
-# iii-directory worker — end-to-end harness
+# directory worker — end-to-end harness
 
-Self-asserting smoke harness for the `iii-directory` worker. Builds + installs
+Self-asserting smoke harness for the `directory` worker. Builds + installs
 the worker, starts its own iii engine, downloads **real** worker bundles from
 the public registry (https://api.workers.iii.dev), and asserts every
 `directory::*` behavior with one command. Exits 0 on PASS, 1 on any FAIL.
@@ -23,12 +23,12 @@ downloads, the prose error contract (`D110` / `D112` / `D210` / `D310` /
 
 ```sh
 ./run-tests.sh              # build + install the worker, then run the full suite
-./run-tests.sh --no-build   # reuse the iii-directory already in ~/.iii/workers
+./run-tests.sh --no-build   # reuse the directory already in ~/.iii/workers
 ./run-tests.sh --keep       # leave the engine running afterwards (debugging)
 PORT=49210 ./run-tests.sh   # use a non-default engine port
 ```
 
-Builds `iii-directory` (debug), copies it to `~/.iii/workers/iii-directory`,
+Builds `directory` (debug), copies it to `~/.iii/workers/directory`,
 substitutes `config.yaml` into `reports/engine-config.yaml` (absolute paths),
 starts the engine, lays down local-override fixtures under `.iii/skills/`,
 downloads `shell` / `database` / `coder` / `iii`, and runs every assertion.

@@ -8,11 +8,11 @@ Run allowlisted Unix commands, background jobs, and structured filesystem operat
 iii worker add shell
 ```
 
-Sandbox-targeted execution and `shell::fs::*` forwarding need the `iii-sandbox` worker; `iii worker add shell` does not pull it in. To surface `shell::*` to LLM agents, pair with `iii-directory`:
+Sandbox-targeted execution and `shell::fs::*` forwarding need the `iii-sandbox` worker; `iii worker add shell` does not pull it in. To surface `shell::*` to LLM agents, pair with `directory`:
 
 ```sh
 iii worker add iii-sandbox
-iii worker add iii-directory
+iii worker add directory
 ```
 
 ## Skills

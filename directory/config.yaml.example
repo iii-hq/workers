@@ -1,15 +1,15 @@
 # Optional seed file for first-time registration
 # (`iii-directory --config ./config.yaml.example`).
 #
-# As of this version, iii-directory's runtime config lives in the
-# `configuration` worker under id `iii-directory` (the same pattern
+# As of this version, directory's runtime config lives in the
+# `configuration` worker under id `directory` (the same pattern
 # `database` and `storage` use). This file is only a SEED: when the worker
 # is launched with `--config <this file>` AND no value is yet stored for id
-# `iii-directory`, its contents are passed as `initial_value` on
+# `directory`, its contents are passed as `initial_value` on
 # `configuration::register` (the configuration worker env-expands `${VAR}`).
 # After that first register the stored value is authoritative; edit it with
-# `configuration::set id=iii-directory` (or the console Workers tab), or by
-# editing `./data/configuration/iii-directory.yaml` directly.
+# `configuration::set id=directory` (or the console Workers tab), or by
+# editing `./data/configuration/directory.yaml` directly.
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
 # registry_cache_ttl_ms, filter_unregistered). Topology fields require a

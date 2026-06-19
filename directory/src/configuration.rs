@@ -1,5 +1,5 @@
 //! Integration with the `configuration` worker — register, fetch, and
-//! hot-reload the `iii-directory` configuration entry.
+//! hot-reload the `directory` configuration entry.
 //!
 //! Mirrors the `database` worker's pattern: register a JSON Schema + seed
 //! at boot, read the authoritative (env-expanded) value via
@@ -23,7 +23,7 @@ use crate::config::{SharedConfig, SkillsConfig, Topology};
 use crate::functions::registry::RegistryCache;
 use crate::functions::skills::RegisteredWorkersCache;
 
-pub const CONFIG_ID: &str = "iii-directory";
+pub const CONFIG_ID: &str = "directory";
 const CONFIG_FN_ID: &str = "directory::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -64,15 +64,15 @@ impl SharedState {
     }
 }
 
-/// Register the `iii-directory` configuration schema with the configuration
+/// Register the `directory` configuration schema with the configuration
 /// worker. When `seed` is present, its value is installed as `initial_value`.
 /// Otherwise, built-in defaults are seeded only when no stored value exists.
 pub async fn register_config(iii: &III, seed: Option<&SkillsConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
-        "name": "iii-directory",
+        "name": "directory",
         "description": "Skills/prompts folders, workers-registry URL, download timeouts, \
-                        and skill-visibility filters for the iii-directory worker.",
+                        and skill-visibility filters for the directory worker.",
         "schema": SkillsConfig::json_schema(),
     });
     if let Some(seed) = seed {
@@ -84,7 +84,7 @@ pub async fn register_config(iii: &III, seed: Option<&SkillsConfig>) -> Result<(
     Ok(())
 }
 
-/// Read the live `iii-directory` configuration (env-expanded by the
+/// Read the live `directory` configuration (env-expanded by the
 /// configuration worker).
 pub async fn fetch_config(iii: &III) -> Result<SkillsConfig, String> {
     let value = get_config_value(iii).await?;
@@ -142,7 +142,7 @@ struct OnConfigChangeResponse {
 }
 
 /// Register the internal config-change handler and bind a `configuration`
-/// trigger for `configuration:updated` on the `iii-directory` entry.
+/// trigger for `configuration:updated` on the `directory` entry.
 pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIError> {
     let st = state.clone();
     let engine = iii.clone();
@@ -157,7 +157,7 @@ pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIE
             }
         })
         .description(
-            "Internal: reload tunable iii-directory settings from the authoritative \
+            "Internal: reload tunable directory settings from the authoritative \
              configuration when it changes.",
         ),
     );
@@ -201,7 +201,7 @@ async fn on_config_change(iii: &III, state: &SharedState) {
         return;
     }
     apply_config(state, cfg).await;
-    tracing::info!("iii-directory configuration reloaded (tunable fields applied; caches cleared)");
+    tracing::info!("directory configuration reloaded (tunable fields applied; caches cleared)");
 }
 
 async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {

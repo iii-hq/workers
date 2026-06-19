@@ -1,5 +1,5 @@
 ---
-name: iii-directory
+name: directory
 description: >-
   Discovery entry point for the engine — read the skill and prompt docs that
   installed workers ship off local disk, browse the public iii workers registry
@@ -7,7 +7,7 @@ description: >-
   which workers exist and how to call them.
 ---
 
-# iii-directory
+# directory
 
 The directory worker is how an agent finds its way around the engine. It does
 three things: serves the markdown docs installed workers ship (`directory::skills::*`),

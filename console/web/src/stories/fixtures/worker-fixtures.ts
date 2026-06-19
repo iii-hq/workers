@@ -31,7 +31,7 @@ function base(
 /* ---------------- worker::list ---------------- */
 
 /** Mirrors the user's screenshot: 7+ workers, mix of running engine builtins
- * (null pid, null version) and a managed iii-directory with a real pid. */
+ * (null pid, null version) and a managed directory with a real pid. */
 export const workerListDone = base(
   'worker-list',
   'worker::list',
@@ -41,7 +41,7 @@ export const workerListDone = base(
       { name: 'iii-worker-manager', pid: null, running: true },
       { name: 'iii-pubsub', pid: null, running: true },
       { name: 'iii-observability', pid: null, running: true },
-      { name: 'iii-directory', pid: 19052, running: true, version: '0.5.2' },
+      { name: 'directory', pid: 19052, running: true, version: '0.5.2' },
       { name: 'iii-queue', pid: null, running: true, version: '0.11.6' },
       { name: 'iii-state', pid: null, running: true, version: '0.11.6' },
       { name: 'iii-stream', pid: null, running: true, version: '0.11.6' },
@@ -56,7 +56,7 @@ export const workerListRunningOnly = base(
   { running_only: true },
   {
     workers: [
-      { name: 'iii-directory', pid: 19052, running: true, version: '0.5.2' },
+      { name: 'directory', pid: 19052, running: true, version: '0.5.2' },
       { name: 'iii-queue', pid: null, running: true, version: '0.11.6' },
     ],
   },

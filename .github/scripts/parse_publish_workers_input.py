@@ -18,7 +18,7 @@ ALLOWED_WORKERS: tuple[str, ...] = (
     "console",
     "database",
     "harness",
-    "iii-directory",
+    "directory",
     "image-resize",
     "mcp",
     "shell",
