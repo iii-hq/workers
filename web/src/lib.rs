@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod convert;
+pub mod fetch;
 pub mod manifest;
 pub mod schemas;
 pub mod ssrf;
