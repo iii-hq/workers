@@ -99,6 +99,38 @@ pub fn request_schema() -> serde_json::Value {
         .expect("FetchPayload schema serializes")
 }
 
+/// Typed schema for the `web::fetch` response envelope. The handler returns a
+/// raw `Value` (its shape is request-dependent), so this type exists only to
+/// publish a concrete response schema: the SDK would otherwise emit the
+/// permissive `AnyValue` schema, which the registry rejects. Every field is
+/// optional because no single response carries all of them — success carries
+/// `ok`/`status`/`headers`/`body`/…, the page-mode viewable-image variant
+/// carries `content`+`details`, and failures carry `ok=false`/`error`/`message`.
+#[derive(JsonSchema)]
+pub struct FetchResponse {
+    pub ok: Option<bool>,
+    pub error: Option<String>,
+    pub message: Option<String>,
+    pub status: Option<u16>,
+    pub status_text: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub body: Option<String>,
+    pub response_format: Option<String>,
+    pub bytes_truncated: Option<bool>,
+    pub content_type: Option<String>,
+    pub transformed: Option<String>,
+    pub json: Option<serde_json::Value>,
+    pub parse_error: Option<String>,
+    pub redirect_chain: Option<Vec<String>>,
+    pub content: Option<serde_json::Value>,
+    pub details: Option<serde_json::Value>,
+}
+
+pub fn response_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(FetchResponse))
+        .expect("FetchResponse schema serializes")
+}
+
 pub const TOOL_DESCRIPTION: &str = concat!(
     "Fetch a URL over HTTP(S) and return the response as a structured envelope. ",
     "Use this INSTEAD of `shell::exec` with curl for any HTTP request — it ",
@@ -178,5 +210,16 @@ mod tests {
         let s = request_schema();
         assert_eq!(s["type"], "object");
         assert!(s["properties"].get("url").is_some());
+    }
+
+    // The registry's publish gate rejects untyped (AnyValue/empty) schemas,
+    // so the response schema must be a concrete object. Guards against the
+    // handler's raw-`Value` return leaking an AnyValue schema again.
+    #[test]
+    fn response_schema_is_typed_object() {
+        let s = response_schema();
+        assert_eq!(s["type"], "object");
+        assert!(s["properties"].get("ok").is_some());
+        assert!(s["properties"].get("error").is_some());
     }
 }
