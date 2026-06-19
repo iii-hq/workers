@@ -5,6 +5,7 @@
 //! rebinding (TOCTOU between check and connect).
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
 
 use ipnet::{Ipv4Net, Ipv6Net};
 
@@ -40,31 +41,46 @@ pub fn parse_target(raw: &str) -> Result<ParsedTarget, String> {
     Ok(ParsedTarget { url, hostname, port })
 }
 
-fn v4_blocklist() -> Vec<(Ipv4Net, &'static str)> {
-    [
-        ("0.0.0.0/8", "this-network"),
-        ("10.0.0.0/8", "private rfc1918"),
-        ("100.64.0.0/10", "cgnat rfc6598"),
-        ("127.0.0.0/8", "loopback"),
-        ("169.254.0.0/16", "link-local (incl. AWS metadata)"),
-        ("172.16.0.0/12", "private rfc1918"),
-        ("192.0.0.0/24", "ietf protocol assignments"),
-        ("192.0.2.0/24", "documentation"),
-        ("192.168.0.0/16", "private rfc1918"),
-        ("198.18.0.0/15", "benchmarking"),
-        ("198.51.100.0/24", "documentation"),
-        ("203.0.113.0/24", "documentation"),
-        ("224.0.0.0/4", "multicast"),
-        ("240.0.0.0/4", "reserved"),
-    ]
-    .into_iter()
-    .map(|(cidr, label)| (cidr.parse::<Ipv4Net>().expect("valid v4 cidr"), label))
-    .collect()
+static V4_BLOCKLIST: OnceLock<Vec<(Ipv4Net, &'static str)>> = OnceLock::new();
+static V6_BLOCKLIST: OnceLock<[(Ipv6Net, &'static str); 3]> = OnceLock::new();
+
+fn v4_blocklist() -> &'static [(Ipv4Net, &'static str)] {
+    V4_BLOCKLIST.get_or_init(|| {
+        [
+            ("0.0.0.0/8", "this-network"),
+            ("10.0.0.0/8", "private rfc1918"),
+            ("100.64.0.0/10", "cgnat rfc6598"),
+            ("127.0.0.0/8", "loopback"),
+            ("169.254.0.0/16", "link-local (incl. AWS metadata)"),
+            ("172.16.0.0/12", "private rfc1918"),
+            ("192.0.0.0/24", "ietf protocol assignments"),
+            ("192.0.2.0/24", "documentation"),
+            ("192.168.0.0/16", "private rfc1918"),
+            ("198.18.0.0/15", "benchmarking"),
+            ("198.51.100.0/24", "documentation"),
+            ("203.0.113.0/24", "documentation"),
+            ("224.0.0.0/4", "multicast"),
+            ("240.0.0.0/4", "reserved"),
+        ]
+        .into_iter()
+        .map(|(cidr, label)| (cidr.parse::<Ipv4Net>().expect("valid v4 cidr"), label))
+        .collect()
+    })
+}
+
+fn v6_blocklist() -> &'static [(Ipv6Net, &'static str)] {
+    V6_BLOCKLIST.get_or_init(|| {
+        [
+            ("fe80::/10".parse().unwrap(), "link-local fe80::/10"),
+            ("fc00::/7".parse().unwrap(), "unique-local fc00::/7"),
+            ("ff00::/8".parse().unwrap(), "multicast ff00::/8"),
+        ]
+    })
 }
 
 fn check_ipv4(addr: Ipv4Addr, policy: &SsrfPolicy) -> Option<&'static str> {
     for (net, label) in v4_blocklist() {
-        if label == "loopback" && policy.allow_loopback {
+        if *label == "loopback" && policy.allow_loopback {
             continue;
         }
         if net.contains(&addr) {
@@ -85,12 +101,7 @@ fn check_ipv6(addr: Ipv6Addr, policy: &SsrfPolicy) -> Option<&'static str> {
     if addr == Ipv6Addr::UNSPECIFIED {
         return Some("unspecified");
     }
-    let blocks: [(Ipv6Net, &'static str); 3] = [
-        ("fe80::/10".parse().unwrap(), "link-local fe80::/10"),
-        ("fc00::/7".parse().unwrap(), "unique-local fc00::/7"),
-        ("ff00::/8".parse().unwrap(), "multicast ff00::/8"),
-    ];
-    for (net, label) in blocks {
+    for (net, label) in v6_blocklist() {
         if net.contains(&addr) {
             return Some(label);
         }
