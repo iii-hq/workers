@@ -106,7 +106,7 @@ There is **no `too_large` error** — oversize responses come back `ok: true` wi
 Two orthogonal knobs — pick ONE:
 
 - **`response_format`** = transport encoding for APIs/binaries (`text`/`base64`/`json`). The body is returned untouched.
-- **`format`** = page-reading mode (`markdown`/`text`/`html`). The request goes out with a browser User-Agent + format-matched `Accept` header, and `text/html` responses are transformed (`markdown` is the right default for reading pages — far fewer tokens than raw HTML). Non-HTML bodies pass through unchanged. If Cloudflare answers `403` with a challenge, the worker retries once with its honest UA (beats the UA-fingerprint rule only, not full JS challenges). For very large pages, lower `max_bytes` — conversion runs on the capped body.
+- **`format`** = page-reading mode (`markdown`/`text`/`html`). The request goes out with a browser User-Agent + format-matched `Accept` header, and `text/html` responses are transformed (`markdown` is the right default for reading pages — far fewer tokens than raw HTML). Non-HTML bodies pass through unchanged. If Cloudflare answers `403` with a challenge, the worker retries once with its honest UA (beats the UA-fingerprint rule only, not full JS challenges). For large pages, lower `max_bytes` — conversion runs on the capped body.
 
 Don't combine them: when `format` is set, `response_format` is ignored (treated as `"text"`).
 

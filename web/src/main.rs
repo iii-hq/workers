@@ -70,15 +70,18 @@ async fn main() -> Result<()> {
                 return None;
             }
         };
-        match serde_yaml::from_str::<serde_json::Value>(&contents).ok() {
-            Some(v) => match WebConfig::from_json(&v) {
+        match serde_yaml::from_str::<serde_json::Value>(&contents) {
+            Ok(v) => match WebConfig::from_json(&v) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
                     tracing::warn!(path, error = %e, "failed to parse seed config; ignoring");
                     None
                 }
             },
-            None => None,
+            Err(e) => {
+                tracing::warn!(path, error = %e, "failed to parse YAML seed config; ignoring");
+                None
+            }
         }
     });
 
