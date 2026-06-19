@@ -7,7 +7,7 @@ edition = "2021"
 publish = false
 
 [[bin]]
-name = "iii-web"
+name = "web"
 path = "src/main.rs"
 
 [lib]

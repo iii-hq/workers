@@ -29,7 +29,7 @@ existing callers and the harness consumer are unaffected.
 iii worker add web
 ```
 
-`iii worker add` fetches the binary (`iii-web`), writes a config block into
+`iii worker add` fetches the binary (`web`), writes a config block into
 `~/.iii/config.yaml`, and the engine starts the worker on the next
 `iii start`.
 
@@ -188,7 +188,7 @@ which loopback returns `blocked_host`.
 ## Local development & testing
 
 ```bash
-cargo build                  # build the iii-web binary
+cargo build                  # build the web binary
 cargo test                   # unit + wiremock integration + adversarial SSRF tests
 cargo clippy -- -D warnings  # lints
 cargo fmt --check            # formatting

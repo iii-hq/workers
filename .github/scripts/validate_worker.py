@@ -39,6 +39,19 @@ BOOTSTRAP_WORKERS = frozenset({
 
 SKILL_MD_SIZE_CAP = 256 * 1024  # 256 KiB
 
+# `iii worker add <worker>` downloads the release archive and looks for a
+# binary named after the WORKER (see iii crates/iii-worker binary_download.rs:
+# extract_binary_from_targz(worker_name, ...)). The registry payload carries
+# only the worker name, never the cargo [[bin]] name, so the packaged binary
+# MUST be named after the worker or the resolver fails with
+# "Binary '<worker>' not found in archive" (web/v1.1.x shipped this bug).
+# Workers below intentionally ship a differently-named, user-facing binary and
+# are known-broken on fresh `iii worker add` until the resolver carries the
+# bin name through the registry; do not silently extend this list.
+BINARY_NAME_EXCEPTIONS = frozenset({
+    "acp",  # editors launch the `iii-acp` binary by name (ACP subprocess)
+})
+
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
@@ -96,6 +109,18 @@ def main(argv: list[str] | None = None) -> int:
             hard(
                 f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python' | 'javascript'"
             )
+        # The release archive's binary is named after `bin` (defaulting to the
+        # worker name); the resolver looks it up by worker name. They must match
+        # or `iii worker add {worker}` fails with "Binary not found in archive".
+        if m.deploy == "binary":
+            effective_bin = m.bin or m.name
+            if effective_bin != worker and worker not in BINARY_NAME_EXCEPTIONS:
+                hard(
+                    f"{worker}/iii.worker.yaml bin={effective_bin!r} must equal the "
+                    f"worker name {worker!r} for binary deploys: `iii worker add` "
+                    f"extracts the release archive by worker name and would fail "
+                    f"with \"Binary '{worker}' not found in archive\""
+                )
 
     # 3. Manifest version >= base
     if m is not None and m.manifest:

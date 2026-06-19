@@ -1,4 +1,4 @@
-//! `iii-web` binary entry: connect, register configuration + fetch the
+//! `web` binary entry: connect, register configuration + fetch the
 //! authoritative value, register `web::fetch`, bind the config-change
 //! trigger for hot-reload, then sleep until Ctrl+C.
 
@@ -13,7 +13,7 @@ use web::{configuration, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-web",
+    name = "web",
     about = "Outbound HTTP client on the iii bus (web::fetch)."
 )]
 struct Cli {
