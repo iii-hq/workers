@@ -28,6 +28,7 @@ on:
           - provider-anthropic
           - provider-openai
           - session-manager
+          - telegram-bot
           - shell
           - storage
           - web

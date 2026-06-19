@@ -15,7 +15,7 @@ or a single worker like `llm-router` directly.
 flowchart LR
   %% Nodes
   chat["chat"]
-  tg["telegram-worker"]
+  tg["telegram-bot"]
   funcs["trigger functions<br/>as needed"]
   ctx["context-manager"]
   harness["harness"]
@@ -71,7 +71,7 @@ flowchart LR
 
 ### How to read the diagram
 
-- **Green** (`chat`, `telegram-worker`, `third-party-worker`) are *example consumers*. They are not
+- **Green** (`chat`, `telegram-bot`, `third-party-worker`) are *example consumers*. They are not
   part of this spec; they show who calls in and how. Any worker or client can take their place.
 - **Red** (`context-manager`, `session-manager`, `llm-router`, `harness`) are the four workers this
   spec defines. Each is **standalone**: installable and useful on its own, with no hard dependency on

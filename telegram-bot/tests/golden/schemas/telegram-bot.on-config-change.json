@@ -1,0 +1,22 @@
+{
+  "description": "Internal: reload telegram-bot configuration on change.",
+  "function_id": "telegram-bot::on-config-change",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigChangeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "ConfigChangeAck",
+    "type": "object"
+  }
+}

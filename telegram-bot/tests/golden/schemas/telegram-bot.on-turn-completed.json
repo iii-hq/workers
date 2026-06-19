@@ -1,0 +1,52 @@
+{
+  "description": "Drain FIFO queue and post turn outcome toasts.",
+  "function_id": "telegram-bot::on-turn-completed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "reason": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "result_error": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "status",
+      "turn_id"
+    ],
+    "title": "TurnCompletedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "BindingAck",
+    "type": "object"
+  }
+}

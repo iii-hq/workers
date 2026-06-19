@@ -100,6 +100,13 @@ rules:
   - '!harness::sweep-pending'
   - '!context::on-config-change'
   - '!approval::on-config-change'
+  - '!telegram-bot::on-config-change'
+  - '!telegram-bot::on-message-added'
+  - '!telegram-bot::on-message-updated'
+  - '!telegram-bot::on-status-changed'
+  - '!telegram-bot::on-turn-completed'
+  - '!telegram-bot::on-pending-created'
+  - '!telegram-bot::on-pending-resolved'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

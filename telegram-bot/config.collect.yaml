@@ -1,0 +1,22 @@
+# Interface-collection config for the registry publish workflow.
+#
+# The publish job (.github/workflows/_publish-registry.yml) and PR interface
+# boot smoke (.github/workflows/ci.yml) boot a throwaway copy of this worker
+# purely to read back the functions and trigger types it registers with the
+# engine — the published "interface". That interface is static: it does NOT
+# depend on a real Telegram bot token.
+#
+# The worker refuses to start when bot_token is empty (see main.rs). On a clean
+# CI runner there is no configuration store entry yet, so boot without a seed
+# fails before functions register — exactly the failure seen in interface boot
+# smoke. This config supplies a dummy token so validation passes; no Telegram
+# API call succeeds during collection, and that is fine — collection only needs
+# the worker to connect and register its surface.
+#
+# Kept in lockstep with _publish-registry.yml / ci.yml interface-smoke, which
+# pass `--config config.collect.yaml` whenever this file is present.
+
+bot_token: "collect:interface-collection-token"
+updates:
+  name: polling
+  config: {}
