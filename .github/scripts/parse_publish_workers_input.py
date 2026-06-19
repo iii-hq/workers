@@ -22,7 +22,8 @@ ALLOWED_WORKERS: tuple[str, ...] = (
     "image-resize",
     "mcp",
     "shell",
-    "storage"
+    "storage",
+    "web",
 )
 
 _ALLOWED_SET = frozenset(ALLOWED_WORKERS)

@@ -24,6 +24,7 @@ on:
       - 'session-manager/v*'
       - 'shell/v*'
       - 'storage/v*'
+      - 'web/v*'
   workflow_dispatch:
     inputs:
       tag:

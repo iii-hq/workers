@@ -30,6 +30,7 @@ on:
           - session-manager
           - shell
           - storage
+          - web
       bump:
         description: 'Version bump'
         required: true
