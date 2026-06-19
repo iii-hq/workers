@@ -3,13 +3,14 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use iii_sdk::IIIError;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 
 use crate::clients::telegram;
 use crate::config::{PollingConfig, UpdatesAdapter, WorkerConfig};
 use crate::deps::Deps;
-use crate::functions::webhook;
+use crate::functions::{self, webhook};
 
 /// Start ingress for the initial config (called once at boot).
 pub async fn start(deps: &Arc<Deps>) {
@@ -38,22 +39,62 @@ async fn apply_updates_adapter(deps: &Arc<Deps>, _prev: Option<&WorkerConfig>, c
 
     match cfg.resolve_updates() {
         UpdatesAdapter::Polling(polling) => {
+            // Stop Telegram POSTing *before* removing the engine route, so there
+            // is no window where the route is gone but updates still arrive.
             if let Err(e) = telegram::delete_webhook(deps).await {
                 tracing::warn!(error = %e, "deleteWebhook failed (may already be unset)");
             }
+            unregister_webhook_trigger(deps).await;
             start_poller(deps.clone(), polling).await;
             tracing::info!("updates adapter: polling");
         }
         UpdatesAdapter::Webhook(webhook) => {
-            if webhook.url.trim().is_empty() {
-                tracing::warn!("updates adapter: webhook (url not set; call set-webhook)");
+            let Some(url) = webhook.endpoint_url() else {
+                tracing::warn!("updates adapter: webhook (base_url not set; ingress inactive)");
+                return;
+            };
+            // The engine route must exist before Telegram is told to POST to it,
+            // otherwise early updates hit an unregistered path. If registration
+            // fails, leave the trigger unset so the next reload retries and skip
+            // setWebhook.
+            if let Err(e) = ensure_webhook_trigger(deps).await {
+                tracing::error!(error = %e, "failed to register webhook http trigger; skipping setWebhook");
                 return;
             }
-            match telegram::set_webhook(deps, &webhook.url, webhook.secret.as_deref()).await {
-                Ok(()) => tracing::info!(url = %webhook.url, "updates adapter: webhook registered"),
+            match telegram::set_webhook(deps, &url, webhook.secret.as_deref()).await {
+                Ok(()) => tracing::info!(url = %url, "updates adapter: webhook registered"),
                 Err(e) => tracing::error!(error = %e, "setWebhook failed"),
             }
         }
+    }
+}
+
+/// Register the webhook ingress HTTP route if it is not already registered,
+/// retaining the [`iii_sdk::Trigger`] handle in [`Deps`]. Idempotent: a second
+/// call while the route is held (e.g. a webhook→webhook URL change) is a no-op,
+/// so the engine never accumulates duplicate UUID-keyed routes.
+async fn ensure_webhook_trigger(deps: &Arc<Deps>) -> Result<(), IIIError> {
+    let mut guard = deps.runtime.webhook_trigger.lock().await;
+    if guard.is_some() {
+        return Ok(());
+    }
+    let trigger = functions::register_webhook_trigger(&deps.iii)?;
+    *guard = Some(trigger);
+    tracing::info!(
+        api_path = crate::config::WEBHOOK_API_PATH,
+        "webhook http trigger registered"
+    );
+    Ok(())
+}
+
+/// Remove the webhook ingress HTTP route if one is registered. `take()` +
+/// `unregister()` is mandatory — `Trigger` has no `Drop`, so dropping the handle
+/// silently would leave the route live on the engine.
+async fn unregister_webhook_trigger(deps: &Arc<Deps>) {
+    let handle = deps.runtime.webhook_trigger.lock().await.take();
+    if let Some(trigger) = handle {
+        trigger.unregister();
+        tracing::info!("webhook http trigger unregistered");
     }
 }
 
@@ -73,9 +114,12 @@ async fn start_poller(deps: Arc<Deps>, _polling: PollingConfig) {
     *handle_guard = Some(handle);
 }
 
-/// Stop the background poller on shutdown.
+/// Stop the background poller and remove the webhook route on shutdown, so a
+/// graceful restart starts from a clean slate rather than relying on engine-side
+/// cleanup of a disconnected worker's triggers.
 pub async fn shutdown(deps: &Arc<Deps>) {
     stop_poller(deps).await;
+    unregister_webhook_trigger(deps).await;
 }
 
 async fn stop_poller(deps: &Arc<Deps>) {
@@ -104,8 +148,11 @@ async fn run_poller(deps: Arc<Deps>, cancel: CancellationToken) {
         let offset = deps.runtime.poll_offset.load(Ordering::Relaxed);
         let timeout = polling.timeout_seconds.min(50);
 
-        match telegram::get_updates(&deps, offset, timeout).await {
+        match telegram::get_updates_with_cancel(&deps, offset, timeout, Some(&cancel)).await {
             Ok(updates) => {
+                if cancel.is_cancelled() {
+                    return;
+                }
                 backoff_secs = 1;
                 if updates.is_empty() {
                     continue;
@@ -121,6 +168,7 @@ async fn run_poller(deps: Arc<Deps>, cancel: CancellationToken) {
                     .poll_offset
                     .store(last_id.saturating_add(1), Ordering::Relaxed);
             }
+            Err(e) if e.to_string().contains("cancelled") => return,
             Err(e) => {
                 tracing::warn!(error = %e, backoff_secs, "getUpdates failed");
                 tokio::select! {
@@ -176,7 +224,7 @@ mod tests {
         };
         let next = WorkerConfig {
             updates: UpdatesAdapter::Webhook(WebhookConfig {
-                url: "https://x".into(),
+                base_url: "https://x".into(),
                 secret: None,
             }),
             ..prev.clone()

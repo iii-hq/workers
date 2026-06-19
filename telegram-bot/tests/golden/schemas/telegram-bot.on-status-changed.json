@@ -1,5 +1,5 @@
 {
-  "description": "Send typing indicator while the session is working.",
+  "description": "Observe session status changes.",
   "function_id": "telegram-bot::on-status-changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

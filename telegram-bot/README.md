@@ -16,7 +16,7 @@ iii worker add telegram-bot
 1. Set configuration (configuration id `telegram-bot`):
 
 ```yaml
-bot_token: "${TELEGRAM_BOT_TOKEN:}"
+bot_token: "${TELEGRAM_BOT_TOKEN}"
 verbosity: minimal
 default_model:
   provider: anthropic
@@ -33,28 +33,38 @@ Each `/start` clears the chat's active harness session. The next message after m
 
 Assistant output streams via `sendMessageDraft` when available (Bot API 9.3+), with `editMessageText` fallback. Model thinking blocks stream via `sendRichMessageDraft` (`RichBlockThinking`). Drafts are finalized to persistent messages on turn completion.
 
-When draft streaming is enabled (`streaming.transport: auto` or `draft`), the worker skips `sendChatAction(typing)` — thinking/answer drafts already show progress. With edit-only fallback, typing is deferred 400ms and cleared when the final `sendMessage` posts (Telegram has no stop-typing API; each `sendChatAction` lasts ~5s on clients unless a bot message arrives).
+The worker does not send a `sendChatAction(typing)` indicator: Telegram has no stop-typing API and each action lingers ~5s on clients, leaving the indicator visible for seconds after the answer arrives. Progress is shown by streamed thinking/answer drafts (draft transport) or the streamed message bubble (edit transport) instead.
 
 When a tool call needs approval, the bot posts an inline keyboard: **Approve**, **Reject**, and **Approve always** (per-session grant via `approval::approve-always`).
 
 ## Webhook mode (production)
 
 ```yaml
-bot_token: "${TELEGRAM_BOT_TOKEN:}"
+bot_token: "${TELEGRAM_BOT_TOKEN}"
 updates:
   name: webhook
   config:
-    url: "https://your-engine.example/telegram-bot/webhook"
-    secret: "optional-secret"
+    base_url: "https://your-engine.example"   # iii engine root only
+    secret: "your-webhook-secret"             # recommended
 ```
 
-Register (or re-register) with Telegram:
+`base_url` is the **public root of your iii engine** — the bot appends its own
+path (`/telegram-bot/webhook`) to build the URL handed to Telegram, so operators
+never repeat the path. Selecting the `webhook` adapter (at boot or via
+hot-reload) does everything automatically, with no restart:
 
-```bash
-curl -X POST http://127.0.0.1:3000/telegram-bot/set-webhook
-```
+1. registers the `telegram-bot/webhook` HTTP route on the engine, then
+2. calls Telegram `setWebhook` with `{base_url}/telegram-bot/webhook`.
 
-Hot-reload to webhook mode also calls `setWebhook` automatically when `url` is set.
+Switching back to `polling` reverses both — it calls `deleteWebhook` and then
+removes the HTTP route. No manual step is required.
+
+> The legacy full-URL form (`url: https://…/telegram-bot/webhook`) is still
+> accepted for backward compatibility. A `secret` is strongly recommended:
+> without it, anyone who learns the URL can inject forged updates.
+
+`POST /telegram-bot/set-webhook` remains available to manually re-arm Telegram
+(e.g. if it dropped the webhook) without changing configuration.
 
 ## Configuration
 
@@ -62,7 +72,7 @@ All fields hot-reload through the `configuration` worker — no restart required
 
 | Field | Description |
 |---|---|
-| `bot_token` | **Required.** Telegram Bot API token (`${TELEGRAM_BOT_TOKEN:}`) |
+| `bot_token` | **Required.** Telegram Bot API token (`${TELEGRAM_BOT_TOKEN}`) |
 | `updates` | Ingress adapter: `polling` (default) or `webhook` — see below |
 | `default_model` | Skip model picker when set (`provider` + `id`) |
 | `verbosity` | `none` \| `minimal` \| `high` \| `debug` — controls transcript mirroring |
@@ -90,9 +100,13 @@ updates:
 updates:
   name: webhook
   config:
-    url: "https://your-engine.example/telegram-bot/webhook"  # required
-    secret: "optional-secret"
+    base_url: "https://your-engine.example"   # iii engine root; required
+    secret: "your-webhook-secret"             # recommended
 ```
+
+The bot derives the Telegram webhook URL as `{base_url}/telegram-bot/webhook`
+and registers/removes the HTTP route as the adapter is switched to/from
+`webhook` — see [Webhook mode](#webhook-mode-production).
 
 Verbosity levels:
 
@@ -124,5 +138,5 @@ UPDATE_GOLDENS=1 cargo test   # after schema changes
 
 HTTP endpoints (engine default `http://127.0.0.1:3000`):
 
-- `POST /telegram-bot/webhook` — Telegram update ingress (webhook mode only)
-- `POST /telegram-bot/set-webhook` — calls Telegram `setWebhook` (webhook mode only)
+- `POST /telegram-bot/webhook` — Telegram update ingress. Registered **only while the `webhook` adapter is active**; removed in polling mode.
+- `POST /telegram-bot/set-webhook` — manually (re-)register the Telegram webhook from config. Always available.

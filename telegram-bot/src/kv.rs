@@ -14,22 +14,27 @@ pub async fn chat_session(deps: &Deps, chat_id: i64) -> Option<String> {
 
 pub async fn set_chat_session(deps: &Deps, chat_id: i64, session_id: &str) -> Result<(), IIIError> {
     let timeout = deps.cfg().await.timeout_ms;
+    let chat_key = format!("chat:{chat_id}:session");
     state::set(
         &deps.iii,
         STATE_SCOPE,
-        &format!("chat:{chat_id}:session"),
+        &chat_key,
         json!(session_id),
         Some(timeout),
     )
     .await?;
-    state::set(
+    if let Err(e) = state::set(
         &deps.iii,
         STATE_SCOPE,
         &format!("session:{session_id}:chat"),
         json!(chat_id),
         Some(timeout),
     )
-    .await?;
+    .await
+    {
+        let _ = state::delete(&deps.iii, STATE_SCOPE, &chat_key, Some(timeout)).await;
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -63,6 +68,39 @@ pub async fn set_entry_message_id(
         &deps.iii,
         STATE_SCOPE,
         &format!("entry:{session_id}:{entry_id}:msg"),
+        json!(message_id),
+        Some(deps.cfg().await.timeout_ms),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn entry_chunk_message_id(
+    deps: &Deps,
+    session_id: &str,
+    entry_id: &str,
+    chunk_idx: u32,
+) -> Option<i64> {
+    state::get_i64(
+        &deps.iii,
+        STATE_SCOPE,
+        &format!("entry:{session_id}:{entry_id}:chunk:{chunk_idx}:msg"),
+        deps.cfg().await.timeout_ms,
+    )
+    .await
+}
+
+pub async fn set_entry_chunk_message_id(
+    deps: &Deps,
+    session_id: &str,
+    entry_id: &str,
+    chunk_idx: u32,
+    message_id: i64,
+) -> Result<(), IIIError> {
+    state::set(
+        &deps.iii,
+        STATE_SCOPE,
+        &format!("entry:{session_id}:{entry_id}:chunk:{chunk_idx}:msg"),
         json!(message_id),
         Some(deps.cfg().await.timeout_ms),
     )
@@ -183,33 +221,33 @@ pub async fn clear_chat_session(deps: &Deps, chat_id: i64) -> Result<Option<Stri
     let timeout = deps.cfg().await.timeout_ms;
     let old = chat_session(deps, chat_id).await;
     if let Some(ref sid) = old {
-        let _ = state::delete(
+        state::delete(
             &deps.iii,
             STATE_SCOPE,
             &format!("session:{sid}:chat"),
             Some(timeout),
         )
-        .await;
+        .await?;
     }
-    let _ = state::delete(
+    state::delete(
         &deps.iii,
         STATE_SCOPE,
         &format!("chat:{chat_id}:session"),
         Some(timeout),
     )
-    .await;
+    .await?;
     Ok(old)
 }
 
 pub async fn clear_chat_model(deps: &Deps, chat_id: i64) -> Result<(), IIIError> {
     let timeout = deps.cfg().await.timeout_ms;
-    let _ = state::delete(
+    state::delete(
         &deps.iii,
         STATE_SCOPE,
         &format!("chat:{chat_id}:model"),
         Some(timeout),
     )
-    .await;
+    .await?;
     Ok(())
 }
 

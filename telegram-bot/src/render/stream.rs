@@ -12,7 +12,6 @@ use crate::preferences;
 use crate::render::chunk::{split_message, TELEGRAM_MAX_MESSAGE_LEN};
 use crate::render::format;
 use crate::render::throttle;
-use crate::render::typing;
 use crate::render::verbosity::{
     self, message_phase, render_answer_text, render_thinking_text, MessagePhase,
 };
@@ -163,7 +162,7 @@ async fn on_empty_assistant_added(
     register_pending_materialization(&deps.runtime, chat_id, order_key, entry_id);
 
     if should_emit_native_thinking_placeholder(session.transport) {
-        send_native_thinking_placeholder(deps, session_id, &mut session, "").await?;
+        send_native_thinking_placeholder(deps, &mut session, "").await?;
     }
 
     deps.runtime
@@ -347,7 +346,6 @@ pub async fn finalize_session(deps: &Deps, session_id: &str) -> Result<(), IIIEr
         .await?;
     }
 
-    typing::suppress_typing(deps, session_id);
     Ok(())
 }
 
@@ -592,7 +590,7 @@ async fn apply_draft_update(
 
     if uses_rich_thinking_draft(phase) {
         let thinking = session.last_thinking_text.clone();
-        send_native_thinking_placeholder(deps, session_id, session, &thinking).await?;
+        send_native_thinking_placeholder(deps, session, &thinking).await?;
         return Ok(());
     }
 
@@ -607,9 +605,6 @@ async fn apply_draft_update(
     {
         Ok(()) => {
             session.draft_started = true;
-            if !draft_text.is_empty() {
-                typing::stop_typing_on_output(deps, session_id);
-            }
         }
         Err(e) if is_draft_unsupported(&e) => {
             pin_edit_fallback(deps, session.chat_id);
@@ -647,9 +642,38 @@ async fn apply_edit_update(
         order_key,
     )
     .await?;
-    if !text.is_empty() {
-        typing::stop_typing_on_output(deps, session_id);
+    Ok(())
+}
+
+/// Send or edit a continuation chunk (index >= 1), persisting message IDs in KV.
+#[allow(clippy::too_many_arguments)]
+async fn deliver_continuation_chunk(
+    deps: &Deps,
+    session_id: &str,
+    entry_id: &str,
+    chat_id: i64,
+    order_key: i64,
+    chunk_idx: u32,
+    chunk: &str,
+    settle_ms: u64,
+) -> Result<(), IIIError> {
+    if let Some(id) = kv::entry_chunk_message_id(deps, session_id, entry_id, chunk_idx).await {
+        if let Err(e) = edit_message_text_formatted(deps, chat_id, id, chunk).await {
+            tracing::warn!(error = %e, message_id = id, chunk_idx, "editMessageText failed");
+        }
+        return Ok(());
     }
+    let id = send_in_order(
+        deps,
+        chat_id,
+        order_key,
+        entry_id,
+        chunk_idx,
+        settle_ms,
+        || send_message_formatted(deps, chat_id, chunk, None),
+    )
+    .await?;
+    kv::set_entry_chunk_message_id(deps, session_id, entry_id, chunk_idx, id).await?;
     Ok(())
 }
 
@@ -692,14 +716,8 @@ async fn deliver_text(
             }
             for (i, chunk) in chunks.iter().skip(1).enumerate() {
                 let chunk_idx = i as u32 + 1;
-                let _ = send_in_order(
-                    deps,
-                    chat_id,
-                    order_key,
-                    entry_id,
-                    chunk_idx,
-                    settle_ms,
-                    || send_message_formatted(deps, chat_id, chunk, None),
+                let _ = deliver_continuation_chunk(
+                    deps, session_id, entry_id, chat_id, order_key, chunk_idx, chunk, settle_ms,
                 )
                 .await;
             }
@@ -732,14 +750,8 @@ async fn deliver_text(
         }
         for (i, chunk) in chunks.iter().skip(1).enumerate() {
             let chunk_idx = i as u32 + 1;
-            let _ = send_in_order(
-                deps,
-                chat_id,
-                order_key,
-                entry_id,
-                chunk_idx,
-                settle_ms,
-                || send_message_formatted(deps, chat_id, chunk, None),
+            let _ = deliver_continuation_chunk(
+                deps, session_id, entry_id, chat_id, order_key, chunk_idx, chunk, settle_ms,
             )
             .await;
         }
@@ -771,6 +783,8 @@ async fn deliver_text(
         if chunk_index == 0 {
             *message_id = Some(id);
             kv::set_entry_message_id(deps, session_id, entry_id, id).await?;
+        } else {
+            kv::set_entry_chunk_message_id(deps, session_id, entry_id, chunk_index, id).await?;
         }
         chunk_index += 1;
     }
@@ -850,14 +864,15 @@ async fn finalize_draft_messages(
         }
         for (i, chunk) in chunks.iter().skip(1).enumerate() {
             let chunk_idx = i as u32 + 1;
-            let _ = send_in_order(
+            let _ = deliver_continuation_chunk(
                 deps,
+                session_id,
+                entry_id,
                 session.chat_id,
                 order_key,
-                entry_id,
                 chunk_idx,
+                chunk,
                 0,
-                || send_message_formatted(deps, session.chat_id, chunk, None),
             )
             .await;
         }
@@ -891,6 +906,9 @@ async fn finalize_draft_messages(
                 if chunk_index == 0 {
                     session.message_id = Some(id);
                     kv::set_entry_message_id(deps, session_id, entry_id, id).await?;
+                } else {
+                    kv::set_entry_chunk_message_id(deps, session_id, entry_id, chunk_index, id)
+                        .await?;
                 }
             }
             Err(e) => tracing::warn!(error = %e, "finalize sendMessage failed"),
@@ -1089,11 +1107,9 @@ where
     let lock = deps.runtime.chat_create_lock(chat_id);
     let _guard = lock.lock().await;
     let result = make().await;
-
-    if result.is_ok() {
-        clear_pending_materialization(&deps.runtime, chat_id, entry_id);
-    }
-    complete_create_slot(&deps.runtime, chat_id, &slot, order_key, result.is_ok());
+    let ok = result.is_ok();
+    clear_pending_materialization(&deps.runtime, chat_id, entry_id);
+    complete_create_slot(&deps.runtime, chat_id, &slot, order_key, ok);
     result
 }
 
@@ -1257,7 +1273,6 @@ fn is_draft_unsupported(err: &IIIError) -> bool {
 
 async fn send_native_thinking_placeholder(
     deps: &Deps,
-    session_id: &str,
     session: &mut StreamSession,
     thinking_text: &str,
 ) -> Result<(), IIIError> {
@@ -1267,7 +1282,6 @@ async fn send_native_thinking_placeholder(
     {
         Ok(()) => {
             session.draft_started = true;
-            typing::stop_typing_on_output(deps, session_id);
         }
         Err(e) if is_draft_unsupported(&e) => {
             pin_edit_fallback(deps, session.chat_id);
@@ -1291,16 +1305,12 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum DraftFinalizeStep {
-        ClearDraftBefore,
         Post,
         ClearDraftAfter,
     }
 
-    const DRAFT_FINALIZE_STEPS: [DraftFinalizeStep; 3] = [
-        DraftFinalizeStep::ClearDraftBefore,
-        DraftFinalizeStep::Post,
-        DraftFinalizeStep::ClearDraftAfter,
-    ];
+    const DRAFT_FINALIZE_STEPS: [DraftFinalizeStep; 2] =
+        [DraftFinalizeStep::Post, DraftFinalizeStep::ClearDraftAfter];
 
     #[test]
     fn draft_id_stable() {
@@ -1694,10 +1704,9 @@ mod tests {
     }
 
     #[test]
-    fn draft_finalize_clears_draft_before_posting_answer() {
-        assert_eq!(DRAFT_FINALIZE_STEPS[0], DraftFinalizeStep::ClearDraftBefore);
-        assert_eq!(DRAFT_FINALIZE_STEPS[1], DraftFinalizeStep::Post);
-        assert_eq!(DRAFT_FINALIZE_STEPS[2], DraftFinalizeStep::ClearDraftAfter);
+    fn draft_finalize_posts_before_clearing_draft() {
+        assert_eq!(DRAFT_FINALIZE_STEPS[0], DraftFinalizeStep::Post);
+        assert_eq!(DRAFT_FINALIZE_STEPS[1], DraftFinalizeStep::ClearDraftAfter);
     }
 
     #[test]

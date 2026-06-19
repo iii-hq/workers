@@ -130,12 +130,7 @@ fn render_content_blocks(
 }
 
 fn truncate_json(value: &serde_json::Value, max: usize) -> String {
-    let s = value.to_string();
-    if s.len() <= max {
-        s
-    } else {
-        format!("{}…", &s[..max])
-    }
+    crate::text::truncate_ellipsis(&value.to_string(), max)
 }
 
 pub fn turn_status_message(

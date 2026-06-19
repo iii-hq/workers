@@ -5,7 +5,7 @@ pub mod webhook;
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, Trigger, III};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -83,11 +83,14 @@ pub fn bind_triggers(iii: &Arc<III>) {
     }
 }
 
+/// Register the always-on control-plane HTTP triggers at boot.
+///
+/// Only the `set-webhook` control endpoint is static. The `webhook` ingress
+/// route is registered/unregistered dynamically by [`crate::ingress`] to follow
+/// the `updates` adapter (created on switch to webhook, removed on switch back
+/// to polling) — see [`register_webhook_trigger`].
 pub fn bind_http_triggers(iii: &Arc<III>) {
-    let http = [
-        (WEBHOOK_ID, "telegram-bot/webhook", "POST"),
-        (SET_WEBHOOK_ID, "telegram-bot/set-webhook", "POST"),
-    ];
+    let http = [(SET_WEBHOOK_ID, "telegram-bot/set-webhook", "POST")];
     for (function_id, api_path, http_method) in http {
         match iii.register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
@@ -99,6 +102,19 @@ pub fn bind_http_triggers(iii: &Arc<III>) {
             Err(e) => tracing::warn!(error = %e, function_id, "failed to register http trigger"),
         }
     }
+}
+
+/// Register the Telegram webhook ingress HTTP route and return its [`Trigger`]
+/// handle so the caller can later [`Trigger::unregister`] it. The route path is
+/// [`crate::config::WEBHOOK_API_PATH`] — the same constant used to derive the
+/// public URL handed to Telegram, so they cannot drift.
+pub fn register_webhook_trigger(iii: &III) -> Result<Trigger, IIIError> {
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".to_string(),
+        function_id: WEBHOOK_ID.to_string(),
+        config: json!({ "api_path": crate::config::WEBHOOK_API_PATH, "http_method": "POST" }),
+        metadata: None,
+    })
 }
 
 fn bind_best_effort(

@@ -18,7 +18,8 @@
 //! updates:
 //!   name: webhook
 //!   config:
-//!     url: https://your-engine.example/telegram-bot/webhook
+//!     base_url: https://your-engine.example   # iii engine root; the bot
+//!                                              # appends /telegram-bot/webhook
 //!     secret: optional-secret
 //! ```
 
@@ -168,22 +169,52 @@ impl Default for PollingConfig {
     }
 }
 
+/// Engine HTTP `api_path` the webhook ingress route is registered under, and
+/// the suffix appended to the operator-supplied iii root to build the Telegram
+/// webhook URL. Single source of truth for both the trigger registration
+/// (see [`crate::functions::register_webhook_trigger`]) and URL derivation
+/// (see [`WebhookConfig::endpoint_url`]).
+pub const WEBHOOK_API_PATH: &str = "telegram-bot/webhook";
+
 /// Settings for the `webhook` adapter.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
-    /// Public engine URL Telegram should POST updates to.
-    pub url: String,
+    /// Public iii engine root (e.g. `https://your-engine.example`). The bot
+    /// appends its own webhook path (`/telegram-bot/webhook`) when registering
+    /// with Telegram — operators do not repeat the path. The legacy `url` key
+    /// (a full endpoint) is still accepted via alias for backward compatibility.
+    #[serde(alias = "url")]
+    pub base_url: String,
 
     /// Optional `X-Telegram-Bot-Api-Secret-Token` header value for validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
 }
 
+impl WebhookConfig {
+    /// The full endpoint Telegram should POST updates to:
+    /// `{base_url}/telegram-bot/webhook`. Returns `None` when `base_url` is
+    /// empty/whitespace (no ingress to register). If `base_url` already ends
+    /// with the webhook path (a legacy full-URL config), it is used as-is so
+    /// existing deployments keep working without double-appending the path.
+    pub fn endpoint_url(&self) -> Option<String> {
+        let base = self.base_url.trim().trim_end_matches('/');
+        if base.is_empty() {
+            return None;
+        }
+        if base.ends_with(WEBHOOK_API_PATH) {
+            Some(base.to_string())
+        } else {
+            Some(format!("{base}/{WEBHOOK_API_PATH}"))
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
-    /// Required. Telegram Bot API token. Env-expandable: `"${TELEGRAM_BOT_TOKEN:}"`.
+    /// Required. Telegram Bot API token. Env-expandable: `"${TELEGRAM_BOT_TOKEN}"`.
     #[serde(default)]
     pub bot_token: String,
 
@@ -455,13 +486,50 @@ mod tests {
     #[test]
     fn parses_webhook_adapter() {
         let yaml =
-            "updates:\n  name: webhook\n  config:\n    url: https://x/webhook\n    secret: s";
+            "updates:\n  name: webhook\n  config:\n    base_url: https://engine.example\n    secret: s";
         let cfg = WorkerConfig::from_yaml(yaml).unwrap();
         let UpdatesAdapter::Webhook(w) = cfg.updates else {
             panic!("expected webhook");
         };
-        assert_eq!(w.url, "https://x/webhook");
+        assert_eq!(w.base_url, "https://engine.example");
         assert_eq!(w.secret.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn webhook_legacy_url_alias_still_parses() {
+        let yaml = "updates:\n  name: webhook\n  config:\n    url: https://engine.example/telegram-bot/webhook";
+        let cfg = WorkerConfig::from_yaml(yaml).unwrap();
+        let UpdatesAdapter::Webhook(w) = cfg.updates else {
+            panic!("expected webhook");
+        };
+        assert_eq!(w.base_url, "https://engine.example/telegram-bot/webhook");
+    }
+
+    #[test]
+    fn endpoint_url_appends_path_to_root_and_preserves_full_url() {
+        let root = WebhookConfig {
+            base_url: "https://engine.example/".into(),
+            secret: None,
+        };
+        assert_eq!(
+            root.endpoint_url().as_deref(),
+            Some("https://engine.example/telegram-bot/webhook")
+        );
+
+        let full = WebhookConfig {
+            base_url: "https://engine.example/telegram-bot/webhook".into(),
+            secret: None,
+        };
+        assert_eq!(
+            full.endpoint_url().as_deref(),
+            Some("https://engine.example/telegram-bot/webhook")
+        );
+
+        let empty = WebhookConfig {
+            base_url: "  ".into(),
+            secret: None,
+        };
+        assert_eq!(empty.endpoint_url(), None);
     }
 
     #[test]
@@ -473,7 +541,7 @@ mod tests {
         };
         let webhook = WorkerConfig {
             updates: UpdatesAdapter::Webhook(WebhookConfig {
-                url: "https://x".into(),
+                base_url: "https://x".into(),
                 secret: None,
             }),
             ..polling.clone()

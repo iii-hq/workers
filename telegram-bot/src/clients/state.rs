@@ -57,7 +57,7 @@ pub async fn get_string(iii: &III, scope: &str, key: &str, timeout_ms: u64) -> O
 pub async fn get_i64(iii: &III, scope: &str, key: &str, timeout_ms: u64) -> Option<i64> {
     match get(iii, scope, key, Some(timeout_ms)).await {
         Ok(v) if v.is_i64() => v.as_i64(),
-        Ok(v) if v.is_u64() => v.as_u64().map(|n| n as i64),
+        Ok(v) if v.is_u64() => v.as_u64().and_then(|n| i64::try_from(n).ok()),
         _ => None,
     }
 }

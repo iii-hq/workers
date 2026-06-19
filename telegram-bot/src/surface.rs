@@ -55,7 +55,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<StatusChangedEvent, BindingAck>(
             "telegram-bot::on-status-changed",
-            "Send typing indicator while the session is working.",
+            "Observe session status changes.",
         ),
         spec::<TurnCompletedEvent, BindingAck>(
             "telegram-bot::on-turn-completed",

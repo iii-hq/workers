@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
-use iii_sdk::III;
+use iii_sdk::{Trigger, III};
 use reqwest::Client;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -115,14 +115,11 @@ pub struct RuntimeState {
     pub poller_cancel: Mutex<Option<CancellationToken>>,
     /// Join handle for the background poller task.
     pub poller_handle: Mutex<Option<JoinHandle<()>>>,
-    /// Typing-indicator refresh tasks per session_id.
-    pub typing_tasks: DashMap<String, CancellationToken>,
-    /// Sessions where typing must not restart (turn ended or terminal status).
-    pub typing_suppressed: DashMap<String, ()>,
-    /// Sessions where visible assistant output already stopped typing for this turn.
-    pub typing_output_seen: DashMap<String, ()>,
-    /// Bumped when typing is stopped/suppressed — stale refresh ticks must not send.
-    pub typing_generation: DashMap<String, u64>,
+    /// Engine HTTP-trigger handle for the webhook ingress route. `Some` only
+    /// while the webhook adapter is active; retained so the route can be
+    /// unregistered when switching back to polling (the SDK `Trigger` has no
+    /// `Drop`, so it must be explicitly `take()`n and `.unregister()`ed).
+    pub webhook_trigger: Mutex<Option<Trigger>>,
     /// Latest harness turn_id per session (for trace baggage on binding handlers).
     pub active_turns: DashMap<String, String>,
 }
@@ -154,30 +151,9 @@ impl RuntimeState {
             poll_offset: AtomicI64::new(0),
             poller_cancel: Mutex::new(None),
             poller_handle: Mutex::new(None),
-            typing_tasks: DashMap::new(),
-            typing_suppressed: DashMap::new(),
-            typing_output_seen: DashMap::new(),
-            typing_generation: DashMap::new(),
+            webhook_trigger: Mutex::new(None),
             active_turns: DashMap::new(),
         }
-    }
-
-    /// Current typing generation for a session (0 when never started).
-    pub fn typing_generation(&self, session_id: &str) -> u64 {
-        self.typing_generation
-            .get(session_id)
-            .map(|entry| *entry.value())
-            .unwrap_or(0)
-    }
-
-    /// Invalidate in-flight/deferred typing sends for a session.
-    pub fn bump_typing_generation(&self, session_id: &str) -> u64 {
-        let mut entry = self
-            .typing_generation
-            .entry(session_id.to_string())
-            .or_insert(0);
-        *entry += 1;
-        *entry
     }
 
     /// Per-entry mutex so finalize and stream handlers cannot interleave.
@@ -220,12 +196,7 @@ impl RuntimeState {
             self.pending_entries.retain(|k, _| k.0 != sid);
             self.finalized_entries.retain(|k, _| k.0 != sid);
             self.entry_locks.retain(|k, _| k.0 != sid);
-            if let Some((_, token)) = self.typing_tasks.remove(sid) {
-                token.cancel();
-            }
-            self.typing_suppressed.remove(sid);
-            self.typing_output_seen.remove(sid);
-            self.bump_typing_generation(sid);
+            self.revisions.retain(|k, _| k.0 != sid);
             self.active_turns.remove(sid);
         }
     }
@@ -293,7 +264,6 @@ mod tests {
 
         assert!(!runtime.active_turns.contains_key("old-session"));
         assert!(!runtime.fifo_queues.contains_key(&42));
-        assert!(!runtime.typing_suppressed.contains_key("old-session"));
         assert!(!runtime
             .stream_sessions
             .contains_key(&("old-session".into(), "entry-1".into())));

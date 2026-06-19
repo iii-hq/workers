@@ -47,7 +47,7 @@ pub async fn handle_internal(
     let prompt = format!(
         "Approval required for `{}`\n{}",
         record.function_id,
-        truncate(&args, 500)
+        crate::text::truncate_ellipsis(&args, 500)
     );
 
     let keyboard = telegram::inline_keyboard(vec![
@@ -75,12 +75,4 @@ fn short_token(function_call_id: &str) -> String {
         hash = hash.wrapping_mul(31).wrapping_add(u64::from(b));
     }
     format!("{:08x}", hash & 0xffff_ffff)
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
-    }
 }

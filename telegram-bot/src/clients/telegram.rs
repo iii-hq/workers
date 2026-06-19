@@ -162,37 +162,6 @@ pub async fn answer_callback_query(
     Ok(())
 }
 
-pub async fn send_chat_action(deps: &Deps, chat_id: i64, action: &str) -> Result<(), IIIError> {
-    let body = json!({
-        "chat_id": chat_id,
-        "action": action,
-    });
-    api_call(deps, "sendChatAction", body).await?;
-    Ok(())
-}
-
-/// Like [`send_chat_action`], but aborts the HTTP request when `cancel` fires.
-pub async fn send_chat_action_cancellable(
-    deps: &Deps,
-    chat_id: i64,
-    action: &str,
-    cancel: &CancellationToken,
-) -> Result<(), IIIError> {
-    let body = json!({
-        "chat_id": chat_id,
-        "action": action,
-    });
-    api_call_cancellable(
-        deps,
-        "sendChatAction",
-        body,
-        cancel,
-        Duration::from_secs(30),
-    )
-    .await?;
-    Ok(())
-}
-
 pub async fn set_my_commands(deps: &Deps) -> Result<(), IIIError> {
     let commands = json!([
         { "command": "start", "description": "Start or pick a model" },
@@ -201,6 +170,7 @@ pub async fn set_my_commands(deps: &Deps) -> Result<(), IIIError> {
         { "command": "help", "description": "Show available commands" },
         { "command": "thinking", "description": "Set reasoning depth" },
         { "command": "verbosity", "description": "Set transcript verbosity" },
+        { "command": "settings", "description": "Show current bot settings" },
     ]);
     api_call(deps, "setMyCommands", json!({ "commands": commands })).await?;
     Ok(())
@@ -233,18 +203,32 @@ pub async fn get_updates(
     offset: i64,
     timeout_secs: u64,
 ) -> Result<Vec<TelegramUpdate>, IIIError> {
+    get_updates_with_cancel(deps, offset, timeout_secs, None).await
+}
+
+pub async fn get_updates_with_cancel(
+    deps: &Deps,
+    offset: i64,
+    timeout_secs: u64,
+    cancel: Option<&CancellationToken>,
+) -> Result<Vec<TelegramUpdate>, IIIError> {
     let body = json!({
         "offset": offset,
         "timeout": timeout_secs,
         "allowed_updates": ["message", "callback_query"],
     });
-    let result = api_call_with_timeout(
-        deps,
-        "getUpdates",
-        body,
-        Duration::from_secs(timeout_secs.saturating_add(15)),
-    )
-    .await?;
+    let timeout = Duration::from_secs(timeout_secs.saturating_add(15));
+    let result = if let Some(cancel) = cancel {
+        let mut call = Box::pin(api_call_with_timeout(deps, "getUpdates", body, timeout));
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                return Err(IIIError::Handler("getUpdates cancelled".into()));
+            }
+            result = &mut call => result?,
+        }
+    } else {
+        api_call_with_timeout(deps, "getUpdates", body, timeout).await?
+    };
     let updates = result
         .as_array()
         .ok_or_else(|| IIIError::Handler("telegram getUpdates: expected array".into()))?;
@@ -259,22 +243,6 @@ pub async fn get_updates(
 
 async fn api_call(deps: &Deps, method: &str, body: Value) -> Result<Value, IIIError> {
     api_call_with_timeout(deps, method, body, Duration::from_secs(30)).await
-}
-
-async fn api_call_cancellable(
-    deps: &Deps,
-    method: &str,
-    body: Value,
-    cancel: &CancellationToken,
-    timeout: Duration,
-) -> Result<Value, IIIError> {
-    let mut call = Box::pin(api_call_with_timeout(deps, method, body, timeout));
-    tokio::select! {
-        _ = cancel.cancelled() => {
-            Err(IIIError::Handler("telegram request cancelled".into()))
-        }
-        result = &mut call => result,
-    }
 }
 
 async fn api_call_with_timeout(
@@ -294,7 +262,7 @@ async fn api_call_with_timeout(
         .json(&body)
         .send()
         .await
-        .map_err(|e| IIIError::Handler(format!("telegram http: {e}")))?;
+        .map_err(|e| IIIError::Handler(format!("telegram http: {}", e.without_url())))?;
     let payload: Value = resp
         .json()
         .await

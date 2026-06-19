@@ -5,7 +5,7 @@ use iii_sdk::{IIIError, III};
 use crate::config::SteeringMode;
 use crate::deps::Deps;
 use crate::kv;
-use crate::render::{stream, typing, verbosity};
+use crate::render::{stream, verbosity};
 use crate::telemetry;
 use crate::types::TurnCompletedEvent;
 
@@ -23,11 +23,6 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
 
 async fn handle(deps: &Deps, evt: TurnCompletedEvent) -> Result<BindingAck, IIIError> {
     telemetry::with_baggage(&evt.session_id, &evt.turn_id, || async {
-        // Suppress typing before finalize — turn-completed can be delivered before
-        // status-changed, and a stale `working` event must not restart the loop
-        // after the final answer is posted.
-        typing::suppress_typing(deps, &evt.session_id);
-
         let cfg = deps.cfg().await;
 
         stream::finalize_session(deps, &evt.session_id).await?;
@@ -81,23 +76,18 @@ async fn drain_fifo(
     session_id: &str,
     cfg: &crate::config::WorkerConfig,
 ) -> Result<(), IIIError> {
-    let next = deps
+    let text = deps
         .runtime
         .fifo_queues
-        .get_mut(&chat_id)
-        .and_then(|mut q| {
-            if q.is_empty() {
-                None
-            } else {
-                Some(q.remove(0))
-            }
-        });
+        .get(&chat_id)
+        .and_then(|q| q.first().cloned());
 
-    let Some(text) = next else {
+    let Some(text) = text else {
         return Ok(());
     };
 
     let Some(model) = kv::chat_model(deps, chat_id).await else {
+        tracing::warn!(chat_id, "FIFO drain skipped: no model selected");
         return Ok(());
     };
 
@@ -111,5 +101,11 @@ async fn drain_fifo(
         &model,
     )
     .await?;
+
+    if let Some(mut q) = deps.runtime.fifo_queues.get_mut(&chat_id) {
+        if !q.is_empty() {
+            q.remove(0);
+        }
+    }
     Ok(())
 }

@@ -34,15 +34,11 @@ async fn handle(deps: &Deps) -> Result<SetWebhookResponse, IIIError> {
             "set-webhook requires updates adapter name: webhook".into(),
         ));
     };
-    let url = webhook.url.trim();
-    if url.is_empty() {
+    let Some(url) = webhook.endpoint_url() else {
         return Err(IIIError::Handler(
-            "updates.webhook.config.url is not set in telegram-bot configuration".into(),
+            "updates.webhook.config.base_url is not set in telegram-bot configuration".into(),
         ));
-    }
-    telegram::set_webhook(deps, url, webhook.secret.as_deref()).await?;
-    Ok(SetWebhookResponse {
-        ok: true,
-        url: url.to_string(),
-    })
+    };
+    telegram::set_webhook(deps, &url, webhook.secret.as_deref()).await?;
+    Ok(SetWebhookResponse { ok: true, url })
 }

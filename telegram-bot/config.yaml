@@ -1,3 +1,0 @@
-workers:
-  - name: reminder
-    worker_path: /Users/sergio/Documents/workspaces/iii/demo/workers/reminder

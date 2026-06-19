@@ -115,19 +115,16 @@ pub async fn stop(
     serde_json::from_value(value).map_err(|e| IIIError::Handler(format!("harness::stop: {e}")))
 }
 
-pub async fn status_active(iii: &III, session_id: &str, timeout_ms: u64) -> bool {
-    match iii
+pub async fn status_active(iii: &III, session_id: &str, timeout_ms: u64) -> Result<bool, IIIError> {
+    let v = iii
         .trigger(TriggerRequest {
             function_id: "harness::status".into(),
             payload: json!({ "session_id": session_id }),
             action: None,
             timeout_ms: Some(timeout_ms),
         })
-        .await
-    {
-        Ok(v) => !v.is_null(),
-        Err(_) => false,
-    }
+        .await?;
+    Ok(!v.is_null())
 }
 
 pub fn metadata_for_chat(chat_id: i64, model: &ModelRef) -> serde_json::Map<String, Value> {

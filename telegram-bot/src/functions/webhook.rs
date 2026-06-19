@@ -11,7 +11,6 @@ use crate::deps::Deps;
 use crate::functions::bindings::message_added::BindingAck;
 use crate::kv;
 use crate::preferences::{self, parse_thinking_level, parse_verbosity, thinking_level_wire};
-use crate::render::typing;
 use crate::telemetry;
 use crate::types::{
     ChatFsm, HttpTriggerRequest, PendingApprovalRecord, ResolveDecision, TelegramUpdate,
@@ -35,9 +34,20 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
 pub async fn handle(deps: &Deps, req: HttpTriggerRequest) -> Result<WebhookResponse, IIIError> {
     let cfg = deps.cfg().await;
     if let UpdatesAdapter::Webhook(webhook) = &cfg.updates {
-        if let Some(secret) = webhook.secret.as_deref() {
-            if !header_matches(&req.headers, secret) {
-                return Err(IIIError::Handler("invalid webhook secret".into()));
+        // Validate the secret token only when one is configured. A secret-less
+        // webhook is accepted (the operator opted out of validation) so ingress
+        // works without it, but it is strongly recommended — without it anyone
+        // who learns the URL can inject forged updates.
+        match webhook.secret.as_deref().filter(|s| !s.is_empty()) {
+            Some(secret) => {
+                if !header_matches(&req.headers, secret) {
+                    return Err(IIIError::Handler("invalid webhook secret".into()));
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "webhook update accepted without secret validation; set updates.webhook.config.secret"
+                );
             }
         }
     } else {
@@ -140,13 +150,25 @@ async fn handle_message(
 
     if cfg.steering_mode == SteeringMode::Fifo {
         if let Some(ref sid) = session_id {
-            if harness::status_active(&deps.iii, sid, cfg.timeout_ms).await {
-                deps.runtime
-                    .fifo_queues
-                    .entry(chat_id)
-                    .or_default()
-                    .push(user_text);
-                return Ok(());
+            match harness::status_active(&deps.iii, sid, cfg.timeout_ms).await {
+                Ok(true) => {
+                    deps.runtime
+                        .fifo_queues
+                        .entry(chat_id)
+                        .or_default()
+                        .push(user_text);
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, session_id = %sid, "harness::status failed; queueing message");
+                    deps.runtime
+                        .fifo_queues
+                        .entry(chat_id)
+                        .or_default()
+                        .push(user_text);
+                    return Ok(());
+                }
             }
         }
     }
@@ -587,8 +609,6 @@ pub async fn send_user_message(
         kv::set_chat_session(deps, chat_id, &resp.session_id).await?;
     }
 
-    typing::allow_typing(deps, &resp.session_id);
-
     Ok(())
 }
 
@@ -624,15 +644,9 @@ fn header_matches(headers: &Option<serde_json::Map<String, Value>>, secret: &str
     let Some(map) = headers else {
         return false;
     };
-    for key in [
-        "x-telegram-bot-api-secret-token",
-        "X-Telegram-Bot-Api-Secret-Token",
-    ] {
-        if map.get(key).and_then(Value::as_str) == Some(secret) {
-            return true;
-        }
-    }
-    false
+    const TARGET: &str = "x-telegram-bot-api-secret-token";
+    map.iter()
+        .any(|(key, value)| key.eq_ignore_ascii_case(TARGET) && value.as_str() == Some(secret))
 }
 
 #[cfg(test)]

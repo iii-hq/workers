@@ -10,6 +10,7 @@ pub mod preferences;
 pub mod render;
 pub mod surface;
 pub mod telemetry;
+pub mod text;
 pub mod types;
 
 pub use config::WorkerConfig;

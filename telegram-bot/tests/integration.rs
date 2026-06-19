@@ -78,15 +78,19 @@ async fn worker_registers_on_engine() {
         .get("functions")
         .and_then(|v| v.as_array())
         .expect("functions list");
-    let registered = functions
-        .iter()
-        .any(|f| f.get("id").and_then(|v| v.as_str()) == Some("telegram-bot::webhook"));
+    // The engine identifies functions by `function_id`; older builds used `id`.
+    // Accept either so the probe is robust to engine/SDK version skew. The
+    // `telegram-bot::webhook` function is registered regardless of the active
+    // updates adapter (its HTTP route is what is adapter-gated, not the
+    // function itself).
+    let registered = functions.iter().any(|f| {
+        f.get("function_id")
+            .or_else(|| f.get("id"))
+            .and_then(|v| v.as_str())
+            == Some("telegram-bot::webhook")
+    });
     if !registered {
-        eprintln!(
-            "skipping: telegram-bot did not register (configuration worker or bot_token required)"
-        );
-        client.shutdown_async().await;
-        return;
+        panic!("telegram-bot::webhook was not registered on engine");
     }
 
     client.shutdown_async().await;
