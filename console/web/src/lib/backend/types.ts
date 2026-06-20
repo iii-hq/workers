@@ -112,6 +112,14 @@ export interface ChatStreamOptions {
    * send) so callers that haven't been updated yet still work.
    */
   sessionId?: string
+  /**
+   * Whether the optional standalone `approval-gate` worker is connected. When
+   * `false`, the real backend skips the `approval::pending-*` trigger
+   * subscriptions and the `approval::list-pending` catch-up read — those
+   * functions don't exist without the gate. Defaults to `true` so callers that
+   * haven't been updated keep the approval surface.
+   */
+  approvalGateAvailable?: boolean
 }
 
 export type CompactResult =

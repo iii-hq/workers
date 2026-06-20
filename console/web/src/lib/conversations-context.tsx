@@ -10,6 +10,10 @@ import {
   useConversations,
 } from '@/hooks/use-conversations'
 import {
+  isApprovalGateAvailable,
+  useApprovalGateStatus,
+} from '@/hooks/use-approval-gate-status'
+import {
   type HarnessStatus,
   isHarnessAvailable,
   useHarnessStatus,
@@ -44,6 +48,13 @@ interface ConversationsContextValue extends ConversationsApi {
    * the real backend.
    */
   harnessStatus: HarnessStatus
+  /**
+   * Whether the optional standalone `approval-gate` worker is connected. Gates
+   * all approval UI + `approval::*` RPC: false → the gate isn't installed, so
+   * the console hides the permission-mode picker and runs calls ungated rather
+   * than triggering "function not found". Only meaningful on the real backend.
+   */
+  approvalGateAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -65,6 +76,9 @@ export function ConversationsProvider({
 }: ConversationsProviderProps) {
   const harnessStatus = useHarnessStatus(backend.id === 'real')
   const harnessAvailable = isHarnessAvailable(harnessStatus)
+  const approvalGateAvailable = isApprovalGateAvailable(
+    useApprovalGateStatus(backend.id === 'real'),
+  )
   const {
     modelOptions,
     catalogKeys,
@@ -109,6 +123,7 @@ export function ConversationsProvider({
     refreshModels,
     refreshingModels,
     harnessStatus,
+    approvalGateAvailable,
   }
 
   return (

@@ -36,6 +36,12 @@ interface ComposerProps {
    */
   permissionMode: PermissionMode
   permissionModeLoading?: boolean
+  /**
+   * Whether to render the manual/auto/full permission-mode picker. Hidden when
+   * the optional approval-gate worker is absent (nothing to control). Defaults
+   * to `true` so existing callers / Storybook keep the picker.
+   */
+  showPermissionMode?: boolean
   thinkingLevel: ThinkingLevel
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
@@ -62,6 +68,7 @@ export function Composer({
   catalogLoading,
   permissionMode,
   permissionModeLoading,
+  showPermissionMode = true,
   thinkingLevel,
   onModeChange,
   onModelChange,
@@ -139,11 +146,13 @@ export function Composer({
       <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
         <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
         <ModePicker value={mode} onChange={onModeChange} />
-        <PermissionModePicker
-          value={permissionMode}
-          onChange={onPermissionModeChange}
-          disabled={inputDisabled || !!permissionModeLoading}
-        />
+        {showPermissionMode ? (
+          <PermissionModePicker
+            value={permissionMode}
+            onChange={onPermissionModeChange}
+            disabled={inputDisabled || !!permissionModeLoading}
+          />
+        ) : null}
         <div className="flex-1 min-w-0" />
         <Select<ThinkingLevel>
           value={thinkingLevel}

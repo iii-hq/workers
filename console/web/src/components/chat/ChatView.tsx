@@ -158,10 +158,15 @@ export function ChatView({
     ) => fn(sessionId, functionCallId, decision)
   }, [backend])
 
+  // Approval UI + `approval::*` RPC require BOTH the harness AND the optional
+  // standalone approval-gate worker. The gate owns `approval::*`; without it,
+  // enabling approval would trigger "function not found", so we treat approval
+  // as off and let calls run ungated.
   const approvalEnabled =
     backend.id === 'real' &&
     (conversationsCtx
-      ? isHarnessAvailable(conversationsCtx.harnessStatus)
+      ? isHarnessAvailable(conversationsCtx.harnessStatus) &&
+        conversationsCtx.approvalGateAvailable
       : false)
   const approvalSettings = useApprovalSettings(sessionId, approvalEnabled)
 
@@ -310,7 +315,13 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           model,
-          { signal: controller.signal, sessionId, messageId, thinkingLevel },
+          {
+            signal: controller.signal,
+            sessionId,
+            messageId,
+            thinkingLevel,
+            approvalGateAvailable: approvalEnabled,
+          },
         )) {
           switch (event.kind) {
             case 'thought-start': {
@@ -688,6 +699,7 @@ export function ChatView({
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}
+            showPermissionMode={approvalEnabled}
             thinkingLevel={thinkingLevel}
             onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
