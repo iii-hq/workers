@@ -299,6 +299,9 @@ impl SessionEntry {
 pub enum SessionStatus {
     Idle,
     Working,
+    /// Parked mid-turn awaiting a user decision (e.g. the harness reached
+    /// `max_turns` and is asking whether to continue).
+    Waiting,
     Done,
     Error,
 }

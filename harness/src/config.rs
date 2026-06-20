@@ -24,6 +24,14 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_turns")]
     pub default_max_turns: u32,
 
+    /// When an interactive (`harness::send`) top-level turn reaches its
+    /// `max_turns` budget, pause and ask the user whether to continue instead
+    /// of silently ending. The next message resumes the turn with another
+    /// `default_max_turns` of budget. Sub-agents and `harness::run` turns always
+    /// auto-end. Set `false` to restore the legacy auto-end behavior.
+    #[serde(default = "default_ask_to_continue_on_max_turns")]
+    pub ask_to_continue_on_max_turns: bool,
+
     /// Default wait guard for a parked pending call (sub-agent / hook hold)
     /// before the sweep resolves it with an error. Milliseconds.
     #[serde(default = "default_pending_timeout_ms")]
@@ -147,6 +155,9 @@ pub struct BootSignature {
 fn default_max_turns() -> u32 {
     500
 }
+fn default_ask_to_continue_on_max_turns() -> bool {
+    true
+}
 fn default_pending_timeout_ms() -> u64 {
     1_800_000
 }
@@ -252,6 +263,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             default_max_turns: default_max_turns(),
+            ask_to_continue_on_max_turns: default_ask_to_continue_on_max_turns(),
             default_pending_timeout_ms: default_pending_timeout_ms(),
             max_depth: default_max_depth(),
             max_children: default_max_children(),
@@ -277,6 +289,7 @@ mod tests {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.default_max_turns, 500);
+        assert!(cfg.ask_to_continue_on_max_turns);
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 5);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
@@ -309,6 +322,16 @@ mod tests {
         let cfg =
             WorkerConfig::from_json(&serde_json::json!({ "default_functions": null })).unwrap();
         assert!(cfg.default_functions.is_none());
+    }
+
+    #[test]
+    fn ask_to_continue_knob_round_trips_when_disabled() {
+        let cfg =
+            WorkerConfig::from_json(&serde_json::json!({ "ask_to_continue_on_max_turns": false }))
+                .unwrap();
+        assert!(!cfg.ask_to_continue_on_max_turns);
+        let back = WorkerConfig::from_json(&cfg.to_json()).unwrap();
+        assert_eq!(back, cfg);
     }
 
     #[test]

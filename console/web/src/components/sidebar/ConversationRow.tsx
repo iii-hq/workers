@@ -154,6 +154,12 @@ export function ConversationRow({
       </div>
       {conversation.status === 'working' ? (
         <StatusDot tone="accent" pulse title="working" className="shrink-0" />
+      ) : conversation.status === 'waiting' ? (
+        <StatusDot
+          tone="accent"
+          title={conversation.statusReason ?? 'waiting for your reply'}
+          className="shrink-0"
+        />
       ) : conversation.status === 'error' ? (
         <StatusDot
           tone="alert"

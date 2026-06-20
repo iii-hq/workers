@@ -5,13 +5,24 @@
     "definitions": {
       "SessionStatus": {
         "description": "Coarse session lifecycle status, rendered directly by consumers.",
-        "enum": [
-          "idle",
-          "working",
-          "done",
-          "error"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "idle",
+              "working",
+              "done",
+              "error"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Parked mid-turn awaiting a user decision (e.g. the harness reached `max_turns` and is asking whether to continue).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
@@ -46,13 +57,24 @@
     "definitions": {
       "SessionStatus": {
         "description": "Coarse session lifecycle status, rendered directly by consumers.",
-        "enum": [
-          "idle",
-          "working",
-          "done",
-          "error"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "idle",
+              "working",
+              "done",
+              "error"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Parked mid-turn awaiting a user decision (e.g. the harness reached `max_turns` and is asking whether to continue).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {

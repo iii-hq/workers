@@ -3,7 +3,7 @@
  * `session-manager/architecture/integration.md` the console consumes.
  */
 
-export type SessionStatus = 'idle' | 'working' | 'done' | 'error'
+export type SessionStatus = 'idle' | 'working' | 'waiting' | 'done' | 'error'
 
 export type ContentBlock =
   | { type: 'text'; text: string }

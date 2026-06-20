@@ -154,7 +154,12 @@ export interface MessagePatch {
 }
 
 /** Mirrors session-manager's SessionStatus. */
-export type ConversationStatus = 'idle' | 'working' | 'done' | 'error'
+export type ConversationStatus =
+  | 'idle'
+  | 'working'
+  | 'waiting'
+  | 'done'
+  | 'error'
 
 export interface Conversation {
   /**

@@ -209,6 +209,16 @@ pub struct TurnRecord {
     pub result_error: Option<String>,
     #[serde(default)]
     pub validation_retries: u32,
+    /// A top-level interactive turn parked at `max_turns`, awaiting the user's
+    /// "continue or stop" reply. Non-terminal (status == `AwaitingFunctions`);
+    /// the next `harness::send` resumes it with an extended budget.
+    #[serde(default)]
+    pub awaiting_continue: bool,
+    /// Seeded `true` by `harness::send` (an interactive chat turn); `false` for
+    /// `harness::run` and `harness::spawn` turns, which auto-end at `max_turns`
+    /// rather than pausing to ask (no interactive user to answer).
+    #[serde(default)]
+    pub interactive: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -286,6 +296,8 @@ mod tests {
             result: None,
             result_error: None,
             validation_retries: 0,
+            awaiting_continue: false,
+            interactive: false,
             created_at: 1,
             updated_at: 1,
         }
@@ -375,6 +387,18 @@ mod tests {
         assert!(r.calls.is_empty());
         assert_eq!(r.options.max_validation_retries, 2);
         assert_eq!(r.options.output, OutputContract::Text);
+        // New flags default to false so legacy records keep the auto-end path.
+        assert!(!r.awaiting_continue);
+        assert!(!r.interactive);
+    }
+
+    #[test]
+    fn awaiting_continue_round_trips() {
+        let mut r = record();
+        r.awaiting_continue = true;
+        r.interactive = true;
+        let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 
     #[test]

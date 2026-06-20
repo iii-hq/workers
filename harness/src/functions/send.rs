@@ -105,7 +105,9 @@ pub struct StartOutcome {
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
-    let out = start(deps, req).await?;
+    // `harness::send` is the interactive chat entry point: a turn it starts may
+    // pause at `max_turns` to ask the user whether to continue.
+    let out = start(deps, req, true).await?;
     Ok(SendResponse {
         session_id: out.session_id,
         turn_id: out.turn_id,
@@ -116,7 +118,15 @@ pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, Harne
 }
 
 /// Ensure the session, persist the message, and seed/merge the turn.
-pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, HarnessError> {
+///
+/// `interactive` is `true` for `harness::send` (a chat turn that may pause at
+/// `max_turns`) and `false` for `harness::run` (auto-ends so the poller never
+/// hangs on a parked turn).
+pub async fn start(
+    deps: &Deps,
+    req: SendRequest,
+    interactive: bool,
+) -> Result<StartOutcome, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
 
@@ -165,8 +175,8 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         .append(&session_id, &message, entry_id.as_deref(), None, None)
         .await?;
 
-    // CAS-seed the turn (or take the merge path).
-    let outcome = seed_or_merge(deps, &cfg, &session_id, options).await?;
+    // CAS-seed the turn (or take the merge / resume path).
+    let outcome = seed_or_merge(deps, &cfg, &session_id, options, interactive).await?;
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
@@ -262,9 +272,40 @@ async fn seed_or_merge(
     cfg: &WorkerConfig,
     session_id: &str,
     options: TurnOptions,
+    interactive: bool,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match existing {
+        Some(rec) if !rec.status.is_terminal() && rec.awaiting_continue => {
+            // Resume a turn parked at `max_turns`. Serialize against the loop /
+            // resolve / concurrent sends so the step and budget can't be
+            // double-bumped; re-read under the lock to settle the race.
+            let _guard = deps.locks.guard(session_id).await;
+            let recheck =
+                crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+            match recheck {
+                Some(mut r) if !r.status.is_terminal() && r.awaiting_continue => {
+                    // The user's message is already appended; the resumed loop
+                    // assembles it into context on its next step.
+                    resume_awaiting_continue(deps, cfg, &mut r).await?;
+                    Ok(StartOutcome {
+                        session_id: session_id.to_string(),
+                        turn_id: r.turn_id,
+                        merged: true,
+                        deduplicated: false,
+                    })
+                }
+                // Lost the race (another send resumed it, or it went terminal):
+                // fall back to a plain steering merge / fresh seed.
+                Some(r) if !r.status.is_terminal() => Ok(StartOutcome {
+                    session_id: session_id.to_string(),
+                    turn_id: r.turn_id,
+                    merged: true,
+                    deduplicated: false,
+                }),
+                _ => seed_new(deps, cfg, session_id, options, interactive).await,
+            }
+        }
         Some(rec) if !rec.status.is_terminal() => {
             // Merge path: the message is already appended; the running loop's
             // steering check folds it in. Double-check the record didn't go
@@ -284,11 +325,36 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => seed_new(deps, cfg, session_id, options).await,
+                _ => seed_new(deps, cfg, session_id, options, interactive).await,
             }
         }
-        _ => seed_new(deps, cfg, session_id, options).await,
+        _ => seed_new(deps, cfg, session_id, options, interactive).await,
     }
+}
+
+/// Resume a turn parked at `max_turns`: clear the flag, extend the budget by a
+/// fresh allotment, bump the step, set Running, persist, and re-enqueue. Mirrors
+/// `deferred::persist_and_maybe_resume`; stale-step safe via the monotonic step.
+async fn resume_awaiting_continue(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    record: &mut TurnRecord,
+) -> Result<(), HarnessError> {
+    record.awaiting_continue = false;
+    record.options.max_turns = extended_max_turns(record.options.max_turns, cfg.default_max_turns);
+    record.step += 1;
+    record.status = TurnStatus::Running;
+    record.updated_at = AgentMessage::now_ms();
+    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    crate::turn_loop::enqueue_step(&deps.iii, &record.session_id, &record.turn_id, record.step)
+        .await?;
+    Ok(())
+}
+
+/// Extend a turn's `max_turns` budget by one fresh allotment, saturating.
+/// `turn_count` is left untouched (monotonic), so the guard clears immediately.
+fn extended_max_turns(current: u32, default: u32) -> u32 {
+    current.saturating_add(default)
 }
 
 async fn seed_new(
@@ -296,6 +362,7 @@ async fn seed_new(
     cfg: &WorkerConfig,
     session_id: &str,
     options: TurnOptions,
+    interactive: bool,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -318,6 +385,8 @@ async fn seed_new(
         result: None,
         result_error: None,
         validation_retries: 0,
+        awaiting_continue: false,
+        interactive,
         created_at: now,
         updated_at: now,
     };
@@ -339,6 +408,13 @@ mod tests {
     fn string_message_becomes_user_text() {
         let m = normalize_message(MessageInput::Text("hi".into())).unwrap();
         assert!(matches!(m, AgentMessage::User(_)));
+    }
+
+    #[test]
+    fn extended_max_turns_adds_a_fresh_allotment_and_saturates() {
+        assert_eq!(extended_max_turns(500, 500), 1000);
+        assert_eq!(extended_max_turns(1, 500), 501);
+        assert_eq!(extended_max_turns(u32::MAX, 500), u32::MAX);
     }
 
     #[test]

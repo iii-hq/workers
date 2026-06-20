@@ -98,7 +98,21 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     }
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
+
+    // A turn parked at max_turns has no enqueued step, so it would never observe
+    // the abort. Re-enqueue one (Running, next step) so the loop runs, hits the
+    // abort check, and finalises cancelled.
+    let parked = record.awaiting_continue;
+    if parked {
+        record.awaiting_continue = false;
+        record.step += 1;
+        record.status = crate::types::turn::TurnStatus::Running;
+    }
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    if parked {
+        crate::turn_loop::enqueue_step(&deps.iii, &record.session_id, &record.turn_id, record.step)
+            .await?;
+    }
 
     Ok(StopResponse { stopping: true })
 }

@@ -250,6 +250,9 @@ async fn seed_child(
         result: None,
         result_error: None,
         validation_retries: 0,
+        // Sub-agents have no interactive user: auto-end at max_turns, never pause.
+        awaiting_continue: false,
+        interactive: false,
         created_at: now,
         updated_at: now,
     };

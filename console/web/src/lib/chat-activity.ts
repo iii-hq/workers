@@ -29,6 +29,9 @@ export function getDockSignal(
     if (m.role === 'function-call' && m.pendingApproval) return 'active'
   }
 
+  // A turn parked awaiting the user's reply (e.g. max_turns) needs attention.
+  if (active.status === 'waiting') return 'attention'
+
   const last = active.messages[active.messages.length - 1]
   if (!last) return null
 

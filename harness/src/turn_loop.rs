@@ -154,8 +154,12 @@ pub async fn run_step(
         }
     }
 
-    // max_turns guard: cap runaway loops with a synthetic notice.
+    // max_turns guard. An interactive top-level turn pauses and asks the user
+    // whether to continue; sub-agents and `harness::run` turns auto-end.
     if record.turn_count >= record.options.max_turns {
+        if record.interactive && record.parent.is_none() && cfg.ask_to_continue_on_max_turns {
+            return park_awaiting_continue(deps, &session, &mut record).await;
+        }
         let notice = format!(
             "max_turns ({}) reached; ending the turn.",
             record.options.max_turns
@@ -167,6 +171,7 @@ pub async fn run_step(
                 json!({ "reason": "max_turns", "message": notice }),
                 &format!("e_{}_max_turns", record.turn_id),
                 Some(&origin(&record.turn_id)),
+                None,
             )
             .await;
         let text = json!(notice);
@@ -721,6 +726,54 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
     })
 }
 
+/// Park an interactive top-level turn that reached `max_turns`, asking the user
+/// whether to continue. Non-terminal (`AwaitingFunctions` + `awaiting_continue`)
+/// with no re-enqueue — the user's next `harness::send` resumes it (see
+/// `send::resume_awaiting_continue`). Idempotent on step redelivery: the notice
+/// uses a deterministic entry id and re-parking re-writes the same fields.
+async fn park_awaiting_continue(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+) -> Result<TurnStepResult, HarnessError> {
+    let cfg = deps.cfg().await;
+    let notice = format!(
+        "Reached the max-turns limit ({}). Reply to continue, or stop here.",
+        record.options.max_turns
+    );
+    // Key the entry id on the current budget so a second pause (after one
+    // continue raised the budget) writes a distinct entry rather than colliding.
+    let entry_id = format!(
+        "e_{}_await_continue_{}",
+        record.turn_id, record.options.max_turns
+    );
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "notice",
+            json!({ "reason": "max_turns_await_continue", "message": notice }),
+            &entry_id,
+            Some(&origin(&record.turn_id)),
+            Some(&notice),
+        )
+        .await;
+
+    record.status = TurnStatus::AwaitingFunctions;
+    record.awaiting_continue = true;
+    record.updated_at = AgentMessage::now_ms();
+    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    let _ = session
+        .set_status(&record.session_id, "waiting", Some("max_turns"))
+        .await;
+
+    Ok(TurnStepResult {
+        session_id: record.session_id.clone(),
+        status: TurnStatus::AwaitingFunctions,
+        next_step: None,
+        skipped: false,
+    })
+}
+
 async fn finalize_completed(
     deps: &Deps,
     session: &SessionClient,
@@ -781,6 +834,7 @@ async fn finalize_failed(
             json!({ "reason": reason }),
             &format!("e_{}_error", record.turn_id),
             Some(&origin(&record.turn_id)),
+            None,
         )
         .await;
     let _ = session
@@ -1114,6 +1168,7 @@ async fn assemble_context(
                             data,
                             &ids::compaction_entry_id(&record.turn_id, step),
                             Some(&origin(&record.turn_id)),
+                            None,
                         )
                         .await;
                 }

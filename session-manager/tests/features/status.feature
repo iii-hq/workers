@@ -130,6 +130,29 @@ Feature: session::set-status — the coarse lifecycle status
     And delivery 1 to "ui::status" has "previous_status" = "working"
     And delivery 1 to "ui::status" has "status" = "done"
 
+  # Prevents: the "waiting" lifecycle status (a turn parked awaiting a user
+  # decision, e.g. the harness reached max_turns) being rejected by the enum.
+  Scenario: a turn can be parked in the waiting status
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
+      """
+      {}
+      """
+    When I call "session::set-status" with:
+      """
+      { "session_id": "s_001", "status": "working" }
+      """
+    And I call "session::set-status" with:
+      """
+      { "session_id": "s_001", "status": "waiting", "reason": "max_turns" }
+      """
+    And I call "session::get" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "meta.status" is "waiting"
+    And delivery 1 to "ui::status" has "status" = "waiting"
+    And delivery 1 to "ui::status" has "previous_status" = "working"
+
   # Prevents: setting status on sessions that don't exist.
   Scenario: set_status on an unknown session is rejected
     When I call "session::set-status" with:

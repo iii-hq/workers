@@ -140,6 +140,11 @@ impl SessionClient {
 
     /// Append a `custom` (kind: custom) bookkeeping entry — used for the
     /// compaction record. Idempotent on `entry_id`.
+    ///
+    /// `display`, when set, populates the custom message's `display` field (and
+    /// a mirroring text content block) so the entry RENDERS in the console; the
+    /// console drops custom entries whose `display`/`content` are both empty.
+    /// Bookkeeping entries the user never needs to see pass `None`.
     pub async fn append_custom(
         &self,
         session_id: &str,
@@ -147,20 +152,29 @@ impl SessionClient {
         data: Value,
         entry_id: &str,
         origin: Option<&Value>,
+        display: Option<&str>,
     ) -> Result<(), HarnessError> {
         // session-manager stores custom entries via a `custom` message wrapper
         // with no model wire mapping; the harness reads them back with
         // include_custom.
+        let content = match display {
+            Some(text) => json!([{ "type": "text", "text": text }]),
+            None => json!([]),
+        };
+        let mut message = json!({
+            "role": "custom",
+            "custom_type": custom_type,
+            "content": content,
+            "details": data,
+            "timestamp": AgentMessage::now_ms(),
+        });
+        if let Some(text) = display {
+            message["display"] = json!(text);
+        }
         let mut payload = json!({
             "session_id": session_id,
             "entry_id": entry_id,
-            "message": {
-                "role": "custom",
-                "custom_type": custom_type,
-                "content": [],
-                "details": data,
-                "timestamp": AgentMessage::now_ms(),
-            },
+            "message": message,
         });
         if let Some(o) = origin {
             payload["origin"] = o.clone();
