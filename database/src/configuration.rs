@@ -4,7 +4,9 @@
 use crate::config::WorkerConfig;
 use crate::handlers::AppState;
 use crate::pool::{self, Pool};
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -17,7 +19,7 @@ const CONFIG_RETRIES: u32 = 3;
 /// Register the `database` configuration schema with the configuration worker.
 /// When `seed` is present, its value is installed as `initial_value`. Otherwise,
 /// built-in defaults are seeded only when no stored value exists yet.
-pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Database",
@@ -34,7 +36,7 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
 }
 
 /// Read the live `database` configuration (env-expanded by the configuration worker).
-pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
@@ -43,7 +45,7 @@ pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -51,14 +53,14 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
 /// Returns `Ok(None)` when the entry does not exist (`NOT_FOUND`).
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
@@ -93,7 +95,7 @@ pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), Str
 }
 
 /// Register the internal config-change handler and bind a `configuration` trigger.
-pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIError> {
+pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -103,7 +105,7 @@ pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIErro
             let engine = engine.clone();
             async move {
                 on_config_change(&engine, &st).await;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                Ok::<Value, Error>(json!({ "ok": true }))
             }
         })
         .description(
@@ -130,7 +132,7 @@ pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIErro
 /// `payload.new_value` would let any caller replace the live connection pools
 /// (e.g. point them at an attacker-controlled database) without updating
 /// persisted state. Re-fetch the stored value via `configuration::get` instead.
-async fn on_config_change(iii: &III, state: &AppState) {
+async fn on_config_change(iii: &IIIClient, state: &AppState) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -150,7 +152,7 @@ async fn on_config_change(iii: &III, state: &AppState) {
     }
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii

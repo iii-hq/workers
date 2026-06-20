@@ -13,7 +13,7 @@ use database::handlers::transaction::TxReq;
 use database::handlers::{execute, prepare, query, run_statement, transaction, AppState};
 use database::pool;
 use database::transaction::TxRegistry;
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -19,7 +19,7 @@ use database::handlers::{
 };
 use database::transaction::TxRegistry;
 use database::triggers::handler::RowChangeTrigger;
-use iii_observability::{Logger, OtelConfig};
+use iii_helpers::observability::{Logger, OtelConfig};
 use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
                 async move {
                     query::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Run a read-only SQL query and return the result rows."),
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
                 async move {
                     execute::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Run a write statement (INSERT/UPDATE/DELETE/DDL)."),
@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
                 async move {
                     prepare::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Prepare a parameterized statement once."),
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
                 async move {
                     run_statement::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Run a previously-prepared handle."),
@@ -180,7 +180,7 @@ async fn main() -> Result<()> {
                 async move {
                     transaction::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Run a sequence of statements atomically."),
@@ -195,7 +195,7 @@ async fn main() -> Result<()> {
                 async move {
                     begin_transaction::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description(
@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
                 async move {
                     transaction_query::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Run a read-only SQL query inside an interactive transaction."),
@@ -228,7 +228,7 @@ async fn main() -> Result<()> {
                 async move {
                     transaction_execute::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description(
@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
                 async move {
                     commit_transaction::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Commit and finalize an interactive transaction."),
@@ -261,7 +261,7 @@ async fn main() -> Result<()> {
                 async move {
                     rollback_transaction::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description("Rollback and finalize an interactive transaction."),
@@ -276,7 +276,7 @@ async fn main() -> Result<()> {
                 async move {
                     list_databases::handle(&st, req)
                         .await
-                        .map_err(iii_sdk::IIIError::from)
+                        .map_err(iii_sdk::errors::Error::from)
                 }
             })
             .description(

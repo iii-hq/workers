@@ -285,7 +285,7 @@ mod tests {
             )),
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
-            log: iii_observability::Logger::new(),
+            log: iii_helpers::observability::Logger::new(),
         };
 
         crate::handlers::execute::handle(
