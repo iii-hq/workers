@@ -39,20 +39,22 @@ The worker refuses to start unless `fs.host_root` is set, or `fs.allow_unjailed:
 By default, `mkdir`/`chmod`/`write` reject modes carrying setuid/setgid/sticky bits (the top octal digit, e.g. `4755`) with `S210`, since they are a privilege-escalation primitive when the worker runs as root inside the jail. Set `fs.allow_special_bits: true` only if your workload genuinely needs them.
 
 ```yaml
-max_timeout_ms: 30000        # foreground exec hard cap; per-call timeout_ms is clamped to this
+max_timeout_ms: 120000       # foreground exec hard cap; per-call timeout_ms is clamped to this
 max_bg_timeout_ms: 0         # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms)
 default_timeout_ms: 10000    # applied when the caller omits timeout_ms
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
-inherit_env: false           # when false, only allowed_env keys are forwarded
-allowed_env: [PATH, HOME, LANG, LC_ALL, TERM]  # also gates per-call `env` (dangerous keys never settable)
+inherit_env: true            # forward the worker's env to children; per-call dangerous keys still blocked
+allowed_env: [PATH, HOME, LANG, LC_ALL, TERM]  # gates per-call `env` (dangerous keys never settable)
 
 # exec gate. argv[0] is matched by basename or exact path; an empty
-# allowlist means open. denylist_patterns are advisory regex over
-# argv.join(" "), a tripwire for honest mistakes only.
-allowlist: [ls, cat, pwd, echo, grep, wc, head, tail, sort, uniq, cut, date]
+# allowlist means OPEN — the shipped default, so any command runs.
+# denylist_patterns are advisory regex over argv.join(" "), a tripwire for
+# catastrophic mistakes only, NOT a security boundary.
+allowlist: []
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
   - "mkfs"
+  - "dd\\s+if="
 
 max_concurrent_jobs: 16      # exec_bg past this is rejected
 job_retention_secs: 3600     # finished jobs pruned after this
