@@ -439,7 +439,10 @@ mod tests {
         let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
         c.compile_denylist().expect("denylist compiles");
         // Empty allowlist == open: every command a coding agent needs is permitted.
-        assert!(c.allowlist.is_empty(), "shipped allowlist must be open (empty)");
+        assert!(
+            c.allowlist.is_empty(),
+            "shipped allowlist must be open (empty)"
+        );
         for cmd in ["cargo", "git", "bash", "make", "node", "python3"] {
             assert!(
                 c.is_command_allowed(&[cmd.into()]).is_ok(),
@@ -448,9 +451,7 @@ mod tests {
         }
         // The previously-blocked exec-escape (`env <cmd>`) is now permitted —
         // the open allowlist is the point of this standard.
-        assert!(c
-            .is_command_allowed(&["env".into(), "nmap".into()])
-            .is_ok());
+        assert!(c.is_command_allowed(&["env".into(), "nmap".into()]).is_ok());
         // The catastrophic denylist is still a live tripwire.
         let err = c
             .is_command_allowed(&["rm".into(), "-rf".into(), "/".into()])
