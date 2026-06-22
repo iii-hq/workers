@@ -11,7 +11,7 @@ use storage::backend::factory::LocalBackendCtx;
 use storage::backend::local;
 use storage::config::{redact_url, BucketConfig as CfgBucket, WorkerConfig};
 use storage::configuration;
-use storage::handlers::{delete_object, get_object, presign_url, put_object, AppState};
+use storage::handlers::{delete_object, get_object, head_object, presign_url, put_object, AppState};
 use storage::rustfs::{health, spawn};
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
@@ -385,7 +385,7 @@ async fn main() -> Result<()> {
         tracing::info!(queue_id = %queue_id, "cf-queue poller started");
     }
 
-    // Register the four storage::* RPC functions inline.
+    // Register the five storage::* RPC functions inline.
     {
         let st = state.clone();
         iii.register_function(
@@ -438,6 +438,19 @@ async fn main() -> Result<()> {
             ),
         );
     }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::headObject",
+            RegisterFunction::new_async(move |req: head_object::HeadReq| {
+                let st = st.clone();
+                async move { head_object::handle(&st, req).await.map_err(IIIError::from) }
+            })
+            .description(
+                "Fetch object metadata (size, ETag, content-type, last-modified) without downloading the body.",
+            ),
+        );
+    }
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         "storage::object-created",
@@ -459,7 +472,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, state.clone(), cfg.topology())
         .context("registering configuration change trigger")?;
 
-    tracing::info!("storage registered 4 functions and 2 trigger types, waiting for invocations");
+    tracing::info!("storage registered 5 functions and 2 trigger types, waiting for invocations");
     wait_for_shutdown_signal().await?;
     tracing::info!("storage shutting down");
     iii.shutdown_async().await;
