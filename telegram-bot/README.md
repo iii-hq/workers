@@ -81,7 +81,29 @@ All fields hot-reload through the `configuration` worker — no restart required
 | `steering_mode` | `steering` (default, harness merge) or `fifo` (local queue) |
 | `functions_allow` | Globs for `harness::send` `options.functions.allow` |
 | `system_prompt` | Optional system prompt on every send |
+| `system_prompt_mode` | `override` (default, replaces the harness prompt) or `enrich` (appends `system_prompt` to it) |
+| `channel_context` | `auto` (default, injects the built-in Telegram channel-context prompt) or `off` |
 | `timeout_ms` | Timeout for harness, approval, state, and configuration RPCs (default `10000`) |
+
+### Telegram channel awareness
+
+By default (`channel_context: auto`) the bot layers a built-in **channel-context
+prompt** onto every send, telling the agent that it is talking to a Telegram
+user: its reply text is the only thing the user sees (no visible console — so
+"log a reminder" reaches no one), how to format for Telegram, and how to reach
+the user *later* (reminders/schedules) by targeting this session. The prompt
+carries the live `chat_id` and `session_id`.
+
+The agent reaches the user out-of-band via **`telegram-bot::notify`**
+(`{ session_id, text, parse_mode? }`) — a session-scoped send that delivers only
+to the chat bound to that session. For reminders the agent binds a `cron`
+trigger to `telegram-bot::notify` (fixed text) or `harness::send` (generated
+reply) targeting this session.
+
+Composition with `system_prompt_mode`: `enrich` layers `[channel context] +
+[system_prompt]` on top of the harness's built-in prompt; `override` uses
+`[channel context] + [system_prompt]` alone. Set `channel_context: off` to drop
+the channel layer entirely.
 
 ### `updates` adapter
 

@@ -1,6 +1,6 @@
 use super::{
     build_system_prompt, prompt_family, resolve_system_prompt, select_identity_prompt, variants,
-    Mode, PromptFamily, SystemPromptOpts,
+    Mode, PromptFamily, SystemPromptOpts, SystemPromptStrategy,
 };
 
 fn default_prompt() -> String {
@@ -13,22 +13,64 @@ fn default_prompt() -> String {
 #[test]
 fn resolve_non_empty_override_returns_verbatim() {
     assert_eq!(
-        resolve_system_prompt(Some("custom".into()), Some(Mode::Plan), Some("anthropic")),
+        resolve_system_prompt(
+            Some("custom".into()),
+            SystemPromptStrategy::Override,
+            Some(Mode::Plan),
+            Some("anthropic")
+        ),
         Some("custom".into())
     );
 }
 
 #[test]
 fn resolve_empty_override_falls_through_to_builtin() {
-    let out = resolve_system_prompt(Some(String::new()), None, Some("anthropic"))
-        .expect("built-in prompt");
+    let out = resolve_system_prompt(
+        Some(String::new()),
+        SystemPromptStrategy::Override,
+        None,
+        Some("anthropic"),
+    )
+    .expect("built-in prompt");
     assert!(out.contains("You are an iii agent worker"));
 }
 
 #[test]
 fn resolve_missing_override_builds_builtin() {
-    let out = resolve_system_prompt(None, None, Some("openai")).expect("built-in prompt");
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, None, Some("openai"))
+        .expect("built-in prompt");
     assert!(out.contains("## Autonomy and persistence"));
+}
+
+#[test]
+fn resolve_enrich_appends_custom_to_builtin() {
+    let out = resolve_system_prompt(
+        Some("Speak only in haiku.".into()),
+        SystemPromptStrategy::Enrich,
+        None,
+        Some("anthropic"),
+    )
+    .expect("enriched prompt");
+    // Built-in identity is preserved...
+    assert!(out.contains("You are an iii agent worker"));
+    // ...and the caller prompt is appended after it.
+    assert!(out.ends_with("Speak only in haiku."));
+}
+
+#[test]
+fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
+    let out = resolve_system_prompt(
+        Some(String::new()),
+        SystemPromptStrategy::Enrich,
+        None,
+        Some("anthropic"),
+    )
+    .expect("built-in prompt");
+    let built_in = build_system_prompt(SystemPromptOpts {
+        mode: None,
+        provider: "anthropic",
+    });
+    assert_eq!(out, built_in);
 }
 
 #[test]

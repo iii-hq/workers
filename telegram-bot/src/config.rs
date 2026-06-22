@@ -47,6 +47,29 @@ pub enum SteeringMode {
     Fifo,
 }
 
+/// Whether `system_prompt` replaces the harness's built-in prompt or is
+/// appended to it. `override` (default) keeps the previous behaviour;
+/// `enrich` layers `system_prompt` on top of the built-in prompt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SystemPromptMode {
+    Override,
+    #[default]
+    Enrich,
+}
+
+/// Whether the built-in Telegram channel-context prompt is layered onto every
+/// send. `auto` (default) tells the agent it is running in Telegram (how its
+/// output is delivered, how to reach the user later, formatting limits); `off`
+/// omits it for operators who want full control of the prompt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelContext {
+    #[default]
+    Auto,
+    Off,
+}
+
 /// Model reasoning depth forwarded to `harness::send` `options.thinking_level`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -250,6 +273,16 @@ pub struct WorkerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
 
+    /// How `system_prompt` combines with the harness's built-in prompt:
+    /// `override` replaces it, `enrich` appends to it.
+    #[serde(default)]
+    pub system_prompt_mode: SystemPromptMode,
+
+    /// Whether to layer the built-in Telegram channel-context prompt onto every
+    /// send. `auto` (default) injects it; `off` omits it.
+    #[serde(default)]
+    pub channel_context: ChannelContext,
+
     /// Timeout for harness, approval, state, and configuration RPCs (ms).
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
@@ -345,6 +378,10 @@ struct WorkerConfigRaw {
     functions_allow: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     system_prompt: Option<String>,
+    #[serde(default)]
+    system_prompt_mode: SystemPromptMode,
+    #[serde(default)]
+    channel_context: ChannelContext,
     #[serde(default, deserialize_with = "deserialize_optional_u64")]
     timeout_ms: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_optional_u64")]
@@ -397,6 +434,8 @@ impl From<WorkerConfigRaw> for WorkerConfig {
             steering_mode: raw.steering_mode,
             functions_allow: raw.functions_allow,
             system_prompt: raw.system_prompt,
+            system_prompt_mode: raw.system_prompt_mode,
+            channel_context: raw.channel_context,
             timeout_ms,
         }
     }
@@ -434,6 +473,8 @@ impl Default for WorkerConfig {
             steering_mode: SteeringMode::default(),
             functions_allow: Vec::new(),
             system_prompt: None,
+            system_prompt_mode: SystemPromptMode::default(),
+            channel_context: ChannelContext::default(),
             timeout_ms: default_timeout_ms(),
         }
     }
@@ -471,6 +512,20 @@ mod tests {
         assert_eq!(cfg.steering_mode, SteeringMode::Steering);
         assert_eq!(cfg.timeout_ms, 10_000);
         assert!(matches!(cfg.updates, UpdatesAdapter::Polling(_)));
+        assert_eq!(cfg.system_prompt_mode, SystemPromptMode::Override);
+        assert_eq!(cfg.channel_context, ChannelContext::Auto);
+    }
+
+    #[test]
+    fn parses_channel_context_off() {
+        let cfg = WorkerConfig::from_json(&json!({ "channel_context": "off" })).unwrap();
+        assert_eq!(cfg.channel_context, ChannelContext::Off);
+    }
+
+    #[test]
+    fn parses_system_prompt_mode_enrich() {
+        let cfg = WorkerConfig::from_json(&json!({ "system_prompt_mode": "enrich" })).unwrap();
+        assert_eq!(cfg.system_prompt_mode, SystemPromptMode::Enrich);
     }
 
     #[test]

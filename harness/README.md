@@ -103,7 +103,9 @@ engine-grounded identity prompt at send time: four provider-specific variants
 (`anthropic`, `openai` → gpt, `kimi`, and a step-by-step default for local
 runtimes) selected from `provider`, plus an optional `mode` (`plan` | `ask` |
 `agent`) that prepends a short operating-mode paragraph. A non-empty
-`system_prompt` override wins verbatim. Prompt bodies live in
+`system_prompt` is combined with the built-in prompt per
+`options.system_prompt_strategy`: `override` (default) uses it verbatim, while
+`enrich` appends it to the built-in prompt. Prompt bodies live in
 [`prompts/`](prompts/) and are tested in [`src/prompt/tests.rs`](src/prompt/tests.rs).
 
 ## Custom trigger types

@@ -36,10 +36,21 @@ pub enum HarnessMode {
     Agent,
 }
 
+/// Mirrors the harness `SystemPromptStrategy`: `override` replaces the built-in
+/// prompt, `enrich` appends to it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptStrategy {
+    Override,
+    Enrich,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SendOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt_strategy: Option<SystemPromptStrategy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<HarnessMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +156,7 @@ mod tests {
     fn send_options_serializes_metadata() {
         let opts = SendOptions {
             system_prompt: None,
+            system_prompt_strategy: None,
             mode: None,
             thinking_level: None,
             functions: None,

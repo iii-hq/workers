@@ -10,7 +10,7 @@ use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
-use crate::prompt::{self, Mode};
+use crate::prompt::{self, Mode, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
@@ -31,6 +31,10 @@ pub enum MessageInput {
 pub struct SendOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// How `system_prompt` combines with the built-in prompt: `override`
+    /// (default) replaces it; `enrich` appends to it.
+    #[serde(default)]
+    pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,6 +206,7 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
         provider: req.provider.clone(),
         system_prompt: prompt::resolve_system_prompt(
             opts.system_prompt,
+            opts.system_prompt_strategy,
             opts.mode,
             req.provider.as_deref(),
         ),
@@ -337,5 +342,27 @@ mod tests {
         };
         let opts = build_options(&cfg, &req);
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn build_options_enrich_appends_to_builtin_prompt() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "m".into(),
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                system_prompt: Some("Speak only in haiku.".into()),
+                system_prompt_strategy: SystemPromptStrategy::Enrich,
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req);
+        let prompt = opts.system_prompt.expect("enriched prompt");
+        assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+        assert!(prompt.ends_with("Speak only in haiku."));
     }
 }

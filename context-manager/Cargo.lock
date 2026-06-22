@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "context-manager"
-version = "0.1.1"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

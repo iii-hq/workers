@@ -180,6 +180,10 @@ async fn seed_child(
             provider: provider.clone(),
             system_prompt: prompt::resolve_system_prompt(
                 req.options.as_ref().and_then(|o| o.system_prompt.clone()),
+                req.options
+                    .as_ref()
+                    .map(|o| o.system_prompt_strategy)
+                    .unwrap_or_default(),
                 req.options.as_ref().and_then(|o| o.mode),
                 provider.as_deref(),
             ),

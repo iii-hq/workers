@@ -39,7 +39,30 @@ Source: [`src/config.rs`](../src/config.rs) (schema + types),
 | `steering_mode` | `steering`\|`fifo`, default `steering` | `steering` merges mid-turn messages into the running turn; `fifo` queues locally and drains one per turn. |
 | `functions_allow` | `[glob]` | Passed to `harness::send` `options.functions.allow`. |
 | `system_prompt` | string, optional | System prompt added to every send. |
+| `system_prompt_mode` | `override`\|`enrich`, default `override` | `override` replaces the harness's built-in prompt with `system_prompt`; `enrich` appends `system_prompt` to it. Forwarded as `options.system_prompt_strategy`. |
+| `channel_context` | `auto`\|`off`, default `auto` | `auto` layers the built-in Telegram channel-context prompt (with live `chat_id`/`session_id`) ahead of `system_prompt`; `off` omits it. Composed bot-side, then sent per `system_prompt_mode`. |
 | `timeout_ms` | u64, default `10000` | Timeout for all harness/approval/state/configuration RPCs. |
+
+### System prompt composition
+
+Each send composes up to three layers: the harness built-in prompt (H), the
+Telegram channel context (T, when `channel_context: auto`), and the operator's
+`system_prompt` (O). The bot builds `extra = T + O` and sends it with
+`system_prompt_strategy = system_prompt_mode`:
+
+- `enrich` (default) → harness yields **H + T + O**.
+- `override` → harness yields **T + O** (drops the harness identity, keeps channel awareness).
+- `channel_context: off` → drops T; with `override` + `system_prompt` this matches the pre-channel behavior.
+
+The bot mints the `session_id` itself for a new chat (and records the
+chat↔session mapping up front) so T can always carry a real `session_id`.
+
+### Outbound: `telegram-bot::notify`
+
+`telegram-bot::notify { session_id, text, parse_mode? }` pushes a message to the
+chat bound to `session_id` (rejected if no chat is mapped). It is the agent's
+proactive "talk to the user" verb for scheduled reminders and async results;
+normal turn replies are still delivered reactively via `on-message-added`.
 
 The `updates` adapter is **adjacently tagged** (`name` discriminator + nested
 `config`), mirroring session-manager's storage adapter shape:

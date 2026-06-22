@@ -8,8 +8,22 @@ mod family;
 mod mode;
 mod variants;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
 pub use family::{identity_prompt, prompt_family, select_identity_prompt, PromptFamily};
 pub use mode::{paragraph, Mode};
+
+/// How a caller-supplied system prompt combines with the built-in identity prompt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptStrategy {
+    /// Caller prompt replaces the built-in prompt verbatim.
+    Override,
+    /// Caller prompt is appended to the built-in identity prompt.
+    #[default]
+    Enrich,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemPromptOpts<'a> {
@@ -27,19 +41,27 @@ pub fn build_system_prompt(opts: SystemPromptOpts<'_>) -> String {
     }
 }
 
-/// Resolve the system prompt for a turn: a non-empty caller override wins;
-/// otherwise assemble the built-in identity prompt.
+/// Resolve the system prompt for a turn. With `Override`, a non-empty caller
+/// prompt wins verbatim; with `Enrich`, it is appended to the built-in prompt.
+/// An absent or empty caller prompt yields the built-in prompt under either
+/// strategy.
 pub fn resolve_system_prompt(
     override_prompt: Option<String>,
+    strategy: SystemPromptStrategy,
     mode: Option<Mode>,
     provider: Option<&str>,
 ) -> Option<String> {
-    match override_prompt.as_deref() {
-        Some(s) if !s.is_empty() => Some(s.to_string()),
-        _ => Some(build_system_prompt(SystemPromptOpts {
+    let built_in = || {
+        build_system_prompt(SystemPromptOpts {
             mode,
             provider: provider.unwrap_or(""),
-        })),
+        })
+    };
+    let custom = override_prompt.as_deref().filter(|s| !s.is_empty());
+    match (strategy, custom) {
+        (SystemPromptStrategy::Override, Some(s)) => Some(s.to_string()),
+        (SystemPromptStrategy::Enrich, Some(s)) => Some(format!("{}\n\n{}", built_in(), s)),
+        (_, None) => Some(built_in()),
     }
 }
 

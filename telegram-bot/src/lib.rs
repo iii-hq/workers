@@ -1,3 +1,4 @@
+pub mod approval_gate;
 pub mod clients;
 pub mod config;
 pub mod configuration;
@@ -7,6 +8,7 @@ pub mod ingress;
 pub mod kv;
 pub mod manifest;
 pub mod preferences;
+pub mod prompt;
 pub mod render;
 pub mod surface;
 pub mod telemetry;
