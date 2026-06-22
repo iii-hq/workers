@@ -18,7 +18,7 @@ pub struct SpawnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
-    /// (default) replaces it; `enrich` appends to it.
+    /// replaces it; `enrich` (default) appends to it.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]

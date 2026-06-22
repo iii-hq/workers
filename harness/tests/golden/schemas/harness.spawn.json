@@ -500,8 +500,8 @@
                 "$ref": "#/definitions/SystemPromptStrategy"
               }
             ],
-            "default": "override",
-            "description": "How `system_prompt` combines with the built-in prompt: `override` (default) replaces it; `enrich` appends to it."
+            "default": "enrich",
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it."
           },
           "thinking_level": {
             "anyOf": [

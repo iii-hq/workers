@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(cfg.steering_mode, SteeringMode::Steering);
         assert_eq!(cfg.timeout_ms, 10_000);
         assert!(matches!(cfg.updates, UpdatesAdapter::Polling(_)));
-        assert_eq!(cfg.system_prompt_mode, SystemPromptMode::Override);
+        assert_eq!(cfg.system_prompt_mode, SystemPromptMode::Enrich);
         assert_eq!(cfg.channel_context, ChannelContext::Auto);
     }
 
