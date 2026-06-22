@@ -100,16 +100,14 @@ pub fn start_watch(
 ) {
     iii.register_function(
         WATCH_FN_ID,
-        RegisterFunction::new_async(
-            move |event: WorkerLifecycleEvent| {
-                let status = status.clone();
-                let on_present = on_present.clone();
-                async move {
-                    handle_worker_event(&status, &on_present, &event);
-                    Ok::<_, IIIError>(WorkerLifecycleAck { ok: true })
-                }
-            },
-        )
+        RegisterFunction::new_async(move |event: WorkerLifecycleEvent| {
+            let status = status.clone();
+            let on_present = on_present.clone();
+            async move {
+                handle_worker_event(&status, &on_present, &event);
+                Ok::<_, IIIError>(WorkerLifecycleAck { ok: true })
+            }
+        })
         .description("Internal: track approval-gate worker add/remove."),
     );
 
@@ -176,7 +174,10 @@ fn is_approval_gate_event(event: &WorkerLifecycleEvent) -> bool {
     }
     if let Some(source) = &event.source {
         if let Ok(text) = serde_json::to_string(source) {
-            if text.to_ascii_lowercase().contains(APPROVAL_GATE_WORKER_NAME) {
+            if text
+                .to_ascii_lowercase()
+                .contains(APPROVAL_GATE_WORKER_NAME)
+            {
                 return true;
             }
         }
