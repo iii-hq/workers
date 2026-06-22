@@ -27,12 +27,23 @@ pub fn content_block_to_wire(b: &ContentBlock) -> Option<Value> {
             id,
             function_id,
             arguments,
-        } => Some(json!({
-            "type": "tool_use",
-            "id": id,
-            "name": encode_tool_name(function_id),
-            "input": arguments,
-        })),
+        } => {
+            // Anthropic rejects any tool_use whose `input` is not an object
+            // ("tool_use.input: Input should be an object"). Interrupted/partial
+            // calls can persist a non-object value (null, string, …); coerce
+            // them to `{}` so a corrupted block never wedges the whole turn.
+            let input = if arguments.is_object() {
+                arguments.clone()
+            } else {
+                json!({})
+            };
+            Some(json!({
+                "type": "tool_use",
+                "id": id,
+                "name": encode_tool_name(function_id),
+                "input": input,
+            }))
+        }
         // During tool use Anthropic requires signed thinking blocks passed
         // back unmodified (400 otherwise); unsigned blocks (aborted/partial
         // stream) would fail signature verification and are dropped.
@@ -240,6 +251,47 @@ mod tests {
             function_id: "shell::exec".into(),
             arguments: json!({ "cmd": "ls" }),
         }
+    }
+
+    #[test]
+    fn non_object_tool_input_is_coerced_to_object() {
+        // Anthropic rejects any tool_use whose `input` is not an object
+        // ("messages.N.content.0.tool_use.input: Input should be an object").
+        // An interrupted/partial tool call can carry a non-object `arguments`
+        // (null from an unparseable partial, or any stray value), so the wire
+        // boundary must coerce it — this also unblocks sessions already holding
+        // a corrupted block.
+        for bad in [
+            Value::Null,
+            json!("partial"),
+            json!(7),
+            json!([1, 2]),
+            json!(true),
+        ] {
+            let wire = content_block_to_wire(&ContentBlock::FunctionCall {
+                id: "t1".into(),
+                function_id: "shell::exec".into(),
+                arguments: bad.clone(),
+            })
+            .expect("tool_use is emitted");
+            assert_eq!(wire["type"], "tool_use");
+            assert!(
+                wire["input"].is_object(),
+                "input must be an object, got {} for arguments {bad}",
+                wire["input"]
+            );
+        }
+    }
+
+    #[test]
+    fn object_tool_input_is_passed_through_unchanged() {
+        let wire = content_block_to_wire(&ContentBlock::FunctionCall {
+            id: "t1".into(),
+            function_id: "shell::exec".into(),
+            arguments: json!({ "cmd": "ls" }),
+        })
+        .unwrap();
+        assert_eq!(wire["input"], json!({ "cmd": "ls" }));
     }
 
     #[test]
