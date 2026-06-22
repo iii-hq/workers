@@ -61,29 +61,10 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Prefer to call an agent like a function and get a typed result back? Use
-`harness::run` (held open until the turn ends) with an output contract:
-
-```rust
-let result = iii
-    .trigger(TriggerRequest {
-        function_id: "harness::run".into(),
-        payload: json!({
-            "message": "Classify: 'Refund not received after 14 days'",
-            "model": "claude-sonnet-4",
-            "provider": "anthropic",
-            "options": { "output": { "type": "json", "schema": {
-                "type": "object",
-                "properties": { "category": { "type": "string" }, "urgency": { "type": "string" } },
-                "required": ["category"]
-            } } }
-        }),
-        action: None,
-        timeout_ms: Some(300_000),
-    })
-    .await?;
-// { status: "completed", result: { "category": "billing", "urgency": "high" }, ... }
-```
+Want a typed result back? Add an output contract
+(`options.output: { type: "json", schema }`) and read the result off the
+[`harness::turn-completed`](#custom-trigger-types) event — bind it filtered to
+your session and the result arrives when the turn finishes.
 
 The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat

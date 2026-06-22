@@ -126,7 +126,7 @@ pub struct ParentLink {
 }
 
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
-/// `harness::send` / `run` / `spawn`, advanced one step per `harness::turn`.
+/// `harness::send` / `spawn`, advanced one step per `harness::turn`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnRecord {
     pub turn_id: String,

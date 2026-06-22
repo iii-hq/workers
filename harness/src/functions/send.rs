@@ -92,7 +92,7 @@ pub struct SendResponse {
     pub deduplicated: Option<bool>,
 }
 
-/// The shared result of starting (or merging) a turn, reused by `harness::run`.
+/// The shared result of starting (or merging) a turn.
 pub struct StartOutcome {
     pub session_id: String,
     pub turn_id: String,
