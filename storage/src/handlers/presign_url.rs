@@ -18,6 +18,12 @@ pub struct PresignReq {
     pub content_type: Option<String>,
     #[serde(default = "default_expires")]
     pub expires_in_seconds: u64,
+    /// GET-only: override `Content-Disposition` header on the served response.
+    /// Rejected with `INVALID_PRESIGN_PARAMS` if set on a PUT presign.
+    pub response_content_disposition: Option<String>,
+    /// GET-only: override `Content-Type` header on the served response.
+    /// Rejected with `INVALID_PRESIGN_PARAMS` if set on a PUT presign.
+    pub response_content_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Clone, Copy)]
@@ -60,6 +66,13 @@ pub async fn handle(state: &AppState, req: PresignReq) -> Result<PresignResp, St
             reason: "content_type is required for PUT presigns to prevent type smuggling".into(),
         }));
     }
+    if matches!(method, PresignMethod::Put)
+        && (req.response_content_disposition.is_some() || req.response_content_type.is_some())
+    {
+        return Err(err_to_str(StorageError::InvalidPresignParams {
+            reason: "response_content_disposition and response_content_type are only valid for GET presigns".into(),
+        }));
+    }
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let resp = backend
         .presign(BackendPresignReq {
@@ -67,8 +80,8 @@ pub async fn handle(state: &AppState, req: PresignReq) -> Result<PresignResp, St
             method,
             content_type: req.content_type,
             expires_in_seconds: req.expires_in_seconds,
-            response_content_disposition: None,
-            response_content_type: None,
+            response_content_disposition: req.response_content_disposition,
+            response_content_type: req.response_content_type,
         })
         .await
         .map_err(|e| {
@@ -164,5 +177,72 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("INVALID_PRESIGN_PARAMS"), "got: {err}");
+    }
+
+    fn state_with_mock() -> (AppState, Arc<MockBackend>) {
+        let m = Arc::new(MockBackend::default());
+        let mut map = HashMap::new();
+        map.insert("uploads".to_string(), Arc::clone(&m) as Arc<dyn Backend>);
+        let st = AppState {
+            backends: Arc::new(RwLock::new(map)),
+            local_ctx: None,
+        };
+        (st, m)
+    }
+
+    #[tokio::test]
+    async fn presign_get_threads_response_overrides_to_backend() {
+        let (st, mock) = state_with_mock();
+        super::handle(
+            &st,
+            req(json!({
+                "bucket": "uploads",
+                "key": "file.pdf",
+                "method": "GET",
+                "expires_in_seconds": 600,
+                "response_content_disposition": "attachment; filename=\"file.pdf\"",
+                "response_content_type": "application/pdf"
+            })),
+        )
+        .await
+        .unwrap();
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        if let crate::backend::mock::MockCall::Presign(presign_req) = &calls[0] {
+            assert_eq!(
+                presign_req.response_content_disposition.as_deref(),
+                Some("attachment; filename=\"file.pdf\"")
+            );
+            assert_eq!(
+                presign_req.response_content_type.as_deref(),
+                Some("application/pdf")
+            );
+        } else {
+            panic!("expected Presign call, got: {:?}", calls[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn presign_put_with_response_override_is_rejected() {
+        let st = state();
+        let err = super::handle(
+            &st,
+            req(json!({
+                "bucket": "uploads",
+                "key": "k",
+                "method": "PUT",
+                "content_type": "image/png",
+                "expires_in_seconds": 600,
+                "response_content_disposition": "attachment; filename=\"k\""
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PRESIGN_PARAMS"), "got: {err}");
+        assert!(
+            err.contains("response_content_disposition") || err.contains("GET"),
+            "got: {err}"
+        );
     }
 }
