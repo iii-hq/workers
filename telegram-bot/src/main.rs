@@ -5,6 +5,7 @@ use clap::Parser;
 use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 use tokio::sync::RwLock;
 
+use telegram_bot::approval_gate::{self, ApprovalGateStatus};
 use telegram_bot::clients::telegram;
 use telegram_bot::configuration::{self, ConfigCell};
 use telegram_bot::deps::Deps;
@@ -85,10 +86,32 @@ async fn main() -> Result<()> {
         .context("telegram-bot requires a non-empty bot_token in configuration")?;
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
-    let deps = Arc::new(Deps::new(iii.clone(), cell.clone()));
+    let approval_gate = Arc::new(ApprovalGateStatus::new());
+    let deps = Arc::new(Deps::new(iii.clone(), cell.clone(), approval_gate.clone()));
 
     functions::register_all(&iii, &deps);
+
+    let present = approval_gate::probe_presence(&iii).await;
+    approval_gate.set_present(present);
+    approval_gate.finish_loading();
+    if approval_gate.is_available() {
+        tracing::info!("approval-gate present");
+    } else {
+        tracing::info!("approval-gate absent — approval prompts disabled");
+    }
+
     functions::bind_triggers(&iii);
+    if approval_gate.is_available() {
+        functions::bind_approval_triggers(&iii);
+    }
+
+    let iii_for_bind = iii.clone();
+    approval_gate::start_watch(
+        iii.clone(),
+        approval_gate.clone(),
+        Arc::new(move || functions::bind_approval_triggers(&iii_for_bind)),
+    );
+
     functions::bind_http_triggers(&iii);
 
     configuration::register_config_trigger(&iii, cell, deps.clone())

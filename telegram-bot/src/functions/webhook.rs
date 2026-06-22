@@ -6,7 +6,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::clients::{approval, harness, router, telegram};
-use crate::config::{ModelRef, SteeringMode, UpdatesAdapter, WorkerConfig};
+use crate::config::{
+    ChannelContext, ModelRef, SteeringMode, SystemPromptMode, UpdatesAdapter, WorkerConfig,
+};
 use crate::deps::Deps;
 use crate::functions::bindings::message_added::BindingAck;
 use crate::kv;
@@ -511,6 +513,9 @@ async fn resolve_callback(
     approve_always: bool,
     cfg: &WorkerConfig,
 ) -> Result<(), IIIError> {
+    if !deps.approval_gate.is_available() {
+        return Ok(());
+    }
     let Some(data) = kv::load_approval_callback(deps, token).await else {
         return Ok(());
     };
@@ -552,6 +557,20 @@ pub async fn send_user_message(
     cfg: &WorkerConfig,
     model: &ModelRef,
 ) -> Result<(), IIIError> {
+    // Resolve the session id, minting one bot-side for a brand-new chat. Doing
+    // this up front means the channel-context prompt can carry a real
+    // session_id from the very first message (so the agent can target this
+    // session for reminders), and the chat↔session mapping is recorded before
+    // the turn starts (so `telegram-bot::notify` can resolve the chat).
+    let session_id: String = match session_id {
+        Some(s) => s.to_string(),
+        None => {
+            let sid = crate::prompt::new_session_id();
+            kv::set_chat_session(deps, chat_id, &sid).await?;
+            sid
+        }
+    };
+
     let thinking_level = preferences::effective_thinking_level(deps, chat_id, cfg)
         .await
         .map(|l| thinking_level_wire(l).to_string());
@@ -560,14 +579,14 @@ pub async fn send_user_message(
         .map(telemetry::telegram_message_id)
         .unwrap_or_else(|| format!("tg-fifo-{chat_id}"));
 
-    let session_id_for_trace = session_id
-        .map(String::from)
-        .unwrap_or_else(|| telemetry::pending_session_id(chat_id));
-
-    let metadata = telemetry::tracing_metadata(&session_id_for_trace, &message_id);
+    let metadata = telemetry::tracing_metadata(&session_id, &message_id);
 
     let options = harness::SendOptions {
-        system_prompt: cfg.system_prompt.clone(),
+        system_prompt: compose_system_prompt(cfg, chat_id, &session_id, model),
+        system_prompt_strategy: Some(match cfg.system_prompt_mode {
+            SystemPromptMode::Override => harness::SystemPromptStrategy::Override,
+            SystemPromptMode::Enrich => harness::SystemPromptStrategy::Enrich,
+        }),
         mode: None,
         thinking_level,
         functions: if cfg.functions_allow.is_empty() {
@@ -580,11 +599,11 @@ pub async fn send_user_message(
         metadata: Some(metadata),
     };
 
-    let resp = telemetry::with_baggage(&session_id_for_trace, &message_id, || async {
+    let resp = telemetry::with_baggage(&session_id, &message_id, || async {
         harness::send(
             &deps.iii,
             harness::HarnessSendRequest {
-                session_id: session_id.map(String::from),
+                session_id: Some(session_id.clone()),
                 message: text.to_string(),
                 model: model.id.clone(),
                 provider: model.provider.clone(),
@@ -605,11 +624,35 @@ pub async fn send_user_message(
         .active_turns
         .insert(resp.session_id.clone(), resp.turn_id.clone());
 
-    if session_id.is_none() {
-        kv::set_chat_session(deps, chat_id, &resp.session_id).await?;
-    }
-
     Ok(())
+}
+
+/// Compose the per-send system prompt the bot hands to the harness: the
+/// built-in Telegram channel context (when `channel_context: auto`) followed by
+/// the operator's configured `system_prompt`. Combined with the harness's base
+/// prompt according to `system_prompt_mode` (`enrich` layers on top of it,
+/// `override` replaces it). Returns `None` when neither source contributes, so
+/// the harness falls back to its own built-in prompt.
+fn compose_system_prompt(
+    cfg: &WorkerConfig,
+    chat_id: i64,
+    session_id: &str,
+    model: &ModelRef,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if cfg.channel_context == ChannelContext::Auto {
+        parts.push(crate::prompt::channel_context(chat_id, session_id, model));
+    }
+    if let Some(operator) = &cfg.system_prompt {
+        if !operator.is_empty() {
+            parts.push(operator.clone());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 async fn bind_model(deps: &Deps, chat_id: i64, model: &ModelRef) -> Result<(), IIIError> {
@@ -619,6 +662,9 @@ async fn bind_model(deps: &Deps, chat_id: i64, model: &ModelRef) -> Result<(), I
 }
 
 async fn catch_up_approvals(deps: &Deps, session_id: &str, cfg: &WorkerConfig) {
+    if !deps.approval_gate.is_available() {
+        return;
+    }
     let Ok(pending) = approval::list_pending(&deps.iii, session_id, cfg.timeout_ms).await else {
         return;
     };
@@ -651,11 +697,67 @@ fn header_matches(headers: &Option<serde_json::Map<String, Value>>, secret: &str
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::config::ChannelContext;
+
     #[test]
     fn parses_model_callback() {
         let data = "m:anthropic:claude-sonnet-4";
         let parts: Vec<&str> = data.splitn(3, ':').collect();
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[1], "anthropic");
+    }
+
+    fn model() -> ModelRef {
+        ModelRef {
+            provider: "anthropic".into(),
+            id: "claude-sonnet-4".into(),
+        }
+    }
+
+    #[test]
+    fn compose_default_injects_channel_context() {
+        // Default config: channel_context = auto, no operator prompt.
+        let cfg = WorkerConfig::default();
+        let out = compose_system_prompt(&cfg, 7, "s_x", &model()).expect("channel context");
+        assert!(out.contains("Telegram channel"));
+        assert!(out.contains("session_id: s_x"));
+    }
+
+    #[test]
+    fn compose_appends_operator_prompt_after_channel_context() {
+        let cfg = WorkerConfig {
+            system_prompt: Some("Always answer in French.".into()),
+            ..Default::default()
+        };
+        let out = compose_system_prompt(&cfg, 7, "s_x", &model()).expect("composed");
+        let ctx_at = out.find("Telegram channel").expect("context present");
+        let op_at = out
+            .find("Always answer in French.")
+            .expect("operator present");
+        assert!(
+            ctx_at < op_at,
+            "operator prompt must come after channel context"
+        );
+    }
+
+    #[test]
+    fn compose_channel_off_uses_operator_only() {
+        let cfg = WorkerConfig {
+            channel_context: ChannelContext::Off,
+            system_prompt: Some("op".into()),
+            ..Default::default()
+        };
+        let out = compose_system_prompt(&cfg, 7, "s_x", &model()).expect("operator only");
+        assert_eq!(out, "op");
+    }
+
+    #[test]
+    fn compose_channel_off_no_operator_is_none() {
+        let cfg = WorkerConfig {
+            channel_context: ChannelContext::Off,
+            ..Default::default()
+        };
+        assert!(compose_system_prompt(&cfg, 7, "s_x", &model()).is_none());
     }
 }

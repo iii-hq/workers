@@ -1,4 +1,5 @@
 pub mod bindings;
+pub mod notify;
 pub mod set_webhook;
 pub mod webhook;
 
@@ -15,6 +16,7 @@ use crate::deps::Deps;
 
 pub const WEBHOOK_ID: &str = "telegram-bot::webhook";
 pub const SET_WEBHOOK_ID: &str = "telegram-bot::set-webhook";
+pub const NOTIFY_ID: &str = "telegram-bot::notify";
 pub const ON_MESSAGE_ADDED_ID: &str = "telegram-bot::on-message-added";
 pub const ON_MESSAGE_UPDATED_ID: &str = "telegram-bot::on-message-updated";
 pub const ON_STATUS_CHANGED_ID: &str = "telegram-bot::on-status-changed";
@@ -49,6 +51,7 @@ fn register<Req, Resp, F, Fut>(
 pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
     webhook::register(iii, deps);
     set_webhook::register(iii, deps);
+    notify::register(iii, deps);
     bindings::register(iii, deps);
     tracing::info!("all functions registered");
 }
@@ -67,6 +70,16 @@ pub fn bind_triggers(iii: &Arc<III>) {
         ),
         ("session::status-changed", ON_STATUS_CHANGED_ID, json!({})),
         ("harness::turn-completed", ON_TURN_COMPLETED_ID, json!({})),
+    ];
+    for (trigger_type, function_id, config) in bindings {
+        bind_best_effort(iii, trigger_type, function_id, config);
+    }
+}
+
+/// Bind approval trigger handlers. Only safe to call when the optional
+/// `approval-gate` worker is connected (registers `approval::pending-*`).
+pub fn bind_approval_triggers(iii: &Arc<III>) {
+    let bindings = [
         (
             "approval::pending-created",
             ON_PENDING_CREATED_ID,

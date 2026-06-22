@@ -479,6 +479,15 @@
               "null"
             ]
           },
+          "system_prompt_strategy": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SystemPromptStrategy"
+              }
+            ],
+            "default": "enrich",
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it."
+          },
           "thinking_level": {
             "anyOf": [
               {
@@ -514,6 +523,25 @@
           "error"
         ],
         "type": "string"
+      },
+      "SystemPromptStrategy": {
+        "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
+        "oneOf": [
+          {
+            "description": "Caller prompt replaces the built-in prompt verbatim.",
+            "enum": [
+              "override"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Caller prompt is appended to the built-in identity prompt.",
+            "enum": [
+              "enrich"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "ThinkingLevel": {
         "enum": [

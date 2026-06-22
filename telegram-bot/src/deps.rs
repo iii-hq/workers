@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::approval_gate::ApprovalGateStatus;
 use crate::configuration::ConfigCell;
 use crate::render::stream::EffectiveTransport;
 use crate::render::verbosity::MessagePhase;
@@ -21,14 +22,16 @@ pub struct Deps {
     pub iii: Arc<III>,
     pub config: ConfigCell,
     pub runtime: Arc<RuntimeState>,
+    pub approval_gate: Arc<ApprovalGateStatus>,
 }
 
 impl Deps {
-    pub fn new(iii: Arc<III>, config: ConfigCell) -> Self {
+    pub fn new(iii: Arc<III>, config: ConfigCell, approval_gate: Arc<ApprovalGateStatus>) -> Self {
         Self {
             iii,
             config,
             runtime: Arc::new(RuntimeState::new()),
+            approval_gate,
         }
     }
 

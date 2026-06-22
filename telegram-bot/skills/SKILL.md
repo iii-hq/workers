@@ -77,9 +77,15 @@ the whole job.
 Inbound: a Telegram update arrives by long-poll or webhook and lands in the
 `telegram-bot::webhook` handler. Slash commands are handled locally; any other
 text is sent to `harness::send` with the chat's session, the selected model, the
-configured `system_prompt`, and the `functions_allow` policy. The first message
-in a chat creates the session and persists a `chat_id ↔ session_id` mapping;
-later messages continue that session until the next `/start`.
+composed system prompt (built-in Telegram channel context per `channel_context`
+plus the configured `system_prompt`, sent per `system_prompt_mode`), and the
+`functions_allow` policy. The first message in a chat mints the session id
+bot-side and persists a `chat_id ↔ session_id` mapping; later messages continue
+that session until the next `/start`.
+
+Proactive outbound: the agent can reach the user out-of-band via
+`telegram-bot::notify` (session-scoped), e.g. a cron-bound reminder targeting
+this session.
 
 Outbound: as the turn runs, `session-manager`, `harness`, and `approval-gate`
 emit events. The worker's bound handlers consume them and render into the
