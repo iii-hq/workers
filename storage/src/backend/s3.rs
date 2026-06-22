@@ -165,11 +165,7 @@ impl Backend for S3Backend {
     }
 
     async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
-        let mut h = self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&req.key);
+        let mut h = self.client.head_object().bucket(&self.bucket).key(&req.key);
         if let Some(v) = req.version_id {
             h = h.version_id(v);
         }

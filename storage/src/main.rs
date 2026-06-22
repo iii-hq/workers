@@ -11,7 +11,9 @@ use storage::backend::factory::LocalBackendCtx;
 use storage::backend::local;
 use storage::config::{redact_url, BucketConfig as CfgBucket, WorkerConfig};
 use storage::configuration;
-use storage::handlers::{delete_object, get_object, head_object, presign_url, put_object, AppState};
+use storage::handlers::{
+    delete_object, get_object, head_object, presign_url, put_object, AppState,
+};
 use storage::rustfs::{health, spawn};
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};

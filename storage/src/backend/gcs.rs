@@ -203,7 +203,11 @@ impl Backend for GcsBackend {
             .get_object(&get_req)
             .await
             .map_err(map_gcs_error)?;
-        let size = if object.size < 0 { 0 } else { object.size as u64 };
+        let size = if object.size < 0 {
+            0
+        } else {
+            object.size as u64
+        };
         let last_modified = object
             .updated
             .and_then(|t| chrono::Utc.timestamp_opt(t.unix_timestamp(), 0).single())

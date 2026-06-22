@@ -117,7 +117,6 @@ mod tests {
         assert!(err.contains("UNKNOWN_BUCKET"), "got: {err}");
     }
 
-
     #[tokio::test]
     async fn empty_key_errors() {
         let (st, _m) = state_with(None);
