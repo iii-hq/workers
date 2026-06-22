@@ -61,6 +61,14 @@ await iii.trigger({
     key: 'u/1/profile.jpg',
   },
 })                                  // idempotent: returns { deleted: false } if absent
+
+const { content_type, etag, size, last_modified } = await iii.trigger({
+  function_id: 'storage::headObject',
+  payload: {
+    bucket: 'uploads',
+    key: 'u/1/profile.jpg',
+  },
+})                                  // fetches metadata only — no body download
 ```
 
 From a Rust worker:
@@ -240,6 +248,32 @@ triggers:
 > redelivery or auth-scope edge cases in production, file an issue —
 > v1.1 will finalize the consume path.
 
+## RPC reference notes
+
+### `storage::presignUrl` — GET-only response-override params
+
+Two optional fields are accepted only when `method` is `"GET"`. Passing
+either on a `PUT` presign returns `INVALID_PRESIGN_PARAMS`.
+
+| Field | Type | Description |
+|---|---|---|
+| `response_content_disposition` | `string` (optional) | Override `Content-Disposition` header on the served response (e.g. `"attachment; filename=\"report.pdf\""`). |
+| `response_content_type` | `string` (optional) | Override `Content-Type` header on the served response (e.g. `"application/pdf"`). |
+
+```ts
+const { url } = await iii.trigger({
+  function_id: 'storage::presignUrl',
+  payload: {
+    bucket: 'uploads',
+    key: 'reports/q1.pdf',
+    method: 'GET',
+    expires_in_seconds: 300,
+    response_content_disposition: 'attachment; filename="q1.pdf"',
+    response_content_type: 'application/pdf',
+  },
+})
+```
+
 ## Local development & testing
 
 The committed `config.yaml` declares a single `scratch` bucket served by the
@@ -257,8 +291,9 @@ cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
 The worker registers its schema with the `configuration` worker (seeding
 `config.yaml` if no stored value exists), fetches the live config, then spawns a
 rustfs process on a random port, waits for it to become healthy, and registers
-`storage::putObject`, `storage::getObject`, `storage::deleteObject`, and
-`storage::presignUrl`. Files land under `./data/storage/` (configurable via
+`storage::putObject`, `storage::getObject`, `storage::deleteObject`,
+`storage::presignUrl`, and `storage::headObject`. Files land under
+`./data/storage/` (configurable via
 `providers.local.data_dir`).
 
 Running `--manifest` prints the registry-publish JSON without touching the

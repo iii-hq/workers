@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 
 pub mod delete_object;
 pub mod get_object;
+pub mod head_object;
 pub mod presign_url;
 pub mod put_object;
 

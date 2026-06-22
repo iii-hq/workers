@@ -164,6 +164,36 @@ impl Backend for S3Backend {
         })
     }
 
+    async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
+        let mut h = self.client.head_object().bucket(&self.bucket).key(&req.key);
+        if let Some(v) = req.version_id {
+            h = h.version_id(v);
+        }
+        let resp = h.send().await.map_err(map_s3_error)?;
+        let last_modified = resp
+            .last_modified
+            .and_then(|dt| {
+                chrono::Utc
+                    .timestamp_opt(dt.secs(), dt.subsec_nanos())
+                    .single()
+            })
+            .unwrap_or_else(Utc::now);
+        let content_type = resp
+            .content_type
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let etag = resp.e_tag.unwrap_or_default();
+        let size = match resp.content_length {
+            Some(n) if n >= 0 => n as u64,
+            _ => 0,
+        };
+        Ok(HeadResp {
+            content_type,
+            etag,
+            last_modified,
+            size,
+        })
+    }
+
     async fn delete(&self, req: DeleteReq) -> Result<DeleteResp, BackendError> {
         let mut d = self
             .client
@@ -189,14 +219,16 @@ impl Backend for S3Backend {
                 message: format!("presign config: {e}"),
             })?;
         let presigned = match req.method {
-            PresignMethod::Get => self
-                .client
-                .get_object()
-                .bucket(&self.bucket)
-                .key(&req.key)
-                .presigned(cfg)
-                .await
-                .map_err(map_s3_error)?,
+            PresignMethod::Get => {
+                let mut get = self.client.get_object().bucket(&self.bucket).key(&req.key);
+                if let Some(cd) = req.response_content_disposition {
+                    get = get.response_content_disposition(cd);
+                }
+                if let Some(ct) = req.response_content_type {
+                    get = get.response_content_type(ct);
+                }
+                get.presigned(cfg).await.map_err(map_s3_error)?
+            }
             PresignMethod::Put => {
                 let mut put = self.client.put_object().bucket(&self.bucket).key(&req.key);
                 if let Some(ct) = &req.content_type {
