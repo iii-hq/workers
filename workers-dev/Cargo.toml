@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "workers-dev"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Local dev orchestrator for iii workers in this repo"
+
+[[bin]]
+name = "workers-dev"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "io-util", "process"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[dev-dependencies]
+tempfile = "3"
