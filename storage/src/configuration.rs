@@ -114,6 +114,23 @@ pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), Str
     Ok(())
 }
 
+/// Internal `storage::on-config-change` trigger payload. The handler re-fetches
+/// the authoritative configuration, so this carries only the (advisory)
+/// configuration id; a struct (not `Value`) keeps the request schema concrete
+/// and unknown fields are ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnConfigChangeEvent {
+    /// Configuration id that changed (advisory; the handler re-fetches the value).
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Ack returned by the internal `storage::on-config-change` handler.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OnConfigChangeResponse {
+    pub ok: bool,
+}
+
 /// Register the internal config-change handler and bind a `configuration` trigger.
 ///
 /// `boot_topology` is the bucket/notification topology captured at startup; any
@@ -127,13 +144,13 @@ pub fn register_config_trigger(
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let st = st.clone();
             let engine = engine.clone();
             let boot_topology = boot_topology.clone();
             async move {
                 on_config_change(&engine, &st, &boot_topology).await;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
