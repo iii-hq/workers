@@ -66,8 +66,7 @@ sequenceDiagram
 `harness::send` is the entry point; it ensures the session (applying `session.metadata`, the
 tenancy hook), persists the user message, and enqueues the first `harness::turn` step, then returns
 immediately — or merges into a turn that is already running (see
-[Concurrency & steering](#concurrency--steering)). [`harness::run`](#harnessrun) is the same path
-with the call held open until the turn ends; [`harness::spawn`](#harnessspawn) seeds a child
+[Concurrency & steering](#concurrency--steering)). [`harness::spawn`](#harnessspawn) seeds a child
 session through the same CAS. The loop runs as durable enqueued
 steps so a crash or restart resumes mid-turn (see
 [Durability & idempotency](#durability--idempotency)). Every `session::append` /
@@ -356,7 +355,7 @@ and joins on their results; that is the whole feature.
 ## Output contract
 
 A turn can declare what it must produce — free text (default) or JSON, optionally validated against
-a JSON Schema. This is what turns a sub-agent or a backend [`harness::run`](#harnessrun) call into a
+a JSON Schema. This is what turns a sub-agent or a backend [`harness::send`](#harnesssend) call into a
 typed unit of work instead of "parse the transcript yourself". The shape (`OutputContract`) is
 shared — see [README § Output contract](README.md#output-contract).
 
@@ -379,8 +378,7 @@ shared — see [README § Output contract](README.md#output-contract).
     After that the turn ends `completed` with `result_error` set and the raw final text as a
     best-effort `result`.
 
-The result is stored on the turn record, returned by [`harness::run`](#harnessrun) and
-[`harness::status`](#harnessstatus), carried on the
+The result is stored on the turn record, returned by [`harness::status`](#harnessstatus), carried on the
 [`harness::turn_completed`](#trigger-types-emitted) event, and — for sub-agents — delivered to the
 parent in the `function_result` (`details` carries the structured value; `content` a text
 rendering).
@@ -553,7 +551,7 @@ For operators wiring hooks and developers writing them:
 4. **Mutations are silent.** The transcript stores the *effective* (rewritten) values. Return
    `annotations` (merged into the entry's `origin`) or log originals yourself, or audits will show
    data that never matched what actually ran.
-5. **Don't start turns from hooks.** A hook calling `harness::send` / `run` can loop
+5. **Don't start turns from hooks.** A hook calling `harness::send` can loop
    (hook -> turn -> hook). If a hook must trigger follow-up work, emit through a queue or carry a
    hop counter in `session.metadata`.
 6. **Reach for events first.** If observe-only is enough, bind
@@ -563,8 +561,6 @@ For operators wiring hooks and developers writing them:
 ## Registered functions
 
 - `harness::send` — Entry point: persist the incoming message and kick off a turn; returns fast.
-- `harness::run` — `send` with the call held open until the turn ends; returns the result (the
-  backend/automation entry point).
 - `harness::spawn` — Spawn a sub-agent in a child session; the model-facing pending trigger (see
   [Sub-agents](#sub-agents-harnessspawn)).
 - `harness::turn` — Internal durable loop step (enqueued); not called directly by consumers.
@@ -579,9 +575,9 @@ For operators wiring hooks and developers writing them:
 
 Deny-by-default for in-run agents (see [README § Security model](README.md#security-model)):
 
-- **Deny:** `harness::send` and `harness::run` — self-invocation: a model that can start arbitrary
-  turns can fork unbounded loops outside any `max_turns` guard (the prior deployment denies
-  `run::start` for the same reason); `harness::turn` (internal); `harness::function::trigger`
+- **Deny:** `harness::send` — self-invocation: a model that can start arbitrary
+  turns can fork unbounded loops outside any `max_turns` guard; `harness::turn` (internal);
+  `harness::function::trigger`
   (forged call ids, policy re-entry); `harness::function::resolve` (forged results for parked
   calls); `harness::stop`.
 - **Allow (gated):** `harness::spawn` — the controlled alternative to `send`: the harness itself
@@ -630,8 +626,8 @@ type TurnCompletedEvent = {
 };
 ```
 
-A backend worker that chains agents binds `harness::turn_completed` and calls `harness::send` /
-`harness::run` from the handler — that is the supported way to build event-driven loops. **The
+A backend worker that chains agents binds `harness::turn_completed` and calls `harness::send`
+from the handler — that is the supported way to build event-driven loops. **The
 loop guard is the consumer's:** `max_turns` bounds one turn, not a chain of turns; an event loop
 (completed -> send -> completed -> …) must carry its own termination condition — a hop counter in
 `session.metadata`, a budget sibling, or a terminal check in the handler.
@@ -774,50 +770,13 @@ Example:
 { "session_id": "s_7a1", "turn_id": "t_001", "accepted": true }
 ```
 
-### `harness::run`
-
-`harness::send` with the call held open until the turn ends — "call an agent like a function" for
-backend automations and scripts. Held-open sync calls are an established bus pattern
-([`router::chat`](llm-router.md#routerchat) streams the same way). On timeout the turn is **not**
-aborted — the caller re-attaches via [`harness::status`](#harnessstatus) or the
-[`harness::turn_completed`](#trigger-types-emitted) event (or calls [`harness::stop`](#harnessstop)
-to actually cancel). A `run` that merges into an in-flight turn waits on that turn.
-
-- Invocation: **sync** (open until the turn ends or `timeout_ms` elapses)
-
-```typescript
-type RunRequest = SendRequest & { timeout_ms?: number }; // default 300_000
-type RunResponse = {
-  session_id: string;
-  turn_id: string;
-  status: TurnStatus;          // terminal status — or the live one when timed_out
-  timed_out?: boolean;
-  result?: unknown;            // output-contract result (see Output contract)
-  result_error?: string;
-  final_message?: AssistantMessage; // the turn's last assistant message
-};
-```
-
-Example:
-
-```jsonc
-// request — classify a ticket, get typed JSON back
-{ "message": "Classify: 'Refund not received after 14 days'",
-  "model": "claude-sonnet-4", "provider": "anthropic",
-  "options": { "output": { "type": "json", "schema": { "type": "object", "properties": {
-    "category": { "type": "string" }, "urgency": { "type": "string" } } } } }
-// response
-{ "session_id": "s_9f2", "turn_id": "t_001", "status": "completed",
-  "result": { "category": "billing", "urgency": "high" } }
-```
-
 ### `harness::spawn`
 
 Spawn a sub-agent in a child session (see [Sub-agents](#sub-agents-harnessspawn)). Designed to be
 called **by the model** through `agent_trigger` — the controlled, guarded alternative to exposing
 `harness::send`. Triggered from a turn, the trigger layer records the child linkage and reports
 the call `pending`; the child's result arrives as the call's `function_result` when it finishes.
-(Called directly by a consumer, it simply starts a linked child and returns — `send` and `run` are
+(Called directly by a consumer, it simply starts a linked child and returns — `send` is
 usually what consumers want.)
 
 - Invocation: **sync** (kicks the child's enqueued loop; the *call result* is deferred)
@@ -1021,7 +980,7 @@ type StatusResponse = {
 
 | Scope | Key | Value | Purpose |
 |---|---|---|---|
-| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, per-send options (incl. output contract), per-call checkpoints `(`triggered` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::run` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). |
+| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, per-send options (incl. output contract), per-call checkpoints `(`triggered` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). |
 | `harness_idem` | `<idempotency_key>` | `{ session_id, turn_id, entry_id, ts }` | `harness::send` webhook dedupe (TTL ~24h). |
 
 Transcript truth lives in [session-manager](session-manager.md); the harness keeps only loop

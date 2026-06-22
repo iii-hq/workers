@@ -9,15 +9,13 @@
 use crate::functions::{
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
-    run::{RunRequest, RunResponse},
     send::{SendRequest, SendResponse},
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
 };
 use crate::functions::{
-    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, RUN_ID, SEND_ID, SPAWN_ID, STATUS_ID, STOP_ID,
-    TURN_ID,
+    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, SEND_ID, SPAWN_ID, STATUS_ID, STOP_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
@@ -51,7 +49,6 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SendRequest, SendResponse>(SEND_ID),
-        spec::<RunRequest, RunResponse>(RUN_ID),
         spec::<SpawnRequest, SpawnResponse>(SPAWN_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),
         spec::<FunctionTriggerRequest, FunctionTriggerResponse>(FUNCTION_TRIGGER_ID),

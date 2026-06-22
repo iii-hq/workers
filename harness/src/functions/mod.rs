@@ -5,7 +5,6 @@
 
 pub mod function_resolve;
 pub mod function_trigger;
-pub mod run;
 pub mod send;
 pub mod spawn;
 pub mod status;
@@ -28,11 +27,6 @@ pub const SEND_ID: &str = "harness::send";
 pub const SEND_DESC: &str =
     "Entry point: ensure the session, persist the incoming message, and kick off a turn; returns \
      fast (or merges into a running turn).";
-
-pub const RUN_ID: &str = "harness::run";
-pub const RUN_DESC: &str =
-    "send with the call held open until the turn ends; returns the turn result (the \
-     backend/automation entry point).";
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
@@ -87,9 +81,6 @@ fn register<Req, Resp, F, Fut>(
 pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
     register(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
         send::handle(&d, r).await
-    });
-    register(iii, deps, RUN_ID, RUN_DESC, |d, r| async move {
-        run::handle(&d, r).await
     });
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
