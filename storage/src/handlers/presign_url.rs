@@ -67,6 +67,8 @@ pub async fn handle(state: &AppState, req: PresignReq) -> Result<PresignResp, St
             method,
             content_type: req.content_type,
             expires_in_seconds: req.expires_in_seconds,
+            response_content_disposition: None,
+            response_content_type: None,
         })
         .await
         .map_err(|e| {

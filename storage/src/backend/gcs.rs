@@ -189,6 +189,36 @@ impl Backend for GcsBackend {
         })
     }
 
+    async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
+        let mut get_req = GetObjectRequest {
+            bucket: self.bucket.clone(),
+            object: req.key.clone(),
+            ..Default::default()
+        };
+        if let Some(v) = req.version_id.as_deref() {
+            get_req.generation = v.parse::<i64>().ok();
+        }
+        let object = self
+            .client
+            .get_object(&get_req)
+            .await
+            .map_err(map_gcs_error)?;
+        let size = if object.size < 0 { 0 } else { object.size as u64 };
+        let last_modified = object
+            .updated
+            .and_then(|t| chrono::Utc.timestamp_opt(t.unix_timestamp(), 0).single())
+            .unwrap_or_else(Utc::now);
+        let content_type = object
+            .content_type
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        Ok(HeadResp {
+            content_type,
+            etag: object.etag,
+            last_modified,
+            size,
+        })
+    }
+
     async fn delete(&self, req: DeleteReq) -> Result<DeleteResp, BackendError> {
         let mut del_req = DeleteObjectRequest {
             bucket: self.bucket.clone(),
@@ -223,6 +253,14 @@ impl Backend for GcsBackend {
         };
         if matches!(req.method, PresignMethod::Put) {
             opts.content_type = req.content_type.clone();
+        }
+        if let Some(cd) = &req.response_content_disposition {
+            opts.query_parameters
+                .insert("response-content-disposition".to_string(), vec![cd.clone()]);
+        }
+        if let Some(ct) = &req.response_content_type {
+            opts.query_parameters
+                .insert("response-content-type".to_string(), vec![ct.clone()]);
         }
         let url = self
             .client

@@ -19,6 +19,7 @@ pub mod s3;
 pub trait Backend: Send + Sync {
     async fn put(&self, req: PutReq) -> Result<PutResp, BackendError>;
     async fn get(&self, req: GetReq) -> Result<GetResp, BackendError>;
+    async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError>;
     async fn delete(&self, req: DeleteReq) -> Result<DeleteResp, BackendError>;
     async fn presign(&self, req: PresignReq) -> Result<PresignResp, BackendError>;
 
@@ -62,6 +63,20 @@ pub struct GetResp {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct HeadReq {
+    pub key: String,
+    pub version_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeadResp {
+    pub content_type: String,
+    pub etag: String,
+    pub last_modified: DateTime<Utc>,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeleteReq {
     pub key: String,
@@ -85,6 +100,12 @@ pub struct PresignReq {
     pub method: PresignMethod,
     pub content_type: Option<String>,
     pub expires_in_seconds: u64,
+    /// GET-only: override the `Content-Disposition` header on the served response.
+    /// Ignored for `Put` presign; providers SHOULD return an error if set on a Put.
+    pub response_content_disposition: Option<String>,
+    /// GET-only: override the `Content-Type` header on the served response.
+    /// Ignored for `Put` presign; providers SHOULD return an error if set on a Put.
+    pub response_content_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +161,7 @@ pub mod mock {
     pub enum MockCall {
         Put(PutReq),
         Get(GetReq),
+        Head(HeadReq),
         Delete(DeleteReq),
         Presign(PresignReq),
     }
@@ -148,6 +170,7 @@ pub mod mock {
     pub struct MockResponses {
         pub put: Option<Result<PutResp, BackendError>>,
         pub get: Option<Result<GetResp, BackendError>>,
+        pub head: Option<Result<HeadResp, BackendError>>,
         pub delete: Option<Result<DeleteResp, BackendError>>,
         pub presign: Option<Result<PresignResp, BackendError>>,
     }
@@ -191,6 +214,16 @@ pub mod mock {
                 }
             }
             Ok(resp)
+        }
+
+        async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
+            self.calls.lock().unwrap().push(MockCall::Head(req));
+            self.responses
+                .lock()
+                .unwrap()
+                .head
+                .clone()
+                .unwrap_or(Err(BackendError::NotFound))
         }
 
         async fn delete(&self, req: DeleteReq) -> Result<DeleteResp, BackendError> {
@@ -282,5 +315,42 @@ mod backend_tests {
             .await
             .unwrap_err();
         assert!(matches!(err, BackendError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn mock_head_returns_not_found_by_default() {
+        let m = MockBackend::default();
+        let err = m
+            .head(HeadReq {
+                key: "k".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BackendError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn mock_head_records_call_and_returns_canned_response() {
+        let m = MockBackend::default();
+        let canned = HeadResp {
+            content_type: "image/png".to_string(),
+            etag: "\"abc123\"".to_string(),
+            last_modified: Utc::now(),
+            size: 42,
+        };
+        m.responses.lock().unwrap().head = Some(Ok(canned.clone()));
+        let resp = m
+            .head(HeadReq {
+                key: "img.png".into(),
+                version_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.size, 42);
+        assert_eq!(resp.content_type, "image/png");
+        let calls = m.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(calls[0], MockCall::Head(_)));
     }
 }
