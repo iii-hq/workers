@@ -91,6 +91,10 @@ async function* realStream(
   const client = await getIiiClient()
   const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
   const messageId = opts?.messageId ?? newMessageId()
+  // The `approval::*` functions live on the optional standalone approval-gate
+  // worker. When it's absent, skip every approval subscription / read so we
+  // don't register triggers for unknown types or call missing functions.
+  const approvalGateAvailable = opts?.approvalGateAvailable !== false
 
   const queue: TurnSourceEvent[] = []
   let resolveNext: (() => void) | null = null
@@ -116,18 +120,16 @@ async function* realStream(
   const stopTurnEvents = startTurnEventsSubscription(client, sessionId, {
     onCompleted: (event) => push({ kind: 'turn-completed', event }),
   })
-  const stopApprovalEvents = startApprovalEventsSubscription(
-    client,
-    sessionId,
-    {
-      onCreated: (record) =>
-        pushPending(record.function_call_id, {
-          kind: 'approval-created',
-          record,
-        }),
-      onResolved: (event) => push({ kind: 'approval-resolved', event }),
-    },
-  )
+  const stopApprovalEvents = approvalGateAvailable
+    ? startApprovalEventsSubscription(client, sessionId, {
+        onCreated: (record) =>
+          pushPending(record.function_call_id, {
+            kind: 'approval-created',
+            record,
+          }),
+        onResolved: (event) => push({ kind: 'approval-resolved', event }),
+      })
+    : () => {}
 
   const onAbort = () => wake()
   signal?.addEventListener('abort', onAbort, { once: true })
@@ -137,21 +139,23 @@ async function* realStream(
     const { provider, model: modelId } = resolveRunParams(model)
 
     // Reconnect recovery: rebuild any pending-approval cards a prior turn left
-    // held (e.g. resending after a reload). Best-effort.
-    void listPendingApprovals(client, sessionId)
-      .then((records) => {
-        for (const record of records) {
-          pushPending(record.function_call_id, {
-            kind: 'approval-created',
-            record,
-          })
-        }
-      })
-      .catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn('[real-backend] approval::list-pending recovery', err)
-        }
-      })
+    // held (e.g. resending after a reload). Best-effort; skipped without the gate.
+    if (approvalGateAvailable) {
+      void listPendingApprovals(client, sessionId)
+        .then((records) => {
+          for (const record of records) {
+            pushPending(record.function_call_id, {
+              kind: 'approval-created',
+              record,
+            })
+          }
+        })
+        .catch((err) => {
+          if (import.meta.env.DEV) {
+            console.warn('[real-backend] approval::list-pending recovery', err)
+          }
+        })
+    }
 
     const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
 

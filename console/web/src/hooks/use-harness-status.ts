@@ -250,9 +250,13 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
 }
 
 /**
- * Whether harness-owned bus functions (`router::models::list`, `approval::*`,
- * etc.) are registered and safe to trigger. False during the initial presence
- * probe and while the worker is absent.
+ * Whether harness-owned bus functions (`router::models::list`, etc.) are
+ * registered and safe to trigger. False during the initial presence probe and
+ * while the worker is absent.
+ *
+ * NOTE: `approval::*` is NOT harness-owned — it lives on the standalone,
+ * optional `approval-gate` worker. Gate approval logic on
+ * `useApprovalGateStatus` / `isApprovalGateAvailable`, not this.
  */
 export function isHarnessAvailable(status: HarnessStatus): boolean {
   return status.present && !status.loading

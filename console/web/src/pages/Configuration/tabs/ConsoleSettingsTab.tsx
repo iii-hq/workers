@@ -17,6 +17,7 @@ import {
   saveApprovalGateDefaults,
 } from '@/lib/backend/approval-gate-config'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 
 // Provider credentials + settings now live in the llm-router `configuration`
@@ -41,12 +42,20 @@ export function ConsoleSettingsTab({
   theme,
   onThemeChange,
 }: ConsoleSettingsTabProps) {
+  // The permissions section only applies when the optional approval-gate worker
+  // is connected (it owns `approval::*` + the config entry). Absent → hide the
+  // whole section and skip the config read so it can't error. Outside the
+  // provider (Storybook) the context is null; treat that as available.
+  const ctx = useConversationsCtxOptional()
+  const approvalGateAvailable = ctx ? ctx.approvalGateAvailable : true
+
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
   const [allowlist, setAllowlist] = useState<string[]>([])
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
+    if (!approvalGateAvailable) return
     let cancelled = false
     void (async () => {
       try {
@@ -66,7 +75,7 @@ export function ConsoleSettingsTab({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [approvalGateAvailable])
 
   const persistDefaults = useCallback(
     async (mode: PermissionMode, list: string[]) => {
@@ -128,104 +137,108 @@ export function ConsoleSettingsTab({
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-10">
-      <Section
-        title="appearance"
-        description="theme preference, stored per browser."
-      >
-        <Row
-          label="theme"
-          control={
-            <ModeToggle<Theme>
-              value={theme}
-              onChange={onThemeChange}
-              variant="radio"
-              aria-label="theme"
-              options={[
-                { value: 'light', label: 'light' },
-                { value: 'dark', label: 'dark' },
-              ]}
-            />
-          }
-        />
-      </Section>
-
-      <Section
-        title="permissions"
-        description="default mode and auto allowlist stored in the approval-gate configuration entry. applies to NEW conversations only."
-      >
-        <Row
-          label="default mode"
-          control={
-            <DefaultPermissionModePicker
-              value={loaded ? defaultMode : undefined}
-              onChange={handleModeChange}
-            />
-          }
-          meta="manual prompts for everything · auto skips functions on your allowlist · full skips everything"
-        />
-        {defaultMode === 'auto' ? (
+        <Section
+          title="appearance"
+          description="theme preference, stored per browser."
+        >
           <Row
-            label="allowlist"
+            label="theme"
             control={
+              <ModeToggle<Theme>
+                value={theme}
+                onChange={onThemeChange}
+                variant="radio"
+                aria-label="theme"
+                options={[
+                  { value: 'light', label: 'light' },
+                  { value: 'dark', label: 'dark' },
+                ]}
+              />
+            }
+          />
+        </Section>
+
+        {approvalGateAvailable ? (
+          <Section
+            title="permissions"
+            description="default mode and auto allowlist stored in the approval-gate configuration entry. applies to NEW conversations only."
+          >
+            <Row
+              label="default mode"
+              control={
+                <DefaultPermissionModePicker
+                  value={loaded ? defaultMode : undefined}
+                  onChange={handleModeChange}
+                />
+              }
+              meta="manual prompts for everything · auto skips functions on your allowlist · full skips everything"
+            />
+            {defaultMode === 'auto' ? (
+              <Row
+                label="allowlist"
+                control={
+                  <button
+                    type="button"
+                    onClick={() => setAllowlistOpen(true)}
+                    className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
+                  >
+                    manage
+                    {allowlist.length > 0 ? ` (${allowlist.length})` : ''}
+                  </button>
+                }
+                meta="functions that auto-approve while a new conversation is in auto mode. edits apply to NEW conversations only."
+              />
+            ) : null}
+          </Section>
+        ) : null}
+
+        <Dialog open={allowlistOpen} onOpenChange={setAllowlistOpen}>
+          <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col">
+            <DialogTitle className="text-[14px]">
+              auto-mode allowlist
+            </DialogTitle>
+            <DialogDescription className="mt-1">
+              checked functions auto-approve while a new conversation is in auto
+              mode. existing conversations keep their own snapshot.
+            </DialogDescription>
+            <div className="mt-4 flex-1 overflow-y-auto border border-rule-2 -mx-2 px-2 py-2 min-h-[280px]">
+              <FunctionAllowlistTree
+                functions={allowlistCandidates}
+                allowlist={allowlistSet}
+                onAdd={addAllow}
+                onRemove={removeAllow}
+                emptyHint="catalog hasn't loaded any functions yet."
+              />
+            </div>
+            <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={() => setAllowlistOpen(true)}
+                onClick={() => setAllowlistOpen(false)}
+                className="font-mono text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
+              >
+                done
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Section
+          title="providers"
+          description="api keys, endpoints, and per-provider settings."
+        >
+          <Row
+            label="manage"
+            control={
+              <a
+                href={HARNESS_CONFIG_HASH}
                 className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
               >
-                manage
-                {allowlist.length > 0 ? ` (${allowlist.length})` : ''}
-              </button>
+                open provider settings
+              </a>
             }
-            meta="functions that auto-approve while a new conversation is in auto mode. edits apply to NEW conversations only."
+            meta="credentials + settings live in the harness configuration (workers tab). the form's shape grows with each provider that registers; api keys are masked."
           />
-        ) : null}
-      </Section>
-
-      <Dialog open={allowlistOpen} onOpenChange={setAllowlistOpen}>
-        <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col">
-          <DialogTitle className="text-[14px]">auto-mode allowlist</DialogTitle>
-          <DialogDescription className="mt-1">
-            checked functions auto-approve while a new conversation is in auto
-            mode. existing conversations keep their own snapshot.
-          </DialogDescription>
-          <div className="mt-4 flex-1 overflow-y-auto border border-rule-2 -mx-2 px-2 py-2 min-h-[280px]">
-            <FunctionAllowlistTree
-              functions={allowlistCandidates}
-              allowlist={allowlistSet}
-              onAdd={addAllow}
-              onRemove={removeAllow}
-              emptyHint="catalog hasn't loaded any functions yet."
-            />
-          </div>
-          <div className="mt-4 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setAllowlistOpen(false)}
-              className="font-mono text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
-            >
-              done
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Section
-        title="providers"
-        description="api keys, endpoints, and per-provider settings."
-      >
-        <Row
-          label="manage"
-          control={
-            <a
-              href={HARNESS_CONFIG_HASH}
-              className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
-            >
-              open provider settings
-            </a>
-          }
-          meta="credentials + settings live in the harness configuration (workers tab). the form's shape grows with each provider that registers; api keys are masked."
-        />
-      </Section>
+        </Section>
       </div>
     </div>
   )
