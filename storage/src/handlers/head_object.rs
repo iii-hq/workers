@@ -116,4 +116,40 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("UNKNOWN_BUCKET"), "got: {err}");
     }
+
+
+    #[tokio::test]
+    async fn empty_key_errors() {
+        let (st, _m) = state_with(None);
+        let err = super::handle(&st, req(json!({"bucket": "uploads", "key": ""})))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("CONFIG_ERROR") || err.contains("must not be empty"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_id_is_threaded_to_backend() {
+        let (st, mock) = state_with(Some(Ok(BackendHeadResp {
+            content_type: "application/octet-stream".into(),
+            etag: String::new(),
+            last_modified: Utc::now(),
+            size: 1,
+        })));
+        super::handle(
+            &st,
+            req(json!({"bucket": "uploads", "key": "k", "version_id": "v2"})),
+        )
+        .await
+        .unwrap();
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        if let crate::backend::mock::MockCall::Head(h) = &calls[0] {
+            assert_eq!(h.version_id.as_deref(), Some("v2"));
+        } else {
+            panic!("expected Head call, got: {:?}", calls[0]);
+        }
+    }
 }
