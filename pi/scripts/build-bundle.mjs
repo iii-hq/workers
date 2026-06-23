@@ -46,6 +46,7 @@ const inlinePackageJson = {
 await build({
   entryPoints: [join(root, 'src/index.ts')],
   bundle: true,
+  minify: true,
   platform: 'node',
   target: 'node22',
   format: 'esm',
