@@ -109,10 +109,18 @@ fn push_block_content(
         }
         BlockKind::ToolUse => {
             if let Some(tc) = state.function_calls.get(idx) {
+                // An interrupted stream leaves `args_json` as a partial,
+                // unparseable blob (e.g. `{"cmd":`). A tool_use input must be a
+                // JSON object, so degrade anything that fails to parse to `{}`
+                // rather than null — a null input is a hard Anthropic 400 once
+                // the aborted turn is replayed.
                 let arguments = if tc.args_json.is_empty() {
                     serde_json::json!({})
                 } else {
-                    serde_json::from_str(&tc.args_json).unwrap_or(Value::Null)
+                    serde_json::from_str(&tc.args_json)
+                        .ok()
+                        .filter(Value::is_object)
+                        .unwrap_or_else(|| serde_json::json!({}))
                 };
                 out.push(ContentBlock::FunctionCall {
                     id: tc.id.clone(),
@@ -530,6 +538,27 @@ mod tests {
                 assert_eq!(function_id, "shell::exec");
                 assert_eq!(arguments["cmd"], "ls");
             }
+            other => panic!("want function_call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interrupted_tool_use_args_degrade_to_empty_object() {
+        // Stop hit mid tool-call: some partial_json arrived but the JSON never
+        // closed (no content_block_stop). The accumulated args must degrade to
+        // a valid object, never null — a null `tool_use.input` is a hard
+        // Anthropic 400 ("Input should be an object") when the aborted turn is
+        // replayed on the next request.
+        let (state, _events) = run(&[
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell__exec\"}}",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\"}}",
+        ]);
+        let final_msg = build_partial(&state, "claude-test");
+        match &final_msg.content[0] {
+            ContentBlock::FunctionCall { arguments, .. } => assert!(
+                arguments.is_object(),
+                "interrupted tool args must be an object, got {arguments}"
+            ),
             other => panic!("want function_call, got {other:?}"),
         }
     }
