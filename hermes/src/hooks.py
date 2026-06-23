@@ -20,7 +20,12 @@ def use_api(
         result = await handler(req, logger)
         return result.model_dump(by_alias=True)
 
-    iii.register_function(function_id, wrapped)
+    iii.register_function(
+        function_id,
+        wrapped,
+        request_format=config.get("request_format"),
+        response_format=config.get("response_format"),
+    )
     iii.register_trigger(
         {
             "type": "http",

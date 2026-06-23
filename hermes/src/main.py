@@ -43,6 +43,58 @@ SEND_REQUEST_FORMAT = {
 }
 SESSION_ID_FORMAT = {"type": "object", "properties": {"session_id": {"type": "string"}}}
 
+RUN_RESPONSE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "session_id": {"type": "string"},
+        "result": {"type": "string"},
+        "is_error": {"type": "boolean"},
+        "stop_reason": {"type": "string"},
+        "busy": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+}
+START_RESPONSE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "session_id": {"type": "string"},
+        "started": {"type": "boolean"},
+        "busy": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+}
+SEND_RESPONSE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "platform": {"type": "string"},
+        "sent": {"type": "boolean"},
+        "detail": {"type": "string"},
+    },
+}
+SESSIONS_RESPONSE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "sessions": {"type": "array", "items": {"type": "object"}},
+        "hermes_sessions_raw": {"type": "string"},
+    },
+}
+STATUS_RESPONSE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "session_id": {"type": "string"},
+        "live": {"type": "boolean"},
+        "record": {"type": ["object", "null"]},
+    },
+}
+STOP_RESPONSE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "session_id": {"type": "string"},
+        "stopped": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+}
+
 
 def load_config() -> dict[str, Any]:
     cfg = {**DEFAULTS, "defaults": {**DEFAULTS["defaults"]}}
@@ -71,42 +123,49 @@ def main() -> None:
         handlers["run"],
         description="Run one Hermes turn and wait. Accepts `prompt` or a `messages` array; returns {session_id, result}. Carries the iii runtime context by default. Final-text only (Hermes one-shot exposes no per-tool event stream).",
         request_format=RUN_REQUEST_FORMAT,
+        response_format=RUN_RESPONSE_FORMAT,
     )
     iii.register_function(
         "hermes::start",
         handlers["start"],
         description="Start a Hermes turn and return immediately; watch agent::events (group_id = session_id) for the result. Returns {session_id, started}.",
         request_format=RUN_REQUEST_FORMAT,
+        response_format=START_RESPONSE_FORMAT,
     )
     iii.register_function(
         "run::start_and_wait",
         handlers["run"],
         description="Alias for hermes::run under the shared agent entrypoint.",
         request_format=RUN_REQUEST_FORMAT,
+        response_format=RUN_RESPONSE_FORMAT,
     )
     iii.register_function(
         "hermes::send",
         handlers["send"],
         description="Deliver a message to a Hermes gateway platform (telegram, discord, slack, and 27+ others). Outbound omnichannel.",
         request_format=SEND_REQUEST_FORMAT,
+        response_format=SEND_RESPONSE_FORMAT,
     )
     iii.register_function(
         "hermes::sessions::list",
         handlers["sessions_list"],
         description="List Hermes sessions this worker has run, plus the raw `hermes sessions list` output.",
         request_format={"type": "object", "properties": {}},
+        response_format=SESSIONS_RESPONSE_FORMAT,
     )
     iii.register_function(
         "hermes::status",
         handlers["status"],
         description="Point-in-time status of a Hermes session: live flag and stored record.",
         request_format=SESSION_ID_FORMAT,
+        response_format=STATUS_RESPONSE_FORMAT,
     )
     iii.register_function(
         "hermes::stop",
         handlers["stop"],
         description="Interrupt a live Hermes run for a session.",
         request_format=SESSION_ID_FORMAT,
+        response_format=STOP_RESPONSE_FORMAT,
     )
 
     # Inbound sink: the Hermes gateway delivers platform/webhook events here over
@@ -118,6 +177,18 @@ def main() -> None:
             "api_path": cfg["inbound_api_path"],
             "http_method": "POST",
             "description": "Inbound Hermes gateway delivery sink (platform messages + webhooks).",
+            "request_format": {
+                "type": "object",
+                "properties": {"body": {"type": "object"}, "headers": {"type": "object"}},
+            },
+            "response_format": {
+                "type": "object",
+                "properties": {
+                    "statusCode": {"type": "integer"},
+                    "body": {"type": "object"},
+                    "headers": {"type": "object"},
+                },
+            },
         },
         handlers["inbound"],
     )
