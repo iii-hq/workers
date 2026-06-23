@@ -65,11 +65,21 @@ impl WorkerGraph {
 
     /// Topological start order (dependencies before dependents).
     pub fn topo_start_order(&self, subset: &[String]) -> Result<Vec<String>> {
-        let subset_set: HashSet<&str> = subset.iter().map(String::as_str).collect();
+        let mut deduped: Vec<&String> = Vec::new();
+        let mut seen = HashSet::new();
+        for worker in subset {
+            if !self.workers.iter().any(|w| w == worker) {
+                bail!("unknown worker {worker}");
+            }
+            if seen.insert(worker.as_str()) {
+                deduped.push(worker);
+            }
+        }
+        let subset_set: HashSet<&str> = deduped.iter().map(|w| w.as_str()).collect();
         let mut in_degree: HashMap<&str, usize> = HashMap::new();
         let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
 
-        for worker in subset {
+        for worker in &deduped {
             in_degree.entry(worker.as_str()).or_insert(0);
             for dep in self.dependencies(worker) {
                 if !subset_set.contains(dep.as_str()) {
@@ -89,7 +99,7 @@ impl WorkerGraph {
             .collect();
         queue.make_contiguous().sort_unstable();
 
-        let mut order = Vec::with_capacity(subset.len());
+        let mut order = Vec::with_capacity(deduped.len());
         while let Some(node) = queue.pop_front() {
             order.push(node.to_string());
             if let Some(children) = adj.get(node) {
@@ -108,7 +118,7 @@ impl WorkerGraph {
             }
         }
 
-        if order.len() != subset.len() {
+        if order.len() != deduped.len() {
             bail!("dependency cycle detected among workers");
         }
 
@@ -285,5 +295,39 @@ mod tests {
         let closure = graph.restart_closure("llm-router").unwrap();
         assert_eq!(closure.first().map(String::as_str), Some("llm-router"));
         assert!(closure.contains(&"harness".to_string()));
+    }
+
+    #[test]
+    fn topo_start_order_rejects_unknown_worker() {
+        let tmp = fixture_repo();
+        let workers: Vec<String> = ["session-manager", "llm-router"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let graph = WorkerGraph::load(tmp.path(), &workers).unwrap();
+        let err = graph
+            .topo_start_order(&["session-manager".to_string(), "typo".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown worker typo"));
+    }
+
+    #[test]
+    fn topo_start_order_deduplicates_subset() {
+        let tmp = fixture_repo();
+        let workers: Vec<String> = ["session-manager", "llm-router"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let graph = WorkerGraph::load(tmp.path(), &workers).unwrap();
+        let order = graph
+            .topo_start_order(&[
+                "session-manager".to_string(),
+                "session-manager".to_string(),
+                "llm-router".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&"session-manager".to_string()));
+        assert!(order.contains(&"llm-router".to_string()));
     }
 }

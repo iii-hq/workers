@@ -44,87 +44,93 @@ struct DisplayRow {
 
 pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
 
-    let mut views: Vec<WorkerView> = orchestrator.worker_views().await?;
-    let mut display_rows = build_display_rows(&views);
-    let mut table_state = TableState::default();
-    table_state.select(Some(first_worker_row(&display_rows).unwrap_or(0)));
+    let result: Result<()> = async {
+        let stdout = io::stdout();
+        let backend = ratatui::backend::CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
 
-    let mut mode = UiMode::Dashboard;
-    let poll = Duration::from_millis(orchestrator.config.poll_interval_ms);
-    let mut last_poll = Instant::now();
-    let mut running = true;
+        let mut views: Vec<WorkerView> = orchestrator.worker_views().await?;
+        let mut display_rows = build_display_rows(&views);
+        let mut table_state = TableState::default();
+        table_state.select(Some(first_worker_row(&display_rows).unwrap_or(0)));
 
-    let color_enabled = orchestrator.config.color_mode.enabled_for_tui();
+        let mut mode = UiMode::Dashboard;
+        let poll = Duration::from_millis(orchestrator.config.poll_interval_ms);
+        let mut last_poll = Instant::now();
+        let mut running = true;
 
-    while running {
-        display_rows = build_display_rows(&views);
-        terminal.draw(|f| {
-            draw_ui(
-                f,
-                &orchestrator.config.engine_url,
-                &views,
-                &display_rows,
-                &mut table_state,
-                &mode,
-                color_enabled,
-            );
-        })?;
+        let color_enabled = orchestrator.config.color_mode.enabled_for_tui();
 
-        if last_poll.elapsed() >= poll {
-            if let Ok(v) = orchestrator.worker_views().await {
-                views = v;
+        while running {
+            display_rows = build_display_rows(&views);
+            terminal.draw(|f| {
+                draw_ui(
+                    f,
+                    &orchestrator.config.engine_url,
+                    &views,
+                    &display_rows,
+                    &mut table_state,
+                    &mode,
+                    color_enabled,
+                );
+            })?;
+
+            if last_poll.elapsed() >= poll {
+                if let Ok(v) = orchestrator.worker_views().await {
+                    views = v;
+                }
+                last_poll = Instant::now();
+                if matches!(mode, UiMode::Busy(_)) {
+                    mode = UiMode::Dashboard;
+                }
             }
-            last_poll = Instant::now();
-            if matches!(mode, UiMode::Busy(_)) {
-                mode = UiMode::Dashboard;
-            }
-        }
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match &mode {
-                    UiMode::ConfirmRestart(worker) => {
-                        let worker = worker.clone();
-                        match key.code {
-                            KeyCode::Char('y') | KeyCode::Enter => {
-                                spawn_restart(orchestrator.clone(), worker.clone());
-                                mode = UiMode::Busy(format!("restarting {worker} + dependents…"));
+            if event::poll(Duration::from_millis(100))? {
+                if let Event::Key(key) = event::read()? {
+                    match &mode {
+                        UiMode::ConfirmRestart(worker) => {
+                            let worker = worker.clone();
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Enter => {
+                                    spawn_restart(orchestrator.clone(), worker.clone());
+                                    mode = UiMode::Busy(format!("restarting {worker} + dependents…"));
+                                }
+                                KeyCode::Char('n') | KeyCode::Esc => {
+                                    mode = UiMode::Dashboard;
+                                }
+                                _ => {}
                             }
-                            KeyCode::Char('n') | KeyCode::Esc => {
+                        }
+                        UiMode::Busy(_) => {
+                            if key.code == KeyCode::Esc {
                                 mode = UiMode::Dashboard;
                             }
-                            _ => {}
                         }
-                    }
-                    UiMode::Busy(_) => {
-                        if key.code == KeyCode::Esc {
-                            mode = UiMode::Dashboard;
+                        UiMode::Dashboard => {
+                            running = handle_dashboard_key(
+                                orchestrator.clone(),
+                                key,
+                                &mut table_state,
+                                &display_rows,
+                                &views,
+                                &mut mode,
+                            )
+                            .await?;
                         }
-                    }
-                    UiMode::Dashboard => {
-                        running = handle_dashboard_key(
-                            orchestrator.clone(),
-                            key,
-                            &mut table_state,
-                            &display_rows,
-                            &views,
-                            &mut mode,
-                        )
-                        .await?;
                     }
                 }
             }
         }
-    }
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    Ok(())
+        Ok(())
+    }
+    .await;
+
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -498,7 +504,7 @@ fn draw_overlay(f: &mut Frame, area: Rect, message: &str, color_enabled: bool) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" confirm ")
-                    .style(overlay_bg_style()),
+                    .style(styled_if(color_enabled, overlay_bg_style())),
             ),
         popup,
     );

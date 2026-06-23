@@ -132,6 +132,8 @@ impl Orchestrator {
         let stdout = child.stdout.take().context("stdout pipe")?;
         let stderr = child.stderr.take().context("stderr pipe")?;
 
+        let expected_pid = child.id();
+
         {
             let mut runtimes = self.runtimes.write().await;
             let rt = runtimes.get_mut(name).context("unknown worker runtime")?;
@@ -155,7 +157,7 @@ impl Orchestrator {
         let name_wait = name.to_string();
         let runtimes_wait = self.runtimes.clone();
         tokio::spawn(async move {
-            wait_for_exit(&name_wait, runtimes_wait).await;
+            wait_for_exit(&name_wait, expected_pid, runtimes_wait).await;
         });
 
         if wait_connected {
@@ -363,7 +365,7 @@ fn update_proc_state_from_line(rt: &mut WorkerRuntime, line: &str) {
     }
 }
 
-async fn wait_for_exit(worker: &str, runtimes: SharedRuntimes) {
+async fn wait_for_exit(worker: &str, expected_pid: Option<u32>, runtimes: SharedRuntimes) {
     loop {
         time::sleep(Duration::from_millis(250)).await;
 
@@ -372,6 +374,9 @@ async fn wait_for_exit(worker: &str, runtimes: SharedRuntimes) {
             let Some(rt) = guard.get_mut(worker) else {
                 return;
             };
+            if rt.pid() != expected_pid {
+                return;
+            }
             let Some(child) = rt.child_mut() else {
                 return;
             };

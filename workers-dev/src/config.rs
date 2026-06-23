@@ -94,7 +94,7 @@ impl Config {
             engine_url,
             engine_host,
             engine_port,
-            release: file_cfg.release.unwrap_or(release),
+            release: release || file_cfg.release.unwrap_or(false),
             poll_interval_ms: file_cfg
                 .poll_interval_ms
                 .unwrap_or(DEFAULT_POLL_INTERVAL_MS),
@@ -104,7 +104,7 @@ impl Config {
             workers,
             harness_stack,
             worker_specs,
-            stop_on_exit: file_cfg.stop_on_exit.unwrap_or(stop_on_exit),
+            stop_on_exit: stop_on_exit || file_cfg.stop_on_exit.unwrap_or(false),
             color_mode,
         })
     }
@@ -178,13 +178,15 @@ pub fn parse_engine_url(url: &str, port_override: Option<u16>) -> Result<(String
         .or_else(|| url.strip_prefix("wss://"))
         .unwrap_or(url);
 
-    let (host, port) = if let Some((host, port_str)) = stripped.split_once(':') {
+    let authority = stripped.split('/').next().unwrap_or(stripped);
+
+    let (host, port) = if let Some((host, port_str)) = authority.rsplit_once(':') {
         let port: u16 = port_str
             .parse()
             .with_context(|| format!("invalid port in engine url {url}"))?;
         (host.to_string(), port)
     } else {
-        (stripped.to_string(), 49134)
+        (authority.to_string(), 49134)
     };
 
     Ok((host, port_override.unwrap_or(port)))
@@ -197,6 +199,20 @@ mod tests {
     #[test]
     fn parse_default_url() {
         let (host, port) = parse_engine_url(DEFAULT_ENGINE_URL, None).unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 49134);
+    }
+
+    #[test]
+    fn parse_url_with_trailing_slash() {
+        let (host, port) = parse_engine_url("ws://127.0.0.1:49134/", None).unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 49134);
+    }
+
+    #[test]
+    fn parse_url_with_path() {
+        let (host, port) = parse_engine_url("ws://127.0.0.1:49134/ws", None).unwrap();
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 49134);
     }

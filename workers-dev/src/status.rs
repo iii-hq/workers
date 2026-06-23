@@ -1,9 +1,10 @@
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use crate::discover::WorkerGroup;
 use crate::config::Config;
@@ -51,20 +52,15 @@ pub async fn fetch_engine_workers(config: &Config) -> Result<Vec<EngineWorker>> 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd
-        .spawn()
+    let output = timeout(Duration::from_secs(10), cmd.output())
+        .await
+        .context("timed out waiting for iii trigger engine::workers::list")?
         .context("spawn iii trigger (is iii on PATH?)")?;
-    let mut stdout = child.stdout.take().context("iii stdout")?;
-    let mut stderr = child.stderr.take().context("iii stderr")?;
 
-    let status = child.wait().await.context("wait for iii trigger")?;
+    let out = String::from_utf8_lossy(&output.stdout).to_string();
+    let err = String::from_utf8_lossy(&output.stderr).to_string();
 
-    let mut out = String::new();
-    stdout.read_to_string(&mut out).await?;
-    let mut err = String::new();
-    stderr.read_to_string(&mut err).await?;
-
-    if !status.success() {
+    if !output.status.success() {
         anyhow::bail!(
             "iii trigger engine::workers::list failed: {}",
             err.trim()

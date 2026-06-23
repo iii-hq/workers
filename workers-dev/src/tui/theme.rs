@@ -16,8 +16,9 @@ pub fn footer_style() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+/// Selected row background: ~10% blue tint on a dark terminal (no fg override).
 pub fn selection_row_style() -> Style {
-    Style::default().bg(Color::DarkGray)
+    Style::default().bg(Color::Rgb(18, 28, 45))
 }
 
 pub fn group_header_style(group: WorkerGroup) -> Style {

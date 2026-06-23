@@ -126,7 +126,9 @@ async fn main() -> Result<()> {
     };
 
     if orchestrator.config.stop_on_exit {
-        let _ = orchestrator.stop_workers(&[]).await;
+        if let Err(err) = orchestrator.stop_workers(&[]).await {
+            eprintln!("warning: {err:#}");
+        }
     }
 
     result
