@@ -205,6 +205,25 @@ describe('register', () => {
     release?.();
   });
 
+  it('pi::start reports busy instead of started when a run is already live', async () => {
+    const fake = await registeredWorker();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    script(fullTurnEvents, gate);
+    await fake.registered.get('pi::start')?.({ prompt: 'first', session_id: 'busy-2' });
+    await vi.waitFor(() => {
+      expect(fake.state.has('pi_sessions/busy-2')).toBe(true);
+    });
+    const second = (await fake.registered.get('pi::start')?.({
+      prompt: 'second',
+      session_id: 'busy-2',
+    })) as Record<string, unknown>;
+    expect(second).toMatchObject({ session_id: 'busy-2', busy: true, started: false });
+    release?.();
+  });
+
   it('pi::status reflects the stored record and live flag', async () => {
     const fake = await registeredWorker();
     const res = (await fake.registered.get('pi::status')?.({ session_id: 'none' })) as Record<

@@ -326,6 +326,17 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
+      // executeRun reserves the live slot synchronously, so a prior start for
+      // this session is already visible here: report busy instead of a false
+      // started: true. Cannot await executeRun — start must return immediately.
+      if (live.has(session_id)) {
+        return {
+          session_id,
+          started: false,
+          busy: true,
+          reason: 'a run is already active for this session',
+        };
+      }
       void executeRun(iii, getCfg(), emit, emitRaw, { ...parsed, session_id }).catch(
         async (err) => {
           console.error(`pi::start background run failed for ${session_id}: ${String(err)}`);

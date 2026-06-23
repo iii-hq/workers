@@ -30,7 +30,10 @@ export type BuildSessionOptions = {
 function resolveModel(registry: ModelRegistry, model: string | undefined) {
   if (!model) return undefined;
   const sep = model.indexOf('/');
-  if (sep <= 0) return undefined;
+  if (sep <= 0) {
+    console.warn(`model "${model}" is not in "provider/modelId" form; using Pi default`);
+    return undefined;
+  }
   const provider = model.slice(0, sep);
   const modelId = model.slice(sep + 1);
   const resolved = registry.find(provider, modelId);
