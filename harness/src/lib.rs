@@ -13,6 +13,7 @@ pub mod configuration;
 pub mod contract;
 pub mod deferred;
 pub mod deps;
+pub mod discovery;
 pub mod error;
 pub mod events;
 pub mod functions;

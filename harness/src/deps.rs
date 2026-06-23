@@ -6,9 +6,12 @@ use std::sync::Arc;
 
 use iii_sdk::III;
 
-use crate::clients::{ContextClient, EngineClient, RouterClient, SessionClient};
+use crate::clients::{
+    ContextClient, EngineClient, FunctionDescriptor, RouterClient, SessionClient,
+};
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
+use crate::discovery::FunctionsCell;
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
 use crate::locks::SessionLocks;
@@ -17,16 +20,24 @@ use crate::locks::SessionLocks;
 pub struct Deps {
     pub iii: Arc<III>,
     pub config: ConfigCell,
+    pub functions: FunctionsCell,
     pub events: TurnEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
 }
 
 impl Deps {
-    pub fn new(iii: Arc<III>, config: ConfigCell, events: TurnEvents, hooks: HookRegistry) -> Self {
+    pub fn new(
+        iii: Arc<III>,
+        config: ConfigCell,
+        functions: FunctionsCell,
+        events: TurnEvents,
+        hooks: HookRegistry,
+    ) -> Self {
         Self {
             iii,
             config,
+            functions,
             events,
             hooks,
             locks: SessionLocks::new(),
@@ -36,6 +47,12 @@ impl Deps {
     /// The current config snapshot (cheap `Arc` clone).
     pub async fn cfg(&self) -> Arc<WorkerConfig> {
         self.config.read().await.clone()
+    }
+
+    /// The current cached function-registry snapshot (cheap `Arc` clone). Kept
+    /// live by the `engine::functions-available` trigger; see [`crate::discovery`].
+    pub async fn functions(&self) -> Arc<Vec<FunctionDescriptor>> {
+        self.functions.read().await.clone()
     }
 
     pub async fn session(&self) -> SessionClient {
