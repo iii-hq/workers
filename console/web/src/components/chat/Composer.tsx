@@ -61,6 +61,10 @@ interface ComposerProps {
   onPermissionModeChange: (next: PermissionMode) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
+  /** Resume a turn parked at max_turns (the ask-to-continue pause). */
+  onContinue?: () => void
+  /** The turn is parked awaiting the user's continue/stop decision. */
+  waiting?: boolean
   isStreaming?: boolean
   /** External lock (e.g. harness not installed). Editor + send disabled. */
   blocked?: boolean
@@ -92,6 +96,8 @@ export function Composer({
   onPermissionModeChange,
   onSubmit,
   onStop,
+  onContinue,
+  waiting,
   isStreaming,
   blocked,
   blockedPlaceholder = 'chat unavailable…',
@@ -105,7 +111,9 @@ export function Composer({
   const [clearToken, setClearToken] = useState(0)
   const textRef = useRef('')
 
-  const inputDisabled = isStreaming || blocked
+  // A turn parked at max_turns is non-terminal but NOT actively streaming, so
+  // the input stays usable: the user can press Continue or type to steer.
+  const inputDisabled = blocked || (!!isStreaming && !waiting)
 
   const handleSubmit = useCallback(() => {
     if (inputDisabled) return
@@ -147,11 +155,13 @@ export function Composer({
           onSubmit={handleSubmit}
           clearToken={clearToken}
           placeholder={
-            isStreaming
-              ? 'streaming response…'
-              : blocked
-                ? blockedPlaceholder
-                : 'send a message…'
+            waiting
+              ? 'press continue, or type to steer…'
+              : isStreaming
+                ? 'streaming response…'
+                : blocked
+                  ? blockedPlaceholder
+                  : 'send a message…'
           }
           disabled={inputDisabled}
           initialContent={initialContent}
@@ -196,7 +206,29 @@ export function Composer({
           disabled={inputDisabled}
           loading={catalogLoading}
         />
-        {isStreaming ? (
+        {waiting ? (
+          <>
+            <Button
+              type="button"
+              variant="pill"
+              size="sm"
+              onClick={onStop}
+              aria-label="stop turn"
+            >
+              stop
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={onContinue}
+              aria-label="continue turn"
+            >
+              continue
+              <span aria-hidden>→</span>
+            </Button>
+          </>
+        ) : isStreaming ? (
           <Button
             type="button"
             variant="pill"

@@ -1,0 +1,37 @@
+{
+  "function_id": "harness::continue",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "turn_id": {
+        "description": "Omit to continue the session's current turn.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "ContinueRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "continuing": {
+        "description": "True when a parked turn was resumed; false when there was nothing to continue (no turn, wrong turn, terminal, or not awaiting continuation).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "continuing"
+    ],
+    "title": "ContinueResponse",
+    "type": "object"
+  }
+}

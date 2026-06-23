@@ -180,6 +180,26 @@ export async function stopTurn(
 }
 
 /**
+ * Trigger `harness::continue`: resume a turn parked at `max_turns` (the
+ * ask-to-continue pause) with a fresh budget. The explicit counterpart to
+ * replying — a parked turn is non-terminal, so the chat input is blocked.
+ */
+export async function continueTurn(
+  client: Pick<IiiClient, 'trigger'>,
+  sessionId: string,
+  turnId?: string,
+): Promise<boolean> {
+  const res = await client.trigger<{ continuing?: boolean }>(
+    'harness::continue',
+    {
+      session_id: sessionId,
+      ...(turnId ? { turn_id: turnId } : {}),
+    },
+  )
+  return Boolean(res?.continuing)
+}
+
+/**
  * Trigger `harness::status`: a point-in-time read of the session's turn
  * record. Returns `null` when no turn has ever run for the session.
  */

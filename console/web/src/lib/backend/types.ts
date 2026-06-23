@@ -188,6 +188,12 @@ export interface ChatBackend {
    */
   abortRun?(sessionId: string): Promise<void>
   /**
+   * Resume a turn parked at max_turns (the ask-to-continue pause) via
+   * `harness::continue`. A parked turn blocks the chat input, so the UI
+   * surfaces an explicit Continue button instead of a reply.
+   */
+  continueTurn?(sessionId: string): Promise<void>
+  /**
    * Powers `/compact`. Compacts the session-manager transcript (the single
    * source of truth) directly. `contextWindow` skips the server's
    * `models::get` lookup when known.

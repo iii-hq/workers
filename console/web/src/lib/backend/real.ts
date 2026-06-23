@@ -25,6 +25,7 @@ import {
 } from './approval-events-live'
 import { loadApprovalGateDefaults } from './approval-gate-config'
 import {
+  continueTurn,
   getTurnStatus,
   type HarnessFunctionPolicy,
   type HarnessThinkingLevel,
@@ -277,6 +278,11 @@ async function realAbortRun(sessionId: string): Promise<void> {
   await stopTurn(client, sessionId)
 }
 
+async function realContinueTurn(sessionId: string): Promise<void> {
+  const client = await getIiiClient()
+  await continueTurn(client, sessionId)
+}
+
 /** `context::compact` response, discriminated on `status`. */
 type CompactResponse =
   | {
@@ -393,5 +399,6 @@ export const realBackend: ChatBackend = {
   stream: realStream,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
+  continueTurn: realContinueTurn,
   compactSession: realCompactSession,
 }

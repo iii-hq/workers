@@ -335,7 +335,9 @@ async fn seed_or_merge(
 /// Resume a turn parked at `max_turns`: clear the flag, extend the budget by a
 /// fresh allotment, bump the step, set Running, persist, and re-enqueue. Mirrors
 /// `deferred::persist_and_maybe_resume`; stale-step safe via the monotonic step.
-async fn resume_awaiting_continue(
+/// Shared with `harness::continue` (the explicit button path). The caller holds
+/// the per-session lock.
+pub(crate) async fn resume_awaiting_continue(
     deps: &Deps,
     cfg: &WorkerConfig,
     record: &mut TurnRecord,

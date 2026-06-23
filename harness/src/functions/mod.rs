@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod continue_turn;
 pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
@@ -60,6 +61,11 @@ pub const STOP_DESC: &str =
 
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
+
+pub const CONTINUE_ID: &str = "harness::continue";
+pub const CONTINUE_DESC: &str =
+    "Resume a turn parked at max_turns (the ask-to-continue pause) with a fresh budget; the explicit \
+     counterpart to replying, for a UI Continue button.";
 
 pub const FILESYSTEM_GRANT_ID: &str = "harness::filesystem::grant";
 pub const FILESYSTEM_GRANT_DESC: &str =
@@ -155,6 +161,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     });
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
+    });
+    register(iii, deps, CONTINUE_ID, CONTINUE_DESC, |d, r| async move {
+        continue_turn::handle(&d, r).await
     });
 
     // Internal filesystem grant controls — registered for trusted callers, kept

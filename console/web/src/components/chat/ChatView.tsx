@@ -668,6 +668,13 @@ export function ChatView({
     void backend.abortRun?.(sessionId).catch(() => {})
   }, [backend, sessionId])
 
+  // Resume a turn parked at max_turns (the ask-to-continue pause). A parked
+  // turn is non-terminal, so the input is blocked — the Continue button calls
+  // `harness::continue` instead of relying on a reply.
+  const handleContinue = useCallback(() => {
+    void backend.continueTurn?.(sessionId).catch(() => {})
+  }, [backend, sessionId])
+
   // Covers the gap between submit / fcall-end and the next streamed content,
   // where the assistant/thought shimmer hasn't yet rendered.
   const isThinking =
@@ -875,6 +882,8 @@ export function ChatView({
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
+            onContinue={handleContinue}
+            waiting={conversation.status === 'waiting'}
             isStreaming={streamingIndicator}
             blocked={harnessBlocked}
             blockedPlaceholder={
