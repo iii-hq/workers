@@ -83,6 +83,7 @@ rules:
   - '!storage::on-config-change'
   - '!database::on-config-change'
   - '!session::on-config-change'
+  - '!coder::on-config-change'
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # turn is the internal loop step; function::trigger/resolve forge call ids

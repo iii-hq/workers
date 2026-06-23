@@ -111,6 +111,23 @@ pub async fn apply_config(cell: &ConfigCell, cfg: CoderConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
+/// Internal `coder::on-config-change` trigger payload. The handler re-fetches
+/// the authoritative configuration, so this carries only the (advisory)
+/// configuration id; a struct (not `Value`) keeps the request schema concrete
+/// and unknown fields are ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnConfigChangeEvent {
+    /// Configuration id that changed (advisory; the handler re-fetches the value).
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Ack returned by the internal `coder::on-config-change` handler.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OnConfigChangeResponse {
+    pub ok: bool,
+}
+
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger.
 ///
@@ -126,13 +143,13 @@ pub fn register_config_trigger(
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let cell = cell_for_fn.clone();
             let engine = engine.clone();
             let boot_sig = boot_sig.clone();
             async move {
                 on_config_change(&engine, &cell, &boot_sig).await;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
