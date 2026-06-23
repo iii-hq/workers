@@ -1,0 +1,39 @@
+{
+  "name": "pi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi coding agent as an iii worker: headless turns over the iii bus, raw events on pi::events, AgentEvent frames on agent::events.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "build": "tsc -b",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "bin": {
+    "pi": "./dist/index.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.0",
+    "iii-sdk": "^0.19.2",
+    "yaml": "^2.6.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

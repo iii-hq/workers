@@ -1,0 +1,16 @@
+# Agent permissions for the pi worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# pi::run / pi::start (and the run::start_and_wait alias) spawn a full Pi
+# coding agent with the host's filesystem and shell — an agent invoking those
+# without human approval is a privilege escalation, so they are NOT
+# allow-listed and stay at the needs_approval default. pi::steer / pi::follow_up
+# inject instructions into a live run, so they stay gated too. Read-only
+# introspection is safe to allow.
+version: 1
+
+rules:
+  # internal config-reload callback — bus-internal, never agent-callable
+  - '!pi::on-config-change'
+  - pi::status
+  - pi::sessions::list

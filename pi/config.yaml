@@ -1,0 +1,23 @@
+engine_url: ws://127.0.0.1:49134
+
+defaults:
+  model: ""                # empty = Pi settings default; else "provider/modelId", e.g. "anthropic/claude-sonnet-4-20250514"
+  thinking_level: medium   # off | minimal | low | medium | high | xhigh
+  cwd: ""                  # default working directory for runs
+  tools: []                # empty = Pi defaults (read, bash, edit, write); else an allowlist of tool names
+  agent_dir: ""            # Pi global config dir; empty = ~/.pi/agent
+
+# Stream AgentEvent frames here, grouped by session_id. The console and
+# acp worker both read this stream.
+events_stream: agent::events
+
+# Raw Pi events (exact AgentSession event shapes: agent_start/end, turn_*,
+# message_*, tool_execution_*) mirrored verbatim here, grouped by session_id.
+raw_events_stream: pi::events
+
+# Append the iii runtime context to the system prompt: teaches the agent
+# live discovery against the engine catalog through the iii CLI
+# (engine::functions::list, `iii trigger <fn> --help`). Per-turn override
+# via the iii_context payload field; a caller-supplied system_prompt
+# always wins and gets nothing appended.
+iii_context: true
