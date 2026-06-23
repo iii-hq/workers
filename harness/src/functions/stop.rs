@@ -24,7 +24,14 @@ pub struct StopResponse {
 
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
-    let Some(mut record) =
+
+    // Lock-free pre-read: discover the in-flight stream + live children and
+    // fast-out for a missing/mismatched/terminal turn. This drives the prompt,
+    // lock-free part of cancellation (child cascade + router::abort) so
+    // generation is interrupted immediately, even while the running step holds
+    // the per-session lock across in-flight tool execution. The authoritative
+    // abort write happens under the lock below.
+    let Some(record) =
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
     else {
         return Ok(StopResponse { stopping: false });
@@ -37,10 +44,16 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     if record.status.is_terminal() {
         return Ok(StopResponse { stopping: false });
     }
+    // Pin the turn we observed so the write under the lock can't land on a newer
+    // turn that started in between (matters when `turn_id` was omitted).
+    let target_turn = record.turn_id.clone();
 
-    // Cascade to non-terminal spawned children first (harness.md § Cancellation
-    // cascade): each child stop resolves the child's parent call with an error
-    // when the child finalises.
+    // Cascade to non-terminal spawned children BEFORE taking this session's
+    // lock (harness.md § Cancellation cascade): each child stop acquires its
+    // OWN session lock, so holding the parent lock here could deadlock against a
+    // child→parent resolve. Holding at most one session lock at a time keeps
+    // cancellation lock-order-free. Each child stop resolves the child's parent
+    // call with an error when the child finalises.
     for child in record.live_children() {
         Box::pin(handle(
             deps,
@@ -53,15 +66,39 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         .ok();
     }
 
-    record.abort = true;
-    record.updated_at = crate::types::message::AgentMessage::now_ms();
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-
-    // Abort an in-flight stream so the running step finalises promptly.
+    // Prompt stream interruption (lock-free): aborting a stale or already
+    // finished request_id is a harmless no-op, so the pre-read id is safe to
+    // use without the lock.
     if let Some(request_id) = &record.stream_request_id {
         let router = deps.router().await;
         router.abort(request_id).await;
     }
+
+    // Authoritative abort write UNDER the per-session lock (see locks.rs): the
+    // running step persists the whole turn record from a stale in-memory copy
+    // at several points, so a lock-free write here would be clobbered. Taking
+    // the lock — as `harness::function::resolve` and the pending sweep already
+    // do — serializes this read-modify-write with the step and closes the race.
+    // Re-read inside the lock so the flag is set on the freshest record rather
+    // than reverting the step's other updates.
+    let _guard = deps.locks.guard(&req.session_id).await;
+    let Some(mut record) =
+        crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+    else {
+        return Ok(StopResponse { stopping: false });
+    };
+    if record.turn_id != target_turn {
+        // A newer turn started between the pre-read and the lock — don't flag it.
+        return Ok(StopResponse { stopping: false });
+    }
+    if record.status.is_terminal() {
+        // The step finalised between the pre-read and acquiring the lock
+        // (possibly via the router::abort above) — nothing left to flag.
+        return Ok(StopResponse { stopping: false });
+    }
+    record.abort = true;
+    record.updated_at = crate::types::message::AgentMessage::now_ms();
+    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
     Ok(StopResponse { stopping: true })
 }

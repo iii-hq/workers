@@ -76,6 +76,23 @@ fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> V
     Value::Object(obj)
 }
 
+/// Whether the running step must finalise as cancelled after generation.
+///
+/// Three independent signals mean "cancel": the loop's own in-memory abort flag
+/// (a stop observed between steps), a `durable_abort` that a concurrent
+/// `harness::stop` wrote to state during generation while the in-memory copy
+/// stayed stale, or a stream that itself ended `Aborted`. The middle term is the
+/// fix for the post-generation race: a stop landing after a normal `Done` frame
+/// carries neither a stale-true local flag nor an `Aborted` stop_reason, so
+/// without re-reading durable state it would leak a step of tool execution.
+fn cancel_requested(
+    local_abort: bool,
+    durable_abort: bool,
+    stop_reason: crate::types::event::StopReason,
+) -> bool {
+    local_abort || durable_abort || stop_reason == crate::types::event::StopReason::Aborted
+}
+
 /// Run one durable loop step.
 pub async fn run_step(
     deps: &Deps,
@@ -242,6 +259,14 @@ pub async fn run_step(
     record.stream_request_id = Some(params.request_id.clone());
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
+    // Release the per-session lock across the generation RPC. The loop writes no
+    // turn record between here and the post-generation cancellation check
+    // (router::chat streams into the SESSION, not the turn record), so dropping
+    // the lock lets a concurrent harness::stop take it and set the durable abort
+    // flag — observed THIS step by the re-read below — instead of leaving the
+    // stop blocked behind the whole step and a step of tool execution leaking.
+    drop(_guard);
+
     let router = deps.router().await;
     let outcome = router.chat(params, &sink).await?;
 
@@ -265,10 +290,24 @@ pub async fn run_step(
         )
         .await;
 
+    // Re-acquire the lock before any further turn-record write, then re-read the
+    // durable abort flag under it (authoritative — no concurrent writer once
+    // held). A harness::stop that landed during generation set the flag on
+    // durable state while this in-memory `record` stayed stale; if the stream
+    // had already completed normally it carries stop_reason != Aborted, so
+    // without this re-read the stop would be missed until the next step.
+    let _guard = deps.locks.guard(&payload.session_id).await;
+    let durable_abort =
+        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
+            .await?
+            .map(|r| r.abort)
+            .unwrap_or(false);
+
     record.turn_count += 1;
 
     // Cancellation during generation finalises the partial as cancelled.
-    if record.abort || outcome.message.stop_reason == crate::types::event::StopReason::Aborted {
+    if cancel_requested(record.abort, durable_abort, outcome.message.stop_reason) {
+        record.abort = true;
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
     if !outcome.ok {
@@ -1055,5 +1094,35 @@ impl Clone for SessionStreamSink {
             entry_id: self.entry_id.clone(),
             turn_id: self.turn_id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cancel_requested;
+    use crate::types::event::StopReason;
+
+    #[test]
+    fn durable_abort_is_observed_even_when_local_is_stale_and_stream_completed() {
+        // The post-generation race: a harness::stop landed after a normal `Done`
+        // frame, so the loop's in-memory flag is still false and the stream's
+        // stop_reason is End (not Aborted). Re-reading durable state must still
+        // cancel — otherwise this step's tool calls execute despite the stop.
+        assert!(cancel_requested(false, true, StopReason::End));
+        assert!(cancel_requested(false, true, StopReason::FunctionCall));
+    }
+
+    #[test]
+    fn local_abort_or_aborted_stream_still_cancels() {
+        // A stop observed between steps (local flag) or a stream the router tore
+        // down (Aborted) cancel regardless of durable state.
+        assert!(cancel_requested(true, false, StopReason::End));
+        assert!(cancel_requested(false, false, StopReason::Aborted));
+    }
+
+    #[test]
+    fn no_signal_does_not_cancel() {
+        assert!(!cancel_requested(false, false, StopReason::End));
+        assert!(!cancel_requested(false, false, StopReason::FunctionCall));
     }
 }
