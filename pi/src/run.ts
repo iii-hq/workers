@@ -88,6 +88,63 @@ const RUN_REQUEST_FORMAT = z.toJSONSchema(RunPayloadSchema);
 const SESSION_ID_FORMAT = z.toJSONSchema(SessionIdSchema);
 const STEER_REQUEST_FORMAT = z.toJSONSchema(SteerPayloadSchema);
 
+const UsageSchema = z.object({
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  cache_read_tokens: z.number().optional(),
+  cache_write_tokens: z.number().optional(),
+});
+
+const RunResultSchema = z.object({
+  session_id: z.string(),
+  pi_session_id: z.string().nullable().optional(),
+  result: z.string().optional(),
+  stop_reason: z.string().optional(),
+  is_error: z.boolean().optional(),
+  num_turns: z.number().optional(),
+  total_cost_usd: z.number().optional(),
+  usage: UsageSchema.nullable().optional(),
+  busy: z.boolean().optional(),
+  reason: z.string().optional(),
+});
+const StartResultSchema = z.object({
+  session_id: z.string(),
+  started: z.boolean(),
+  busy: z.boolean().optional(),
+  reason: z.string().optional(),
+});
+const SteerResultSchema = z.object({
+  session_id: z.string(),
+  steered: z.boolean(),
+  reason: z.string().optional(),
+});
+const FollowUpResultSchema = z.object({
+  session_id: z.string(),
+  queued: z.boolean(),
+  reason: z.string().optional(),
+});
+const StopResultSchema = z.object({
+  session_id: z.string(),
+  stopped: z.boolean(),
+  reason: z.string().optional(),
+});
+const StatusResultSchema = z.object({
+  session_id: z.string(),
+  live: z.boolean(),
+  record: z.record(z.string(), z.unknown()).nullable(),
+});
+const SessionsResultSchema = z.object({
+  sessions: z.array(z.record(z.string(), z.unknown())),
+});
+
+const RUN_RESPONSE_FORMAT = z.toJSONSchema(RunResultSchema);
+const START_RESPONSE_FORMAT = z.toJSONSchema(StartResultSchema);
+const STEER_RESPONSE_FORMAT = z.toJSONSchema(SteerResultSchema);
+const FOLLOWUP_RESPONSE_FORMAT = z.toJSONSchema(FollowUpResultSchema);
+const STOP_RESPONSE_FORMAT = z.toJSONSchema(StopResultSchema);
+const STATUS_RESPONSE_FORMAT = z.toJSONSchema(StatusResultSchema);
+const SESSIONS_RESPONSE_FORMAT = z.toJSONSchema(SessionsResultSchema);
+
 type LiveRun = { session: AgentSession };
 const live = new Map<string, LiveRun>();
 
@@ -318,6 +375,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw Pi events onto pi::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: RUN_RESPONSE_FORMAT,
     },
   );
 
@@ -349,6 +407,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Start a Pi turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: START_RESPONSE_FORMAT,
     },
   );
 
@@ -365,6 +424,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Inject a steering instruction into a live Pi run; applied after the current tool calls finish.',
       request_format: STEER_REQUEST_FORMAT,
+      response_format: STEER_RESPONSE_FORMAT,
     },
   );
 
@@ -381,6 +441,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Queue a follow-up message for a live Pi run; processed after the agent would otherwise stop.',
       request_format: STEER_REQUEST_FORMAT,
+      response_format: FOLLOWUP_RESPONSE_FORMAT,
     },
   );
 
@@ -396,6 +457,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
     {
       description: 'Interrupt a live Pi run for a session.',
       request_format: SESSION_ID_FORMAT,
+      response_format: STOP_RESPONSE_FORMAT,
     },
   );
 
@@ -409,12 +471,14 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
     {
       description: 'Point-in-time status of a Pi session.',
       request_format: SESSION_ID_FORMAT,
+      response_format: STATUS_RESPONSE_FORMAT,
     },
   );
 
   iii.registerFunction('pi::sessions::list', async () => ({ sessions: await listSessions(iii) }), {
     description: 'List every Pi session this worker has run.',
     request_format: { type: 'object', properties: {} },
+    response_format: SESSIONS_RESPONSE_FORMAT,
   });
 
   iii.registerFunction(
@@ -425,6 +489,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Alias for pi::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: RUN_RESPONSE_FORMAT,
     },
   );
 }

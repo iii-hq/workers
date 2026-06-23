@@ -62,10 +62,18 @@ export async function fetchRuntime(iii: ISdk): Promise<RuntimeConfig | null> {
  */
 export async function bindConfigTrigger(iii: ISdk, onChange: () => Promise<void>): Promise<void> {
   await onChange();
-  iii.registerFunction(CONFIG_FN_ID, async () => {
-    await onChange();
-    return null;
-  });
+  iii.registerFunction(
+    CONFIG_FN_ID,
+    async () => {
+      await onChange();
+      return null;
+    },
+    {
+      description: 'Internal: reload pi configuration when it changes.',
+      request_format: { type: 'object', properties: {} },
+      response_format: { type: 'null' },
+    },
+  );
   iii.registerTrigger({
     type: 'configuration',
     function_id: CONFIG_FN_ID,
