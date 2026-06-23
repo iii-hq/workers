@@ -25,6 +25,7 @@ on:
           - image-resize
           - llm-router
           - mcp
+          - pi
           - provider-anthropic
           - provider-openai
           - session-manager
