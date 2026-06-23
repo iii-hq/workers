@@ -35,3 +35,54 @@ impl SessionLocks {
         lock.lock_owned().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SessionLocks;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// The property the abort-write fix relies on: two holders of the SAME
+    /// session lock never overlap, so a read-modify-write under the guard can't
+    /// be clobbered by a concurrent one (e.g. harness::stop vs the turn loop).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn same_session_critical_sections_never_overlap() {
+        let locks = SessionLocks::new();
+        let inside = Arc::new(AtomicBool::new(false));
+        let overlaps = Arc::new(AtomicU32::new(0));
+
+        let tasks: Vec<_> = (0..16)
+            .map(|_| {
+                let (locks, inside, overlaps) = (locks.clone(), inside.clone(), overlaps.clone());
+                tokio::spawn(async move {
+                    let _g = locks.guard("s").await;
+                    // If mutual exclusion holds, `inside` is always false here.
+                    if inside.swap(true, Ordering::SeqCst) {
+                        overlaps.fetch_add(1, Ordering::SeqCst);
+                    }
+                    tokio::task::yield_now().await; // widen the window for a racer
+                    inside.store(false, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(
+            overlaps.load(Ordering::SeqCst),
+            0,
+            "critical sections overlapped"
+        );
+    }
+
+    /// Different sessions must NOT serialize — holding one session's guard can't
+    /// block another session's stop/step.
+    #[tokio::test]
+    async fn distinct_sessions_do_not_block_each_other() {
+        let locks = SessionLocks::new();
+        let held = locks.guard("a").await;
+        // A different session acquires without waiting on `held`.
+        let _other = locks.guard("b").await;
+        drop(held);
+    }
+}
