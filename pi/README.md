@@ -65,7 +65,17 @@ iii trigger pi::stop session_id=<session_id>
 iii trigger pi::run --help
 ```
 
+A turn from the CLI returns the result with token usage and cost:
+
+![iii trigger pi::run returning pong with usage and cost](https://raw.githubusercontent.com/iii-hq/workers/main/pi/assets/cli-run.png)
+
+`iii trigger pi::run --help` prints the published request schema as a parameter table:
+
+![iii trigger pi::run --help printing the request schema as a parameter table](https://raw.githubusercontent.com/iii-hq/workers/main/pi/assets/cli-help.png)
+
 Call `pi::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Pi session files in engine state and resumes automatically.
+
+![iii trigger pi::sessions::list showing the stored session records](https://raw.githubusercontent.com/iii-hq/workers/main/pi/assets/cli-sessions.png)
 
 Two ids come back from every run. `session_id` is the iii session id: the key for `pi::status`, `pi::stop`, `pi::steer`, resume, and the stream group. `pi_session_id` is Pi's internal session id — returned for reference, not a lookup key.
 
@@ -116,6 +126,10 @@ By default every turn's prompt carries the iii runtime context: the same engine-
 iii trigger pi::run --timeout-ms 300000 \
   --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
+
+Pi answers by querying the live engine itself, grouping every connected worker by role:
+
+![iii trigger pi::run enumerating every worker connected to the engine](https://raw.githubusercontent.com/iii-hq/workers/main/pi/assets/cli-discovery.png)
 
 The context is prepended on a fresh session and skipped on resume (it is already in the conversation history). Turn it off entirely with `"iii_context": false` per call or globally in `config.yaml`.
 
