@@ -35,10 +35,16 @@ The live engine is the single source of truth. Ask it — never assume:
 - \`iii trigger <function> --help\` — that function's description and request schema, served by
   the engine. THIS IS THE API REFERENCE for every call you make. Fetch it BEFORE the first call
   to any function; a one-line description from \`list\` is a hint, not the contract.
-- \`iii trigger engine::workers::list\` — every connected worker;
+- \`iii trigger engine::workers::list\` — every WS-connected (currently running) worker;
   \`iii trigger engine::workers::info name=<name>\` — one worker's full surface.
+- \`iii trigger worker::list\` — installed + running workers, including daemon-managed
+  builtins. \`engine::workers::list\` sees only WS-connected workers, so to confirm a worker is
+  RUNNING, merge the two by name.
 - \`iii trigger engine::triggers::list\` — every trigger TYPE;
   \`iii trigger engine::registered-triggers::list\` — every trigger INSTANCE already bound.
+
+Trust a successful runtime call over an empty list: an empty \`*::list\` can mean lag, not
+absence — never conclude a function or worker is missing from one empty read.
 
 Need a backend capability? Check what is already registered FIRST — it is usually one call
 away. When nothing fits, search the public registry before building anything:
