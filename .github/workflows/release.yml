@@ -19,6 +19,7 @@ on:
       - 'image-resize/v*'
       - 'llm-router/v*'
       - 'mcp/v*'
+      - 'pi/v*'
       - 'provider-anthropic/v*'
       - 'provider-openai/v*'
       - 'session-manager/v*'
