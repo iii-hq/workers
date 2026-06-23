@@ -128,13 +128,25 @@ const StopResultSchema = z.object({
   stopped: z.boolean(),
   reason: z.string().optional(),
 });
+const SessionRecordSchema = z.object({
+  session_id: z.string(),
+  pi_session_id: z.string().nullable(),
+  session_file: z.string().nullable(),
+  cwd: z.string(),
+  model: z.string(),
+  status: z.enum(['working', 'done', 'error']),
+  turns: z.number(),
+  total_cost_usd: z.number(),
+  usage: UsageSchema.nullable(),
+  updated_at_ms: z.number(),
+});
 const StatusResultSchema = z.object({
   session_id: z.string(),
   live: z.boolean(),
-  record: z.record(z.string(), z.unknown()).nullable(),
+  record: SessionRecordSchema.nullable(),
 });
 const SessionsResultSchema = z.object({
-  sessions: z.array(z.record(z.string(), z.unknown())),
+  sessions: z.array(SessionRecordSchema),
 });
 
 const RUN_RESPONSE_FORMAT = z.toJSONSchema(RunResultSchema);
