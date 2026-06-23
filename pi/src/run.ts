@@ -84,9 +84,18 @@ const SteerPayloadSchema = z.object({
   prompt: z.string().describe('Instruction to inject into the live run'),
 });
 
-const RUN_REQUEST_FORMAT = z.toJSONSchema(RunPayloadSchema);
-const SESSION_ID_FORMAT = z.toJSONSchema(SessionIdSchema);
-const STEER_REQUEST_FORMAT = z.toJSONSchema(SteerPayloadSchema);
+// The registry's publish validator has no `$schema` meta-schema registered, so
+// the draft-2020-12 `$schema` key z.toJSONSchema stamps at the root fails
+// publish. Strip it; the schema body is what the engine + registry consume.
+function jsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const out = z.toJSONSchema(schema) as Record<string, unknown>;
+  delete out.$schema;
+  return out;
+}
+
+const RUN_REQUEST_FORMAT = jsonSchema(RunPayloadSchema);
+const SESSION_ID_FORMAT = jsonSchema(SessionIdSchema);
+const STEER_REQUEST_FORMAT = jsonSchema(SteerPayloadSchema);
 
 const UsageSchema = z.object({
   input_tokens: z.number(),
@@ -149,13 +158,13 @@ const SessionsResultSchema = z.object({
   sessions: z.array(SessionRecordSchema),
 });
 
-const RUN_RESPONSE_FORMAT = z.toJSONSchema(RunResultSchema);
-const START_RESPONSE_FORMAT = z.toJSONSchema(StartResultSchema);
-const STEER_RESPONSE_FORMAT = z.toJSONSchema(SteerResultSchema);
-const FOLLOWUP_RESPONSE_FORMAT = z.toJSONSchema(FollowUpResultSchema);
-const STOP_RESPONSE_FORMAT = z.toJSONSchema(StopResultSchema);
-const STATUS_RESPONSE_FORMAT = z.toJSONSchema(StatusResultSchema);
-const SESSIONS_RESPONSE_FORMAT = z.toJSONSchema(SessionsResultSchema);
+const RUN_RESPONSE_FORMAT = jsonSchema(RunResultSchema);
+const START_RESPONSE_FORMAT = jsonSchema(StartResultSchema);
+const STEER_RESPONSE_FORMAT = jsonSchema(SteerResultSchema);
+const FOLLOWUP_RESPONSE_FORMAT = jsonSchema(FollowUpResultSchema);
+const STOP_RESPONSE_FORMAT = jsonSchema(StopResultSchema);
+const STATUS_RESPONSE_FORMAT = jsonSchema(StatusResultSchema);
+const SESSIONS_RESPONSE_FORMAT = jsonSchema(SessionsResultSchema);
 
 type LiveRun = { session: AgentSession };
 const live = new Map<string, LiveRun>();

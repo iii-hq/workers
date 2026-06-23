@@ -30,9 +30,12 @@ export type Config = z.infer<typeof ConfigSchema>;
 export const RuntimeConfigSchema = ConfigSchema.omit({ engine_url: true });
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
-/** JSON Schema published to the configuration worker. */
+/** JSON Schema published to the configuration worker. The registry validator
+ *  has no `$schema` meta-schema, so strip the draft-2020-12 `$schema` key. */
 export function runtimeJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>;
+  const out = z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>;
+  delete out.$schema;
+  return out;
 }
 
 /** The runtime slice of a full config, for use as `initial_value`. */
