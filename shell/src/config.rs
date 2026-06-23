@@ -176,6 +176,43 @@ impl Default for ShellConfig {
 }
 
 impl ShellConfig {
+    /// The bootable, zero-config default: seeded as `initial_value` on first
+    /// registration and used as the runtime fallback when the stored value is
+    /// null, so the worker boots with no config file at all (database-style
+    /// zero-config). This is deliberately NOT `Default::default()` — that is
+    /// unjailed (`host_root: None`) so an operator config that omits the jail
+    /// fails closed. This seed is the shipped permissive dev default: jailed to
+    /// `/tmp`, env forwarded, open exec with a catastrophic-only denylist. It is
+    /// kept in sync with `config.yaml` by a unit test.
+    pub fn seed_default() -> Self {
+        Self {
+            max_timeout_ms: 120_000,
+            inherit_env: true,
+            denylist_patterns: vec![
+                r"rm\s+-rf\s+/".into(),
+                r":\(\)\s*\{\s*:\|".into(),
+                "mkfs".into(),
+                r"dd\s+if=".into(),
+                "shutdown".into(),
+                "reboot".into(),
+                "/etc/shadow".into(),
+            ],
+            fs: FsConfig {
+                host_root: Some(PathBuf::from("/tmp")),
+                max_read_bytes: 16_777_216,
+                max_write_bytes: 16_777_216,
+                denylist_paths: vec![
+                    PathBuf::from("/etc/passwd"),
+                    PathBuf::from("/etc/shadow"),
+                ],
+                ..FsConfig::default()
+            },
+            ..Self::default()
+        }
+    }
+}
+
+impl ShellConfig {
     pub fn compile_denylist(&mut self) -> Result<()> {
         self.compiled_denylist = self
             .denylist_patterns
@@ -457,6 +494,22 @@ mod tests {
             .is_command_allowed(&["rm".into(), "-rf".into(), "/".into()])
             .expect_err("rm -rf / must still trip the denylist");
         assert!(err.contains("denylist"), "got: {err}");
+    }
+
+    /// `seed_default()` is the in-code twin of the shipped `config.yaml` — the
+    /// file the registry publishes and that `cargo run` loads. If they drift, a
+    /// zero-config boot and a `config.yaml` boot would diverge silently.
+    #[test]
+    fn seed_default_matches_shipped_config_yaml() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
+        let content = std::fs::read_to_string(path).expect("read config.yaml");
+        let from_file: ShellConfig =
+            serde_yaml::from_str(&content).expect("config.yaml parses");
+        assert_eq!(
+            from_file.to_json(),
+            ShellConfig::seed_default().to_json(),
+            "config.yaml and ShellConfig::seed_default() must stay in sync"
+        );
     }
 
     #[test]

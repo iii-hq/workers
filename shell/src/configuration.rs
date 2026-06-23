@@ -129,6 +129,14 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &III) -> Result<ShellRuntime, Strin
 }
 
 /// Register the `shell` configuration schema with the configuration worker.
+///
+/// `initial_value` (used only on first registration; preserved afterwards) is
+/// taken from an explicit `--config` seed when given, otherwise from the
+/// built-in zero-config default when no value is stored yet — so the worker
+/// boots with no config file at all (database parity). Unlike database we
+/// cannot seed `ShellConfig::default()`: it is intentionally unjailed/invalid,
+/// so the built-in seed is `ShellConfig::seed_default()`, a bootable permissive
+/// dev default.
 pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
@@ -136,24 +144,23 @@ pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<()
         "description": "Command allowlist/denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
     });
-    // Only an explicit --config seed is written as initial_value. We never seed
-    // the built-in ShellConfig::default(): it is intentionally invalid (unjailed;
-    // rejected by prepare_config), so writing it would leave the stored `shell`
-    // config stuck in a self-invalid state. With no seed and no stored value the
-    // worker fails closed at build_runtime with a clear fs-jail error instead.
-    if let Some(seed) = seed {
-        // Validate the seed with the SAME checks build_runtime uses (denylist
-        // regex compile, fs-jail rule, host_root/denylist reachability) BEFORE
-        // persisting it. Persisting an invalid seed would store a value the
-        // worker then rejects; because configuration::register preserves the
-        // value after first registration, a one-line typo would become a
-        // persistent outage. If the seed is invalid, register the schema only
-        // and let the worker fail closed with a clear error.
-        match build_runtime(seed, iii) {
-            Ok(_) => payload["initial_value"] = seed.to_json(),
+    let candidate: Option<ShellConfig> = match seed {
+        Some(s) => Some(s.clone()),
+        None if should_seed_default_value(iii).await? => Some(ShellConfig::seed_default()),
+        None => None,
+    };
+    if let Some(cfg) = &candidate {
+        // Validate with the SAME checks build_runtime uses (denylist regex
+        // compile, fs-jail rule, host_root/denylist reachability) BEFORE
+        // persisting. configuration::register preserves the value after first
+        // registration, so a one-line typo in --config — or an unbootable
+        // built-in seed — would become a persistent outage. If invalid, register
+        // the schema only and let the worker fail closed with a clear error.
+        match build_runtime(cfg, iii) {
+            Ok(_) => payload["initial_value"] = cfg.to_json(),
             Err(e) => tracing::error!(
                 error = %e,
-                "ignoring invalid --config seed; not registering it as initial_value"
+                "ignoring invalid config seed; not registering it as initial_value"
             ),
         }
     }
@@ -161,10 +168,27 @@ pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<()
     Ok(())
 }
 
+/// Seed the built-in default only when nothing is stored yet — never overwrite
+/// an operator's persisted value.
+async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+    match try_get_config_value(iii).await? {
+        None => Ok(true),
+        Some(value) if value.is_null() => Ok(true),
+        Some(_) => Ok(false),
+    }
+}
+
 /// Read the live `shell` configuration (env-expanded by the configuration worker).
 pub async fn fetch_config(iii: &III) -> Result<ShellConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
+        // Null means register_config did not seed (its seed_default failed
+        // validation) or the stored value was nulled at runtime. Fall back to
+        // the unjailed Default::default(), which build_runtime rejects: boot
+        // fails closed, and a steady-state hot-reload keeps last-good rather
+        // than silently widening the live jail to the /tmp seed default. Boot
+        // zero-config comes from register_config seeding seed_default(), not
+        // from this fallback.
         tracing::warn!(
             "configuration value is null; falling back to the built-in default, which is \
              intentionally invalid (unjailed) and is rejected by build_runtime — boot \
@@ -389,6 +413,13 @@ mod tests {
     fn prepare_config_rejects_unjailed_default() {
         let err = prepare_config(&ShellConfig::default()).expect_err("default is unsafe");
         assert!(err.contains("fs jail"));
+    }
+
+    #[test]
+    fn prepare_config_accepts_seed_default() {
+        // The zero-config seed must boot (jailed to /tmp) — that is the whole
+        // point of seeding it instead of the unjailed Default::default().
+        prepare_config(&ShellConfig::seed_default()).expect("seed_default boots");
     }
 
     #[test]
