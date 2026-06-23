@@ -201,10 +201,7 @@ impl ShellConfig {
                 host_root: Some(PathBuf::from("/tmp")),
                 max_read_bytes: 16_777_216,
                 max_write_bytes: 16_777_216,
-                denylist_paths: vec![
-                    PathBuf::from("/etc/passwd"),
-                    PathBuf::from("/etc/shadow"),
-                ],
+                denylist_paths: vec![PathBuf::from("/etc/passwd"), PathBuf::from("/etc/shadow")],
                 ..FsConfig::default()
             },
             ..Self::default()
@@ -503,8 +500,7 @@ mod tests {
     fn seed_default_matches_shipped_config_yaml() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
         let content = std::fs::read_to_string(path).expect("read config.yaml");
-        let from_file: ShellConfig =
-            serde_yaml::from_str(&content).expect("config.yaml parses");
+        let from_file: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
         assert_eq!(
             from_file.to_json(),
             ShellConfig::seed_default().to_json(),
