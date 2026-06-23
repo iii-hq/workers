@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
             Some(cfg)
         }
         Err(e) => {
-            tracing::warn!(path = %cli.config, error = %e, "failed to load seed config; relying on existing configuration entry");
+            tracing::warn!(path = %cli.config, error = %e, "could not load --config seed; using the stored configuration value if present, else the built-in zero-config default");
             None
         }
     };
