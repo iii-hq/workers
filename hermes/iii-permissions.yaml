@@ -1,0 +1,13 @@
+# Agent permissions for the hermes worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# hermes::run (and the run::start_and_wait alias) spawns a full Hermes agent
+# with the host's tools and shell; hermes::send delivers to external messaging
+# platforms. An agent invoking either without human approval is a privilege
+# escalation, so they stay at the needs_approval default. Read-only
+# introspection is safe to allow.
+version: 1
+
+rules:
+  - hermes::status
+  - hermes::sessions::list

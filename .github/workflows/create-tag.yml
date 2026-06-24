@@ -19,6 +19,7 @@ on:
           - database
           - email
           - harness
+          - hermes
           - iii-directory
           - lsp
           - lsp-vscode
