@@ -1,4 +1,4 @@
-import { Copy } from 'lucide-react'
+import { Copy, Folder } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
@@ -736,10 +736,13 @@ export function ChatView({
         <div className="mx-auto max-w-[760px]">
           {backend.id === 'real' ? (
             <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
-              <span aria-hidden>📁</span>
+              <Folder size={12} className="shrink-0" aria-hidden />
               {conversation.workingDir ? (
                 <span
-                  className="truncate font-mono"
+                  // dir=rtl keeps the trailing (most-distinguishing) path
+                  // segment visible when truncated in the narrow dock.
+                  dir="rtl"
+                  className="truncate text-left font-mono"
                   title={conversation.workingDir}
                 >
                   {conversation.workingDir}

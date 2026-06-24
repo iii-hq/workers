@@ -22,9 +22,10 @@ import { cn } from '@/lib/utils'
  * or "browse to add" a new directory. Browsing lists the operator's coder roots
  * (`coder::info`) one level at a time (`coder::list-folder`, lazy). The search
  * box filters the current level live; typing/pasting an absolute path jumps
- * straight there (browse) or selects it (projects). The chosen dir is what the
- * harness scopes the chat to (`base_dir`); it locks read-only after the first
- * send.
+ * straight there (browse) or selects it (projects). A pasted/remembered dir is
+ * validated against the live roots before it's accepted. The chosen dir is what
+ * the harness scopes the chat to (`base_dir`); it is re-scopable mid-conversation
+ * (a change drops a visible transcript marker).
  */
 
 interface DirectoryPickerProps {
@@ -80,8 +81,11 @@ function errMsg(err: unknown): string {
       : err && typeof err === 'object' && 'message' in err
         ? String((err as { message: unknown }).message)
         : String(err)
-  const inner = raw.match(/"message"\s*:\s*"([^"]+)"/)
-  return inner ? inner[1] : raw
+  // Errors nest: `handler error: {"code":"C211","message":"…"}`. Prefer the
+  // innermost (last) message and tolerate escaped quotes inside it.
+  const matches = [...raw.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g)]
+  if (matches.length === 0) return raw
+  return matches[matches.length - 1][1].replace(/\\(.)/g, '$1')
 }
 
 export function DirectoryPicker({
@@ -256,8 +260,14 @@ export function DirectoryPicker({
       setValidating(dir)
       try {
         const client = await getIiiClient()
-        await client.trigger('coder::list-folder', { path: dir, page_size: 1 })
-        select(dir)
+        const res = await client.trigger<ListFolderResult>(
+          'coder::list-folder',
+          { path: dir, page_size: 1 },
+        )
+        // Select the CANONICAL resolved dir the worker echoes back — not the
+        // raw input — so what's stored is exactly what coder will resolve to
+        // (a file path errors C210; a non-existent path errors C211).
+        select(res?.path ?? dir)
       } catch (err) {
         setError(`can't use ${dir} — ${errMsg(err)}`)
       } finally {
@@ -453,6 +463,7 @@ export function DirectoryPicker({
                       setView('projects')
                       setProjects(loadRecentProjects())
                       setQuery('')
+                      setError(null)
                     }}
                     className="text-ink-faint hover:text-ink"
                   >
