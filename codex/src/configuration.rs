@@ -88,6 +88,11 @@ pub fn register_config_trigger(iii: &III, cell: ConfigCell) -> Result<(), IIIErr
                 Ok::<Value, IIIError>(json!({ "ok": true }))
             }
         })
+        .request_format(json!({ "type": "object", "properties": {} }))
+        .response_format(json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+        }))
         .description("Internal: reload codex configuration when it changes."),
     );
 

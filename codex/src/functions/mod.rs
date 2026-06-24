@@ -14,7 +14,31 @@ use types::{RunRequest, SessionIdRequest};
 
 fn schema_value<T: schemars::JsonSchema>() -> Value {
     let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
-    serde_json::to_value(root).expect("schema serializes")
+    let mut v = serde_json::to_value(root).expect("schema serializes");
+    // The registry publish validator has no meta-schema registered, so the
+    // `$schema` key schemars stamps at the root fails publish. Strip it; the
+    // schema body is what the engine + registry consume.
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
+}
+
+fn run_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "session_id": { "type": "string" },
+            "codex_thread_id": { "type": ["string", "null"] },
+            "result": { "type": "string" },
+            "stop_reason": { "type": "string" },
+            "is_error": { "type": "boolean" },
+            "num_turns": { "type": "integer" },
+            "usage": { "type": ["object", "null"] },
+            "busy": { "type": "boolean" },
+            "reason": { "type": "string" },
+        },
+    })
 }
 
 pub fn register_all(iii: &III, cell: ConfigCell) {
@@ -33,6 +57,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 }
             })
             .request_format(schema_value::<RunRequest>())
+            .response_format(run_response_schema())
             .description(
                 "Run one Codex turn and wait for the result. Accepts `prompt` or a `messages` \
                  array plus a raw SDK `codex_config` pass-through; streams raw Codex events onto \
@@ -84,6 +109,10 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 }
             })
             .request_format(schema_value::<RunRequest>())
+            .response_format(json!({
+                "type": "object",
+                "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
+            }))
             .description(
                 "Start a Codex turn and return immediately; watch codex::events / agent::events \
                  (group_id = session_id) for progress and turn_end.",
@@ -103,6 +132,14 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
             }))
         })
         .request_format(schema_value::<SessionIdRequest>())
+        .response_format(json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string" },
+                "stopped": { "type": "boolean" },
+                "reason": { "type": "string" },
+            },
+        }))
         .description("Interrupt a live Codex run for a session."),
     );
 
@@ -124,6 +161,14 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 }
             })
             .request_format(schema_value::<SessionIdRequest>())
+            .response_format(json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "live": { "type": "boolean" },
+                    "record": { "type": ["object", "null"] },
+                },
+            }))
             .description("Point-in-time status of a Codex session."),
         );
     }
@@ -141,6 +186,10 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 }
             })
             .request_format(json!({ "type": "object", "properties": {} }))
+            .response_format(json!({
+                "type": "object",
+                "properties": { "sessions": { "type": "array", "items": { "type": "object" } } },
+            }))
             .description("List every Codex session this worker has run."),
         );
     }
