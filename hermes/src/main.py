@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import threading
@@ -7,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from iii import InitOptions, Logger, register_worker
+from iii import InitOptions, register_worker
 
 from .handlers import create_handlers
 from .hooks import use_api
@@ -115,7 +116,8 @@ def main() -> None:
         address=url,
         options=InitOptions(worker_name="hermes", otel={"enabled": True, "service_name": "hermes"}),
     )
-    logger = Logger(service_name="hermes")
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("hermes")
     handlers = create_handlers(iii, load_config, logger)
 
     iii.register_function(

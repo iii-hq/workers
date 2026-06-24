@@ -38,6 +38,11 @@ class FakeIii:
             return [copy.deepcopy(v) for k, v in self.state.items() if k.startswith(f"{scope}/")]
         return None
 
+    async def trigger_async(self, request: dict[str, Any]) -> Any:
+        # Handlers await `trigger_async` (0.19.x forbids the sync `trigger` from
+        # the event-loop thread); back it with the same in-memory store.
+        return self.trigger(request)
+
     def register_function(self, fid: str, handler: Any, **_kw: Any) -> None:
         self.registered[fid] = handler
 

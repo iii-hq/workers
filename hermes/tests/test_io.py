@@ -127,7 +127,7 @@ def test_inbound_handles_empty_body(monkeypatch):
 
 def test_emit_writes_stream_set_frame():
     fake = FakeIii()
-    _emit(fake, "agent::events", "s1", 3, {"type": "agent_end"})
+    asyncio.run(_emit(fake, "agent::events", "s1", 3, {"type": "agent_end"}))
     frames = fake.stream_frames("agent::events")
     assert frames[0]["group_id"] == "s1"
     assert frames[0]["item_id"] == "s1-00000003"

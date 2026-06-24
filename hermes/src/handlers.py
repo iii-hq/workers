@@ -11,11 +11,12 @@ iii workers can react.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from typing import Any
 
-from iii import ApiRequest, ApiResponse, IIIClient, Logger
+from iii import ApiRequest, ApiResponse, IIIClient
 
 from . import hermes_cli
 from .iii_prompt import III_CONTEXT_PROMPT
@@ -24,9 +25,9 @@ SCOPE = "hermes_sessions"
 JSON_HEADERS = {"Content-Type": "application/json"}
 
 
-def _emit(iii: IIIClient, stream_name: str, session_id: str, seq: int, event: dict[str, Any]) -> None:
+async def _emit(iii: IIIClient, stream_name: str, session_id: str, seq: int, event: dict[str, Any]) -> None:
     item_id = f"{session_id}-{seq:08d}"
-    iii.trigger(
+    await iii.trigger_async(
         {
             "function_id": "stream::set",
             "payload": {"stream_name": stream_name, "group_id": session_id, "item_id": item_id, "data": event},
@@ -47,7 +48,7 @@ def _extract_prompt(data: dict[str, Any]) -> str:
     return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("text"))
 
 
-def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
+def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str, Any]:
     live: set[str] = set()
 
     async def run(data: dict[str, Any]) -> dict[str, Any]:
@@ -60,7 +61,9 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
             prompt = _extract_prompt(data)
             cwd = data.get("cwd") or cfg["defaults"]["cwd"]
             model = data.get("model") or cfg["defaults"]["model"]
-            prior = iii.trigger({"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}})
+            prior = await iii.trigger_async(
+                {"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}}
+            )
             iii_ctx = data.get("iii_context")
             iii_ctx = cfg["iii_context"] if iii_ctx is None else iii_ctx
             prompt_text = f"{III_CONTEXT_PROMPT}\n\n---\n\n{prompt}" if (iii_ctx and not prior) else prompt
@@ -81,20 +84,22 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
                 "turns": (prior or {}).get("turns", 0) + 1,
                 "updated_at_ms": int(time.time() * 1000),
             }
-            iii.trigger({"function_id": "state::set", "payload": {"scope": SCOPE, "key": session_id, "value": record}})
+            await iii.trigger_async(
+                {"function_id": "state::set", "payload": {"scope": SCOPE, "key": session_id, "value": record}}
+            )
 
             message = {"role": "assistant", "content": [{"type": "text", "text": result}], "provider": "hermes"}
-            _emit(
+            await _emit(
                 iii, cfg["raw_events_stream"], session_id, 0, {"type": "result", "text": result, "is_error": is_error}
             )
-            _emit(
+            await _emit(
                 iii,
                 cfg["events_stream"],
                 session_id,
                 0,
                 {"type": "turn_end", "message": message, "function_results": []},
             )
-            _emit(iii, cfg["events_stream"], session_id, 1, {"type": "agent_end", "messages": [message]})
+            await _emit(iii, cfg["events_stream"], session_id, 1, {"type": "agent_end", "messages": [message]})
             return {
                 "session_id": session_id,
                 "result": result,
@@ -118,7 +123,9 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
             lambda t: (
                 t.exception()
                 and logger.error(
-                    "hermes::start background run failed", {"session_id": session_id, "error": str(t.exception())}
+                    "hermes::start background run failed: session_id=%s error=%s",
+                    session_id,
+                    t.exception(),
                 )
             )
         )
@@ -135,13 +142,13 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
 
     async def sessions_list(_data: dict[str, Any]) -> dict[str, Any]:
         cfg = get_cfg()
-        stored = iii.trigger({"function_id": "state::list", "payload": {"scope": SCOPE}}) or []
+        stored = await iii.trigger_async({"function_id": "state::list", "payload": {"scope": SCOPE}}) or []
         raw = await hermes_cli.sessions_list(cfg["hermes_executable"] or "hermes")
         return {"sessions": stored, "hermes_sessions_raw": raw}
 
     async def status(data: dict[str, Any]) -> dict[str, Any]:
         session_id = data.get("session_id", "")
-        record = iii.trigger({"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}})
+        record = await iii.trigger_async({"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}})
         return {"session_id": session_id, "live": session_id in live, "record": record}
 
     async def stop(data: dict[str, Any]) -> dict[str, Any]:
@@ -151,7 +158,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
         # depends on a long-running gateway run (live-integration item).
         return {"session_id": session_id, "stopped": False, "reason": "hermes one-shot turns are not interruptible"}
 
-    async def inbound(req: ApiRequest[Any], log: Logger) -> ApiResponse[Any]:
+    async def inbound(req: ApiRequest[Any], log: logging.Logger) -> ApiResponse[Any]:
         cfg = get_cfg()
         body = req.body or {}
         # Republish the inbound platform/webhook delivery so iii workers can
@@ -159,8 +166,8 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
         # is confirmed against a running gateway; map it onto a dedicated
         # `hermes::message` trigger type (register_trigger_type) once verified.
         gid = str(body.get("session_id") or body.get("chat_id") or uuid.uuid4())
-        _emit(iii, cfg["raw_events_stream"], gid, 0, {"type": "inbound", "body": body})
-        log.info("hermes inbound delivery", {"group_id": gid})
+        await _emit(iii, cfg["raw_events_stream"], gid, 0, {"type": "inbound", "body": body})
+        log.info("hermes inbound delivery: group_id=%s", gid)
         return ApiResponse(statusCode=200, body={"ok": True}, headers=JSON_HEADERS)
 
     return {

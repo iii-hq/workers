@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Awaitable, Callable
 
-from iii import ApiRequest, ApiResponse, IIIClient, Logger
+from iii import ApiRequest, ApiResponse, IIIClient
 
 
 def use_api(
     iii: IIIClient,
     config: dict[str, Any],
-    handler: Callable[[ApiRequest[Any], Logger], Awaitable[ApiResponse[Any]]],
+    handler: Callable[[ApiRequest[Any], logging.Logger], Awaitable[ApiResponse[Any]]],
 ) -> None:
     api_path = config["api_path"]
     http_method = config["http_method"]
     function_id = config.get("function_id") or f"api.{http_method.lower()}.{api_path}"
-    logger = Logger(service_name=function_id)
+    logger = logging.getLogger(function_id)
 
     async def wrapped(data: ApiRequest[Any] | dict[str, Any]) -> dict[str, Any]:
         req = ApiRequest(**data) if isinstance(data, dict) else data
