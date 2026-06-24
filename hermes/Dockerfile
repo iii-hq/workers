@@ -1,9 +1,10 @@
 FROM python:3.11-slim
 
-# Hermes installer prerequisites (Python 3.11 is the base; the installer pulls
-# its own uv venv, a Node 22 bridge, ripgrep, and ffmpeg).
+# Prerequisites. The Hermes installer needs git/curl/xz/build tools; the iii
+# installer needs jq; ripgrep gives the agent fast in-repo search (Hermes warns
+# when it is absent).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl xz-utils build-essential ca-certificates \
+      git curl xz-utils build-essential ca-certificates jq ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Hermes agent CLI. The installer sets up `hermes` on PATH.
