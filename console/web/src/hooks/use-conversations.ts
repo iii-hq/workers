@@ -50,6 +50,7 @@ import {
   loadLastWorkingDir,
   saveActiveId,
   saveLastModel,
+  saveLastWorkingDir,
 } from '@/lib/storage'
 import {
   type Conversation,
@@ -149,6 +150,8 @@ export interface ConversationsApi {
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
   setMode: (id: string, mode: Mode) => void
+  /** Per-session working directory; only meaningful while the chat is a draft. */
+  setWorkingDir: (id: string, dir: string) => void
   appendMessage: (id: string, message: Message) => void
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
   compactConversation: (id: string, marker: Message) => void
@@ -535,6 +538,20 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setWorkingDir = useCallback(
+    (id: string, dir: string) => {
+      patchConversation(id, (c) => ({
+        ...c,
+        workingDir: dir,
+        updatedAt: Date.now(),
+      }))
+      saveLastWorkingDir(dir)
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta({ ...conv, workingDir: dir })
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const appendMessage = useCallback(
     (id: string, message: Message) =>
       patchConversation(id, (c) => {
@@ -621,6 +638,7 @@ export function useConversations(
     remove,
     setModel,
     setMode,
+    setWorkingDir,
     appendMessage,
     updateMessage,
     compactConversation,

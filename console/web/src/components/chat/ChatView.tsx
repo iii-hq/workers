@@ -84,6 +84,7 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
+  onUpdateWorkingDir: (id: string, dir: string) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -97,6 +98,7 @@ export function ChatView({
   density = 'route',
   onUpdateModel,
   onUpdateMode,
+  onUpdateWorkingDir,
   onAppendMessage,
   onPatchMessage,
   onCompactConversation,
@@ -199,6 +201,18 @@ export function ChatView({
         onAppendMessage(
           conversationId,
           makeSystemNotice('select a model before sending.', 'warn'),
+        )
+        return
+      }
+
+      // Confine the session to a project directory before any work runs.
+      if (backend.id === 'real' && !conversation.workingDir) {
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice(
+            'choose a working directory before sending.',
+            'warn',
+          ),
         )
         return
       }
@@ -320,6 +334,7 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
+            workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
           },
         )) {
@@ -548,10 +563,12 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      conversation.workingDir,
       thinkingLevel,
       sessionId,
       contextWindow,
       backend,
+      approvalEnabled,
       announcer,
       ensureSession,
       onAppendMessage,
@@ -704,6 +721,12 @@ export function ChatView({
             onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
+            showWorkingDir={backend.id === 'real'}
+            workingDir={conversation.workingDir ?? null}
+            workingDirLocked={!conversation.draft}
+            onWorkingDirChange={(next) =>
+              onUpdateWorkingDir(conversation.id, next)
+            }
             onPermissionModeChange={(next) =>
               void approvalSettings.setMode(next)
             }
