@@ -35,12 +35,18 @@ def _model_env(model: str) -> dict[str, str]:
     return {"HERMES_INFERENCE_MODEL": model} if model else {}
 
 
-async def run_turn(hermes: str, prompt: str, *, cwd: str = "", model: str = "") -> tuple[str, str]:
+async def run_turn(hermes: str, prompt: str, *, cwd: str = "", model: str = "", session: str = "") -> tuple[str, str]:
     """One-shot turn via ``hermes -z``. Returns (result_text, stderr).
 
     ``-z`` is the pure scripting entry point: only the final response on stdout.
+    ``--resume <session>`` keys the turn to a worker-owned session id: the first
+    turn creates that session, later turns with the same id continue it, so the
+    Hermes conversation resumes across ``hermes::run`` calls.
     """
-    code, out, err = await _run([hermes, "-z", prompt], cwd=cwd, env=_model_env(model), stdin=None)
+    argv = [hermes, "-z", prompt]
+    if session:
+        argv += ["--resume", session]
+    code, out, err = await _run(argv, cwd=cwd, env=_model_env(model), stdin=None)
     if code != 0:
         raise RuntimeError(f"hermes -z exited {code}: {err.strip() or out.strip()}")
     return out.strip(), err

@@ -13,11 +13,12 @@ from tests._helpers.fake_iii import FakeIii, FakeLogger, base_cfg
 def _scripted_run_turn(result: str = "done", *, raises: Exception | None = None):
     captured: dict[str, object] = {}
 
-    async def fake(hermes: str, prompt: str, *, cwd: str = "", model: str = ""):
+    async def fake(hermes: str, prompt: str, *, cwd: str = "", model: str = "", session: str = ""):
         captured["hermes"] = hermes
         captured["prompt"] = prompt
         captured["cwd"] = cwd
         captured["model"] = model
+        captured["session"] = session
         if raises is not None:
             raise raises
         return result, ""
@@ -151,6 +152,12 @@ def test_run_messages_payload_extracts_last_user(monkeypatch):
     assert captured["prompt"] == "second"
 
 
+def test_run_threads_session_id_for_resume(monkeypatch):
+    _, _, h, captured = _make(monkeypatch)
+    asyncio.run(h["run"]({"prompt": "x", "session_id": "sess-abc"}))
+    assert captured["session"] == "sess-abc"
+
+
 def test_run_uses_configured_executable(monkeypatch):
     _, _, h, captured = _make(monkeypatch, cfg=base_cfg(hermes_executable="/opt/hermes"))
     asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
@@ -186,7 +193,7 @@ def test_busy_guard_blocks_concurrent_same_session(monkeypatch, fn_name):
     logger = FakeLogger()
     gate = asyncio.Event()
 
-    async def slow(hermes, prompt, *, cwd="", model=""):
+    async def slow(hermes, prompt, *, cwd="", model="", session=""):
         await gate.wait()
         return "done", ""
 

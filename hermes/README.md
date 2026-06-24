@@ -37,6 +37,8 @@ iii trigger hermes::sessions::list
 iii trigger hermes::run --help
 ```
 
+Pass the same `session_id` again to continue a conversation: the worker threads it to Hermes as `hermes -z --resume <session_id>`, so the first call creates that session and later calls continue it. (Hermes also keeps its own cross-session memory, so some facts persist beyond a single session regardless.)
+
 ## The agent on the bus
 
 By default every turn prepends the iii runtime context: the engine-grounded discovery rules retargeted to the `iii` CLI, which Hermes reaches through its own shell / `execute_code` tool. The agent discovers capabilities from the live engine (`engine::functions::list`, `<fn> --help`, the registry flow) instead of memory. Disable per call with `"iii_context": false`, or globally in `config.yaml`.

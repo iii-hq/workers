@@ -71,7 +71,11 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
             is_error = False
             try:
                 result, _ = await hermes_cli.run_turn(
-                    cfg["hermes_executable"] or "hermes", prompt_text, cwd=cwd, model=model
+                    cfg["hermes_executable"] or "hermes",
+                    prompt_text,
+                    cwd=cwd,
+                    model=model,
+                    session=session_id,
                 )
             except Exception as exc:  # noqa: BLE001 - surface the failure in the envelope
                 result, is_error = str(exc), True
