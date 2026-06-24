@@ -152,6 +152,12 @@ export interface Conversation {
   titleManual?: boolean
   model: ModelId | null
   mode: Mode
+  /**
+   * Per-session working directory. Confines this chat's shell/coder operations
+   * to one project dir (the harness forwards it as `base_dir`). Chosen before
+   * the first send, then locked for the session (locked ⇔ `!draft`).
+   */
+  workingDir?: string | null
   messages: Message[]
   /** Driver-owned session status (spinner + sidebar indicator). */
   status?: ConversationStatus

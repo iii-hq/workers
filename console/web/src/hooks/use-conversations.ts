@@ -47,6 +47,7 @@ import type { SessionMeta } from '@/lib/sessions/types'
 import {
   loadActiveId,
   loadLastModel,
+  loadLastWorkingDir,
   saveActiveId,
   saveLastModel,
 } from '@/lib/storage'
@@ -87,6 +88,9 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
+    // Pre-fill the last-used dir so a repeat new chat is one confirm, not a
+    // re-browse. Still a draft, so the picker stays editable until first send.
+    workingDir: loadLastWorkingDir(),
     messages: [],
     status: 'idle',
     draft: true,
@@ -102,13 +106,14 @@ function isMode(v: unknown): v is Mode {
 
 /** The console's session metadata convention (replaces wholesale on writes). */
 function metadataFor(
-  c: Pick<Conversation, 'model' | 'mode' | 'titleManual'>,
+  c: Pick<Conversation, 'model' | 'mode' | 'titleManual' | 'workingDir'>,
 ): Record<string, unknown> {
   return {
     surface: 'console',
     ...(c.model ? { model: c.model } : {}),
     mode: c.mode,
     ...(c.titleManual ? { title_manual: true } : {}),
+    ...(c.workingDir ? { working_dir: c.workingDir } : {}),
   }
 }
 
@@ -121,6 +126,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
     model:
       typeof md.model === 'string' && md.model.length > 0 ? md.model : null,
     mode: isMode(md.mode) ? md.mode : DEFAULT_MODE,
+    workingDir:
+      typeof md.working_dir === 'string' && md.working_dir.length > 0
+        ? md.working_dir
+        : null,
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,

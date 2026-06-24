@@ -6,6 +6,7 @@
 
 const ACTIVE_KEY = 'iii-chat-active'
 const LAST_MODEL_KEY = 'iii-chat-last-model'
+const LAST_WORKING_DIR_KEY = 'iii-chat-last-working-dir'
 const DEFAULT_PERMISSION_MODE_KEY = 'iii-default-permission-mode'
 
 export type PermissionMode = 'manual' | 'auto' | 'full'
@@ -94,6 +95,28 @@ export function saveLastModel(id: string | null): void {
   try {
     if (id) localStorage.setItem(LAST_MODEL_KEY, id)
     else localStorage.removeItem(LAST_MODEL_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Most recently chosen working directory, pre-selected on the next new chat so
+ * repeat sessions in the same project are one confirm, not a re-browse. A
+ * convenience default only — the picker still lets the user browse and override.
+ */
+export function loadLastWorkingDir(): string | null {
+  try {
+    return localStorage.getItem(LAST_WORKING_DIR_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function saveLastWorkingDir(dir: string | null): void {
+  try {
+    if (dir) localStorage.setItem(LAST_WORKING_DIR_KEY, dir)
+    else localStorage.removeItem(LAST_WORKING_DIR_KEY)
   } catch {
     /* best-effort */
   }
