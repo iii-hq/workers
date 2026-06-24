@@ -26,6 +26,9 @@ hermes-worker = "src.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

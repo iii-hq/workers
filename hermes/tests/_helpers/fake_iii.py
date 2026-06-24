@@ -1,0 +1,82 @@
+"""In-memory stand-in for the engine bus.
+
+`state::get/set/list` are backed by a dict keyed `scope/key`, `stream::set` is
+recorded as a plain call, and `register_function` is captured so tests can
+invoke handlers at the same boundary the engine uses. Mirrors the pi worker's
+`fake-iii` helper.
+
+`trigger` is synchronous because the handlers call `iii.trigger(...)` without
+awaiting it (the Python SDK returns the value directly).
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+
+class FakeIii:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.state: dict[str, Any] = {}
+        self.registered: dict[str, Any] = {}
+        self.triggers: list[dict[str, Any]] = []
+
+    def trigger(self, request: dict[str, Any]) -> Any:
+        fid = request["function_id"]
+        # Clone like the wire would: later caller-side mutation must not rewrite
+        # the recorded call or the stored value.
+        payload = copy.deepcopy(request.get("payload", {}))
+        self.calls.append({"function_id": fid, "payload": payload})
+        scope, key, value = payload.get("scope"), payload.get("key"), payload.get("value")
+        if fid == "state::set":
+            self.state[f"{scope}/{key}"] = value
+            return None
+        if fid == "state::get":
+            return copy.deepcopy(self.state.get(f"{scope}/{key}"))
+        if fid == "state::list":
+            return [copy.deepcopy(v) for k, v in self.state.items() if k.startswith(f"{scope}/")]
+        return None
+
+    def register_function(self, fid: str, handler: Any, **_kw: Any) -> None:
+        self.registered[fid] = handler
+
+    def register_trigger(self, spec: dict[str, Any]) -> None:
+        self.triggers.append(spec)
+
+    def stream_frames(self, stream_name: str) -> list[dict[str, Any]]:
+        return [
+            c["payload"]
+            for c in self.calls
+            if c["function_id"] == "stream::set" and c["payload"].get("stream_name") == stream_name
+        ]
+
+
+class FakeLogger:
+    def __init__(self) -> None:
+        self.errors: list[tuple[str, Any]] = []
+        self.infos: list[tuple[str, Any]] = []
+
+    def error(self, msg: str, meta: Any = None) -> None:
+        self.errors.append((msg, meta))
+
+    def info(self, msg: str, meta: Any = None) -> None:
+        self.infos.append((msg, meta))
+
+
+def base_cfg(**overrides: Any) -> dict[str, Any]:
+    cfg = {
+        "engine_url": "ws://127.0.0.1:49134",
+        "defaults": {"model": "", "cwd": ""},
+        "events_stream": "agent::events",
+        "raw_events_stream": "hermes::events",
+        "iii_context": True,
+        "hermes_executable": "",
+        "inbound_api_path": "/hermes/inbound",
+    }
+    for k, v in overrides.items():
+        if k == "defaults":
+            cfg["defaults"].update(v)
+        else:
+            cfg[k] = v
+    return cfg
