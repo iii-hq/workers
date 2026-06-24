@@ -22,7 +22,8 @@ iii_context: true
 hermes_executable: ""
 
 # api_path the gateway delivers inbound platform/webhook events to. The worker
-# exposes this over iii-http and turns each delivery into a hermes::message
-# trigger. Point a Hermes webhook route / delivery target at
-# http://<engine-http-host>/<inbound_api_path>.
+# exposes this over iii-http and republishes each delivery onto the raw events
+# stream for iii workers to react to. (A dedicated hermes::message trigger type
+# is still pending; see the README status.) Point a Hermes webhook route /
+# delivery target at http://<engine-http-host>/<inbound_api_path>.
 inbound_api_path: /hermes/inbound

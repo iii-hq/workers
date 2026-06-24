@@ -63,7 +63,7 @@ A real turn over the bus (`pong`) and a live discovery turn where Hermes enumera
 
 The unique value over the other agent workers: Hermes is iii's gateway to 27+ chat platforms.
 
-```
+```text
 27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (iii-http) ─▶ republished
                                                                     │ iii worker reacts,
                                                                     │ drives the bus

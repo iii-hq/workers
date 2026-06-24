@@ -3,7 +3,7 @@ name: hermes
 language: python
 deploy: image
 manifest: pyproject.toml
-description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send delivers to 27+ messaging platforms, and inbound platform/webhook events fire the hermes::message trigger so any iii worker can react.
+description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send delivers to 27+ messaging platforms, and inbound platform/webhook deliveries are republished onto hermes::events for iii workers to react to.
 
 env:
   III_URL: "ws://localhost:49134"

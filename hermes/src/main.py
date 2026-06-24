@@ -175,7 +175,10 @@ def main() -> None:
     iii.register_function(
         "hermes::stop",
         handlers["stop"],
-        description="Interrupt a live Hermes run for a session.",
+        description=(
+            "Interrupt an interruptible live Hermes run. One-shot turns are not "
+            "interruptible and return stopped: false."
+        ),
         request_format=SESSION_ID_FORMAT,
         response_format=STOP_RESPONSE_FORMAT,
     )

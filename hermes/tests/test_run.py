@@ -129,6 +129,16 @@ def test_run_resume_increments_turns(monkeypatch):
     assert res["session_id"] == "s1"
 
 
+def test_run_resumed_turns_emit_distinct_frames(monkeypatch):
+    # Two runs on the same session_id must not collide item_ids (a fixed
+    # per-call seq would make turn 2 overwrite turn 1's stream frames).
+    fake, _, h, _ = _make(monkeypatch)
+    asyncio.run(h["run"]({"prompt": "one", "session_id": "dup"}))
+    asyncio.run(h["run"]({"prompt": "two", "session_id": "dup"}))
+    ids = [f["item_id"] for f in fake.stream_frames("agent::events")]
+    assert len(ids) == len(set(ids)), "resumed run reused item_ids"
+
+
 def test_run_generates_session_id_when_absent(monkeypatch):
     _, _, h, _ = _make(monkeypatch)
     res = asyncio.run(h["run"]({"prompt": "x"}))

@@ -13,7 +13,12 @@ def use_api(
 ) -> None:
     api_path = config["api_path"]
     http_method = config["http_method"]
-    function_id = config.get("function_id") or f"api.{http_method.lower()}.{api_path}"
+    # Prefer an explicit, ::-namespaced function_id (callers always pass one).
+    # The fallback normalizes api_path into the same :: style instead of
+    # producing a dot-namespaced id with a leading slash from the path.
+    function_id = config.get("function_id") or "api::{}::{}".format(
+        http_method.lower(), api_path.strip("/").replace("/", "::")
+    )
     logger = logging.getLogger(function_id)
 
     async def wrapped(data: ApiRequest[Any] | dict[str, Any]) -> dict[str, Any]:

@@ -127,11 +127,18 @@ def test_inbound_handles_empty_body(monkeypatch):
 
 def test_emit_writes_stream_set_frame():
     fake = FakeIii()
-    asyncio.run(_emit(fake, "agent::events", "s1", 3, {"type": "agent_end"}))
+    asyncio.run(_emit(fake, "agent::events", "s1", {"type": "agent_end"}))
     frames = fake.stream_frames("agent::events")
     assert frames[0]["group_id"] == "s1"
-    assert frames[0]["item_id"] == "s1-00000003"
     assert frames[0]["data"] == {"type": "agent_end"}
+
+
+def test_emit_item_ids_monotonic_per_session():
+    fake = FakeIii()
+    for _ in range(3):
+        asyncio.run(_emit(fake, "agent::events", "s1", {"type": "x"}))
+    ids = [f["item_id"] for f in fake.stream_frames("agent::events")]
+    assert len(set(ids)) == 3 and ids == sorted(ids)
 
 
 def test_create_handlers_exposes_full_surface(monkeypatch):

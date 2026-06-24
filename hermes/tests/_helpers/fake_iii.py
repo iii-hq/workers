@@ -5,8 +5,10 @@ recorded as a plain call, and `register_function` is captured so tests can
 invoke handlers at the same boundary the engine uses. Mirrors the pi worker's
 `fake-iii` helper.
 
-`trigger` is synchronous because the handlers call `iii.trigger(...)` without
-awaiting it (the Python SDK returns the value directly).
+Handlers await `trigger_async` (0.19.x forbids the sync `trigger` from the
+event-loop thread); `trigger_async` here backs the same in-memory store. The
+sync `trigger` is kept only as that backing implementation, not a handler
+entrypoint.
 """
 
 from __future__ import annotations
@@ -58,15 +60,16 @@ class FakeIii:
 
 
 class FakeLogger:
+    # Match logging.Logger-style calls: logger.error("...%s", a, b).
     def __init__(self) -> None:
-        self.errors: list[tuple[str, Any]] = []
-        self.infos: list[tuple[str, Any]] = []
+        self.errors: list[tuple[str, tuple[Any, ...]]] = []
+        self.infos: list[tuple[str, tuple[Any, ...]]] = []
 
-    def error(self, msg: str, meta: Any = None) -> None:
-        self.errors.append((msg, meta))
+    def error(self, msg: str, *args: Any) -> None:
+        self.errors.append((msg, args))
 
-    def info(self, msg: str, meta: Any = None) -> None:
-        self.infos.append((msg, meta))
+    def info(self, msg: str, *args: Any) -> None:
+        self.infos.append((msg, args))
 
 
 def base_cfg(**overrides: Any) -> dict[str, Any]:

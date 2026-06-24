@@ -24,9 +24,17 @@ from .iii_prompt import III_CONTEXT_PROMPT
 SCOPE = "hermes_sessions"
 JSON_HEADERS = {"Content-Type": "application/json"}
 
+# Per-process epoch + per-session monotonic counter so item_ids never collide,
+# including across resumed runs on the same session_id (a fixed per-call seq
+# would make turn 2's frames overwrite turn 1's). Mirrors the harness emitter.
+_PROCESS_EPOCH = uuid.uuid4().hex[:8]
+_seq_by_session: dict[str, int] = {}
 
-async def _emit(iii: IIIClient, stream_name: str, session_id: str, seq: int, event: dict[str, Any]) -> None:
-    item_id = f"{session_id}-{seq:08d}"
+
+async def _emit(iii: IIIClient, stream_name: str, session_id: str, event: dict[str, Any]) -> None:
+    seq = _seq_by_session.get(session_id, 0)
+    _seq_by_session[session_id] = seq + 1
+    item_id = f"{session_id}-{_PROCESS_EPOCH}-{seq:08d}"
     await iii.trigger_async(
         {
             "function_id": "stream::set",
@@ -45,7 +53,8 @@ def _extract_prompt(data: dict[str, Any]) -> str:
     content = users[-1].get("content")
     if isinstance(content, str):
         return content
-    return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("text"))
+    blocks = content if isinstance(content, list) else []
+    return "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("text"))
 
 
 def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str, Any]:
@@ -94,16 +103,15 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
 
             message = {"role": "assistant", "content": [{"type": "text", "text": result}], "provider": "hermes"}
             await _emit(
-                iii, cfg["raw_events_stream"], session_id, 0, {"type": "result", "text": result, "is_error": is_error}
+                iii, cfg["raw_events_stream"], session_id, {"type": "result", "text": result, "is_error": is_error}
             )
             await _emit(
                 iii,
                 cfg["events_stream"],
                 session_id,
-                0,
                 {"type": "turn_end", "message": message, "function_results": []},
             )
-            await _emit(iii, cfg["events_stream"], session_id, 1, {"type": "agent_end", "messages": [message]})
+            await _emit(iii, cfg["events_stream"], session_id, {"type": "agent_end", "messages": [message]})
             return {
                 "session_id": session_id,
                 "result": result,
@@ -170,7 +178,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
         # is confirmed against a running gateway; map it onto a dedicated
         # `hermes::message` trigger type (register_trigger_type) once verified.
         gid = str(body.get("session_id") or body.get("chat_id") or uuid.uuid4())
-        await _emit(iii, cfg["raw_events_stream"], gid, 0, {"type": "inbound", "body": body})
+        await _emit(iii, cfg["raw_events_stream"], gid, {"type": "inbound", "body": body})
         log.info("hermes inbound delivery: group_id=%s", gid)
         return ApiResponse(statusCode=200, body={"ok": True}, headers=JSON_HEADERS)
 
