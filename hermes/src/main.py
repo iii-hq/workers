@@ -121,14 +121,21 @@ def main() -> None:
     iii.register_function(
         "hermes::run",
         handlers["run"],
-        description="Run one Hermes turn and wait. Accepts `prompt` or a `messages` array; returns {session_id, result}. Carries the iii runtime context by default. Final-text only (Hermes one-shot exposes no per-tool event stream).",
+        description=(
+            "Run one Hermes turn and wait. Accepts `prompt` or a `messages` array; returns "
+            "{session_id, result}. Carries the iii runtime context by default. Final-text only "
+            "(Hermes one-shot exposes no per-tool event stream)."
+        ),
         request_format=RUN_REQUEST_FORMAT,
         response_format=RUN_RESPONSE_FORMAT,
     )
     iii.register_function(
         "hermes::start",
         handlers["start"],
-        description="Start a Hermes turn and return immediately; watch agent::events (group_id = session_id) for the result. Returns {session_id, started}.",
+        description=(
+            "Start a Hermes turn and return immediately; watch agent::events "
+            "(group_id = session_id) for the result. Returns {session_id, started}."
+        ),
         request_format=RUN_REQUEST_FORMAT,
         response_format=START_RESPONSE_FORMAT,
     )
@@ -142,7 +149,10 @@ def main() -> None:
     iii.register_function(
         "hermes::send",
         handlers["send"],
-        description="Deliver a message to a Hermes gateway platform (telegram, discord, slack, and 27+ others). Outbound omnichannel.",
+        description=(
+            "Deliver a message to a Hermes gateway platform (telegram, discord, slack, "
+            "and 27+ others). Outbound omnichannel."
+        ),
         request_format=SEND_REQUEST_FORMAT,
         response_format=SEND_RESPONSE_FORMAT,
     )

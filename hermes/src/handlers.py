@@ -67,7 +67,9 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
 
             is_error = False
             try:
-                result, _ = await hermes_cli.run_turn(cfg["hermes_executable"] or "hermes", prompt_text, cwd=cwd, model=model)
+                result, _ = await hermes_cli.run_turn(
+                    cfg["hermes_executable"] or "hermes", prompt_text, cwd=cwd, model=model
+                )
             except Exception as exc:  # noqa: BLE001 - surface the failure in the envelope
                 result, is_error = str(exc), True
 
@@ -82,20 +84,43 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
             iii.trigger({"function_id": "state::set", "payload": {"scope": SCOPE, "key": session_id, "value": record}})
 
             message = {"role": "assistant", "content": [{"type": "text", "text": result}], "provider": "hermes"}
-            _emit(iii, cfg["raw_events_stream"], session_id, 0, {"type": "result", "text": result, "is_error": is_error})
-            _emit(iii, cfg["events_stream"], session_id, 0, {"type": "turn_end", "message": message, "function_results": []})
+            _emit(
+                iii, cfg["raw_events_stream"], session_id, 0, {"type": "result", "text": result, "is_error": is_error}
+            )
+            _emit(
+                iii,
+                cfg["events_stream"],
+                session_id,
+                0,
+                {"type": "turn_end", "message": message, "function_results": []},
+            )
             _emit(iii, cfg["events_stream"], session_id, 1, {"type": "agent_end", "messages": [message]})
-            return {"session_id": session_id, "result": result, "is_error": is_error, "stop_reason": "error" if is_error else "end"}
+            return {
+                "session_id": session_id,
+                "result": result,
+                "is_error": is_error,
+                "stop_reason": "error" if is_error else "end",
+            }
         finally:
             live.discard(session_id)
 
     async def start(data: dict[str, Any]) -> dict[str, Any]:
         session_id = data.get("session_id") or str(uuid.uuid4())
         if session_id in live:
-            return {"session_id": session_id, "started": False, "busy": True, "reason": "a run is already active for this session"}
+            return {
+                "session_id": session_id,
+                "started": False,
+                "busy": True,
+                "reason": "a run is already active for this session",
+            }
         task = asyncio.create_task(run({**data, "session_id": session_id}))
         task.add_done_callback(
-            lambda t: t.exception() and logger.error("hermes::start background run failed", {"session_id": session_id, "error": str(t.exception())})
+            lambda t: (
+                t.exception()
+                and logger.error(
+                    "hermes::start background run failed", {"session_id": session_id, "error": str(t.exception())}
+                )
+            )
         )
         return {"session_id": session_id, "started": True}
 
@@ -138,4 +163,12 @@ def create_handlers(iii: IIIClient, get_cfg, logger: Logger) -> dict[str, Any]:
         log.info("hermes inbound delivery", {"group_id": gid})
         return ApiResponse(statusCode=200, body={"ok": True}, headers=JSON_HEADERS)
 
-    return {"run": run, "start": start, "send": send, "sessions_list": sessions_list, "status": status, "stop": stop, "inbound": inbound}
+    return {
+        "run": run,
+        "start": start,
+        "send": send,
+        "sessions_list": sessions_list,
+        "status": status,
+        "stop": stop,
+        "inbound": inbound,
+    }

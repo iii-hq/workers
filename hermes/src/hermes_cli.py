@@ -16,7 +16,9 @@ import asyncio
 import os
 
 
-async def _run(argv: list[str], *, cwd: str | None, env: dict[str, str] | None, stdin: str | None) -> tuple[int, str, str]:
+async def _run(
+    argv: list[str], *, cwd: str | None, env: dict[str, str] | None, stdin: str | None
+) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE if stdin is not None else None,
