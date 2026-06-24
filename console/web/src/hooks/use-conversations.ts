@@ -47,7 +47,6 @@ import type { SessionMeta } from '@/lib/sessions/types'
 import {
   loadActiveId,
   loadLastModel,
-  loadLastWorkingDir,
   saveActiveId,
   saveLastModel,
   saveLastWorkingDir,
@@ -90,9 +89,11 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
-    // Pre-fill the last-used dir so a repeat new chat is one confirm, not a
-    // re-browse. Still a draft, so the picker stays editable until first send.
-    workingDir: loadLastWorkingDir(),
+    // No silent pre-fill: a new chat starts with NO working dir so the user
+    // makes an explicit, visible choice (the picker opens to recent projects).
+    // Silently inheriting the last-used dir is exactly what made a chat operate
+    // in the wrong directory without the user choosing it.
+    workingDir: null,
     messages: [],
     status: 'idle',
     draft: true,

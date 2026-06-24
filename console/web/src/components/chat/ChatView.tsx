@@ -605,6 +605,32 @@ export function ChatView({
   const headerPad = isDock ? 'px-4' : 'px-9'
   const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
 
+  // Re-scope the working directory. Allowed mid-conversation (no irreversible
+  // lock); a change after the chat has started drops a visible marker so the
+  // directory the agent operates in is never silently swapped.
+  const handleWorkingDirChange = useCallback(
+    (next: string) => {
+      const id = conversation.id
+      const prev = conversation.workingDir ?? null
+      onUpdateWorkingDir(id, next)
+      if (!conversation.draft && next !== prev) {
+        onAppendMessage(
+          id,
+          makeSystemNotice(
+            `working directory changed to ${next} — applies to the messages that follow`,
+          ),
+        )
+      }
+    },
+    [
+      conversation.id,
+      conversation.workingDir,
+      conversation.draft,
+      onUpdateWorkingDir,
+      onAppendMessage,
+    ],
+  )
+
   return (
     <section className="flex-1 flex flex-col min-w-0 min-h-0">
       <header
@@ -708,6 +734,23 @@ export function ChatView({
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
+          {backend.id === 'real' ? (
+            <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
+              <span aria-hidden>📁</span>
+              {conversation.workingDir ? (
+                <span
+                  className="truncate font-mono"
+                  title={conversation.workingDir}
+                >
+                  {conversation.workingDir}
+                </span>
+              ) : (
+                <span className="lowercase text-ink-ghost">
+                  no working directory — choose one before sending
+                </span>
+              )}
+            </div>
+          ) : null}
           <Composer
             mode={conversation.mode}
             model={conversation.model}
@@ -723,10 +766,8 @@ export function ChatView({
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             showWorkingDir={backend.id === 'real'}
             workingDir={conversation.workingDir ?? null}
-            workingDirLocked={!conversation.draft}
-            onWorkingDirChange={(next) =>
-              onUpdateWorkingDir(conversation.id, next)
-            }
+            workingDirLocked={false}
+            onWorkingDirChange={handleWorkingDirChange}
             onPermissionModeChange={(next) =>
               void approvalSettings.setMode(next)
             }

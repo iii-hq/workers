@@ -68,6 +68,22 @@ function parentOf(p: string): string {
 
 const isAbsPath = (s: string) => s.trim().startsWith('/')
 
+/**
+ * iii triggers reject with a plain object `{ code, message }`, not an Error, and
+ * the message is often a nested `handler error: {"code":"C211","message":"…"}`.
+ * Pull out the human-readable inner message.
+ */
+function errMsg(err: unknown): string {
+  const raw =
+    err instanceof Error
+      ? err.message
+      : err && typeof err === 'object' && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : String(err)
+  const inner = raw.match(/"message"\s*:\s*"([^"]+)"/)
+  return inner ? inner[1] : raw
+}
+
 export function DirectoryPicker({
   value,
   onChange,
@@ -86,6 +102,7 @@ export function DirectoryPicker({
   const [dirs, setDirs] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [validating, setValidating] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Close on outside click / Escape.
@@ -124,7 +141,7 @@ export function DirectoryPicker({
       setRoots(r)
       return r
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errMsg(err))
       setRoots([])
       return []
     } finally {
@@ -147,7 +164,7 @@ export function DirectoryPicker({
         .sort((a, b) => a.localeCompare(b))
       setDirs(names)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errMsg(err))
       setDirs([])
     } finally {
       setLoading(false)
@@ -229,6 +246,27 @@ export function DirectoryPicker({
     [onChange],
   )
 
+  // Validate a pasted/remembered dir against the LIVE worker roots before
+  // accepting it — a remembered project may be deleted, on another machine, or
+  // outside the configured roots. Browsed dirs are already known-valid.
+  const validateAndSelect = useCallback(
+    async (raw: string) => {
+      const dir = raw.trim().replace(/\/+$/, '') || '/'
+      setError(null)
+      setValidating(dir)
+      try {
+        const client = await getIiiClient()
+        await client.trigger('coder::list-folder', { path: dir, page_size: 1 })
+        select(dir)
+      } catch (err) {
+        setError(`can't use ${dir} — ${errMsg(err)}`)
+      } finally {
+        setValidating(null)
+      }
+    },
+    [select],
+  )
+
   const forget = useCallback((dir: string) => {
     removeRecentProject(dir)
     setProjects(loadRecentProjects())
@@ -254,7 +292,7 @@ export function DirectoryPicker({
   const onSearchKey = (e: React.KeyboardEvent) => {
     if (e.key !== 'Enter' || !isAbsPath(query)) return
     e.preventDefault()
-    if (view === 'projects') select(query.trim())
+    if (view === 'projects') void validateAndSelect(query)
     else void jumpTo(query)
   }
 
@@ -320,14 +358,23 @@ export function DirectoryPicker({
             />
           </div>
 
+          {/* validation/error (shown in the projects view; browse has its own) */}
+          {view === 'projects' && error ? (
+            <div className="flex items-start gap-1.5 border-b border-rule-2 px-3 py-2 text-[11px] text-ink-faint">
+              <AlertCircle size={12} className="mt-0.5 shrink-0" aria-hidden />
+              <span>{error}</span>
+            </div>
+          ) : null}
+
           {/* body */}
           {view === 'projects' ? (
             <div className="max-h-[280px] overflow-y-auto py-1">
               {isAbsPath(query) ? (
                 <button
                   type="button"
-                  onClick={() => select(query.trim())}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-accent hover:bg-panel"
+                  disabled={validating !== null}
+                  onClick={() => void validateAndSelect(query)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-accent hover:bg-panel disabled:opacity-50"
                 >
                   <CornerDownLeft size={13} className="shrink-0" aria-hidden />
                   <span className="truncate font-mono">
@@ -343,8 +390,9 @@ export function DirectoryPicker({
                 >
                   <button
                     type="button"
-                    onClick={() => select(p)}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left"
+                    disabled={validating !== null}
+                    onClick={() => void validateAndSelect(p)}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left disabled:opacity-50"
                     title={p}
                   >
                     <Folder
