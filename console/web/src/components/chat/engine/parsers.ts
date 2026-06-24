@@ -149,6 +149,7 @@ export const workersListRequestSchema = z.object({
   search: z.string().optional(),
   runtime: z.string().optional(),
   status: z.string().optional(),
+  tag: z.string().optional(),
 })
 export type WorkersListRequest = z.infer<typeof workersListRequestSchema>
 
@@ -165,6 +166,7 @@ export const workerSummarySchema = z.object({
   active_invocations: z.number(),
   isolation: z.string().nullable().optional(),
   ip_address: z.string().nullable().optional(),
+  tag: z.string().nullable().optional(),
 })
 export type WorkerSummary = z.infer<typeof workerSummarySchema>
 

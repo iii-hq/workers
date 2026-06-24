@@ -21,12 +21,14 @@ import {
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { Traces } from '@/pages/Traces'
+import { Workers } from '@/pages/Workers'
 
 /* The component spec sheet and the streaming-scenario playground now live in
    Storybook (`pnpm storybook`), not as in-app routes. The header keeps a
    single `traces` entry alongside the configuration gear. */
 const VIEW_OPTIONS: { value: View; label: string }[] = [
   { value: 'traces', label: 'traces' },
+  { value: 'workers', label: 'workers' },
 ]
 
 export function App() {
@@ -94,6 +96,8 @@ export function App() {
           <div className="flex-1 flex flex-col min-w-0 min-h-0">
             {view === 'configuration' ? (
               <Configuration theme={theme} onThemeChange={setTheme} />
+            ) : view === 'workers' ? (
+              <Workers />
             ) : (
               <Traces />
             )}

@@ -226,6 +226,12 @@ describe('engine::workers::list', () => {
     ).toEqual({ runtime: 'rust', status: 'connected' })
   })
 
+  it('parses an optional tag filter', () => {
+    expect(
+      safeParseRequest(workersListRequestSchema, { tag: 'platform' }),
+    ).toEqual({ tag: 'platform' })
+  })
+
   it('parses a wrapped success payload', () => {
     const payload = {
       workers: [
@@ -242,12 +248,14 @@ describe('engine::workers::list', () => {
           active_invocations: 0,
           isolation: 'process',
           ip_address: '127.0.0.1',
+          tag: 'dev',
         },
       ],
     }
     const parsed = safeParseResponse(workersListResponseSchema, wrap(payload))
     expect(parsed?.workers).toHaveLength(1)
     expect(parsed?.workers[0].runtime).toBe('node')
+    expect(parsed?.workers[0].tag).toBe('dev')
   })
 
   it('parses an empty workers list', () => {
