@@ -61,9 +61,15 @@ iii trigger opencode::stop session_id=<session_id>
 iii trigger opencode::run --help
 ```
 
-Call `opencode::run` again with the returned `session_id` to continue: the worker captures OpenCode's session id (`ses_...`) from the event stream, maps it to your iii `session_id` in engine state, and resumes with `--session`.
+A turn from the CLI returns the result with token usage and cost, and `opencode::run --help` prints the published request schema as a parameter table:
 
-Two ids come back. `session_id` is the iii session id (the key for status/stop/resume and the stream group). `opencode_session_id` is OpenCode's own `ses_...` id, returned for reference.
+![opencode::run returning pong with usage and cost, after engine::functions::list shows the registered surface](https://raw.githubusercontent.com/iii-hq/workers/main/opencode/assets/cli-run.png)
+
+![iii trigger opencode::run --help printing the request schema as a parameter table](https://raw.githubusercontent.com/iii-hq/workers/main/opencode/assets/cli-help.png)
+
+**Resume uses the iii `session_id`, not `opencode_session_id`.** Two ids come back from every run: `session_id` (a UUID) is the iii key for resume / status / stop and the stream group; `opencode_session_id` (`ses_...`) is OpenCode's own id, returned for reference only. To continue a conversation, pass the same **iii `session_id`** again. The worker looks up the stored OpenCode session for that key and resumes with `--session`:
+
+![two opencode::run turns sharing the iii session_id; the second resumes (num_turns 2) and recalls a token from the first](https://raw.githubusercontent.com/iii-hq/workers/main/opencode/assets/cli-resume.png)
 
 Long turns: use `opencode::start` to return immediately, then watch `agent::events` (group_id = session_id) for `message_complete`, `function_execution_start/end`, and `turn_end`. `opencode::stop` interrupts a live run.
 
@@ -96,6 +102,10 @@ OpenCode reports per-step `tokens` (input / output / reasoning / cache read+writ
 ## The agent on the bus
 
 By default every turn's prompt carries the iii runtime context: the engine-grounded discovery rules retargeted to the `iii` CLI, which OpenCode reaches through its own shell tool. The agent discovers capabilities from the live engine (`engine::functions::list`, `iii trigger <fn> --help`, the registry flow) instead of memory. Local file edits stay on OpenCode's native tools; backend actions go through registered functions. The context is prepended on a fresh session and skipped on resume; turn it off with `"iii_context": false` per call or in `config.yaml`.
+
+OpenCode answers by querying the live engine itself, grouping every connected worker by runtime:
+
+![opencode::run enumerating the workers connected to the engine by running iii trigger engine::workers::list](https://raw.githubusercontent.com/iii-hq/workers/main/opencode/assets/cli-discovery.png)
 
 ## Configuration
 
