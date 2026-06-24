@@ -219,6 +219,15 @@ pub struct ReadFileInput {
     /// neither is set.
     #[serde(default)]
     pub paths: Option<Vec<ReadTarget>>,
+    /// Optional per-call session working directory. When set, every relative
+    /// path (the single `path` or each `paths[]` entry, in both the bare
+    /// string and `{path,...}` object forms) anchors here instead of the
+    /// primary allowed root, and every resolved path must stay inside it.
+    /// `base_dir` itself must canonicalize inside an allowed root
+    /// (`coder::info` lists them). Omit to resolve against the primary
+    /// allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -388,6 +397,7 @@ fn inner(
             let p = p.clone();
             let single_req = SingleReadReq {
                 path: &p,
+                base_dir: req.base_dir.as_deref(),
                 line_from: req.line_from,
                 line_to: req.line_to,
                 stat: req.stat,
@@ -409,7 +419,7 @@ fn inner(
         }
         // Batch mode
         (None, Some(targets)) => {
-            let results = batch_read(resolver, cfg, targets);
+            let results = batch_read(resolver, cfg, req.base_dir.as_deref(), targets);
             Ok(ReadFileOutput {
                 path: None,
                 content: None,
@@ -432,6 +442,7 @@ fn inner(
 
 struct SingleReadReq<'a> {
     path: &'a str,
+    base_dir: Option<&'a str>,
     line_from: Option<u64>,
     line_to: Option<u64>,
     stat: bool,
@@ -493,7 +504,7 @@ fn single_read(
     // REDACTION ORDERING: resolve + deny-check (C211) BEFORE any metadata
     // syscall — stat on a denied path must be byte-identical to stat on a
     // missing path, and no budget may reclassify either.
-    let abs = resolver.require_writable(req.path)?;
+    let abs = resolver.require_writable_opt(req.base_dir, req.path)?;
     let md = std::fs::metadata(&abs).map_err(|e| CoderError::io_for_path(e, req.path))?;
     if !md.is_file() {
         return Err(CoderError::BadInput(format!(
@@ -761,6 +772,7 @@ fn entry_failure(path: String, error: WireError) -> ReadEntryResult {
 fn batch_read(
     resolver: &PathResolver,
     cfg: &CoderConfig,
+    base_dir: Option<&str>,
     targets: &[ReadTarget],
 ) -> Vec<ReadEntryResult> {
     let mut remaining_budget: u64 = cfg.batch_read_budget_bytes;
@@ -797,7 +809,7 @@ fn batch_read(
 
         // Resolve + accessibility check; failures echo the caller's input
         // verbatim and do NOT consume budget.
-        let abs = match resolver.require_writable(wire_path) {
+        let abs = match resolver.require_writable_opt(base_dir, wire_path) {
             Ok(p) => p,
             Err(e) => {
                 results.push(entry_failure(wire_path.to_string(), e.to_wire_error()));

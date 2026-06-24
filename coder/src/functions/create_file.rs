@@ -17,6 +17,13 @@ use crate::path::PathResolver;
 #[schemars(example = "example_create_file_input")]
 pub struct CreateFileInput {
     pub files: Vec<CreateFileSpec>,
+    /// Optional per-call session working directory. When set, relative
+    /// `path`s anchor here instead of the primary allowed root, and every
+    /// resolved path must stay inside it. `base_dir` itself must canonicalize
+    /// inside an allowed root (`coder::info` lists them). Omit to resolve
+    /// against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -94,9 +101,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
+    let base_dir = req.base_dir.as_deref();
     let mut results = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(create_one(&resolver, &cfg, spec));
+        results.push(create_one(&resolver, &cfg, base_dir, spec));
     }
     Ok(CreateFileOutput { results })
 }
@@ -104,13 +112,14 @@ pub async fn handle(
 fn create_one(
     resolver: &PathResolver,
     cfg: &CoderConfig,
+    base_dir: Option<&str>,
     spec: CreateFileSpec,
 ) -> CreateFileResult {
     // Resolve up front: from here on every filesystem operation uses ONLY
     // the resolver-returned path (never re-derived from the raw request),
     // and the result echoes that canonical absolute path. When resolution
     // fails there is no canonical path, so the input is echoed verbatim.
-    let abs = match resolver.require_writable(&spec.path) {
+    let abs = match resolver.require_writable_opt(base_dir, &spec.path) {
         Ok(abs) => abs,
         Err(e) => {
             return CreateFileResult {
@@ -214,6 +223,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -249,6 +259,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -272,6 +283,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -300,6 +312,7 @@ mod tests {
                     parents: true,
                     overwrite: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -325,6 +338,7 @@ mod tests {
                     parents: true,
                     overwrite: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -353,6 +367,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -384,6 +399,7 @@ mod tests {
                         overwrite: false,
                     },
                 ],
+                base_dir: None,
             },
         )
         .await
@@ -412,6 +428,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
+                base_dir: None,
             },
         )
         .await

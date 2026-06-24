@@ -10,6 +10,14 @@
       }
     ],
     "properties": {
+      "base_dir": {
+        "default": null,
+        "description": "Optional per-call session working directory. When set, a relative `path` anchors here instead of the primary allowed root, and the resolved base folder must stay inside it. `base_dir` itself must canonicalize inside an allowed root (`coder::info` lists them). Omit to resolve against the primary allowed root exactly as before.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "max_depth": {
         "default": null,
         "description": "Maximum depth to descend; the root node is depth 0.",

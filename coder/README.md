@@ -151,6 +151,7 @@ All errors return as JSON objects of the form `{"code":"C2xx","message":"..."}`.
 | `C215` | Path is outside every allowed root (lexically or through a symlink); names all roots + recovery |
 | `C216` | Underlying I/O error |
 | `C217` | `coder::create-file` or `coder::move` saw an existing file with `overwrite=false` |
+| `C218` | A per-call `base_dir` was set and the path is inside an allowed root but outside the session directory; names the session dir + recovery (distinct from `C215` so it does not contradict the allowed-roots list) |
 
 ## Configuration
 

@@ -26,6 +26,13 @@ pub struct MoveFileInput {
     /// Entries to move. Each entry is processed independently so a single
     /// failure never aborts the rest.
     pub files: Vec<MoveFileSpec>,
+    /// Optional per-call session working directory. When set, relative
+    /// `from`/`to` paths anchor here instead of the primary allowed root,
+    /// and BOTH resolved endpoints must stay inside it. `base_dir` itself
+    /// must canonicalize inside an allowed root (`coder::info` lists them).
+    /// Omit to resolve against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -113,9 +120,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
+    let base_dir = req.base_dir.as_deref();
     let mut results = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(move_one(&resolver, spec));
+        results.push(move_one(&resolver, base_dir, spec));
     }
     Ok(MoveFileOutput { results })
 }
@@ -124,9 +132,13 @@ pub async fn handle(
 // Per-entry logic
 // ---------------------------------------------------------------------------
 
-fn move_one(resolver: &PathResolver, spec: MoveFileSpec) -> MoveFileResult {
+fn move_one(
+    resolver: &PathResolver,
+    base_dir: Option<&str>,
+    spec: MoveFileSpec,
+) -> MoveFileResult {
     // Resolve source.
-    let abs_from = match resolver.require_writable(&spec.from) {
+    let abs_from = match resolver.require_writable_opt(base_dir, &spec.from) {
         Ok(p) => p,
         Err(e) => {
             return MoveFileResult {
@@ -140,7 +152,7 @@ fn move_one(resolver: &PathResolver, spec: MoveFileSpec) -> MoveFileResult {
     };
 
     // Resolve destination (may not exist yet — resolution via fallback is fine).
-    let abs_to = match resolver.require_writable(&spec.to) {
+    let abs_to = match resolver.require_writable_opt(base_dir, &spec.to) {
         Ok(p) => p,
         Err(e) => {
             return MoveFileResult {
@@ -410,6 +422,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -447,6 +460,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -475,6 +489,7 @@ mod tests {
                         overwrite,
                         parents: true,
                     }],
+                    base_dir: None,
                 },
             )
             .await
@@ -524,6 +539,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -555,6 +571,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -615,6 +632,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -658,6 +676,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -695,6 +714,7 @@ mod tests {
                     overwrite: true,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -722,6 +742,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -759,6 +780,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -772,6 +794,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -815,6 +838,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -840,6 +864,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -866,6 +891,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -902,6 +928,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -938,6 +965,7 @@ mod tests {
                         overwrite,
                         parents: true,
                     }],
+                    base_dir: None,
                 },
             )
             .await
@@ -978,6 +1006,7 @@ mod tests {
                     overwrite: false,
                     parents: false,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -1015,6 +1044,7 @@ mod tests {
                         parents: true,
                     },
                 ],
+                base_dir: None,
             },
         )
         .await
@@ -1043,6 +1073,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -1078,6 +1109,7 @@ mod tests {
                         parents: true,
                     },
                 ],
+                base_dir: None,
             },
         )
         .await

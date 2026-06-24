@@ -74,6 +74,14 @@ pub enum CoderError {
     #[error("C217: {0}")]
     #[serde(rename = "C217")]
     AlreadyExists(String),
+
+    /// Path canonicalises inside a configured root but OUTSIDE the
+    /// per-call `base_dir` the session is scoped to. Distinct from `C215`
+    /// (outside EVERY root) so the rejection can name the session
+    /// directory rather than contradict `coder::info`'s allowed-roots list.
+    #[error("C218: {0}")]
+    #[serde(rename = "C218")]
+    OutsideSession(String),
 }
 
 impl CoderError {
@@ -93,6 +101,7 @@ impl CoderError {
             CoderError::OutsideBase(_) => "C215",
             CoderError::Io(_) => "C216",
             CoderError::AlreadyExists(_) => "C217",
+            CoderError::OutsideSession(_) => "C218",
         }
     }
 
@@ -106,7 +115,8 @@ impl CoderError {
             | CoderError::TooLarge(m)
             | CoderError::OutsideBase(m)
             | CoderError::Io(m)
-            | CoderError::AlreadyExists(m) => m,
+            | CoderError::AlreadyExists(m)
+            | CoderError::OutsideSession(m) => m,
         }
     }
 
@@ -277,10 +287,11 @@ mod tests {
             CoderError::OutsideBase("a".into()).code(),
             CoderError::Io("a".into()).code(),
             CoderError::AlreadyExists("a".into()).code(),
+            CoderError::OutsideSession("a".into()).code(),
         ]
         .into_iter()
         .collect();
-        assert_eq!(codes.len(), 6);
+        assert_eq!(codes.len(), 7);
     }
 
     /// DRIFT PREVENTION: `to_wire_error()` (structured per-entry form)
@@ -296,6 +307,7 @@ mod tests {
             CoderError::OutsideBase("outside base msg".into()),
             CoderError::Io("io msg".into()),
             CoderError::AlreadyExists("already exists msg".into()),
+            CoderError::OutsideSession("outside session msg".into()),
         ];
         for v in &variants {
             let wire = v.to_wire_error();

@@ -25,6 +25,13 @@ pub struct DeleteFileInput {
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]
     pub recursive: bool,
+    /// Optional per-call session working directory. When set, relative
+    /// `paths` anchor here instead of the primary allowed root, and every
+    /// resolved path must stay inside it. `base_dir` itself must canonicalize
+    /// inside an allowed root (`coder::info` lists them). Omit to resolve
+    /// against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -64,19 +71,25 @@ pub async fn handle(
             "`paths` must not be empty".into(),
         )));
     }
+    let base_dir = req.base_dir.as_deref();
     let mut results = Vec::with_capacity(req.paths.len());
     for p in req.paths {
-        results.push(delete_one(&resolver, &p, req.recursive));
+        results.push(delete_one(&resolver, base_dir, &p, req.recursive));
     }
     Ok(DeleteFileOutput { results })
 }
 
-fn delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> DeleteFileResult {
+fn delete_one(
+    resolver: &PathResolver,
+    base_dir: Option<&str>,
+    rel: &str,
+    recursive: bool,
+) -> DeleteFileResult {
     // Resolve up front: deletion operates ONLY on the resolver-returned
     // path, and the result echoes that canonical absolute path. When
     // resolution fails there is no canonical path, so the caller's input
     // is echoed verbatim.
-    let abs = match resolver.require_writable(rel) {
+    let abs = match resolver.require_writable_opt(base_dir, rel) {
         Ok(abs) => abs,
         Err(e) => {
             return DeleteFileResult {
@@ -182,6 +195,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -199,6 +213,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -216,6 +231,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".env".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -235,6 +251,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -252,6 +269,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
@@ -270,6 +288,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
@@ -293,6 +312,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["secrets".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
@@ -324,6 +344,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
