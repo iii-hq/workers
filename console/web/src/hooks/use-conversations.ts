@@ -51,6 +51,7 @@ import {
   saveActiveId,
   saveLastModel,
   saveLastWorkingDir,
+  saveRecentProject,
 } from '@/lib/storage'
 import {
   type Conversation,
@@ -546,6 +547,7 @@ export function useConversations(
         updatedAt: Date.now(),
       }))
       saveLastWorkingDir(dir)
+      saveRecentProject(dir)
       const conv = conversations.find((c) => c.id === id)
       if (conv) writeMeta({ ...conv, workingDir: dir })
     },
