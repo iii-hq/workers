@@ -71,4 +71,28 @@ describe('buildArgs', () => {
     expect(args[args.indexOf('--model') + 1]).toBe('anthropic/claude-sonnet-4-5');
     expect(args[args.indexOf('--dir') + 1]).toBe('/repo');
   });
+
+  it('adds --agent when set, omits flags that are empty', () => {
+    const args = buildArgs(
+      RunPayloadSchema.parse({ prompt: 'hi', agent: 'build' }),
+      cfg,
+      'hi',
+      null,
+    );
+    expect(args[args.indexOf('--agent') + 1]).toBe('build');
+    expect(args).not.toContain('--model');
+    expect(args).not.toContain('--dir');
+  });
+
+  it('per-turn fields override config defaults', async () => {
+    const c2 = await loadConfig('/nonexistent/config.yaml');
+    c2.defaults.model = 'cfg/model';
+    const args = buildArgs(
+      RunPayloadSchema.parse({ prompt: 'hi', model: 'payload/model' }),
+      c2,
+      'hi',
+      null,
+    );
+    expect(args[args.indexOf('--model') + 1]).toBe('payload/model');
+  });
 });

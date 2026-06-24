@@ -74,6 +74,34 @@ describe('register', () => {
     });
   });
 
+  it('opencode::start reports busy when a run is already live for the session', async () => {
+    const fake = await registeredWorker();
+    spawnMock.mockImplementation(
+      scriptedSpawn(fullTurn, newSpawnCapture(), { hang: true }) as never,
+    );
+    await fake.registered.get('opencode::start')?.({ prompt: 'a', session_id: 'busy1' });
+    await new Promise((r) => setTimeout(r, 20));
+    const second = (await fake.registered.get('opencode::start')?.({
+      prompt: 'b',
+      session_id: 'busy1',
+    })) as Record<string, unknown>;
+    expect(second).toMatchObject({ session_id: 'busy1', started: false, busy: true });
+  });
+
+  it('opencode::stop kills a live run', async () => {
+    const fake = await registeredWorker();
+    const capture = newSpawnCapture();
+    spawnMock.mockImplementation(scriptedSpawn(fullTurn, capture, { hang: true }) as never);
+    await fake.registered.get('opencode::start')?.({ prompt: 'long', session_id: 'live1' });
+    await new Promise((r) => setTimeout(r, 20));
+    const res = (await fake.registered.get('opencode::stop')?.({ session_id: 'live1' })) as Record<
+      string,
+      unknown
+    >;
+    expect(res).toMatchObject({ session_id: 'live1', stopped: true });
+    expect(capture.killed).toBe(true);
+  });
+
   it('opencode::stop without a live run reports stopped: false', async () => {
     const fake = await registeredWorker();
     const res = (await fake.registered.get('opencode::stop')?.({ session_id: 'ghost' })) as Record<

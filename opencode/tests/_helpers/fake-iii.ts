@@ -42,6 +42,7 @@ export function fakeIii(): FakeIii {
     registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
       registered.set(fnId, handler);
     }),
+    registerTrigger: vi.fn(),
   } as unknown as ISdk;
 
   const streamFrames = (stream: string) =>
