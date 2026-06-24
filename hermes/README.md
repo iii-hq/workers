@@ -37,11 +37,27 @@ iii trigger hermes::sessions::list
 iii trigger hermes::run --help
 ```
 
+`iii trigger hermes::run --help` and `hermes::send --help` print the published request schemas as parameter tables:
+
+![iii trigger hermes::run --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-run-help.png)
+
+![iii trigger hermes::send --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-send-help.png)
+
+`hermes::sessions::list` returns the worker's session records plus the raw `hermes sessions list` output:
+
+![iii trigger hermes::sessions::list output](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-sessions.png)
+
 Pass the same `session_id` again to continue a conversation: the worker threads it to Hermes as `hermes -z --resume <session_id>`, so the first call creates that session and later calls continue it. (Hermes also keeps its own cross-session memory, so some facts persist beyond a single session regardless.)
+
+![two hermes::run turns sharing a session_id; the second recalls a fact from the first](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-resume.png)
 
 ## The agent on the bus
 
 By default every turn prepends the iii runtime context: the engine-grounded discovery rules retargeted to the `iii` CLI, which Hermes reaches through its own shell / `execute_code` tool. The agent discovers capabilities from the live engine (`engine::functions::list`, `<fn> --help`, the registry flow) instead of memory. Disable per call with `"iii_context": false`, or globally in `config.yaml`.
+
+A real turn over the bus (`pong`) and a live discovery turn where Hermes enumerates every connected worker by running `iii trigger engine::workers::list` itself:
+
+![hermes::run returning pong, then a discovery turn listing the connected workers](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-run-discovery.png)
 
 ## Omnichannel front door
 
@@ -79,7 +95,7 @@ Exposes the agent loop, omnichannel send, and inbound events — not Hermes's du
 
 ## Status
 
-Foundation. The agent loop (`hermes::run` via `hermes -z`), `hermes::send`, sessions, and the iii context are wired against the documented Hermes CLI. Two parts finalize against a live Hermes instance with credentials:
+Live-verified against a running engine with the Hermes CLI and an Anthropic key: the agent loop (`hermes::run` / `start` / `status` / `sessions::list`), real turns (`pong`), live iii discovery (the agent runs `iii trigger engine::workers::list` itself), and session continuity (`--resume`) all work end to end. Two parts remain to finalize against a live messaging gateway:
 
 - **Events granularity** — Hermes one-shot returns only final text, so `agent::events` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event stream depends on a Hermes mode that exposes one.
-- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries today; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
+- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries today and binds via `iii-http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
