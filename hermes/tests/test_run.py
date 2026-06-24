@@ -27,12 +27,15 @@ def _scripted_run_turn(result: str = "done", *, raises: Exception | None = None)
     return fake, captured
 
 
-def _make(monkeypatch, cfg=None, *, result="done", raises=None):
+def _make(monkeypatch, cfg=None, *, result="done", raises=None, usage=None):
     cfg = cfg or base_cfg()
     fake = FakeIii()
     logger = FakeLogger()
     fn, captured = _scripted_run_turn(result, raises=raises)
     monkeypatch.setattr(handlers_mod.hermes_cli, "run_turn", fn)
+    # Default: no usage row, so the envelope stays minimal and hermetic (the
+    # real reader would hit ~/.hermes/state.db). Pass `usage` to exercise it.
+    monkeypatch.setattr(handlers_mod.hermes_cli, "read_latest_usage", lambda: usage)
     h = create_handlers(fake, lambda: cfg, logger)
     return fake, logger, h, captured
 
@@ -41,6 +44,35 @@ def test_run_returns_result_envelope(monkeypatch):
     fake, _, h, _ = _make(monkeypatch, result="pong")
     res = asyncio.run(h["run"]({"prompt": "ping", "session_id": "s1"}))
     assert res == {"session_id": "s1", "result": "pong", "is_error": False, "stop_reason": "end"}
+
+
+def test_run_surfaces_usage_and_cost(monkeypatch):
+    usage = {
+        "usage": {
+            "input_tokens": 6,
+            "output_tokens": 2245,
+            "cache_read_tokens": 16915,
+            "cache_write_tokens": 22332,
+            "reasoning_tokens": 0,
+        },
+        "total_cost_usd": 0.1225,
+        "cost_source": "official_docs_snapshot",
+    }
+    fake, _, h, _ = _make(monkeypatch, usage=usage)
+    res = asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
+    assert res["usage"]["output_tokens"] == 2245
+    assert res["total_cost_usd"] == 0.1225
+    assert res["cost_source"] == "official_docs_snapshot"
+    # also on the session record and the agent_end frame
+    assert fake.state["hermes_sessions/s1"]["total_cost_usd"] == 0.1225
+    end = [f["data"] for f in fake.stream_frames("agent::events") if f["data"]["type"] == "agent_end"][0]
+    assert end["usage"]["output_tokens"] == 2245 and end["total_cost_usd"] == 0.1225
+
+
+def test_run_omits_usage_when_unavailable(monkeypatch):
+    fake, _, h, _ = _make(monkeypatch)  # usage None
+    res = asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
+    assert "usage" not in res and "total_cost_usd" not in res
 
 
 def test_run_persists_session_record_done(monkeypatch):

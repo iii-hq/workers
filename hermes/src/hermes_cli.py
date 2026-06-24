@@ -14,6 +14,53 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+
+def _state_db() -> Path:
+    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    return Path(home) / "state.db"
+
+
+def read_latest_usage() -> dict[str, Any] | None:
+    """Read usage + cost for the most recently updated Hermes session.
+
+    Hermes records per-session token counts and cost in its SQLite session
+    store; ``hermes -z`` does not print them, so the worker reads them back
+    here. Runs are serialized per session, so the latest row is this turn.
+    """
+    db = _state_db()
+    if not db.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+        try:
+            row = con.execute(
+                "SELECT input_tokens, output_tokens, cache_read_tokens, "
+                "cache_write_tokens, reasoning_tokens, estimated_cost_usd, "
+                "actual_cost_usd, cost_source FROM sessions ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    inp, out, cr, cw, rea, est, act, src = row
+    cost = act if act not in (None, 0) else est
+    return {
+        "usage": {
+            "input_tokens": inp or 0,
+            "output_tokens": out or 0,
+            "cache_read_tokens": cr or 0,
+            "cache_write_tokens": cw or 0,
+            "reasoning_tokens": rea or 0,
+        },
+        "total_cost_usd": cost,
+        "cost_source": src,
+    }
 
 
 async def _run(

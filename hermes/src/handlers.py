@@ -92,6 +92,8 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
             except Exception as exc:  # noqa: BLE001 - surface the failure in the envelope
                 result, is_error = str(exc), True
 
+            usage_info = None if is_error else hermes_cli.read_latest_usage()
+
             record = {
                 "session_id": session_id,
                 "cwd": cwd,
@@ -100,6 +102,9 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
                 "turns": (prior or {}).get("turns", 0) + 1,
                 "updated_at_ms": int(time.time() * 1000),
             }
+            if usage_info:
+                record["usage"] = usage_info["usage"]
+                record["total_cost_usd"] = usage_info["total_cost_usd"]
             await iii.trigger_async(
                 {"function_id": "state::set", "payload": {"scope": SCOPE, "key": session_id, "value": record}}
             )
@@ -114,13 +119,22 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
                 session_id,
                 {"type": "turn_end", "message": message, "function_results": []},
             )
-            await _emit(iii, cfg["events_stream"], session_id, {"type": "agent_end", "messages": [message]})
-            return {
+            end_event = {"type": "agent_end", "messages": [message]}
+            if usage_info:
+                end_event["usage"] = usage_info["usage"]
+                end_event["total_cost_usd"] = usage_info["total_cost_usd"]
+            await _emit(iii, cfg["events_stream"], session_id, end_event)
+            envelope = {
                 "session_id": session_id,
                 "result": result,
                 "is_error": is_error,
                 "stop_reason": "error" if is_error else "end",
             }
+            if usage_info:
+                envelope["usage"] = usage_info["usage"]
+                envelope["total_cost_usd"] = usage_info["total_cost_usd"]
+                envelope["cost_source"] = usage_info["cost_source"]
+            return envelope
         finally:
             live.discard(session_id)
 

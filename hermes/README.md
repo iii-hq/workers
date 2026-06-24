@@ -37,6 +37,8 @@ iii trigger hermes::sessions::list
 iii trigger hermes::run --help
 ```
 
+`hermes::run` returns `{session_id, result, usage, total_cost_usd, cost_source}`. Hermes records per-turn token counts (input / output / cache / reasoning) and cost in its own SQLite session store; `hermes -z` does not print them, so the worker reads the latest session row back after the turn and surfaces it on the result envelope, the session record, and the `agent_end` frame on `agent::events`.
+
 `iii trigger hermes::run --help` and `hermes::send --help` print the published request schemas as parameter tables:
 
 ![iii trigger hermes::run --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-run-help.png)
@@ -97,7 +99,7 @@ Exposes the agent loop, omnichannel send, and inbound events — not Hermes's du
 
 Live-verified against a running engine with the Hermes CLI and an Anthropic key: the agent loop (`hermes::run` / `start` / `status` / `sessions::list`), real turns (`pong`), live iii discovery (the agent runs `iii trigger engine::workers::list` itself), and session continuity (`--resume`) all work end to end. Two parts remain to finalize against a live messaging gateway:
 
-- **Events granularity + usage/cost** — Hermes one-shot (`hermes -z`) prints only the final response text: no per-tool frames and no token-usage or cost line. So `agent::events` carries `turn_end` + `agent_end` (the final message) only, and `hermes::run` does not return usage/cost the way claude-code and pi do. Surfacing per-tool frames and usage/cost both depend on a Hermes mode that emits them (or parsing the session JSONL), tracked as a follow-up.
+- **Events granularity** — Hermes one-shot (`hermes -z`) prints only the final response text, so `agent::events` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event stream depends on a Hermes mode that emits one.
 - **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries today and binds via `iii-http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
 
 ## Tool profile
