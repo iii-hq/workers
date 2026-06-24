@@ -44,8 +44,13 @@ pub async fn handle(
     // gating). exec_bg returns its spawn-time failures as plain strings (its
     // documented contract), so we stringify the S-code into the message — the
     // agent still sees the code (e.g. "S215") and the self-correcting text.
-    let mut overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), &cfg)
-        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    let mut overrides = build_overrides(
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+        req.base_dir.as_deref(),
+        &cfg,
+    )
+    .map_err(|e| format!("{}: {}", e.code, e.message))?;
     // stdin needs no gating (opaque input bytes); host-only via is_empty().
     overrides.stdin = req.stdin;
 

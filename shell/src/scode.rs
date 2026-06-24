@@ -31,7 +31,7 @@ pub const FALLBACK_CODE: &str = "S216";
 /// The table is the union of the codes the fs and exec sandbox paths
 /// each legitimately handle:
 /// - shared lifecycle/config codes: `S001`–`S004`, `S200`, `S210`, `S216`
-/// - fs-specific codes: `S211`–`S215`, `S217`–`S219`
+/// - fs-specific codes: `S211`–`S215`, `S217`–`S220`
 /// - exec-specific codes: `S100`–`S102`, `S300`, `S400`
 ///
 /// Mapping every code on BOTH paths is intentional: the worker should
@@ -62,6 +62,8 @@ pub fn map_static_code(code: &str) -> &'static str {
         "S217" => "S217",
         "S218" => "S218",
         "S219" => "S219",
+        // base_dir (per-call session-scope) containment violation.
+        "S220" => "S220",
         _ => FALLBACK_CODE,
     }
 }
@@ -180,6 +182,7 @@ mod tests {
             ("S217", "S217"),
             ("S218", "S218"),
             ("S219", "S219"),
+            ("S220", "S220"),
             // Unknown collapses to the generic fallback.
             ("S999", "S216"),
         ]

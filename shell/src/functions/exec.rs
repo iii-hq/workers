@@ -34,8 +34,13 @@ pub async fn handle(
     // (S215) or an env key outside allowed_env / in DANGEROUS_ENV_KEYS (S210)
     // rejects here, carrying the S-code to the wire via From<ExecError>. The
     // sandbox backend additionally rejects any populated override (host-only).
-    let mut overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), &cfg)
-        .map_err(iii_sdk::IIIError::from)?;
+    let mut overrides = build_overrides(
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+        req.base_dir.as_deref(),
+        &cfg,
+    )
+    .map_err(iii_sdk::IIIError::from)?;
     // stdin needs no gating (opaque input bytes); it is host-only, enforced by
     // the sandbox backend's is_empty() rejection of any populated override.
     overrides.stdin = req.stdin;

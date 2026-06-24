@@ -202,6 +202,38 @@ impl HostFsBackend {
         confine_path(path, self.host_root_canon.as_deref(), &self.denylist_canon)
     }
 
+    /// Resolve and validate an optional per-call `base_dir` against this
+    /// backend's configured jail. `None` ⇒ `Ok(None)` (unchanged behaviour);
+    /// see [`confine_base_dir`].
+    fn confine_base_dir(&self, base_dir: Option<&str>) -> Result<Option<PathBuf>, FsError> {
+        confine_base_dir(
+            base_dir,
+            self.host_root_canon.as_deref(),
+            &self.denylist_canon,
+        )
+    }
+
+    /// base_dir-aware form of [`Self::validate_path`]. When `base_dir_canon`
+    /// is `Some`, the path is scoped to that session directory (relative
+    /// anchors there; an absolute path outside it is S220). When `None`, it
+    /// delegates to [`Self::validate_path`] — byte-for-byte the prior jail
+    /// check.
+    fn validate_path_scoped(
+        &self,
+        path: &str,
+        base_dir_canon: Option<&Path>,
+    ) -> Result<PathBuf, FsError> {
+        match base_dir_canon {
+            None => self.validate_path(path),
+            Some(_) => confine_path_with_base_dir(
+                path,
+                self.host_root_canon.as_deref(),
+                base_dir_canon,
+                &self.denylist_canon,
+            ),
+        }
+    }
+
     /// Lexical operand for handlers whose semantics forbid canonicalizing
     /// (rm/chmod/mv/sed act on the link itself, not its target). Relative
     /// inputs anchor to the SAME jail root `validate_path` validated
@@ -209,6 +241,18 @@ impl HostFsBackend {
     /// diverge (the worker's CWD is unrelated to the jail).
     fn lexical_operand(&self, path: &str) -> PathBuf {
         lexical_operand_with(path, self.host_root_canon.as_deref())
+    }
+
+    /// base_dir-aware form of [`Self::lexical_operand`]. When a session
+    /// `base_dir` is in effect, a relative operand must anchor at `base_dir`
+    /// (the directory `validate_path_scoped` validated against) so the
+    /// validated and operated-on paths cannot diverge. `None` ⇒ delegates to
+    /// [`Self::lexical_operand`] (the unchanged `host_root`-anchored operand).
+    fn lexical_operand_scoped(&self, path: &str, base_dir_canon: Option<&Path>) -> PathBuf {
+        match base_dir_canon {
+            None => self.lexical_operand(path),
+            Some(base) => lexical_operand_with(path, Some(base)),
+        }
     }
 }
 
@@ -287,6 +331,111 @@ fn lexical_operand_with(path: &str, host_root_canon: Option<&Path>) -> PathBuf {
         }
     }
     normalize_lexical(p)
+}
+
+/// Resolve and validate an OPTIONAL per-call `base_dir` against the worker's
+/// configured jail. Returns:
+/// - `Ok(None)` when no `base_dir` was supplied — the caller then takes the
+///   unchanged `host_root`-anchored path (byte-for-byte the prior behaviour).
+/// - `Ok(Some(canon))` when `base_dir` canonicalizes INSIDE the configured
+///   `host_root` (and misses the denylist) — `canon` is the effective root that
+///   relative paths anchor against and that absolute paths must stay inside.
+/// - `Err(_)` when `base_dir` itself escapes the jail (or is otherwise invalid):
+///   the worker is jailed to `host_root`, so a session directory outside it is
+///   never honored. The error reuses `confine_path`'s S210/S215 taxonomy so a
+///   bad `base_dir` reads the same as a bad path.
+///
+/// `base_dir` MUST be confined by `host_root`; an unjailed worker
+/// (`host_root: None`) has no ceiling to validate against, so a supplied
+/// `base_dir` is rejected S210 rather than silently treated as the ceiling.
+fn confine_base_dir(
+    base_dir: Option<&str>,
+    host_root_canon: Option<&Path>,
+    denylist_canon: &[PathBuf],
+) -> Result<Option<PathBuf>, FsError> {
+    let Some(base_dir) = base_dir else {
+        return Ok(None);
+    };
+    let Some(_root) = host_root_canon else {
+        return Err(FsError::new(
+            "S210",
+            format!(
+                "base_dir {base_dir} is only honored when the worker is jailed \
+                 (fs.host_root is set); this worker is unjailed"
+            ),
+        ));
+    };
+    // The session dir must itself canonicalize inside host_root + miss the
+    // denylist — reuse the SAME confinement the fs ops enforce so a base_dir
+    // that escapes the jail (or a denylisted one) is rejected identically.
+    let canon = confine_path(base_dir, host_root_canon, denylist_canon)?;
+    Ok(Some(canon))
+}
+
+/// base_dir-aware jail confinement, LAYERED on top of [`confine_path`]. When
+/// `base_dir_canon` is `Some`, the call is scoped to that session directory:
+/// relative paths anchor at `base_dir` (not `host_root`) and the resolved path
+/// must land INSIDE `base_dir`. When it is `None`, this is exactly
+/// [`confine_path`] against `host_root` — the back-compat path, unchanged.
+///
+/// The core jail algorithm (`confine_path` →
+/// `canonicalize_with_fallback`/`normalize_lexical`) is reused verbatim, not
+/// re-implemented: passing `base_dir` as the effective root gives both the
+/// relative-anchor and the containment check for free, because `base_dir` is
+/// already known to sit inside `host_root` (the denylist is threaded through
+/// too). The only addition is the DX-1 error refinement: an ABSOLUTE path that
+/// is inside `host_root` but outside `base_dir` is rejected with S220 naming
+/// the session directory, instead of the generic "escapes host_root" S215 —
+/// which would contradict the worker's own configured roots.
+///
+/// `pub(crate)` so the exec backend can confine a per-call `cwd` against the
+/// SAME session-scoped jail (shell::exec/exec_bg `base_dir`) instead of
+/// duplicating the layering.
+pub(crate) fn confine_path_with_base_dir(
+    path: &str,
+    host_root_canon: Option<&Path>,
+    base_dir_canon: Option<&Path>,
+    denylist_canon: &[PathBuf],
+) -> Result<PathBuf, FsError> {
+    let Some(base) = base_dir_canon else {
+        // No session scope: identical to the unscoped jail check.
+        return confine_path(path, host_root_canon, denylist_canon);
+    };
+    // Scope the confinement to base_dir: relative paths anchor at base_dir and
+    // the canonical result must start_with(base_dir). Since base_dir ⊆
+    // host_root (validated by confine_base_dir), this is strictly tighter than
+    // the host_root check.
+    match confine_path(path, Some(base), denylist_canon) {
+        Ok(canon) => Ok(canon),
+        Err(e) => {
+            // DX-1: an absolute path that is inside host_root but outside
+            // base_dir would otherwise surface the generic "escapes host_root
+            // <base_dir>" S215, which is confusing — the path IS inside an
+            // allowed root, just not this session's. Detect that case and emit
+            // a session-scoped S220 naming base_dir so the agent corrects to a
+            // path under the session directory rather than guessing roots.
+            if e.code == "S215" && Path::new(path).is_absolute() {
+                if let Ok(canon) = canonicalize_with_fallback(Path::new(path)) {
+                    let inside_host_root = host_root_canon
+                        .map(|hr| canon.starts_with(hr))
+                        .unwrap_or(false);
+                    let denied = denylist_canon.iter().any(|d| canon.starts_with(d));
+                    if inside_host_root && !canon.starts_with(base) && !denied {
+                        return Err(FsError::new(
+                            "S220",
+                            format!(
+                                "this session is scoped to {}; {path} is inside an allowed \
+                                 root but outside the session directory — use a path under {}",
+                                base.display(),
+                                base.display()
+                            ),
+                        ));
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 // MIRROR-INVARIANT: `canonicalize_with_fallback` + `normalize_lexical`
@@ -646,7 +795,11 @@ async fn pump_file_to_channel(
 impl FsBackend for HostFsBackend {
     async fn ls(&self, req: LsArgs) -> FsCallResult<LsResponse> {
         // Jail validation runs here, on the async fn, BEFORE the blocking work.
-        let p = self.validate_path(&req.path)?;
+        // A per-call base_dir (when set) scopes both the relative anchor and the
+        // containment ceiling to the session directory; None ⇒ the unchanged
+        // host_root jail.
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        let p = self.validate_path_scoped(&req.path, base.as_deref())?;
         // The symlink_metadata stat, read_dir, and the per-entry
         // symlink_metadata loop are all blocking std::fs work that scales with
         // directory size; move it off the executor (mirrors grep/sed).
@@ -679,7 +832,8 @@ impl FsBackend for HostFsBackend {
     }
 
     async fn stat(&self, req: StatArgs) -> FsCallResult<StatResponse> {
-        let p = self.validate_path(&req.path)?;
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        let p = self.validate_path_scoped(&req.path, base.as_deref())?;
         let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
         let name = p
             .file_name()
@@ -689,7 +843,8 @@ impl FsBackend for HostFsBackend {
     }
 
     async fn mkdir(&self, req: crate::fs::MkdirArgs) -> FsCallResult<crate::fs::MkdirResponse> {
-        let p = self.validate_path(&req.path)?;
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        let p = self.validate_path_scoped(&req.path, base.as_deref())?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
         if p.exists() {
@@ -736,9 +891,12 @@ impl FsBackend for HostFsBackend {
     async fn rm(&self, req: crate::fs::RmArgs) -> FsCallResult<crate::fs::RmResponse> {
         // Lexical form required: rm of a symlink must remove the link, not
         // the target. validate_path canonicalizes for jail confinement; we
-        // operate on the lexical path to preserve unlink semantics.
-        self.validate_path(&req.path)?;
-        let p = self.lexical_operand(&req.path);
+        // operate on the lexical path to preserve unlink semantics. Both the
+        // validation and the operand anchor at the session base_dir when set,
+        // so they cannot diverge.
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        self.validate_path_scoped(&req.path, base.as_deref())?;
+        let p = self.lexical_operand_scoped(&req.path, base.as_deref());
 
         // The symlink_metadata stat, recursive remove_dir_all, the non-recursive
         // read_dir emptiness probe, and the unlink are all blocking std::fs work
@@ -779,9 +937,10 @@ impl FsBackend for HostFsBackend {
     }
     async fn chmod(&self, req: crate::fs::ChmodArgs) -> FsCallResult<crate::fs::ChmodResponse> {
         // Jail validation + mode parsing run here, on the async fn, BEFORE the
-        // blocking work.
-        self.validate_path(&req.path)?;
-        let p = self.lexical_operand(&req.path);
+        // blocking work. base_dir (when set) scopes the validation + operand.
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        self.validate_path_scoped(&req.path, base.as_deref())?;
+        let p = self.lexical_operand_scoped(&req.path, base.as_deref());
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
 
@@ -855,10 +1014,12 @@ impl FsBackend for HostFsBackend {
     }
 
     async fn mv(&self, req: crate::fs::MvArgs) -> FsCallResult<crate::fs::MvResponse> {
-        self.validate_path(&req.src)?;
-        self.validate_path(&req.dst)?;
-        let src_p = self.lexical_operand(&req.src);
-        let dst_p = self.lexical_operand(&req.dst);
+        // A single session base_dir scopes BOTH operands.
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        self.validate_path_scoped(&req.src, base.as_deref())?;
+        self.validate_path_scoped(&req.dst, base.as_deref())?;
+        let src_p = self.lexical_operand_scoped(&req.src, base.as_deref());
+        let dst_p = self.lexical_operand_scoped(&req.dst, base.as_deref());
         if !src_p.exists() {
             return Err(FsError::new("S211", format!("src not found: {}", req.src)));
         }
@@ -914,7 +1075,8 @@ impl FsBackend for HostFsBackend {
         })
     }
     async fn grep(&self, req: crate::fs::GrepArgs) -> FsCallResult<crate::fs::GrepResponse> {
-        let root = self.validate_path(&req.path)?;
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        let root = self.validate_path_scoped(&req.path, base.as_deref())?;
         // Cap before compiling: an unbounded pattern stalls compilation and
         // pins memory.
         check_pattern_len(&req.pattern)?;
@@ -1194,6 +1356,10 @@ impl FsBackend for HostFsBackend {
         let exclude_glob = req.exclude_glob;
         let host_root_canon = self.host_root_canon.clone();
         let denylist_canon = self.denylist_canon.clone();
+        // Resolve the optional session base_dir up front (on the async fn) so the
+        // blocking closure confines + anchors every operand to it instead of the
+        // global host_root. None ⇒ unchanged host_root behaviour.
+        let base_dir_canon = self.confine_base_dir(req.base_dir.as_deref())?;
         // Per-file read cap: sed builds a same-size output String in memory, so
         // an unbounded file is an OOM vector (grep skips binary + bounds its
         // line read; sed did neither). Honor the backend's max_read_bytes; a 0
@@ -1214,8 +1380,14 @@ impl FsBackend for HostFsBackend {
             let files: Vec<String> = match source {
                 SedSource::Files(fs) => fs,
                 SedSource::Dir(root) => {
-                    confine_path(&root, host_root_canon.as_deref(), &denylist_canon)?;
-                    let root_anchored = lexical_operand_with(&root, host_root_canon.as_deref());
+                    confine_path_with_base_dir(
+                        &root,
+                        host_root_canon.as_deref(),
+                        base_dir_canon.as_deref(),
+                        &denylist_canon,
+                    )?;
+                    let anchor = base_dir_canon.as_deref().or(host_root_canon.as_deref());
+                    let root_anchored = lexical_operand_with(&root, anchor);
                     let root_path = root_anchored.as_path();
                     let _ = root_path
                         .symlink_metadata()
@@ -1239,19 +1411,26 @@ impl FsBackend for HostFsBackend {
             };
 
             // Per-file jail confinement, exactly as on the executor pre-fix:
-            // validate EVERY file (S210/S215 on the first violation) BEFORE
+            // validate EVERY file (S210/S215/S220 on the first violation) BEFORE
             // touching any file, so a single bad path aborts the whole call
-            // with nothing written.
+            // with nothing written. base_dir (when set) scopes each file.
             for f in &files {
-                confine_path(f, host_root_canon.as_deref(), &denylist_canon)?;
+                confine_path_with_base_dir(
+                    f,
+                    host_root_canon.as_deref(),
+                    base_dir_canon.as_deref(),
+                    &denylist_canon,
+                )?;
             }
 
             // Anchor every file to its jail-relative operand (the operated-on
             // path, not its canonical target — sed acts on the link itself).
+            // The anchor is the session base_dir when set, else host_root.
+            let file_anchor = base_dir_canon.as_deref().or(host_root_canon.as_deref());
             let anchored: Vec<(String, PathBuf)> = files
                 .into_iter()
                 .map(|f| {
-                    let p = lexical_operand_with(&f, host_root_canon.as_deref());
+                    let p = lexical_operand_with(&f, file_anchor);
                     (f, p)
                 })
                 .collect();
@@ -1413,17 +1592,20 @@ impl FsBackend for HostFsBackend {
         })
     }
     async fn write(&self, req: crate::fs::WriteArgs) -> FsCallResult<crate::fs::WriteResponse> {
-        let p = self.validate_path(&req.path)?;
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        let p = self.validate_path_scoped(&req.path, base.as_deref())?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
 
-        // Defense-in-depth: re-check parent against the precomputed
-        // canonical root before creating intermediate directories.
-        // validate_path already enforces this on `p`, but parents:true
-        // is S-C1's second site so we keep the belt.
+        // Defense-in-depth: re-check parent against the effective canonical
+        // root before creating intermediate directories. validate_path already
+        // enforces this on `p`, but parents:true is S-C1's second site so we
+        // keep the belt. The ceiling is the session base_dir when set, else
+        // host_root — so parents can never climb out of the session directory.
+        let parent_ceiling = base.as_deref().or(self.host_root_canon.as_deref());
         if req.parents {
             if let Some(parent) = p.parent() {
-                if let Some(root_canon) = &self.host_root_canon {
+                if let Some(root_canon) = parent_ceiling {
                     if !parent.starts_with(root_canon) {
                         return Err(FsError::new(
                             "S215",
@@ -1550,7 +1732,8 @@ impl FsBackend for HostFsBackend {
     async fn read(&self, req: crate::fs::ReadArgs) -> FsCallResult<crate::fs::ReadResponse> {
         use std::os::unix::fs::PermissionsExt;
 
-        let p = self.validate_path(&req.path)?;
+        let base = self.confine_base_dir(req.base_dir.as_deref())?;
+        let p = self.validate_path_scoped(&req.path, base.as_deref())?;
         let md = tokio::fs::symlink_metadata(&p)
             .await
             .map_err(|e| FsError::from_io(&req.path, e))?;
@@ -1741,6 +1924,7 @@ mod tests {
         let b = stub_backend(cfg);
         let res = b
             .rm(crate::fs::RmArgs {
+                base_dir: None,
                 path: "victim.txt".into(),
                 recursive: false,
             })
@@ -1761,6 +1945,7 @@ mod tests {
         let b = stub_backend(cfg);
         let res = b
             .mv(crate::fs::MvArgs {
+                base_dir: None,
                 src: "a.txt".into(),
                 dst: "b.txt".into(),
                 overwrite: false,
@@ -1784,6 +1969,7 @@ mod tests {
         let b = stub_backend(cfg);
         let res = b
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: "f.txt".into(),
                 mode: "0600".into(),
                 uid: None,
@@ -1812,6 +1998,7 @@ mod tests {
         let b = stub_backend(cfg);
         let res = b
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec!["s.txt".into()],
                 path: None,
                 recursive: true,
@@ -1845,6 +2032,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "/etc/shell-escape/nested".into(),
                 mode: "0644".into(),
                 parents: true,
@@ -1928,6 +2116,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .ls(LsArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
             })
             .await
@@ -1943,6 +2132,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .ls(LsArgs {
+                base_dir: None,
                 path: "/nope/never/exists/iii".into(),
             })
             .await
@@ -1958,6 +2148,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .stat(StatArgs {
+                base_dir: None,
                 path: f.to_str().unwrap().into(),
             })
             .await
@@ -1974,6 +2165,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .ls(LsArgs {
+                base_dir: None,
                 path: f.to_str().unwrap().into(),
             })
             .await
@@ -1991,6 +2183,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .ls(LsArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
             })
             .await
@@ -2011,6 +2204,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .ls(LsArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
             })
             .await
@@ -2028,6 +2222,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .ls(LsArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
             })
             .await
@@ -2043,6 +2238,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: p.to_str().unwrap().into(),
                 mode: "0755".into(),
                 parents: false,
@@ -2059,6 +2255,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 mode: "0755".into(),
                 parents: false,
@@ -2074,6 +2271,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 mode: "0755".into(),
                 parents: true,
@@ -2089,6 +2287,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: root.join("x").to_str().unwrap().into(),
                 mode: "garbage".into(),
                 parents: false,
@@ -2106,6 +2305,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .rm(crate::fs::RmArgs {
+                base_dir: None,
                 path: f.to_str().unwrap().into(),
                 recursive: false,
             })
@@ -2120,6 +2320,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .rm(crate::fs::RmArgs {
+                base_dir: None,
                 path: "/nope/never/iii-rm-test".into(),
                 recursive: false,
             })
@@ -2137,6 +2338,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .rm(crate::fs::RmArgs {
+                base_dir: None,
                 path: sub.to_str().unwrap().into(),
                 recursive: false,
             })
@@ -2156,6 +2358,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .rm(crate::fs::RmArgs {
+                base_dir: None,
                 path: link.to_str().unwrap().into(),
                 recursive: false,
             })
@@ -2173,6 +2376,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: deep.to_str().unwrap().into(),
                 mode: "0755".into(),
                 parents: true,
@@ -2195,6 +2399,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .rm(crate::fs::RmArgs {
+                base_dir: None,
                 path: tree.to_str().unwrap().into(),
                 recursive: true,
             })
@@ -2212,6 +2417,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: f.to_str().unwrap().into(),
                 mode: "0600".into(),
                 uid: None,
@@ -2230,6 +2436,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: "/nope/never/iii-chmod".into(),
                 mode: "0600".into(),
                 uid: None,
@@ -2249,6 +2456,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: f.to_str().unwrap().into(),
                 mode: "garbage".into(),
                 uid: None,
@@ -2270,6 +2478,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: tree.to_str().unwrap().into(),
                 mode: "0700".into(),
                 uid: None,
@@ -2296,6 +2505,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .mv(crate::fs::MvArgs {
+                base_dir: None,
                 src: a.to_str().unwrap().into(),
                 dst: b.to_str().unwrap().into(),
                 overwrite: false,
@@ -2313,6 +2523,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .mv(crate::fs::MvArgs {
+                base_dir: None,
                 src: root.join("nope").to_str().unwrap().into(),
                 dst: root.join("dst").to_str().unwrap().into(),
                 overwrite: false,
@@ -2333,6 +2544,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .mv(crate::fs::MvArgs {
+                base_dir: None,
                 src: a.to_str().unwrap().into(),
                 dst: b.to_str().unwrap().into(),
                 overwrite: false,
@@ -2353,6 +2565,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .mv(crate::fs::MvArgs {
+                base_dir: None,
                 src: a.to_str().unwrap().into(),
                 dst: b.to_str().unwrap().into(),
                 overwrite: true,
@@ -2372,6 +2585,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: f.to_str().unwrap().into(),
                 mode: "0644".into(),
                 uid: Some(0),
@@ -2391,6 +2605,7 @@ mod tests {
         let b = stub_backend(HostFsConfig::default());
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "rel/path".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -2406,6 +2621,7 @@ mod tests {
         let b = stub_backend(HostFsConfig::default());
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "/tmp/shell-write-bad-mode".into(),
                 mode: "not-octal".into(),
                 parents: false,
@@ -2426,6 +2642,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "/etc/shell-escape".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -2449,6 +2666,7 @@ mod tests {
         // proving an agent can write a file with a plain string.
         let resp = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "hello.txt".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -2482,6 +2700,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "big.txt".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -2506,6 +2725,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "../../etc/evil".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -2527,6 +2747,7 @@ mod tests {
         let b = stub_backend(HostFsConfig::default());
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: target,
                 mode: "0644".into(),
                 parents: false,
@@ -2548,7 +2769,10 @@ mod tests {
         };
         let b = stub_backend(cfg);
         let err = b
-            .read(crate::fs::ReadArgs { path: missing })
+            .read(crate::fs::ReadArgs {
+                base_dir: None,
+                path: missing,
+            })
             .await
             .unwrap_err();
         assert_eq!(err.code, "S211");
@@ -2563,7 +2787,13 @@ mod tests {
             ..Default::default()
         };
         let b = stub_backend(cfg);
-        let err = b.read(crate::fs::ReadArgs { path: dir }).await.unwrap_err();
+        let err = b
+            .read(crate::fs::ReadArgs {
+                base_dir: None,
+                path: dir,
+            })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S212");
     }
 
@@ -2580,6 +2810,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .read(crate::fs::ReadArgs {
+                base_dir: None,
                 path: f.to_string_lossy().to_string(),
             })
             .await
@@ -2597,6 +2828,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .read(crate::fs::ReadArgs {
+                base_dir: None,
                 path: "/etc/shell-escape".into(),
             })
             .await
@@ -2616,6 +2848,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .read(crate::fs::ReadArgs {
+                base_dir: None,
                 path: f.to_string_lossy().to_string(),
             })
             .await
@@ -2630,6 +2863,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "alpha".into(),
                 recursive: true,
@@ -2652,6 +2886,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "x".into(),
                 recursive: false,
@@ -2673,6 +2908,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "[unclosed".into(),
                 recursive: true,
@@ -2694,6 +2930,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "x".into(),
                 recursive: true,
@@ -2717,6 +2954,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "x".into(),
                 recursive: true,
@@ -2739,6 +2977,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "match".into(),
                 recursive: true,
@@ -2762,6 +3001,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![f.to_str().unwrap().into()],
                 path: None,
                 recursive: false,
@@ -2789,6 +3029,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![f.to_str().unwrap().into()],
                 path: None,
                 recursive: false,
@@ -2811,6 +3052,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![],
                 path: None,
                 recursive: false,
@@ -2833,6 +3075,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec!["/x".into()],
                 path: Some(root.to_str().unwrap().into()),
                 recursive: true,
@@ -2855,6 +3098,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![],
                 path: Some(root.to_str().unwrap().into()),
                 recursive: false,
@@ -2879,6 +3123,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![f.to_str().unwrap().into()],
                 path: None,
                 recursive: false,
@@ -2910,6 +3155,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![f.to_str().unwrap().into()],
                 path: None,
                 recursive: false,
@@ -2976,6 +3222,7 @@ mod tests {
         let h = stub_backend(cfg);
         let err = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: "c.txt".into(),
                 mode: "4755".into(),
                 uid: None,
@@ -3006,6 +3253,7 @@ mod tests {
         let h = stub_backend(cfg);
         let resp = h
             .chmod(crate::fs::ChmodArgs {
+                base_dir: None,
                 path: "c.txt".into(),
                 mode: "4755".into(),
                 uid: None,
@@ -3029,6 +3277,7 @@ mod tests {
         let h = stub_backend(cfg);
         let err = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: "newdir".into(),
                 mode: "2755".into(),
                 parents: false,
@@ -3051,6 +3300,7 @@ mod tests {
         let h = stub_backend(cfg);
         let resp = h
             .mkdir(crate::fs::MkdirArgs {
+                base_dir: None,
                 path: "newdir".into(),
                 mode: "2755".into(),
                 parents: false,
@@ -3076,6 +3326,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .write(crate::fs::WriteArgs {
+                base_dir: None,
                 path: "f.txt".into(),
                 mode: "1644".into(),
                 parents: false,
@@ -3099,6 +3350,7 @@ mod tests {
         let started = std::time::Instant::now();
         let err = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: huge,
                 recursive: true,
@@ -3124,6 +3376,7 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let resp = h
             .grep(crate::fs::GrepArgs {
+                base_dir: None,
                 path: root.to_str().unwrap().into(),
                 pattern: "alpha".into(),
                 recursive: true,
@@ -3149,6 +3402,7 @@ mod tests {
         let started = std::time::Instant::now();
         let err = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![f.to_str().unwrap().into()],
                 path: None,
                 recursive: false,
@@ -3182,6 +3436,7 @@ mod tests {
         let started = std::time::Instant::now();
         let err = h
             .sed(crate::fs::SedArgs {
+                base_dir: None,
                 files: vec![f.to_str().unwrap().into()],
                 path: None,
                 recursive: false,
@@ -3222,6 +3477,7 @@ mod tests {
 
         let read_err = b
             .read(crate::fs::ReadArgs {
+                base_dir: None,
                 path: "escape/hostname".into(),
             })
             .await
@@ -3230,6 +3486,7 @@ mod tests {
 
         let stat_err = b
             .stat(StatArgs {
+                base_dir: None,
                 path: "escape/hostname".into(),
             })
             .await
@@ -3238,10 +3495,195 @@ mod tests {
 
         let ls_err = b
             .ls(LsArgs {
+                base_dir: None,
                 path: "escape".into(),
             })
             .await
             .unwrap_err();
         assert_eq!(ls_err.code, "S215", "ls through escape symlink");
+    }
+
+    // --- per-call base_dir (session scope) on the fs backend ---
+
+    /// Helper: a jailed backend rooted at `root`.
+    fn jailed_backend(root: &std::path::Path) -> HostFsBackend {
+        stub_backend(HostFsConfig {
+            host_root: Some(root.to_path_buf()),
+            ..Default::default()
+        })
+    }
+
+    /// A write with a relative path anchors at base_dir, not at host_root: the
+    /// file lands under <host_root>/session/, proving base_dir re-anchors the
+    /// relative path.
+    #[tokio::test]
+    async fn write_relative_path_anchors_at_base_dir() {
+        let root = tmp();
+        fs::create_dir_all(root.join("session")).unwrap();
+        let b = jailed_backend(&root);
+        let resp = b
+            .write(crate::fs::WriteArgs {
+                path: "out.txt".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("scoped\n".into()),
+                base_dir: Some("session".into()),
+            })
+            .await
+            .expect("relative write under base_dir succeeds");
+        assert_eq!(resp.bytes_written, 7);
+        assert_eq!(
+            fs::read_to_string(root.join("session/out.txt")).unwrap(),
+            "scoped\n"
+        );
+        // It must NOT have landed at the host_root level.
+        assert!(!root.join("out.txt").exists());
+    }
+
+    /// rm with a relative path is confined to base_dir: the victim under
+    /// <host_root>/session is removed, while an identically-named file at the
+    /// host_root level is untouched.
+    #[tokio::test]
+    async fn rm_relative_path_is_confined_to_base_dir() {
+        let root = tmp();
+        fs::create_dir_all(root.join("session")).unwrap();
+        fs::write(root.join("session/victim.txt"), "x").unwrap();
+        fs::write(root.join("victim.txt"), "sibling").unwrap();
+        let b = jailed_backend(&root);
+        let resp = b
+            .rm(crate::fs::RmArgs {
+                path: "victim.txt".into(),
+                recursive: false,
+                base_dir: Some("session".into()),
+            })
+            .await
+            .expect("rm under base_dir succeeds");
+        assert!(resp.removed);
+        assert!(
+            !root.join("session/victim.txt").exists(),
+            "session file gone"
+        );
+        assert!(
+            root.join("victim.txt").exists(),
+            "host_root sibling untouched — rm was confined to base_dir"
+        );
+    }
+
+    /// mv with relative src/dst confines BOTH operands to base_dir.
+    #[tokio::test]
+    async fn mv_relative_src_and_dst_confined_to_base_dir() {
+        let root = tmp();
+        fs::create_dir_all(root.join("session")).unwrap();
+        fs::write(root.join("session/a.txt"), "content").unwrap();
+        let b = jailed_backend(&root);
+        let resp = b
+            .mv(crate::fs::MvArgs {
+                src: "a.txt".into(),
+                dst: "b.txt".into(),
+                overwrite: false,
+                base_dir: Some("session".into()),
+            })
+            .await
+            .expect("mv under base_dir succeeds");
+        assert!(resp.moved);
+        assert!(!root.join("session/a.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("session/b.txt")).unwrap(),
+            "content"
+        );
+    }
+
+    /// DX-1: an ABSOLUTE path that is inside host_root but OUTSIDE base_dir is
+    /// rejected with the new S220 code, and the message NAMES the session dir
+    /// (not the generic "escapes host_root" S215, which would contradict the
+    /// tool's own configured roots).
+    #[tokio::test]
+    async fn abs_path_inside_host_root_outside_base_dir_is_s220_naming_session() {
+        let root = tmp();
+        fs::create_dir_all(root.join("session")).unwrap();
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::write(root.join("other/secret.txt"), "x").unwrap();
+        let b = jailed_backend(&root);
+        // Absolute path that resolves inside host_root/other — a sibling of the
+        // session dir, still inside an allowed root, but not this session.
+        let abs = root.join("other/secret.txt").canonicalize().unwrap();
+        let err = b
+            .read(crate::fs::ReadArgs {
+                path: abs.to_string_lossy().into_owned(),
+                base_dir: Some("session".into()),
+            })
+            .await
+            .expect_err("abs path outside base_dir must reject");
+        assert_eq!(err.code, "S220", "distinct session-scope code, not S215");
+        let session_canon = root.join("session").canonicalize().unwrap();
+        assert!(
+            err.message.contains(&session_canon.display().to_string()),
+            "S220 must name the session dir, got: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("escapes host_root"),
+            "must not reuse the generic jail-escape wording, got: {}",
+            err.message
+        );
+    }
+
+    /// base_dir itself must canonicalize inside host_root; a session dir that
+    /// escapes the jail is rejected S215 (it is never honored).
+    #[tokio::test]
+    async fn base_dir_escaping_host_root_is_rejected_s215() {
+        let root = tmp();
+        let b = jailed_backend(&root);
+        let err = b
+            .ls(LsArgs {
+                path: ".".into(),
+                base_dir: Some("../../etc".into()),
+            })
+            .await
+            .expect_err("a base_dir outside the jail must reject");
+        assert_eq!(err.code, "S215");
+    }
+
+    /// A genuinely jail-escaping absolute path (outside host_root entirely)
+    /// under a base_dir still rejects S215 — the DX-1 refinement only applies
+    /// to paths that ARE inside an allowed root.
+    #[tokio::test]
+    async fn abs_path_outside_host_root_under_base_dir_still_s215() {
+        let root = tmp();
+        fs::create_dir_all(root.join("session")).unwrap();
+        let b = jailed_backend(&root);
+        let err = b
+            .read(crate::fs::ReadArgs {
+                path: "/etc/hostname".into(),
+                base_dir: Some("session".into()),
+            })
+            .await
+            .expect_err("abs path outside the jail must reject");
+        assert_eq!(err.code, "S215", "outside every allowed root stays S215");
+    }
+
+    /// Back-compat: base_dir=None reproduces the prior behaviour byte-for-byte.
+    /// A relative write still anchors at host_root (not at any session dir) and
+    /// lands exactly where it did before this feature.
+    #[tokio::test]
+    async fn base_dir_none_reproduces_host_root_anchoring() {
+        let root = tmp();
+        let b = jailed_backend(&root);
+        let resp = b
+            .write(crate::fs::WriteArgs {
+                path: "top.txt".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("legacy\n".into()),
+                base_dir: None,
+            })
+            .await
+            .expect("relative write with base_dir=None anchors at host_root");
+        assert_eq!(resp.bytes_written, 7);
+        assert_eq!(
+            fs::read_to_string(root.join("top.txt")).unwrap(),
+            "legacy\n",
+            "base_dir=None ⇒ anchors at host_root exactly as before"
+        );
     }
 }

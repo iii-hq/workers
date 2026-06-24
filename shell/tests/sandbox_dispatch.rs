@@ -71,6 +71,7 @@ async fn stat_forwards_path_with_sandbox_id() {
     })));
     let resp = backend(stub.clone())
         .stat(StatArgs {
+            base_dir: None,
             path: "/sb/x.txt".into(),
         })
         .await
@@ -87,6 +88,7 @@ async fn mkdir_forwards_mode_and_parents_flag() {
     let stub = StubFwd::new(Response::Ok(json!({"created": true})));
     let resp = backend(stub.clone())
         .mkdir(MkdirArgs {
+            base_dir: None,
             path: "/sb/dir".into(),
             mode: "0700".into(),
             parents: true,
@@ -104,6 +106,7 @@ async fn rm_forwards_recursive_flag() {
     let stub = StubFwd::new(Response::Ok(json!({"removed": true})));
     backend(stub.clone())
         .rm(RmArgs {
+            base_dir: None,
             path: "/sb/d".into(),
             recursive: true,
         })
@@ -118,6 +121,7 @@ async fn chmod_forwards_uid_gid_recursive() {
     let stub = StubFwd::new(Response::Ok(json!({"updated": 7})));
     let resp = backend(stub.clone())
         .chmod(ChmodArgs {
+            base_dir: None,
             path: "/sb/d".into(),
             mode: "0644".into(),
             uid: Some(1000),
@@ -138,6 +142,7 @@ async fn mv_forwards_overwrite_flag() {
     let stub = StubFwd::new(Response::Ok(json!({"moved": true})));
     backend(stub.clone())
         .mv(MvArgs {
+            base_dir: None,
             src: "/sb/a".into(),
             dst: "/sb/b".into(),
             overwrite: true,
@@ -158,6 +163,7 @@ async fn grep_forwards_full_payload() {
     })));
     backend(stub.clone())
         .grep(GrepArgs {
+            base_dir: None,
             path: "/sb".into(),
             pattern: "needle".into(),
             recursive: true,
@@ -186,6 +192,7 @@ async fn sed_forwards_full_payload() {
     })));
     backend(stub.clone())
         .sed(SedArgs {
+            base_dir: None,
             files: vec!["/sb/a".into()],
             path: None,
             recursive: false,
@@ -216,6 +223,7 @@ async fn read_forwards_path_and_returns_engine_response() {
     })));
     let resp = backend(stub.clone())
         .read(ReadArgs {
+            base_dir: None,
             path: "/sb/file".into(),
         })
         .await
@@ -238,6 +246,7 @@ async fn write_forwards_content_ref_verbatim() {
     };
     let resp = backend(stub.clone())
         .write(WriteArgs {
+            base_dir: None,
             path: "/sb/x".into(),
             mode: "0600".into(),
             parents: false,
@@ -260,7 +269,10 @@ async fn remote_error_with_s_code_round_trips() {
         message: "destination exists".into(),
     });
     let err = backend(stub)
-        .ls(LsArgs { path: "/sb".into() })
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
         .await
         .unwrap_err();
     assert_eq!(err.code, "S213");
@@ -274,7 +286,10 @@ async fn remote_error_with_unknown_s_code_collapses_to_s216() {
         message: "future code".into(),
     });
     let err = backend(stub)
-        .ls(LsArgs { path: "/sb".into() })
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
         .await
         .unwrap_err();
     assert_eq!(err.code, "S216");
@@ -288,6 +303,7 @@ async fn remote_error_invocation_failed_with_s_code_in_message_recovers() {
     });
     let err = backend(stub)
         .stat(StatArgs {
+            base_dir: None,
             path: "/sb/missing".into(),
         })
         .await
@@ -303,7 +319,10 @@ async fn remote_error_invocation_failed_without_s_code_falls_back_to_s216() {
         message: "handler error: just a string with no code".into(),
     });
     let err = backend(stub)
-        .ls(LsArgs { path: "/sb".into() })
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
         .await
         .unwrap_err();
     assert_eq!(err.code, "S216");
@@ -316,6 +335,7 @@ async fn handler_error_with_json_payload_recovers_code() {
     ));
     let err = backend(stub)
         .rm(RmArgs {
+            base_dir: None,
             path: "/sb/d".into(),
             recursive: false,
         })
@@ -331,6 +351,7 @@ async fn handler_error_with_raw_s_code_in_string_recovers_via_scan() {
     ));
     let err = backend(stub)
         .grep(GrepArgs {
+            base_dir: None,
             path: "/sb".into(),
             pattern: "[".into(),
             recursive: true,
@@ -349,7 +370,10 @@ async fn handler_error_with_raw_s_code_in_string_recovers_via_scan() {
 async fn handler_error_without_s_code_falls_back_to_s216() {
     let stub = StubFwd::new(Response::HandlerErr("just a plain old string".into()));
     let err = backend(stub)
-        .ls(LsArgs { path: "/sb".into() })
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
         .await
         .unwrap_err();
     assert_eq!(err.code, "S216");
@@ -359,7 +383,10 @@ async fn handler_error_without_s_code_falls_back_to_s216() {
 async fn engine_response_missing_required_field_is_s216() {
     let stub = StubFwd::new(Response::Ok(json!({})));
     let err = backend(stub)
-        .ls(LsArgs { path: "/sb".into() })
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
         .await
         .unwrap_err();
     assert_eq!(err.code, "S216");
@@ -370,7 +397,13 @@ async fn engine_response_missing_required_field_is_s216() {
 async fn disabled_sandbox_returns_s210_without_calling_engine() {
     let stub = StubFwd::new(Response::Ok(json!({"entries": []})));
     let b = SandboxFsBackend::new(stub.clone(), false, Uuid::new_v4());
-    let err = b.ls(LsArgs { path: "/sb".into() }).await.unwrap_err();
+    let err = b
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
+        .await
+        .unwrap_err();
     assert_eq!(err.code, "S210");
     assert!(
         stub.captured.lock().unwrap().is_empty(),
@@ -382,7 +415,10 @@ async fn disabled_sandbox_returns_s210_without_calling_engine() {
 async fn scan_s_code_skips_codes_glued_to_an_identifier() {
     let stub = StubFwd::new(Response::HandlerErr("fooS211bar should not match".into()));
     let err = backend(stub)
-        .ls(LsArgs { path: "/sb".into() })
+        .ls(LsArgs {
+            base_dir: None,
+            path: "/sb".into(),
+        })
         .await
         .unwrap_err();
     assert_eq!(err.code, "S216");
