@@ -70,6 +70,8 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
             prompt = _extract_prompt(data)
             cwd = data.get("cwd") or cfg["defaults"]["cwd"]
             model = data.get("model") or cfg["defaults"]["model"]
+            tools = data.get("tools")
+            tools = cfg["defaults"].get("tools", "") if tools is None else tools
             prior = await iii.trigger_async(
                 {"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}}
             )
@@ -85,6 +87,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
                     cwd=cwd,
                     model=model,
                     session=session_id,
+                    toolsets=tools,
                 )
             except Exception as exc:  # noqa: BLE001 - surface the failure in the envelope
                 result, is_error = str(exc), True

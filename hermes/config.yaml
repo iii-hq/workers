@@ -3,6 +3,11 @@ engine_url: ws://127.0.0.1:49134
 defaults:
   model: ""                # empty = Hermes default; else a HERMES_INFERENCE_MODEL value, e.g. "anthropic/claude-sonnet-4.6"
   cwd: ""                  # default working directory for runs
+  # Comma-separated Hermes toolsets passed as -t. The Hermes default enables
+  # ~17 toolsets, most pure context cost for a headless code turn; this slim
+  # profile keeps terminal (so the agent can run the iii CLI for discovery),
+  # file, code_execution, and web. Set to "" for the full Hermes default.
+  tools: "terminal,file,code_execution,web"
 
 # Stream AgentEvent frames here, grouped by session_id. The console and acp
 # worker both read this stream.

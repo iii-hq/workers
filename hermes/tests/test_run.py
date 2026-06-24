@@ -13,12 +13,13 @@ from tests._helpers.fake_iii import FakeIii, FakeLogger, base_cfg
 def _scripted_run_turn(result: str = "done", *, raises: Exception | None = None):
     captured: dict[str, object] = {}
 
-    async def fake(hermes: str, prompt: str, *, cwd: str = "", model: str = "", session: str = ""):
+    async def fake(hermes: str, prompt: str, *, cwd: str = "", model: str = "", session: str = "", toolsets: str = ""):
         captured["hermes"] = hermes
         captured["prompt"] = prompt
         captured["cwd"] = cwd
         captured["model"] = model
         captured["session"] = session
+        captured["toolsets"] = toolsets
         if raises is not None:
             raise raises
         return result, ""
@@ -168,6 +169,18 @@ def test_run_threads_session_id_for_resume(monkeypatch):
     assert captured["session"] == "sess-abc"
 
 
+def test_run_passes_default_toolset_profile(monkeypatch):
+    _, _, h, captured = _make(monkeypatch, cfg=base_cfg(defaults={"tools": "terminal,file"}))
+    asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
+    assert captured["toolsets"] == "terminal,file"
+
+
+def test_run_per_turn_toolsets_override(monkeypatch):
+    _, _, h, captured = _make(monkeypatch, cfg=base_cfg(defaults={"tools": "terminal"}))
+    asyncio.run(h["run"]({"prompt": "x", "session_id": "s1", "tools": "web,file"}))
+    assert captured["toolsets"] == "web,file"
+
+
 def test_run_uses_configured_executable(monkeypatch):
     _, _, h, captured = _make(monkeypatch, cfg=base_cfg(hermes_executable="/opt/hermes"))
     asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
@@ -203,7 +216,7 @@ def test_busy_guard_blocks_concurrent_same_session(monkeypatch, fn_name):
     logger = FakeLogger()
     gate = asyncio.Event()
 
-    async def slow(hermes, prompt, *, cwd="", model="", session=""):
+    async def slow(hermes, prompt, *, cwd="", model="", session="", toolsets=""):
         await gate.wait()
         return "done", ""
 

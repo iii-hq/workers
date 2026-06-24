@@ -15,7 +15,12 @@ from .hooks import use_api
 
 DEFAULTS: dict[str, Any] = {
     "engine_url": "ws://127.0.0.1:49134",
-    "defaults": {"model": "", "cwd": ""},
+    # `tools` is a comma-separated Hermes toolset allowlist passed as `-t`. The
+    # Hermes default enables ~17 toolsets, most irrelevant to a headless code
+    # turn and pure context cost; the slim default keeps terminal (so the agent
+    # can run the iii CLI for discovery), file, and code_execution. Set tools
+    # to "" to fall back to the full Hermes default.
+    "defaults": {"model": "", "cwd": "", "tools": "terminal,file,code_execution,web"},
     "events_stream": "agent::events",
     "raw_events_stream": "hermes::events",
     "iii_context": True,
@@ -31,6 +36,7 @@ RUN_REQUEST_FORMAT = {
         "messages": {"type": "array", "description": "Alternative to prompt; the last user entry becomes the prompt"},
         "model": {"type": "string", "description": "HERMES_INFERENCE_MODEL value; empty = Hermes default"},
         "cwd": {"type": "string", "description": "Working directory the turn runs in"},
+        "tools": {"type": "string", "description": "Comma-separated Hermes toolsets (-t); empty = Hermes default"},
         "iii_context": {"type": "boolean", "description": "Prepend the iii runtime discovery context"},
     },
 }

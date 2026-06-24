@@ -75,7 +75,7 @@ class FakeLogger:
 def base_cfg(**overrides: Any) -> dict[str, Any]:
     cfg = {
         "engine_url": "ws://127.0.0.1:49134",
-        "defaults": {"model": "", "cwd": ""},
+        "defaults": {"model": "", "cwd": "", "tools": ""},
         "events_stream": "agent::events",
         "raw_events_stream": "hermes::events",
         "iii_context": True,
