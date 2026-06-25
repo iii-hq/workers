@@ -10,13 +10,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iii_sdk::{register_worker, IIIError, InitOptions, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 
-static ENGINE: OnceCell<Option<Arc<III>>> = OnceCell::const_new();
+static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
 
 /// Payloads received by engine-side recorder functions, keyed by the
 /// recorder function id.
@@ -26,7 +28,7 @@ pub fn ws_url() -> String {
     std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
 }
 
-async fn try_connect_raw() -> Option<Arc<III>> {
+async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
     let iii = Arc::new(register_worker(&url, InitOptions::default()));
 
@@ -42,7 +44,7 @@ async fn try_connect_raw() -> Option<Arc<III>> {
             .await;
         match probe {
             Ok(_) => return Some(iii),
-            Err(IIIError::NotConnected) => continue,
+            Err(Error::NotConnected) => continue,
             Err(_) => continue,
         }
     }
@@ -57,7 +59,7 @@ async fn try_connect_raw() -> Option<Arc<III>> {
 
 /// Get-or-init the shared engine handle, registering the production
 /// session-manager surface in-process on first success.
-pub async fn get_or_init() -> Option<Arc<III>> {
+pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
         .get_or_init(|| async {
             let iii = try_connect_raw().await?;
@@ -70,7 +72,7 @@ pub async fn get_or_init() -> Option<Arc<III>> {
 
 /// Register an engine-side recorder function that stashes every payload
 /// it receives. Returns the generated function id.
-pub fn register_recorder_function(iii: &Arc<III>) -> String {
+pub fn register_recorder_function(iii: &Arc<IIIClient>) -> String {
     let function_id = format!("test::session_recv::{}", uuid::Uuid::new_v4().simple());
     {
         let mut map = RECEIVED.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -88,7 +90,7 @@ pub fn register_recorder_function(iii: &Arc<III>) -> String {
                     .entry(fid)
                     .or_default()
                     .push(payload);
-                Ok::<_, IIIError>(json!({ "ok": true }))
+                Ok::<_, Error>(json!({ "ok": true }))
             }
         })
         .description("BDD recorder: stashes received session events."),

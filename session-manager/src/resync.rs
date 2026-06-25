@@ -170,7 +170,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use iii_sdk::TriggerConfig;
+    use iii_sdk::trigger::TriggerConfig;
     use serde_json::{json, Value};
 
     use crate::events::{EventDeliverer, EventKind, TriggerSets};

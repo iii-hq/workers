@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use tokio::sync::{OnceCell, RwLock};
 
 use session_manager::config::{FsBackendConfig, StorageAdapter, WorkerConfig};
@@ -36,7 +37,7 @@ pub struct Shared {
 static SHARED: OnceCell<Arc<Shared>> = OnceCell::const_new();
 
 /// Idempotent: the first caller registers; subsequent callers reuse.
-pub async fn register_all(iii: &Arc<III>) -> Arc<Shared> {
+pub async fn register_all(iii: &Arc<IIIClient>) -> Arc<Shared> {
     SHARED
         .get_or_init(|| async {
             // Leaked tempdir that lives for the test binary lifetime.
@@ -86,7 +87,7 @@ pub fn shared() -> Option<Arc<Shared>> {
 /// Poll the engine until `function_id` is routable, panicking after a
 /// deadline. An `Err` carrying a `session/` code also counts as
 /// routable — it proves the call reached the production handler.
-async fn wait_until_routable(iii: &Arc<III>, function_id: &str) {
+async fn wait_until_routable(iii: &Arc<IIIClient>, function_id: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let res = iii

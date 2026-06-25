@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::World;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 
 use session_manager::config::WorkerConfig;
@@ -64,7 +64,7 @@ pub struct SessionWorld {
     pub aliases: HashMap<String, String>,
 
     /// Shared engine connection; `None` soft-skips @engine steps.
-    pub engine: Option<Arc<III>>,
+    pub engine: Option<Arc<IIIClient>>,
     /// Alias -> recorder function id for engine subscribers.
     pub engine_subscribers: HashMap<String, String>,
     /// Named in-process bridged-instance stacks (@engine bridge tests).
