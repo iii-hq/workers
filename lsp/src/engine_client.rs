@@ -1,11 +1,12 @@
 use dashmap::{DashMap, DashSet};
-use iii_sdk::{register_worker, IIIConnectionState, InitOptions, WorkerMetadata, III};
+use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use std::sync::{Arc, Mutex};
 
 use crate::engine_introspection::{self, FunctionInfo, TriggerInfo, TriggerTypeInfo, WorkerInfo};
 
 pub struct EngineClient {
-    iii: III,
+    iii: IIIClient,
     pub functions: DashMap<String, FunctionInfo>,
     pub trigger_types: DashMap<String, TriggerTypeInfo>,
     pub workers: DashMap<String, WorkerInfo>,
