@@ -10,7 +10,8 @@ use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::wire::cache::cache_enabled;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
@@ -22,9 +23,9 @@ use tokio::sync::mpsc;
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn make_stream(
-    iii: III,
+    iii: IIIClient,
     http: reqwest::Client,
-) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, IIIError>>
+) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
@@ -46,7 +47,7 @@ fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<(), ()
 }
 
 async fn run_stream_call(
-    iii: &III,
+    iii: &IIIClient,
     http: reqwest::Client,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,

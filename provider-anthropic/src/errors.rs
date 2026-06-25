@@ -1,6 +1,6 @@
 //! Upstream failure → shared ErrorKind taxonomy (spec § provider protocol
 //! rule 5: five providers MUST NOT invent five taxonomies).
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use llm_router::types::events::ErrorKind;
 use serde_json::Value;
 
@@ -24,9 +24,9 @@ pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
 }
 
 /// Map router bus errors surfaced through `router::provider::resolve`.
-pub fn classify_bus_error(err: &IIIError) -> ErrorKind {
+pub fn classify_bus_error(err: &Error) -> ErrorKind {
     match err {
-        IIIError::Remote { code, .. } if code == "router/registration_rejected" => {
+        Error::Remote { code, .. } if code == "router/registration_rejected" => {
             ErrorKind::Permanent
         }
         _ => ErrorKind::Transient,
@@ -69,8 +69,8 @@ fn is_context_overflow_message(message: &str) -> bool {
 
 /// Invalid handler input surfaced on the bus in the `{ code, message }`
 /// convention (same shape RouterError uses on the router side).
-pub fn invalid_request(message: impl Into<String>) -> IIIError {
-    IIIError::Remote {
+pub fn invalid_request(message: impl Into<String>) -> Error {
+    Error::Remote {
         code: "provider/invalid_request".to_string(),
         message: message.into(),
         stacktrace: None,
@@ -81,13 +81,13 @@ pub fn invalid_request(message: impl Into<String>) -> IIIError {
 /// the provider's `invalid_request` wire error. Used with
 /// `RegisterFunction::new_async_with_bad_request` so typed schemas are emitted
 /// while the malformed-payload contract stays `provider/invalid_request`.
-pub fn invalid_request_from_serde(e: serde_json::Error) -> IIIError {
+pub fn invalid_request_from_serde(e: serde_json::Error) -> Error {
     invalid_request(format!("bad ProviderStreamInput: {e}"))
 }
 
 /// Discovery hit a transient upstream failure — caller keeps the old slice.
-pub fn upstream_unavailable(message: impl Into<String>) -> IIIError {
-    IIIError::Remote {
+pub fn upstream_unavailable(message: impl Into<String>) -> Error {
+    Error::Remote {
         code: "provider/upstream_unavailable".to_string(),
         message: message.into(),
         stacktrace: None,
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn registration_rejected_is_permanent_on_the_bus() {
-        let err = IIIError::Remote {
+        let err = Error::Remote {
             code: "router/registration_rejected".into(),
             message: "bad token".into(),
             stacktrace: None,
@@ -151,11 +151,11 @@ mod tests {
     #[test]
     fn bus_error_codes_are_worker_prefixed() {
         match invalid_request("x") {
-            IIIError::Remote { code, .. } => assert_eq!(code, "provider/invalid_request"),
+            Error::Remote { code, .. } => assert_eq!(code, "provider/invalid_request"),
             other => panic!("want Remote, got {other:?}"),
         }
         match upstream_unavailable("x") {
-            IIIError::Remote { code, .. } => assert_eq!(code, "provider/upstream_unavailable"),
+            Error::Remote { code, .. } => assert_eq!(code, "provider/upstream_unavailable"),
             other => panic!("want Remote, got {other:?}"),
         }
     }

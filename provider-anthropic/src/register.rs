@@ -6,7 +6,9 @@ use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{router_client, state, PROVIDER_ID};
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -37,7 +39,7 @@ pub fn declaration() -> ProviderDeclaration {
 
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
-pub async fn declare_once(iii: &III) -> Result<(), IIIError> {
+pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
     let token = state::load_token(iii).await;
     let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
     if let Some(t) = &token {
@@ -52,7 +54,7 @@ pub async fn declare_once(iii: &III) -> Result<(), IIIError> {
     Ok(())
 }
 
-async fn persist_registration_token(iii: &III, token: &str) -> Result<(), IIIError> {
+async fn persist_registration_token(iii: &IIIClient, token: &str) -> Result<(), Error> {
     let mut delay = Duration::from_millis(200);
     for attempt in 0..5 {
         match state::store_token(iii, token).await {
@@ -73,7 +75,7 @@ async fn persist_registration_token(iii: &III, token: &str) -> Result<(), IIIErr
 /// Retry until acknowledged: covers provider-before-router boot order.
 /// A token mismatch also lands here — it never resolves on its own and
 /// needs the operator to clear the binding (logged every attempt).
-pub async fn declare_with_backoff(iii: III) {
+pub async fn declare_with_backoff(iii: IIIClient) {
     let mut delay = Duration::from_millis(500);
     loop {
         match declare_once(&iii).await {
@@ -93,7 +95,7 @@ pub async fn declare_with_backoff(iii: III) {
 /// Register, then populate the catalog from the live API. The declaration
 /// carries no models, so the slice is empty until this refresh lands;
 /// failures are logged and left to the next config-change refresh.
-pub async fn declare_and_refresh(iii: III, http: reqwest::Client) {
+pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     declare_with_backoff(iii.clone()).await;
     match refresh_models(&iii, &http).await {
         Ok(count) => println!("[provider-anthropic] catalog refreshed: {count} models"),
@@ -101,7 +103,7 @@ pub async fn declare_and_refresh(iii: III, http: reqwest::Client) {
     }
 }
 
-pub async fn register_provider(iii: III) -> Result<(), IIIError> {
+pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Streaming uses no total timeout (the router owns stream budgets);
     // connect failures surface fast.
     let http = reqwest::Client::builder()
@@ -133,7 +135,7 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
                 let (iii, http) = (iii_ready.clone(), http_ready.clone());
                 async move {
                     tokio::spawn(declare_and_refresh(iii, http));
-                    Ok::<_, IIIError>(ProviderReadyAck { ok: true })
+                    Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
             .description(surface::ON_ROUTER_READY_DESC),
