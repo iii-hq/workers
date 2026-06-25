@@ -12,7 +12,7 @@ export function newSpawnCapture(): SpawnCapture {
 }
 
 export function scriptedSpawn(
-  events: object[],
+  events: Array<object | string>,
   capture: SpawnCapture,
   opts: { code?: number; stderr?: string; hang?: boolean } = {},
 ) {
@@ -20,7 +20,9 @@ export function scriptedSpawn(
   return (bin: string, args: string[]) => {
     capture.bin = bin;
     capture.args = args;
-    const lines = events.map((e) => `${JSON.stringify(e)}\n`);
+    // A string event is emitted verbatim (e.g. a malformed line the parser must
+    // drop); an object is JSON-serialized like a real OpenCode event.
+    const lines = events.map((e) => `${typeof e === 'string' ? e : JSON.stringify(e)}\n`);
     const stdout = hang ? new Readable({ read() {} }) : Readable.from(lines);
     const stderrStream = Readable.from(stderr ? [stderr] : []);
     const child = new EventEmitter() as EventEmitter & {

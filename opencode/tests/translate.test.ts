@@ -117,13 +117,15 @@ describe('event translation', () => {
     expect(end.messages[0].usage).toMatchObject({ output_tokens: 5 });
   });
 
-  it('ignores malformed JSON lines but still completes', async () => {
+  it('drops a malformed JSON line but still completes', async () => {
     const fake = fakeIii();
     const c = await cfg();
-    // inject a non-JSON line by scripting a raw string event the parser drops
+    // a raw (non-JSON) line is emitted verbatim before a valid event; the
+    // parser must skip it and the turn still finishes from the good events.
     spawnMock.mockImplementation(
       scriptedSpawn(
         [
+          '{ this is not json',
           { type: 'text', sessionID: 'ses_1', part: { type: 'text', text: 'ok' } },
           ev.step_finish(),
         ],
@@ -139,5 +141,9 @@ describe('event translation', () => {
       RunPayloadSchema.parse({ prompt: 'x', session_id: 's1', iii_context: false }),
     );
     expect(result.result).toBe('ok');
+    expect(result.is_error).toBe(false);
+    // the garbage line is not mirrored as a parsed event
+    const raw = fake.streamFrames('opencode::events').map((f) => f.data as { type?: string });
+    expect(raw.every((d) => typeof d.type === 'string')).toBe(true);
   });
 });

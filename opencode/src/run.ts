@@ -303,7 +303,9 @@ async function runReserved(
       });
       let stderr = '';
       child.stderr.on('data', (d) => {
-        stderr += String(d).slice(0, 8192);
+        // Keep only the latest 8 KiB so a chatty child can't grow this
+        // unbounded (slicing each chunk alone would still accumulate).
+        stderr = (stderr + String(d)).slice(-8192);
       });
       child.on('error', reject);
       child.on('close', (code) => {
