@@ -7,7 +7,8 @@
 //! are warned about instead of silently dropped.
 
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, InitOptions};
 use provider_anthropic::register::register_provider;
 
 #[derive(Parser, Debug)]
