@@ -3,7 +3,7 @@
 //! Reads never write — the *effective* settings are the stored record
 //! when one exists, else the configuration defaults computed in memory.
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 
 use crate::config::WorkerConfig;
@@ -63,7 +63,7 @@ pub fn effective(
 /// Hot-path read for the gate: any failure (state outage, absent record,
 /// garbage) degrades to `None` → configuration defaults. Safe because the
 /// default mode never widens beyond what the deployment configured.
-pub async fn read_tolerant(iii: &III, session_id: &str) -> Option<ApprovalSettings> {
+pub async fn read_tolerant(iii: &IIIClient, session_id: &str) -> Option<ApprovalSettings> {
     let reply = state::get(iii, SETTINGS_SCOPE, session_id).await;
     match reply {
         Ok(value) => parse_settings(&value),
@@ -77,7 +77,7 @@ pub async fn read_tolerant(iii: &III, session_id: &str) -> Option<ApprovalSettin
 /// Strict read for mutations: a state outage is an error — re-seeding
 /// over an unreadable record would clobber it.
 pub async fn read_strict(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
 ) -> Result<Option<ApprovalSettings>, ApprovalError> {
     let reply = state::get(iii, SETTINGS_SCOPE, session_id)
@@ -92,7 +92,7 @@ pub async fn read_strict(
 /// written in one `state::set` — mutations are human-driven and rare, so
 /// read-modify-write of one small record is sufficient.
 pub async fn materialize_and<F>(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     cfg: &WorkerConfig,
     mutate: F,
@@ -119,7 +119,7 @@ where
 
 /// Drop the stored record (the session reverts to configuration
 /// defaults). Returns whether a record existed.
-pub async fn clear(iii: &III, session_id: &str) -> Result<bool, ApprovalError> {
+pub async fn clear(iii: &IIIClient, session_id: &str) -> Result<bool, ApprovalError> {
     validate_id("session_id", session_id)?;
     let old = state::delete(iii, SETTINGS_SCOPE, session_id)
         .await

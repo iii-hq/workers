@@ -103,7 +103,13 @@ mod tests {
     use crate::pending::PENDING_SCOPE;
     use crate::testkit::{state_set, with_stack, BootOpts};
 
-    async fn seed(iii: &iii_sdk::III, sid: &str, cid: &str, pending_at: i64, owner: Option<&str>) {
+    async fn seed(
+        iii: &iii_sdk::IIIClient,
+        sid: &str,
+        cid: &str,
+        pending_at: i64,
+        owner: Option<&str>,
+    ) {
         let mut record = json!({
             "session_id": sid,
             "turn_id": "t_1",

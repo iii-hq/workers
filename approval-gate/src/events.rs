@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    IIIError, RegisterTriggerType, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest,
-    III,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -168,10 +168,10 @@ struct ApprovalTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for ApprovalTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let id = config.id.clone();
         let function_id = config.function_id.clone();
-        self.set.add(config).map_err(IIIError::Handler)?;
+        self.set.add(config).map_err(Error::Handler)?;
         tracing::info!(
             trigger_type = self.set.trigger_type(),
             id = %id,
@@ -181,7 +181,7 @@ impl TriggerHandler for ApprovalTriggerHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = self.set.trigger_type(),
             id = %config.id,
@@ -195,7 +195,7 @@ impl TriggerHandler for ApprovalTriggerHandler {
 /// Register both custom trigger types with the engine. Must run **before**
 /// `functions::register_all` so the handlers capture the subscriber sets
 /// they fan out to.
-pub fn register_trigger_types(iii: &Arc<III>) -> TriggerSets {
+pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
 
     let _ = iii.register_trigger_type(
@@ -236,11 +236,11 @@ pub trait EventSink: Send + Sync {
 /// Filtered fire-and-forget fan-out to every matching binding.
 pub struct Emitter {
     sets: TriggerSets,
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, iii: Arc<III>) -> Self {
+    pub fn new(sets: TriggerSets, iii: Arc<IIIClient>) -> Self {
         Self { sets, iii }
     }
 
