@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -44,12 +44,12 @@ impl StubFwd {
 
 #[async_trait]
 impl TriggerFwd for StubFwd {
-    async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, IIIError> {
+    async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
         self.captured.lock().unwrap().push((fid.into(), payload));
         match self.next.lock().unwrap().take() {
             Some(Response::Ok(v)) => Ok(v),
-            Some(Response::HandlerErr(s)) => Err(IIIError::Handler(s)),
-            Some(Response::RemoteErr { code, message }) => Err(IIIError::Remote {
+            Some(Response::HandlerErr(s)) => Err(Error::Handler(s)),
+            Some(Response::RemoteErr { code, message }) => Err(Error::Remote {
                 code,
                 message,
                 stacktrace: None,

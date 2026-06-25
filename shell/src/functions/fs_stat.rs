@@ -8,13 +8,16 @@ use crate::functions::fs_dispatch::pick_backend;
 
 pub async fn handle(
     host: Arc<dyn FsBackend>,
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
     sandbox_enabled: bool,
     payload: Value,
-) -> Result<StatResponse, iii_sdk::IIIError> {
+) -> Result<StatResponse, iii_sdk::errors::Error> {
     let req: StatRequest = serde_json::from_value(payload)
         .map_err(|e| FsError::new("S210", format!("bad stat payload: {e}")))?;
     let (target, args) = req.split();
     let backend = pick_backend(target, host, iii, sandbox_enabled);
-    backend.stat(args).await.map_err(iii_sdk::IIIError::from)
+    backend
+        .stat(args)
+        .await
+        .map_err(iii_sdk::errors::Error::from)
 }

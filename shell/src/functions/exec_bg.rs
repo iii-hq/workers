@@ -26,7 +26,7 @@ const SANDBOX_RPC_SLACK_MS: u64 = 30_000;
 
 pub async fn handle(
     cfg: Arc<ShellConfig>,
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
     req: ExecBgRequest,
 ) -> Result<ExecBgResponse, String> {
     // Field-level type errors (wrong-type `command`, non-string `args[i]`,
@@ -770,7 +770,7 @@ mod sandbox_path_tests {
     use crate::jobs::{self, JobStatus};
     use crate::triggers::TriggerFwd;
     use async_trait::async_trait;
-    use iii_sdk::IIIError;
+    use iii_sdk::errors::Error;
     use serde_json::{json, Value};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -779,7 +779,7 @@ mod sandbox_path_tests {
 
     #[async_trait]
     impl TriggerFwd for ImmediateOk {
-        async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, IIIError> {
+        async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
             Ok(self.0.lock().unwrap().take().unwrap())
         }
     }
@@ -867,8 +867,8 @@ mod sandbox_path_tests {
         struct AlwaysErr;
         #[async_trait]
         impl TriggerFwd for AlwaysErr {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, IIIError> {
-                Err(IIIError::Remote {
+            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+                Err(Error::Remote {
                     code: "S300".into(),
                     message: "VM boot failed".into(),
                     stacktrace: None,
@@ -908,7 +908,7 @@ mod sandbox_path_tests {
         }
         #[async_trait]
         impl TriggerFwd for GatedFwd {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, IIIError> {
+            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
                 // Wait until the test releases us via the oneshot channel.
                 let rx = self.release.lock().await.take().unwrap();
                 rx.await.unwrap();
@@ -970,7 +970,7 @@ mod sandbox_path_tests {
         jobs::JOBS.map.lock().await.remove(&resp.job_id);
     }
 
-    /// Test seam: the production `handle` accepts `iii_sdk::III` and
+    /// Test seam: the production `handle` accepts `iii_sdk::IIIClient` and
     /// constructs the backend internally. Tests inject the TriggerFwd
     /// directly to avoid spinning up an engine. The implementation
     /// factors out a `spawn_sandbox_job` helper that this shim calls.

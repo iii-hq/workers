@@ -20,9 +20,11 @@
 use std::future::Future;
 use std::time::Instant;
 
-use iii_observability::opentelemetry::metrics::{Counter, Histogram, Meter, ObservableGauge};
-use iii_observability::opentelemetry::{global, KeyValue};
-use iii_sdk::IIIError;
+use iii_helpers::observability::opentelemetry::metrics::{
+    Counter, Histogram, Meter, ObservableGauge,
+};
+use iii_helpers::observability::opentelemetry::{global, KeyValue};
+use iii_sdk::errors::Error;
 use once_cell::sync::Lazy;
 use tracing::Instrument;
 
@@ -96,7 +98,7 @@ pub const OUTCOME_OK: &str = "ok";
 pub const OUTCOME_ERROR: &str = "error";
 
 /// Fine-grained code label used when a call fails without a coded remote error
-/// (e.g. an argv-parse or allowlist rejection surfaced as `IIIError::Handler`).
+/// (e.g. an argv-parse or allowlist rejection surfaced as `Error::Handler`).
 pub const CODE_INVOCATION_FAILED: &str = "invocation_failed";
 
 /// Pure classification of a handler result into the `(outcome, code)` pair used
@@ -106,10 +108,10 @@ pub const CODE_INVOCATION_FAILED: &str = "invocation_failed";
 /// - `Ok(_)`                       -> (`ok`,    `ok`)
 /// - `Err(Remote { code, .. })`    -> (`error`, the S-code verbatim)
 /// - `Err(any other variant)`      -> (`error`, `invocation_failed`)
-pub fn classify<T>(result: &Result<T, IIIError>) -> (&'static str, String) {
+pub fn classify<T>(result: &Result<T, Error>) -> (&'static str, String) {
     match result {
         Ok(_) => (OUTCOME_OK, OUTCOME_OK.to_string()),
-        Err(IIIError::Remote { code, .. }) => (OUTCOME_ERROR, code.clone()),
+        Err(Error::Remote { code, .. }) => (OUTCOME_ERROR, code.clone()),
         Err(_) => (OUTCOME_ERROR, CODE_INVOCATION_FAILED.to_string()),
     }
 }
@@ -122,9 +124,9 @@ pub fn classify<T>(result: &Result<T, IIIError>) -> (&'static str, String) {
 /// `Result` to derive labels. The future is awaited inside an `info_span!`
 /// carrying `function_id` so logs/traces emitted by the handler correlate with
 /// the same call.
-pub async fn record_call<T, F>(function_id: &'static str, fut: F) -> Result<T, IIIError>
+pub async fn record_call<T, F>(function_id: &'static str, fut: F) -> Result<T, Error>
 where
-    F: Future<Output = Result<T, IIIError>>,
+    F: Future<Output = Result<T, Error>>,
 {
     // `.instrument()` (not `span.enter()`) attaches the span to the future
     // across await points without holding a `!Send` `Entered` guard, keeping
@@ -173,7 +175,7 @@ mod tests {
 
     #[test]
     fn classify_ok_is_ok_ok() {
-        let result: Result<u8, IIIError> = Ok(7);
+        let result: Result<u8, Error> = Ok(7);
         let (outcome, code) = classify(&result);
         assert_eq!(outcome, OUTCOME_OK);
         assert_eq!(code, OUTCOME_OK);
@@ -181,7 +183,7 @@ mod tests {
 
     #[test]
     fn classify_remote_derives_outcome_error_and_the_scode() {
-        let result: Result<u8, IIIError> = Err(IIIError::Remote {
+        let result: Result<u8, Error> = Err(Error::Remote {
             code: "S215".to_string(),
             message: "jail/denylist".to_string(),
             stacktrace: None,
@@ -194,14 +196,14 @@ mod tests {
     #[test]
     fn classify_non_coded_error_falls_back_to_invocation_failed() {
         // An argv-parse / allowlist rejection surfaces as Handler (no S-code).
-        let result: Result<u8, IIIError> =
-            Err(IIIError::Handler("argv: command not allowed".to_string()));
+        let result: Result<u8, Error> =
+            Err(Error::Handler("argv: command not allowed".to_string()));
         let (outcome, code) = classify(&result);
         assert_eq!(outcome, OUTCOME_ERROR);
         assert_eq!(code, CODE_INVOCATION_FAILED);
 
         // A timeout (distinct non-Remote variant) classifies the same way.
-        let timed_out: Result<u8, IIIError> = Err(IIIError::Timeout);
+        let timed_out: Result<u8, Error> = Err(Error::Timeout);
         let (outcome, code) = classify(&timed_out);
         assert_eq!(outcome, OUTCOME_ERROR);
         assert_eq!(code, CODE_INVOCATION_FAILED);

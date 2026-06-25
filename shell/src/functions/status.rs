@@ -4,7 +4,7 @@ use crate::jobs;
 
 pub async fn handle(req: StatusRequest) -> Result<StatusResponse, ExecError> {
     // Return the TYPED ExecError (not its JSON string): main.rs's
-    // `.map_err(IIIError::from)` lifts it to `IIIError::Remote`, so the S-code
+    // `.map_err(Error::from)` lifts it to `Error::Remote`, so the S-code
     // (S211 for job-not-found) lands as the top-level wire `code` — an agent
     // runs one error handler across every shell:: call instead of branching on
     // a plain-string contract for status/kill alone.
@@ -36,7 +36,7 @@ mod tests {
     }
 
     /// Pin the wire contract: the handler's `Err` lifts to
-    /// `IIIError::Remote { code: "S211", .. }`, which the engine SDK maps to
+    /// `Error::Remote { code: "S211", .. }`, which the engine SDK maps to
     /// the wire `code` verbatim — NOT the `invocation_failed`/Handler collapse.
     #[tokio::test]
     async fn status_missing_job_lifts_to_remote_s211() {
@@ -45,12 +45,12 @@ mod tests {
         })
         .await
         .expect_err("missing job must error");
-        match iii_sdk::IIIError::from(err) {
-            iii_sdk::IIIError::Remote { code, message, .. } => {
+        match iii_sdk::errors::Error::from(err) {
+            iii_sdk::errors::Error::Remote { code, message, .. } => {
                 assert_eq!(code, "S211");
                 assert!(message.contains("no such job"));
             }
-            other => panic!("expected IIIError::Remote, got {other:?}"),
+            other => panic!("expected Error::Remote, got {other:?}"),
         }
     }
 }

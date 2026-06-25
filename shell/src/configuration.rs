@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
@@ -32,7 +34,7 @@ pub struct ShellRuntime {
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<RwLock<ShellRuntime>>,
-    pub iii: III,
+    pub iii: IIIClient,
     /// Serializes hot-reloads: held across the authoritative fetch + build + swap
     /// so an older event's slow build can never clobber a newer applied config.
     pub reload_lock: Arc<Mutex<()>>,
@@ -102,7 +104,7 @@ pub fn prepare_config(cfg: &ShellConfig) -> Result<Arc<ShellConfig>, String> {
 }
 
 /// Build the live runtime: validate the config, then build the host fs backend.
-pub fn build_runtime(cfg: &ShellConfig, iii: &III) -> Result<ShellRuntime, String> {
+pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime, String> {
     let config = prepare_config(cfg)?;
     if config.fs.host_root.is_none() {
         tracing::warn!(
@@ -137,7 +139,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &III) -> Result<ShellRuntime, Strin
 /// cannot seed `ShellConfig::default()`: it is intentionally unjailed/invalid,
 /// so the built-in seed is `ShellConfig::seed_default()`, a bootable permissive
 /// dev default.
-pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Shell",
@@ -170,7 +172,7 @@ pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<()
 
 /// Seed the built-in default only when nothing is stored yet — never overwrite
 /// an operator's persisted value.
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -179,7 +181,7 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
 }
 
 /// Read the live `shell` configuration (env-expanded by the configuration worker).
-pub async fn fetch_config(iii: &III) -> Result<ShellConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<ShellConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         // Null means register_config did not seed (its seed_default failed
@@ -199,18 +201,18 @@ pub async fn fetch_config(iii: &III) -> Result<ShellConfig, String> {
     ShellConfig::from_json(&value)
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        // `trigger_with_retry` flattens the structured `IIIError` to its
+        // `trigger_with_retry` flattens the structured `Error` to its
         // Display string, so we substring-match the recovered message rather
-        // than branch on `IIIError::Remote { code }`. The engine's missing-entry
+        // than branch on `Error::Remote { code }`. The engine's missing-entry
         // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
         // `NOT_FOUND`), so uppercase before matching to catch them all. A
         // false negative is non-fatal — it just propagates the raw retry error
@@ -243,15 +245,15 @@ async fn apply_config(state: &AppState, cfg: ShellConfig) -> Result<(), String> 
 }
 
 /// Register the internal config-change handler and bind a `configuration` trigger.
-pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIError> {
+pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
     let st = state.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: Value| {
             let st = st.clone();
             async move {
-                on_config_change(&st).await.map_err(IIIError::from)?;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                on_config_change(&st).await.map_err(Error::from)?;
+                Ok::<Value, Error>(json!({ "ok": true }))
             }
         })
         .description("Internal: reload the security policy + fs backend on configuration change."),
@@ -363,7 +365,11 @@ where
     }
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii

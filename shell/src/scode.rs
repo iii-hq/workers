@@ -2,10 +2,10 @@
 //!
 //! Both `fs::sandbox` and `exec::sandbox` forward ops to the engine
 //! daemon and must translate the engine's error envelope (an
-//! `IIIError`, or a stringified `{code,message}` payload) back into a
+//! `Error`, or a stringified `{code,message}` payload) back into a
 //! worker error type. The translation logic — scanning for an S-code,
 //! canonicalizing it against the known table, and lifting an
-//! `IIIError` into a worker error — was previously duplicated in both
+//! `Error` into a worker error — was previously duplicated in both
 //! modules. The two copies of the canonical-code table had already
 //! diverged: each path recognized a different subset of S-codes, so
 //! the same engine code could canonicalize to its specific value on
@@ -17,7 +17,7 @@
 //! `ExecError::new`; both share the SAME canonical table — the union
 //! of every code either path legitimately handles.
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::Value;
 
 /// The generic fallback code for any engine error whose S-code we do
@@ -99,7 +99,7 @@ pub fn scan_s_code(s: &str) -> Option<&str> {
     None
 }
 
-/// Recover a canonical S-code from an `IIIError` and lift it into the
+/// Recover a canonical S-code from an `Error` and lift it into the
 /// caller's error type via `make`.
 ///
 /// Engine `Remote` errors carry the code structurally; the engine's
@@ -110,15 +110,15 @@ pub fn scan_s_code(s: &str) -> Option<&str> {
 /// Generic over the error constructor so both `FsError::new` and
 /// `ExecError::new` reuse the identical recovery logic; the only
 /// difference between the fs and exec paths is which `make` is passed.
-pub fn map_iii_err<E>(err: &IIIError, make: impl Fn(&'static str, String) -> E) -> E {
+pub fn map_iii_err<E>(err: &Error, make: impl Fn(&'static str, String) -> E) -> E {
     match err {
-        IIIError::Remote { code, message, .. } if code.starts_with('S') => {
+        Error::Remote { code, message, .. } if code.starts_with('S') => {
             return make(
                 map_static_code(code),
                 format!("forwarded from engine: {message}"),
             );
         }
-        IIIError::Remote { message, .. } => {
+        Error::Remote { message, .. } => {
             if let Some(c) = scan_s_code(message) {
                 return make(
                     map_static_code(c),
@@ -126,7 +126,7 @@ pub fn map_iii_err<E>(err: &IIIError, make: impl Fn(&'static str, String) -> E) 
                 );
             }
         }
-        IIIError::Handler(s) => {
+        Error::Handler(s) => {
             if let Ok(parsed) = serde_json::from_str::<Value>(s) {
                 if let Some(c) = parsed.get("code").and_then(|v| v.as_str()) {
                     let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
@@ -210,7 +210,7 @@ mod tests {
         let exec_make = |code: &'static str, msg: String| ("exec", code, msg);
 
         for (input, expected) in canonical_cases() {
-            let remote = IIIError::Remote {
+            let remote = Error::Remote {
                 code: input.to_string(),
                 message: "boom".into(),
                 stacktrace: None,
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn map_iii_err_recovers_from_wrapped_message() {
-        let err = IIIError::Remote {
+        let err = Error::Remote {
             code: "invocation_failed".into(),
             message: "handler error: S211: not found".into(),
             stacktrace: None,
@@ -270,21 +270,21 @@ mod tests {
 
     #[test]
     fn map_iii_err_recovers_from_handler_json() {
-        let err = IIIError::Handler(r#"{"code":"S214","message":"directory not empty"}"#.into());
+        let err = Error::Handler(r#"{"code":"S214","message":"directory not empty"}"#.into());
         let (code, _) = map_iii_err(&err, |c, m| (c, m));
         assert_eq!(code, "S214");
     }
 
     #[test]
     fn map_iii_err_recovers_from_handler_raw_scan() {
-        let err = IIIError::Handler("something broke S217 bad regex".into());
+        let err = Error::Handler("something broke S217 bad regex".into());
         let (code, _) = map_iii_err(&err, |c, m| (c, m));
         assert_eq!(code, "S217");
     }
 
     #[test]
     fn map_iii_err_unknown_falls_back_to_s216() {
-        let err = IIIError::Handler("just a plain old string".into());
+        let err = Error::Handler("just a plain old string".into());
         let (code, _) = map_iii_err(&err, |c, m| (c, m));
         assert_eq!(code, "S216");
     }

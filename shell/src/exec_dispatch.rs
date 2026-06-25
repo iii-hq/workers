@@ -15,7 +15,7 @@ use crate::triggers::IiiTriggerFwd;
 pub fn pick_exec_backend(
     target: Target,
     cfg: Arc<ShellConfig>,
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
 ) -> Arc<dyn ExecBackend> {
     match target {
         Target::Host => Arc::new(HostExecBackend::new(cfg)),
@@ -23,7 +23,7 @@ pub fn pick_exec_backend(
     }
 }
 
-fn sandbox_for(id: Uuid, iii: iii_sdk::III, enabled: bool) -> Arc<dyn ExecBackend> {
+fn sandbox_for(id: Uuid, iii: iii_sdk::IIIClient, enabled: bool) -> Arc<dyn ExecBackend> {
     Arc::new(SandboxExecBackend::new(
         Arc::new(IiiTriggerFwd::new(iii)),
         enabled,
@@ -32,6 +32,6 @@ fn sandbox_for(id: Uuid, iii: iii_sdk::III, enabled: bool) -> Arc<dyn ExecBacken
 }
 
 // No unit tests in this module: `pick_exec_backend`'s match arms are trivial
-// constructors that would require a real `iii_sdk::III` to exercise. The
+// constructors that would require a real `iii_sdk::IIIClient` to exercise. The
 // ExecError -> wire-code conversion is covered by
-// `exec::error::tests` (the `From<ExecError> for IIIError` Remote lift).
+// `exec::error::tests` (the `From<ExecError> for Error` Remote lift).
