@@ -6,7 +6,7 @@
 //! `could not resolve model limits` — are kept word-for-word in the
 //! message part so callers can match on the documented strings.
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ContextError {
@@ -36,9 +36,9 @@ impl ContextError {
     }
 }
 
-impl From<ContextError> for IIIError {
+impl From<ContextError> for Error {
     fn from(e: ContextError) -> Self {
-        IIIError::Handler(e.to_string())
+        Error::Handler(e.to_string())
     }
 }
 
