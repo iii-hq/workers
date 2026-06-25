@@ -5,7 +5,9 @@
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use iii_sdk::{register_worker, IIIError, InitOptions, TriggerRequest};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
@@ -81,7 +83,7 @@ async fn end_to_end_via_iii_sdk() {
         .await;
         match attempt {
             Ok(Ok(v)) => break v,
-            Ok(Err(IIIError::NotConnected)) | Err(_) => {}
+            Ok(Err(Error::NotConnected)) | Err(_) => {}
             Ok(Err(_)) => {}
         }
         assert!(

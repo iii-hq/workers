@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use iii_sdk::errors::Error;
 use iii_sdk::helpers::create_channel;
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::configuration::ConfigCell;
@@ -24,18 +26,18 @@ const MODELS_GET_TIMEOUT_MS: u64 = 5_000;
 /// trigger response, so this only covers socket latency.
 const READER_DRAIN_MS: u64 = 2_000;
 
-fn is_unroutable(err: &IIIError) -> bool {
+fn is_unroutable(err: &Error) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("function_not_found") || msg.contains("not found") || msg.contains("no function")
 }
 
 /// `router::models::get` — `{ model: Model } | null`.
 pub struct RouterModelResolver {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
 }
 
 impl RouterModelResolver {
-    pub fn new(iii: Arc<III>) -> Self {
+    pub fn new(iii: Arc<IIIClient>) -> Self {
         Self { iii }
     }
 }
@@ -82,12 +84,12 @@ impl ModelResolver for RouterModelResolver {
 /// `summarizer_timeout_ms` change hot-applies on the next call with no
 /// rebuild.
 pub struct RouterSummarizer {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     config: ConfigCell,
 }
 
 impl RouterSummarizer {
-    pub fn new(iii: Arc<III>, config: ConfigCell) -> Self {
+    pub fn new(iii: Arc<IIIClient>, config: ConfigCell) -> Self {
         Self { iii, config }
     }
 }
