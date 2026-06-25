@@ -3,7 +3,9 @@
 //! initial_value, so operator-stored values survive every re-register.
 use std::collections::BTreeMap;
 
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use super::schema::compose_entry_schema;
@@ -15,9 +17,9 @@ pub const ENTRY_ID: &str = "llm-router";
 pub type EntryWriteLock = std::sync::Arc<tokio::sync::Mutex<()>>;
 
 pub async fn register_entry(
-    iii: &III,
+    iii: &IIIClient,
     provider_schemas: &BTreeMap<String, Value>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     iii.trigger(TriggerRequest {
         function_id: "configuration::register".into(),
         payload: json!({
@@ -34,8 +36,8 @@ pub async fn register_entry(
 }
 
 /// Null before the entry exists.
-pub async fn read_entry_value(iii: &III) -> Value {
-    let res = iii
+pub async fn read_entry_value(iii: &IIIClient) -> Value {
+    let res: Result<Value, _> = iii
         .trigger(TriggerRequest {
             function_id: "configuration::get".into(),
             payload: json!({ "id": ENTRY_ID }),
@@ -49,7 +51,7 @@ pub async fn read_entry_value(iii: &III) -> Value {
     }
 }
 
-pub async fn write_entry_value(iii: &III, value: Value) -> Result<(), IIIError> {
+pub async fn write_entry_value(iii: &IIIClient, value: Value) -> Result<(), Error> {
     iii.trigger(TriggerRequest {
         function_id: "configuration::set".into(),
         payload: json!({ "id": ENTRY_ID, "value": value }),

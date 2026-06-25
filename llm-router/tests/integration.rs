@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, TriggerRequest, III};
+use iii_sdk::channel::StreamChannelRef;
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::register::register_router;
 use serde_json::{json, Value};
 
@@ -181,7 +184,7 @@ macro_rules! bare_engine_or_skip {
     };
 }
 
-async fn call(iii: &III, function_id: &str, payload: Value) -> Result<Value, iii_sdk::IIIError> {
+async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
     iii.trigger(TriggerRequest {
         function_id: function_id.into(),
         payload,
@@ -191,9 +194,9 @@ async fn call(iii: &III, function_id: &str, payload: Value) -> Result<Value, iii
     .await
 }
 
-fn remote_code(err: &iii_sdk::IIIError) -> &str {
+fn remote_code(err: &Error) -> &str {
     match err {
-        iii_sdk::IIIError::Remote { code, .. } => code,
+        Error::Remote { code, .. } => code,
         _ => "",
     }
 }
@@ -210,7 +213,7 @@ struct ProviderOptions {
 }
 
 struct LiveProvider {
-    iii: III,
+    iii: IIIClient,
     token: String,
     write_failed: Arc<AtomicBool>,
     fail_at_ms: Arc<AtomicU64>,
@@ -234,16 +237,16 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
             let address = address.clone();
             let (wf, fam) = (wf.clone(), fam.clone());
             async move {
-                let r: iii_sdk::StreamChannelRef =
+                let r: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
-                        .map_err(|e| iii_sdk::IIIError::Serde(e.to_string()))?;
-                let writer = iii_sdk::ChannelWriter::new(&address, &r);
+                        .map_err(|e| Error::Serde(e.to_string()))?;
+                let writer = iii_sdk::channel::ChannelWriter::new(&address, &r);
                 let model = input["model"].clone();
                 let start = json!({ "type": "start", "partial": { "role": "assistant", "content": [], "stop_reason": "end", "model": model, "provider": "real", "timestamp": 1 } });
                 writer
                     .send_message(&start.to_string())
                     .await
-                    .map_err(|e| iii_sdk::IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
                 if ping_forever {
                     let begun = Instant::now();
                     loop {
@@ -266,7 +269,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 writer
                     .send_message(&json!({ "type": "done", "message": message }).to_string())
                     .await
-                    .map_err(|e| iii_sdk::IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
                 let _ = writer.close().await;
                 Ok(json!({ "ok": true }))
             }
@@ -294,7 +297,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                         timeout_ms: Some(5000),
                     })
                     .await?;
-                    Ok::<Value, iii_sdk::IIIError>(json!({ "ok": true }))
+                    Ok::<Value, Error>(json!({ "ok": true }))
                 }
             }),
         );
@@ -334,9 +337,9 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
 
 /// Consumer-side channel: collect frames + a pump that drives dispatch.
 async fn consumer_channel(
-    iii: &III,
+    iii: &IIIClient,
 ) -> (
-    iii_sdk::StreamChannelRef,
+    StreamChannelRef,
     Arc<std::sync::Mutex<Vec<String>>>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -874,12 +877,12 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
             let sink = sink.clone();
             async move {
                 sink.lock().unwrap().push(input);
-                Ok::<Value, iii_sdk::IIIError>(json!({}))
+                Ok::<Value, Error>(json!({}))
             }
         }),
     );
     probe
-        .register_trigger(iii_sdk::RegisterTriggerInput {
+        .register_trigger(RegisterTriggerInput {
             trigger_type: "router::models::changed".into(),
             function_id: "probe::on_models_changed".into(),
             config: json!({}),

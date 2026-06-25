@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::state::{state_get, state_set};
 use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
 use crate::types::router::ProviderDeclaration;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{errors::Error, IIIClient};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -40,7 +40,7 @@ pub struct ProviderRecord {
 }
 
 pub struct RegistryStore {
-    iii: III,
+    iii: IIIClient,
     records: Mutex<HashMap<String, ProviderRecord>>,
 }
 
@@ -86,14 +86,14 @@ fn availability_recovered(existing: Option<&ProviderRecord>) -> bool {
 }
 
 impl RegistryStore {
-    pub fn new(iii: III) -> Self {
+    pub fn new(iii: IIIClient) -> Self {
         Self {
             iii,
             records: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn load(&self) -> Result<(), IIIError> {
+    pub async fn load(&self) -> Result<(), Error> {
         // No iii-state worker on this engine (the registry-publish flow boots
         // against a bare `workers: []` engine to collect the interface):
         // start empty. Safe to tolerate exactly this error class — with no
@@ -110,7 +110,7 @@ impl RegistryStore {
         Ok(())
     }
 
-    async fn persist(&self, records: &HashMap<String, ProviderRecord>) -> Result<(), IIIError> {
+    async fn persist(&self, records: &HashMap<String, ProviderRecord>) -> Result<(), Error> {
         let value = serde_json::to_value(records).unwrap_or_default();
         state_set(&self.iii, REGISTRY_KEY, value).await
     }

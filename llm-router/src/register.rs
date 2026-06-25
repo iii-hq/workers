@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::catalog::handlers::{make_models_get, make_models_list, make_models_supports};
@@ -40,7 +42,7 @@ pub struct RouterRefs {
     pub settings: Arc<RwLock<RouterSettings>>,
 }
 
-pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
+pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // 1–2. restore durable stores
     let registry = Arc::new(RegistryStore::new(iii.clone()));
     let catalog = Arc::new(CatalogStore::new(iii.clone()));

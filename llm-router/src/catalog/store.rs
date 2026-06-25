@@ -8,25 +8,25 @@ use std::collections::HashMap;
 use crate::state::{state_get, state_set};
 use crate::types::errors::is_function_not_found;
 use crate::types::model::Model;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{errors::Error, IIIClient};
 use tokio::sync::Mutex;
 
 const CATALOG_KEY: &str = "catalog";
 
 pub struct CatalogStore {
-    iii: III,
+    iii: IIIClient,
     slices: Mutex<HashMap<String, Vec<Model>>>,
 }
 
 impl CatalogStore {
-    pub fn new(iii: III) -> Self {
+    pub fn new(iii: IIIClient) -> Self {
         Self {
             iii,
             slices: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn load(&self) -> Result<(), IIIError> {
+    pub async fn load(&self) -> Result<(), Error> {
         // No iii-state worker on this engine (the registry-publish flow boots
         // against a bare `workers: []` engine to collect the interface):
         // start empty. Safe to tolerate exactly this error class — with no
@@ -76,7 +76,7 @@ impl CatalogStore {
             .cloned()
     }
 
-    pub async fn set_slice(&self, provider: &str, models: Vec<Model>) -> Result<(), IIIError> {
+    pub async fn set_slice(&self, provider: &str, models: Vec<Model>) -> Result<(), Error> {
         let mut slices = self.slices.lock().await; // serialized writer
         slices.insert(provider.to_string(), models);
         let value = serde_json::to_value(&*slices).unwrap_or_default();

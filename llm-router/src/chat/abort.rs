@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 use crate::types::router::{AbortRequest, AbortResponse};
 
@@ -10,7 +10,7 @@ use super::inflight::InflightMap;
 
 pub fn make_abort(
     inflight: Arc<InflightMap>,
-) -> impl Fn(AbortRequest) -> BoxFuture<'static, Result<AbortResponse, IIIError>> + Send + Sync + 'static
+) -> impl Fn(AbortRequest) -> BoxFuture<'static, Result<AbortResponse, Error>> + Send + Sync + 'static
 {
     move |req: AbortRequest| {
         let inflight = inflight.clone();
