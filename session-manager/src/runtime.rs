@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{register_worker, InitOptions, WorkerMetadata, III};
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 
 use crate::config::{StorageAdapter, WorkerConfig};
 use crate::configuration::ConfigCell;
@@ -57,14 +58,14 @@ pub struct SessionRuntime {
     pub mode: AdapterMode,
     /// The remote engine connection (bridge mode only); shut down when this
     /// runtime is retired.
-    pub bridge_remote: Option<Arc<III>>,
+    pub bridge_remote: Option<Arc<IIIClient>>,
 }
 
 /// The boot-time wiring `build_runtime` reuses on every rebuild: the engine
 /// handle, the six subscriber sets, the bridge relay registry, and the shared
 /// config snapshot the service reads list limits from.
 pub struct SessionBuildContext {
-    pub iii: Arc<III>,
+    pub iii: Arc<IIIClient>,
     /// This instance's own engine url; a bridge whose `url` equals it would
     /// defer storage to itself, so that is rejected.
     pub local_url: String,

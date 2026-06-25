@@ -37,10 +37,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    IIIError, RegisterTriggerType, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest,
-    III,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -548,11 +548,11 @@ struct SessionTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for SessionTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let kind = self.set.kind();
         let id = config.id.clone();
         let function_id = config.function_id.clone();
-        self.set.add(config).map_err(IIIError::Handler)?;
+        self.set.add(config).map_err(Error::Handler)?;
         tracing::info!(
             trigger_type = kind.trigger_type(),
             id = %id,
@@ -562,7 +562,7 @@ impl TriggerHandler for SessionTriggerHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = self.set.kind().trigger_type(),
             id = %config.id,
@@ -625,7 +625,7 @@ struct StoreEventsTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for StoreEventsTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = STORE_EVENTS,
             id = %config.id,
@@ -636,7 +636,7 @@ impl TriggerHandler for StoreEventsTriggerHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = STORE_EVENTS,
             id = %config.id,
@@ -650,7 +650,7 @@ impl TriggerHandler for StoreEventsTriggerHandler {
 /// Register the internal [`STORE_EVENTS`] trigger type (main/fs mode
 /// only). The engine replays existing registrations on re-register, so
 /// attached bridges survive a main restart.
-pub fn register_store_events_type(iii: &Arc<III>) -> BridgeSubscribers {
+pub fn register_store_events_type(iii: &Arc<IIIClient>) -> BridgeSubscribers {
     let subscribers = BridgeSubscribers::new();
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
@@ -670,7 +670,7 @@ pub fn register_store_events_type(iii: &Arc<III>) -> BridgeSubscribers {
 /// Register the six custom trigger types with the engine. Must run
 /// **before** `functions::register_all` so handlers can capture the
 /// subscriber sets.
-pub fn register_trigger_types(iii: &Arc<III>) -> TriggerSets {
+pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
 
     let _ = iii.register_trigger_type(
@@ -760,11 +760,11 @@ pub trait EventDeliverer: Send + Sync {
 /// Failures are logged and swallowed — a misbehaving subscriber must
 /// not break the write path.
 pub struct IiiDeliverer {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
 }
 
 impl IiiDeliverer {
-    pub fn new(iii: Arc<III>) -> Self {
+    pub fn new(iii: Arc<IIIClient>) -> Self {
         Self { iii }
     }
 }
@@ -917,12 +917,12 @@ impl EventSink for Emitter {
 /// fire-and-forget local fan-out): the mutation itself already
 /// succeeded against the main store.
 pub struct RemotePublisher {
-    remote: Arc<III>,
+    remote: Arc<IIIClient>,
     timeout_ms: u64,
 }
 
 impl RemotePublisher {
-    pub fn new(remote: Arc<III>, timeout_ms: u64) -> Self {
+    pub fn new(remote: Arc<IIIClient>, timeout_ms: u64) -> Self {
         Self { remote, timeout_ms }
     }
 }
@@ -960,7 +960,7 @@ impl EventSink for RemotePublisher {
 /// re-emits each envelope through the **local** emitter — it never
 /// re-publishes, so there are no echo loops. Returns the relay
 /// function id.
-pub fn attach_bridge_relay(remote: &Arc<III>, local_emitter: Arc<Emitter>) -> String {
+pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>) -> String {
     let relay_id = format!("session::bridge::recv::{}", uuid::Uuid::new_v4().simple());
 
     let emitter = local_emitter.clone();
@@ -972,13 +972,13 @@ pub fn attach_bridge_relay(remote: &Arc<III>, local_emitter: Arc<Emitter>) -> St
                 emitter
                     .emit_envelopes(std::slice::from_ref(&envelope))
                     .await;
-                Ok::<_, IIIError>(serde_json::json!({ "ok": true }))
+                Ok::<_, Error>(serde_json::json!({ "ok": true }))
             }
         })
         .description("Internal: session event relay for one bridged session-manager instance."),
     );
 
-    match remote.register_trigger(iii_sdk::RegisterTriggerInput {
+    match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
         trigger_type: STORE_EVENTS.to_string(),
         function_id: relay_id.clone(),
         config: serde_json::json!({}),

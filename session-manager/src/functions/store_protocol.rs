@@ -11,7 +11,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -92,8 +93,8 @@ pub struct PublishEventsResponse {
     pub published: usize,
 }
 
-fn storage_err(e: crate::store::StoreError) -> IIIError {
-    IIIError::from(crate::error::SessionError::from(e))
+fn storage_err(e: crate::store::StoreError) -> Error {
+    Error::from(crate::error::SessionError::from(e))
 }
 
 /// Message returned when a non-authoritative (bridge-mode) instance is asked to
@@ -106,19 +107,19 @@ const BRIDGE_MODE_REJECT: &str =
 /// The live store, or a rejection when the instance is not fs-main. Snapshotted
 /// per call so a bridge->fs hot-reload re-enables the protocol (and fs->bridge
 /// disables it) without re-registering these functions.
-async fn fs_store(state: &AppState) -> Result<Arc<dyn SessionStore>, IIIError> {
+async fn fs_store(state: &AppState) -> Result<Arc<dyn SessionStore>, Error> {
     let rt = state.runtime.read().await;
     if rt.mode != AdapterMode::FsMain {
-        return Err(IIIError::Handler(BRIDGE_MODE_REJECT.to_string()));
+        return Err(Error::Handler(BRIDGE_MODE_REJECT.to_string()));
     }
     Ok(rt.store.clone())
 }
 
 /// The live local emitter, gated to fs-main like [`fs_store`].
-async fn fs_emitter(state: &AppState) -> Result<Arc<Emitter>, IIIError> {
+async fn fs_emitter(state: &AppState) -> Result<Arc<Emitter>, Error> {
     let rt = state.runtime.read().await;
     if rt.mode != AdapterMode::FsMain {
-        return Err(IIIError::Handler(BRIDGE_MODE_REJECT.to_string()));
+        return Err(Error::Handler(BRIDGE_MODE_REJECT.to_string()));
     }
     Ok(rt.local_emitter.clone())
 }
@@ -126,7 +127,7 @@ async fn fs_emitter(state: &AppState) -> Result<Arc<Emitter>, IIIError> {
 /// Register the raw store surface plus the `publish-events` ingest. Both read
 /// the live runtime per call (see [`fs_store`] / [`fs_emitter`]) and reject when
 /// the instance is in bridge mode, so the protocol follows adapter hot-reloads.
-pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
+pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
     let st = state.clone();
     iii.register_function(
         GET_META,
@@ -148,7 +149,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
             async move {
                 let store = fs_store(&st).await?;
                 store.put_meta(&req.meta).await.map_err(storage_err)?;
-                Ok::<_, IIIError>(OkResponse { ok: true })
+                Ok::<_, Error>(OkResponse { ok: true })
             }
         })
         .description("Internal store protocol: write one SessionMeta."),
@@ -165,7 +166,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .delete_meta(&req.session_id)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(OkResponse { ok: true })
+                Ok::<_, Error>(OkResponse { ok: true })
             }
         })
         .description("Internal store protocol: delete one SessionMeta."),
@@ -179,7 +180,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
             async move {
                 let store = fs_store(&st).await?;
                 let metas = store.list_metas().await.map_err(storage_err)?;
-                Ok::<_, IIIError>(ListMetasResponse { metas })
+                Ok::<_, Error>(ListMetasResponse { metas })
             }
         })
         .description("Internal store protocol: list every SessionMeta."),
@@ -212,7 +213,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .put_entry(&req.session_id, &req.entry)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(OkResponse { ok: true })
+                Ok::<_, Error>(OkResponse { ok: true })
             }
         })
         .description("Internal store protocol: write one SessionEntry."),
@@ -229,7 +230,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .list_entries(&req.session_id)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(ListEntriesResponse { entries })
+                Ok::<_, Error>(ListEntriesResponse { entries })
             }
         })
         .description("Internal store protocol: list every entry of a session."),
@@ -246,7 +247,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .delete_entries(&req.session_id)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(OkResponse { ok: true })
+                Ok::<_, Error>(OkResponse { ok: true })
             }
         })
         .description("Internal store protocol: delete every entry of a session."),
@@ -263,7 +264,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .get_active_leaf(&req.session_id)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(ActiveLeafResponse { entry_id })
+                Ok::<_, Error>(ActiveLeafResponse { entry_id })
             }
         })
         .description("Internal store protocol: read a session's active leaf pointer."),
@@ -280,7 +281,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .set_active_leaf(&req.session_id, &req.entry_id)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(OkResponse { ok: true })
+                Ok::<_, Error>(OkResponse { ok: true })
             }
         })
         .description("Internal store protocol: move a session's active leaf pointer."),
@@ -297,7 +298,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
                     .delete_active_leaf(&req.session_id)
                     .await
                     .map_err(storage_err)?;
-                Ok::<_, IIIError>(OkResponse { ok: true })
+                Ok::<_, Error>(OkResponse { ok: true })
             }
         })
         .description("Internal store protocol: clear a session's active leaf pointer."),
@@ -311,7 +312,7 @@ pub fn register_store_protocol(iii: &Arc<III>, state: AppState) {
             async move {
                 let emitter = fs_emitter(&st).await?;
                 let published = emitter.emit_envelopes(&req.events).await;
-                Ok::<_, IIIError>(PublishEventsResponse { published })
+                Ok::<_, Error>(PublishEventsResponse { published })
             }
         })
         .description(

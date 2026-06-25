@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::TriggerConfig;
+use iii_sdk::trigger::TriggerConfig;
 
 use session_manager::events::EventKind;
 
