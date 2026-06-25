@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{
-    register_worker, IIIError, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -394,7 +394,7 @@ async fn main() -> Result<()> {
             "storage::putObject",
             RegisterFunction::new_async(move |req: put_object::PutReq| {
                 let st = st.clone();
-                async move { put_object::handle(&st, req).await.map_err(IIIError::from) }
+                async move { put_object::handle(&st, req).await.map_err(Error::from) }
             })
             .description(
                 "Write an object to a configured bucket. Body is base64; max 10MB inline.",
@@ -407,7 +407,7 @@ async fn main() -> Result<()> {
             "storage::getObject",
             RegisterFunction::new_async(move |req: get_object::GetReq| {
                 let st = st.clone();
-                async move { get_object::handle(&st, req).await.map_err(IIIError::from) }
+                async move { get_object::handle(&st, req).await.map_err(Error::from) }
             })
             .description("Read an object. Body is base64; for large objects use presignUrl."),
         );
@@ -418,11 +418,7 @@ async fn main() -> Result<()> {
             "storage::deleteObject",
             RegisterFunction::new_async(move |req: delete_object::DeleteReq| {
                 let st = st.clone();
-                async move {
-                    delete_object::handle(&st, req)
-                        .await
-                        .map_err(IIIError::from)
-                }
+                async move { delete_object::handle(&st, req).await.map_err(Error::from) }
             })
             .description("Delete an object. No-op when the object does not exist."),
         );
@@ -433,7 +429,7 @@ async fn main() -> Result<()> {
             "storage::presignUrl",
             RegisterFunction::new_async(move |req: presign_url::PresignReq| {
                 let st = st.clone();
-                async move { presign_url::handle(&st, req).await.map_err(IIIError::from) }
+                async move { presign_url::handle(&st, req).await.map_err(Error::from) }
             })
             .description(
                 "Issue a short-lived URL the browser can hit directly to PUT or GET an object.",
@@ -446,7 +442,7 @@ async fn main() -> Result<()> {
             "storage::headObject",
             RegisterFunction::new_async(move |req: head_object::HeadReq| {
                 let st = st.clone();
-                async move { head_object::handle(&st, req).await.map_err(IIIError::from) }
+                async move { head_object::handle(&st, req).await.map_err(Error::from) }
             })
             .description(
                 "Fetch object metadata (size, ETag, content-type, last-modified) without downloading the body.",

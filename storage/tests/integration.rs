@@ -11,7 +11,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
@@ -80,7 +81,10 @@ async fn boot() -> Option<Harness> {
 /// Returns the last response value (or panics with the last error). The worker
 /// spawns rustfs and waits for the sidecar to become healthy before
 /// registering functions, so there's a non-trivial readiness window.
-async fn put_when_ready(client: &iii_sdk::III, payload: serde_json::Value) -> serde_json::Value {
+async fn put_when_ready(
+    client: &iii_sdk::IIIClient,
+    payload: serde_json::Value,
+) -> serde_json::Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut last_err: Option<String> = None;
     while std::time::Instant::now() < deadline {
@@ -139,7 +143,7 @@ async fn put_then_get_round_trips_via_rustfs() {
 
     assert!(put.is_object(), "putObject should return an object");
 
-    let get = timeout(
+    let get: serde_json::Value = timeout(
         Duration::from_secs(10),
         client.trigger(TriggerRequest {
             function_id: "storage::getObject".into(),
