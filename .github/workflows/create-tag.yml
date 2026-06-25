@@ -26,6 +26,7 @@ on:
           - image-resize
           - llm-router
           - mcp
+          - opencode
           - pi
           - provider-anthropic
           - provider-openai
