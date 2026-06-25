@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 
 use crate::clients::{
     ContextClient, EngineClient, FunctionDescriptor, RouterClient, SessionClient,
@@ -18,7 +18,7 @@ use crate::locks::SessionLocks;
 
 #[derive(Clone)]
 pub struct Deps {
-    pub iii: Arc<III>,
+    pub iii: Arc<IIIClient>,
     pub config: ConfigCell,
     pub functions: FunctionsCell,
     pub events: TurnEvents,
@@ -28,7 +28,7 @@ pub struct Deps {
 
 impl Deps {
     pub fn new(
-        iii: Arc<III>,
+        iii: Arc<IIIClient>,
         config: ConfigCell,
         functions: FunctionsCell,
         events: TurnEvents,

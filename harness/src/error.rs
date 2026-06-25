@@ -4,7 +4,7 @@
 //! `harness/spawn_depth_exceeded`, and `harness/spawn_fanout_exceeded`
 //! verbatim.
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HarnessError {
@@ -52,9 +52,9 @@ impl HarnessError {
     }
 }
 
-impl From<HarnessError> for IIIError {
+impl From<HarnessError> for Error {
     fn from(e: HarnessError) -> Self {
-        IIIError::Handler(e.to_string())
+        Error::Handler(e.to_string())
     }
 }
 

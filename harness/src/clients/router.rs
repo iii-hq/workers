@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use iii_observability::opentelemetry::trace::FutureExt as _;
+use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::helpers::create_channel;
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::sync::Notify;
@@ -53,13 +54,13 @@ pub struct ChatOutcome {
 
 #[derive(Clone)]
 pub struct RouterClient {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     timeout_ms: u64,
     coalesce_ms: u64,
 }
 
 impl RouterClient {
-    pub fn new(iii: Arc<III>, timeout_ms: u64, coalesce_ms: u64) -> Self {
+    pub fn new(iii: Arc<IIIClient>, timeout_ms: u64, coalesce_ms: u64) -> Self {
         Self {
             iii,
             timeout_ms,
@@ -141,7 +142,7 @@ impl RouterClient {
         // the SDK uses to attach a handler's context.
         let iii = self.iii.clone();
         let timeout_ms = self.timeout_ms;
-        let parent_cx = iii_observability::opentelemetry::Context::current();
+        let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
         let trigger = tokio::spawn(
             async move {
                 iii.trigger(TriggerRequest {

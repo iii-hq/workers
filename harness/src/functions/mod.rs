@@ -15,7 +15,8 @@ pub mod turn;
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -55,7 +56,7 @@ pub const STATUS_DESC: &str = "Read the current turn status for a session.";
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
 fn register<Req, Resp, F, Fut>(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
     id: &str,
     description: &str,
@@ -72,13 +73,13 @@ fn register<Req, Resp, F, Fut>(
         RegisterFunction::new_async(move |req: Req| {
             let deps = deps.clone();
             let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(IIIError::from) }
+            async move { handler(deps, req).await.map_err(Error::from) }
         })
         .description(description),
     );
 }
 
-pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
         send::handle(&d, r).await
     });

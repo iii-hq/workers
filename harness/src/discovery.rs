@@ -17,7 +17,9 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -40,7 +42,7 @@ pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
 }
 
 /// Fetch the authoritative registry and swap the snapshot; returns the count.
-async fn reload(iii: &Arc<III>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
+async fn reload(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
     let functions = engine.functions_list().await;
     let count = functions.len();
@@ -50,7 +52,7 @@ async fn reload(iii: &Arc<III>, cell: &FunctionsCell, timeout_ms: u64) -> usize 
 
 /// Seed the snapshot from the registry. The trigger fires only on change, so
 /// without this the cache would stay empty until the first change.
-pub async fn seed(iii: &Arc<III>, cell: &FunctionsCell, timeout_ms: u64) {
+pub async fn seed(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) {
     let count = reload(iii, cell, timeout_ms).await;
     tracing::info!(count, "seeded function-registry cache");
 }
@@ -75,7 +77,7 @@ pub struct OnFunctionsChangeResponse {
 /// seeded snapshot still serves — it just won't update until restart) rather
 /// than bricking boot. The handler is tagged `internal` so it stays off the
 /// public catalog (and out of the very cache it maintains).
-pub fn register_functions_trigger(iii: &Arc<III>, cell: FunctionsCell, timeout_ms: u64) {
+pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, timeout_ms: u64) {
     let engine = iii.clone();
     iii.register_function(
         FUNCTIONS_FN_ID,
@@ -85,7 +87,7 @@ pub fn register_functions_trigger(iii: &Arc<III>, cell: FunctionsCell, timeout_m
             async move {
                 let count = reload(&engine, &cell, timeout_ms).await;
                 tracing::debug!(count, "function-registry cache refreshed");
-                Ok::<OnFunctionsChangeResponse, IIIError>(OnFunctionsChangeResponse { ok: true })
+                Ok::<OnFunctionsChangeResponse, Error>(OnFunctionsChangeResponse { ok: true })
             }
         })
         .description(

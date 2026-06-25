@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, III};
+use iii_sdk::errors::Error;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -169,17 +171,15 @@ struct HookTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for HookTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let id = config.id.clone();
         let function_id = config.function_id.clone();
-        self.set
-            .add(self.point, config)
-            .map_err(IIIError::Handler)?;
+        self.set.add(self.point, config).map_err(Error::Handler)?;
         tracing::info!(trigger_type = self.point.trigger_type(), %id, %function_id, "hook binding registered");
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.set.remove(&config.id);
         Ok(())
     }
@@ -189,7 +189,7 @@ impl TriggerHandler for HookTriggerHandler {
 /// invocation. Cloned into [`crate::deps::Deps`].
 #[derive(Clone)]
 pub struct HookRegistry {
-    pub iii: Arc<III>,
+    pub iii: Arc<IIIClient>,
     pub pre_turn: HookSet,
     pub pre_generate: HookSet,
     pub post_generate: HookSet,
@@ -200,7 +200,7 @@ pub struct HookRegistry {
 impl HookRegistry {
     /// Register the five hook trigger types and return the registry. Must run
     /// before function registration so handlers capture the sets.
-    pub fn register(iii: &Arc<III>) -> Self {
+    pub fn register(iii: &Arc<IIIClient>) -> Self {
         let registry = HookRegistry {
             iii: iii.clone(),
             pre_turn: HookSet::default(),
@@ -218,7 +218,7 @@ impl HookRegistry {
         registry
     }
 
-    fn register_type(&self, iii: &Arc<III>, point: HookPoint, set: HookSet) {
+    fn register_type(&self, iii: &Arc<IIIClient>, point: HookPoint, set: HookSet) {
         let description = match point {
             HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto.",
             HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto.",

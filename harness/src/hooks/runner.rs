@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use globset::{Glob, GlobSetBuilder};
-use iii_sdk::TriggerRequest;
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::{Map, Value};
 
 use super::{HookBinding, HookPoint, HookRegistry};

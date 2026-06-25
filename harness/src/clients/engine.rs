@@ -5,7 +5,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::error::HarnessError;
@@ -21,12 +22,12 @@ pub struct FunctionDescriptor {
 
 #[derive(Clone)]
 pub struct EngineClient {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     timeout_ms: u64,
 }
 
 impl EngineClient {
-    pub fn new(iii: Arc<III>, timeout_ms: u64) -> Self {
+    pub fn new(iii: Arc<IIIClient>, timeout_ms: u64) -> Self {
         Self { iii, timeout_ms }
     }
 

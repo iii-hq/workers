@@ -5,7 +5,8 @@
 //! deterministic entry ids, and per-call checkpoints make redelivery safe.
 
 use async_trait::async_trait;
-use iii_sdk::{TriggerAction, TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -43,7 +44,7 @@ pub struct TurnStepResult {
 
 /// Enqueue the next durable loop step onto the engine's `default` queue.
 pub async fn enqueue_step(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     turn_id: &str,
     step: u64,
