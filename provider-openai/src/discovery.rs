@@ -8,7 +8,8 @@ use crate::curated::{base_id, enrich, is_legacy_generation};
 use crate::errors::upstream_unavailable;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
@@ -115,7 +116,7 @@ async fn fetch_live_models(
 }
 
 /// The refresh flow; returns the reconciled slice size.
-pub async fn refresh_models(iii: &III, http: &reqwest::Client) -> Result<usize, IIIError> {
+pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<usize, Error> {
     let token = state::load_token(iii).await;
     let resolved = router_client::resolve(iii, token.as_deref()).await?;
 
@@ -145,9 +146,9 @@ pub async fn refresh_models(iii: &III, http: &reqwest::Client) -> Result<usize, 
 }
 
 pub fn make_refresh_models(
-    iii: III,
+    iii: IIIClient,
     http: reqwest::Client,
-) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, IIIError>>
+) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
        + Send
        + Sync
        + 'static {
