@@ -26,7 +26,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput, WorkerMetadata, III};
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -73,7 +75,7 @@ fn worker_metadata() -> WorkerMetadata {
 /// `trigger_type_not_found` error log, never as an `Err` here. Restart
 /// the worker after the sibling appears to re-bind.
 fn bind_best_effort(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     trigger_type: &str,
     function_id: &str,
     config: serde_json::Value,

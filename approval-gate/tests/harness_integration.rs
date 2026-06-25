@@ -93,7 +93,7 @@ async fn harness_pre_trigger_hold_then_resolve_allow() {
         iii.register_function(
             "shell::run",
             RegisterFunction::new_async(|_req: serde_json::Value| async {
-                Ok::<_, iii_sdk::IIIError>(json!({ "ok": true }))
+                Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
             }),
         );
 

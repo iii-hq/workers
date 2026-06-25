@@ -36,7 +36,7 @@ mod tests {
     use crate::settings::SETTINGS_SCOPE;
     use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
 
-    async fn seed_pending(iii: &iii_sdk::III, sid: &str, cid: &str) {
+    async fn seed_pending(iii: &iii_sdk::IIIClient, sid: &str, cid: &str) {
         state_set(
             iii,
             PENDING_SCOPE,

@@ -1,9 +1,11 @@
 //! Thin `session::get` wrapper around `iii.trigger()`.
 
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
-pub async fn get(iii: &III, session_id: &str) -> Result<Value, IIIError> {
+pub async fn get(iii: &IIIClient, session_id: &str) -> Result<Value, Error> {
     iii.trigger(TriggerRequest {
         function_id: "session::get".into(),
         payload: json!({ "session_id": session_id }),

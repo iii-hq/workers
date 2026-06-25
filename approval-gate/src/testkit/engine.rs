@@ -5,9 +5,8 @@ use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerRequest, III,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell, RwLock};
 
@@ -267,7 +266,7 @@ impl BootOpts {
 }
 
 pub struct TestStack {
-    pub iii: Arc<III>,
+    pub iii: Arc<IIIClient>,
     pub deps: Arc<Deps>,
     /// The live config snapshot the handlers read (same cell as
     /// `deps.config`); write to it to drive per-call tuning knobs and
@@ -302,7 +301,7 @@ fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
         .ok()
 }
 
-async fn wait_for_harness(iii: &III) -> bool {
+async fn wait_for_harness(iii: &IIIClient) -> bool {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if iii
@@ -371,7 +370,9 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
                 let log = log.clone();
                 async move {
                     log_push(&log, req);
-                    Ok::<_, iii_sdk::IIIError>(json!({ "resolved": true, "turn_resumed": true }))
+                    Ok::<_, iii_sdk::errors::Error>(
+                        json!({ "resolved": true, "turn_resumed": true }),
+                    )
                 }
             }),
         );
@@ -384,7 +385,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
                 .get("session_id")
                 .and_then(Value::as_str)
                 .unwrap_or("s_1");
-            Ok::<_, iii_sdk::IIIError>(json!({ "meta": {
+            Ok::<_, iii_sdk::errors::Error>(json!({ "meta": {
                 "session_id": session_id,
                 "title": "Integration session",
                 "description": "",
@@ -402,7 +403,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
                 let log = log.clone();
                 async move {
                     log_push(&log, req);
-                    Ok::<_, iii_sdk::IIIError>(Value::Null)
+                    Ok::<_, iii_sdk::errors::Error>(Value::Null)
                 }
             }),
         );
@@ -416,7 +417,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
                 let log = log.clone();
                 async move {
                     log_push(&log, req);
-                    Ok::<_, iii_sdk::IIIError>(Value::Null)
+                    Ok::<_, iii_sdk::errors::Error>(Value::Null)
                 }
             }),
         );
@@ -466,10 +467,10 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
 }
 
 pub async fn call(
-    iii: &III,
+    iii: &IIIClient,
     function_id: &str,
     payload: Value,
-) -> Result<Value, iii_sdk::IIIError> {
+) -> Result<Value, iii_sdk::errors::Error> {
     iii.trigger(TriggerRequest {
         function_id: function_id.into(),
         payload,
@@ -479,13 +480,13 @@ pub async fn call(
     .await
 }
 
-pub async fn state_get(iii: &III, scope: &str, key: &str) -> Value {
+pub async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Value {
     call(iii, "state::get", json!({ "scope": scope, "key": key }))
         .await
         .expect("state::get")
 }
 
-pub async fn state_set(iii: &III, scope: &str, key: &str, value: Value) {
+pub async fn state_set(iii: &IIIClient, scope: &str, key: &str, value: Value) {
     call(
         iii,
         "state::set",
