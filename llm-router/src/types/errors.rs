@@ -47,9 +47,9 @@ impl RouterError {
 
 /// Typed pre-stream throws surface on the bus as `IIIError::Remote`
 /// (the engine's `{ code, message }` convention).
-impl From<RouterError> for iii_sdk::IIIError {
+impl From<RouterError> for iii_sdk::errors::Error {
     fn from(e: RouterError) -> Self {
-        iii_sdk::IIIError::Remote {
+        iii_sdk::errors::Error::Remote {
             code: e.code.as_str().to_string(),
             message: e.message,
             stacktrace: None,
@@ -61,15 +61,15 @@ impl From<RouterError> for iii_sdk::IIIError {
 /// the router's stable `invalid_request` wire error. Used with
 /// `RegisterFunction::new_async_with_bad_request` so typed schemas are emitted
 /// while the malformed-payload contract stays `router/invalid_request`.
-pub fn invalid_request_from_serde(e: serde_json::Error) -> iii_sdk::IIIError {
+pub fn invalid_request_from_serde(e: serde_json::Error) -> iii_sdk::errors::Error {
     RouterError::new(RouterCode::InvalidRequest, e.to_string()).into()
 }
 
 /// The engine's invocation path reports a missing function as
 /// `function_not_found` (engine/src/engine/mod.rs); bare `NOT_FOUND` is the
 /// configuration worker's missing-entry code and must not match here.
-pub fn is_function_not_found(err: &iii_sdk::IIIError) -> bool {
-    matches!(err, iii_sdk::IIIError::Remote { code, .. } if code.eq_ignore_ascii_case("function_not_found"))
+pub fn is_function_not_found(err: &iii_sdk::errors::Error) -> bool {
+    matches!(err, iii_sdk::errors::Error::Remote { code, .. } if code.eq_ignore_ascii_case("function_not_found"))
 }
 
 #[cfg(test)]

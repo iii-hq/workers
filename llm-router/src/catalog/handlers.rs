@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 use crate::types::router::{
     ModelGetRequest, ModelGetResponse, ModelsListRequest, ModelsListResponse,
@@ -16,7 +16,7 @@ use super::store::CatalogStore;
 
 pub fn make_models_list(
     catalog: Arc<CatalogStore>,
-) -> impl Fn(ModelsListRequest) -> BoxFuture<'static, Result<ModelsListResponse, IIIError>>
+) -> impl Fn(ModelsListRequest) -> BoxFuture<'static, Result<ModelsListResponse, Error>>
        + Send
        + Sync
        + 'static {
@@ -32,7 +32,7 @@ pub fn make_models_list(
 
 pub fn make_models_get(
     catalog: Arc<CatalogStore>,
-) -> impl Fn(ModelGetRequest) -> BoxFuture<'static, Result<Option<ModelGetResponse>, IIIError>>
+) -> impl Fn(ModelGetRequest) -> BoxFuture<'static, Result<Option<ModelGetResponse>, Error>>
        + Send
        + Sync
        + 'static {
@@ -48,7 +48,7 @@ pub fn make_models_get(
 
 pub fn make_models_supports(
     catalog: Arc<CatalogStore>,
-) -> impl Fn(ModelsSupportsRequest) -> BoxFuture<'static, Result<ModelsSupportsResponse, IIIError>>
+) -> impl Fn(ModelsSupportsRequest) -> BoxFuture<'static, Result<ModelsSupportsResponse, Error>>
        + Send
        + Sync
        + 'static {

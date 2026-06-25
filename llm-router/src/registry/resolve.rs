@@ -13,7 +13,7 @@ use crate::types::router::{
     UpdateCredentialRequest, UpdateCredentialResponse,
 };
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{errors::Error, IIIClient};
 use serde_json::{json, Value};
 
 use crate::config::entry::{read_entry_value, write_entry_value, EntryWriteLock};
@@ -22,7 +22,7 @@ use crate::settings::provider_slices;
 
 /// Core resolution — shared by the resolve handler, provider::list, and chat.
 pub async fn resolve_provider_config(
-    iii: &III,
+    iii: &IIIClient,
     declaration: &ProviderDeclaration,
 ) -> ProviderResolveResponse {
     let entry = read_entry_value(iii).await;
@@ -85,9 +85,9 @@ pub async fn resolve_provider_config(
 }
 
 pub fn make_provider_resolve(
-    iii: III,
+    iii: IIIClient,
     registry: Arc<RegistryStore>,
-) -> impl Fn(ProviderResolveRequest) -> BoxFuture<'static, Result<ProviderResolveResponse, IIIError>>
+) -> impl Fn(ProviderResolveRequest) -> BoxFuture<'static, Result<ProviderResolveResponse, Error>>
        + Send
        + Sync
        + 'static {
@@ -97,7 +97,7 @@ pub fn make_provider_resolve(
             let record = registry
                 .verify_token(&req.id, req.token.as_deref())
                 .await
-                .map_err(IIIError::from)?;
+                .map_err(Error::from)?;
             Ok(resolve_provider_config(&iii, &record.declaration).await)
         })
     }
@@ -106,10 +106,10 @@ pub fn make_provider_resolve(
 /// OAuth write-back (spec § update_credential): providers never write the
 /// configuration entry directly. Read-merge-write under the entry lock.
 pub fn make_update_credential(
-    iii: III,
+    iii: IIIClient,
     registry: Arc<RegistryStore>,
     entry_lock: EntryWriteLock,
-) -> impl Fn(UpdateCredentialRequest) -> BoxFuture<'static, Result<UpdateCredentialResponse, IIIError>>
+) -> impl Fn(UpdateCredentialRequest) -> BoxFuture<'static, Result<UpdateCredentialResponse, Error>>
        + Send
        + Sync
        + 'static {
@@ -119,7 +119,7 @@ pub fn make_update_credential(
             registry
                 .verify_token(&req.id, req.token.as_deref())
                 .await
-                .map_err(IIIError::from)?;
+                .map_err(Error::from)?;
             let credential = req.credential;
             if !credential.is_object() {
                 return Err(RouterError::new(

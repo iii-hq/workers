@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use super::fingerprint::{changed_slices, fingerprint_slices};
@@ -22,11 +24,11 @@ use crate::types::router::{ConfigChangedEvent, RouterAck};
 pub type ListingLookup = Arc<dyn Fn(&str) -> BoxFuture<'static, bool> + Send + Sync>;
 
 pub fn make_on_config_changed(
-    iii: III,
+    iii: IIIClient,
     supports_model_listing: ListingLookup,
     settings: Arc<RwLock<RouterSettings>>,
     debounce_ms: u64,
-) -> impl Fn(ConfigChangedEvent) -> BoxFuture<'static, Result<RouterAck, IIIError>> + Send + Sync + 'static
+) -> impl Fn(ConfigChangedEvent) -> BoxFuture<'static, Result<RouterAck, Error>> + Send + Sync + 'static
 {
     let last_fingerprints: Arc<Mutex<BTreeMap<String, String>>> = Arc::default();
     let pending: Arc<Mutex<BTreeSet<String>>> = Arc::default();
