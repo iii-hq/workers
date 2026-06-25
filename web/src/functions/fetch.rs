@@ -7,7 +7,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use futures::FutureExt;
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, WebConfig};
@@ -28,7 +29,7 @@ pub async fn handle(payload: Value, cfg: &WebConfig) -> Value {
     execute_fetch(parsed, cfg).await
 }
 
-pub fn register(iii: &Arc<III>, shared: &SharedConfig) {
+pub fn register(iii: &Arc<IIIClient>, shared: &SharedConfig) {
     let shared = shared.clone();
     iii.register_function(
         "web::fetch",
@@ -42,7 +43,7 @@ pub fn register(iii: &Arc<III>, shared: &SharedConfig) {
                 let envelope = result.unwrap_or_else(|_| {
                     json!({ "ok": false, "error": "transport_error", "message": "internal error" })
                 });
-                Ok::<Value, IIIError>(envelope)
+                Ok::<Value, Error>(envelope)
             }
         })
         .description(TOOL_DESCRIPTION)
