@@ -243,6 +243,29 @@ export const webFetchInvalidUrlError = base(
   },
 )
 
+/** Fail-closed dispatch-policy denial — the agent's allow-list omits web::fetch.
+ * The harness rejects the call before it runs; renders as the actionable
+ * DispatchDeniedView (not the raw "invocation failed" string). This is the #1
+ * workflow-node failure: a node authored without `agent.functions: ["web::fetch"]`. */
+export const webFetchDispatchDenied = base(
+  'web-fetch-err-dispatch-denied',
+  'web::fetch',
+  { method: 'GET', url: 'https://news.ycombinator.com' },
+  {
+    error: {
+      kind: 'function_error',
+      message:
+        "function web::fetch is not permitted by this agent's dispatch policy (no allow-glob match or a deny-glob match)",
+      content: [
+        {
+          type: 'text',
+          text: "function web::fetch is not permitted by this agent's dispatch policy",
+        },
+      ],
+    },
+  },
+)
+
 export const webFixtures = [
   webFetchJsonSuccess,
   webFetchJsonExplicitFormat,
@@ -258,4 +281,5 @@ export const webFixtures = [
   webFetchTooLargeError,
   webFetchTransportError,
   webFetchInvalidUrlError,
+  webFetchDispatchDenied,
 ] as const
