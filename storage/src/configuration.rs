@@ -5,7 +5,9 @@ use crate::backend::factory::{self, LocalBackendCtx};
 use crate::backend::Backend;
 use crate::config::{Topology, WorkerConfig};
 use crate::handlers::AppState;
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,7 +21,7 @@ const CONFIG_RETRIES: u32 = 3;
 /// Register the `storage` configuration schema with the configuration worker.
 /// When `seed` is present, its value is installed as `initial_value`. Otherwise,
 /// the built-in default is seeded only when no stored value exists yet.
-pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Storage",
@@ -36,7 +38,7 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
 }
 
 /// Read the live `storage` configuration (env-expanded by the configuration worker).
-pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
@@ -45,7 +47,7 @@ pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -53,14 +55,14 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
 /// Returns `Ok(None)` when the entry does not exist (`NOT_FOUND`).
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
@@ -136,10 +138,10 @@ pub struct OnConfigChangeResponse {
 /// `boot_topology` is the bucket/notification topology captured at startup; any
 /// reload that would change it is refused (those require a worker restart).
 pub fn register_config_trigger(
-    iii: &III,
+    iii: &IIIClient,
     state: AppState,
     boot_topology: Topology,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -150,7 +152,7 @@ pub fn register_config_trigger(
             let boot_topology = boot_topology.clone();
             async move {
                 on_config_change(&engine, &st, &boot_topology).await;
-                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
@@ -178,7 +180,7 @@ pub fn register_config_trigger(
 /// (redirecting writes or wiping backends) without updating persisted state.
 /// Instead we re-fetch the stored value via `configuration::get`. A
 /// topology-changing update is refused (it requires a restart).
-async fn on_config_change(iii: &III, state: &AppState, boot_topology: &Topology) {
+async fn on_config_change(iii: &IIIClient, state: &AppState, boot_topology: &Topology) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -210,7 +212,11 @@ async fn on_config_change(iii: &III, state: &AppState, boot_topology: &Topology)
     }
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii

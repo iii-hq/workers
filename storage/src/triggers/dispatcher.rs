@@ -7,7 +7,7 @@ use crate::triggers::normalize::{EventKind, ObjectEventNormalized};
 use crate::triggers::registry::TriggerRegistry;
 use crate::triggers::{object_created, object_deleted};
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -21,12 +21,12 @@ pub trait EventDispatcher: Send + Sync {
 }
 
 pub struct EngineDispatcher {
-    pub iii: III,
+    pub iii: IIIClient,
     pub registry: Arc<TriggerRegistry>,
 }
 
 impl EngineDispatcher {
-    pub fn new(iii: III, registry: Arc<TriggerRegistry>) -> Self {
+    pub fn new(iii: IIIClient, registry: Arc<TriggerRegistry>) -> Self {
         Self { iii, registry }
     }
 }
