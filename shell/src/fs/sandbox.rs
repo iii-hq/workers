@@ -166,7 +166,7 @@ impl FsBackend for SandboxFsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::IIIError;
+    use iii_sdk::errors::Error;
     use std::sync::Mutex;
 
     struct StubFwd {
@@ -176,11 +176,11 @@ mod tests {
 
     #[async_trait]
     impl TriggerFwd for StubFwd {
-        async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, IIIError> {
+        async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
             *self.captured.lock().unwrap() = Some((fid.into(), payload));
             match &self.respond_with {
                 Ok(v) => Ok(v.clone()),
-                Err(json) => Err(IIIError::Handler(json.to_string())),
+                Err(json) => Err(Error::Handler(json.to_string())),
             }
         }
     }
@@ -248,7 +248,7 @@ mod tests {
         let content = iii_sdk::channels::StreamChannelRef {
             channel_id: "c-1".into(),
             access_key: "k-1".into(),
-            direction: iii_sdk::channels::ChannelDirection::Read,
+            direction: iii_sdk::helpers::ChannelDirection::Read,
         };
         let resp = b
             .write(WriteArgs {
@@ -334,8 +334,8 @@ mod tests {
         struct RemoteFwd;
         #[async_trait]
         impl TriggerFwd for RemoteFwd {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, IIIError> {
-                Err(IIIError::Remote {
+            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+                Err(Error::Remote {
                     code: "S214".into(),
                     message: "directory not empty".into(),
                     stacktrace: None,
@@ -361,8 +361,8 @@ mod tests {
         struct WrappedFwd;
         #[async_trait]
         impl TriggerFwd for WrappedFwd {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, IIIError> {
-                Err(IIIError::Remote {
+            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+                Err(Error::Remote {
                     code: "invocation_failed".into(),
                     message: "handler error: S211: not found".into(),
                     stacktrace: None,

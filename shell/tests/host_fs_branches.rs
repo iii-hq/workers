@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{Channel, IIIError};
+use iii_sdk::channel::Channel;
+use iii_sdk::errors::Error;
 
 use shell::fs::host::{ChannelMaker, HostFsBackend, HostFsConfig};
 use shell::fs::{ChmodArgs, FsBackend, GrepArgs, MkdirArgs, MvArgs, RmArgs, SedArgs, StatArgs};
@@ -13,8 +14,8 @@ struct StubChan;
 
 #[async_trait]
 impl ChannelMaker for StubChan {
-    async fn create_channel(&self, _: usize) -> Result<Channel, IIIError> {
-        Err(IIIError::Handler(
+    async fn create_channel(&self, _: usize) -> Result<Channel, Error> {
+        Err(Error::Handler(
             "stub channel maker — non-streaming tests only".into(),
         ))
     }

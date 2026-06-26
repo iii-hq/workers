@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use shell::config::ShellConfig;
@@ -32,8 +32,8 @@ fn cfg_with_allow(allow: &[&str]) -> Arc<ShellConfig> {
     Arc::new(c)
 }
 
-fn fresh_iii() -> III {
-    III::new("ws://stub-not-connected:0")
+fn fresh_iii() -> IIIClient {
+    IIIClient::new("ws://stub-not-connected:0")
 }
 
 fn tmpdir(prefix: &str) -> std::path::PathBuf {
@@ -115,11 +115,11 @@ async fn exec_handler_rejects_unlisted_command() {
     .await
     .unwrap_err();
     // Allowlist rejections are intentionally plain-string (no S-code): they
-    // flow through `From<String>` to `IIIError::Handler`, which the engine maps
+    // flow through `From<String>` to `Error::Handler`, which the engine maps
     // to `code: "invocation_failed"` with the violation in the message — NOT a
     // Remote S-code. Assert that contract so the split stays explicit.
     assert!(
-        matches!(err, iii_sdk::IIIError::Handler(_)),
+        matches!(err, iii_sdk::errors::Error::Handler(_)),
         "allowlist rejection must be the plain-string Handler path, got {err:?}"
     );
     assert!(err.to_string().contains("allowlist"), "got: {err}");
@@ -243,13 +243,13 @@ async fn status_handler_rejects_unknown_job_id() {
     .await
     .unwrap_err();
     // The handler now returns the TYPED ExecError carrying the S-code, and it
-    // lifts to `IIIError::Remote { code, .. }` so the engine maps the S-code to
+    // lifts to `Error::Remote { code, .. }` so the engine maps the S-code to
     // the wire `code` verbatim (not the old `invocation_failed`/Handler collapse).
     assert_eq!(err.code, "S211");
     assert!(err.message.contains("no such job"));
-    match iii_sdk::IIIError::from(err) {
-        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S211"),
-        other => panic!("expected IIIError::Remote, got {other:?}"),
+    match iii_sdk::errors::Error::from(err) {
+        iii_sdk::errors::Error::Remote { code, .. } => assert_eq!(code, "S211"),
+        other => panic!("expected Error::Remote, got {other:?}"),
     }
 }
 
@@ -266,13 +266,13 @@ async fn kill_handler_rejects_unknown_job_id() {
     ))
     .await
     .unwrap_err();
-    // Typed ExecError carrying the S-code; lifts to `IIIError::Remote` so the
+    // Typed ExecError carrying the S-code; lifts to `Error::Remote` so the
     // S-code reaches the wire `code` verbatim.
     assert_eq!(err.code, "S211");
     assert!(err.message.contains("no such job"));
-    match iii_sdk::IIIError::from(err) {
-        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S211"),
-        other => panic!("expected IIIError::Remote, got {other:?}"),
+    match iii_sdk::errors::Error::from(err) {
+        iii_sdk::errors::Error::Remote { code, .. } => assert_eq!(code, "S211"),
+        other => panic!("expected Error::Remote, got {other:?}"),
     }
 }
 
@@ -346,8 +346,11 @@ fn fs_host_backend() -> Arc<dyn shell::fs::FsBackend> {
     struct StubChan;
     #[async_trait::async_trait]
     impl shell::fs::host::ChannelMaker for StubChan {
-        async fn create_channel(&self, _: usize) -> Result<iii_sdk::Channel, iii_sdk::IIIError> {
-            Err(iii_sdk::IIIError::Handler("stub channel".into()))
+        async fn create_channel(
+            &self,
+            _: usize,
+        ) -> Result<iii_sdk::channel::Channel, iii_sdk::errors::Error> {
+            Err(iii_sdk::errors::Error::Handler("stub channel".into()))
         }
         fn engine_address(&self) -> String {
             "ws://stub:0".into()
@@ -553,21 +556,21 @@ async fn fs_dispatch_split_target_rejects_unknown_kind() {
     // The S210 payload-deser code is now the top-level wire `code` (Remote),
     // not buried in a stringified-JSON message.
     match err {
-        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S210"),
-        other => panic!("expected IIIError::Remote {{ code: S210 }}, got {other:?}"),
+        iii_sdk::errors::Error::Remote { code, .. } => assert_eq!(code, "S210"),
+        other => panic!("expected Error::Remote {{ code: S210 }}, got {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn fs_handler_rejects_bad_payload_shape() {
     // path must be a string. Hits the S210 mapping in fs_ls::handle, which now
-    // lifts to `IIIError::Remote { code: "S210", .. }`.
+    // lifts to `Error::Remote { code: "S210", .. }`.
     let err = functions::fs_ls::handle(fs_host_backend(), fresh_iii(), true, json!({"path": 42}))
         .await
         .unwrap_err();
     match err {
-        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S210"),
-        other => panic!("expected IIIError::Remote {{ code: S210 }}, got {other:?}"),
+        iii_sdk::errors::Error::Remote { code, .. } => assert_eq!(code, "S210"),
+        other => panic!("expected Error::Remote {{ code: S210 }}, got {other:?}"),
     }
 }
 

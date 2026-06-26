@@ -4,7 +4,7 @@ use crate::jobs::{self, JobStatus};
 
 pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
     // Return the TYPED ExecError (not its JSON string): main.rs's
-    // `.map_err(IIIError::from)` lifts it to `IIIError::Remote`, so the S-code
+    // `.map_err(Error::from)` lifts it to `Error::Remote`, so the S-code
     // lands as the top-level wire `code` and an agent's single shell:: error
     // handler works here too. job-not-found maps to S211; operational kill
     // failures below use S216 (the exec/fs "other io" code).
@@ -110,7 +110,7 @@ mod missing_job_tests {
     }
 
     /// Pin the wire contract: the handler's `Err` lifts to
-    /// `IIIError::Remote { code: "S211", .. }`, which the engine SDK maps to
+    /// `Error::Remote { code: "S211", .. }`, which the engine SDK maps to
     /// the wire `code` verbatim — NOT the `invocation_failed`/Handler collapse.
     #[tokio::test]
     async fn killing_missing_job_lifts_to_remote_s211() {
@@ -119,12 +119,12 @@ mod missing_job_tests {
         })
         .await
         .expect_err("missing job must error");
-        match iii_sdk::IIIError::from(err) {
-            iii_sdk::IIIError::Remote { code, message, .. } => {
+        match iii_sdk::errors::Error::from(err) {
+            iii_sdk::errors::Error::Remote { code, message, .. } => {
                 assert_eq!(code, "S211");
                 assert!(message.contains("no such job"));
             }
-            other => panic!("expected IIIError::Remote, got {other:?}"),
+            other => panic!("expected Error::Remote, got {other:?}"),
         }
     }
 }

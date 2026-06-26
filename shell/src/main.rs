@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_observability::OtelConfig;
-use iii_sdk::{register_worker, IIIError, InitOptions, RegisterFunction};
+use iii_helpers::observability::OtelConfig;
+use iii_sdk::errors::Error;
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::Value;
 
 mod config;
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    tracing::info!(url = %cli.url, seed_config = %cli.config, "connecting to III engine");
+    tracing::info!(url = %cli.url, seed_config = %cli.config, "connecting to IIIClient engine");
 
     let iii = register_worker(
         &cli.url,
@@ -139,7 +140,7 @@ async fn main() -> Result<()> {
                 let st = st.clone();
                 telemetry::record_call("shell::exec", async move {
                     let cfg = { st.runtime.read().await.config.clone() };
-                    // handle already returns Result<_, IIIError> (S-codes lifted
+                    // handle already returns Result<_, Error> (S-codes lifted
                     // to Remote inside); no map_err needed.
                     let res = functions::exec::handle(cfg, st.iii.clone(), req).await;
                     // Truncation is only visible on the typed Ok response (the
@@ -184,7 +185,7 @@ async fn main() -> Result<()> {
                     let cfg = { st.runtime.read().await.config.clone() };
                     functions::exec_bg::handle(cfg, st.iii.clone(), req)
                         .await
-                        .map_err(IIIError::from)
+                        .map_err(Error::from)
                 })
             })
             .description(
@@ -210,7 +211,7 @@ async fn main() -> Result<()> {
         "shell::kill",
         RegisterFunction::new_async(|req: KillRequest| {
             telemetry::record_call("shell::kill", async move {
-                functions::kill::handle(req).await.map_err(IIIError::from)
+                functions::kill::handle(req).await.map_err(Error::from)
             })
         })
         .description(
@@ -224,7 +225,7 @@ async fn main() -> Result<()> {
         "shell::status",
         RegisterFunction::new_async(|req: StatusRequest| {
             telemetry::record_call("shell::status", async move {
-                functions::status::handle(req).await.map_err(IIIError::from)
+                functions::status::handle(req).await.map_err(Error::from)
             })
         })
         .description(
@@ -245,7 +246,7 @@ async fn main() -> Result<()> {
                 let st = st.clone();
                 telemetry::record_call("shell::list", async move {
                     let cfg = { st.runtime.read().await.config.clone() };
-                    functions::list::handle(cfg).await.map_err(IIIError::from)
+                    functions::list::handle(cfg).await.map_err(Error::from)
                 })
             })
             .request_format(schema_value::<functions::types::ListRequest>())
@@ -266,7 +267,7 @@ async fn main() -> Result<()> {
                 let st = st.clone();
                 telemetry::record_call("shell::config-status", async move {
                     let status = { st.reload_status.read().await.clone() };
-                    Ok::<Value, IIIError>(serde_json::to_value(status)?)
+                    Ok::<Value, Error>(serde_json::to_value(status)?)
                 })
             })
             .request_format(schema_value::<functions::types::ConfigStatusRequest>())
@@ -343,7 +344,7 @@ fn spawn_job_reaper(state: AppState) {
 /// Register the 10 shell::fs::* functions. Each keeps a `Value` handler (so the
 /// inline S210 mapping survives), reads the live host backend + sandbox toggle
 /// from AppState, and publishes its typed schema via request/response_format.
-fn register_fs(iii: &iii_sdk::III, state: &AppState) {
+fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
     macro_rules! fs_fn {
         ($id:literal, $module:ident, $req:ty, $resp:ty, $desc:expr) => {{
             let st = state.clone();
@@ -359,7 +360,7 @@ fn register_fs(iii: &iii_sdk::III, state: &AppState) {
                             let rt = st.runtime.read().await;
                             (rt.host_backend.clone(), rt.config.sandbox.enabled)
                         };
-                        // handle already returns Result<_, IIIError> (FsError
+                        // handle already returns Result<_, Error> (FsError
                         // S-codes lifted to Remote inside); no map_err needed.
                         functions::$module::handle(host, st.iii.clone(), sb_enabled, req).await
                     })

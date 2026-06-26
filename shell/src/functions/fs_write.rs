@@ -8,13 +8,13 @@ use crate::functions::fs_dispatch::pick_backend;
 
 pub async fn handle(
     host: Arc<dyn FsBackend>,
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
     sandbox_enabled: bool,
     payload: Value,
-) -> Result<WriteResponse, iii_sdk::IIIError> {
+) -> Result<WriteResponse, iii_sdk::errors::Error> {
     let req: WriteRequest = serde_json::from_value(payload)
         .map_err(|e| FsError::new("S210", format!("bad write payload: {e}")))?;
-    let (target, mut specs, batch) = req.into_specs().map_err(iii_sdk::IIIError::from)?;
+    let (target, mut specs, batch) = req.into_specs().map_err(iii_sdk::errors::Error::from)?;
     let backend = pick_backend(target, host, iii, sandbox_enabled);
 
     // Single-file form (`path`+`content`): return the backend response verbatim
@@ -26,7 +26,7 @@ pub async fn handle(
         return backend
             .write(specs.pop().unwrap())
             .await
-            .map_err(iii_sdk::IIIError::from);
+            .map_err(iii_sdk::errors::Error::from);
     }
 
     // Batch: write each file in order, aggregating per-file results. A failure
@@ -34,7 +34,10 @@ pub async fn handle(
     let mut files = Vec::with_capacity(specs.len());
     let mut total: u64 = 0;
     for spec in specs {
-        let r = backend.write(spec).await.map_err(iii_sdk::IIIError::from)?;
+        let r = backend
+            .write(spec)
+            .await
+            .map_err(iii_sdk::errors::Error::from)?;
         total += r.bytes_written;
         files.push(WriteFileResult {
             path: r.path,

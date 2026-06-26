@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -17,11 +17,11 @@ use shell::triggers::TriggerFwd;
 
 struct StubFwd {
     captured: Mutex<Vec<(String, Value)>>,
-    next: Mutex<Option<Result<Value, IIIError>>>,
+    next: Mutex<Option<Result<Value, Error>>>,
 }
 
 impl StubFwd {
-    fn new(resp: Result<Value, IIIError>) -> Arc<Self> {
+    fn new(resp: Result<Value, Error>) -> Arc<Self> {
         Arc::new(Self {
             captured: Mutex::new(Vec::new()),
             next: Mutex::new(Some(resp)),
@@ -34,7 +34,7 @@ impl StubFwd {
 
 #[async_trait]
 impl TriggerFwd for StubFwd {
-    async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, IIIError> {
+    async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
         self.captured.lock().unwrap().push((fid.into(), payload));
         self.next
             .lock()
