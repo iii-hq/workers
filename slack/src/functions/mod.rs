@@ -69,7 +69,7 @@ macro_rules! slack_method {
             iii: &::std::sync::Arc<::iii_sdk::IIIClient>,
             deps: &::std::sync::Arc<$crate::deps::Deps>,
         ) {
-            $crate::functions::register::<$req, ::serde_json::Value, _, _>(
+            $crate::functions::register::<$req, $crate::response::SlackResponse, _, _>(
                 iii,
                 deps,
                 $id,
@@ -78,7 +78,8 @@ macro_rules! slack_method {
                     let params = ::serde_json::to_value(&req).map_err(|e| {
                         ::iii_sdk::errors::Error::Handler(format!("serialize {}: {e}", $method))
                     })?;
-                    $crate::clients::slack::call(&d, $method, params).await
+                    let value = $crate::clients::slack::call(&d, $method, params).await?;
+                    Ok($crate::response::SlackResponse::from_value(value))
                 },
             );
         }

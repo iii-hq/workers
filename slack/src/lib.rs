@@ -9,6 +9,7 @@ pub mod httpio;
 pub mod ingress;
 pub mod kv;
 pub mod manifest;
+pub mod response;
 pub mod signing;
 pub mod stream;
 pub mod surface;

@@ -31,11 +31,12 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         "Call any Slack Web API method by name with arbitrary params (escape hatch).",
         |d, req: CallReq| async move {
             let params = req.params.unwrap_or_else(|| json!({}));
-            if req.as_user {
-                crate::clients::slack::call_user(&d, &req.method, params).await
+            let value = if req.as_user {
+                crate::clients::slack::call_user(&d, &req.method, params).await?
             } else {
-                crate::clients::slack::call(&d, &req.method, params).await
-            }
+                crate::clients::slack::call(&d, &req.method, params).await?
+            };
+            Ok(crate::response::SlackResponse::from_value(value))
         },
     );
 }

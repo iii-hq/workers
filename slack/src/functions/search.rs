@@ -31,7 +31,8 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, req: MessagesReq| async move {
             let params = serde_json::to_value(&req)
                 .map_err(|e| iii_sdk::errors::Error::Handler(format!("serialize search: {e}")))?;
-            crate::clients::slack::call_user(&d, "search.messages", params).await
+            let value = crate::clients::slack::call_user(&d, "search.messages", params).await?;
+            Ok(crate::response::SlackResponse::from_value(value))
         },
     );
 }

@@ -1,0 +1,42 @@
+{
+  "description": "Publish App Home.",
+  "function_id": "slack::views::publish",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "hash": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "user_id": {
+        "type": "string"
+      },
+      "view": {
+        "description": "Block Kit view of type `home`."
+      }
+    },
+    "required": [
+      "user_id",
+      "view"
+    ],
+    "title": "PublishReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

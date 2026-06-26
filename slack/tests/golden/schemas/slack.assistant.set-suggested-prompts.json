@@ -1,0 +1,46 @@
+{
+  "description": "Set suggested prompts.",
+  "function_id": "slack::assistant::set-suggested-prompts",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "channel_id": {
+        "type": "string"
+      },
+      "prompts": {
+        "description": "Up to 4 prompts: `[{ \"title\": \"...\", \"message\": \"...\" }]`."
+      },
+      "thread_ts": {
+        "type": "string"
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "channel_id",
+      "prompts",
+      "thread_ts"
+    ],
+    "title": "SetSuggestedPromptsReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

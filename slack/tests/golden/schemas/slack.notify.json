@@ -1,0 +1,53 @@
+{
+  "description": "Out-of-band session send.",
+  "function_id": "slack::notify",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "blocks": {
+        "default": null,
+        "description": "Optional Block Kit blocks."
+      },
+      "session_id": {
+        "description": "A session this bot created (its replies are bound to a Slack thread).",
+        "type": "string"
+      },
+      "text": {
+        "default": null,
+        "description": "Message text (markdown). Used unless `blocks` is provided.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "NotifyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "channel": {
+        "type": "string"
+      },
+      "delivered": {
+        "type": "boolean"
+      },
+      "ts": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "channel",
+      "delivered"
+    ],
+    "title": "NotifyResponse",
+    "type": "object"
+  }
+}

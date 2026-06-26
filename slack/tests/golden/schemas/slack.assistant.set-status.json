@@ -1,0 +1,42 @@
+{
+  "description": "Set status.",
+  "function_id": "slack::assistant::set-status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "channel_id": {
+        "type": "string"
+      },
+      "status": {
+        "description": "Status text, e.g. `\"is thinking...\"`. Empty string clears it.",
+        "type": "string"
+      },
+      "thread_ts": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel_id",
+      "status",
+      "thread_ts"
+    ],
+    "title": "SetStatusReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

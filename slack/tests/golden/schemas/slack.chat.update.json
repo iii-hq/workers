@@ -1,0 +1,51 @@
+{
+  "description": "Edit a message.",
+  "function_id": "slack::chat::update",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "blocks": true,
+      "channel": {
+        "type": "string"
+      },
+      "markdown_text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "ts": {
+        "description": "ts of the message to edit.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel",
+      "ts"
+    ],
+    "title": "UpdateReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

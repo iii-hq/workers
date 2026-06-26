@@ -1,0 +1,36 @@
+{
+  "description": "Set purpose.",
+  "function_id": "slack::conversations::set-purpose",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "channel": {
+        "type": "string"
+      },
+      "purpose": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel",
+      "purpose"
+    ],
+    "title": "SetPurposeReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

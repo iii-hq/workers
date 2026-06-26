@@ -83,7 +83,8 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         "slack::auth::test",
         "Check the bot token and return the bot/workspace identity (auth.test).",
         |d, _req: AuthTestReq| async move {
-            crate::clients::slack::call(&d, "auth.test", serde_json::json!({})).await
+            let value = crate::clients::slack::call(&d, "auth.test", serde_json::json!({})).await?;
+            Ok(crate::response::SlackResponse::from_value(value))
         },
     );
     super::register(

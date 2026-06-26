@@ -1,0 +1,48 @@
+{
+  "description": "Add a bookmark.",
+  "function_id": "slack::bookmarks::add",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "channel_id": {
+        "type": "string"
+      },
+      "link": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "title": {
+        "type": "string"
+      },
+      "type": {
+        "description": "Bookmark type, e.g. `link`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel_id",
+      "title",
+      "type"
+    ],
+    "title": "BookmarkAddReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

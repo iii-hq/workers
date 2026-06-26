@@ -1,0 +1,37 @@
+{
+  "description": "Pin a message.",
+  "function_id": "slack::pins::add",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "channel": {
+        "type": "string"
+      },
+      "timestamp": {
+        "description": "Message ts to pin/unpin.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel",
+      "timestamp"
+    ],
+    "title": "PinReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

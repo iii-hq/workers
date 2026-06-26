@@ -9,15 +9,7 @@ use crate::config::{ModelRef, WorkerConfig};
 use crate::deps::Deps;
 use crate::kv::{self, PendingMsg};
 
-const CHANNEL_CONTEXT: &str = "\
-You are operating as a Slack app in a thread with a user. The only thing the \
-user sees is your assistant reply text, delivered as a Slack message in this \
-thread. There is no console or log they can read. Format with Slack-flavored \
-markdown (no tables). Live context: channel={channel}, thread_ts={thread_ts}, \
-session_id={session_id}. To reach the user later (reminders, async results), \
-use slack::notify targeting this session, or harness::send on this session, and \
-bind a cron trigger — discover the API via engine::functions::list. The slack::* \
-function family is available; discover what is installed before assuming.";
+const CHANNEL_CONTEXT: &str = include_str!("../prompts/channel-context.txt");
 
 /// Entry point when the bot is explicitly addressed in a thread.
 #[allow(clippy::too_many_arguments)]

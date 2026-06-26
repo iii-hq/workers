@@ -1,0 +1,51 @@
+{
+  "description": "Post an ephemeral message.",
+  "function_id": "slack::chat::post-ephemeral",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "blocks": true,
+      "channel": {
+        "type": "string"
+      },
+      "text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "thread_ts": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "user": {
+        "description": "User who will see the ephemeral message.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel",
+      "user"
+    ],
+    "title": "PostEphemeralReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

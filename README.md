@@ -48,6 +48,7 @@ npx skills add iii-hq/iii --all
 | [`opencode`](opencode/) | Node | OpenCode as an iii worker — `opencode::*` run headless OpenCode turns via `opencode run --format json`, mirror raw JSON events onto `opencode::events`, and stream AgentEvent frames (with usage + cost) onto `agent::events`. |
 | [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |
 | [`telegram-bot`](telegram-bot/) | Rust | Telegram webhook bridge to the harness stack — live message edits, inline approval keyboards, and configurable verbosity. |
+| [`slack`](slack/) | Rust | Slack Web API as `slack::*` functions plus a harness bridge — @mention-triggered turns, native `chat.*Stream` replies, Block Kit approvals. See [`slack/architecture/`](slack/architecture/). |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
