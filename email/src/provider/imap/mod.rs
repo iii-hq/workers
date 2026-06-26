@@ -4,7 +4,7 @@ pub mod idle;
 pub mod reconnect;
 
 use dashmap::DashMap;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -35,23 +35,23 @@ impl ImapPool {
     /// Acquire (or open) a connection for the given (account, folder). Returns
     /// an owned guard that holds the lock for the duration of the IMAP
     /// exchange. Reconnects transparently on first acquire after a drop.
-    pub async fn acquire(&self, account: &str, folder: &str) -> Result<SessionGuard, IIIError> {
+    pub async fn acquire(&self, account: &str, folder: &str) -> Result<SessionGuard, Error> {
         // Validate FIRST — invalid (account, folder) tuples must never reach
         // the DashMap, otherwise a malformed-payload flood from a hostile
         // caller can balloon `self.sessions` without bound.
         let acct = self.cfg.accounts.get(account).ok_or_else(|| {
-            IIIError::Handler(
+            Error::Handler(
                 json!({"code":"E600","message":format!("unknown account `{account}`")}).to_string(),
             )
         })?;
         let imap_cfg = acct.imap.as_ref().ok_or_else(|| {
-            IIIError::Handler(
+            Error::Handler(
                 json!({"code":"E603","message":format!("account `{account}` has no imap config")})
                     .to_string(),
             )
         })?;
         if !imap_cfg.folders.iter().any(|f| f == folder) {
-            return Err(IIIError::Handler(
+            return Err(Error::Handler(
                 json!({
                     "code":"E613",
                     "message":format!("folder `{folder}` not in account `{account}`.imap.folders")

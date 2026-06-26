@@ -1,4 +1,4 @@
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use std::sync::Arc;
 
 pub mod accounts;
@@ -13,7 +13,7 @@ pub mod send;
 pub const REGISTERED_FN_COUNT: usize = 8;
 
 pub fn register_all(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &Arc<crate::config::WorkerConfig>,
     pool: &Arc<crate::provider::imap::ImapPool>,
 ) {

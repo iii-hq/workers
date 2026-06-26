@@ -1,4 +1,4 @@
-use iii_sdk::{protocol::TriggerRequest, IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -29,7 +29,7 @@ pub struct SendReq {
     pub attachments: Vec<Attachment>,
 }
 
-pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
+pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
     let cfg = cfg.clone();
     let iii_inner = iii.clone();
     iii.register_function(
@@ -39,20 +39,20 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
             let iii = iii_inner.clone();
             async move {
                 if req.to.is_empty() {
-                    return Err(IIIError::Handler(
+                    return Err(Error::Handler(
                         json!({"code":"E601","message":"at least one recipient required in `to`"})
                             .to_string(),
                     ));
                 }
                 if req.html.is_none() && req.text.is_none() {
-                    return Err(IIIError::Handler(
+                    return Err(Error::Handler(
                         json!({"code":"E604","message":"provide at least one of `html` or `text`"})
                             .to_string(),
                     ));
                 }
                 let total = req.to.len() + req.cc.len() + req.bcc.len();
                 if total > cfg.limits.max_recipients {
-                    return Err(IIIError::Handler(
+                    return Err(Error::Handler(
                         json!({
                             "code":"E602",
                             "message":format!("recipient count {} exceeds max {}", total, cfg.limits.max_recipients)
@@ -61,13 +61,13 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                 }
 
                 let acct = cfg.accounts.get(&req.account).ok_or_else(|| {
-                    IIIError::Handler(
+                    Error::Handler(
                         json!({"code":"E600","message":format!("unknown account `{}`", req.account)})
                             .to_string(),
                     )
                 })?;
                 let smtp_cfg = acct.smtp.as_ref().ok_or_else(|| {
-                    IIIError::Handler(
+                    Error::Handler(
                         json!({"code":"E603","message":format!("account `{}` has no smtp transport configured", req.account)})
                             .to_string(),
                     )
@@ -80,7 +80,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                     // Base64 inflates by ~4/3 → conservative check on decoded size.
                     let approx = b.len() * 3 / 4;
                     if approx > max_bytes {
-                        return Err(IIIError::Handler(
+                        return Err(Error::Handler(
                             json!({
                                 "code":"E605",
                                 "message":format!("attachment `{}` exceeds max {} bytes", a.filename, max_bytes)
@@ -98,7 +98,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                     })
                     .await
                     .map_err(|e| {
-                        IIIError::Handler(
+                        Error::Handler(
                             json!({
                                 "code":"E606",
                                 "message":format!("auth::get_token failed for `email::{}`: {e}", req.account)
@@ -106,7 +106,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                         )
                     })?;
                 if cred.is_null() {
-                    return Err(IIIError::Handler(
+                    return Err(Error::Handler(
                         json!({
                             "code":"E607",
                             "message":format!("no credential stored for `email::{}` — call auth::set_token first", req.account)
@@ -118,7 +118,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                     &acct.from, smtp_cfg, &cred, req, cfg.limits.send_timeout_ms,
                 ).await?;
 
-                Ok::<_, IIIError>(json!({ "message_id": message_id }))
+                Ok::<_, Error>(json!({ "message_id": message_id }))
             }
         })
         .description(

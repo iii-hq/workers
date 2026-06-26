@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -18,7 +18,7 @@ fn default_add() -> bool {
     true
 }
 
-pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
+pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
         "email::flag",
@@ -27,7 +27,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
             async move {
                 let allowed = ["seen", "flagged", "answered", "deleted", "draft"];
                 if !allowed.iter().any(|a| a.eq_ignore_ascii_case(&req.flag)) {
-                    return Err(IIIError::Handler(
+                    return Err(Error::Handler(
                         json!({
                             "code":"E622",
                             "message":format!("flag `{}` not in {{seen, flagged, answered, deleted, draft}}", req.flag)
@@ -55,10 +55,10 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 .await;
 
                 match outcome {
-                    Ok(()) => Ok::<_, IIIError>(json!({ "ok": true })),
+                    Ok(()) => Ok::<_, Error>(json!({ "ok": true })),
                     Err(e) => {
                         guard.poison();
-                        Err(IIIError::Handler(
+                        Err(Error::Handler(
                             json!({"code":"E623","message":format!("uid_store failed: {e}")})
                                 .to_string(),
                         ))

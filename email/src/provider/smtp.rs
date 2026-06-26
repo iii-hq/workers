@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use lettre::{
     message::{
         header::ContentType, Attachment as LAttach, Mailbox, Message, MultiPart, SinglePart,
@@ -37,12 +37,12 @@ pub async fn send(
     cred: &Value,
     req: SendReq,
     timeout_ms: u64,
-) -> Result<String, IIIError> {
+) -> Result<String, Error> {
     let user = cred
         .get("username")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            IIIError::Handler(
+            Error::Handler(
                 json!({"code":"E608","message":"credential missing `username`"}).to_string(),
             )
         })?;
@@ -50,13 +50,13 @@ pub async fn send(
         .get("password")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            IIIError::Handler(
+            Error::Handler(
                 json!({"code":"E608","message":"credential missing `password`"}).to_string(),
             )
         })?;
 
     let from_mb: Mailbox = from.parse().map_err(|e| {
-        IIIError::Handler(
+        Error::Handler(
             json!({"code":"E609","message":format!("invalid from address `{from}`: {e}")})
                 .to_string(),
         )
@@ -98,16 +98,14 @@ pub async fn send(
     };
 
     let message = builder.multipart(multipart).map_err(|e| {
-        IIIError::Handler(
-            json!({"code":"E609","message":format!("build message: {e}")}).to_string(),
-        )
+        Error::Handler(json!({"code":"E609","message":format!("build message: {e}")}).to_string())
     })?;
 
     let creds = Credentials::new(user.to_string(), pass.to_string());
     let transport: AsyncSmtpTransport<Tokio1Executor> = if cfg.starttls {
         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&cfg.host)
             .map_err(|e| {
-                IIIError::Handler(json!({"code":"E609","message":e.to_string()}).to_string())
+                Error::Handler(json!({"code":"E609","message":e.to_string()}).to_string())
             })?
             .port(cfg.port)
             .credentials(creds)
@@ -125,7 +123,7 @@ pub async fn send(
     };
 
     let response = transport.send(message).await.map_err(|e| {
-        IIIError::Handler(
+        Error::Handler(
             json!({"code":"E620","message":format!("smtp send failed: {e}")}).to_string(),
         )
     })?;
@@ -141,16 +139,16 @@ pub async fn send(
     Ok(message_id)
 }
 
-fn parse_addr(field: &str, addr: &str) -> Result<Mailbox, IIIError> {
+fn parse_addr(field: &str, addr: &str) -> Result<Mailbox, Error> {
     addr.parse::<Mailbox>().map_err(|e| {
-        IIIError::Handler(
+        Error::Handler(
             json!({"code":"E609","message":format!("invalid {field} address `{addr}`: {e}")})
                 .to_string(),
         )
     })
 }
 
-fn build_body(html: Option<&str>, text: Option<&str>) -> Result<MultiPart, IIIError> {
+fn build_body(html: Option<&str>, text: Option<&str>) -> Result<MultiPart, Error> {
     let mp = match (html, text) {
         (Some(h), Some(t)) => MultiPart::alternative()
             .singlepart(
@@ -182,9 +180,9 @@ fn into_multipart(mp: MultiPart) -> MultiPart {
     mp
 }
 
-fn build_attachment_part(a: Attachment) -> Result<SinglePart, IIIError> {
+fn build_attachment_part(a: Attachment) -> Result<SinglePart, Error> {
     let ct: ContentType = a.content_type.parse().map_err(|e| {
-        IIIError::Handler(
+        Error::Handler(
             json!({
                 "code":"E609",
                 "message":format!("invalid attachment content_type `{}`: {e}", a.content_type)
@@ -196,7 +194,7 @@ fn build_attachment_part(a: Attachment) -> Result<SinglePart, IIIError> {
     // reserved for size-limit violations.
     let bytes = match a.source {
         AttachmentSource::Base64(s) => B64.decode(s.as_bytes()).map_err(|e| {
-            IIIError::Handler(
+            Error::Handler(
                 json!({"code":"E626","message":format!("attachment `{}` base64 decode failed: {e}", a.filename)}).to_string(),
             )
         })?,

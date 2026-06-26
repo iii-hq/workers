@@ -1,4 +1,4 @@
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use mail_parser::{MessageParser, MimeHeaders};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -12,7 +12,7 @@ struct GetReq {
     uid: u32,
 }
 
-pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
+pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
         "email::get",
@@ -28,7 +28,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     Ok(b) => b,
                     Err(e) => {
                         guard.poison();
-                        return Err(IIIError::Handler(
+                        return Err(Error::Handler(
                             json!({"code":"E619","message":format!("fetch body failed: {e}")})
                                 .to_string(),
                         ));
@@ -36,7 +36,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 };
 
                 let parsed = MessageParser::default().parse(&body[..]).ok_or_else(|| {
-                    IIIError::Handler(
+                    Error::Handler(
                         json!({"code":"E619","message":"mime parse failed"}).to_string(),
                     )
                 })?;
@@ -51,7 +51,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     }));
                 }
 
-                Ok::<_, IIIError>(json!({
+                Ok::<_, Error>(json!({
                     "uid": req.uid,
                     "message_id": parsed.message_id().unwrap_or(""),
                     "from": parsed.from()

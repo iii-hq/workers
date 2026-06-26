@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use iii_sdk::{IIIError, TriggerConfig, TriggerHandler};
+use iii_sdk::{
+    errors::Error,
+    trigger::{TriggerConfig, TriggerHandler},
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -27,9 +30,9 @@ pub struct Handler {
 
 #[async_trait]
 impl TriggerHandler for Handler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let cfg: Config = serde_json::from_value(config.config.clone()).map_err(|e| {
-            IIIError::Handler(
+            Error::Handler(
                 json!({
                     "code":"CONFIG_ERROR",
                     "message":format!("email::new-mail config: {e}")
@@ -54,7 +57,7 @@ impl TriggerHandler for Handler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.registry.unregister(&config.id);
         tracing::info!(instance = %config.id, "email::new-mail trigger unregistered");
         Ok(())

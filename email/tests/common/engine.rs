@@ -1,4 +1,4 @@
-//! Lazily resolve a single shared `iii_sdk::III` handle so `@engine`
+//! Lazily resolve a single shared `iii_sdk::IIIClient` handle so `@engine`
 //! scenarios can run in-process against a live engine. When the engine
 //! isn't reachable (typical contributor laptop), every consumer gets
 //! `None` and `@engine` steps short-circuit without failing the run.
@@ -9,12 +9,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{register_worker, InitOptions, III};
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use tokio::sync::OnceCell;
 
-static ENGINE: OnceCell<Option<Arc<III>>> = OnceCell::const_new();
+static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
 
-pub async fn get_or_init() -> Option<Arc<III>> {
+pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
         .get_or_init(|| async {
             let url = std::env::var("III_ENGINE_WS_URL")

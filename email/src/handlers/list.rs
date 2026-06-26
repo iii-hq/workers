@@ -1,4 +1,4 @@
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,7 +22,7 @@ fn default_limit() -> u32 {
 }
 const MAX_LIMIT: u32 = 1000;
 
-pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
+pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
         "email::list",
@@ -42,7 +42,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     Ok(u) => u,
                     Err(e) => {
                         guard.poison();
-                        return Err(IIIError::Handler(
+                        return Err(Error::Handler(
                             json!({"code":"E612","message":format!("uid_search failed: {e}")})
                                 .to_string(),
                         ));
@@ -65,7 +65,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 }
 
                 let next_cursor = uids.first().copied();
-                Ok::<_, IIIError>(json!({
+                Ok::<_, Error>(json!({
                     "items": items,
                     "next_since_uid": next_cursor,
                 }))

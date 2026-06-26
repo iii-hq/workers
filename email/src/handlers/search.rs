@@ -1,5 +1,5 @@
 use iii_sdk::channels::ChannelWriter;
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,7 +19,7 @@ fn default_folder() -> String {
     "INBOX".into()
 }
 
-pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
+pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     let iii_inner = iii.clone();
     iii.register_function(
@@ -40,7 +40,7 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     Ok(u) => u,
                     Err(e) => {
                         guard.poison();
-                        return Err(IIIError::Handler(
+                        return Err(Error::Handler(
                             json!({"code":"E612","message":format!("uid_search failed: {e}")})
                                 .to_string(),
                         ));
@@ -74,12 +74,12 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 }
 
                 writer.close().await.map_err(|e| {
-                    IIIError::Handler(
+                    Error::Handler(
                         json!({"code":"E621","message":format!("channel close failed: {e}")})
                             .to_string(),
                     )
                 })?;
-                Ok::<_, IIIError>(Value::Null)
+                Ok::<_, Error>(Value::Null)
             }
         })
         .description(

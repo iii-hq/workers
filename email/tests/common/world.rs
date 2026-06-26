@@ -7,14 +7,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cucumber::World;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct EmailWorld {
-    pub iii: Option<Arc<III>>,
+    pub iii: Option<Arc<IIIClient>>,
     pub unique_id: String,
     pub stash: HashMap<String, Value>,
 }
