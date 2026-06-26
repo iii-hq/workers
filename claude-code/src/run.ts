@@ -83,8 +83,59 @@ const SessionIdSchema = z.object({
   session_id: z.string().describe('iii session id returned by claude::run / claude::start'),
 });
 
-const RUN_REQUEST_FORMAT = z.toJSONSchema(RunPayloadSchema);
-const SESSION_ID_FORMAT = z.toJSONSchema(SessionIdSchema);
+// The registry's publish validator has no `$schema` meta-schema registered, so
+// the draft-2020-12 `$schema` key z.toJSONSchema stamps at the root fails
+// publish. Strip it; the schema body is what the engine + registry consume.
+function jsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const out = z.toJSONSchema(schema) as Record<string, unknown>;
+  delete out.$schema;
+  return out;
+}
+
+const RUN_REQUEST_FORMAT = jsonSchema(RunPayloadSchema);
+const SESSION_ID_FORMAT = jsonSchema(SessionIdSchema);
+
+const UsageSchema = z.object({
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  cache_read_tokens: z.number().optional(),
+  cache_write_tokens: z.number().optional(),
+});
+const SessionRecordSchema = z.object({
+  session_id: z.string(),
+  claude_session_id: z.string().nullable(),
+  cwd: z.string(),
+  model: z.string(),
+  status: z.enum(['working', 'done', 'error']),
+  turns: z.number(),
+  total_cost_usd: z.number(),
+  usage: UsageSchema.nullable(),
+  updated_at_ms: z.number(),
+});
+const RUN_RESPONSE_FORMAT = jsonSchema(
+  z.object({
+    session_id: z.string(),
+    claude_session_id: z.string().nullable().optional(),
+    result: z.string().optional(),
+    stop_reason: z.string().optional(),
+    is_error: z.boolean().optional(),
+    num_turns: z.number().optional(),
+    total_cost_usd: z.number().optional(),
+    usage: UsageSchema.nullable().optional(),
+    busy: z.boolean().optional(),
+    reason: z.string().optional(),
+  }),
+);
+const START_RESPONSE_FORMAT = jsonSchema(
+  z.object({ session_id: z.string(), started: z.boolean() }),
+);
+const STOP_RESPONSE_FORMAT = jsonSchema(
+  z.object({ session_id: z.string(), stopped: z.boolean(), reason: z.string().optional() }),
+);
+const STATUS_RESPONSE_FORMAT = jsonSchema(
+  z.object({ session_id: z.string(), live: z.boolean(), record: SessionRecordSchema.nullable() }),
+);
+const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(SessionRecordSchema) }));
 
 type LiveRun = { interrupt: () => Promise<void> };
 const live = new Map<string, LiveRun>();
@@ -347,6 +398,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: RUN_RESPONSE_FORMAT,
     },
   );
 
@@ -369,6 +421,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Start a Claude Code turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: START_RESPONSE_FORMAT,
     },
   );
 
@@ -384,6 +437,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
     {
       description: 'Interrupt a live Claude Code run for a session.',
       request_format: SESSION_ID_FORMAT,
+      response_format: STOP_RESPONSE_FORMAT,
     },
   );
 
@@ -397,6 +451,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
     {
       description: 'Point-in-time status of a Claude Code session.',
       request_format: SESSION_ID_FORMAT,
+      response_format: STATUS_RESPONSE_FORMAT,
     },
   );
 
@@ -406,6 +461,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
     {
       description: 'List every Claude Code session this worker has run.',
       request_format: { type: 'object', properties: {} },
+      response_format: SESSIONS_RESPONSE_FORMAT,
     },
   );
 
@@ -417,6 +473,7 @@ export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: E
       description:
         'Alias for claude::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: RUN_RESPONSE_FORMAT,
     },
   );
 }

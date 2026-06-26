@@ -9,7 +9,8 @@ use crate::triggers::object_created::TriggerConfig as CreatedConfig;
 use crate::triggers::object_deleted::TriggerConfig as DeletedConfig;
 use crate::triggers::registry::TriggerRegistry;
 use async_trait::async_trait;
-use iii_sdk::{IIIError, TriggerConfig, TriggerHandler};
+use iii_sdk::errors::Error;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use std::sync::Arc;
 
 pub struct ObjectCreatedHandler {
@@ -22,12 +23,12 @@ pub struct ObjectCreatedHandler {
 
 #[async_trait]
 impl TriggerHandler for ObjectCreatedHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let cfg: CreatedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
             // Build the envelope through serde_json so internal quotes,
             // newlines, and other JSON-special chars in `e` are escaped
             // rather than producing malformed JSON.
-            IIIError::Handler(
+            Error::Handler(
                 serde_json::json!({
                     "code": "CONFIG_ERROR",
                     "message": format!("object-created config: {e}"),
@@ -36,7 +37,7 @@ impl TriggerHandler for ObjectCreatedHandler {
             )
         })?;
         if !self.wired_buckets.contains(&cfg.bucket) {
-            return Err(IIIError::Handler(
+            return Err(Error::Handler(
                 serde_json::json!({
                     "code": "CONFIG_ERROR",
                     "message": format!(
@@ -62,7 +63,7 @@ impl TriggerHandler for ObjectCreatedHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.registry.unregister(&config.id);
         tracing::info!(instance = %config.id, "object-created trigger unregistered");
         Ok(())
@@ -76,9 +77,9 @@ pub struct ObjectDeletedHandler {
 
 #[async_trait]
 impl TriggerHandler for ObjectDeletedHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let cfg: DeletedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
-            IIIError::Handler(
+            Error::Handler(
                 serde_json::json!({
                     "code": "CONFIG_ERROR",
                     "message": format!("object-deleted config: {e}"),
@@ -87,7 +88,7 @@ impl TriggerHandler for ObjectDeletedHandler {
             )
         })?;
         if !self.wired_buckets.contains(&cfg.bucket) {
-            return Err(IIIError::Handler(
+            return Err(Error::Handler(
                 serde_json::json!({
                     "code": "CONFIG_ERROR",
                     "message": format!(
@@ -113,7 +114,7 @@ impl TriggerHandler for ObjectDeletedHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.registry.unregister(&config.id);
         tracing::info!(instance = %config.id, "object-deleted trigger unregistered");
         Ok(())

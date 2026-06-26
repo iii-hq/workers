@@ -83,7 +83,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "approval-gate"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "approval-gate",
@@ -92,7 +92,7 @@ dependencies = [
  "clap",
  "futures",
  "harness",
- "iii-sdk",
+ "iii-sdk 0.20.0",
  "regex",
  "schemars",
  "serde",
@@ -545,14 +545,14 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
  "clap",
  "globset",
  "iii-observability",
- "iii-sdk",
+ "iii-sdk 0.19.2",
  "jsonschema",
  "schemars",
  "serde",
@@ -805,6 +805,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-helpers"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09daa7c14a9e4c1f7077c4a181918d207e3f05cdfea8b2d7781bbeb80caf4c5d"
+dependencies = [
+ "futures-util",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "iii-observability"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -833,6 +854,27 @@ dependencies = [
  "futures-util",
  "hostname",
  "iii-observability",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-sdk"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5957568413b9a5178c11bf91b20909e93e568b187e259e941ba6009a7ec3f5c1"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hostname",
+ "iii-helpers",
  "reqwest",
  "schemars",
  "serde",

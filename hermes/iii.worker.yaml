@@ -1,0 +1,24 @@
+iii: v1
+name: hermes
+language: python
+deploy: image
+manifest: pyproject.toml
+description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send delivers to 27+ messaging platforms, and inbound platform/webhook deliveries are republished onto hermes::events for iii workers to react to.
+
+env:
+  III_URL: "ws://localhost:49134"
+
+runtime:
+  language: python
+  entry: src/main.py
+
+# Hermes bundles a Python 3.11 runtime, a Node bridge, and 27 platform
+# adapters via its installer, and the gateway runs an inbound HTTP server.
+# It needs more headroom than a thin CRUD worker.
+resources:
+  memory: 2048
+  cpus: 2
+
+scripts:
+  install: "pip install ."
+  start: "python -m src.main"

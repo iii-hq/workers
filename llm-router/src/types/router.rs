@@ -7,7 +7,7 @@ use crate::types::credential::Credential;
 use crate::types::events::{StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
-use iii_sdk::StreamChannelRef;
+use iii_sdk::channel::StreamChannelRef;
 
 // ── consumer surface ────────────────────────────────────────────────────────
 

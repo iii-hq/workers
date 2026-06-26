@@ -8,9 +8,9 @@ use crate::functions::types::{ExecRequest, ExecResponse};
 
 pub async fn handle(
     cfg: Arc<ShellConfig>,
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
     req: ExecRequest,
-) -> Result<ExecResponse, iii_sdk::IIIError> {
+) -> Result<ExecResponse, iii_sdk::errors::Error> {
     // Field-level type errors (wrong-type `command`, non-string `args[i]`,
     // bad `target.kind`) come from the per-field deserializers in
     // `functions::types`; they surface here as the trigger `Err` carrying
@@ -21,10 +21,10 @@ pub async fn handle(
     // The typed-schema migration must NOT collapse "absent args" into
     // "args: []" or callers lose the shell-words path.
     // argv-parse and allowlist/denylist rejections are plain Strings with no
-    // S-code; via `From<String> for IIIError` they become the engine's
+    // S-code; via `From<String> for Error` they become the engine's
     // `invocation_failed` envelope, message naming the violation. Only the
     // backend `ExecError` below carries an S-code, surfaced as the wire `code`
-    // through `From<ExecError> for IIIError` (Remote) so an agent can branch
+    // through `From<ExecError> for Error` (Remote) so an agent can branch
     // on `error.code`.
     let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
 
@@ -40,7 +40,7 @@ pub async fn handle(
         req.base_dir.as_deref(),
         &cfg,
     )
-    .map_err(iii_sdk::IIIError::from)?;
+    .map_err(iii_sdk::errors::Error::from)?;
     // stdin needs no gating (opaque input bytes); it is host-only, enforced by
     // the sandbox backend's is_empty() rejection of any populated override.
     overrides.stdin = req.stdin;
@@ -52,7 +52,7 @@ pub async fn handle(
     let out = backend
         .run(&argv, timeout, &overrides)
         .await
-        .map_err(iii_sdk::IIIError::from)?;
+        .map_err(iii_sdk::errors::Error::from)?;
 
     Ok(ExecResponse::from(out))
 }

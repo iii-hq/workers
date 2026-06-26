@@ -1066,9 +1066,9 @@ async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::mode
         ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
         ExposeMode::Native => {
             let policy = CompiledPolicy::from(record.options.functions.as_ref());
-            let engine = deps.engine().await;
+            let snapshot = deps.functions().await;
             let mut tools = Vec::new();
-            for descriptor in engine.functions_list().await {
+            for descriptor in snapshot.iter() {
                 if !policy.allows(&descriptor.function_id) {
                     continue;
                 }

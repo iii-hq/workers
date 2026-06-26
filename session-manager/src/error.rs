@@ -2,7 +2,7 @@
 //! snake_case, worker-prefixed code in a `code: message` shape (see
 //! tech-specs/2026-06-agentic/README.md § Error conventions).
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
@@ -60,9 +60,9 @@ impl SessionError {
     }
 }
 
-impl From<SessionError> for IIIError {
+impl From<SessionError> for Error {
     fn from(e: SessionError) -> Self {
-        IIIError::Handler(e.to_string())
+        Error::Handler(e.to_string())
     }
 }
 

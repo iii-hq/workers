@@ -8,16 +8,16 @@ use crate::functions::fs_dispatch::pick_backend;
 
 pub async fn handle(
     host: Arc<dyn FsBackend>,
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
     sandbox_enabled: bool,
     payload: Value,
-) -> Result<LsResponse, iii_sdk::IIIError> {
+) -> Result<LsResponse, iii_sdk::errors::Error> {
     // Both the payload-deser error (S210) and the backend error carry their
-    // S-code to the wire `code` via `From<FsError> for IIIError` (Remote), so
+    // S-code to the wire `code` via `From<FsError> for Error` (Remote), so
     // an agent can branch on `error.code` instead of parsing the message.
     let req: LsRequest = serde_json::from_value(payload)
         .map_err(|e| FsError::new("S210", format!("bad ls payload: {e}")))?;
     let (target, args) = req.split();
     let backend = pick_backend(target, host, iii, sandbox_enabled);
-    backend.ls(args).await.map_err(iii_sdk::IIIError::from)
+    backend.ls(args).await.map_err(iii_sdk::errors::Error::from)
 }

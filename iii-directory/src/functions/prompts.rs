@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -63,12 +64,12 @@ pub struct PromptGetOutput {
     pub modified_at: String,
 }
 
-pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
+pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     register_list_prompts(iii, cfg);
     register_get_prompt(iii, cfg);
 }
 
-fn register_list_prompts(iii: &Arc<III>, cfg: &SharedConfig) {
+fn register_list_prompts(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     let cfg_inner = cfg.clone();
     iii.register_function(
         "directory::prompts::list",
@@ -90,7 +91,7 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &SharedConfig) {
                         }
                     })
                     .collect();
-                Ok::<_, IIIError>(ListPromptsOutput { prompts: out })
+                Ok::<_, Error>(ListPromptsOutput { prompts: out })
             }
         })
         .description(
@@ -99,13 +100,13 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &SharedConfig) {
     );
 }
 
-fn register_get_prompt(iii: &Arc<III>, cfg: &SharedConfig) {
+fn register_get_prompt(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     let cfg_inner = cfg.clone();
     iii.register_function(
         "directory::prompts::get",
         RegisterFunction::new_async(move |req: PromptGetInput| {
             let cfg = cfg_inner.load_full();
-            async move { get_prompt(&cfg, req).await.map_err(IIIError::Handler) }
+            async move { get_prompt(&cfg, req).await.map_err(Error::Handler) }
         })
         .description(
             "Fetch one filesystem-backed prompt by name. Returns the raw markdown body plus name, \

@@ -7,7 +7,7 @@
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 use crate::catalog::store::CatalogStore;
 use crate::registry::store::RegistryStore;
@@ -102,7 +102,7 @@ pub fn make_route(
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
     settings: Arc<RwLock<RouterSettings>>,
-) -> impl Fn(RouteRequest) -> BoxFuture<'static, Result<RouteResponse, IIIError>> + Send + Sync + 'static
+) -> impl Fn(RouteRequest) -> BoxFuture<'static, Result<RouteResponse, Error>> + Send + Sync + 'static
 {
     move |req: RouteRequest| {
         let (registry, catalog, settings) = (registry.clone(), catalog.clone(), settings.clone());
@@ -124,7 +124,7 @@ pub fn make_route(
                 heuristics,
                 default_provider,
             })
-            .map_err(IIIError::from)?;
+            .map_err(Error::from)?;
             Ok(RouteResponse {
                 provider: candidates[0].clone(),
                 candidates,

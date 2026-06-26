@@ -2,7 +2,7 @@
 
 [package]
 name = "context-manager"
-version = "1.0.0"
+version = "1.0.2"
 edition = "2021"
 publish = false
 
@@ -15,7 +15,7 @@ name = "context_manager"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.19.2"
+iii-sdk = "=0.20.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

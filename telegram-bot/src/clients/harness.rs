@@ -1,4 +1,6 @@
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -95,10 +97,10 @@ pub struct HarnessStatusRequest {
 }
 
 pub async fn send(
-    iii: &III,
+    iii: &IIIClient,
     req: HarnessSendRequest,
     timeout_ms: u64,
-) -> Result<HarnessSendResponse, IIIError> {
+) -> Result<HarnessSendResponse, Error> {
     let value = iii
         .trigger(TriggerRequest {
             function_id: "harness::send".into(),
@@ -107,14 +109,14 @@ pub async fn send(
             timeout_ms: Some(timeout_ms),
         })
         .await?;
-    serde_json::from_value(value).map_err(|e| IIIError::Handler(format!("harness::send: {e}")))
+    serde_json::from_value(value).map_err(|e| Error::Handler(format!("harness::send: {e}")))
 }
 
 pub async fn stop(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     timeout_ms: u64,
-) -> Result<HarnessStopResponse, IIIError> {
+) -> Result<HarnessStopResponse, Error> {
     let value = iii
         .trigger(TriggerRequest {
             function_id: "harness::stop".into(),
@@ -123,10 +125,14 @@ pub async fn stop(
             timeout_ms: Some(timeout_ms),
         })
         .await?;
-    serde_json::from_value(value).map_err(|e| IIIError::Handler(format!("harness::stop: {e}")))
+    serde_json::from_value(value).map_err(|e| Error::Handler(format!("harness::stop: {e}")))
 }
 
-pub async fn status_active(iii: &III, session_id: &str, timeout_ms: u64) -> Result<bool, IIIError> {
+pub async fn status_active(
+    iii: &IIIClient,
+    session_id: &str,
+    timeout_ms: u64,
+) -> Result<bool, Error> {
     let v = iii
         .trigger(TriggerRequest {
             function_id: "harness::status".into(),

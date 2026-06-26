@@ -4,7 +4,8 @@ use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, InitOptions, TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use llm_router::register::register_router;
 use provider_anthropic::register::register_provider;
 use serde_json::{json, Value};
@@ -137,7 +138,11 @@ macro_rules! engine_or_skip {
     };
 }
 
-async fn call(iii: &III, function_id: &str, payload: Value) -> Result<Value, iii_sdk::IIIError> {
+async fn call(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, iii_sdk::errors::Error> {
     iii.trigger(TriggerRequest {
         function_id: function_id.into(),
         payload,
@@ -149,9 +154,9 @@ async fn call(iii: &III, function_id: &str, payload: Value) -> Result<Value, iii
 
 /// Consumer-side channel: collect frames + a pump that drives dispatch.
 async fn consumer_channel(
-    iii: &III,
+    iii: &IIIClient,
 ) -> (
-    iii_sdk::StreamChannelRef,
+    iii_sdk::channel::StreamChannelRef,
     Arc<std::sync::Mutex<Vec<String>>>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -225,7 +230,7 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
 // ── boot + config ───────────────────────────────────────────────────────────
 
 /// Boot router + provider on one engine; wait until the provider is listed.
-async fn boot_stack(engine_url: &str) -> (III, III) {
+async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
     let router_iii = register_worker(engine_url, InitOptions::default());
     register_router(router_iii.clone())
         .await
@@ -256,7 +261,7 @@ async fn boot_stack(engine_url: &str) -> (III, III) {
 }
 
 /// Paste-a-key: point the anthropic slice at the stub.
-async fn configure_stub_key(router_iii: &III, stub_url: &str) {
+async fn configure_stub_key(router_iii: &IIIClient, stub_url: &str) {
     call(
         router_iii,
         "configuration::set",
@@ -271,7 +276,7 @@ async fn configure_stub_key(router_iii: &III, stub_url: &str) {
 /// Pull the live (stubbed) list into the catalog and wait until routing can
 /// see it — the declaration carries no models, so tests that route by
 /// catalog ownership must refresh first.
-async fn refresh_and_wait(router_iii: &III, provider_iii: &III, expect_id: &str) {
+async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expect_id: &str) {
     let res = call(
         provider_iii,
         "provider::anthropic::refresh_models",

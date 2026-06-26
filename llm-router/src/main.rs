@@ -7,7 +7,8 @@
 //! keys found there are warned about instead of silently dropped.
 
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, InitOptions};
 use llm_router::register::register_router;
 
 #[derive(Parser, Debug)]

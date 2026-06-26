@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 
 use crate::deps::Deps;
 use crate::render::stream;
@@ -12,7 +13,7 @@ pub struct BindingAck {
     pub ok: bool,
 }
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::super::register(
         iii,
         deps,
@@ -22,7 +23,7 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
     );
 }
 
-async fn handle(deps: &Deps, evt: MessageAddedEvent) -> Result<BindingAck, IIIError> {
+async fn handle(deps: &Deps, evt: MessageAddedEvent) -> Result<BindingAck, Error> {
     let message = match evt.message {
         Some(m) => m,
         None => return Ok(BindingAck { ok: true }),

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
 // only routed views left are `traces` and `configuration`.
-export type View = 'configuration' | 'traces'
+export type View = 'configuration' | 'traces' | 'workers'
 
 /**
  * Sub-tab inside the Configuration page. URL-driven so deep links and the
@@ -27,6 +27,9 @@ function routeFromHash(hash: string): View | null {
   // Backwards compat: `#/chat` no longer exists as a view -- chat is the
   // always-visible side dock now. Land legacy bookmarks on the default view.
   if (hash === '#/chat') return 'traces'
+  if (hash === '#/workers') {
+    return 'workers'
+  }
   if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
     return 'configuration'
   }
@@ -43,6 +46,8 @@ function hashFor(view: View): string {
   switch (view) {
     case 'traces':
       return '#/traces'
+    case 'workers':
+      return '#/workers'
     case 'configuration':
       return '#/configuration'
   }

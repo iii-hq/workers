@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
@@ -32,7 +34,7 @@ pub struct ShellRuntime {
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<RwLock<ShellRuntime>>,
-    pub iii: III,
+    pub iii: IIIClient,
     /// Serializes hot-reloads: held across the authoritative fetch + build + swap
     /// so an older event's slow build can never clobber a newer applied config.
     pub reload_lock: Arc<Mutex<()>>,
@@ -102,7 +104,7 @@ pub fn prepare_config(cfg: &ShellConfig) -> Result<Arc<ShellConfig>, String> {
 }
 
 /// Build the live runtime: validate the config, then build the host fs backend.
-pub fn build_runtime(cfg: &ShellConfig, iii: &III) -> Result<ShellRuntime, String> {
+pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime, String> {
     let config = prepare_config(cfg)?;
     if config.fs.host_root.is_none() {
         tracing::warn!(
@@ -129,31 +131,38 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &III) -> Result<ShellRuntime, Strin
 }
 
 /// Register the `shell` configuration schema with the configuration worker.
-pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<(), String> {
+///
+/// `initial_value` (used only on first registration; preserved afterwards) is
+/// taken from an explicit `--config` seed when given, otherwise from the
+/// built-in zero-config default when no value is stored yet — so the worker
+/// boots with no config file at all (database parity). Unlike database we
+/// cannot seed `ShellConfig::default()`: it is intentionally unjailed/invalid,
+/// so the built-in seed is `ShellConfig::seed_default()`, a bootable permissive
+/// dev default.
+pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Shell",
         "description": "Command allowlist/denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
     });
-    // Only an explicit --config seed is written as initial_value. We never seed
-    // the built-in ShellConfig::default(): it is intentionally invalid (unjailed;
-    // rejected by prepare_config), so writing it would leave the stored `shell`
-    // config stuck in a self-invalid state. With no seed and no stored value the
-    // worker fails closed at build_runtime with a clear fs-jail error instead.
-    if let Some(seed) = seed {
-        // Validate the seed with the SAME checks build_runtime uses (denylist
-        // regex compile, fs-jail rule, host_root/denylist reachability) BEFORE
-        // persisting it. Persisting an invalid seed would store a value the
-        // worker then rejects; because configuration::register preserves the
-        // value after first registration, a one-line typo would become a
-        // persistent outage. If the seed is invalid, register the schema only
-        // and let the worker fail closed with a clear error.
-        match build_runtime(seed, iii) {
-            Ok(_) => payload["initial_value"] = seed.to_json(),
+    let candidate: Option<ShellConfig> = match seed {
+        Some(s) => Some(s.clone()),
+        None if should_seed_default_value(iii).await? => Some(ShellConfig::seed_default()),
+        None => None,
+    };
+    if let Some(cfg) = &candidate {
+        // Validate with the SAME checks build_runtime uses (denylist regex
+        // compile, fs-jail rule, host_root/denylist reachability) BEFORE
+        // persisting. configuration::register preserves the value after first
+        // registration, so a one-line typo in --config — or an unbootable
+        // built-in seed — would become a persistent outage. If invalid, register
+        // the schema only and let the worker fail closed with a clear error.
+        match build_runtime(cfg, iii) {
+            Ok(_) => payload["initial_value"] = cfg.to_json(),
             Err(e) => tracing::error!(
                 error = %e,
-                "ignoring invalid --config seed; not registering it as initial_value"
+                "ignoring invalid config seed; not registering it as initial_value"
             ),
         }
     }
@@ -161,10 +170,27 @@ pub async fn register_config(iii: &III, seed: Option<&ShellConfig>) -> Result<()
     Ok(())
 }
 
+/// Seed the built-in default only when nothing is stored yet — never overwrite
+/// an operator's persisted value.
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
+    match try_get_config_value(iii).await? {
+        None => Ok(true),
+        Some(value) if value.is_null() => Ok(true),
+        Some(_) => Ok(false),
+    }
+}
+
 /// Read the live `shell` configuration (env-expanded by the configuration worker).
-pub async fn fetch_config(iii: &III) -> Result<ShellConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<ShellConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
+        // Null means register_config did not seed (its seed_default failed
+        // validation) or the stored value was nulled at runtime. Fall back to
+        // the unjailed Default::default(), which build_runtime rejects: boot
+        // fails closed, and a steady-state hot-reload keeps last-good rather
+        // than silently widening the live jail to the /tmp seed default. Boot
+        // zero-config comes from register_config seeding seed_default(), not
+        // from this fallback.
         tracing::warn!(
             "configuration value is null; falling back to the built-in default, which is \
              intentionally invalid (unjailed) and is rejected by build_runtime — boot \
@@ -175,18 +201,18 @@ pub async fn fetch_config(iii: &III) -> Result<ShellConfig, String> {
     ShellConfig::from_json(&value)
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        // `trigger_with_retry` flattens the structured `IIIError` to its
+        // `trigger_with_retry` flattens the structured `Error` to its
         // Display string, so we substring-match the recovered message rather
-        // than branch on `IIIError::Remote { code }`. The engine's missing-entry
+        // than branch on `Error::Remote { code }`. The engine's missing-entry
         // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
         // `NOT_FOUND`), so uppercase before matching to catch them all. A
         // false negative is non-fatal — it just propagates the raw retry error
@@ -218,16 +244,34 @@ async fn apply_config(state: &AppState, cfg: ShellConfig) -> Result<(), String> 
     Ok(())
 }
 
+/// Event delivered to the internal `shell::on-config-change` handler. A struct
+/// (not `Value`) keeps the request schema concrete; the handler re-fetches the
+/// configuration id; unknown fields are ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnConfigChangeEvent {
+    /// Configuration id that changed (advisory; the handler re-fetches the value).
+    /// Schema-only: kept to publish a typed request schema; the handler ignores it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub id: Option<String>,
+}
+
+/// Ack returned by the internal `shell::on-config-change` handler.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OnConfigChangeResponse {
+    pub ok: bool,
+}
+
 /// Register the internal config-change handler and bind a `configuration` trigger.
-pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIError> {
+pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
     let st = state.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let st = st.clone();
             async move {
-                on_config_change(&st).await.map_err(IIIError::from)?;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                on_config_change(&st).await.map_err(Error::from)?;
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description("Internal: reload the security policy + fs backend on configuration change."),
@@ -339,7 +383,11 @@ where
     }
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
@@ -389,6 +437,13 @@ mod tests {
     fn prepare_config_rejects_unjailed_default() {
         let err = prepare_config(&ShellConfig::default()).expect_err("default is unsafe");
         assert!(err.contains("fs jail"));
+    }
+
+    #[test]
+    fn prepare_config_accepts_seed_default() {
+        // The zero-config seed must boot (jailed to /tmp) — that is the whole
+        // point of seeding it instead of the unjailed Default::default().
+        prepare_config(&ShellConfig::seed_default()).expect("seed_default boots");
     }
 
     #[test]

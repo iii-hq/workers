@@ -29,14 +29,14 @@ iii -c ./config.yaml
 
 | flag | default | purpose |
 |------|---------|---------|
-| `--config <path>` | `./config.yaml` | Optional seed config: the YAML is passed as `initial_value` when registering the schema with the `configuration` worker on first boot. It is **not** the live source of truth — the live value is fetched over RPC after registration. |
+| `--config <path>` | `./config.yaml` | Optional seed config: the YAML is passed as `initial_value` when registering the schema with the `configuration` worker on first boot. It is **not** the live source of truth — the live value is fetched over RPC after registration. When the file is absent and nothing is stored yet, the worker seeds a built-in zero-config default (`ShellConfig::seed_default()`, jailed to `/tmp`) instead. |
 | `--url <ws-url>` | `ws://127.0.0.1:49134` | iii engine WebSocket |
 
 ## Configuration
 
 The shell worker integrates with the central `configuration` worker rather than reading a static file at runtime:
 
-1. On boot it registers a schema with id `shell`; the YAML at `--config <path>` (default `./config.yaml`) is sent as the `initial_value` (populates the first-boot default). If the file is missing or unreadable the worker warns and continues without a seed.
+1. On boot it registers a schema with id `shell`; the YAML at `--config <path>` (default `./config.yaml`) is sent as the `initial_value` (populates the first-boot default). If the file is missing or unreadable the worker warns and, when no value is stored yet, seeds the built-in zero-config default (`ShellConfig::seed_default()`) so it still boots.
 2. It immediately fetches the live value over RPC and activates the security policy and fs backend from that response.
 3. It then registers the `configuration:updated` trigger and runs a **fail-closed** boot reconcile before exposing any public function. The reconcile re-fetches the authoritative value (closing the race where an update lands between the initial fetch and trigger registration, leaving no listener). If that re-fetch fails the worker aborts startup — it exits rather than serve a possibly stale security policy, and no `shell::*` / `shell::fs::*` function is ever exposed.
 4. It subscribes to `configuration:updated` events. When the config for schema id `shell` changes, the worker hot-reloads the security policy and fs backend atomically.

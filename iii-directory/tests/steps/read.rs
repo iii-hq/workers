@@ -7,7 +7,7 @@
 //! batched fetch) is gone — see [`crate::functions::skills`].
 
 use cucumber::{given, then, when};
-use iii_sdk::TriggerRequest;
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::{json, Value};
 
 use crate::common::world::IiiSkillsWorld;

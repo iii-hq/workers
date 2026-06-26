@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -89,7 +89,7 @@ fn codex_bin(cfg: &Config) -> String {
 
 /// Run one Codex turn and return the result map. `iii_context_default` is the
 /// config-level toggle; the payload field overrides it.
-pub async fn run(iii: III, cfg: Arc<Config>, req: RunRequest) -> Value {
+pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     let session_id = req
         .session_id
         .clone()
@@ -270,7 +270,7 @@ struct Outcome {
 }
 
 async fn stream_turn(
-    iii: &III,
+    iii: &IIIClient,
     cfg: &Config,
     session_id: &str,
     child: &mut tokio::process::Child,

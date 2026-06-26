@@ -21,7 +21,8 @@ pub mod remove_always_allow;
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -80,7 +81,7 @@ pub const ON_TURN_COMPLETED_DESC: &str =
 
 /// Everything a function handler needs.
 pub struct Deps {
-    pub iii: Arc<III>,
+    pub iii: Arc<IIIClient>,
     pub sink: Arc<dyn EventSink>,
     /// Hot-swappable config snapshot, sourced from the `configuration`
     /// worker and reloaded live (see [`crate::configuration`]).
@@ -100,7 +101,7 @@ impl Deps {
 /// Register one typed handler under `id`, mapping `ApprovalError` into
 /// the wire error shape (`code: message`).
 fn register<Req, Resp, F, Fut>(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
     id: &str,
     description: &str,
@@ -117,13 +118,13 @@ fn register<Req, Resp, F, Fut>(
         RegisterFunction::new_async(move |req: Req| {
             let deps = deps.clone();
             let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(IIIError::from) }
+            async move { handler(deps, req).await.map_err(Error::from) }
         })
         .description(description),
     );
 }
 
-pub fn register_all(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, GATE_ID, GATE_DESC, |d, r| async move {
         gate::handle(&d, r).await
     });

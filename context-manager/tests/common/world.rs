@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cucumber::World;
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -55,7 +56,7 @@ pub struct ContextWorld {
     pub aliases: HashMap<String, String>,
 
     /// Shared engine connection; `None` soft-skips @engine steps.
-    pub engine: Option<Arc<III>>,
+    pub engine: Option<Arc<IIIClient>>,
 }
 
 impl std::fmt::Debug for ContextWorld {

@@ -201,7 +201,11 @@ mod tests {
         serde_json::from_value(test_hook_input("s_1", "c_1", function_id)).unwrap()
     }
 
-    async fn seed_settings(iii: &iii_sdk::III, session_id: &str, settings: &ApprovalSettings) {
+    async fn seed_settings(
+        iii: &iii_sdk::IIIClient,
+        session_id: &str,
+        settings: &ApprovalSettings,
+    ) {
         state_set(
             iii,
             SETTINGS_SCOPE,

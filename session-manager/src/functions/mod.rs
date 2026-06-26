@@ -26,7 +26,8 @@ pub mod update_message;
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -51,7 +52,7 @@ pub struct Deps {
 /// runtime's `service` + `sink` from [`AppState`], so handlers never capture a
 /// stale adapter across a hot-reload.
 fn register<Req, Resp, F, Fut>(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     state: &AppState,
     id: &str,
     description: &str,
@@ -76,14 +77,14 @@ fn register<Req, Resp, F, Fut>(
                         sink: rt.sink.clone(),
                     })
                 };
-                handler(deps, req).await.map_err(IIIError::from)
+                handler(deps, req).await.map_err(Error::from)
             }
         })
         .description(description),
     );
 }
 
-pub fn register_all(iii: &Arc<III>, state: &AppState) {
+pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
     register(
         iii,
         state,

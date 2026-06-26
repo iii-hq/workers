@@ -1,0 +1,15 @@
+# Agent permissions for the opencode worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# opencode::run / opencode::start (and the run::start_and_wait alias) spawn a
+# full OpenCode agent with the host's filesystem and shell — an agent invoking
+# those without human approval is a privilege escalation, so they are NOT
+# allow-listed and stay at the needs_approval default. Read-only introspection
+# is safe to allow.
+version: 1
+
+rules:
+  # internal config-reload callback — bus-internal, never agent-callable
+  - '!opencode::on-config-change'
+  - opencode::status
+  - opencode::sessions::list

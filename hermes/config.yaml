@@ -1,0 +1,34 @@
+engine_url: ws://127.0.0.1:49134
+
+defaults:
+  model: ""                # empty = Hermes default; else a HERMES_INFERENCE_MODEL value, e.g. "anthropic/claude-sonnet-4.6"
+  cwd: ""                  # default working directory for runs
+  # Comma-separated Hermes toolsets passed as -t. The Hermes default enables
+  # ~17 toolsets, most pure context cost for a headless code turn; this slim
+  # profile keeps terminal (so the agent can run the iii CLI for discovery),
+  # file, code_execution, and web. Set to "" for the full Hermes default.
+  tools: "terminal,file,code_execution,web"
+
+# Stream AgentEvent frames here, grouped by session_id. The console and acp
+# worker both read this stream.
+events_stream: agent::events
+
+# Raw Hermes run output mirrored here, grouped by session_id.
+raw_events_stream: hermes::events
+
+# Prepend the iii runtime context to the prompt on a fresh session: teaches the
+# agent live discovery against the engine catalog through the iii CLI
+# (engine::functions::list, `iii trigger <fn> --help`). Hermes reaches the CLI
+# through its own shell / execute_code tool. Per-turn override via the
+# iii_context payload field.
+iii_context: true
+
+# Path to the hermes CLI binary. Empty = resolve `hermes` on PATH.
+hermes_executable: ""
+
+# api_path the gateway delivers inbound platform/webhook events to. The worker
+# exposes this over iii-http and republishes each delivery onto the raw events
+# stream for iii workers to react to. (A dedicated hermes::message trigger type
+# is still pending; see the README status.) Point a Hermes webhook route /
+# delivery target at http://<engine-http-host>/<inbound_api_path>.
+inbound_api_path: /hermes/inbound

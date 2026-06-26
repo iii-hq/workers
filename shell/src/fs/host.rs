@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{Channel, IIIError};
+use iii_sdk::channel::Channel;
+use iii_sdk::errors::Error;
 
 use crate::fs::error::FsError;
 
@@ -35,12 +36,12 @@ impl Drop for TempGuard {
 
 #[async_trait]
 pub trait ChannelMaker: Send + Sync + std::fmt::Debug {
-    async fn create_channel(&self, buffer: usize) -> Result<Channel, IIIError>;
+    async fn create_channel(&self, buffer: usize) -> Result<Channel, Error>;
     fn engine_address(&self) -> String;
 }
 
 pub struct IiiChannelMaker {
-    iii: iii_sdk::III,
+    iii: iii_sdk::IIIClient,
 }
 
 impl std::fmt::Debug for IiiChannelMaker {
@@ -52,14 +53,14 @@ impl std::fmt::Debug for IiiChannelMaker {
 }
 
 impl IiiChannelMaker {
-    pub fn new(iii: iii_sdk::III) -> Self {
+    pub fn new(iii: iii_sdk::IIIClient) -> Self {
         Self { iii }
     }
 }
 
 #[async_trait]
 impl ChannelMaker for IiiChannelMaker {
-    async fn create_channel(&self, buffer: usize) -> Result<Channel, IIIError> {
+    async fn create_channel(&self, buffer: usize) -> Result<Channel, Error> {
         iii_sdk::helpers::create_channel(&self.iii, Some(buffer)).await
     }
     fn engine_address(&self) -> String {
@@ -1802,8 +1803,11 @@ mod tests {
     struct StubChan;
     #[async_trait::async_trait]
     impl super::ChannelMaker for StubChan {
-        async fn create_channel(&self, _: usize) -> Result<iii_sdk::Channel, iii_sdk::IIIError> {
-            Err(iii_sdk::IIIError::Handler("stub".into()))
+        async fn create_channel(
+            &self,
+            _: usize,
+        ) -> Result<iii_sdk::channel::Channel, iii_sdk::errors::Error> {
+            Err(iii_sdk::errors::Error::Handler("stub".into()))
         }
         fn engine_address(&self) -> String {
             "ws://stub:0".into()
@@ -1829,7 +1833,7 @@ mod tests {
         iii_sdk::channels::StreamChannelRef {
             channel_id: "c".into(),
             access_key: "k".into(),
-            direction: iii_sdk::channels::ChannelDirection::Read,
+            direction: iii_sdk::helpers::ChannelDirection::Read,
         }
     }
 

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use serde_json::Value;
 
 use super::common_steps::{lookup_path, parse_expected};

@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    IIIError, RegisterTriggerType, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest,
-    III,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{TriggerAction, TriggerRequest};
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -90,14 +90,14 @@ impl RouterEventTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for RouterEventTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let raw = if config.config.is_null() {
             Value::Object(serde_json::Map::new())
         } else {
             config.config.clone()
         };
         serde_json::from_value::<EventBindingConfig>(raw)
-            .map_err(|e| IIIError::Handler(format!("invalid {} config: {e}", self.name)))?;
+            .map_err(|e| Error::Handler(format!("invalid {} config: {e}", self.name)))?;
         tracing::info!(
             trigger_type = %self.name,
             id = %config.id,
@@ -108,7 +108,7 @@ impl TriggerHandler for RouterEventTriggerHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = %self.name,
             id = %config.id,
@@ -121,7 +121,7 @@ impl TriggerHandler for RouterEventTriggerHandler {
 
 /// Fan-out handle: register once at boot, clone into handlers that emit.
 pub struct RouterEvents {
-    iii: III,
+    iii: IIIClient,
     ready: SubscriberSet,
     models_changed: SubscriberSet,
     provider_changed: SubscriberSet,
@@ -130,7 +130,7 @@ pub struct RouterEvents {
 impl RouterEvents {
     /// Register the three custom trigger types. Must run before emitting
     /// `router::ready` so the engine can replay existing bindings first.
-    pub fn register(iii: &III) -> Arc<Self> {
+    pub fn register(iii: &IIIClient) -> Arc<Self> {
         let ready = SubscriberSet::default();
         let models_changed = SubscriberSet::default();
         let provider_changed = SubscriberSet::default();

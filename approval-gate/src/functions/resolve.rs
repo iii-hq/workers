@@ -122,7 +122,7 @@ mod tests {
     use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
     use crate::types::PendingApprovalRecord;
 
-    async fn seed_record(iii: &iii_sdk::III) {
+    async fn seed_record(iii: &iii_sdk::IIIClient) {
         let record = PendingApprovalRecord {
             session_id: "s_1".into(),
             turn_id: "t_9".into(),

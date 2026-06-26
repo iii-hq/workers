@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::StreamChannelRef;
+use iii_sdk::channel::StreamChannelRef;
 
 #[derive(Debug)]
 pub enum ReadEvent {

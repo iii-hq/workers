@@ -11,8 +11,11 @@ use std::sync::{Arc, RwLock};
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
 use crate::types::router::{ChatResponse, ErrorShape};
-use iii_observability::opentelemetry::trace::FutureExt as _;
-use iii_sdk::{IIIError, StreamChannelRef, TriggerRequest, III};
+use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
+use iii_sdk::channel::StreamChannelRef;
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -78,7 +81,7 @@ pub struct ChatFnInput {
 }
 
 pub struct ChatPipeline {
-    pub iii: III,
+    pub iii: IIIClient,
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
     pub inflight: Arc<InflightMap>,
@@ -95,8 +98,8 @@ fn now_ms() -> i64 {
 
 use crate::types::errors::is_function_not_found;
 
-fn is_router_coded(err: &IIIError) -> bool {
-    matches!(err, IIIError::Remote { code, .. } if code.starts_with("router/"))
+fn is_router_coded(err: &Error) -> bool {
+    matches!(err, Error::Remote { code, .. } if code.starts_with("router/"))
 }
 
 impl ChatPipeline {
@@ -104,12 +107,12 @@ impl ChatPipeline {
         &self,
         call: ChatCall,
         sink: Arc<dyn FrameSink>,
-    ) -> Result<ChatResponse, IIIError> {
+    ) -> Result<ChatResponse, Error> {
         // A pre-stream failure must still leave exactly one terminal frame on
         // the sink. Without it, `router::complete`'s drain blocks for its full
         // reader budget and `router::chat` consumers never see a terminal.
         // (Regression: pre_stream_routing_failure_emits_one_error_terminal_frame.)
-        let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> IIIError {
+        let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> Error {
             // Pre-stream failures are permanent: a bad model or an unrouted
             // request won't succeed on retry. Mark the frame Permanent so a
             // streaming consumer inspecting error_kind doesn't retry it.
@@ -229,7 +232,7 @@ impl ChatPipeline {
         inflight: &super::inflight::InflightEntry,
         request_id: &str,
         sink: Arc<dyn FrameSink>,
-    ) -> Result<ChatResponse, IIIError> {
+    ) -> Result<ChatResponse, Error> {
         let pricing = model_meta.and_then(|m| m.pricing.clone());
         let mut last_partial = None;
         let mut last_usage = None;
@@ -277,7 +280,7 @@ impl ChatPipeline {
             // provider stream nests under `router::chat` instead of rooting a
             // detached trace. `with_context` (not `cx.attach()`) because the
             // `ContextGuard` is `!Send` and can't cross the `.await` below.
-            let parent_cx = iii_observability::opentelemetry::Context::current();
+            let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
             let call_task = tokio::spawn(
                 async move {
                     let out = iii
@@ -308,7 +311,7 @@ impl ChatPipeline {
             .await;
             let call_outcome = call_task
                 .await
-                .unwrap_or(Err(IIIError::Handler("provider task panicked".into())));
+                .unwrap_or(Err(Error::Handler("provider task panicked".into())));
 
             match relay {
                 RelayResult::Done { terminal, .. } => {
@@ -539,8 +542,8 @@ fn insert_present(map: &mut serde_json::Map<String, Value>, key: &str, value: Op
 mod tests {
     use super::*;
 
-    fn remote(code: &str) -> IIIError {
-        IIIError::Remote {
+    fn remote(code: &str) -> Error {
+        Error::Remote {
             code: code.into(),
             message: "m".into(),
             stacktrace: None,
@@ -553,7 +556,7 @@ mod tests {
         assert!(is_function_not_found(&remote("FUNCTION_NOT_FOUND")));
         // the configuration worker's missing-entry code must NOT flip availability
         assert!(!is_function_not_found(&remote("NOT_FOUND")));
-        assert!(!is_function_not_found(&IIIError::Timeout));
+        assert!(!is_function_not_found(&Error::Timeout));
         assert!(is_router_coded(&remote("router/not_configured")));
         assert!(!is_router_coded(&remote("function_not_found")));
     }

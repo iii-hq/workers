@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 
 use session_manager::config::WorkerConfig;
 use session_manager::events::{
@@ -35,7 +35,7 @@ pub struct BridgeStack {
 }
 
 /// Build one bridged-instance stack against `engine` (the main's bus).
-pub async fn build_bridge_stack(engine: &Arc<III>) -> BridgeStack {
+pub async fn build_bridge_stack(engine: &Arc<IIIClient>) -> BridgeStack {
     let recorder = Recorder::new();
     let emitter = Arc::new(Emitter::new(
         TriggerSets::new(),

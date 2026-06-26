@@ -49,7 +49,7 @@ where
         ("iii.session.id", session_id),
         ("iii.message.id", message_id),
     ];
-    iii_observability::run_with_baggage(&baggage, f()).await
+    iii_helpers::observability::run_with_baggage(&baggage, f()).await
 }
 
 /// Correlation id for a Telegram update (matches harness idempotency / metadata).

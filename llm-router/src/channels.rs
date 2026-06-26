@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, StreamChannelRef, III};
+use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
+use iii_sdk::{errors::Error, IIIClient};
 use tokio::sync::{mpsc, Notify};
 
 use crate::chat::relay::{CallerGone, FrameSink, ReadEvent, RelayRead, RouterChannel};
@@ -48,7 +49,7 @@ impl FrameSink for SdkSink {
 }
 
 /// Spawn the forwarder task that owns the async ChannelWriter.
-fn spawn_writer_forwarder(writer: iii_sdk::ChannelWriter) -> Arc<SdkSink> {
+fn spawn_writer_forwarder(writer: ChannelWriter) -> Arc<SdkSink> {
     let (tx, mut rx) = mpsc::unbounded_channel::<SinkMsg>();
     let closed = Arc::new(AtomicBool::new(false));
     let closed_for_task = closed.clone();
@@ -104,7 +105,7 @@ impl RelayRead for SdkReader {
 }
 
 /// Mint a fresh router-owned iii channel for one provider attempt.
-pub async fn create_router_channel(iii: &III) -> Result<RouterChannel, IIIError> {
+pub async fn create_router_channel(iii: &IIIClient) -> Result<RouterChannel, Error> {
     let channel = iii_sdk::helpers::create_channel(iii, None).await?;
 
     // reader: bridge on_message + a pump task into an mpsc the relay can
@@ -152,7 +153,7 @@ pub async fn create_router_channel(iii: &III) -> Result<RouterChannel, IIIError>
 }
 
 /// Build a sink for a caller-supplied writer_ref; same forwarder-task bridge.
-pub async fn open_sink(iii: &III, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, IIIError> {
-    let writer = iii_sdk::ChannelWriter::new(iii.address(), r);
+pub async fn open_sink(iii: &IIIClient, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, Error> {
+    let writer = ChannelWriter::new(iii.address(), r);
     Ok(spawn_writer_forwarder(writer))
 }

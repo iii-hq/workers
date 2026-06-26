@@ -10,16 +10,16 @@ use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::AssistantMessageEvent;
 use crate::types::router::CompleteResponse;
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{errors::Error, IIIClient};
 
 use super::chat::{ChatCall, ChatPipeline};
 use super::relay::ReadEvent;
 use crate::channels::create_router_channel;
 
 pub fn make_complete(
-    iii: III,
+    iii: IIIClient,
     pipeline: Arc<ChatPipeline>,
-) -> impl Fn(ChatCall) -> BoxFuture<'static, Result<CompleteResponse, IIIError>> + Send + Sync + 'static
+) -> impl Fn(ChatCall) -> BoxFuture<'static, Result<CompleteResponse, Error>> + Send + Sync + 'static
 {
     move |call: ChatCall| {
         let (iii, pipeline) = (iii.clone(), pipeline.clone());
@@ -55,10 +55,10 @@ pub fn make_complete(
                     // outer ≥ inner budget, always
                     ev = reader.next(Duration::from_secs(600)) => match ev {
                         ReadEvent::Msg(m) => collect(&mut terminal, &m),
-                        _ => break chat_task.await.map_err(|e| IIIError::Handler(e.to_string()))??,
+                        _ => break chat_task.await.map_err(|e| Error::Handler(e.to_string()))??,
                     },
                     res = &mut chat_task => {
-                        let response = res.map_err(|e| IIIError::Handler(e.to_string()))??;
+                        let response = res.map_err(|e| Error::Handler(e.to_string()))??;
                         // The pipeline is done; remaining frames are in-flight
                         // engine hops, not a live stream — finish the drain on
                         // a short budget instead of the streaming one.

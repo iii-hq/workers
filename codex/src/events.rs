@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -23,7 +24,7 @@ fn next_item_id(session_id: &str) -> String {
     format!("{session_id}-{}-{:08}", &*EPOCH, seq)
 }
 
-pub async fn emit(iii: &III, stream_name: &str, session_id: &str, data: Value) {
+pub async fn emit(iii: &IIIClient, stream_name: &str, session_id: &str, data: Value) {
     let item_id = next_item_id(session_id);
     let res = iii
         .trigger(TriggerRequest {

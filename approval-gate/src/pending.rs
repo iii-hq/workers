@@ -3,7 +3,8 @@
 //! Every record has an explicit deletion path (resolve, turn/session
 //! purge), which is what keeps `state::list` O(live holds).
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 
 use crate::state;
@@ -32,10 +33,10 @@ pub fn parse_record(value: &Value) -> Option<PendingApprovalRecord> {
 }
 
 pub async fn get(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     function_call_id: &str,
-) -> Result<Option<PendingApprovalRecord>, IIIError> {
+) -> Result<Option<PendingApprovalRecord>, Error> {
     let reply = state::get(
         iii,
         PENDING_SCOPE,
@@ -48,7 +49,7 @@ pub async fn get(
 /// Write the record. Returns the previous value when one existed (a
 /// concurrent duplicate hold lost the race — the caller must not emit a
 /// second `pending_created`).
-pub async fn put(iii: &III, record: &PendingApprovalRecord) -> Result<Option<Value>, IIIError> {
+pub async fn put(iii: &IIIClient, record: &PendingApprovalRecord) -> Result<Option<Value>, Error> {
     let reply = state::set(
         iii,
         PENDING_SCOPE,
@@ -73,10 +74,10 @@ pub async fn put(iii: &III, record: &PendingApprovalRecord) -> Result<Option<Val
 /// list O(live). The delete is benign if it races: the gate already
 /// decided emission.
 pub async fn delete_with_gate(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     function_call_id: &str,
-) -> Result<Option<PendingApprovalRecord>, IIIError> {
+) -> Result<Option<PendingApprovalRecord>, Error> {
     let key = pending_key(session_id, function_call_id);
     let reply = state::set(iii, PENDING_SCOPE, &key, Value::Null).await?;
     let old = reply.get("old_value").cloned().unwrap_or(Value::Null);
@@ -90,7 +91,7 @@ pub async fn delete_with_gate(
 
 /// Full-scope scan, values-only (the engine's `state::list` contract).
 /// Malformed/null values are skipped.
-pub async fn list_all(iii: &III) -> Result<Vec<PendingApprovalRecord>, IIIError> {
+pub async fn list_all(iii: &IIIClient) -> Result<Vec<PendingApprovalRecord>, Error> {
     let reply = state::list(iii, PENDING_SCOPE).await?;
     let values = match reply {
         Value::Array(items) => items,

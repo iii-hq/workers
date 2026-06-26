@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, WebConfig};
@@ -20,7 +22,7 @@ pub struct SharedState {
     pub config: SharedConfig,
 }
 
-pub async fn register_config(iii: &III, seed: Option<&WebConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&WebConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "web",
@@ -36,7 +38,7 @@ pub async fn register_config(iii: &III, seed: Option<&WebConfig>) -> Result<(), 
     Ok(())
 }
 
-pub async fn fetch_config(iii: &III) -> Result<WebConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<WebConfig, String> {
     match try_get_value(iii).await? {
         Some(v) if !v.is_null() => WebConfig::from_json(&v),
         _ => {
@@ -46,7 +48,7 @@ pub async fn fetch_config(iii: &III) -> Result<WebConfig, String> {
     }
 }
 
-async fn should_seed_default(iii: &III) -> Result<bool, String> {
+async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
     match try_get_value(iii).await? {
         None => Ok(true),
         Some(v) if v.is_null() => Ok(true),
@@ -54,7 +56,7 @@ async fn should_seed_default(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn try_get_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
@@ -74,7 +76,7 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
-pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIError> {
+pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -84,7 +86,7 @@ pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIE
             let engine = engine.clone();
             async move {
                 on_config_change(&engine, &st).await;
-                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
@@ -101,7 +103,7 @@ pub fn register_config_trigger(iii: &III, state: SharedState) -> Result<(), IIIE
     Ok(())
 }
 
-async fn on_config_change(iii: &III, state: &SharedState) {
+async fn on_config_change(iii: &IIIClient, state: &SharedState) {
     match fetch_config(iii).await {
         Ok(cfg) => {
             apply_config(state, cfg).await;
@@ -111,7 +113,11 @@ async fn on_config_change(iii: &III, state: &SharedState) {
     }
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii

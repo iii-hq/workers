@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{ProviderRegisterRequest, ProviderRegisterResponse};
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{errors::Error, IIIClient};
 use serde_json::{json, Value};
 
 use crate::catalog::store::CatalogStore;
@@ -28,12 +28,12 @@ fn valid_id(id: &str) -> bool {
 }
 
 pub fn make_provider_register(
-    iii: III,
+    iii: IIIClient,
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
     entry_lock: EntryWriteLock,
     events: Arc<RouterEvents>,
-) -> impl Fn(ProviderRegisterRequest) -> BoxFuture<'static, Result<ProviderRegisterResponse, IIIError>>
+) -> impl Fn(ProviderRegisterRequest) -> BoxFuture<'static, Result<ProviderRegisterResponse, Error>>
        + Send
        + Sync
        + 'static {
@@ -56,7 +56,7 @@ pub fn make_provider_register(
                 .into());
             }
             if let Some(schema) = &declaration.config_schema {
-                validate_custom_schema(schema).map_err(IIIError::from)?;
+                validate_custom_schema(schema).map_err(Error::from)?;
             }
             if let Some(models) = &declaration.models {
                 for m in models {
@@ -79,7 +79,7 @@ pub fn make_provider_register(
             let upserted = registry
                 .upsert(declaration, worker_id, input.token)
                 .await
-                .map_err(IIIError::from)?;
+                .map_err(Error::from)?;
             let token = upserted.token;
             let availability_recovered = upserted.availability_recovered;
 

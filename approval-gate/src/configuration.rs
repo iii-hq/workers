@@ -14,7 +14,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -45,7 +47,7 @@ const HOOK_ON_ERROR: &str = "fail_closed";
 /// as `initial_value`. Otherwise, the built-in default is seeded only
 /// when no stored value exists yet (re-registration preserves the stored
 /// value, so this is safe to call every boot).
-pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Approval Gate",
@@ -66,7 +68,7 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
 
 /// Read the live `approval-gate` configuration (env-expanded by the
 /// configuration worker — `from_json` does NOT re-expand).
-pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
@@ -75,7 +77,7 @@ pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -83,7 +85,7 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
@@ -92,7 +94,7 @@ async fn get_config_value(iii: &III) -> Result<Value, String> {
 /// Returns `Ok(None)` when the entry does not exist. The engine's
 /// missing-entry codes vary in case (`function_not_found`,
 /// `STATEMENT_NOT_FOUND`, `NOT_FOUND`), so match case-insensitively.
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
@@ -106,7 +108,7 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
 }
 
 /// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
-pub fn bind_hook(iii: &III) {
+pub fn bind_hook(iii: &IIIClient) {
     match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "harness::hook::pre-trigger".to_string(),
         function_id: "approval::gate".to_string(),
@@ -151,7 +153,7 @@ pub struct OnConfigChangeResponse {
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger. The handler re-fetches via `configuration::get` and ignores the
 /// trigger payload, so a direct call can never inject config.
-pub fn register_config_trigger(iii: &III, cell: ConfigCell) -> Result<(), IIIError> {
+pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -161,7 +163,7 @@ pub fn register_config_trigger(iii: &III, cell: ConfigCell) -> Result<(), IIIErr
             let engine = engine.clone();
             async move {
                 on_config_change(&engine, &cell).await;
-                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
@@ -189,7 +191,7 @@ pub fn register_config_trigger(iii: &III, cell: ConfigCell) -> Result<(), IIIErr
 /// trusting `payload.new_value` would let any caller inject arbitrary
 /// config without updating persisted state. Re-fetch the stored value via
 /// `configuration::get` instead.
-async fn on_config_change(iii: &III, cell: &ConfigCell) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -205,7 +207,11 @@ async fn on_config_change(iii: &III, cell: &ConfigCell) {
     tracing::info!("approval-gate configuration reloaded");
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii

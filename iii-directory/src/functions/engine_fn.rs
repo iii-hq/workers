@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -48,13 +50,13 @@ pub struct FunctionInfoOutput {
 
 // ────────────────── registration ──────────────────────────────────────
 
-pub fn register(iii: &Arc<III>) {
+pub fn register(iii: &Arc<IIIClient>) {
     let iii_inner = iii.clone();
     iii.register_function(
         "directory::engine::functions::info",
         RegisterFunction::new_async(move |req: FunctionInfoInput| {
             let iii = iii_inner.clone();
-            async move { function_info(&iii, req).await.map_err(IIIError::Handler) }
+            async move { function_info(&iii, req).await.map_err(Error::Handler) }
         })
         .description(
             "Full detail for one engine function: schemas, owning worker, and \
@@ -66,7 +68,10 @@ pub fn register(iii: &Arc<III>) {
 
 // ────────────────── handler ──────────────────────────────────────────
 
-async fn function_info(iii: &III, input: FunctionInfoInput) -> Result<FunctionInfoOutput, String> {
+async fn function_info(
+    iii: &IIIClient,
+    input: FunctionInfoInput,
+) -> Result<FunctionInfoOutput, String> {
     let function_id = input.function_id.trim().to_string();
     if function_id.is_empty() {
         return Err("function_id must be non-empty".into());

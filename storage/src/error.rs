@@ -88,9 +88,9 @@ impl StorageError {
     }
 }
 
-impl From<StorageError> for iii_sdk::IIIError {
+impl From<StorageError> for iii_sdk::errors::Error {
     fn from(e: StorageError) -> Self {
-        iii_sdk::IIIError::Handler(e.to_wire_string())
+        iii_sdk::errors::Error::Handler(e.to_wire_string())
     }
 }
 
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn into_iii_error_carries_wire_body() {
         let e = StorageError::UnknownBucket { bucket: "x".into() };
-        let iii_e: iii_sdk::IIIError = e.into();
+        let iii_e: iii_sdk::errors::Error = e.into();
         let body = format!("{iii_e:?}");
         assert!(body.contains("UNKNOWN_BUCKET"));
     }

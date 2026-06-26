@@ -38,8 +38,8 @@ impl FsError {
     /// effectively infallible (OOM only); `expect` so future changes that
     /// break the invariant fail loudly instead of producing malformed JSON.
     ///
-    /// The handler-return path lifts `FsError` to `IIIError::Remote` directly
-    /// (see `From<FsError> for IIIError` below), so it no longer stringifies.
+    /// The handler-return path lifts `FsError` to `Error::Remote` directly
+    /// (see `From<FsError> for Error` below), so it no longer stringifies.
     /// `to_json` is kept as the canonical `{code,message}` serialization
     /// (round-trip coverage in tests) and for any caller that needs the wire
     /// shape as a `String`.
@@ -49,13 +49,13 @@ impl FsError {
 }
 
 /// Carry the S2xx code to the wire as the top-level `code`. The engine SDK
-/// maps `IIIError::Remote { code, message, .. }` to the wire `ErrorBody`
+/// maps `Error::Remote { code, message, .. }` to the wire `ErrorBody`
 /// verbatim, so an agent can branch on `error.code` (e.g. "S211"). Any other
-/// `IIIError` variant collapses to `code: "invocation_failed"` with the real
+/// `Error` variant collapses to `code: "invocation_failed"` with the real
 /// code buried in the message — which is exactly what we are escaping here.
-impl From<FsError> for iii_sdk::IIIError {
+impl From<FsError> for iii_sdk::errors::Error {
     fn from(err: FsError) -> Self {
-        iii_sdk::IIIError::Remote {
+        iii_sdk::errors::Error::Remote {
             code: err.code.to_string(),
             message: err.message,
             stacktrace: None,
@@ -118,15 +118,15 @@ mod tests {
         assert!(j.contains("\"message\":\"nope\""));
     }
 
-    /// The wire contract: `FsError` lifts to `IIIError::Remote { code, .. }` so
+    /// The wire contract: `FsError` lifts to `Error::Remote { code, .. }` so
     /// the S-code reaches the wire `code` verbatim. Any other variant (e.g.
     /// Handler) would collapse to `code: "invocation_failed"` — pin against that
     /// regression so an agent can keep branching on `error.code`.
     #[test]
     fn converts_to_iii_remote_carrying_the_s_code() {
-        let err: iii_sdk::IIIError = FsError::new("S215", "denied").into();
+        let err: iii_sdk::errors::Error = FsError::new("S215", "denied").into();
         match err {
-            iii_sdk::IIIError::Remote {
+            iii_sdk::errors::Error::Remote {
                 code,
                 message,
                 stacktrace,
@@ -135,7 +135,7 @@ mod tests {
                 assert_eq!(message, "denied");
                 assert!(stacktrace.is_none());
             }
-            other => panic!("expected IIIError::Remote, got {other:?}"),
+            other => panic!("expected Error::Remote, got {other:?}"),
         }
     }
 }

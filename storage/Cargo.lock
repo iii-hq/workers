@@ -1921,16 +1921,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-observability"
-version = "0.19.0"
+name = "iii-helpers"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35ddb7c5dc5a7cac2da5250d623a960b1dbd7de956caa57c986f6895fe905c22"
+checksum = "09daa7c14a9e4c1f7077c4a181918d207e3f05cdfea8b2d7781bbeb80caf4c5d"
 dependencies = [
  "futures-util",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry_sdk",
  "reqwest 0.12.28",
+ "schemars",
+ "serde",
  "serde_json",
  "sysinfo",
  "tokio",
@@ -1941,14 +1943,14 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.19.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdad3fb4a9abff08e1a384db2b8dd75a780c5cc25b07e3fc4fd3179e55439d28"
+checksum = "5957568413b9a5178c11bf91b20909e93e568b187e259e941ba6009a7ec3f5c1"
 dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
- "iii-observability",
+ "iii-helpers",
  "reqwest 0.12.28",
  "schemars",
  "serde",
@@ -3386,7 +3388,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "storage"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",

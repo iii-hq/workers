@@ -44,8 +44,8 @@ impl From<ContentRef> for iii_sdk::channels::StreamChannelRef {
             channel_id: c.channel_id,
             access_key: c.access_key,
             direction: match c.direction {
-                ContentDirection::Read => iii_sdk::channels::ChannelDirection::Read,
-                ContentDirection::Write => iii_sdk::channels::ChannelDirection::Write,
+                ContentDirection::Read => iii_sdk::helpers::ChannelDirection::Read,
+                ContentDirection::Write => iii_sdk::helpers::ChannelDirection::Write,
             },
         }
     }
@@ -57,8 +57,8 @@ impl From<iii_sdk::channels::StreamChannelRef> for ContentRef {
             channel_id: c.channel_id,
             access_key: c.access_key,
             direction: match c.direction {
-                iii_sdk::channels::ChannelDirection::Read => ContentDirection::Read,
-                iii_sdk::channels::ChannelDirection::Write => ContentDirection::Write,
+                iii_sdk::helpers::ChannelDirection::Read => ContentDirection::Read,
+                iii_sdk::helpers::ChannelDirection::Write => ContentDirection::Write,
             },
         }
     }

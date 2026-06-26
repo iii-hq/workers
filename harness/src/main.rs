@@ -11,9 +11,11 @@
 //!      five hook points) BEFORE functions so handlers capture subscriber sets.
 //!   5. Register the `harness::*` functions.
 //!   6. Bind the cron pending-sweep (retain its handle for live re-bind).
-//!   7. LAST: bind the configuration-change trigger so its handler closes over
+//!   7. Seed the function-registry cache and bind `engine::functions-available`
+//!      so native exposure reads a live snapshot instead of listing per turn.
+//!   8. LAST: bind the configuration-change trigger so its handler closes over
 //!      the fully-built snapshot cell + the cron handle.
-//!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!   9. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
 
@@ -26,7 +28,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, functions, manifest};
+use harness::{config, discovery, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -110,7 +112,14 @@ async fn main() -> Result<()> {
     let hooks = HookRegistry::register(&iii);
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
-    let deps = Arc::new(Deps::new(iii.clone(), cell.clone(), events, hooks));
+    let functions_cell = discovery::new_cell();
+    let deps = Arc::new(Deps::new(
+        iii.clone(),
+        cell.clone(),
+        functions_cell.clone(),
+        events,
+        hooks,
+    ));
 
     functions::register_all(&iii, &deps);
 
@@ -120,11 +129,16 @@ async fn main() -> Result<()> {
         sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
     });
 
+    discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
+    discovery::register_functions_trigger(&iii, functions_cell, cfg.dispatch_timeout_ms);
+
     // LAST: bind the configuration-change trigger.
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!("harness ready: 8 harness::* functions + turn events + hook points");
+    tracing::info!(
+        "harness ready: 8 harness::* functions + turn events + hook points + reactive function-registry cache"
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("harness shutting down");

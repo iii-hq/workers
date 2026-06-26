@@ -4,7 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -23,7 +25,7 @@ fn config_rpc_timeout_ms(seed: Option<&WorkerConfig>) -> u64 {
         .unwrap_or_else(|| WorkerConfig::default().timeout_ms)
 }
 
-pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Telegram Worker",
@@ -45,11 +47,14 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
     Ok(())
 }
 
-pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     fetch_config_with_timeout(iii, WorkerConfig::default().timeout_ms).await
 }
 
-async fn fetch_config_with_timeout(iii: &III, timeout_ms: u64) -> Result<WorkerConfig, String> {
+async fn fetch_config_with_timeout(
+    iii: &IIIClient,
+    timeout_ms: u64,
+) -> Result<WorkerConfig, String> {
     let value = try_get_config_value(iii, timeout_ms)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))?;
@@ -60,7 +65,7 @@ async fn fetch_config_with_timeout(iii: &III, timeout_ms: u64) -> Result<WorkerC
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii, WorkerConfig::default().timeout_ms).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -68,7 +73,7 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn try_get_config_value(iii: &III, timeout_ms: u64) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient, timeout_ms: u64) -> Result<Option<Value>, String> {
     match trigger_with_retry(
         iii,
         "configuration::get",
@@ -101,10 +106,10 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) -> bool {
 }
 
 pub fn register_config_trigger(
-    iii: &III,
+    iii: &IIIClient,
     cell: ConfigCell,
     deps: Arc<Deps>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     let deps_for_fn = deps.clone();
@@ -116,7 +121,7 @@ pub fn register_config_trigger(
             let deps = deps_for_fn.clone();
             async move {
                 on_config_change(&engine, &cell, &deps).await;
-                Ok::<_, IIIError>(ConfigChangeAck { ok: true })
+                Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
         .description(
@@ -136,7 +141,7 @@ pub fn register_config_trigger(
     Ok(())
 }
 
-async fn on_config_change(iii: &III, cell: &ConfigCell, deps: &Arc<Deps>) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, deps: &Arc<Deps>) {
     let prev = cell.read().await.clone();
     let timeout_ms = prev.timeout_ms;
     let cfg = match fetch_config_with_timeout(iii, timeout_ms).await {
@@ -159,7 +164,7 @@ async fn on_config_change(iii: &III, cell: &ConfigCell, deps: &Arc<Deps>) {
 }
 
 async fn trigger_with_retry(
-    iii: &III,
+    iii: &IIIClient,
     function_id: &str,
     payload: Value,
     timeout_ms: u64,

@@ -4,7 +4,8 @@
 
 pub mod types;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::codex;
@@ -14,10 +15,34 @@ use types::{RunRequest, SessionIdRequest};
 
 fn schema_value<T: schemars::JsonSchema>() -> Value {
     let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
-    serde_json::to_value(root).expect("schema serializes")
+    let mut v = serde_json::to_value(root).expect("schema serializes");
+    // The registry publish validator has no meta-schema registered, so the
+    // `$schema` key schemars stamps at the root fails publish. Strip it; the
+    // schema body is what the engine + registry consume.
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
 }
 
-pub fn register_all(iii: &III, cell: ConfigCell) {
+fn run_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "session_id": { "type": "string" },
+            "codex_thread_id": { "type": ["string", "null"] },
+            "result": { "type": "string" },
+            "stop_reason": { "type": "string" },
+            "is_error": { "type": "boolean" },
+            "num_turns": { "type": "integer" },
+            "usage": { "type": ["object", "null"] },
+            "busy": { "type": "boolean" },
+            "reason": { "type": "string" },
+        },
+    })
+}
+
+pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
     // codex::run — run a turn and wait for the result.
     {
         let iii_h = iii.clone();
@@ -29,10 +54,11 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 let cell_h = cell_h.clone();
                 async move {
                     let cfg = { cell_h.read().await.clone() };
-                    Ok::<Value, IIIError>(codex::run(iii_h, cfg, req).await)
+                    Ok::<Value, Error>(codex::run(iii_h, cfg, req).await)
                 }
             })
             .request_format(schema_value::<RunRequest>())
+            .response_format(run_response_schema())
             .description(
                 "Run one Codex turn and wait for the result. Accepts `prompt` or a `messages` \
                  array plus a raw SDK `codex_config` pass-through; streams raw Codex events onto \
@@ -80,10 +106,14 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                             }
                         }
                     });
-                    Ok::<Value, IIIError>(json!({ "session_id": session_id, "started": true }))
+                    Ok::<Value, Error>(json!({ "session_id": session_id, "started": true }))
                 }
             })
             .request_format(schema_value::<RunRequest>())
+            .response_format(json!({
+                "type": "object",
+                "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
+            }))
             .description(
                 "Start a Codex turn and return immediately; watch codex::events / agent::events \
                  (group_id = session_id) for progress and turn_end.",
@@ -96,13 +126,21 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
         "codex::stop",
         RegisterFunction::new_async(move |req: SessionIdRequest| async move {
             let stopped = codex::stop(&req.session_id).await;
-            Ok::<Value, IIIError>(json!({
+            Ok::<Value, Error>(json!({
                 "session_id": req.session_id,
                 "stopped": stopped,
                 "reason": if stopped { Value::Null } else { json!("no live run") },
             }))
         })
         .request_format(schema_value::<SessionIdRequest>())
+        .response_format(json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string" },
+                "stopped": { "type": "boolean" },
+                "reason": { "type": "string" },
+            },
+        }))
         .description("Interrupt a live Codex run for a session."),
     );
 
@@ -116,7 +154,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 async move {
                     let record = load_session(&iii_h, &req.session_id).await.ok().flatten();
                     let live = codex::is_live(&req.session_id).await;
-                    Ok::<Value, IIIError>(json!({
+                    Ok::<Value, Error>(json!({
                         "session_id": req.session_id,
                         "live": live,
                         "record": record,
@@ -124,6 +162,14 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 }
             })
             .request_format(schema_value::<SessionIdRequest>())
+            .response_format(json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "live": { "type": "boolean" },
+                    "record": { "type": ["object", "null"] },
+                },
+            }))
             .description("Point-in-time status of a Codex session."),
         );
     }
@@ -137,10 +183,14 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 let iii_h = iii_h.clone();
                 async move {
                     let sessions = list_sessions(&iii_h).await.unwrap_or_default();
-                    Ok::<Value, IIIError>(json!({ "sessions": sessions }))
+                    Ok::<Value, Error>(json!({ "sessions": sessions }))
                 }
             })
             .request_format(json!({ "type": "object", "properties": {} }))
+            .response_format(json!({
+                "type": "object",
+                "properties": { "sessions": { "type": "array", "items": { "type": "object" } } },
+            }))
             .description("List every Codex session this worker has run."),
         );
     }

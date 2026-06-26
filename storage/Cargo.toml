@@ -2,7 +2,7 @@
 
 [package]
 name = "storage"
-version = "0.1.6"
+version = "0.1.8"
 edition = "2021"
 publish = false
 
@@ -14,7 +14,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.19.0"
+iii-sdk = "=0.20.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{ModelsReconcileRequest, ModelsReconcileResponse};
 use futures::future::BoxFuture;
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::json;
 
 use crate::catalog::store::CatalogStore;
@@ -17,7 +17,7 @@ pub fn make_models_reconcile(
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
     events: Arc<RouterEvents>,
-) -> impl Fn(ModelsReconcileRequest) -> BoxFuture<'static, Result<ModelsReconcileResponse, IIIError>>
+) -> impl Fn(ModelsReconcileRequest) -> BoxFuture<'static, Result<ModelsReconcileResponse, Error>>
        + Send
        + Sync
        + 'static {
@@ -28,7 +28,7 @@ pub fn make_models_reconcile(
             registry
                 .verify_token(&provider, req.token.as_deref())
                 .await
-                .map_err(IIIError::from)?;
+                .map_err(Error::from)?;
             let models = req.models;
             for m in &models {
                 if m.provider != provider {

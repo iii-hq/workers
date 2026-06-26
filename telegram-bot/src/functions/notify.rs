@@ -11,7 +11,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +42,7 @@ pub struct NotifyResponse {
     pub message_ids: Vec<i64>,
 }
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::register(
         iii,
         deps,
@@ -53,13 +54,13 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
     );
 }
 
-async fn handle(deps: &Deps, req: NotifyRequest) -> Result<NotifyResponse, IIIError> {
+async fn handle(deps: &Deps, req: NotifyRequest) -> Result<NotifyResponse, Error> {
     if req.text.is_empty() {
-        return Err(IIIError::Handler("notify: text is empty".into()));
+        return Err(Error::Handler("notify: text is empty".into()));
     }
 
     let Some(chat_id) = kv::chat_id_for_session(deps, &req.session_id).await else {
-        return Err(IIIError::Handler(format!(
+        return Err(Error::Handler(format!(
             "notify: no Telegram chat is bound to session {}",
             req.session_id
         )));
@@ -86,7 +87,7 @@ async fn send_chunk(
     chat_id: i64,
     text: &str,
     parse_mode: Option<&str>,
-) -> Result<i64, IIIError> {
+) -> Result<i64, Error> {
     let (body, mode): (String, Option<&str>) = match parse_mode {
         Some(explicit) => (text.to_string(), Some(explicit)),
         None => {

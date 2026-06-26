@@ -140,16 +140,16 @@ fn is_engine_timeout(err: &ExecError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::IIIError;
+    use iii_sdk::errors::Error;
     use serde_json::Value;
     use std::sync::Mutex;
 
     /// Stub forwarder using `Mutex<Option<...>>` to handle the
-    /// non-Clone `IIIError` shape. Same pattern as
+    /// non-Clone `Error` shape. Same pattern as
     /// `tests/sandbox_dispatch.rs::StubFwd`.
     struct StubFwd {
         captured: Mutex<Option<(String, Value)>>,
-        next: Mutex<Option<Result<Value, IIIError>>>,
+        next: Mutex<Option<Result<Value, Error>>>,
     }
 
     impl StubFwd {
@@ -162,13 +162,13 @@ mod tests {
         fn handler_err(json_msg: &'static str) -> Arc<Self> {
             Arc::new(Self {
                 captured: Mutex::new(None),
-                next: Mutex::new(Some(Err(IIIError::Handler(json_msg.to_string())))),
+                next: Mutex::new(Some(Err(Error::Handler(json_msg.to_string())))),
             })
         }
         fn remote_err(code: &str, message: &str) -> Arc<Self> {
             Arc::new(Self {
                 captured: Mutex::new(None),
-                next: Mutex::new(Some(Err(IIIError::Remote {
+                next: Mutex::new(Some(Err(Error::Remote {
                     code: code.into(),
                     message: message.into(),
                     stacktrace: None,
@@ -179,7 +179,7 @@ mod tests {
 
     #[async_trait]
     impl TriggerFwd for StubFwd {
-        async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, IIIError> {
+        async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
             *self.captured.lock().unwrap() = Some((fid.into(), payload));
             self.next
                 .lock()

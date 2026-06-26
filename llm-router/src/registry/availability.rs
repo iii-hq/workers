@@ -3,15 +3,15 @@ use std::sync::Arc;
 
 use crate::types::router::{ProviderInfo, ProviderListRequest, ProviderListResponse};
 use futures::future::BoxFuture;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{errors::Error, IIIClient};
 
 use crate::registry::resolve::resolve_provider_config;
 use crate::registry::store::RegistryStore;
 
 pub fn make_provider_list(
-    iii: III,
+    iii: IIIClient,
     registry: Arc<RegistryStore>,
-) -> impl Fn(ProviderListRequest) -> BoxFuture<'static, Result<ProviderListResponse, IIIError>>
+) -> impl Fn(ProviderListRequest) -> BoxFuture<'static, Result<ProviderListResponse, Error>>
        + Send
        + Sync
        + 'static {

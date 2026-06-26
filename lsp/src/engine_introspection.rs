@@ -1,4 +1,6 @@
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,7 +53,7 @@ pub struct WorkerInfo {
     pub isolation: Option<String>,
 }
 
-pub async fn list_functions(iii: &III) -> Result<Vec<FunctionInfo>, IIIError> {
+pub async fn list_functions(iii: &IIIClient) -> Result<Vec<FunctionInfo>, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::functions::list".into(),
@@ -66,7 +68,7 @@ pub async fn list_functions(iii: &III) -> Result<Vec<FunctionInfo>, IIIError> {
         .unwrap_or_default())
 }
 
-pub async fn list_workers(iii: &III) -> Result<Vec<WorkerInfo>, IIIError> {
+pub async fn list_workers(iii: &IIIClient) -> Result<Vec<WorkerInfo>, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::workers::list".into(),
@@ -82,9 +84,9 @@ pub async fn list_workers(iii: &III) -> Result<Vec<WorkerInfo>, IIIError> {
 }
 
 pub async fn list_triggers(
-    iii: &III,
+    iii: &IIIClient,
     include_internal: bool,
-) -> Result<Vec<TriggerInfo>, IIIError> {
+) -> Result<Vec<TriggerInfo>, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::registered-triggers::list".into(),
@@ -100,9 +102,9 @@ pub async fn list_triggers(
 }
 
 pub async fn list_trigger_types(
-    iii: &III,
+    iii: &IIIClient,
     include_internal: bool,
-) -> Result<Vec<TriggerTypeInfo>, IIIError> {
+) -> Result<Vec<TriggerTypeInfo>, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::triggers::list".into(),

@@ -4,7 +4,8 @@
 //! ~/.codex/sessions). Trigger errors propagate (fail-fast); swallowing them
 //! would silently start a fresh conversation instead of resuming.
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::json;
 
 use crate::wire::SessionRecord;
@@ -12,7 +13,10 @@ use crate::wire::SessionRecord;
 const SCOPE: &str = "codex_sessions";
 const TIMEOUT_MS: u64 = 5_000;
 
-pub async fn load_session(iii: &III, session_id: &str) -> anyhow::Result<Option<SessionRecord>> {
+pub async fn load_session(
+    iii: &IIIClient,
+    session_id: &str,
+) -> anyhow::Result<Option<SessionRecord>> {
     let v = iii
         .trigger(TriggerRequest {
             function_id: "state::get".to_string(),
@@ -34,7 +38,7 @@ pub async fn load_session(iii: &III, session_id: &str) -> anyhow::Result<Option<
     Ok(Some(rec))
 }
 
-pub async fn save_session(iii: &III, record: &SessionRecord) -> anyhow::Result<()> {
+pub async fn save_session(iii: &IIIClient, record: &SessionRecord) -> anyhow::Result<()> {
     iii.trigger(TriggerRequest {
         function_id: "state::set".to_string(),
         payload: json!({ "scope": SCOPE, "key": record.session_id, "value": record }),
@@ -46,7 +50,7 @@ pub async fn save_session(iii: &III, record: &SessionRecord) -> anyhow::Result<(
     Ok(())
 }
 
-pub async fn list_sessions(iii: &III) -> anyhow::Result<Vec<SessionRecord>> {
+pub async fn list_sessions(iii: &IIIClient) -> anyhow::Result<Vec<SessionRecord>> {
     let v = iii
         .trigger(TriggerRequest {
             function_id: "state::list".to_string(),
@@ -68,7 +72,7 @@ pub async fn list_sessions(iii: &III) -> anyhow::Result<Vec<SessionRecord>> {
 
 /// Best-effort flip to `error` so a failed background run never leaves a
 /// record stuck in `working`. Swallows its own failure.
-pub async fn mark_error(iii: &III, session_id: &str) {
+pub async fn mark_error(iii: &IIIClient, session_id: &str) {
     match load_session(iii, session_id).await {
         Ok(Some(mut rec)) if matches!(rec.status, crate::wire::Status::Working) => {
             rec.status = crate::wire::Status::Error;

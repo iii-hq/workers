@@ -19,12 +19,14 @@ on:
           - database
           - email
           - harness
+          - hermes
           - iii-directory
           - lsp
           - lsp-vscode
           - image-resize
           - llm-router
           - mcp
+          - opencode
           - pi
           - provider-anthropic
           - provider-openai

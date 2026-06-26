@@ -678,16 +678,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-observability"
-version = "0.19.4"
+name = "iii-helpers"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71a3002534a53d85c86e4be167cf7ae8c1de809ab3130ecfcb2d85eb4afd1272"
+checksum = "09daa7c14a9e4c1f7077c4a181918d207e3f05cdfea8b2d7781bbeb80caf4c5d"
 dependencies = [
  "futures-util",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry_sdk",
  "reqwest",
+ "schemars",
+ "serde",
  "serde_json",
  "sysinfo",
  "tokio",
@@ -698,14 +700,14 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.19.4"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebda94ffd347b173746edaccb6e8767c1c2afc4c2663c3a01756396de2660c32"
+checksum = "5957568413b9a5178c11bf91b20909e93e568b187e259e941ba6009a7ec3f5c1"
 dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
- "iii-observability",
+ "iii-helpers",
  "reqwest",
  "schemars",
  "serde",
@@ -1527,12 +1529,12 @@ dependencies = [
 
 [[package]]
 name = "telegram-bot"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
  "dashmap",
- "iii-observability",
+ "iii-helpers",
  "iii-sdk",
  "pulldown-cmark",
  "reqwest",

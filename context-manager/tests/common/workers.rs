@@ -13,7 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use tokio::sync::{OnceCell, RwLock};
 
 use context_manager::adapters::fs_lease::FsLeaseStore;
@@ -25,7 +26,7 @@ use context_manager::ports::{lease_cell, Deps, SystemClock};
 static REGISTERED: OnceCell<()> = OnceCell::const_new();
 
 /// Idempotent: the first caller registers; subsequent callers reuse.
-pub async fn register_all(iii: &Arc<III>) {
+pub async fn register_all(iii: &Arc<IIIClient>) {
     REGISTERED
         .get_or_init(|| async {
             let cfg = WorkerConfig::default();
@@ -59,7 +60,7 @@ pub async fn register_all(iii: &Arc<III>) {
 /// Poll the engine until `function_id` is routable, panicking after a
 /// deadline. An `Err` carrying a `context/` code also counts as
 /// routable — it proves the call reached the production handler.
-async fn wait_until_routable(iii: &Arc<III>, function_id: &str) {
+async fn wait_until_routable(iii: &Arc<IIIClient>, function_id: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let res = iii

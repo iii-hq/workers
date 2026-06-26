@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use super::{SessionStore, StoreError};
@@ -19,13 +20,13 @@ use crate::functions::store_protocol;
 use crate::types::{SessionEntry, SessionMeta};
 
 pub struct BridgeStore {
-    remote: Arc<III>,
+    remote: Arc<IIIClient>,
     timeout_ms: u64,
 }
 
 impl BridgeStore {
     /// `remote` is a connection to the main instance's engine.
-    pub fn new(remote: Arc<III>, timeout_ms: u64) -> Self {
+    pub fn new(remote: Arc<IIIClient>, timeout_ms: u64) -> Self {
         Self { remote, timeout_ms }
     }
 
