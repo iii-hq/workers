@@ -5,7 +5,6 @@
  * Wire source: `iii/workers/workflow/src/types.rs` + `src/functions/*.rs`
  *   - WorkflowDef / NodeDef / InputSpec (One | Many) / FanoutSpec / OutputRef
  *   - StartRequest / StartResponse              (start.rs)
- *   - RunResponse (terminal funnel)             (run.rs)
  *   - StatusResponse (run record + node map)    (status.rs)
  *   - NodeResultRequest / NodeResultResponse    (node_result.rs)
  *
@@ -20,7 +19,6 @@ export { unwrapEnvelope }
 
 export const WORKFLOW_FUNCTION_IDS = [
   'workflow::start',
-  'workflow::run',
   'workflow::status',
   'workflow::stop',
   'workflow::node-result',
@@ -113,18 +111,6 @@ export const runStatusSchema = z.enum([
 ])
 export type RunStatus = z.infer<typeof runStatusSchema>
 
-/* ---------------- workflow::run (terminal funnel) ---------------- */
-
-export const runResponseSchema = z
-  .object({
-    run_id: z.string(),
-    status: runStatusSchema.optional(),
-    result: z.unknown().optional(),
-    result_error: z.string().nullable().optional(),
-  })
-  .passthrough()
-export type RunResponse = z.infer<typeof runResponseSchema>
-
 /* ---------------- workflow::status ---------------- */
 
 export const nodeStateSchema = z.enum([
@@ -136,18 +122,6 @@ export const nodeStateSchema = z.enum([
 ])
 export type NodeState = z.infer<typeof nodeStateSchema>
 
-export const nodeCheckpointSchema = z
-  .object({
-    state: nodeStateSchema,
-    retries: z.number().optional(),
-    result_error: z.string().nullable().optional(),
-    session_id: z.string().nullable().optional(),
-    turn_id: z.string().nullable().optional(),
-    result_ref: z.string().nullable().optional(),
-  })
-  .passthrough()
-export type NodeCheckpoint = z.infer<typeof nodeCheckpointSchema>
-
 export const statusRequestSchema = z
   .object({ run_id: z.string() })
   .passthrough()
@@ -158,7 +132,7 @@ export const statusResponseSchema = z
     run_id: z.string().optional(),
     status: runStatusSchema.optional(),
     step: z.number().optional(),
-    nodes: z.record(z.string(), nodeCheckpointSchema).optional().default({}),
+    nodes: z.record(z.string(), nodeStateSchema).optional().default({}),
     node_results: z.record(z.string(), z.string()).optional().default({}),
     node_errors: z.record(z.string(), z.string()).nullable().optional(),
     result: z.unknown().optional(),
@@ -228,9 +202,9 @@ export interface DagCounts {
   cancelled: number
 }
 
-/** Tally node states from a status response's node map. Fanned items (`#i`)
- *  each count individually, matching how the run actually executes. */
-export function tallyNodes(nodes: Record<string, NodeCheckpoint>): DagCounts {
+/** Tally node states from a status response's node map (uid → state). Fanned
+ *  items (`#i`) each count individually, matching how the run actually executes. */
+export function tallyNodes(nodes: Record<string, NodeState>): DagCounts {
   const counts: DagCounts = {
     total: 0,
     done: 0,
@@ -239,9 +213,9 @@ export function tallyNodes(nodes: Record<string, NodeCheckpoint>): DagCounts {
     failed: 0,
     cancelled: 0,
   }
-  for (const cp of Object.values(nodes)) {
+  for (const state of Object.values(nodes)) {
     counts.total += 1
-    counts[cp.state] += 1
+    counts[state] += 1
   }
   return counts
 }

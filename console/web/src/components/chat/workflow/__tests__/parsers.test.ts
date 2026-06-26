@@ -67,11 +67,11 @@ describe('isJoinNode', () => {
 describe('tallyNodes', () => {
   it('counts each node + fanned item by state', () => {
     const counts = tallyNodes({
-      a: { state: 'done' },
-      b: { state: 'done' },
-      'c#0': { state: 'running' },
-      'c#1': { state: 'pending' },
-      d: { state: 'failed' },
+      a: 'done',
+      b: 'done',
+      'c#0': 'running',
+      'c#1': 'pending',
+      d: 'failed',
     })
     expect(counts).toEqual({
       total: 5,
@@ -107,7 +107,7 @@ describe('schema parsing', () => {
   it('unwraps a harness-enveloped status response', () => {
     const enveloped = {
       content: [{ type: 'text', text: '{}' }],
-      details: { status: 'completed', nodes: { a: { state: 'done' } } },
+      details: { status: 'completed', nodes: { a: 'done' } },
       terminate: true,
     }
     const resp = safeParseResponse(statusResponseSchema, enveloped)

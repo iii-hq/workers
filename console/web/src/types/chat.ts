@@ -160,6 +160,14 @@ export interface Conversation {
    */
   workingDir?: string | null
   messages: Message[]
+  /**
+   * Spawn-parent session id, from the child session's
+   * `SessionMeta.metadata.parent_session_id` (set by the harness on spawn).
+   * Absent for root/orchestrator chats. Drives the sidebar tree grouping.
+   */
+  parentId?: string
+  /** Spawn depth: 0 = root orchestrator (from `metadata.depth`). */
+  depth?: number
   /** Driver-owned session status (spinner + sidebar indicator). */
   status?: ConversationStatus
   statusReason?: string

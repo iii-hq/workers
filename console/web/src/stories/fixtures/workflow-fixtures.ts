@@ -159,39 +159,6 @@ export const workflowStartRunning = base(
   { running: true },
 )
 
-/* ---------------- workflow::run ---------------- */
-
-export const workflowRunCompleted = base(
-  'wf-run-ok',
-  'workflow::run',
-  { definition: blogDef, input: blogInput },
-  wrapHarness({
-    run_id: 'r_f58318bb102841a99134d7a6e7c164df',
-    status: 'completed',
-    result: FINAL_POST,
-  }),
-)
-
-export const workflowRunFailed = base(
-  'wf-run-fail',
-  'workflow::run',
-  { definition: blogDef, input: blogInput },
-  wrapHarness({
-    run_id: 'r_cb2455a7',
-    status: 'failed',
-    result_error:
-      "node 'critics': fanout 'critics' over 'node:harden.critic_briefs' did not resolve to an array within 10000 items",
-  }),
-)
-
-export const workflowRunRunning = base(
-  'wf-run-running',
-  'workflow::run',
-  { definition: blogDef, input: blogInput },
-  undefined,
-  { running: true },
-)
-
 /* ---------------- workflow::status ---------------- */
 
 export const workflowStatusInFlight = base(
@@ -202,17 +169,17 @@ export const workflowStatusInFlight = base(
     run_id: 'r_f58318bb102841a99134d7a6e7c164df',
     status: 'awaiting_nodes',
     nodes: {
-      discover: { state: 'done', retries: 0 },
-      select: { state: 'done', retries: 0 },
-      critic_skeptic: { state: 'done', retries: 0 },
-      critic_contract: { state: 'done', retries: 1 },
-      critic_observability: { state: 'running', retries: 0 },
-      critic_orchestration: { state: 'running', retries: 0 },
-      synthesize: { state: 'pending', retries: 0 },
-      draft: { state: 'pending', retries: 0 },
-      review_slop: { state: 'pending', retries: 0 },
-      review_technical: { state: 'pending', retries: 0 },
-      final_rewrite: { state: 'pending', retries: 0 },
+      discover: 'done',
+      select: 'done',
+      critic_skeptic: 'done',
+      critic_contract: 'done',
+      critic_observability: 'running',
+      critic_orchestration: 'running',
+      synthesize: 'pending',
+      draft: 'pending',
+      review_slop: 'pending',
+      review_technical: 'pending',
+      final_rewrite: 'pending',
     },
     node_results: {
       discover: 'r_f58318bb/discover',
@@ -231,17 +198,17 @@ export const workflowStatusCompleted = base(
     run_id: 'r_f58318bb102841a99134d7a6e7c164df',
     status: 'completed',
     nodes: {
-      discover: { state: 'done' },
-      select: { state: 'done' },
-      critic_skeptic: { state: 'done' },
-      critic_contract: { state: 'done' },
-      critic_observability: { state: 'done' },
-      critic_orchestration: { state: 'done' },
-      synthesize: { state: 'done' },
-      draft: { state: 'done' },
-      review_slop: { state: 'done' },
-      review_technical: { state: 'done' },
-      final_rewrite: { state: 'done' },
+      discover: 'done',
+      select: 'done',
+      critic_skeptic: 'done',
+      critic_contract: 'done',
+      critic_observability: 'done',
+      critic_orchestration: 'done',
+      synthesize: 'done',
+      draft: 'done',
+      review_slop: 'done',
+      review_technical: 'done',
+      final_rewrite: 'done',
     },
     result: FINAL_POST,
   }),
@@ -255,14 +222,13 @@ export const workflowStatusFailed = base(
     run_id: 'r_9a01',
     status: 'failed',
     nodes: {
-      discover: { state: 'done' },
-      select: { state: 'done' },
-      draft: {
-        state: 'failed',
-        retries: 2,
-        result_error:
-          'tools.1.custom.input_schema.type: Field required (provider rejected empty schema)',
-      },
+      discover: 'done',
+      select: 'done',
+      draft: 'failed',
+    },
+    node_errors: {
+      draft:
+        'tools.1.custom.input_schema.type: Field required (provider rejected empty schema)',
     },
     result_error: "node 'draft' failed after 2 retries",
   }),
@@ -277,12 +243,12 @@ export const workflowStatusFanout = base(
     run_id: 'r_fan',
     status: 'awaiting_nodes',
     nodes: {
-      plan: { state: 'done' },
-      'read#0': { state: 'done' },
-      'read#1': { state: 'done' },
-      'read#2': { state: 'running' },
-      'read#10': { state: 'pending' },
-      synthesize: { state: 'pending' },
+      plan: 'done',
+      'read#0': 'done',
+      'read#1': 'done',
+      'read#2': 'running',
+      'read#10': 'pending',
+      synthesize: 'pending',
     },
   }),
 )
@@ -370,9 +336,6 @@ export const workflowStartRejected = base(
 export const workflowFixtures = [
   workflowStartLaunched,
   workflowStartRunning,
-  workflowRunRunning,
-  workflowRunCompleted,
-  workflowRunFailed,
   workflowStatusInFlight,
   workflowStatusCompleted,
   workflowStatusFailed,

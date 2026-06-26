@@ -1,6 +1,6 @@
 import { ActionLine, Chip, MetaRow } from '@/components/chat/sandbox/shared'
 import {
-  type NodeCheckpoint,
+  type NodeState,
   safeParseRequest,
   safeParseResponse,
   statusRequestSchema,
@@ -72,6 +72,7 @@ export function StatusView({ input, output, running }: StatusViewProps) {
   }
 
   const counts = tallyNodes(resp.nodes)
+  const nodeErrors = resp.node_errors ?? {}
   const nodeEntries = Object.entries(resp.nodes).sort((a, b) =>
     compareUids(a[0], b[0]),
   )
@@ -108,8 +109,13 @@ export function StatusView({ input, output, running }: StatusViewProps) {
         <GhostRow label="no nodes materialized yet" />
       ) : (
         <ul className="divide-y divide-rule-2">
-          {nodeEntries.map(([uid, cp]) => (
-            <NodeRow key={uid} uid={uid} cp={cp} />
+          {nodeEntries.map(([uid, state]) => (
+            <NodeRow
+              key={uid}
+              uid={uid}
+              state={state}
+              error={nodeErrors[uid]}
+            />
           ))}
         </ul>
       )}
@@ -127,22 +133,25 @@ export function StatusView({ input, output, running }: StatusViewProps) {
   )
 }
 
-function NodeRow({ uid, cp }: { uid: string; cp: NodeCheckpoint }) {
+function NodeRow({
+  uid,
+  state,
+  error,
+}: {
+  uid: string
+  state: NodeState
+  error?: string
+}) {
   return (
     <li className="flex items-start gap-2 px-3 py-1.5">
-      <NodeStateDot state={cp.state} />
+      <NodeStateDot state={state} />
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="font-mono text-[12.5px] text-ink break-all">
-            {uid}
-          </span>
-          {typeof cp.retries === 'number' && cp.retries > 0 ? (
-            <Chip className="text-warn">retry {cp.retries}</Chip>
-          ) : null}
-        </div>
-        {cp.result_error ? (
+        <span className="font-mono text-[12.5px] text-ink break-all">
+          {uid}
+        </span>
+        {error ? (
           <div className="mt-0.5 font-mono text-[11px] text-warn break-words">
-            {cp.result_error}
+            {error}
           </div>
         ) : null}
       </div>

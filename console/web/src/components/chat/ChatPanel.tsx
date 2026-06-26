@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Prompt } from '@/components/ui/Prompt'
+import { useSidebarWidth } from '@/hooks/use-sidebar-width'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { ChatView } from './ChatView'
 
@@ -52,6 +53,7 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
 
   const [sidebarCollapsed, setSidebarCollapsed] =
     useState<boolean>(loadSidebarCollapsed)
+  const { width: sidebarWidth, setWidth: setSidebarWidth } = useSidebarWidth()
 
   useEffect(() => {
     persistSidebarCollapsed(sidebarCollapsed)
@@ -68,7 +70,8 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
         activeId={activeId}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={toggleSidebar}
-        density={density}
+        width={sidebarWidth}
+        onWidthChange={setSidebarWidth}
         onCreate={createNew}
         onSelect={select}
         onRename={rename}

@@ -268,9 +268,9 @@ describe('parseSandboxErrorDisplay', () => {
 describe('parseDispatchDenial', () => {
   it('extracts the function id and namespace from a bare message', () => {
     const d = parseDispatchDenial(
-      "function workflow::run is not permitted by this agent's dispatch policy",
+      "function workflow::start is not permitted by this agent's dispatch policy",
     )
-    expect(d?.functionId).toBe('workflow::run')
+    expect(d?.functionId).toBe('workflow::start')
     expect(d?.namespace).toBe('workflow')
   })
 

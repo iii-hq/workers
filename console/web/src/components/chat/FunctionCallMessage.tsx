@@ -5,6 +5,7 @@ import {
   DirectoryToolView,
 } from '@/components/chat/directory'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   SandboxFunctionIdLabel,
   SandboxToolView,
@@ -129,6 +130,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (WorkflowToolView.isWorkflowFunction(functionId)) {
     return <WorkflowFunctionIdLabel functionId={functionId} />
   }
+  if (RouterToolView.isRouterFunction(functionId)) {
+    return <RouterFunctionIdLabel functionId={functionId} />
+  }
   return <span className="text-ink">{functionId}</span>
 }
 
@@ -157,7 +161,8 @@ export function FunctionCallMessage({
     WebToolView.tryRenderPreview(message) ??
     CoderToolView.tryRenderPreview(message) ??
     ShellToolView.tryRenderPreview(message) ??
-    WorkflowToolView.tryRenderPreview(message)
+    WorkflowToolView.tryRenderPreview(message) ??
+    RouterToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
@@ -166,7 +171,8 @@ export function FunctionCallMessage({
       WebToolView.tryRender(message) ??
       CoderToolView.tryRender(message) ??
       ShellToolView.tryRender(message) ??
-      WorkflowToolView.tryRender(message))
+      WorkflowToolView.tryRender(message) ??
+      RouterToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =
