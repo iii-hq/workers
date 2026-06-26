@@ -94,18 +94,36 @@ pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), Str
     Ok(())
 }
 
+/// Event delivered to the internal `database::on-config-change` handler. A struct
+/// (not `Value`) keeps the request schema concrete; the handler re-fetches the
+/// configuration id; unknown fields are ignored.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnConfigChangeEvent {
+    /// Configuration id that changed (advisory; the handler re-fetches the value).
+    /// Schema-only: kept to publish a typed request schema; the handler ignores it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub id: Option<String>,
+}
+
+/// Ack returned by the internal `database::on-config-change` handler.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OnConfigChangeResponse {
+    pub ok: bool,
+}
+
 /// Register the internal config-change handler and bind a `configuration` trigger.
 pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let st = st.clone();
             let engine = engine.clone();
             async move {
                 on_config_change(&engine, &st).await;
-                Ok::<Value, Error>(json!({ "ok": true }))
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
