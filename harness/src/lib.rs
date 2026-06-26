@@ -29,3 +29,4 @@ pub mod surface;
 pub mod trigger;
 pub mod turn_loop;
 pub mod types;
+pub mod workspace_inject;

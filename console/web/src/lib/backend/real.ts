@@ -81,6 +81,24 @@ function toThinkingLevel(
   return level && level !== 'off' ? level : undefined
 }
 
+/**
+ * Build `harness::send` `options.metadata`. `working_dir` MUST ride this
+ * per-turn channel (not session metadata, which the harness can't see at the
+ * dispatch choke point) so the harness can scope the turn's shell/coder calls
+ * to it as `base_dir`. Omitted when no directory is set.
+ */
+export function buildTurnMetadata(
+  sessionId: string,
+  messageId: string,
+  workingDir?: string | null,
+): Record<string, unknown> {
+  return {
+    session_id: sessionId,
+    message_id: messageId,
+    ...(workingDir ? { working_dir: workingDir } : {}),
+  }
+}
+
 async function* realStream(
   prompt: string,
   mode: Mode,
@@ -184,7 +202,7 @@ async function* realStream(
         mode,
         functions: functionPolicy,
         ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
-        metadata: { session_id: sessionId, message_id: messageId },
+        metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
       },
     }).catch((err) => {
       kickoffError = err instanceof Error ? err : new Error(String(err))

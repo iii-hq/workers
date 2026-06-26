@@ -156,6 +156,7 @@ export function PlaygroundHarness({
           modelOptions={PLAYGROUND_MODEL_OPTIONS}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
+          onUpdateWorkingDir={() => {}}
           onAppendMessage={appendMessage}
           onPatchMessage={updateMessage}
           onCompactConversation={compactConversation}

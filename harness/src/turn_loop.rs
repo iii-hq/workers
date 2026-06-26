@@ -460,9 +460,24 @@ pub async fn run_step(
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
+            // Stamp the per-session working directory onto scoped shell/coder
+            // calls as `base_dir` BEFORE invocation. The harness owns scoping:
+            // this overwrites any model-supplied base_dir so the model cannot
+            // widen its own workspace. A None working_dir is a no-op (the args
+            // pass through byte-for-byte unchanged).
+            let working_dir = record
+                .options
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("working_dir"))
+                .and_then(Value::as_str);
+            let scoped_args =
+                crate::workspace_inject::inject(&call.function_id, eff_args, working_dir);
+
             // Invoke the target, then run the post_trigger chain over the
             // result before it is appended (redaction / truncation).
-            let raw = trigger::invoke_target(&engine, &policy, &call.function_id, &eff_args).await;
+            let raw =
+                trigger::invoke_target(&engine, &policy, &call.function_id, &scoped_args).await;
             let (data, post_ann) = deps
                 .hooks
                 .run_post_trigger(&record, payload.step, &call.id, &call.function_id, raw)
@@ -998,15 +1013,37 @@ async fn assemble_context(
                 messages = candidate_values.clone();
             }
             Ok(Assembled {
-                system_prompt: Some(out.system_prompt),
+                system_prompt: with_working_dir_aid(Some(out.system_prompt), record),
                 messages,
             })
         }
         Ok(None) | Err(_) => Ok(Assembled {
-            system_prompt: record.options.system_prompt.clone(),
+            system_prompt: with_working_dir_aid(record.options.system_prompt.clone(), record),
             messages: candidate_values,
         }),
     }
+}
+
+/// Append a working-directory line to the system prompt when the turn carries a
+/// `working_dir` in its metadata. This is a model-facing AID only — the real
+/// scoping control plane stamps `base_dir` onto each call
+/// (`workspace_inject::inject`); this line just tells the model where it is so
+/// it reasons about relative paths sensibly.
+fn with_working_dir_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
+    let working_dir = record
+        .options
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("working_dir"))
+        .and_then(Value::as_str);
+    let Some(dir) = working_dir else {
+        return system_prompt;
+    };
+    let line = format!("Your working directory is {dir}.");
+    Some(match system_prompt {
+        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{line}"),
+        _ => line,
+    })
 }
 
 struct Assembled {

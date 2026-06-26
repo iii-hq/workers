@@ -25,6 +25,13 @@ pub struct DeleteFileInput {
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]
     pub recursive: bool,
+    /// Optional per-call session working directory. When set, relative
+    /// `paths` anchor here instead of the primary allowed root, and every
+    /// resolved path must stay inside it. `base_dir` itself must canonicalize
+    /// inside an allowed root (`coder::info` lists them). Omit to resolve
+    /// against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -64,19 +71,25 @@ pub async fn handle(
             "`paths` must not be empty".into(),
         )));
     }
+    let base_dir = req.base_dir.as_deref();
     let mut results = Vec::with_capacity(req.paths.len());
     for p in req.paths {
-        results.push(delete_one(&resolver, &p, req.recursive));
+        results.push(delete_one(&resolver, base_dir, &p, req.recursive));
     }
     Ok(DeleteFileOutput { results })
 }
 
-fn delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> DeleteFileResult {
+fn delete_one(
+    resolver: &PathResolver,
+    base_dir: Option<&str>,
+    rel: &str,
+    recursive: bool,
+) -> DeleteFileResult {
     // Resolve up front: deletion operates ONLY on the resolver-returned
     // path, and the result echoes that canonical absolute path. When
     // resolution fails there is no canonical path, so the caller's input
     // is echoed verbatim.
-    let abs = match resolver.require_writable(rel) {
+    let abs = match resolver.require_writable_opt(base_dir, rel) {
         Ok(abs) => abs,
         Err(e) => {
             return DeleteFileResult {
@@ -88,7 +101,7 @@ fn delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> DeleteFile
         }
     };
     let wire_path = abs.display().to_string();
-    match try_delete_one(resolver, &abs, recursive) {
+    match try_delete_one(resolver, base_dir, &abs, recursive) {
         Ok(removed) => DeleteFileResult {
             path: wire_path,
             success: true,
@@ -106,6 +119,7 @@ fn delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> DeleteFile
 
 fn try_delete_one(
     resolver: &PathResolver,
+    base_dir: Option<&str>,
     abs: &Path,
     recursive: bool,
 ) -> Result<bool, CoderError> {
@@ -113,6 +127,18 @@ fn try_delete_one(
         return Err(CoderError::BadInput(
             "refusing to delete an allowed root itself".into(),
         ));
+    }
+    // A session-scoped delete must not remove the session working directory
+    // itself. With `base_dir` set, `paths: ["."]` (or any path that resolves
+    // back to base_dir) canonicalizes to the session directory — which is a
+    // SUBDIR of an allowed root, so the `is_root` guard above never catches it.
+    // Without this, a recursive delete would wipe the active project directory.
+    if let Some(base) = base_dir {
+        if resolver.session_root(base).as_deref() == Some(abs) {
+            return Err(CoderError::BadInput(
+                "refusing to delete the session working directory itself".into(),
+            ));
+        }
     }
     let md = match std::fs::symlink_metadata(abs) {
         Ok(m) => m,
@@ -182,6 +208,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -199,6 +226,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -216,6 +244,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".env".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -235,6 +264,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: false,
+                base_dir: None,
             },
         )
         .await
@@ -252,6 +282,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
@@ -270,6 +301,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
@@ -293,6 +325,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["secrets".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
@@ -324,11 +357,84 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
+                base_dir: None,
             },
         )
         .await
         .unwrap();
         assert!(!out.results[0].success);
         assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+    }
+
+    // The session working directory is a SUBDIR of the allowed root, so the
+    // is_root guard does not cover it. A scoped `delete path="."` must still be
+    // refused (C210) — otherwise a recursive delete wipes the active project.
+    #[tokio::test]
+    async fn refuses_to_delete_session_dir_via_dot() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join("keep.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".".into()],
+                recursive: true,
+                base_dir: Some(session.to_string_lossy().into_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(session.exists(), "session dir must survive the delete");
+        assert!(session.join("keep.txt").exists());
+    }
+
+    // The same protection must hold when the session dir is named by an
+    // absolute path rather than ".".
+    #[tokio::test]
+    async fn refuses_to_delete_session_dir_via_absolute_path() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        let abs = session.to_string_lossy().into_owned();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![abs.clone()],
+                recursive: true,
+                base_dir: Some(abs),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(session.exists(), "session dir must survive the delete");
+    }
+
+    // The guard must not be over-broad: a real file INSIDE the session dir
+    // still deletes normally.
+    #[tokio::test]
+    async fn deletes_file_inside_session_dir() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join("a.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["a.txt".into()],
+                recursive: false,
+                base_dir: Some(session.to_string_lossy().into_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success);
+        assert!(out.results[0].removed);
+        assert!(!session.join("a.txt").exists());
+        assert!(session.exists(), "session dir itself is untouched");
     }
 }

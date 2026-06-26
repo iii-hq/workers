@@ -90,6 +90,13 @@ export interface ChatStreamOptions {
    * degrades with a warning when the model can't honor it.
    */
   thinkingLevel?: import('@/types/chat').ThinkingLevel
+  /**
+   * Per-session working directory. The real backend forwards it as
+   * `harness::send` `options.metadata.working_dir` so the harness can scope
+   * the turn's shell/coder calls to it (`base_dir`). Session metadata alone is
+   * NOT on the turn record, so it must travel on every send.
+   */
+  workingDir?: string | null
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**

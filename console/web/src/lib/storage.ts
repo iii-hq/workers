@@ -98,3 +98,49 @@ export function saveLastModel(id: string | null): void {
     /* best-effort */
   }
 }
+
+const RECENT_PROJECTS_KEY = 'iii-chat-recent-projects'
+const RECENT_PROJECTS_MAX = 12
+
+/**
+ * Most-recently-used project directories, newest first. The directory picker
+ * opens to this list so a returning user picks a known project in one click
+ * instead of re-browsing the filesystem.
+ */
+export function loadRecentProjects(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_PROJECTS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (v): v is string => typeof v === 'string' && v.length > 0,
+    )
+  } catch {
+    return []
+  }
+}
+
+/** Promote `dir` to the front of the recent list (deduped, capped). */
+export function saveRecentProject(dir: string): void {
+  if (!dir) return
+  try {
+    const next = [dir, ...loadRecentProjects().filter((d) => d !== dir)].slice(
+      0,
+      RECENT_PROJECTS_MAX,
+    )
+    localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next))
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Forget a remembered project (the × affordance in the picker). */
+export function removeRecentProject(dir: string): void {
+  try {
+    const next = loadRecentProjects().filter((d) => d !== dir)
+    localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next))
+  } catch {
+    /* best-effort */
+  }
+}

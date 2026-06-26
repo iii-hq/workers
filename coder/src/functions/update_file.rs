@@ -36,6 +36,13 @@ use crate::path::PathResolver;
 #[schemars(example = "example_update_file_input")]
 pub struct UpdateFileInput {
     pub files: Vec<UpdateFileSpec>,
+    /// Optional per-call session working directory. When set, relative
+    /// `path`s anchor here instead of the primary allowed root, and every
+    /// resolved path must stay inside it. `base_dir` itself must canonicalize
+    /// inside an allowed root (`coder::info` lists them). Omit to resolve
+    /// against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -206,9 +213,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
+    let base_dir = req.base_dir.as_deref();
     let mut results = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(update_one(&resolver, &cfg, spec));
+        results.push(update_one(&resolver, &cfg, base_dir, spec));
     }
     Ok(UpdateFileOutput { results })
 }
@@ -216,13 +224,14 @@ pub async fn handle(
 fn update_one(
     resolver: &PathResolver,
     cfg: &CoderConfig,
+    base_dir: Option<&str>,
     spec: UpdateFileSpec,
 ) -> UpdateFileResult {
     // Resolve up front: the edit pipeline operates ONLY on the
     // resolver-returned path, and the result echoes that canonical
     // absolute path. When resolution fails there is no canonical path,
     // so the caller's input is echoed verbatim.
-    let abs = match resolver.require_writable(&spec.path) {
+    let abs = match resolver.require_writable_opt(base_dir, &spec.path) {
         Ok(abs) => abs,
         Err(e) => {
             return UpdateFileResult {
@@ -1890,6 +1899,7 @@ mod handler_tests {
                         content: "TWO".into(),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -1922,6 +1932,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -1957,6 +1968,7 @@ mod handler_tests {
                         },
                     ],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -1987,6 +1999,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2016,6 +2029,7 @@ mod handler_tests {
                         content: "new".into(),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2042,6 +2056,7 @@ mod handler_tests {
                         content: "inserted".into(),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2078,6 +2093,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2122,6 +2138,7 @@ mod handler_tests {
                         }],
                     },
                 ],
+                base_dir: None,
             },
         )
         .await
@@ -2158,6 +2175,7 @@ mod handler_tests {
             c,
             UpdateFileInput {
                 files: vec![spec("missing.txt"), spec(".env")],
+                base_dir: None,
             },
         )
         .await
@@ -2212,6 +2230,7 @@ mod handler_tests {
                         },
                     ],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2226,9 +2245,16 @@ mod handler_tests {
     #[tokio::test]
     async fn empty_files_array_rejected() {
         let (_tmp, r, c) = setup();
-        let err = handle(r, c, UpdateFileInput { files: vec![] })
-            .await
-            .unwrap_err();
+        let err = handle(
+            r,
+            c,
+            UpdateFileInput {
+                files: vec![],
+                base_dir: None,
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("C210"));
     }
 
@@ -2248,6 +2274,7 @@ mod handler_tests {
                     path: "f.txt".into(),
                     ops,
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2608,6 +2635,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2658,6 +2686,7 @@ mod handler_tests {
                         },
                     ],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2708,6 +2737,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2752,6 +2782,7 @@ mod handler_tests {
                         ops: vec![replace(None)],
                     },
                 ],
+                base_dir: None,
             },
         )
         .await
@@ -2806,6 +2837,7 @@ mod handler_tests {
                         expect_matches: Some(2),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2858,6 +2890,7 @@ mod handler_tests {
                         expect_matches: Some(0),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -2948,6 +2981,7 @@ mod handler_tests {
                         },
                     ],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -3015,6 +3049,7 @@ mod handler_tests {
                         }],
                     },
                 ],
+                base_dir: None,
             },
         )
         .await
@@ -3078,6 +3113,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -3114,6 +3150,7 @@ mod handler_tests {
                     path: "a.txt".into(),
                     ops: vec![op("$1a")],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -3140,6 +3177,7 @@ mod handler_tests {
                     path: "a.txt".into(),
                     ops: vec![op("${1}a")],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -3171,6 +3209,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await
@@ -3209,6 +3248,7 @@ mod handler_tests {
                         expect_matches: Some(0),
                     }],
                 }],
+                base_dir: None,
             },
         )
         .await

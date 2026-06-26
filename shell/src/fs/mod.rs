@@ -65,15 +65,26 @@ impl From<iii_sdk::channels::StreamChannelRef> for ContentRef {
 }
 
 // Backend args — `FsBackend` trait inputs, no `target`, no `JsonSchema`.
+//
+// Every backend args struct carries an OPTIONAL per-call `base_dir`. When set,
+// the op is scoped to that session directory: relative paths anchor at
+// `base_dir` (not the global `host_root`) and an absolute path outside it is
+// rejected. `base_dir` must itself sit inside the configured `host_root`. When
+// `None` (the default, and the wire-absent case) the op behaves exactly as
+// before — see `crate::fs::host::confine_path_with_base_dir`.
 
 #[derive(Debug, Deserialize)]
 pub struct LsArgs {
     pub path: String,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StatArgs {
     pub path: String,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +94,8 @@ pub struct MkdirArgs {
     pub mode: String,
     #[serde(default)]
     pub parents: bool,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +103,8 @@ pub struct RmArgs {
     pub path: String,
     #[serde(default)]
     pub recursive: bool,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +117,8 @@ pub struct ChmodArgs {
     pub gid: Option<u32>,
     #[serde(default)]
     pub recursive: bool,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +127,8 @@ pub struct MvArgs {
     pub dst: String,
     #[serde(default)]
     pub overwrite: bool,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +147,8 @@ pub struct GrepArgs {
     pub max_matches: u64,
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 fn default_max_matches() -> u64 {
     10_000
@@ -162,6 +183,8 @@ pub struct SedArgs {
     pub first_only: bool,
     #[serde(default)]
     pub ignore_case: bool,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 fn default_true() -> bool {
     true
@@ -182,16 +205,26 @@ pub struct WriteArgs {
     pub mode: String,
     pub parents: bool,
     pub content: WriteContent,
+    pub base_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReadArgs {
     pub path: String,
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 // Registration-boundary requests — each carries `target` plus the matching
 // `*Args` fields and derives `JsonSchema` for the SDK.
 
+/// Shared doc for the optional per-call `base_dir` field on every
+/// `shell::fs::*` request. Scopes the call to a session directory: relative
+/// paths anchor here (instead of the global `fs.host_root`) and an absolute
+/// path outside it is rejected (S220). `base_dir` must itself canonicalize
+/// inside `fs.host_root`. Omit to use the global jail root (unchanged default).
+///
+/// (Documented once; each request field below repeats the one-line summary.)
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LsRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
@@ -199,10 +232,20 @@ pub struct LsRequest {
     pub target: Target,
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl LsRequest {
     pub fn split(self) -> (Target, LsArgs) {
-        (self.target, LsArgs { path: self.path })
+        (
+            self.target,
+            LsArgs {
+                path: self.path,
+                base_dir: self.base_dir,
+            },
+        )
     }
 }
 
@@ -213,10 +256,20 @@ pub struct StatRequest {
     pub target: Target,
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl StatRequest {
     pub fn split(self) -> (Target, StatArgs) {
-        (self.target, StatArgs { path: self.path })
+        (
+            self.target,
+            StatArgs {
+                path: self.path,
+                base_dir: self.base_dir,
+            },
+        )
     }
 }
 
@@ -233,6 +286,10 @@ pub struct MkdirRequest {
     /// Create missing parent directories.
     #[serde(default)]
     pub parents: bool,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl MkdirRequest {
     pub fn split(self) -> (Target, MkdirArgs) {
@@ -242,6 +299,7 @@ impl MkdirRequest {
                 path: self.path,
                 mode: self.mode,
                 parents: self.parents,
+                base_dir: self.base_dir,
             },
         )
     }
@@ -257,6 +315,10 @@ pub struct RmRequest {
     /// Required to delete a non-empty directory.
     #[serde(default)]
     pub recursive: bool,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl RmRequest {
     pub fn split(self) -> (Target, RmArgs) {
@@ -265,6 +327,7 @@ impl RmRequest {
             RmArgs {
                 path: self.path,
                 recursive: self.recursive,
+                base_dir: self.base_dir,
             },
         )
     }
@@ -288,6 +351,10 @@ pub struct ChmodRequest {
     /// Apply mode/owner change to all files under the path recursively.
     #[serde(default)]
     pub recursive: bool,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl ChmodRequest {
     pub fn split(self) -> (Target, ChmodArgs) {
@@ -299,6 +366,7 @@ impl ChmodRequest {
                 uid: self.uid,
                 gid: self.gid,
                 recursive: self.recursive,
+                base_dir: self.base_dir,
             },
         )
     }
@@ -316,6 +384,11 @@ pub struct MvRequest {
     /// Replace an existing destination instead of returning an error.
     #[serde(default)]
     pub overwrite: bool,
+    /// Optional per-call session directory. BOTH src and dst anchor here when
+    /// relative; an absolute src/dst outside it is rejected (S220). Must be
+    /// inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl MvRequest {
     pub fn split(self) -> (Target, MvArgs) {
@@ -325,6 +398,7 @@ impl MvRequest {
                 src: self.src,
                 dst: self.dst,
                 overwrite: self.overwrite,
+                base_dir: self.base_dir,
             },
         )
     }
@@ -357,6 +431,10 @@ pub struct GrepRequest {
     /// Skip lines longer than this many bytes (default 4 096).
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl GrepRequest {
     pub fn split(self) -> (Target, GrepArgs) {
@@ -371,6 +449,7 @@ impl GrepRequest {
                 exclude_glob: self.exclude_glob,
                 max_matches: self.max_matches,
                 max_line_bytes: self.max_line_bytes,
+                base_dir: self.base_dir,
             },
         )
     }
@@ -409,6 +488,11 @@ pub struct SedRequest {
     /// Match pattern case-insensitively.
     #[serde(default)]
     pub ignore_case: bool,
+    /// Optional per-call session directory. Relative `files`/`path` anchor
+    /// here; an absolute one outside it is rejected (S220). Must be inside
+    /// fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl SedRequest {
     pub fn split(self) -> (Target, SedArgs) {
@@ -425,6 +509,7 @@ impl SedRequest {
                 regex: self.regex,
                 first_only: self.first_only,
                 ignore_case: self.ignore_case,
+                base_dir: self.base_dir,
             },
         )
     }
@@ -497,6 +582,11 @@ pub struct WriteRequest {
     /// single-file fields (`path`/`content`/`mode`/`parents`) must be omitted.
     #[serde(default)]
     pub files: Option<Vec<WriteFileSpec>>,
+    /// Optional per-call session directory, applied to the single-file `path`
+    /// AND to every batch `files[].path`. Relative paths anchor here; an
+    /// absolute one outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl WriteRequest {
     /// Normalize into `(target, specs, is_batch)`. `is_batch` is true when the
@@ -525,6 +615,9 @@ impl WriteRequest {
                     "`files` is empty; provide at least one { path, content } entry",
                 ));
             }
+            // base_dir is a per-CALL session scope, not a per-file attribute, so
+            // every batch entry shares the request-level base_dir.
+            let base_dir = self.base_dir;
             let specs = files
                 .into_iter()
                 .map(|f| WriteArgs {
@@ -532,6 +625,7 @@ impl WriteRequest {
                     mode: f.mode,
                     parents: f.parents,
                     content: f.content.into(),
+                    base_dir: base_dir.clone(),
                 })
                 .collect();
             Ok((self.target, specs, true))
@@ -552,6 +646,7 @@ impl WriteRequest {
                     mode: self.mode.unwrap_or_else(default_write_mode),
                     parents: self.parents.unwrap_or(false),
                     content: content.into(),
+                    base_dir: self.base_dir,
                 }],
                 false,
             ))
@@ -566,10 +661,20 @@ pub struct ReadRequest {
     pub target: Target,
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Optional per-call session directory. Relative paths anchor here; an
+    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 impl ReadRequest {
     pub fn split(self) -> (Target, ReadArgs) {
-        (self.target, ReadArgs { path: self.path })
+        (
+            self.target,
+            ReadArgs {
+                path: self.path,
+                base_dir: self.base_dir,
+            },
+        )
     }
 }
 

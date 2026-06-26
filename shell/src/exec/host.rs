@@ -367,12 +367,34 @@ mod tests {
         let mut cfg = test_cfg();
         cfg.fs.host_root = Some(root.clone());
 
-        let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, &cfg)
+        let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, None, &cfg)
             .expect("workdir is inside the jail");
         let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
             .await
             .unwrap();
         let expected = root.join("workdir").canonicalize().unwrap();
+        assert_eq!(out.stdout.trim(), expected.to_string_lossy());
+        assert_eq!(out.exit_code, Some(0));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A per-call `base_dir` with NO explicit `cwd` makes the session directory
+    /// the child's working directory: `pwd` prints base_dir, not the worker's
+    /// cwd or `cfg.working_dir`. Proves exec both confines to AND cwds at
+    /// base_dir.
+    #[tokio::test]
+    async fn base_dir_becomes_child_working_directory() {
+        let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("session")).unwrap();
+        let mut cfg = test_cfg();
+        cfg.fs.host_root = Some(root.clone());
+
+        let overrides = crate::exec::policy::build_overrides(None, None, Some("session"), &cfg)
+            .expect("session is inside the jail");
+        let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
+            .await
+            .unwrap();
+        let expected = root.join("session").canonicalize().unwrap();
         assert_eq!(out.stdout.trim(), expected.to_string_lossy());
         assert_eq!(out.exit_code, Some(0));
         std::fs::remove_dir_all(&root).ok();
@@ -388,7 +410,7 @@ mod tests {
 
         let mut env = std::collections::BTreeMap::new();
         env.insert("NODE_ENV".to_string(), "from-override".to_string());
-        let overrides = crate::exec::policy::build_overrides(None, Some(&env), &cfg)
+        let overrides = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
             .expect("NODE_ENV is allowlisted");
 
         let out = run_to_completion(
@@ -410,7 +432,7 @@ mod tests {
         cfg.allowed_env = vec!["NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("SECRET_TOKEN".to_string(), "x".to_string());
-        let err = crate::exec::policy::build_overrides(None, Some(&env), &cfg)
+        let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
             .expect_err("non-allowlisted key must reject");
         assert_eq!(err.code, "S210");
         assert!(
@@ -429,7 +451,7 @@ mod tests {
         cfg.allowed_env = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
-        let err = crate::exec::policy::build_overrides(None, Some(&env), &cfg)
+        let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
             .expect_err("LD_PRELOAD must reject even when allowlisted");
         assert_eq!(err.code, "S210");
         assert!(err.message.contains("LD_PRELOAD"));
@@ -442,7 +464,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut cfg = test_cfg();
         cfg.fs.host_root = Some(root.clone());
-        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, &cfg)
+        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, &cfg)
             .expect_err("escape must reject");
         assert_eq!(err.code, "S215");
         std::fs::remove_dir_all(&root).ok();

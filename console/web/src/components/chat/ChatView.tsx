@@ -1,4 +1,4 @@
-import { Copy } from 'lucide-react'
+import { Copy, Folder } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
@@ -84,6 +84,7 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
+  onUpdateWorkingDir: (id: string, dir: string) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -97,6 +98,7 @@ export function ChatView({
   density = 'route',
   onUpdateModel,
   onUpdateMode,
+  onUpdateWorkingDir,
   onAppendMessage,
   onPatchMessage,
   onCompactConversation,
@@ -199,6 +201,18 @@ export function ChatView({
         onAppendMessage(
           conversationId,
           makeSystemNotice('select a model before sending.', 'warn'),
+        )
+        return
+      }
+
+      // Confine the session to a project directory before any work runs.
+      if (backend.id === 'real' && !conversation.workingDir) {
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice(
+            'choose a working directory before sending.',
+            'warn',
+          ),
         )
         return
       }
@@ -320,6 +334,7 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
+            workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
           },
         )) {
@@ -548,10 +563,12 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      conversation.workingDir,
       thinkingLevel,
       sessionId,
       contextWindow,
       backend,
+      approvalEnabled,
       announcer,
       ensureSession,
       onAppendMessage,
@@ -587,6 +604,32 @@ export function ChatView({
   const isDock = density === 'dock'
   const headerPad = isDock ? 'px-4' : 'px-9'
   const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+
+  // Re-scope the working directory. Allowed mid-conversation (no irreversible
+  // lock); a change after the chat has started drops a visible marker so the
+  // directory the agent operates in is never silently swapped.
+  const handleWorkingDirChange = useCallback(
+    (next: string) => {
+      const id = conversation.id
+      const prev = conversation.workingDir ?? null
+      onUpdateWorkingDir(id, next)
+      if (!conversation.draft && next !== prev) {
+        onAppendMessage(
+          id,
+          makeSystemNotice(
+            `working directory changed to ${next} — applies to the messages that follow`,
+          ),
+        )
+      }
+    },
+    [
+      conversation.id,
+      conversation.workingDir,
+      conversation.draft,
+      onUpdateWorkingDir,
+      onAppendMessage,
+    ],
+  )
 
   return (
     <section className="flex-1 flex flex-col min-w-0 min-h-0">
@@ -691,6 +734,26 @@ export function ChatView({
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
+          {backend.id === 'real' ? (
+            <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
+              <Folder size={12} className="shrink-0" aria-hidden />
+              {conversation.workingDir ? (
+                <span
+                  // dir=rtl keeps the trailing (most-distinguishing) path
+                  // segment visible when truncated in the narrow dock.
+                  dir="rtl"
+                  className="truncate text-left font-mono"
+                  title={conversation.workingDir}
+                >
+                  {conversation.workingDir}
+                </span>
+              ) : (
+                <span className="lowercase text-ink-ghost">
+                  no working directory — choose one before sending
+                </span>
+              )}
+            </div>
+          ) : null}
           <Composer
             mode={conversation.mode}
             model={conversation.model}
@@ -704,6 +767,10 @@ export function ChatView({
             onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
+            showWorkingDir={backend.id === 'real'}
+            workingDir={conversation.workingDir ?? null}
+            workingDirLocked={false}
+            onWorkingDirChange={handleWorkingDirChange}
             onPermissionModeChange={(next) =>
               void approvalSettings.setMode(next)
             }

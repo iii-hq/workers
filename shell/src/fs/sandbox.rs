@@ -193,7 +193,13 @@ mod tests {
         });
         let id = Uuid::new_v4();
         let b = SandboxFsBackend::new(stub.clone(), true, id);
-        let resp = b.ls(LsArgs { path: "/x".into() }).await.unwrap();
+        let resp = b
+            .ls(LsArgs {
+                base_dir: None,
+                path: "/x".into(),
+            })
+            .await
+            .unwrap();
         assert_eq!(resp.entries.len(), 0);
         let (fid, payload) = stub.captured.lock().unwrap().clone().unwrap();
         assert_eq!(fid, "sandbox::fs::ls");
@@ -211,7 +217,13 @@ mod tests {
             respond_with: Ok(json!({ "entries": [] })),
         });
         let b = SandboxFsBackend::new(stub, false, Uuid::new_v4());
-        let err = b.ls(LsArgs { path: "/x".into() }).await.unwrap_err();
+        let err = b
+            .ls(LsArgs {
+                base_dir: None,
+                path: "/x".into(),
+            })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S210");
     }
 
@@ -222,7 +234,13 @@ mod tests {
             respond_with: Err(r#"{"code":"S211","message":"not found"}"#),
         });
         let b = SandboxFsBackend::new(stub, true, Uuid::new_v4());
-        let err = b.ls(LsArgs { path: "/x".into() }).await.unwrap_err();
+        let err = b
+            .ls(LsArgs {
+                base_dir: None,
+                path: "/x".into(),
+            })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S211");
     }
 
@@ -233,7 +251,13 @@ mod tests {
             respond_with: Err(r#"{"code":"S002","message":"sandbox not found"}"#),
         });
         let b = SandboxFsBackend::new(stub, true, Uuid::new_v4());
-        let err = b.ls(LsArgs { path: "/x".into() }).await.unwrap_err();
+        let err = b
+            .ls(LsArgs {
+                base_dir: None,
+                path: "/x".into(),
+            })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S002");
     }
 
@@ -252,6 +276,7 @@ mod tests {
         };
         let resp = b
             .write(WriteArgs {
+                base_dir: None,
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -281,6 +306,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, Uuid::new_v4());
         let err = b
             .write(WriteArgs {
+                base_dir: None,
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -311,6 +337,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, id);
         let resp = b
             .read(ReadArgs {
+                base_dir: None,
                 path: "/sb/y".into(),
             })
             .await
@@ -345,6 +372,7 @@ mod tests {
         let b = SandboxFsBackend::new(Arc::new(RemoteFwd), true, Uuid::new_v4());
         let err = b
             .rm(RmArgs {
+                base_dir: None,
                 path: "/x".into(),
                 recursive: false,
             })
@@ -370,7 +398,13 @@ mod tests {
             }
         }
         let b = SandboxFsBackend::new(Arc::new(WrappedFwd), true, Uuid::new_v4());
-        let err = b.ls(LsArgs { path: "/x".into() }).await.unwrap_err();
+        let err = b
+            .ls(LsArgs {
+                base_dir: None,
+                path: "/x".into(),
+            })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S211");
     }
 
@@ -384,6 +418,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, id);
         let _ = b
             .grep(GrepArgs {
+                base_dir: None,
                 path: "/x".into(),
                 pattern: "p".into(),
                 recursive: true,

@@ -2,9 +2,9 @@ import type { LexicalEditor } from 'lexical'
 import { useCallback, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Button } from '@/components/ui/Button'
+import { Select } from '@/components/ui/Select'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
-import { Select } from '@/components/ui/Select'
 import {
   type Attachment,
   type Mode,
@@ -15,6 +15,7 @@ import {
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
+import { DirectoryPicker } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
@@ -43,8 +44,14 @@ interface ComposerProps {
    */
   showPermissionMode?: boolean
   thinkingLevel: ThinkingLevel
+  /** Show the per-session working-directory picker (real backend only). */
+  showWorkingDir?: boolean
+  workingDir?: string | null
+  /** Locked after the first send — picker renders read-only. */
+  workingDirLocked?: boolean
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
+  onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onPermissionModeChange: (next: PermissionMode) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
@@ -70,8 +77,12 @@ export function Composer({
   permissionModeLoading,
   showPermissionMode = true,
   thinkingLevel,
+  showWorkingDir,
+  workingDir,
+  workingDirLocked,
   onModeChange,
   onModelChange,
+  onWorkingDirChange,
   onThinkingLevelChange,
   onPermissionModeChange,
   onSubmit,
@@ -146,6 +157,14 @@ export function Composer({
       <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
         <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
         <ModePicker value={mode} onChange={onModeChange} />
+        {showWorkingDir && onWorkingDirChange ? (
+          <DirectoryPicker
+            value={workingDir ?? null}
+            onChange={onWorkingDirChange}
+            locked={workingDirLocked}
+            disabled={inputDisabled}
+          />
+        ) : null}
         {showPermissionMode ? (
           <PermissionModePicker
             value={permissionMode}

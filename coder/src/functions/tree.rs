@@ -46,6 +46,13 @@ pub struct TreeInput {
     /// are omitted. Pass `false` to list everything.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
+    /// Optional per-call session working directory. When set, a relative
+    /// `path` anchors here instead of the primary allowed root, and the
+    /// resolved base folder must stay inside it. `base_dir` itself must
+    /// canonicalize inside an allowed root (`coder::info` lists them). Omit
+    /// to resolve against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 fn default_path() -> String {
@@ -135,7 +142,7 @@ fn inner(
     cfg: &CoderConfig,
     req: TreeInput,
 ) -> Result<TreeOutput, CoderError> {
-    let abs = resolver.resolve(&req.path)?;
+    let abs = resolver.resolve_opt(req.base_dir.as_deref(), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -340,6 +347,7 @@ mod tests {
             max_depth: None,
             per_folder_limit: None,
             use_default_excludes: true,
+            base_dir: None,
         }
     }
 

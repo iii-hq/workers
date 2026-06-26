@@ -49,6 +49,7 @@ import {
   loadLastModel,
   saveActiveId,
   saveLastModel,
+  saveRecentProject,
 } from '@/lib/storage'
 import {
   type Conversation,
@@ -87,6 +88,11 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
+    // No silent pre-fill: a new chat starts with NO working dir so the user
+    // makes an explicit, visible choice (the picker opens to recent projects).
+    // Silently inheriting the last-used dir is exactly what made a chat operate
+    // in the wrong directory without the user choosing it.
+    workingDir: null,
     messages: [],
     status: 'idle',
     draft: true,
@@ -102,13 +108,14 @@ function isMode(v: unknown): v is Mode {
 
 /** The console's session metadata convention (replaces wholesale on writes). */
 function metadataFor(
-  c: Pick<Conversation, 'model' | 'mode' | 'titleManual'>,
+  c: Pick<Conversation, 'model' | 'mode' | 'titleManual' | 'workingDir'>,
 ): Record<string, unknown> {
   return {
     surface: 'console',
     ...(c.model ? { model: c.model } : {}),
     mode: c.mode,
     ...(c.titleManual ? { title_manual: true } : {}),
+    ...(c.workingDir ? { working_dir: c.workingDir } : {}),
   }
 }
 
@@ -121,6 +128,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
     model:
       typeof md.model === 'string' && md.model.length > 0 ? md.model : null,
     mode: isMode(md.mode) ? md.mode : DEFAULT_MODE,
+    workingDir:
+      typeof md.working_dir === 'string' && md.working_dir.length > 0
+        ? md.working_dir
+        : null,
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,
@@ -140,6 +151,8 @@ export interface ConversationsApi {
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
   setMode: (id: string, mode: Mode) => void
+  /** Per-session working directory; only meaningful while the chat is a draft. */
+  setWorkingDir: (id: string, dir: string) => void
   appendMessage: (id: string, message: Message) => void
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
   compactConversation: (id: string, marker: Message) => void
@@ -526,6 +539,20 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setWorkingDir = useCallback(
+    (id: string, dir: string) => {
+      patchConversation(id, (c) => ({
+        ...c,
+        workingDir: dir,
+        updatedAt: Date.now(),
+      }))
+      saveRecentProject(dir)
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta({ ...conv, workingDir: dir })
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const appendMessage = useCallback(
     (id: string, message: Message) =>
       patchConversation(id, (c) => {
@@ -612,6 +639,7 @@ export function useConversations(
     remove,
     setModel,
     setMode,
+    setWorkingDir,
     appendMessage,
     updateMessage,
     compactConversation,

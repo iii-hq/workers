@@ -89,6 +89,14 @@ pub struct SearchInput {
     /// Search file paths (default true).
     #[serde(default = "default_true")]
     pub search_paths: bool,
+    /// Optional per-call session working directory. When set, a relative
+    /// `path` anchors here instead of the primary allowed root, and the
+    /// walk root must stay inside it. `base_dir` itself must canonicalize
+    /// inside an allowed root (`coder::info` lists them). Result paths stay
+    /// absolute. Omit to resolve against the primary allowed root exactly as
+    /// before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -186,7 +194,7 @@ fn inner(
     // Use `resolve` rather than `require_writable` so a search rooted at
     // a folder that *contains* non-accessible children still works; the
     // per-file `is_non_accessible` filter below still guards their bytes.
-    let walk_root = resolver.resolve(&req.path)?;
+    let walk_root = resolver.resolve_opt(req.base_dir.as_deref(), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -547,6 +555,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -591,6 +600,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -639,6 +649,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -669,6 +680,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: false,
                 search_paths: true,
+                base_dir: None,
             },
         )
         .await
@@ -700,6 +712,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
+                base_dir: None,
             },
         )
         .await
@@ -737,6 +750,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -779,6 +793,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -807,6 +822,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
+                base_dir: None,
             },
         )
         .await
@@ -835,6 +851,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -863,6 +880,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -892,6 +910,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                base_dir: None,
             },
         )
         .await
@@ -925,6 +944,7 @@ mod tests {
             use_default_excludes: true,
             search_content: true,
             search_paths: false,
+            base_dir: None,
         }
     }
 

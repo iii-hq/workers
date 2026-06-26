@@ -184,6 +184,14 @@
       }
     ],
     "properties": {
+      "base_dir": {
+        "default": null,
+        "description": "Optional per-call session working directory. When set, relative `path`s anchor here instead of the primary allowed root, and every resolved path must stay inside it. `base_dir` itself must canonicalize inside an allowed root (`coder::info` lists them). Omit to resolve against the primary allowed root exactly as before.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "files": {
         "items": {
           "$ref": "#/definitions/UpdateFileSpec"

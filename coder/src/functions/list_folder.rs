@@ -29,6 +29,13 @@ pub struct ListFolderInput {
     /// `config.list_default_page_size` when omitted.
     #[serde(default)]
     pub page_size: Option<u32>,
+    /// Optional per-call session working directory. When set, a relative
+    /// `path` anchors here instead of the primary allowed root, and the
+    /// resolved folder must stay inside it. `base_dir` itself must canonicalize
+    /// inside an allowed root (`coder::info` lists them). Omit to resolve
+    /// against the primary allowed root exactly as before.
+    #[serde(default)]
+    pub base_dir: Option<String>,
 }
 
 fn default_path() -> String {
@@ -99,7 +106,7 @@ fn inner(
     // list-folder uses `resolve`, not `require_writable`, so callers can
     // list a directory that contains non-accessible *children* even if the
     // directory itself happened to match a glob.
-    let abs = resolver.resolve(&req.path)?;
+    let abs = resolver.resolve_opt(req.base_dir.as_deref(), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -227,6 +234,7 @@ mod tests {
                 path: ".".into(),
                 page: 1,
                 page_size: None,
+                base_dir: None,
             },
         )
         .await
@@ -258,6 +266,7 @@ mod tests {
                 path: ".".into(),
                 page: 2,
                 page_size: Some(2),
+                base_dir: None,
             },
         )
         .await
@@ -285,6 +294,7 @@ mod tests {
                 path: ".".into(),
                 page: 1,
                 page_size: Some(9999),
+                base_dir: None,
             },
         )
         .await
@@ -304,6 +314,7 @@ mod tests {
                 path: ".".into(),
                 page: 1,
                 page_size: None,
+                base_dir: None,
             },
         )
         .await
@@ -333,6 +344,7 @@ mod tests {
                 path: "a.txt".into(),
                 page: 1,
                 page_size: None,
+                base_dir: None,
             },
         )
         .await

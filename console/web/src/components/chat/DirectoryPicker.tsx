@@ -1,0 +1,565 @@
+import {
+  AlertCircle,
+  ArrowLeft,
+  Check,
+  ChevronUp,
+  CornerDownLeft,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Search,
+  X,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getIiiClient } from '@/lib/iii-client'
+import { loadRecentProjects, removeRecentProject } from '@/lib/storage'
+import { cn } from '@/lib/utils'
+
+/**
+ * Per-session working-directory picker, project-switcher style.
+ *
+ * Opens to your remembered projects (most-recent first) — pick one in a click,
+ * or "browse to add" a new directory. Browsing lists the operator's coder roots
+ * (`coder::info`) one level at a time (`coder::list-folder`, lazy). The search
+ * box filters the current level live; typing/pasting an absolute path jumps
+ * straight there (browse) or selects it (projects). A pasted/remembered dir is
+ * validated against the live roots before it's accepted. The chosen dir is what
+ * the harness scopes the chat to (`base_dir`); it is re-scopable mid-conversation
+ * (a change drops a visible transcript marker).
+ */
+
+interface DirectoryPickerProps {
+  value: string | null
+  onChange: (dir: string) => void
+  locked?: boolean
+  disabled?: boolean
+  className?: string
+}
+
+interface CoderInfo {
+  base_paths?: string[]
+}
+
+interface DirEntry {
+  name: string
+  kind: string
+  non_accessible?: boolean
+}
+
+interface ListFolderResult {
+  path: string
+  entries?: DirEntry[]
+}
+
+function basename(p: string): string {
+  const parts = p.split('/').filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : p
+}
+
+function parentDisplay(p: string): string {
+  const idx = p.replace(/\/+$/, '').lastIndexOf('/')
+  return idx <= 0 ? '/' : p.slice(0, idx)
+}
+
+function parentOf(p: string): string {
+  const trimmed = p.replace(/\/+$/, '')
+  const idx = trimmed.lastIndexOf('/')
+  return idx <= 0 ? '/' : trimmed.slice(0, idx)
+}
+
+const isAbsPath = (s: string) => s.trim().startsWith('/')
+
+/**
+ * iii triggers reject with a plain object `{ code, message }`, not an Error, and
+ * the message is often a nested `handler error: {"code":"C211","message":"…"}`.
+ * Pull out the human-readable inner message.
+ */
+function errMsg(err: unknown): string {
+  const raw =
+    err instanceof Error
+      ? err.message
+      : err && typeof err === 'object' && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : String(err)
+  // Errors nest: `handler error: {"code":"C211","message":"…"}`. Prefer the
+  // innermost (last) message and tolerate escaped quotes inside it.
+  const matches = [...raw.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g)]
+  if (matches.length === 0) return raw
+  return matches[matches.length - 1][1].replace(/\\(.)/g, '$1')
+}
+
+export function DirectoryPicker({
+  value,
+  onChange,
+  locked,
+  disabled,
+  className,
+}: DirectoryPickerProps) {
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState<'projects' | 'browse'>('projects')
+  const [projects, setProjects] = useState<string[]>([])
+  const [query, setQuery] = useState('')
+  // browse state
+  const [roots, setRoots] = useState<string[] | null>(null)
+  const [root, setRoot] = useState<string | null>(null)
+  const [path, setPath] = useState<string | null>(null)
+  const [dirs, setDirs] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [validating, setValidating] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Close on outside click / Escape.
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const openPanel = useCallback(() => {
+    setProjects(loadRecentProjects())
+    setView('projects')
+    setQuery('')
+    setError(null)
+    setOpen(true)
+  }, [])
+
+  const ensureRoots = useCallback(async (): Promise<string[]> => {
+    if (roots !== null) return roots
+    setLoading(true)
+    setError(null)
+    try {
+      const client = await getIiiClient()
+      const info = await client.trigger<CoderInfo>('coder::info', {})
+      const r = info?.base_paths ?? []
+      setRoots(r)
+      return r
+    } catch (err) {
+      setError(errMsg(err))
+      setRoots([])
+      return []
+    } finally {
+      setLoading(false)
+    }
+  }, [roots])
+
+  const loadFolder = useCallback(async (target: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const client = await getIiiClient()
+      const res = await client.trigger<ListFolderResult>('coder::list-folder', {
+        path: target,
+        page_size: 200,
+      })
+      const names = (res?.entries ?? [])
+        .filter((e) => e.kind === 'dir' && !e.non_accessible)
+        .map((e) => `${target.replace(/\/+$/, '')}/${e.name}`)
+        .sort((a, b) => a.localeCompare(b))
+      setDirs(names)
+    } catch (err) {
+      setError(errMsg(err))
+      setDirs([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const enterBrowse = useCallback(async () => {
+    setView('browse')
+    setQuery('')
+    setError(null)
+    const r = await ensureRoots()
+    if (r.length === 1) {
+      setRoot(r[0])
+      setPath(r[0])
+      void loadFolder(r[0])
+    } else {
+      setRoot(null)
+      setPath(null)
+      setDirs([])
+    }
+  }, [ensureRoots, loadFolder])
+
+  const enterRoot = useCallback(
+    (r: string) => {
+      setRoot(r)
+      setPath(r)
+      setQuery('')
+      void loadFolder(r)
+    },
+    [loadFolder],
+  )
+
+  const enterDir = useCallback(
+    (d: string) => {
+      setPath(d)
+      setQuery('')
+      void loadFolder(d)
+    },
+    [loadFolder],
+  )
+
+  const goUp = useCallback(() => {
+    setQuery('')
+    if (!path || !root || path === root) {
+      // back to the roots list (or projects if there is nowhere up to go)
+      if ((roots?.length ?? 0) > 1) {
+        setPath(null)
+        setRoot(null)
+        return
+      }
+      setView('projects')
+      setProjects(loadRecentProjects())
+      return
+    }
+    const next = parentOf(path)
+    const clamped = next.length < root.length ? root : next
+    setPath(clamped)
+    void loadFolder(clamped)
+  }, [path, root, roots, loadFolder])
+
+  const jumpTo = useCallback(
+    async (raw: string) => {
+      const p = raw.trim().replace(/\/+$/, '') || '/'
+      setView('browse')
+      setQuery('')
+      const r = await ensureRoots()
+      setRoot(r.find((x) => p === x || p.startsWith(`${x}/`)) ?? r[0] ?? null)
+      setPath(p)
+      await loadFolder(p)
+    },
+    [ensureRoots, loadFolder],
+  )
+
+  const select = useCallback(
+    (dir: string) => {
+      onChange(dir)
+      setOpen(false)
+    },
+    [onChange],
+  )
+
+  // Validate a pasted/remembered dir against the LIVE worker roots before
+  // accepting it — a remembered project may be deleted, on another machine, or
+  // outside the configured roots. Browsed dirs are already known-valid.
+  const validateAndSelect = useCallback(
+    async (raw: string) => {
+      const dir = raw.trim().replace(/\/+$/, '') || '/'
+      setError(null)
+      setValidating(dir)
+      try {
+        const client = await getIiiClient()
+        const res = await client.trigger<ListFolderResult>(
+          'coder::list-folder',
+          { path: dir, page_size: 1 },
+        )
+        // Select the CANONICAL resolved dir the worker echoes back — not the
+        // raw input — so what's stored is exactly what coder will resolve to
+        // (a file path errors C210; a non-existent path errors C211).
+        select(res?.path ?? dir)
+      } catch (err) {
+        setError(`can't use ${dir} — ${errMsg(err)}`)
+      } finally {
+        setValidating(null)
+      }
+    },
+    [select],
+  )
+
+  const forget = useCallback((dir: string) => {
+    removeRecentProject(dir)
+    setProjects(loadRecentProjects())
+  }, [])
+
+  const q = query.trim().toLowerCase()
+  const filteredProjects = useMemo(
+    () => projects.filter((p) => p.toLowerCase().includes(q)),
+    [projects, q],
+  )
+  const filteredDirs = useMemo(
+    () =>
+      q
+        ? dirs.filter(
+            (d) =>
+              basename(d).toLowerCase().includes(q) ||
+              d.toLowerCase().includes(q),
+          )
+        : dirs,
+    [dirs, q],
+  )
+
+  const onSearchKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter' || !isAbsPath(query)) return
+    e.preventDefault()
+    if (view === 'projects') void validateAndSelect(query)
+    else void jumpTo(query)
+  }
+
+  const label = value ? basename(value) : 'choose directory'
+
+  if (locked) {
+    return (
+      <span
+        className={cn(
+          'inline-flex items-center gap-1 px-2 py-1 text-[11px] lowercase text-ink-faint',
+          className,
+        )}
+        title={value ?? 'no working directory'}
+      >
+        <Folder size={12} aria-hidden />
+        <span className="max-w-[160px] truncate">{label}</span>
+      </span>
+    )
+  }
+
+  return (
+    <div ref={containerRef} className={cn('relative inline-flex', className)}>
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label="working directory"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={value ?? 'choose a working directory'}
+        onClick={() => (open ? setOpen(false) : openPanel())}
+        className={cn(
+          'inline-flex items-center gap-1 rounded-sm border border-rule px-2 py-1 text-[11px] lowercase transition-colors',
+          value ? 'text-ink' : 'text-ink-faint',
+          'hover:text-ink disabled:opacity-50',
+        )}
+      >
+        <Folder size={12} aria-hidden />
+        <span className="max-w-[160px] truncate">{label}</span>
+      </button>
+
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="select working directory"
+          className="absolute bottom-full left-0 z-30 mb-1 w-[360px] border border-rule bg-bg shadow-lg"
+        >
+          {/* search */}
+          <div className="flex items-center gap-2 border-b border-rule-2 px-2.5 py-1.5">
+            <Search size={13} className="shrink-0 text-ink-ghost" aria-hidden />
+            <input
+              // biome-ignore lint/a11y/noAutofocus: focus the search on open for fast filtering
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onSearchKey}
+              placeholder={
+                view === 'projects'
+                  ? 'search projects, or paste a path…'
+                  : 'filter this folder, or paste a path…'
+              }
+              aria-label="search directories"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-ink placeholder:text-ink-ghost focus:outline-none"
+            />
+          </div>
+
+          {/* validation/error (shown in the projects view; browse has its own) */}
+          {view === 'projects' && error ? (
+            <div className="flex items-start gap-1.5 border-b border-rule-2 px-3 py-2 text-[11px] text-ink-faint">
+              <AlertCircle size={12} className="mt-0.5 shrink-0" aria-hidden />
+              <span>{error}</span>
+            </div>
+          ) : null}
+
+          {/* body */}
+          {view === 'projects' ? (
+            <div className="max-h-[280px] overflow-y-auto py-1">
+              {isAbsPath(query) ? (
+                <button
+                  type="button"
+                  disabled={validating !== null}
+                  onClick={() => void validateAndSelect(query)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-accent hover:bg-panel disabled:opacity-50"
+                >
+                  <CornerDownLeft size={13} className="shrink-0" aria-hidden />
+                  <span className="truncate font-mono">
+                    use this path: {query.trim()}
+                  </span>
+                </button>
+              ) : null}
+
+              {filteredProjects.map((p) => (
+                <div
+                  key={p}
+                  className="group flex items-center gap-1 pr-1.5 hover:bg-panel"
+                >
+                  <button
+                    type="button"
+                    disabled={validating !== null}
+                    onClick={() => void validateAndSelect(p)}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left disabled:opacity-50"
+                    title={p}
+                  >
+                    <Folder
+                      size={13}
+                      className="shrink-0 text-ink-faint"
+                      aria-hidden
+                    />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate text-[12px] text-ink">
+                        {basename(p)}
+                      </span>
+                      <span className="truncate font-mono text-[10px] text-ink-ghost">
+                        {parentDisplay(p)}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`forget ${p}`}
+                    title="forget this project"
+                    onClick={() => forget(p)}
+                    className="shrink-0 p-1 text-ink-ghost opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                  >
+                    <X size={12} aria-hidden />
+                  </button>
+                </div>
+              ))}
+
+              {filteredProjects.length === 0 && !isAbsPath(query) ? (
+                <div className="px-3 py-3 text-[11px] leading-relaxed text-ink-faint">
+                  {projects.length === 0
+                    ? 'no recent projects yet.'
+                    : 'no matching projects.'}{' '}
+                  browse to add one.
+                </div>
+              ) : null}
+
+              <div className="mt-1 border-t border-rule-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => void enterBrowse()}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-ink-faint hover:bg-panel hover:text-ink"
+                >
+                  <FolderPlus size={13} className="shrink-0" aria-hidden />
+                  browse to add a project…
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              {/* browse header */}
+              <div className="flex items-center justify-between gap-2 border-b border-rule-2 px-2 py-1.5">
+                <span className="flex min-w-0 items-center gap-1 text-[11px] text-ink-faint">
+                  <button
+                    type="button"
+                    aria-label="back to projects"
+                    onClick={() => {
+                      setView('projects')
+                      setProjects(loadRecentProjects())
+                      setQuery('')
+                      setError(null)
+                    }}
+                    className="text-ink-faint hover:text-ink"
+                  >
+                    <ArrowLeft size={13} aria-hidden />
+                  </button>
+                  {path ? (
+                    <button
+                      type="button"
+                      aria-label="up one level"
+                      onClick={goUp}
+                      className="text-ink-faint hover:text-ink"
+                    >
+                      <ChevronUp size={13} aria-hidden />
+                    </button>
+                  ) : null}
+                  <span className="truncate font-mono">{path ?? 'roots'}</span>
+                </span>
+                {path ? (
+                  <button
+                    type="button"
+                    onClick={() => select(path)}
+                    className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] lowercase text-accent hover:underline"
+                  >
+                    <Check size={12} aria-hidden /> use this folder
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="max-h-[260px] overflow-y-auto py-1">
+                {isAbsPath(query) ? (
+                  <button
+                    type="button"
+                    onClick={() => void jumpTo(query)}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-accent hover:bg-panel"
+                  >
+                    <CornerDownLeft
+                      size={13}
+                      className="shrink-0"
+                      aria-hidden
+                    />
+                    <span className="truncate font-mono">
+                      go to {query.trim()}
+                    </span>
+                  </button>
+                ) : null}
+
+                {loading ? (
+                  <div className="px-3 py-2 text-[11px] lowercase text-ink-ghost">
+                    loading…
+                  </div>
+                ) : error ? (
+                  <div className="flex items-start gap-1.5 px-3 py-2 text-[11px] text-ink-faint">
+                    <AlertCircle
+                      size={12}
+                      className="mt-0.5 shrink-0"
+                      aria-hidden
+                    />
+                    <span>{error}</span>
+                  </div>
+                ) : path === null ? (
+                  // roots list (only when multiple roots)
+                  (roots ?? []).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => enterRoot(r)}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-ink hover:bg-panel"
+                    >
+                      <FolderOpen size={13} className="shrink-0" aria-hidden />
+                      <span className="truncate font-mono">{r}</span>
+                    </button>
+                  ))
+                ) : filteredDirs.length > 0 ? (
+                  filteredDirs.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => enterDir(d)}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-ink hover:bg-panel"
+                    >
+                      <Folder size={13} className="shrink-0" aria-hidden />
+                      <span className="truncate font-mono">{basename(d)}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-3 py-2 text-[11px] lowercase text-ink-ghost">
+                    {q
+                      ? 'no matching sub-folders'
+                      : 'no sub-folders — use this folder'}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}

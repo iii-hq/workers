@@ -26,6 +26,7 @@ use std::path::PathBuf;
 
 use crate::config::ShellConfig;
 use crate::exec::error::ExecError;
+use crate::target::Target;
 
 /// Environment keys that an agent may NEVER set per-call, regardless of
 /// `allowed_env`. Setting any of these can hijack which binary the child
@@ -121,18 +122,11 @@ impl ExecOverrides {
     }
 }
 
-/// Confine a raw `cwd` string against the fs jail and verify it is an existing
-/// directory. Reuses the fs backend's [`crate::fs::host::confine_path`] so the
-/// rule is literally the same one `shell::fs::*` enforces:
-/// canonicalize → `starts_with(host_root)` → denylist. Per-call (not cached
-/// like the fs backend) because the exec handler reads the live config
-/// snapshot; canonicalizing the root + denylist here is one extra `stat` per
-/// call with a `cwd`, which is negligible.
-fn confine_cwd(cwd: &str, cfg: &ShellConfig) -> Result<PathBuf, ExecError> {
-    // Canonicalize host_root + denylist the same way HostFsBackend::try_new
-    // does, so confine_path sees the identical inputs. An unreachable root /
-    // denylist entry is an operator config error; surface it rather than
-    // silently degrading the jail.
+/// Canonicalize `host_root` + every `denylist_paths` entry the same way
+/// `HostFsBackend::try_new` does, so the confinement helpers see the identical
+/// inputs. An unreachable root is an operator config error (surfaced S216); a
+/// non-existent denylist entry can't be escaped through, so it is kept as-is.
+fn jail_inputs(cfg: &ShellConfig) -> Result<(Option<PathBuf>, Vec<PathBuf>), ExecError> {
     let host_root_canon = match &cfg.fs.host_root {
         Some(root) => Some(std::fs::canonicalize(root).map_err(|e| {
             ExecError::new(
@@ -146,49 +140,100 @@ fn confine_cwd(cwd: &str, cfg: &ShellConfig) -> Result<PathBuf, ExecError> {
     for deny in &cfg.fs.denylist_paths {
         match std::fs::canonicalize(deny) {
             Ok(c) => denylist_canon.push(c),
-            // A denylist entry that doesn't exist can't be escaped through;
-            // skip it rather than failing the whole exec (matches the spirit
-            // of the fs backend, which canonicalizes with a fallback). The
-            // jail root check below is the primary boundary.
             Err(_) => denylist_canon.push(deny.clone()),
         }
     }
+    Ok((host_root_canon, denylist_canon))
+}
 
-    let canon = crate::fs::host::confine_path(cwd, host_root_canon.as_deref(), &denylist_canon)
-        // FsError and ExecError carry the same { code, message } shape; the
-        // confinement codes (S210 bad/empty path, S215 jail escape/denylist)
-        // are exactly what exec wants to surface, so re-wrap verbatim.
-        .map_err(|e| ExecError::new(static_code(e.code), e.message))?;
-
-    // The directory must exist and BE a directory — a missing or
-    // wrong-type cwd is a clear request error, not a spawn-time surprise.
-    let md = std::fs::symlink_metadata(&canon)
-        .map_err(|e| ExecError::new("S211", format!("cwd not found: {cwd}: {e}")))?;
-    // Follow one level for symlinks-to-dir: confine_path already resolved the
-    // path canonically, so this metadata stat is on the real target.
+/// Verify a directory operand exists and is a directory (following one symlink
+/// level). Shared by the `cwd` check and the `base_dir` check — a missing or
+/// wrong-type directory is a clear request error, not a spawn-time surprise.
+fn require_existing_dir(canon: &PathBuf, raw: &str, kind: &str) -> Result<(), ExecError> {
+    let md = std::fs::symlink_metadata(canon)
+        .map_err(|e| ExecError::new("S211", format!("{kind} not found: {raw}: {e}")))?;
     let md = if md.file_type().is_symlink() {
-        std::fs::metadata(&canon)
-            .map_err(|e| ExecError::new("S211", format!("cwd not found: {cwd}: {e}")))?
+        std::fs::metadata(canon)
+            .map_err(|e| ExecError::new("S211", format!("{kind} not found: {raw}: {e}")))?
     } else {
         md
     };
     if !md.is_dir() {
         return Err(ExecError::new(
             "S210",
-            format!("cwd is not a directory: {cwd}"),
+            format!("{kind} is not a directory: {raw}"),
         ));
     }
+    Ok(())
+}
+
+/// Resolve and validate an OPTIONAL per-call `base_dir` for exec, mirroring the
+/// fs backend's [`crate::fs::host::confine_path`] containment. `None` ⇒
+/// `Ok(None)` (unchanged behaviour). When set, `base_dir` must canonicalize
+/// inside `host_root` (the existing ceiling) and be an existing directory; an
+/// unjailed worker has no ceiling, so a supplied `base_dir` is rejected S210.
+fn confine_base_dir(
+    base_dir: Option<&str>,
+    host_root_canon: Option<&std::path::Path>,
+    denylist_canon: &[PathBuf],
+) -> Result<Option<PathBuf>, ExecError> {
+    let Some(base_dir) = base_dir else {
+        return Ok(None);
+    };
+    if host_root_canon.is_none() {
+        return Err(ExecError::new(
+            "S210",
+            format!(
+                "base_dir {base_dir} is only honored when the worker is jailed \
+                 (fs.host_root is set); this worker is unjailed"
+            ),
+        ));
+    }
+    let canon = crate::fs::host::confine_path(base_dir, host_root_canon, denylist_canon)
+        .map_err(|e| ExecError::new(static_code(e.code), e.message))?;
+    require_existing_dir(&canon, base_dir, "base_dir")?;
+    Ok(Some(canon))
+}
+
+/// Confine a raw `cwd` string against the fs jail and verify it is an existing
+/// directory. Reuses the fs backend's
+/// [`crate::fs::host::confine_path_with_base_dir`] so the rule is literally the
+/// same one `shell::fs::*` enforces: canonicalize → `starts_with(root)` →
+/// denylist. When `base_dir_canon` is set the confinement root is the session
+/// directory (relative `cwd` anchors there; an absolute `cwd` outside it is
+/// S220); otherwise it is `host_root` (unchanged). Per-call (not cached like
+/// the fs backend) because the exec handler reads the live config snapshot.
+fn confine_cwd(
+    cwd: &str,
+    host_root_canon: Option<&std::path::Path>,
+    base_dir_canon: Option<&std::path::Path>,
+    denylist_canon: &[PathBuf],
+) -> Result<PathBuf, ExecError> {
+    let canon = crate::fs::host::confine_path_with_base_dir(
+        cwd,
+        host_root_canon,
+        base_dir_canon,
+        denylist_canon,
+    )
+    // FsError and ExecError carry the same { code, message } shape; the
+    // confinement codes (S210 bad/empty path, S215 jail escape/denylist, S220
+    // outside-session-dir) are exactly what exec wants to surface, so re-wrap
+    // verbatim.
+    .map_err(|e| ExecError::new(static_code(e.code), e.message))?;
+
+    require_existing_dir(&canon, cwd, "cwd")?;
     Ok(canon)
 }
 
 /// Map an `FsError`'s runtime `String` code onto the `&'static str` codes
-/// `ExecError` uses, preserving the confinement taxonomy (S210/S211/S215) and
-/// collapsing anything else to the generic S216.
+/// `ExecError` uses, preserving the confinement taxonomy
+/// (S210/S211/S215/S220) and collapsing anything else to the generic S216.
 fn static_code(code: &str) -> &'static str {
     match code {
         "S210" => "S210",
         "S211" => "S211",
         "S215" => "S215",
+        "S220" => "S220",
         _ => "S216",
     }
 }
@@ -239,16 +284,42 @@ fn validate_env(
 
 /// Build the validated [`ExecOverrides`] from the raw request fields, applying
 /// all gating. Returns an `ExecError` (with the S-code the caller surfaces on
-/// the wire) on any violation. Both inputs `None` ⇒ an empty `ExecOverrides`,
+/// the wire) on any violation. All inputs `None` ⇒ an empty `ExecOverrides`,
 /// i.e. unchanged default behaviour.
+///
+/// `base_dir` (when set) scopes the call to a session directory: it becomes
+/// BOTH the confinement root for `cwd` AND the effective working directory when
+/// no `cwd` is given.
+///
+/// - `base_dir=None`: today's behaviour — `cwd` is confined to `host_root` and
+///   an omitted `cwd` leaves the working dir to fall back to `cfg.working_dir`.
+/// - `base_dir=Some`, `cwd=None`: the child runs in `base_dir`.
+/// - `base_dir=Some`, `cwd=Some`: the child runs in `cwd`, which must resolve
+///   inside `base_dir` (relative anchors there; an absolute cwd outside it is
+///   S220).
 pub fn build_overrides(
     cwd: Option<&str>,
     env: Option<&BTreeMap<String, String>>,
+    base_dir: Option<&str>,
     cfg: &ShellConfig,
 ) -> Result<ExecOverrides, ExecError> {
+    let (host_root_canon, denylist_canon) = jail_inputs(cfg)?;
+    // Resolve the session directory first: it gates the cwd confinement below
+    // and, when no cwd is supplied, becomes the working directory itself.
+    let base_dir_canon = confine_base_dir(base_dir, host_root_canon.as_deref(), &denylist_canon)?;
+
     let cwd = match cwd {
-        Some(c) => Some(confine_cwd(c, cfg)?),
-        None => None,
+        Some(c) => Some(confine_cwd(
+            c,
+            host_root_canon.as_deref(),
+            base_dir_canon.as_deref(),
+            &denylist_canon,
+        )?),
+        // No explicit cwd: a session base_dir (already validated as an existing
+        // directory) becomes the working directory, so the child runs in the
+        // session root instead of `cfg.working_dir`. Without base_dir this stays
+        // None and build_command falls back to `cfg.working_dir` (unchanged).
+        None => base_dir_canon,
     };
     let env = match env {
         Some(e) => Some(validate_env(e, cfg)?),
@@ -263,6 +334,23 @@ pub fn build_overrides(
     })
 }
 
+/// The `base_dir` that actually applies to a given exec `target`.
+///
+/// `base_dir` scopes a HOST working directory. A sandbox target runs against the
+/// VM's own filesystem, so an injected `base_dir` is meaningless there and must
+/// be dropped: left in place it materializes (via [`build_overrides`]) as a
+/// populated host `cwd` override, which both exec sandbox paths reject as
+/// host-only (S210). Since the harness stamps `base_dir` onto EVERY `shell::*`
+/// call, that would break every sandbox exec issued from a working-dir-scoped
+/// chat. Genuine user-supplied `cwd`/`env`/`stdin` on a sandbox call are still
+/// rejected — only the harness `base_dir` is dropped here.
+pub fn base_dir_for_target<'a>(target: &Target, base_dir: Option<&'a str>) -> Option<&'a str> {
+    match target {
+        Target::Host => base_dir,
+        Target::Sandbox { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +362,24 @@ mod tests {
         };
         c.fs.host_root = Some(root.to_path_buf());
         c
+    }
+
+    // base_dir applies to a HOST target verbatim, but must be dropped for a
+    // sandbox target — otherwise the harness-injected session dir becomes a
+    // populated host cwd override and the sandbox exec paths reject it (S210),
+    // breaking sandbox exec for every working-dir-scoped chat.
+    #[test]
+    fn base_dir_dropped_for_sandbox_target_kept_for_host() {
+        let sandbox = Target::Sandbox {
+            sandbox_id: uuid::Uuid::nil(),
+        };
+        assert_eq!(base_dir_for_target(&sandbox, Some("/work/session-7")), None);
+        assert_eq!(base_dir_for_target(&sandbox, None), None);
+        assert_eq!(
+            base_dir_for_target(&Target::Host, Some("/work/session-7")),
+            Some("/work/session-7")
+        );
+        assert_eq!(base_dir_for_target(&Target::Host, None), None);
     }
 
     #[test]
@@ -358,12 +464,21 @@ mod tests {
         assert!(err.message.contains("exec-hijacking"));
     }
 
+    /// Test shim: derive the canonical jail inputs from `cfg` and confine `cwd`
+    /// against `host_root` with NO session base_dir, so the existing
+    /// no-base_dir cwd tests keep asserting the same contract against the new
+    /// four-arg `confine_cwd`.
+    fn confine_cwd_via_cfg(cwd: &str, cfg: &ShellConfig) -> Result<PathBuf, ExecError> {
+        let (host_root_canon, denylist_canon) = jail_inputs(cfg)?;
+        confine_cwd(cwd, host_root_canon.as_deref(), None, &denylist_canon)
+    }
+
     #[test]
     fn cwd_inside_jail_resolves() {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("sub")).unwrap();
         let c = cfg_jailed(&root);
-        let canon = confine_cwd("sub", &c).expect("cwd inside jail");
+        let canon = confine_cwd_via_cfg("sub", &c).expect("cwd inside jail");
         assert_eq!(canon, root.join("sub").canonicalize().unwrap());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -373,7 +488,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let c = cfg_jailed(&root);
-        let err = confine_cwd("../../etc", &c).expect_err("escape rejected");
+        let err = confine_cwd_via_cfg("../../etc", &c).expect_err("escape rejected");
         assert_eq!(err.code, "S215");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -386,7 +501,7 @@ mod tests {
         // `nope` is inside the jail lexically but does not exist — confine_path
         // resolves the longest existing ancestor (the root) then the stat
         // fails, surfacing S211.
-        let err = confine_cwd("nope", &c).expect_err("missing cwd rejected");
+        let err = confine_cwd_via_cfg("nope", &c).expect_err("missing cwd rejected");
         assert!(err.code == "S211" || err.code == "S210", "got {}", err.code);
         std::fs::remove_dir_all(&root).ok();
     }
@@ -397,7 +512,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("f.txt"), "x").unwrap();
         let c = cfg_jailed(&root);
-        let err = confine_cwd("f.txt", &c).expect_err("file-as-cwd rejected");
+        let err = confine_cwd_via_cfg("f.txt", &c).expect_err("file-as-cwd rejected");
         assert_eq!(err.code, "S210");
         assert!(err.message.contains("not a directory"));
         std::fs::remove_dir_all(&root).ok();
@@ -406,7 +521,102 @@ mod tests {
     #[test]
     fn build_overrides_both_none_is_empty() {
         let c = ShellConfig::default();
-        let ov = build_overrides(None, None, &c).expect("ok");
+        let ov = build_overrides(None, None, None, &c).expect("ok");
         assert!(ov.is_empty());
+    }
+
+    // --- per-call base_dir (session scope) ---
+
+    /// With base_dir set, a relative cwd anchors at base_dir (not host_root),
+    /// and an OMITTED cwd makes base_dir itself the working directory.
+    #[test]
+    fn base_dir_anchors_relative_cwd_and_becomes_default_cwd() {
+        let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("session/inner")).unwrap();
+        let c = cfg_jailed(&root);
+
+        // cwd omitted ⇒ working dir is base_dir.
+        let ov = build_overrides(None, None, Some("session"), &c).expect("base_dir is valid");
+        assert_eq!(
+            ov.cwd.as_deref(),
+            Some(root.join("session").canonicalize().unwrap().as_path()),
+            "omitted cwd defaults to base_dir"
+        );
+
+        // relative cwd anchors at base_dir, not host_root.
+        let ov = build_overrides(Some("inner"), None, Some("session"), &c)
+            .expect("inner is under base_dir");
+        assert_eq!(
+            ov.cwd.as_deref(),
+            Some(root.join("session/inner").canonicalize().unwrap().as_path()),
+            "relative cwd anchors at base_dir"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// DX-1: an ABSOLUTE cwd that is inside host_root but OUTSIDE base_dir is
+    /// rejected with the new S220 code, and the message names the session dir.
+    #[test]
+    fn abs_cwd_inside_host_root_but_outside_base_dir_is_s220_naming_session() {
+        let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("session")).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        let c = cfg_jailed(&root);
+        let outside = root.join("other").canonicalize().unwrap();
+        let err = build_overrides(Some(outside.to_str().unwrap()), None, Some("session"), &c)
+            .expect_err("abs cwd outside base_dir must reject");
+        assert_eq!(err.code, "S220", "must be the distinct base_dir code");
+        let session_canon = root.join("session").canonicalize().unwrap();
+        assert!(
+            err.message.contains(&session_canon.display().to_string()),
+            "S220 message must name the session dir, got: {}",
+            err.message
+        );
+        // It must NOT reuse the generic 'outside every allowed root' S215 wording.
+        assert!(
+            !err.message.contains("escapes host_root"),
+            "must not contradict the tool's own roots, got: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A base_dir that itself escapes host_root is rejected (the worker is
+    /// jailed to host_root; a session outside it is never honored).
+    #[test]
+    fn base_dir_escaping_host_root_is_rejected() {
+        let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let c = cfg_jailed(&root);
+        let err = build_overrides(None, None, Some("../../etc"), &c)
+            .expect_err("base_dir escaping the jail must reject");
+        assert_eq!(err.code, "S215");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Back-compat: base_dir=None reproduces the prior behaviour exactly — a
+    /// relative cwd still anchors at host_root and omitted cwd stays None
+    /// (build_command then falls back to cfg.working_dir).
+    #[test]
+    fn base_dir_none_is_unchanged_behaviour() {
+        let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let c = cfg_jailed(&root);
+
+        // Omitted cwd + omitted base_dir ⇒ no cwd override (cfg.working_dir wins).
+        let ov = build_overrides(None, None, None, &c).expect("ok");
+        assert!(
+            ov.cwd.is_none(),
+            "no base_dir, no cwd ⇒ None (prior behaviour)"
+        );
+
+        // Relative cwd still anchors at host_root when base_dir is absent.
+        let ov = build_overrides(Some("sub"), None, None, &c).expect("ok");
+        assert_eq!(
+            ov.cwd.as_deref(),
+            Some(root.join("sub").canonicalize().unwrap().as_path()),
+            "relative cwd anchors at host_root when base_dir is absent"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }
