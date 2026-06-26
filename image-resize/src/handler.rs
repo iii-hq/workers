@@ -2,7 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{extract_channel_refs, ChannelReader, ChannelWriter, IIIError, StreamChannelRef};
+use iii_sdk::channels::extract_channel_refs;
+use iii_sdk::channels::{ChannelReader, ChannelWriter, StreamChannelRef};
+use iii_sdk::errors::Error;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -31,7 +33,7 @@ pub async fn handle_resize(
     input_ref: &StreamChannelRef,
     output_ref: &StreamChannelRef,
     metadata_override: Option<ImageMetadata>,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     let reader = ChannelReader::new(engine_ws_base, input_ref);
     let writer = ChannelWriter::new(engine_ws_base, output_ref);
 
@@ -56,20 +58,20 @@ pub async fn handle_resize(
             })
             .await;
 
-        let binary = reader.next_binary().await?;
+        let binary: Option<Vec<u8>> = reader.next_binary().await?;
         let image_bytes = binary
-            .ok_or_else(|| IIIError::Handler("stream closed before binary frame".to_string()))?;
+            .ok_or_else(|| Error::Handler("stream closed before binary frame".to_string()))?;
 
         // Retrieve the metadata text that was dispatched to the callback
         let meta_json = {
             let guard = metadata_holder.lock().unwrap();
             guard
                 .clone()
-                .ok_or_else(|| IIIError::Handler("no metadata text frame received".to_string()))?
+                .ok_or_else(|| Error::Handler("no metadata text frame received".to_string()))?
         };
 
         let meta: ImageMetadata = serde_json::from_str(&meta_json)
-            .map_err(|e| IIIError::Handler(format!("invalid metadata JSON: {e}")))?;
+            .map_err(|e| Error::Handler(format!("invalid metadata JSON: {e}")))?;
 
         (meta, image_bytes)
     };
@@ -87,7 +89,7 @@ pub async fn process_and_write(
     image_bytes: Vec<u8>,
     writer: &ChannelWriter,
     reader: &ChannelReader,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     tracing::info!(
         format = %metadata.format,
         output_format = ?metadata.output_format,
@@ -95,7 +97,7 @@ pub async fn process_and_write(
     );
 
     let params = resolve_params(&config, &metadata)
-        .map_err(|e| IIIError::Handler(format!("param resolution failed: {e}")))?;
+        .map_err(|e| Error::Handler(format!("param resolution failed: {e}")))?;
 
     tracing::info!(
         input_format = ?params.input_format,
@@ -119,12 +121,12 @@ pub async fn process_and_write(
 
     let thumbnail_bytes = tokio::task::spawn_blocking(move || process_image(&image_bytes, &params))
         .await
-        .map_err(|e| IIIError::Handler(format!("spawn_blocking join error: {e}")))?
-        .map_err(|e| IIIError::Handler(format!("image processing failed: {e}")))?;
+        .map_err(|e| Error::Handler(format!("spawn_blocking join error: {e}")))?
+        .map_err(|e| Error::Handler(format!("image processing failed: {e}")))?;
 
     // Decode thumbnail to get output dimensions
     let output_img = image::load_from_memory(&thumbnail_bytes)
-        .map_err(|e| IIIError::Handler(format!("failed to decode output image: {e}")))?;
+        .map_err(|e| Error::Handler(format!("failed to decode output image: {e}")))?;
 
     let thumb_meta = ThumbnailMetadata {
         format: out_format,
@@ -135,7 +137,7 @@ pub async fn process_and_write(
 
     // Send metadata text frame
     let meta_json = serde_json::to_string(&thumb_meta)
-        .map_err(|e| IIIError::Handler(format!("failed to serialize thumbnail metadata: {e}")))?;
+        .map_err(|e| Error::Handler(format!("failed to serialize thumbnail metadata: {e}")))?;
     writer.send_message(&meta_json).await?;
 
     // Send binary thumbnail frame
@@ -146,7 +148,7 @@ pub async fn process_and_write(
     reader.close().await?;
 
     let result = serde_json::to_value(&thumb_meta)
-        .map_err(|e| IIIError::Handler(format!("failed to convert metadata to Value: {e}")))?;
+        .map_err(|e| Error::Handler(format!("failed to convert metadata to Value: {e}")))?;
 
     Ok(result)
 }
@@ -158,10 +160,8 @@ pub async fn process_and_write(
 pub fn build_handler(
     engine_ws_base: String,
     config: Arc<ResizeConfig>,
-) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-       + Send
-       + Sync
-       + 'static {
+) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>> + Send + Sync + 'static
+{
     move |payload: Value| {
         let engine_ws_base = engine_ws_base.clone();
         let config = config.clone();
@@ -173,13 +173,13 @@ pub fn build_handler(
                 .iter()
                 .find(|(name, _)| name == "input_channel")
                 .map(|(_, r)| r.clone())
-                .ok_or_else(|| IIIError::Handler("missing input_channel ref".to_string()))?;
+                .ok_or_else(|| Error::Handler("missing input_channel ref".to_string()))?;
 
             let output_ref = refs
                 .iter()
                 .find(|(name, _)| name == "output_channel")
                 .map(|(_, r)| r.clone())
-                .ok_or_else(|| IIIError::Handler("missing output_channel ref".to_string()))?;
+                .ok_or_else(|| Error::Handler("missing output_channel ref".to_string()))?;
 
             let metadata: Option<ImageMetadata> = payload
                 .get("metadata")
@@ -197,7 +197,7 @@ pub fn build_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::ChannelDirection;
+    use iii_sdk::channels::ChannelDirection;
     use serde_json::json;
 
     fn make_channel_ref(id: &str, dir: &str) -> Value {
