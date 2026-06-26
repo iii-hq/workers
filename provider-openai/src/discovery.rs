@@ -24,52 +24,76 @@ pub fn models_url(api_url: &str) -> String {
     }
 }
 
-/// Chat/reasoning families we route to (port of discover.ts). Excludes
-/// embeddings, audio, image, moderation, realtime, and legacy
-/// completion-only ids.
+/// Substrings marking a non-chat modality (embeddings, audio, image, …).
+/// Applied to OpenAI's catalog AND custom OpenAI-compatible endpoints, since
+/// a local server may also expose embedding models on /v1/models.
+const NON_CHAT: [&str; 14] = [
+    "embed",
+    "whisper",
+    "tts",
+    "audio",
+    "dall-e",
+    "image",
+    "moderation",
+    "realtime",
+    "transcribe",
+    "search",
+    "babbage",
+    "davinci",
+    "ada",
+    "curie",
+];
+
+/// True when the (lowercased) id is not an obvious non-chat modality.
+fn is_chat_modality(lower: &str) -> bool {
+    !NON_CHAT.iter().any(|term| lower.contains(term))
+}
+
 pub fn is_chat_model(id: &str) -> bool {
     let lower = id.to_ascii_lowercase();
     let chat_family = lower.starts_with("gpt-")
         || lower.starts_with("chatgpt")
         || (lower.len() >= 2 && lower.starts_with('o') && lower.as_bytes()[1].is_ascii_digit());
-    if !chat_family {
-        return false;
-    }
-    const NON_CHAT: [&str; 14] = [
-        "embedding",
-        "whisper",
-        "tts",
-        "audio",
-        "dall-e",
-        "image",
-        "moderation",
-        "realtime",
-        "transcribe",
-        "search",
-        "babbage",
-        "davinci",
-        "ada",
-        "curie",
-    ];
-    !NON_CHAT.iter().any(|term| lower.contains(term))
+    chat_family && is_chat_modality(&lower)
 }
 
 pub fn parse_live_models(json: &Value) -> Vec<Model> {
-    let ids: Vec<String> = json
+    let raw_ids: Vec<String> = json
         .get("data")
         .and_then(Value::as_array)
         .map(|rows| {
             rows.iter()
                 .filter_map(|raw| {
-                    let id = raw
-                        .get("id")
+                    raw.get("id")
                         .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())?;
-                    (is_chat_model(id) && !is_legacy_generation(id)).then(|| id.to_string())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
                 })
                 .collect()
         })
         .unwrap_or_default();
+
+    let filtered: Vec<String> = raw_ids
+        .iter()
+        .filter(|id| is_chat_model(id) && !is_legacy_generation(id))
+        .cloned()
+        .collect();
+
+    // Custom OpenAI-compatible servers (LMStudio, Ollama, vLLM) serve
+    // arbitrarily-named models that the gpt-/o-series family gate and the
+    // legacy denylist would discard entirely. When OpenAI-style filtering
+    // admits nothing but the server did return models, it is plainly not
+    // OpenAI: list everything it serves, only dropping non-chat modalities.
+    // Real OpenAI always carries a current family, so this never triggers
+    // against api.openai.com.
+    let ids = if filtered.is_empty() && !raw_ids.is_empty() {
+        raw_ids
+            .into_iter()
+            .filter(|id| is_chat_modality(&id.to_ascii_lowercase()))
+            .collect()
+    } else {
+        filtered
+    };
 
     // Dated snapshots are pinning artifacts: when the undated alias is also
     // live (gpt-5.1 next to gpt-5.1-2025-11-13), keep only the alias so the
@@ -231,6 +255,40 @@ mod tests {
         });
         let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
         assert_eq!(ids, ["gpt-5.1", "gpt-5.4-2026-03-05"]);
+    }
+
+    #[test]
+    fn custom_compatible_endpoint_lists_all_when_openai_filter_admits_nothing() {
+        // An LMStudio/Ollama-style catalog: no id passes the gpt-/o-series
+        // family gate, so OpenAI filtering would yield an empty list. The
+        // fallback lists everything the server serves, dropping only the
+        // embedding model.
+        let json = serde_json::json!({
+            "data": [
+                { "id": "qwen2.5-coder-7b-instruct", "object": "model" },
+                { "id": "llama-3.2-3b-instruct", "object": "model" },
+                { "id": "nomic-embed-text-v1.5", "object": "model" },
+            ]
+        });
+        let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["qwen2.5-coder-7b-instruct", "llama-3.2-3b-instruct"]);
+        // Unknown families get conservative defaults, never vanish.
+        assert_eq!(parse_live_models(&json)[0].context_window, 128_000);
+    }
+
+    #[test]
+    fn openai_filter_still_applies_when_some_current_model_is_present() {
+        // Mixed catalog with a current OpenAI model present → normal OpenAI
+        // filtering (legacy + non-chat dropped), NOT the fallback.
+        let json = serde_json::json!({
+            "data": [
+                { "id": "gpt-5.2", "object": "model" },
+                { "id": "o3-mini", "object": "model" },
+                { "id": "text-embedding-3-large", "object": "model" },
+            ]
+        });
+        let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["gpt-5.2"]);
     }
 
     #[test]
