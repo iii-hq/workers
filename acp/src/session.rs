@@ -1,4 +1,6 @@
-use iii_sdk::{III, IIIError, TriggerRequest};
+use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -53,7 +55,7 @@ pub struct SessionRecord {
     pub config_options: serde_json::Map<String, Value>,
 }
 
-pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Option<Value>, IIIError> {
+pub async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Option<Value>, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "state::get".to_string(),
@@ -75,7 +77,7 @@ pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Option<Value
     }
 }
 
-pub async fn state_set(iii: &III, scope: &str, key: &str, value: Value) -> Result<(), IIIError> {
+pub async fn state_set(iii: &IIIClient, scope: &str, key: &str, value: Value) -> Result<(), Error> {
     iii.trigger(TriggerRequest {
         function_id: "state::set".to_string(),
         payload: json!({ "scope": scope, "key": key, "value": value }),
@@ -86,7 +88,7 @@ pub async fn state_set(iii: &III, scope: &str, key: &str, value: Value) -> Resul
     Ok(())
 }
 
-pub async fn state_delete(iii: &III, scope: &str, key: &str) -> Result<(), IIIError> {
+pub async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), Error> {
     iii.trigger(TriggerRequest {
         function_id: "state::delete".to_string(),
         payload: json!({ "scope": scope, "key": key }),
@@ -97,7 +99,7 @@ pub async fn state_delete(iii: &III, scope: &str, key: &str) -> Result<(), IIIEr
     Ok(())
 }
 
-pub async fn durable_publish(iii: &III, topic: &str, data: Value) -> Result<(), IIIError> {
+pub async fn durable_publish(iii: &IIIClient, topic: &str, data: Value) -> Result<(), Error> {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": data }),
@@ -132,7 +134,7 @@ fn unwrap_value(v: Value) -> Option<Value> {
 // same session race here. Caller (handler.rs) serializes via a per-session
 // in-process mutex to close the window for the common case (multiple
 // agent::events arriving in parallel from one stream subscriber).
-pub async fn append_history(iii: &III, session_id: &str, entry: Value) -> Result<(), IIIError> {
+pub async fn append_history(iii: &IIIClient, session_id: &str, entry: Value) -> Result<(), Error> {
     let scope = scope();
     let key = session_history_key(session_id);
     let mut hist = state_get(iii, &scope, &key)
@@ -143,7 +145,7 @@ pub async fn append_history(iii: &III, session_id: &str, entry: Value) -> Result
     state_set(iii, &scope, &key, Value::Array(hist)).await
 }
 
-pub async fn read_history(iii: &III, session_id: &str) -> Result<Vec<Value>, IIIError> {
+pub async fn read_history(iii: &IIIClient, session_id: &str) -> Result<Vec<Value>, Error> {
     let scope = scope();
     let key = session_history_key(session_id);
     Ok(state_get(iii, &scope, &key)
@@ -152,7 +154,7 @@ pub async fn read_history(iii: &III, session_id: &str) -> Result<Vec<Value>, III
         .unwrap_or_default())
 }
 
-pub async fn append_session_to_index(iii: &III, session_id: &str) -> Result<(), IIIError> {
+pub async fn append_session_to_index(iii: &IIIClient, session_id: &str) -> Result<(), Error> {
     // Read-modify-write under in-process index mutex (caller-owned).
     let scope = scope();
     let key = session_index_key();
@@ -168,7 +170,7 @@ pub async fn append_session_to_index(iii: &III, session_id: &str) -> Result<(), 
     Ok(())
 }
 
-pub async fn remove_session_from_index(iii: &III, session_id: &str) -> Result<(), IIIError> {
+pub async fn remove_session_from_index(iii: &IIIClient, session_id: &str) -> Result<(), Error> {
     // state::update has no array-element-by-value remove op, so this stays
     // a read-modify-write. Race window: a concurrent append from
     // session/new for a different id can be lost. Acceptable in practice
@@ -185,7 +187,7 @@ pub async fn remove_session_from_index(iii: &III, session_id: &str) -> Result<()
     state_set(iii, &scope, key, Value::Array(next)).await
 }
 
-pub async fn read_session_index(iii: &III) -> Result<Vec<String>, IIIError> {
+pub async fn read_session_index(iii: &IIIClient) -> Result<Vec<String>, Error> {
     let scope = scope();
     let key = session_index_key();
     let mut seen = std::collections::HashSet::new();

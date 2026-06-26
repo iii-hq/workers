@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dashmap::{DashMap, DashSet};
-use iii_sdk::{FunctionRef, III, RegisterFunction, RegisterTriggerInput};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::runtime::FunctionRef;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -52,7 +54,7 @@ impl CancelHandle {
 }
 
 pub struct AcpHandler {
-    iii: III,
+    iii: IIIClient,
     conn_id: String,
     initialized: AtomicBool,
     // Cancel handle per active session: AtomicBool gates the abort state for
@@ -77,7 +79,7 @@ pub struct AcpHandler {
     owned_sessions: Arc<DashSet<String>>,
     // Trigger + function guards. Dropping them tears the registration
     // down on the engine, so they live for the lifetime of the handler.
-    _event_subscriber: Option<iii_sdk::Trigger>,
+    _event_subscriber: Option<iii_sdk::trigger::Trigger>,
     _event_function: Option<FunctionRef>,
     // True iff agent::events stream subscriber registered cleanly. When an
     // external brain is configured but this is false, session/prompt fails
@@ -94,7 +96,7 @@ pub struct BrainConfig {
 }
 
 impl AcpHandler {
-    pub fn new(iii: III, outbound: Arc<Outbound>, brain: BrainConfig) -> Self {
+    pub fn new(iii: IIIClient, outbound: Arc<Outbound>, brain: BrainConfig) -> Self {
         let conn_id = Uuid::new_v4().to_string();
         let update_seq = Arc::new(AtomicU64::new(0));
         let owned_sessions: Arc<DashSet<String>> = Arc::new(DashSet::new());
@@ -575,7 +577,7 @@ impl AcpHandler {
             payload["system_prompt"] = json!(sys);
         }
 
-        let req = iii_sdk::TriggerRequest {
+        let req = TriggerRequest {
             function_id: fn_id.to_string(),
             payload,
             action: None,
@@ -667,13 +669,13 @@ async fn write_notification(outbound: &Outbound, seq: &AtomicU64, method: &str, 
 // session_id) against the per-process owned_sessions set so multiple
 // iii-acp subprocesses don't fight over the same events.
 fn register_event_subscriber(
-    iii: &III,
+    iii: &IIIClient,
     conn_id: &str,
     outbound: &Arc<Outbound>,
     update_seq: &Arc<AtomicU64>,
     owned_sessions: &Arc<DashSet<String>>,
     history_locks: &Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-) -> (Option<iii_sdk::Trigger>, Option<FunctionRef>) {
+) -> (Option<iii_sdk::trigger::Trigger>, Option<FunctionRef>) {
     let fn_id = format!("acp::__on_event::{}", conn_id);
 
     let outbound_inner = outbound.clone();
@@ -720,7 +722,7 @@ fn register_event_subscriber(
 // and writes it to stdout. Frames for sessions we don't own (another
 // connection's editor, or sessions closed mid-flight) are skipped.
 async fn forward_agent_event(
-    iii: &III,
+    iii: &IIIClient,
     outbound: &Outbound,
     seq: &AtomicU64,
     owned: &DashSet<String>,
