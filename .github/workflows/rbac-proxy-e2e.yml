@@ -37,8 +37,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: rbac-proxy/tests/e2e/workers/harness/package-lock.json
+          # No cache: harness has no committed package-lock.json (run-tests.sh
+          # generates one via `npm install` at first run). setup-node@v4 with
+          # `cache: 'npm'` against a missing lockfile is a hard failure, not a
+          # warning. ~10s slower per run; revisit if we ever commit a lockfile.
 
       - name: Install iii engine (next)
         run: |
