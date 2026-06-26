@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::World;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 
 use coder::config::CoderConfig;
@@ -23,7 +23,7 @@ use coder::config::CoderConfig;
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct CoderWorld {
-    pub iii: Option<Arc<III>>,
+    pub iii: Option<Arc<IIIClient>>,
     pub cfg: Arc<CoderConfig>,
     pub stash: HashMap<String, Value>,
     pub base_path: Option<PathBuf>,

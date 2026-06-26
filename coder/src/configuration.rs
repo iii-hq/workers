@@ -17,7 +17,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -39,7 +41,7 @@ const CONFIG_RETRIES: u32 = 3;
 /// Register the `coder` configuration schema with the configuration worker.
 /// When `seed` is present, its value is installed as `initial_value`. Otherwise,
 /// the built-in default is seeded only when no stored value exists yet.
-pub async fn register_config(iii: &III, seed: Option<&CoderConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&CoderConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Coder",
@@ -57,7 +59,7 @@ pub async fn register_config(iii: &III, seed: Option<&CoderConfig>) -> Result<()
 
 /// Read the live `coder` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
-pub async fn fetch_config(iii: &III) -> Result<CoderConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<CoderConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
@@ -66,7 +68,7 @@ pub async fn fetch_config(iii: &III) -> Result<CoderConfig, String> {
     CoderConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -74,14 +76,14 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
 /// Returns `Ok(None)` when the entry does not exist (`NOT_FOUND`).
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
@@ -135,10 +137,10 @@ pub struct OnConfigChangeResponse {
 /// change it is refused (those require a worker restart because the
 /// `PathResolver` is never rebuilt).
 pub fn register_config_trigger(
-    iii: &III,
+    iii: &IIIClient,
     cell: ConfigCell,
     boot_sig: JailSignature,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -149,7 +151,7 @@ pub fn register_config_trigger(
             let boot_sig = boot_sig.clone();
             async move {
                 on_config_change(&engine, &cell, &boot_sig).await;
-                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
@@ -179,7 +181,7 @@ pub fn register_config_trigger(
 /// the stored value via `configuration::get` instead. A jail-changing update is
 /// refused (it requires a restart); the previous snapshot is always kept on any
 /// failure path.
-async fn on_config_change(iii: &III, cell: &ConfigCell, boot_sig: &JailSignature) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, boot_sig: &JailSignature) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -204,7 +206,11 @@ async fn on_config_change(iii: &III, cell: &ConfigCell, boot_sig: &JailSignature
     tracing::info!("coder tuning limits reloaded (jail unchanged)");
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii

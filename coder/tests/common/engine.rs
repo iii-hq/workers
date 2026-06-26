@@ -8,19 +8,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{register_worker, IIIError, InitOptions, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::OnceCell;
 
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 
-static ENGINE: OnceCell<Option<Arc<III>>> = OnceCell::const_new();
+static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
 
 pub fn ws_url() -> String {
     std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
 }
 
-pub async fn try_connect_raw() -> Option<Arc<III>> {
+pub async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
     let iii = Arc::new(register_worker(&url, InitOptions::default()));
 
@@ -36,7 +38,7 @@ pub async fn try_connect_raw() -> Option<Arc<III>> {
             .await;
         match probe {
             Ok(_) => return Some(iii),
-            Err(IIIError::NotConnected) => continue,
+            Err(Error::NotConnected) => continue,
             Err(_) => continue,
         }
     }
@@ -52,7 +54,7 @@ pub async fn try_connect_raw() -> Option<Arc<III>> {
 /// Get-or-init the shared engine handle. Registers coder's own function
 /// surface in-process so BDD scenarios drive the same code paths the
 /// production binary would.
-pub async fn get_or_init() -> Option<Arc<III>> {
+pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
         .get_or_init(|| async {
             let iii = try_connect_raw().await?;

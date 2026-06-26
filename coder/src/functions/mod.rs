@@ -23,7 +23,8 @@ pub mod update_file;
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 
 use crate::configuration::ConfigCell;
 use crate::path::PathResolver;
@@ -226,7 +227,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
     ]
 }
 
-pub fn register_all(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+pub fn register_all(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     // DRIFT GUARD: the register_* calls below and the entries in
     // `catalog()` must stay 1:1 — catalog() feeds the wire-schema goldens
     // (tests/golden_schemas.rs). Adding a function to one list but not
@@ -261,7 +262,7 @@ pub fn register_all(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     tracing::info!(count = registered, "coder registered functions");
 }
 
-fn register_info(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_info(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         INFO_ID,
         RegisterFunction::new_async(move |_req: info::InfoInput| {
@@ -269,14 +270,14 @@ fn register_info(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
             let cfg = cfg.clone();
             async move {
                 let cfg = cfg.read().await.clone();
-                info::handle(resolver, cfg).await.map_err(IIIError::from)
+                info::handle(resolver, cfg).await.map_err(Error::from)
             }
         })
         .description(INFO_DESC),
     );
 }
 
-fn register_read_file(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_read_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         READ_FILE_ID,
         RegisterFunction::new_async(move |req: read_file::ReadFileInput| {
@@ -286,14 +287,14 @@ fn register_read_file(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
                 let cfg = cfg.read().await.clone();
                 read_file::handle(resolver, cfg, req)
                     .await
-                    .map_err(IIIError::from)
+                    .map_err(Error::from)
             }
         })
         .description(READ_FILE_DESC),
     );
 }
 
-fn register_search(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_search(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         SEARCH_ID,
         RegisterFunction::new_async(move |req: search::SearchInput| {
@@ -303,14 +304,14 @@ fn register_search(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
                 let cfg = cfg.read().await.clone();
                 search::handle(resolver, cfg, req)
                     .await
-                    .map_err(IIIError::from)
+                    .map_err(Error::from)
             }
         })
         .description(SEARCH_DESC),
     );
 }
 
-fn register_update_file(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_update_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         UPDATE_FILE_ID,
         RegisterFunction::new_async(move |req: update_file::UpdateFileInput| {
@@ -320,14 +321,14 @@ fn register_update_file(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell)
                 let cfg = cfg.read().await.clone();
                 update_file::handle(resolver, cfg, req)
                     .await
-                    .map_err(IIIError::from)
+                    .map_err(Error::from)
             }
         })
         .description(UPDATE_FILE_DESC),
     );
 }
 
-fn register_create_file(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_create_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         CREATE_FILE_ID,
         RegisterFunction::new_async(move |req: create_file::CreateFileInput| {
@@ -337,14 +338,14 @@ fn register_create_file(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell)
                 let cfg = cfg.read().await.clone();
                 create_file::handle(resolver, cfg, req)
                     .await
-                    .map_err(IIIError::from)
+                    .map_err(Error::from)
             }
         })
         .description(CREATE_FILE_DESC),
     );
 }
 
-fn register_delete_file(iii: &III, resolver: Arc<PathResolver>) {
+fn register_delete_file(iii: &IIIClient, resolver: Arc<PathResolver>) {
     iii.register_function(
         DELETE_FILE_ID,
         RegisterFunction::new_async(move |req: delete_file::DeleteFileInput| {
@@ -352,14 +353,14 @@ fn register_delete_file(iii: &III, resolver: Arc<PathResolver>) {
             async move {
                 delete_file::handle(resolver, req)
                     .await
-                    .map_err(IIIError::from)
+                    .map_err(Error::from)
             }
         })
         .description(DELETE_FILE_DESC),
     );
 }
 
-fn register_list_folder(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_list_folder(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         LIST_FOLDER_ID,
         RegisterFunction::new_async(move |req: list_folder::ListFolderInput| {
@@ -369,14 +370,14 @@ fn register_list_folder(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell)
                 let cfg = cfg.read().await.clone();
                 list_folder::handle(resolver, cfg, req)
                     .await
-                    .map_err(IIIError::from)
+                    .map_err(Error::from)
             }
         })
         .description(LIST_FOLDER_DESC),
     );
 }
 
-fn register_tree(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
+fn register_tree(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
     iii.register_function(
         TREE_ID,
         RegisterFunction::new_async(move |req: tree::TreeInput| {
@@ -384,25 +385,19 @@ fn register_tree(iii: &III, resolver: Arc<PathResolver>, cfg: ConfigCell) {
             let cfg = cfg.clone();
             async move {
                 let cfg = cfg.read().await.clone();
-                tree::handle(resolver, cfg, req)
-                    .await
-                    .map_err(IIIError::from)
+                tree::handle(resolver, cfg, req).await.map_err(Error::from)
             }
         })
         .description(TREE_DESC),
     );
 }
 
-fn register_move_file(iii: &III, resolver: Arc<PathResolver>) {
+fn register_move_file(iii: &IIIClient, resolver: Arc<PathResolver>) {
     iii.register_function(
         MOVE_FILE_ID,
         RegisterFunction::new_async(move |req: move_file::MoveFileInput| {
             let resolver = resolver.clone();
-            async move {
-                move_file::handle(resolver, req)
-                    .await
-                    .map_err(IIIError::from)
-            }
+            async move { move_file::handle(resolver, req).await.map_err(Error::from) }
         })
         .description(MOVE_FILE_DESC),
     );
@@ -412,7 +407,7 @@ fn register_move_file(iii: &III, resolver: Arc<PathResolver>) {
 mod tests {
     use super::*;
 
-    /// DRIFT GUARD execution: `III::new` only buffers registrations into a
+    /// DRIFT GUARD execution: `IIIClient::new` only buffers registrations into a
     /// channel (no connection, no runtime needed), so `register_all` runs
     /// engine-free here and its debug_assert fires in `cargo test` when
     /// the register_* calls and `catalog()` fall out of 1:1.
@@ -420,7 +415,7 @@ mod tests {
     fn register_all_count_matches_catalog() {
         use crate::config::CoderConfig;
         use tokio::sync::RwLock;
-        let iii = III::new("ws://127.0.0.1:1");
+        let iii = IIIClient::new("ws://127.0.0.1:1");
         let cfg = CoderConfig::default();
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
         let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));

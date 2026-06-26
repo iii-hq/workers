@@ -9,7 +9,8 @@
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
@@ -78,7 +79,7 @@ async fn boot() -> Option<Harness> {
 /// Poll `function_id` with `payload` until the worker has registered, or
 /// give up. Returns the response (or panics with the last error).
 async fn call_when_ready(
-    client: &iii_sdk::III,
+    client: &iii_sdk::IIIClient,
     function_id: &str,
     payload: serde_json::Value,
 ) -> serde_json::Value {
