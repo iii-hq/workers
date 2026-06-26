@@ -572,7 +572,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "email"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-imap",

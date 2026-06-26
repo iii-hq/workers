@@ -87,15 +87,18 @@ async fn main() -> Result<()> {
 
     email::handlers::register_all(&iii, &cfg, &imap_pool);
 
-    let _new_mail_ref = iii.register_trigger_type(RegisterTriggerType::new(
-        "email::new-mail",
-        "Fires when IMAP IDLE pushes a new message to a configured (account, folder). \
+    let _new_mail_ref = iii.register_trigger_type(
+        RegisterTriggerType::new(
+            "email::new-mail",
+            "Fires when IMAP IDLE pushes a new message to a configured (account, folder). \
          Payload: { account, folder, uid, message_id, from, subject, snippet, ts }. \
          If the IMAP server lacks the IDLE capability, the account fails at startup (E610).",
-        email::triggers::new_mail::Handler {
-            registry: trig_registry.clone(),
-        },
-    ));
+            email::triggers::new_mail::Handler {
+                registry: trig_registry.clone(),
+            },
+        )
+        .trigger_request_format::<email::triggers::new_mail::NewMailBindingConfig>(),
+    );
 
     // Spawn one persistent IMAP+IDLE connection per (account, folder).
     // E610 here is fatal — we refuse to silently degrade to polling.

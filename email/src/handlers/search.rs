@@ -1,8 +1,8 @@
 use iii_sdk::channels::ChannelWriter;
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::sync::Arc;
 
 use crate::provider::StreamRef;
@@ -17,6 +17,11 @@ struct SearchReq {
 }
 fn default_folder() -> String {
     "INBOX".into()
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct SearchResp {
+    ok: bool,
 }
 
 pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
@@ -79,7 +84,7 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
                             .to_string(),
                     )
                 })?;
-                Ok::<_, Error>(Value::Null)
+                Ok::<_, Error>(SearchResp { ok: true })
             }
         })
         .description(

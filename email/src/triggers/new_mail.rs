@@ -3,14 +3,15 @@ use iii_sdk::{
     errors::Error,
     trigger::{TriggerConfig, TriggerHandler},
 };
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
 use super::registry::TriggerRegistry;
 
-#[derive(Deserialize)]
-struct Config {
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NewMailBindingConfig {
     account: String,
     #[serde(default = "default_folder")]
     folder: String,
@@ -31,15 +32,16 @@ pub struct Handler {
 #[async_trait]
 impl TriggerHandler for Handler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let cfg: Config = serde_json::from_value(config.config.clone()).map_err(|e| {
-            Error::Handler(
-                json!({
-                    "code":"CONFIG_ERROR",
-                    "message":format!("email::new-mail config: {e}")
-                })
-                .to_string(),
-            )
-        })?;
+        let cfg: NewMailBindingConfig =
+            serde_json::from_value(config.config.clone()).map_err(|e| {
+                Error::Handler(
+                    json!({
+                        "code":"CONFIG_ERROR",
+                        "message":format!("email::new-mail config: {e}")
+                    })
+                    .to_string(),
+                )
+            })?;
         self.registry.register(
             cfg.account.clone(),
             cfg.folder.clone(),

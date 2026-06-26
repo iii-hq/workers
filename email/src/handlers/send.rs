@@ -1,6 +1,6 @@
 use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -27,6 +27,11 @@ pub struct SendReq {
     pub references: Vec<String>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct SendResp {
+    message_id: String,
 }
 
 pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
@@ -118,7 +123,7 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
                     &acct.from, smtp_cfg, &cred, req, cfg.limits.send_timeout_ms,
                 ).await?;
 
-                Ok::<_, Error>(json!({ "message_id": message_id }))
+                Ok::<_, Error>(SendResp { message_id })
             }
         })
         .description(
