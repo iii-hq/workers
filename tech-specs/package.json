@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.18.2",
   "engines": {
-    "node": "23.11.1"
+    "node": "24.x"
   },
   "scripts": {
     "build": "node build.mjs",
