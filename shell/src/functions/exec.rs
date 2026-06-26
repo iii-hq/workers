@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::ShellConfig;
 use crate::exec::host::parse_argv;
-use crate::exec::policy::build_overrides;
+use crate::exec::policy::{base_dir_for_target, build_overrides};
 use crate::exec_dispatch::pick_exec_backend;
 use crate::functions::types::{ExecRequest, ExecResponse};
 
@@ -34,13 +34,12 @@ pub async fn handle(
     // (S215) or an env key outside allowed_env / in DANGEROUS_ENV_KEYS (S210)
     // rejects here, carrying the S-code to the wire via From<ExecError>. The
     // sandbox backend additionally rejects any populated override (host-only).
-    let mut overrides = build_overrides(
-        req.cwd.as_deref(),
-        req.env.as_ref(),
-        req.base_dir.as_deref(),
-        &cfg,
-    )
-    .map_err(iii_sdk::errors::Error::from)?;
+    // `base_dir` only scopes the host working directory: drop it for a sandbox
+    // target so the harness-injected session dir does not surface as a host cwd
+    // override and get rejected (see `base_dir_for_target`).
+    let base_dir = base_dir_for_target(&req.target, req.base_dir.as_deref());
+    let mut overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), base_dir, &cfg)
+        .map_err(iii_sdk::errors::Error::from)?;
     // stdin needs no gating (opaque input bytes); it is host-only, enforced by
     // the sandbox backend's is_empty() rejection of any populated override.
     overrides.stdin = req.stdin;

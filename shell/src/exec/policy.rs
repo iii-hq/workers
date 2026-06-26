@@ -26,6 +26,7 @@ use std::path::PathBuf;
 
 use crate::config::ShellConfig;
 use crate::exec::error::ExecError;
+use crate::target::Target;
 
 /// Environment keys that an agent may NEVER set per-call, regardless of
 /// `allowed_env`. Setting any of these can hijack which binary the child
@@ -333,6 +334,23 @@ pub fn build_overrides(
     })
 }
 
+/// The `base_dir` that actually applies to a given exec `target`.
+///
+/// `base_dir` scopes a HOST working directory. A sandbox target runs against the
+/// VM's own filesystem, so an injected `base_dir` is meaningless there and must
+/// be dropped: left in place it materializes (via [`build_overrides`]) as a
+/// populated host `cwd` override, which both exec sandbox paths reject as
+/// host-only (S210). Since the harness stamps `base_dir` onto EVERY `shell::*`
+/// call, that would break every sandbox exec issued from a working-dir-scoped
+/// chat. Genuine user-supplied `cwd`/`env`/`stdin` on a sandbox call are still
+/// rejected — only the harness `base_dir` is dropped here.
+pub fn base_dir_for_target<'a>(target: &Target, base_dir: Option<&'a str>) -> Option<&'a str> {
+    match target {
+        Target::Host => base_dir,
+        Target::Sandbox { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +362,24 @@ mod tests {
         };
         c.fs.host_root = Some(root.to_path_buf());
         c
+    }
+
+    // base_dir applies to a HOST target verbatim, but must be dropped for a
+    // sandbox target — otherwise the harness-injected session dir becomes a
+    // populated host cwd override and the sandbox exec paths reject it (S210),
+    // breaking sandbox exec for every working-dir-scoped chat.
+    #[test]
+    fn base_dir_dropped_for_sandbox_target_kept_for_host() {
+        let sandbox = Target::Sandbox {
+            sandbox_id: uuid::Uuid::nil(),
+        };
+        assert_eq!(base_dir_for_target(&sandbox, Some("/work/session-7")), None);
+        assert_eq!(base_dir_for_target(&sandbox, None), None);
+        assert_eq!(
+            base_dir_for_target(&Target::Host, Some("/work/session-7")),
+            Some("/work/session-7")
+        );
+        assert_eq!(base_dir_for_target(&Target::Host, None), None);
     }
 
     #[test]
