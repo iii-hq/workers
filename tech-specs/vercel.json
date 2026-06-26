@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "corepack enable",
+  "installCommand": "corepack enable && corepack prepare pnpm@10.18.2 --activate",
   "buildCommand": "node build.mjs",
   "outputDirectory": "dist",
   "cleanUrls": true,

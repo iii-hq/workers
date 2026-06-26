@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.18.2",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "build": "node build.mjs",
     "dev": "pnpm --dir _gallery dev",
