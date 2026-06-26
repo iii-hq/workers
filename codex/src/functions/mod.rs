@@ -4,7 +4,8 @@
 
 pub mod types;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::codex;
@@ -41,7 +42,7 @@ fn run_response_schema() -> Value {
     })
 }
 
-pub fn register_all(iii: &III, cell: ConfigCell) {
+pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
     // codex::run — run a turn and wait for the result.
     {
         let iii_h = iii.clone();
@@ -53,7 +54,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 let cell_h = cell_h.clone();
                 async move {
                     let cfg = { cell_h.read().await.clone() };
-                    Ok::<Value, IIIError>(codex::run(iii_h, cfg, req).await)
+                    Ok::<Value, Error>(codex::run(iii_h, cfg, req).await)
                 }
             })
             .request_format(schema_value::<RunRequest>())
@@ -105,7 +106,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                             }
                         }
                     });
-                    Ok::<Value, IIIError>(json!({ "session_id": session_id, "started": true }))
+                    Ok::<Value, Error>(json!({ "session_id": session_id, "started": true }))
                 }
             })
             .request_format(schema_value::<RunRequest>())
@@ -125,7 +126,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
         "codex::stop",
         RegisterFunction::new_async(move |req: SessionIdRequest| async move {
             let stopped = codex::stop(&req.session_id).await;
-            Ok::<Value, IIIError>(json!({
+            Ok::<Value, Error>(json!({
                 "session_id": req.session_id,
                 "stopped": stopped,
                 "reason": if stopped { Value::Null } else { json!("no live run") },
@@ -153,7 +154,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 async move {
                     let record = load_session(&iii_h, &req.session_id).await.ok().flatten();
                     let live = codex::is_live(&req.session_id).await;
-                    Ok::<Value, IIIError>(json!({
+                    Ok::<Value, Error>(json!({
                         "session_id": req.session_id,
                         "live": live,
                         "record": record,
@@ -182,7 +183,7 @@ pub fn register_all(iii: &III, cell: ConfigCell) {
                 let iii_h = iii_h.clone();
                 async move {
                     let sessions = list_sessions(&iii_h).await.unwrap_or_default();
-                    Ok::<Value, IIIError>(json!({ "sessions": sessions }))
+                    Ok::<Value, Error>(json!({ "sessions": sessions }))
                 }
             })
             .request_format(json!({ "type": "object", "properties": {} }))

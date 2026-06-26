@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use iii_observability::OtelConfig;
+use iii_helpers::observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
