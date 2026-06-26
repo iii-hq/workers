@@ -101,7 +101,7 @@ fn delete_one(
         }
     };
     let wire_path = abs.display().to_string();
-    match try_delete_one(resolver, &abs, recursive) {
+    match try_delete_one(resolver, base_dir, &abs, recursive) {
         Ok(removed) => DeleteFileResult {
             path: wire_path,
             success: true,
@@ -119,6 +119,7 @@ fn delete_one(
 
 fn try_delete_one(
     resolver: &PathResolver,
+    base_dir: Option<&str>,
     abs: &Path,
     recursive: bool,
 ) -> Result<bool, CoderError> {
@@ -126,6 +127,18 @@ fn try_delete_one(
         return Err(CoderError::BadInput(
             "refusing to delete an allowed root itself".into(),
         ));
+    }
+    // A session-scoped delete must not remove the session working directory
+    // itself. With `base_dir` set, `paths: ["."]` (or any path that resolves
+    // back to base_dir) canonicalizes to the session directory — which is a
+    // SUBDIR of an allowed root, so the `is_root` guard above never catches it.
+    // Without this, a recursive delete would wipe the active project directory.
+    if let Some(base) = base_dir {
+        if resolver.session_root(base).as_deref() == Some(abs) {
+            return Err(CoderError::BadInput(
+                "refusing to delete the session working directory itself".into(),
+            ));
+        }
     }
     let md = match std::fs::symlink_metadata(abs) {
         Ok(m) => m,
@@ -351,5 +364,77 @@ mod tests {
         .unwrap();
         assert!(!out.results[0].success);
         assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+    }
+
+    // The session working directory is a SUBDIR of the allowed root, so the
+    // is_root guard does not cover it. A scoped `delete path="."` must still be
+    // refused (C210) — otherwise a recursive delete wipes the active project.
+    #[tokio::test]
+    async fn refuses_to_delete_session_dir_via_dot() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join("keep.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".".into()],
+                recursive: true,
+                base_dir: Some(session.to_string_lossy().into_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(session.exists(), "session dir must survive the delete");
+        assert!(session.join("keep.txt").exists());
+    }
+
+    // The same protection must hold when the session dir is named by an
+    // absolute path rather than ".".
+    #[tokio::test]
+    async fn refuses_to_delete_session_dir_via_absolute_path() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        let abs = session.to_string_lossy().into_owned();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![abs.clone()],
+                recursive: true,
+                base_dir: Some(abs),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(session.exists(), "session dir must survive the delete");
+    }
+
+    // The guard must not be over-broad: a real file INSIDE the session dir
+    // still deletes normally.
+    #[tokio::test]
+    async fn deletes_file_inside_session_dir() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join("a.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["a.txt".into()],
+                recursive: false,
+                base_dir: Some(session.to_string_lossy().into_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success);
+        assert!(out.results[0].removed);
+        assert!(!session.join("a.txt").exists());
+        assert!(session.exists(), "session dir itself is untouched");
     }
 }

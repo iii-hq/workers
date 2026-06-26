@@ -168,6 +168,25 @@ impl PathResolver {
             .map(PathBuf::as_path)
     }
 
+    /// Canonical form of a session `base_dir` (the per-call working directory
+    /// the harness scopes a call to), using the SAME canonicalisation as
+    /// [`resolve_in`]. `None` when `base_dir` cannot be canonicalised or sits
+    /// outside every allowed root — exactly the conditions under which
+    /// `resolve_in` rejects, so any caller that already resolved a path through
+    /// this `base_dir` gets `Some`.
+    ///
+    /// Used to refuse operations that target the session directory itself (which
+    /// is a SUBDIR of an allowed root, so [`is_root`] does not catch it).
+    ///
+    /// [`resolve_in`]: Self::resolve_in
+    /// [`is_root`]: Self::is_root
+    pub fn session_root(&self, base_dir: &str) -> Option<PathBuf> {
+        let base_canon = self.canonicalize_wire(base_dir, Path::new(base_dir)).ok()?;
+        self.containing_root(&base_canon)
+            .is_some()
+            .then_some(base_canon)
+    }
+
     /// Comma-separated display of all allowed roots, for C215 messages.
     fn roots_list(&self) -> String {
         display_paths(&self.roots_canon)
