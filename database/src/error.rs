@@ -59,11 +59,11 @@ pub enum DbError {
     ConfigError { message: String },
 }
 
-impl From<DbError> for iii_sdk::IIIError {
+impl From<DbError> for iii_sdk::errors::Error {
     fn from(e: DbError) -> Self {
         let body = serde_json::to_string(&e)
             .expect("DbError serialization is infallible (only primitive fields)");
-        iii_sdk::IIIError::Handler(body)
+        iii_sdk::errors::Error::Handler(body)
     }
 }
 
@@ -135,7 +135,7 @@ mod tests {
             db: "primary".into(),
             timeout_ms: 30000,
         };
-        let iii_e: iii_sdk::IIIError = e.into();
+        let iii_e: iii_sdk::errors::Error = e.into();
         let body = format!("{iii_e:?}");
         assert!(body.contains("QUERY_TIMEOUT"));
     }

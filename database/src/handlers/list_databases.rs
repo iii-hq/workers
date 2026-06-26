@@ -90,7 +90,7 @@ mod tests {
             config: Arc::new(RwLock::new(cfg)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
-            log: iii_observability::Logger::new(),
+            log: iii_helpers::observability::Logger::new(),
         }
     }
 

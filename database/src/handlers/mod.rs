@@ -7,7 +7,7 @@ use crate::error::DbError;
 use crate::handle::HandleRegistry;
 use crate::pool::Pool;
 use crate::transaction::TxRegistry;
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
