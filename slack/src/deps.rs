@@ -52,8 +52,10 @@ pub struct Deps {
     pub runtime: Arc<RuntimeState>,
     pub approval_gate: Arc<ApprovalGateStatus>,
     /// Engine HTTP-trigger handles for the bridge ingress routes (Some while the
-    /// bridge is enabled). Held so they can be unregistered on a config change.
+    /// HTTP bridge is enabled). Held so they can be unregistered on a config change.
     pub bridge_triggers: Arc<Mutex<Vec<iii_sdk::trigger::Trigger>>>,
+    /// Cancellation token for the Socket Mode loop (Some while socket mode runs).
+    pub socket_cancel: Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
 }
 
 impl Deps {
@@ -70,6 +72,7 @@ impl Deps {
             runtime: Arc::new(RuntimeState::default()),
             approval_gate,
             bridge_triggers: Arc::new(Mutex::new(Vec::new())),
+            socket_cancel: Arc::new(Mutex::new(None)),
         }
     }
 

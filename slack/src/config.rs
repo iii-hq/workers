@@ -34,6 +34,13 @@ pub struct WorkerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_token: Option<String>,
 
+    /// Optional Slack app-level token (`xapp-`). When set, the inbound bridge runs
+    /// in **Socket Mode** (the worker dials out to Slack over a WebSocket; no
+    /// public URL, signing secret, or Event Subscriptions URL needed). Takes
+    /// precedence over the HTTP/events ingress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_token: Option<String>,
+
     /// Slack signing secret. Required to enable the inbound bridge (HMAC verify).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_secret: Option<String>,
@@ -106,6 +113,7 @@ impl Default for WorkerConfig {
         Self {
             bot_token: String::new(),
             user_token: None,
+            app_token: None,
             signing_secret: None,
             public_base_url: None,
             default_channel: None,
@@ -166,13 +174,28 @@ impl WorkerConfig {
         Ok(())
     }
 
-    /// The inbound bridge is enabled when both a signing secret and a public
-    /// engine URL are configured.
-    pub fn bridge_enabled(&self) -> bool {
-        self.signing_secret
+    /// Socket Mode is active when an app-level token (`xapp-`) is configured.
+    /// It dials out to Slack, so no public URL or signing secret is needed.
+    pub fn socket_enabled(&self) -> bool {
+        self.app_token
             .as_deref()
-            .is_some_and(|s| !s.trim().is_empty())
+            .is_some_and(|t| !t.trim().is_empty())
+    }
+
+    /// The HTTP/events inbound bridge is enabled when a signing secret and a
+    /// public engine URL are configured. Socket Mode takes precedence.
+    pub fn http_bridge_enabled(&self) -> bool {
+        !self.socket_enabled()
+            && self
+                .signing_secret
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
             && self.public_base_url().is_some()
+    }
+
+    /// Any inbound bridge (socket or http) is active.
+    pub fn bridge_enabled(&self) -> bool {
+        self.socket_enabled() || self.http_bridge_enabled()
     }
 
     /// Normalized public engine root (no trailing slash), if set.
