@@ -8,11 +8,12 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use iii_sdk::channels::ChannelWriter;
 use mail_parser::MessageParser;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::Session;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HeaderSummary {
     pub uid: u32,
     pub message_id: Option<String>,

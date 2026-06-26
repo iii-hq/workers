@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -11,6 +11,12 @@ struct MoveReq {
     folder: String,
     uid: u32,
     dst_folder: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct MoveResp {
+    ok: bool,
+    method: String,
 }
 
 enum MoveOutcome {
@@ -65,10 +71,14 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
                 .await;
 
                 match outcome {
-                    Ok(MoveOutcome::Move) => Ok::<_, Error>(json!({ "ok": true, "method": "MOVE" })),
-                    Ok(MoveOutcome::CopyStore) => {
-                        Ok(json!({ "ok": true, "method": "COPY+STORE" }))
-                    }
+                    Ok(MoveOutcome::Move) => Ok::<_, Error>(MoveResp {
+                        ok: true,
+                        method: "MOVE".to_string(),
+                    }),
+                    Ok(MoveOutcome::CopyStore) => Ok(MoveResp {
+                        ok: true,
+                        method: "COPY+STORE".to_string(),
+                    }),
                     Err(MoveError::BothFailed(e)) => {
                         guard.poison();
                         Err(Error::Handler(

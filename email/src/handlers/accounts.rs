@@ -1,11 +1,25 @@
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AccountsListReq {}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct AccountsListResp {
+    accounts: Vec<AccountInfo>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct AccountInfo {
+    name: String,
+    provider: String,
+    from: String,
+    can_send: bool,
+    can_read: bool,
+    folders: Vec<String>,
+}
 
 pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
     let cfg = cfg.clone();
@@ -17,21 +31,23 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
                 let accounts: Vec<_> = cfg
                     .accounts
                     .iter()
-                    .map(|(k, v)| {
-                        json!({
-                            "name": k,
-                            "provider": match v.provider {
-                                crate::config::Provider::Smtp => "smtp",
-                                crate::config::Provider::Imap => "imap",
-                            },
-                            "from": v.from,
-                            "can_send": v.smtp.is_some(),
-                            "can_read": v.imap.is_some(),
-                            "folders": v.imap.as_ref().map(|i| i.folders.clone()).unwrap_or_default(),
-                        })
+                    .map(|(name, account)| AccountInfo {
+                        name: name.clone(),
+                        provider: match account.provider {
+                            crate::config::Provider::Smtp => "smtp".to_string(),
+                            crate::config::Provider::Imap => "imap".to_string(),
+                        },
+                        from: account.from.clone(),
+                        can_send: account.smtp.is_some(),
+                        can_read: account.imap.is_some(),
+                        folders: account
+                            .imap
+                            .as_ref()
+                            .map(|imap| imap.folders.clone())
+                            .unwrap_or_default(),
                     })
                     .collect();
-                Ok::<_, Error>(json!({ "accounts": accounts }))
+                Ok::<_, Error>(AccountsListResp { accounts })
             }
         })
         .description(

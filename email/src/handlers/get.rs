@@ -1,7 +1,7 @@
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use mail_parser::{MessageParser, MimeHeaders};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -10,6 +10,27 @@ struct GetReq {
     account: String,
     folder: String,
     uid: u32,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct GetResp {
+    uid: u32,
+    message_id: String,
+    from: Option<String>,
+    to: Vec<String>,
+    subject: String,
+    date: Option<String>,
+    html: Option<String>,
+    text: Option<String>,
+    attachments: Vec<AttachmentInfo>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct AttachmentInfo {
+    part_id: String,
+    filename: String,
+    content_type: String,
+    size: usize,
 }
 
 pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
@@ -36,38 +57,43 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
                 };
 
                 let parsed = MessageParser::default().parse(&body[..]).ok_or_else(|| {
-                    Error::Handler(
-                        json!({"code":"E619","message":"mime parse failed"}).to_string(),
-                    )
+                    Error::Handler(json!({"code":"E619","message":"mime parse failed"}).to_string())
                 })?;
 
                 let mut attachments = Vec::new();
                 for (idx, part) in parsed.attachments().enumerate() {
-                    attachments.push(json!({
-                        "part_id": format!("{}", idx + 1),
-                        "filename": part.attachment_name().unwrap_or(""),
-                        "content_type": part.content_type().map(|c| c.c_type.to_string()).unwrap_or_default(),
-                        "size": part.contents().len(),
-                    }));
+                    attachments.push(AttachmentInfo {
+                        part_id: format!("{}", idx + 1),
+                        filename: part.attachment_name().unwrap_or("").to_string(),
+                        content_type: part
+                            .content_type()
+                            .map(|content_type| content_type.c_type.to_string())
+                            .unwrap_or_default(),
+                        size: part.contents().len(),
+                    });
                 }
 
-                Ok::<_, Error>(json!({
-                    "uid": req.uid,
-                    "message_id": parsed.message_id().unwrap_or(""),
-                    "from": parsed.from()
+                Ok::<_, Error>(GetResp {
+                    uid: req.uid,
+                    message_id: parsed.message_id().unwrap_or("").to_string(),
+                    from: parsed
+                        .from()
                         .and_then(|a| a.first())
                         .and_then(|a| a.address.as_ref().map(|s| s.to_string())),
-                    "to": parsed.to()
-                        .map(|tos| tos.iter()
-                            .filter_map(|a| a.address.as_ref().map(|s| s.to_string()))
-                            .collect::<Vec<_>>())
+                    to: parsed
+                        .to()
+                        .map(|tos| {
+                            tos.iter()
+                                .filter_map(|a| a.address.as_ref().map(|s| s.to_string()))
+                                .collect::<Vec<_>>()
+                        })
                         .unwrap_or_default(),
-                    "subject": parsed.subject().unwrap_or(""),
-                    "date": parsed.date().map(|d| d.to_rfc3339()),
-                    "html": parsed.body_html(0).map(|s| s.to_string()),
-                    "text": parsed.body_text(0).map(|s| s.to_string()),
-                    "attachments": attachments,
-                }))
+                    subject: parsed.subject().unwrap_or("").to_string(),
+                    date: parsed.date().map(|d| d.to_rfc3339()),
+                    html: parsed.body_html(0).map(|s| s.to_string()),
+                    text: parsed.body_text(0).map(|s| s.to_string()),
+                    attachments,
+                })
             }
         })
         .description(

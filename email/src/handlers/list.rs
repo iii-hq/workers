@@ -1,7 +1,7 @@
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -21,6 +21,12 @@ fn default_limit() -> u32 {
     50
 }
 const MAX_LIMIT: u32 = 1000;
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct ListResp {
+    items: Vec<crate::provider::imap::fetch::HeaderSummary>,
+    next_since_uid: Option<u32>,
+}
 
 pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
@@ -57,7 +63,7 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
                 let mut items = Vec::with_capacity(uids.len());
                 for uid in &uids {
                     match crate::provider::imap::fetch::header_summary(session, *uid).await {
-                        Ok(s) => items.push(serde_json::to_value(&s).unwrap_or(Value::Null)),
+                        Ok(summary) => items.push(summary),
                         Err(e) => {
                             tracing::warn!(uid, error = %e, "header_summary skipped");
                         }
@@ -65,10 +71,10 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
                 }
 
                 let next_cursor = uids.first().copied();
-                Ok::<_, Error>(json!({
-                    "items": items,
-                    "next_since_uid": next_cursor,
-                }))
+                Ok::<_, Error>(ListResp {
+                    items,
+                    next_since_uid: next_cursor,
+                })
             }
         })
         .description(

@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -16,6 +16,11 @@ struct FlagReq {
 }
 fn default_add() -> bool {
     true
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct FlagResp {
+    ok: bool,
 }
 
 pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
@@ -55,7 +60,7 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
                 .await;
 
                 match outcome {
-                    Ok(()) => Ok::<_, Error>(json!({ "ok": true })),
+                    Ok(()) => Ok::<_, Error>(FlagResp { ok: true }),
                     Err(e) => {
                         guard.poison();
                         Err(Error::Handler(
