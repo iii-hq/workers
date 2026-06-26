@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use tokio::sync::OnceCell;
 
 use coder::config::CoderConfig;
@@ -40,7 +40,7 @@ pub struct Shared {
 static SHARED: OnceCell<Arc<Shared>> = OnceCell::const_new();
 
 /// Idempotent: the first caller registers; subsequent callers reuse.
-pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
+pub async fn register_all(iii: &Arc<IIIClient>) -> Result<Arc<Shared>> {
     if let Some(s) = SHARED.get() {
         return Ok(s.clone());
     }

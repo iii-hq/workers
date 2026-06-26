@@ -3,7 +3,7 @@
 //! out for `Then` assertions.
 
 use cucumber::gherkin::Step;
-use iii_sdk::TriggerRequest;
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::Value;
 
 use crate::common::world::CoderWorld;
