@@ -1,4 +1,4 @@
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AccountsListReq {}
 
-pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
+pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
     let cfg = cfg.clone();
     iii.register_function(
         "email::accounts::list",
@@ -31,7 +31,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                         })
                     })
                     .collect();
-                Ok::<_, IIIError>(json!({ "accounts": accounts }))
+                Ok::<_, Error>(json!({ "accounts": accounts }))
             }
         })
         .description(

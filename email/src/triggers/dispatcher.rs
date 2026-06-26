@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,12 +18,12 @@ pub trait EventDispatcher: Send + Sync {
 }
 
 pub struct EngineDispatcher {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     registry: Arc<TriggerRegistry>,
 }
 
 impl EngineDispatcher {
-    pub fn new(iii: Arc<III>, registry: Arc<TriggerRegistry>) -> Self {
+    pub fn new(iii: Arc<IIIClient>, registry: Arc<TriggerRegistry>) -> Self {
         Self { iii, registry }
     }
 }

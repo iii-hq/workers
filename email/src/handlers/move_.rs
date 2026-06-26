@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -27,7 +27,7 @@ enum MoveError {
     PartialCopyStore(async_imap::error::Error),
 }
 
-pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
+pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
         "email::move",
@@ -65,20 +65,20 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 .await;
 
                 match outcome {
-                    Ok(MoveOutcome::Move) => Ok::<_, IIIError>(json!({ "ok": true, "method": "MOVE" })),
+                    Ok(MoveOutcome::Move) => Ok::<_, Error>(json!({ "ok": true, "method": "MOVE" })),
                     Ok(MoveOutcome::CopyStore) => {
                         Ok(json!({ "ok": true, "method": "COPY+STORE" }))
                     }
                     Err(MoveError::BothFailed(e)) => {
                         guard.poison();
-                        Err(IIIError::Handler(
+                        Err(Error::Handler(
                             json!({"code":"E624","message":format!("imap move failed: {e}")})
                                 .to_string(),
                         ))
                     }
                     Err(MoveError::PartialCopyStore(e)) => {
                         guard.poison();
-                        Err(IIIError::Handler(
+                        Err(Error::Handler(
                             json!({
                                 "code": "E627",
                                 "message": format!(

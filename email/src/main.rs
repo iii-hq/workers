@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use iii_sdk::{
-    register_worker, IIIError, InitOptions, RegisterTriggerInput, RegisterTriggerType,
-    WorkerMetadata,
+    errors::Error, protocol::RegisterTriggerInput, register_worker, runtime::WorkerMetadata,
+    InitOptions, RegisterTriggerType,
 };
 use std::sync::Arc;
 
@@ -154,4 +154,4 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 }
 
 #[allow(dead_code)]
-fn _suppress_unused(_: IIIError, _: RegisterTriggerInput) {}
+fn _suppress_unused(_: Error, _: RegisterTriggerInput) {}

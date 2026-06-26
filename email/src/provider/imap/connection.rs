@@ -3,7 +3,7 @@
 //! pool (`mod.rs::ImapPool`). The two paths must NEVER share a session — IMAP
 //! is half-duplex once a command is in flight.
 
-use iii_sdk::{protocol::TriggerRequest, IIIError, III};
+use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,7 @@ pub async fn open_and_select(
     folder: &str,
     cfg: &ImapConfig,
     connect_timeout_ms: u64,
-) -> Result<Session, IIIError> {
+) -> Result<Session, Error> {
     let cred = fetch_credential(account).await?;
     open_and_select_with_cred(account, folder, cfg, connect_timeout_ms, &cred).await
 }
@@ -34,7 +34,7 @@ pub async fn open_and_select_with_cred(
     cfg: &ImapConfig,
     connect_timeout_ms: u64,
     cred: &Value,
-) -> Result<Session, IIIError> {
+) -> Result<Session, Error> {
     let user = cred
         .get("username")
         .and_then(|v| v.as_str())
@@ -181,7 +181,7 @@ pub async fn run_until_shutdown(
     }
 }
 
-async fn fetch_credential(account: &str) -> Result<Value, IIIError> {
+async fn fetch_credential(account: &str) -> Result<Value, Error> {
     // The connection module is invoked from contexts that hold an `Arc<III>`
     // upstream. For the supervisor path we re-resolve via the global SDK
     // handle exposed at `connection::iii_handle`. For the pool path the
@@ -215,7 +215,7 @@ async fn fetch_credential(account: &str) -> Result<Value, IIIError> {
     Ok(cred)
 }
 
-fn build_tls_connector() -> Result<TlsConnector, IIIError> {
+fn build_tls_connector() -> Result<TlsConnector, Error> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let cfg = ClientConfig::builder()
@@ -224,8 +224,8 @@ fn build_tls_connector() -> Result<TlsConnector, IIIError> {
     Ok(TlsConnector::from(Arc::new(cfg)))
 }
 
-fn handler_err(code: &str, msg: &str) -> IIIError {
-    IIIError::Handler(json!({ "code": code, "message": msg }).to_string())
+fn handler_err(code: &str, msg: &str) -> Error {
+    Error::Handler(json!({ "code": code, "message": msg }).to_string())
 }
 
 // ---- shared III handle for credential lookup from non-handler tasks ----
@@ -235,13 +235,13 @@ fn handler_err(code: &str, msg: &str) -> IIIError {
 // main.rs initializes once after register_worker.
 
 use std::sync::OnceLock;
-static III_HANDLE: OnceLock<Arc<III>> = OnceLock::new();
+static III_HANDLE: OnceLock<Arc<IIIClient>> = OnceLock::new();
 
-pub fn install_iii_handle(iii: Arc<III>) {
+pub fn install_iii_handle(iii: Arc<IIIClient>) {
     let _ = III_HANDLE.set(iii);
 }
 
-fn iii_handle() -> Option<Arc<III>> {
+fn iii_handle() -> Option<Arc<IIIClient>> {
     III_HANDLE.get().cloned()
 }
 
