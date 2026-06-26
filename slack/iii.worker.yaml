@@ -1,0 +1,10 @@
+iii: v1
+name: slack
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: slack
+description: Slack as an iii worker — exposes the Slack Web API as slack::* functions, configurable from the console. (Harness bridge lands in later milestones.)
+
+dependencies:
+  configuration: "^0.20.0"

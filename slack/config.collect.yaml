@@ -1,0 +1,8 @@
+# Interface-collection config for the registry publish workflow.
+#
+# Boots a throwaway copy of this worker purely to read back the functions it
+# registers (the published "interface"). The worker refuses to start with an
+# empty bot_token, so this supplies a dummy. No Slack API call succeeds during
+# collection, and that is fine — collection only needs the worker to connect
+# and register its surface.
+bot_token: "collect:interface-collection-token"
