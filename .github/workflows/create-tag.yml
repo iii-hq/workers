@@ -30,6 +30,7 @@ on:
           - pi
           - provider-anthropic
           - provider-openai
+          - rbac-proxy
           - session-manager
           - telegram-bot
           - shell

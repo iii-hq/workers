@@ -42,7 +42,7 @@ export const NAV: NavItem[] = [
 export const FOOTER: FooterSpec = {
   eyebrow: 'where it lives',
   headline: 'one boundary. its own port. the engine, untouched.',
-  command: 'iii worker info rbac-proxy',
+  command: 'iii worker add rbac-proxy',
   attribution: 'rbac-proxy · rbac at the edge',
   source: 'source: workers/tech-specs/2026-06-rbac-proxy-worker',
 }

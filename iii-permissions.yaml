@@ -101,6 +101,14 @@ rules:
   - '!harness::sweep-pending'
   - '!context::on-config-change'
   - '!approval::on-config-change'
+  # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
+  # engine's trigger dispatch, never agent-callable. The handlers already
+  # re-fetch/ignore the event payload; these denies are defense-in-depth.
+  # The proxy is an enforcement boundary, not a callable API — rbac-proxy::status
+  # (read-only) stays at the needs_approval default; deny it on deployments where
+  # the engine URL / bound port topology is itself sensitive.
+  - '!rbac-proxy::on-config-change'
+  - '!rbac-proxy::on-functions-available'
   - '!telegram-bot::on-config-change'
   - '!telegram-bot::on-message-added'
   - '!telegram-bot::on-message-updated'

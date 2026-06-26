@@ -1,0 +1,10 @@
+iii: v1
+name: rbac-proxy
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: rbac-proxy
+description: RBAC boundary proxy for the iii worker protocol — auth, gating, namespacing, middleware, and engine:: result filtering on its own port.
+
+dependencies:
+  configuration: "^0.19.0"

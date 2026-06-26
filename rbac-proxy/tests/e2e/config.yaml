@@ -1,0 +1,17 @@
+# iii engine configuration — passed via `iii -c config.yaml`.
+#
+# Minimal on purpose: the `configuration` worker is enabled by default, and the
+# engine's internal worker listener on :49134 runs with NO rbac block — the
+# rbac-proxy is the boundary. No inline worker config means nothing for the
+# engine to migrate into the configuration worker, so this file is left
+# untouched across runs. Engine state (configuration entries, db) lives under
+# ./data/, which is gitignored.
+#
+# The rbac-proxy worker and the harness are NOT registered here. run-tests.sh:
+#   1. starts this engine
+#   2. starts the rbac-proxy binary as a host process with a --config seed
+#      (auth/middleware/hooks/expose pointing at the harness's support fns)
+#   3. runs the harness, which registers the support fns on the engine and
+#      drives a downstream worker THROUGH the proxy port.
+
+workers: []

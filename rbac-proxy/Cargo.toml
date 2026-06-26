@@ -1,0 +1,45 @@
+[workspace]
+
+[package]
+name = "rbac-proxy"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "rbac-proxy"
+path = "src/main.rs"
+
+[lib]
+name = "rbac_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.20.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "net", "io-util", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+# Must stay on the same schemars major as iii-sdk so the derived
+# `JsonSchema` impls satisfy `RegisterFunction::new_async`.
+schemars = "0.8"
+
+# HTTP + WS proxy (the `console` proxy stack, verbatim).
+axum = { version = "0.7", features = ["ws"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+serde_json = "1"
+which = "8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
