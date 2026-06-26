@@ -36,7 +36,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -296,7 +297,7 @@ impl RegistryCache {
 
 // ---------- registration ----------
 
-pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
+pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     let ttl_ms = cfg.load().registry_cache_ttl_ms;
     let cache = RegistryCache::new(Duration::from_millis(ttl_ms));
     register_with_cache(iii, cfg, cache);
@@ -304,12 +305,12 @@ pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
 
 /// Register the registry proxy functions against a shared cache so a
 /// `configuration:updated` reload can clear it (and repoint `registry_url`).
-pub fn register_with_cache(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache) {
+pub fn register_with_cache(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: RegistryCache) {
     register_worker_list(iii, cfg, cache.clone());
     register_worker_info(iii, cfg, cache);
 }
 
-fn register_worker_list(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache) {
+fn register_worker_list(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: RegistryCache) {
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
@@ -317,11 +318,7 @@ fn register_worker_list(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache
         RegisterFunction::new_async(move |req: WorkerListInput| {
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
-            async move {
-                worker_list(&cfg, &cache, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
+            async move { worker_list(&cfg, &cache, req).await.map_err(Error::Handler) }
         })
         .description(
             "List workers from the public registry (api.workers.iii.dev). \
@@ -336,7 +333,7 @@ fn register_worker_list(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache
     );
 }
 
-fn register_worker_info(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache) {
+fn register_worker_info(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: RegistryCache) {
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
@@ -344,11 +341,7 @@ fn register_worker_info(iii: &Arc<III>, cfg: &SharedConfig, cache: RegistryCache
         RegisterFunction::new_async(move |req: WorkerInfoInput| {
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
-            async move {
-                worker_info(&cfg, &cache, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
+            async move { worker_info(&cfg, &cache, req).await.map_err(Error::Handler) }
         })
         .description(
             "Fetch full registry metadata for one worker: worker envelope \

@@ -27,9 +27,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, TriggerRequest, WorkerMetadata, III,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use serde_json::json;
 
 use iii_directory::config::{SharedConfig, SkillsConfig};
@@ -213,7 +214,7 @@ struct WorkerAddedAck {
 /// Register the internal `directory::__on_worker_added` handler and
 /// subscribe to the `worker` trigger type for `add` operations.
 fn setup_auto_download(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
     in_flight: &Arc<InFlightGuard>,
@@ -231,7 +232,7 @@ fn setup_auto_download(
             let in_flight = in_flight_inner.clone();
             async move {
                 handle_worker_added(&cfg, &cache, &in_flight, &event).await;
-                Ok::<_, iii_sdk::IIIError>(WorkerAddedAck { ok: true })
+                Ok::<_, Error>(WorkerAddedAck { ok: true })
             }
         })
         .description("Internal: auto-download skills on worker add event."),
@@ -241,7 +242,7 @@ fn setup_auto_download(
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(iii_sdk::RegisterTriggerInput {
+            let result = iii_sub.register_trigger(RegisterTriggerInput {
                 trigger_type: "worker".to_string(),
                 function_id: "directory::__on_worker_added".to_string(),
                 config: json!({
@@ -346,7 +347,7 @@ async fn reconcile_one(
 ///
 /// Returns the worker array on success, or `None` if `worker::list`
 /// never became available within the retry budget (~30s).
-async fn fetch_worker_list_with_retry(iii: &III) -> Option<Vec<serde_json::Value>> {
+async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
         let result = iii
@@ -394,7 +395,7 @@ async fn fetch_worker_list_with_retry(iii: &III) -> Option<Vec<serde_json::Value
 /// absent/incomplete (no completion marker) AND has no local override
 /// AND name validates.
 fn spawn_boot_reconcile(
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     cfg: SharedConfig,
     cache: Arc<RegisteredWorkersCache>,
     in_flight: Arc<InFlightGuard>,

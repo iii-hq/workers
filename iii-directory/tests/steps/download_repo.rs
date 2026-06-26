@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use cucumber::{given, then, when};
-use iii_sdk::TriggerRequest;
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::{json, Value};
 
 use crate::common::world::IiiSkillsWorld;
