@@ -5,3 +5,7 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-acp
 description: Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions
+# Opt out of the interface boot smoke: acp is a stdio JSON-RPC worker that exits
+# on stdin EOF and registers only dynamic per-connection functions, so there is
+# no static interface to collect (mirrors lsp).
+interface_smoke: false
