@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 
 use crate::clients::telegram;
 use crate::config::{StreamTransport, WorkerConfig};
@@ -29,7 +29,7 @@ pub async fn on_message_added(
     entry_id: &str,
     message: &AgentMessage,
     timestamp: i64,
-) -> Result<Option<i64>, IIIError> {
+) -> Result<Option<i64>, Error> {
     let cfg = deps.cfg().await;
     let Some(chat_id) = kv::chat_id_for_session(deps, session_id).await else {
         return Ok(None);
@@ -87,7 +87,7 @@ async fn on_message_added_locked(
     timestamp: i64,
     chat_id: i64,
     cfg: &WorkerConfig,
-) -> Result<Option<i64>, IIIError> {
+) -> Result<Option<i64>, Error> {
     if is_entry_finalized(deps, session_id, entry_id).await {
         return Ok(kv::entry_message_id(deps, session_id, entry_id).await);
     }
@@ -149,7 +149,7 @@ async fn on_empty_assistant_added(
     timestamp: i64,
     chat_id: i64,
     cfg: &WorkerConfig,
-) -> Result<Option<i64>, IIIError> {
+) -> Result<Option<i64>, Error> {
     if is_entry_finalized(deps, session_id, entry_id).await {
         return Ok(kv::entry_message_id(deps, session_id, entry_id).await);
     }
@@ -172,7 +172,7 @@ async fn on_empty_assistant_added(
     Ok(None)
 }
 
-pub async fn on_message_updated(deps: &Deps, evt: MessageUpdatedEvent) -> Result<(), IIIError> {
+pub async fn on_message_updated(deps: &Deps, evt: MessageUpdatedEvent) -> Result<(), Error> {
     let cfg = deps.cfg().await;
     let Some(chat_id) = kv::chat_id_for_session(deps, &evt.session_id).await else {
         return Ok(());
@@ -209,7 +209,7 @@ async fn on_message_updated_locked(
     timestamp: i64,
     chat_id: i64,
     cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if is_entry_finalized(deps, session_id, entry_id).await {
         return reconcile_finalized_update(
             deps, cfg, session_id, entry_id, &message, revision, timestamp, chat_id,
@@ -263,7 +263,7 @@ async fn reconcile_finalized_update(
     revision: u64,
     timestamp: i64,
     chat_id: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let key = entry_key(session_id, entry_id);
     let finalized_revision = deps
         .runtime
@@ -306,7 +306,7 @@ async fn reconcile_finalized_update(
     .await
 }
 
-pub async fn finalize_session(deps: &Deps, session_id: &str) -> Result<(), IIIError> {
+pub async fn finalize_session(deps: &Deps, session_id: &str) -> Result<(), Error> {
     let cfg = deps.cfg().await;
 
     let mut ordered_keys: Vec<(i64, (String, String))> = deps
@@ -354,7 +354,7 @@ async fn finalize_entry_under_lock(
     cfg: &WorkerConfig,
     session_id: &str,
     entry_id: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if is_entry_finalized(deps, session_id, entry_id).await {
         return Ok(());
     }
@@ -393,7 +393,7 @@ async fn finalize_entry_locked(
     session_id: &str,
     entry_id: &str,
     session: &mut StreamSession,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if is_entry_finalized(deps, session_id, entry_id).await {
         return Ok(());
     }
@@ -425,10 +425,10 @@ async fn with_entry_lock<F, Fut, T>(
     session_id: &str,
     entry_id: &str,
     f: F,
-) -> Result<T, IIIError>
+) -> Result<T, Error>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, IIIError>>,
+    Fut: Future<Output = Result<T, Error>>,
 {
     let lock = deps.runtime.entry_lock(&entry_key(session_id, entry_id));
     let _guard = lock.lock().await;
@@ -497,7 +497,7 @@ async fn apply_render(
     revision: u64,
     order_key: i64,
     session: &mut StreamSession,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if is_entry_finalized(deps, session_id, entry_id).await {
         return Ok(());
     }
@@ -583,7 +583,7 @@ async fn apply_draft_update(
     session: &mut StreamSession,
     text: &str,
     phase: MessagePhase,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if !should_draft(deps, session, cfg.streaming.draft_throttle_ms) {
         return Ok(());
     }
@@ -625,7 +625,7 @@ async fn apply_edit_update(
     entry_id: &str,
     session: &mut StreamSession,
     text: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let chat_id = session.chat_id;
     let revision = session.last_revision;
     let order_key = session.order_key;
@@ -656,7 +656,7 @@ async fn deliver_continuation_chunk(
     chunk_idx: u32,
     chunk: &str,
     settle_ms: u64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if let Some(id) = kv::entry_chunk_message_id(deps, session_id, entry_id, chunk_idx).await {
         if let Err(e) = edit_message_text_formatted(deps, chat_id, id, chunk).await {
             tracing::warn!(error = %e, message_id = id, chunk_idx, "editMessageText failed");
@@ -694,7 +694,7 @@ async fn deliver_text(
     revision: u64,
     throttle_edits: bool,
     order_key: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let chunks = split_message(text, TELEGRAM_MAX_MESSAGE_LEN);
     if chunks.is_empty() || chunks.iter().all(|c| c.is_empty()) {
         return Ok(());
@@ -797,7 +797,7 @@ async fn finalize_entry(
     session_id: &str,
     entry_id: &str,
     session: &mut StreamSession,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if session.finalized {
         return Ok(());
     }
@@ -850,7 +850,7 @@ async fn finalize_draft_messages(
     entry_id: &str,
     session: &mut StreamSession,
     text: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let order_key = session.order_key;
     let chunks = split_message(text, TELEGRAM_MAX_MESSAGE_LEN);
 
@@ -925,7 +925,7 @@ async fn flush_edit_final(
     entry_id: &str,
     session: &mut StreamSession,
     text: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let chat_id = session.chat_id;
     let revision = session.last_revision;
     let order_key = session.order_key;
@@ -949,7 +949,7 @@ async fn send_message_formatted(
     chat_id: i64,
     text: &str,
     reply_markup: Option<serde_json::Value>,
-) -> Result<i64, IIIError> {
+) -> Result<i64, Error> {
     let (formatted, parse_mode) = format::format_outgoing(text);
     match telegram::send_message(deps, chat_id, &formatted, reply_markup.clone(), parse_mode).await
     {
@@ -967,7 +967,7 @@ async fn edit_message_text_formatted(
     chat_id: i64,
     message_id: i64,
     text: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let (formatted, parse_mode) = format::format_outgoing(text);
     match telegram::edit_message_text(deps, chat_id, message_id, &formatted, parse_mode).await {
         Ok(()) => Ok(()),
@@ -1069,7 +1069,7 @@ pub async fn send_chat_message_in_order(
     deps: &Deps,
     cfg: &WorkerConfig,
     msg: OrderedChatMessage<'_>,
-) -> Result<i64, IIIError> {
+) -> Result<i64, Error> {
     send_in_order(
         deps,
         msg.chat_id,
@@ -1096,10 +1096,10 @@ async fn send_in_order<F, Fut>(
     chunk_idx: u32,
     settle_ms: u64,
     make: F,
-) -> Result<i64, IIIError>
+) -> Result<i64, Error>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<i64, IIIError>>,
+    Fut: Future<Output = Result<i64, Error>>,
 {
     let slot = (order_key, entry_id.to_string(), chunk_idx);
     await_create_slot(&deps.runtime, chat_id, &slot, settle_ms).await;
@@ -1264,7 +1264,7 @@ fn pin_edit_fallback(deps: &Deps, chat_id: i64) {
     deps.runtime.draft_disabled_chats.insert(chat_id, ());
 }
 
-fn is_draft_unsupported(err: &IIIError) -> bool {
+fn is_draft_unsupported(err: &Error) -> bool {
     let msg = format!("{err}");
     msg.contains("TEXTDRAFT_PEER_INVALID")
         || msg.contains("method not found")
@@ -1275,7 +1275,7 @@ async fn send_native_thinking_placeholder(
     deps: &Deps,
     session: &mut StreamSession,
     thinking_text: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let rich = telegram::rich_thinking_draft(thinking_text);
     match telegram::send_rich_message_draft(deps, session.chat_id, session.draft_id, &rich, None)
         .await

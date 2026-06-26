@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,7 @@ pub struct SetWebhookResponse {
     pub url: String,
 }
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::register(
         iii,
         deps,
@@ -27,15 +28,15 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
     );
 }
 
-async fn handle(deps: &Deps) -> Result<SetWebhookResponse, IIIError> {
+async fn handle(deps: &Deps) -> Result<SetWebhookResponse, Error> {
     let cfg = deps.cfg().await;
     let UpdatesAdapter::Webhook(webhook) = &cfg.updates else {
-        return Err(IIIError::Handler(
+        return Err(Error::Handler(
             "set-webhook requires updates adapter name: webhook".into(),
         ));
     };
     let Some(url) = webhook.endpoint_url() else {
-        return Err(IIIError::Handler(
+        return Err(Error::Handler(
             "updates.webhook.config.base_url is not set in telegram-bot configuration".into(),
         ));
     };

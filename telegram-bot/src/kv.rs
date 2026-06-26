@@ -1,6 +1,6 @@
 //! Chat ↔ session KV helpers.
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::json;
 
 use crate::clients::state;
@@ -12,7 +12,7 @@ pub async fn chat_session(deps: &Deps, chat_id: i64) -> Option<String> {
     state::get_string(&deps.iii, STATE_SCOPE, &key, deps.cfg().await.timeout_ms).await
 }
 
-pub async fn set_chat_session(deps: &Deps, chat_id: i64, session_id: &str) -> Result<(), IIIError> {
+pub async fn set_chat_session(deps: &Deps, chat_id: i64, session_id: &str) -> Result<(), Error> {
     let timeout = deps.cfg().await.timeout_ms;
     let chat_key = format!("chat:{chat_id}:session");
     state::set(
@@ -63,7 +63,7 @@ pub async fn set_entry_message_id(
     session_id: &str,
     entry_id: &str,
     message_id: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -96,7 +96,7 @@ pub async fn set_entry_chunk_message_id(
     entry_id: &str,
     chunk_idx: u32,
     message_id: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -125,7 +125,7 @@ pub async fn set_entry_order(
     session_id: &str,
     entry_id: &str,
     order_key: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -154,7 +154,7 @@ pub async fn set_entry_finalized(
     deps: &Deps,
     session_id: &str,
     entry_id: &str,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -185,7 +185,7 @@ pub async fn set_approval_message_id(
     session_id: &str,
     function_call_id: &str,
     message_id: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -205,7 +205,7 @@ pub async fn get_fsm(deps: &Deps, chat_id: i64) -> ChatFsm {
     }
 }
 
-pub async fn set_fsm(deps: &Deps, chat_id: i64, fsm: ChatFsm) -> Result<(), IIIError> {
+pub async fn set_fsm(deps: &Deps, chat_id: i64, fsm: ChatFsm) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -217,7 +217,7 @@ pub async fn set_fsm(deps: &Deps, chat_id: i64, fsm: ChatFsm) -> Result<(), IIIE
     Ok(())
 }
 
-pub async fn clear_chat_session(deps: &Deps, chat_id: i64) -> Result<Option<String>, IIIError> {
+pub async fn clear_chat_session(deps: &Deps, chat_id: i64) -> Result<Option<String>, Error> {
     let timeout = deps.cfg().await.timeout_ms;
     let old = chat_session(deps, chat_id).await;
     if let Some(ref sid) = old {
@@ -239,7 +239,7 @@ pub async fn clear_chat_session(deps: &Deps, chat_id: i64) -> Result<Option<Stri
     Ok(old)
 }
 
-pub async fn clear_chat_model(deps: &Deps, chat_id: i64) -> Result<(), IIIError> {
+pub async fn clear_chat_model(deps: &Deps, chat_id: i64) -> Result<(), Error> {
     let timeout = deps.cfg().await.timeout_ms;
     state::delete(
         &deps.iii,
@@ -255,7 +255,7 @@ pub async fn set_chat_model(
     deps: &Deps,
     chat_id: i64,
     model: &crate::config::ModelRef,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -283,7 +283,7 @@ pub async fn store_approval_callback(
     deps: &Deps,
     token: &str,
     data: &crate::types::ApprovalCallbackData,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -335,7 +335,7 @@ pub async fn set_thinking_message_id(
     session_id: &str,
     entry_id: &str,
     message_id: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -366,7 +366,7 @@ pub async fn set_chat_verbosity(
     deps: &Deps,
     chat_id: i64,
     verbosity: crate::config::Verbosity,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     state::set(
         &deps.iii,
         STATE_SCOPE,
@@ -397,7 +397,7 @@ pub async fn set_chat_thinking_level(
     deps: &Deps,
     chat_id: i64,
     level: Option<crate::config::ThinkingLevel>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let key = format!("chat:{chat_id}:thinking_level");
     let timeout = deps.cfg().await.timeout_ms;
     match level {

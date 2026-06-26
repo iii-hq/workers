@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 
 use crate::config::SteeringMode;
 use crate::deps::Deps;
@@ -11,7 +12,7 @@ use crate::types::TurnCompletedEvent;
 
 use super::message_added::BindingAck;
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::super::register(
         iii,
         deps,
@@ -21,7 +22,7 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
     );
 }
 
-async fn handle(deps: &Deps, evt: TurnCompletedEvent) -> Result<BindingAck, IIIError> {
+async fn handle(deps: &Deps, evt: TurnCompletedEvent) -> Result<BindingAck, Error> {
     telemetry::with_baggage(&evt.session_id, &evt.turn_id, || async {
         let cfg = deps.cfg().await;
 
@@ -75,7 +76,7 @@ async fn drain_fifo(
     chat_id: i64,
     session_id: &str,
     cfg: &crate::config::WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let text = deps
         .runtime
         .fifo_queues

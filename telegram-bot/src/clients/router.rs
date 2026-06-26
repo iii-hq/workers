@@ -1,4 +1,6 @@
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,7 +26,7 @@ pub struct ModelsListResponse {
     pub models: Vec<Model>,
 }
 
-pub async fn list_models(iii: &III, timeout_ms: u64) -> Result<Vec<Model>, IIIError> {
+pub async fn list_models(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<Model>, Error> {
     let value = iii
         .trigger(TriggerRequest {
             function_id: "router::models::list".into(),
@@ -34,6 +36,6 @@ pub async fn list_models(iii: &III, timeout_ms: u64) -> Result<Vec<Model>, IIIEr
         })
         .await?;
     let resp: ModelsListResponse = serde_json::from_value(value)
-        .map_err(|e| IIIError::Handler(format!("router::models::list: {e}")))?;
+        .map_err(|e| Error::Handler(format!("router::models::list: {e}")))?;
     Ok(resp.models)
 }

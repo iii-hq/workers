@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -23,7 +24,7 @@ pub struct WebhookResponse {
     pub ok: bool,
 }
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::register(
         iii,
         deps,
@@ -33,7 +34,7 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
     );
 }
 
-pub async fn handle(deps: &Deps, req: HttpTriggerRequest) -> Result<WebhookResponse, IIIError> {
+pub async fn handle(deps: &Deps, req: HttpTriggerRequest) -> Result<WebhookResponse, Error> {
     let cfg = deps.cfg().await;
     if let UpdatesAdapter::Webhook(webhook) = &cfg.updates {
         // Validate the secret token only when one is configured. A secret-less
@@ -43,7 +44,7 @@ pub async fn handle(deps: &Deps, req: HttpTriggerRequest) -> Result<WebhookRespo
         match webhook.secret.as_deref().filter(|s| !s.is_empty()) {
             Some(secret) => {
                 if !header_matches(&req.headers, secret) {
-                    return Err(IIIError::Handler("invalid webhook secret".into()));
+                    return Err(Error::Handler("invalid webhook secret".into()));
                 }
             }
             None => {
@@ -53,13 +54,13 @@ pub async fn handle(deps: &Deps, req: HttpTriggerRequest) -> Result<WebhookRespo
             }
         }
     } else {
-        return Err(IIIError::Handler(
+        return Err(Error::Handler(
             "webhook HTTP ingress is disabled; updates adapter is not webhook".into(),
         ));
     }
 
     let update: TelegramUpdate = serde_json::from_value(req.body)
-        .map_err(|e| IIIError::Handler(format!("invalid telegram update: {e}")))?;
+        .map_err(|e| Error::Handler(format!("invalid telegram update: {e}")))?;
 
     process_update_with_tracing(deps, update).await?;
     Ok(WebhookResponse { ok: true })
@@ -83,10 +84,7 @@ async fn baggage_session_for_update(deps: &Deps, update: &TelegramUpdate) -> Str
     "telegram-update".into()
 }
 
-pub async fn process_update_with_tracing(
-    deps: &Deps,
-    update: TelegramUpdate,
-) -> Result<(), IIIError> {
+pub async fn process_update_with_tracing(deps: &Deps, update: TelegramUpdate) -> Result<(), Error> {
     let session_id = baggage_session_for_update(deps, &update).await;
     let message_id = telemetry::telegram_message_id(update.update_id);
     telemetry::with_baggage(&session_id, &message_id, || async {
@@ -95,7 +93,7 @@ pub async fn process_update_with_tracing(
     .await
 }
 
-pub async fn process_update(deps: &Deps, update: TelegramUpdate) -> Result<(), IIIError> {
+pub async fn process_update(deps: &Deps, update: TelegramUpdate) -> Result<(), Error> {
     if let Some(cb) = update.callback_query {
         return handle_callback(deps, cb).await;
     }
@@ -112,7 +110,7 @@ async fn handle_message(
     deps: &Deps,
     update_id: i64,
     message: crate::types::TelegramMessage,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let chat_id = message.chat.id;
     let cfg = deps.cfg().await;
 
@@ -216,7 +214,7 @@ async fn handle_command(
     chat_id: i64,
     text: &str,
     cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let parts: Vec<&str> = text.split_whitespace().collect();
     let cmd = parts.first().copied().unwrap_or(text);
     let arg = parts.get(1).copied();
@@ -243,7 +241,7 @@ async fn handle_command(
     }
 }
 
-async fn help_message(deps: &Deps, chat_id: i64) -> Result<(), IIIError> {
+async fn help_message(deps: &Deps, chat_id: i64) -> Result<(), Error> {
     let text = "/start — start a new session and pick a model\n\
 /stop — stop the current turn\n\
 /model — change model\n\
@@ -255,7 +253,7 @@ async fn help_message(deps: &Deps, chat_id: i64) -> Result<(), IIIError> {
     Ok(())
 }
 
-async fn settings_message(deps: &Deps, chat_id: i64, cfg: &WorkerConfig) -> Result<(), IIIError> {
+async fn settings_message(deps: &Deps, chat_id: i64, cfg: &WorkerConfig) -> Result<(), Error> {
     let verbosity = preferences::effective_verbosity(deps, chat_id, cfg).await;
     let thinking = preferences::effective_thinking_level(deps, chat_id, cfg)
         .await
@@ -274,7 +272,7 @@ async fn thinking_command(
     chat_id: i64,
     arg: Option<&str>,
     cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let Some(arg) = arg else {
         let current = preferences::effective_thinking_level(deps, chat_id, cfg)
             .await
@@ -324,7 +322,7 @@ async fn verbosity_command(
     chat_id: i64,
     arg: Option<&str>,
     cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let Some(arg) = arg else {
         let current = preferences::effective_verbosity(deps, chat_id, cfg).await;
         telegram::send_message(
@@ -367,7 +365,7 @@ async fn start_flow(
     chat_id: i64,
     payload: Option<&str>,
     cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if let Some(p) = payload {
         if !p.is_empty() {
             tracing::info!(chat_id, payload = p, "deep link /start payload");
@@ -391,11 +389,7 @@ async fn start_flow(
     show_model_picker(deps, chat_id, cfg).await
 }
 
-async fn reset_chat_for_start(
-    deps: &Deps,
-    chat_id: i64,
-    cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+async fn reset_chat_for_start(deps: &Deps, chat_id: i64, cfg: &WorkerConfig) -> Result<(), Error> {
     let old_session = kv::chat_session(deps, chat_id).await;
     if let Some(ref sid) = old_session {
         let _ = harness::stop(&deps.iii, sid, cfg.timeout_ms).await;
@@ -406,7 +400,7 @@ async fn reset_chat_for_start(
     Ok(())
 }
 
-async fn show_model_picker(deps: &Deps, chat_id: i64, cfg: &WorkerConfig) -> Result<(), IIIError> {
+async fn show_model_picker(deps: &Deps, chat_id: i64, cfg: &WorkerConfig) -> Result<(), Error> {
     if cfg.default_model.is_some() {
         telegram::send_message(
             deps,
@@ -455,7 +449,7 @@ async fn show_model_picker(deps: &Deps, chat_id: i64, cfg: &WorkerConfig) -> Res
 async fn handle_callback(
     deps: &Deps,
     cb: crate::types::TelegramCallbackQuery,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let cfg = deps.cfg().await;
     let data = cb.data.unwrap_or_default();
     let chat_id = cb
@@ -512,7 +506,7 @@ async fn resolve_callback(
     decision: ResolveDecision,
     approve_always: bool,
     cfg: &WorkerConfig,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     if !deps.approval_gate.is_available() {
         return Ok(());
     }
@@ -556,7 +550,7 @@ pub async fn send_user_message(
     idempotency_key: Option<i64>,
     cfg: &WorkerConfig,
     model: &ModelRef,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     // Resolve the session id, minting one bot-side for a brand-new chat. Doing
     // this up front means the channel-context prompt can carry a real
     // session_id from the very first message (so the agent can target this
@@ -655,7 +649,7 @@ fn compose_system_prompt(
     }
 }
 
-async fn bind_model(deps: &Deps, chat_id: i64, model: &ModelRef) -> Result<(), IIIError> {
+async fn bind_model(deps: &Deps, chat_id: i64, model: &ModelRef) -> Result<(), Error> {
     kv::set_chat_model(deps, chat_id, model).await?;
     kv::set_fsm(deps, chat_id, ChatFsm::Idle).await?;
     Ok(())
@@ -682,7 +676,7 @@ async fn catch_up_approvals(deps: &Deps, session_id: &str, cfg: &WorkerConfig) {
 async fn dispatch_pending_created(
     deps: &Deps,
     record: PendingApprovalRecord,
-) -> Result<BindingAck, IIIError> {
+) -> Result<BindingAck, Error> {
     super::bindings::pending_created::handle_internal(deps, record).await
 }
 
