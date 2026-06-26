@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -73,7 +73,7 @@ async fn apply_updates_adapter(deps: &Arc<Deps>, _prev: Option<&WorkerConfig>, c
 /// retaining the [`iii_sdk::Trigger`] handle in [`Deps`]. Idempotent: a second
 /// call while the route is held (e.g. a webhook→webhook URL change) is a no-op,
 /// so the engine never accumulates duplicate UUID-keyed routes.
-async fn ensure_webhook_trigger(deps: &Arc<Deps>) -> Result<(), IIIError> {
+async fn ensure_webhook_trigger(deps: &Arc<Deps>) -> Result<(), Error> {
     let mut guard = deps.runtime.webhook_trigger.lock().await;
     if guard.is_some() {
         return Ok(());

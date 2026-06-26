@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 
 use crate::clients::telegram;
 use crate::deps::Deps;
@@ -9,7 +10,7 @@ use crate::types::PendingApprovalRecord;
 
 use super::message_added::BindingAck;
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::super::register(
         iii,
         deps,
@@ -22,7 +23,7 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
 pub async fn handle_internal(
     deps: &Deps,
     record: PendingApprovalRecord,
-) -> Result<BindingAck, IIIError> {
+) -> Result<BindingAck, Error> {
     let Some(chat_id) = kv::chat_id_for_session(deps, &record.session_id).await else {
         return Ok(BindingAck { ok: true });
     };

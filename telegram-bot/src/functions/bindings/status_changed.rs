@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, III};
+use iii_sdk::errors::Error;
+use iii_sdk::IIIClient;
 
 use crate::deps::Deps;
 use crate::telemetry;
@@ -8,7 +9,7 @@ use crate::types::StatusChangedEvent;
 
 use super::message_added::BindingAck;
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     super::super::register(
         iii,
         deps,
@@ -18,7 +19,7 @@ pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
     );
 }
 
-async fn handle(deps: Arc<Deps>, evt: StatusChangedEvent) -> Result<BindingAck, IIIError> {
+async fn handle(deps: Arc<Deps>, evt: StatusChangedEvent) -> Result<BindingAck, Error> {
     telemetry::with_session_baggage(&deps, &evt.session_id, None, || async {
         tracing::debug!(
             status = %evt.status,

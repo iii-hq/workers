@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
-use iii_sdk::{Trigger, III};
+use iii_sdk::trigger::Trigger;
+use iii_sdk::IIIClient;
 use reqwest::Client;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -19,14 +20,18 @@ pub const STATE_SCOPE: &str = "telegram-bot";
 
 #[derive(Clone)]
 pub struct Deps {
-    pub iii: Arc<III>,
+    pub iii: Arc<IIIClient>,
     pub config: ConfigCell,
     pub runtime: Arc<RuntimeState>,
     pub approval_gate: Arc<ApprovalGateStatus>,
 }
 
 impl Deps {
-    pub fn new(iii: Arc<III>, config: ConfigCell, approval_gate: Arc<ApprovalGateStatus>) -> Self {
+    pub fn new(
+        iii: Arc<IIIClient>,
+        config: ConfigCell,
+        approval_gate: Arc<ApprovalGateStatus>,
+    ) -> Self {
         Self {
             iii,
             config,

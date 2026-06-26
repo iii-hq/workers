@@ -7,11 +7,11 @@ pub mod turn_completed;
 
 use std::sync::Arc;
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 
 use crate::deps::Deps;
 
-pub fn register(iii: &Arc<III>, deps: &Arc<Deps>) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     message_added::register(iii, deps);
     message_updated::register(iii, deps);
     status_changed::register(iii, deps);

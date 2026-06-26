@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use iii_sdk::IIIError;
+use iii_sdk::errors::Error;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
@@ -15,7 +15,7 @@ pub async fn send_message(
     text: &str,
     reply_markup: Option<Value>,
     parse_mode: Option<&str>,
-) -> Result<i64, IIIError> {
+) -> Result<i64, Error> {
     let mut body = json!({
         "chat_id": chat_id,
         "text": text,
@@ -30,7 +30,7 @@ pub async fn send_message(
     message_id
         .get("message_id")
         .and_then(Value::as_i64)
-        .ok_or_else(|| IIIError::Handler("telegram sendMessage: missing message_id".into()))
+        .ok_or_else(|| Error::Handler("telegram sendMessage: missing message_id".into()))
 }
 
 pub async fn edit_message_text(
@@ -39,7 +39,7 @@ pub async fn edit_message_text(
     message_id: i64,
     text: &str,
     parse_mode: Option<&str>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let mut body = json!({
         "chat_id": chat_id,
         "message_id": message_id,
@@ -56,7 +56,7 @@ pub async fn edit_message_reply_markup(
     deps: &Deps,
     chat_id: i64,
     message_id: i64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let body = json!({
         "chat_id": chat_id,
         "message_id": message_id,
@@ -72,7 +72,7 @@ pub async fn send_message_draft(
     draft_id: i32,
     text: &str,
     message_thread_id: Option<i64>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let mut body = json!({
         "chat_id": chat_id,
         "draft_id": draft_id,
@@ -91,7 +91,7 @@ pub async fn send_rich_message_draft(
     draft_id: i32,
     rich_message: &Value,
     message_thread_id: Option<i64>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let mut body = json!({
         "chat_id": chat_id,
         "draft_id": draft_id,
@@ -109,7 +109,7 @@ pub async fn send_rich_message(
     chat_id: i64,
     rich_message: &Value,
     message_thread_id: Option<i64>,
-) -> Result<i64, IIIError> {
+) -> Result<i64, Error> {
     let mut body = json!({
         "chat_id": chat_id,
         "rich_message": rich_message,
@@ -121,7 +121,7 @@ pub async fn send_rich_message(
     result
         .get("message_id")
         .and_then(Value::as_i64)
-        .ok_or_else(|| IIIError::Handler("telegram sendRichMessage: missing message_id".into()))
+        .ok_or_else(|| Error::Handler("telegram sendRichMessage: missing message_id".into()))
 }
 
 pub fn rich_thinking_draft(thinking_text: &str) -> Value {
@@ -153,7 +153,7 @@ pub async fn answer_callback_query(
     deps: &Deps,
     callback_id: &str,
     text: Option<&str>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let mut body = json!({ "callback_query_id": callback_id });
     if let Some(t) = text {
         body["text"] = json!(t);
@@ -162,7 +162,7 @@ pub async fn answer_callback_query(
     Ok(())
 }
 
-pub async fn set_my_commands(deps: &Deps) -> Result<(), IIIError> {
+pub async fn set_my_commands(deps: &Deps) -> Result<(), Error> {
     let commands = json!([
         { "command": "start", "description": "Start or pick a model" },
         { "command": "stop", "description": "Stop the current turn" },
@@ -176,11 +176,7 @@ pub async fn set_my_commands(deps: &Deps) -> Result<(), IIIError> {
     Ok(())
 }
 
-pub async fn set_webhook(
-    deps: &Deps,
-    url: &str,
-    secret_token: Option<&str>,
-) -> Result<(), IIIError> {
+pub async fn set_webhook(deps: &Deps, url: &str, secret_token: Option<&str>) -> Result<(), Error> {
     let mut body = json!({ "url": url });
     if let Some(secret) = secret_token {
         body["secret_token"] = json!(secret);
@@ -189,12 +185,12 @@ pub async fn set_webhook(
     Ok(())
 }
 
-pub async fn delete_webhook(deps: &Deps) -> Result<(), IIIError> {
+pub async fn delete_webhook(deps: &Deps) -> Result<(), Error> {
     api_call(deps, "deleteWebhook", json!({})).await?;
     Ok(())
 }
 
-pub async fn get_file(deps: &Deps, file_id: &str) -> Result<Value, IIIError> {
+pub async fn get_file(deps: &Deps, file_id: &str) -> Result<Value, Error> {
     api_call(deps, "getFile", json!({ "file_id": file_id })).await
 }
 
@@ -202,7 +198,7 @@ pub async fn get_updates(
     deps: &Deps,
     offset: i64,
     timeout_secs: u64,
-) -> Result<Vec<TelegramUpdate>, IIIError> {
+) -> Result<Vec<TelegramUpdate>, Error> {
     get_updates_with_cancel(deps, offset, timeout_secs, None).await
 }
 
@@ -211,7 +207,7 @@ pub async fn get_updates_with_cancel(
     offset: i64,
     timeout_secs: u64,
     cancel: Option<&CancellationToken>,
-) -> Result<Vec<TelegramUpdate>, IIIError> {
+) -> Result<Vec<TelegramUpdate>, Error> {
     let body = json!({
         "offset": offset,
         "timeout": timeout_secs,
@@ -222,7 +218,7 @@ pub async fn get_updates_with_cancel(
         let mut call = Box::pin(api_call_with_timeout(deps, "getUpdates", body, timeout));
         tokio::select! {
             _ = cancel.cancelled() => {
-                return Err(IIIError::Handler("getUpdates cancelled".into()));
+                return Err(Error::Handler("getUpdates cancelled".into()));
             }
             result = &mut call => result?,
         }
@@ -231,17 +227,17 @@ pub async fn get_updates_with_cancel(
     };
     let updates = result
         .as_array()
-        .ok_or_else(|| IIIError::Handler("telegram getUpdates: expected array".into()))?;
+        .ok_or_else(|| Error::Handler("telegram getUpdates: expected array".into()))?;
     let mut out = Vec::with_capacity(updates.len());
     for item in updates {
         let update: TelegramUpdate = serde_json::from_value(item.clone())
-            .map_err(|e| IIIError::Handler(format!("telegram getUpdates parse: {e}")))?;
+            .map_err(|e| Error::Handler(format!("telegram getUpdates parse: {e}")))?;
         out.push(update);
     }
     Ok(out)
 }
 
-async fn api_call(deps: &Deps, method: &str, body: Value) -> Result<Value, IIIError> {
+async fn api_call(deps: &Deps, method: &str, body: Value) -> Result<Value, Error> {
     api_call_with_timeout(deps, method, body, Duration::from_secs(30)).await
 }
 
@@ -250,7 +246,7 @@ async fn api_call_with_timeout(
     method: &str,
     body: Value,
     timeout: Duration,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     let cfg = deps.cfg().await;
     let token = cfg.bot_token.clone();
     let url = format!("{API_BASE}{token}/{method}");
@@ -262,13 +258,13 @@ async fn api_call_with_timeout(
         .json(&body)
         .send()
         .await
-        .map_err(|e| IIIError::Handler(format!("telegram http: {}", e.without_url())))?;
+        .map_err(|e| Error::Handler(format!("telegram http: {}", e.without_url())))?;
     let payload: Value = resp
         .json()
         .await
-        .map_err(|e| IIIError::Handler(format!("telegram json: {e}")))?;
+        .map_err(|e| Error::Handler(format!("telegram json: {e}")))?;
     if payload.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(IIIError::Handler(format!(
+        return Err(Error::Handler(format!(
             "telegram {method} failed: {payload}"
         )));
     }

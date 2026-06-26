@@ -1,4 +1,6 @@
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -37,10 +39,10 @@ pub struct ListPendingResponse {
 }
 
 pub async fn resolve(
-    iii: &III,
+    iii: &IIIClient,
     req: ResolveRequest,
     timeout_ms: u64,
-) -> Result<ResolveResponse, IIIError> {
+) -> Result<ResolveResponse, Error> {
     let value = iii
         .trigger(TriggerRequest {
             function_id: "approval::resolve".into(),
@@ -49,15 +51,15 @@ pub async fn resolve(
             timeout_ms: Some(timeout_ms),
         })
         .await?;
-    serde_json::from_value(value).map_err(|e| IIIError::Handler(format!("approval::resolve: {e}")))
+    serde_json::from_value(value).map_err(|e| Error::Handler(format!("approval::resolve: {e}")))
 }
 
 pub async fn approve_always(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     function_id: &str,
     timeout_ms: u64,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     iii.trigger(TriggerRequest {
         function_id: "approval::approve-always".into(),
         payload: json!({
@@ -72,10 +74,10 @@ pub async fn approve_always(
 }
 
 pub async fn list_pending(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     timeout_ms: u64,
-) -> Result<Vec<PendingApprovalRecord>, IIIError> {
+) -> Result<Vec<PendingApprovalRecord>, Error> {
     let value = iii
         .trigger(TriggerRequest {
             function_id: "approval::list-pending".into(),
@@ -85,6 +87,6 @@ pub async fn list_pending(
         })
         .await?;
     let resp: ListPendingResponse = serde_json::from_value(value)
-        .map_err(|e| IIIError::Handler(format!("approval::list-pending: {e}")))?;
+        .map_err(|e| Error::Handler(format!("approval::list-pending: {e}")))?;
     Ok(resp.pending)
 }

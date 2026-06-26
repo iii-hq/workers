@@ -7,7 +7,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -61,7 +63,7 @@ pub fn is_approval_gate_available(status: &ApprovalGateStatus) -> bool {
 }
 
 /// One-time presence probe via `engine::workers::list`.
-pub async fn probe_presence(iii: &III) -> bool {
+pub async fn probe_presence(iii: &IIIClient) -> bool {
     match list_workers(iii).await {
         Ok(workers) => workers
             .iter()
@@ -94,7 +96,7 @@ struct WorkerLifecycleAck {
 /// `approval-gate` flips presence and invokes `on_present` when the gate
 /// connects.
 pub fn start_watch(
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     status: Arc<ApprovalGateStatus>,
     on_present: Arc<dyn Fn() + Send + Sync>,
 ) {
@@ -105,7 +107,7 @@ pub fn start_watch(
             let on_present = on_present.clone();
             async move {
                 handle_worker_event(&status, &on_present, &event);
-                Ok::<_, IIIError>(WorkerLifecycleAck { ok: true })
+                Ok::<_, Error>(WorkerLifecycleAck { ok: true })
             }
         })
         .description("Internal: track approval-gate worker add/remove."),
@@ -191,7 +193,7 @@ struct EngineWorker {
     name: Option<String>,
 }
 
-async fn list_workers(iii: &III) -> Result<Vec<EngineWorker>, IIIError> {
+async fn list_workers(iii: &IIIClient) -> Result<Vec<EngineWorker>, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::workers::list".into(),
