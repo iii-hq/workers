@@ -103,10 +103,28 @@ async fn handle_message(deps: &Deps, team: Option<&str>, m: MessageEvent) {
     }
 
     // Channel message. If it mentions the bot, the app_mention event will drive
-    // the turn — don't double-handle here. Otherwise capture it as context.
+    // the turn — don't double-handle here.
     if mentions_bot(deps, &text).await {
         return;
     }
+    // With require_mention disabled, every channel message triggers a turn.
+    if !deps.cfg().await.require_mention {
+        if let Err(e) = turn::handle_addressed(
+            deps,
+            team,
+            &channel,
+            &thread_ts,
+            m.user.as_deref(),
+            &text,
+            &ts,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "handle_addressed (channel) failed");
+        }
+        return;
+    }
+    // Otherwise capture it as context for the next mention.
     let _ = kv::push_pending(
         deps,
         team,

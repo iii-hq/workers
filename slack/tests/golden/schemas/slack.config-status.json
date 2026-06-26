@@ -22,7 +22,7 @@
         ]
       },
       "bridge_enabled": {
-        "description": "True once the harness bridge lands and is enabled (always false in M1).",
+        "description": "Whether the inbound bridge is enabled (socket or http transport configured).",
         "type": "boolean"
       },
       "enterprise_id": {

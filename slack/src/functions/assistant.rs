@@ -30,11 +30,19 @@ pub struct SetTitleReq {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SuggestedPrompt {
+    /// Clickable label shown to the user.
+    pub title: String,
+    /// Text sent to the assistant when the prompt is clicked.
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SetSuggestedPromptsReq {
     pub channel_id: String,
     pub thread_ts: String,
-    /// Up to 4 prompts: `[{ "title": "...", "message": "..." }]`.
-    pub prompts: Value,
+    /// Up to 4 prompts.
+    pub prompts: Vec<SuggestedPrompt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }

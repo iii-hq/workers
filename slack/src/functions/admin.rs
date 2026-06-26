@@ -32,13 +32,14 @@ pub struct ConfigStatus {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enterprise_id: Option<String>,
-    /// True once the harness bridge lands and is enabled (always false in M1).
+    /// Whether the inbound bridge is enabled (socket or http transport configured).
     pub bridge_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 async fn config_status(deps: &Deps) -> Result<ConfigStatus, Error> {
+    let bridge_enabled = deps.cfg().await.bridge_enabled();
     match slack::auth_test(deps).await {
         Ok(id) => {
             *deps.identity.write().await = Some(id.clone());
@@ -58,21 +59,25 @@ async fn config_status(deps: &Deps) -> Result<ConfigStatus, Error> {
                 bot_id,
                 url,
                 enterprise_id,
-                bridge_enabled: false,
+                bridge_enabled,
                 error: None,
             })
         }
-        Err(e) => Ok(ConfigStatus {
-            ok: false,
-            team: None,
-            team_id: None,
-            bot_user_id: None,
-            bot_id: None,
-            url: None,
-            enterprise_id: None,
-            bridge_enabled: false,
-            error: Some(e.to_string()),
-        }),
+        Err(e) => {
+            // Auth failed — drop any stale cached identity.
+            *deps.identity.write().await = None;
+            Ok(ConfigStatus {
+                ok: false,
+                team: None,
+                team_id: None,
+                bot_user_id: None,
+                bot_id: None,
+                url: None,
+                enterprise_id: None,
+                bridge_enabled,
+                error: Some(e.to_string()),
+            })
+        }
     }
 }
 

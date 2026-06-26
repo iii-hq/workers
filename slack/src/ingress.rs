@@ -24,8 +24,12 @@ use crate::functions::{events::EVENTS_ID, interactions::INTERACTIONS_ID};
 /// Reconcile both inbound transports to the current config, and refresh the
 /// cached Slack identity (the bot user id the bridge needs for mention handling).
 pub async fn apply(deps: &Arc<Deps>) {
-    if let Ok(id) = crate::clients::slack::auth_test(deps).await {
-        *deps.identity.write().await = Some(id);
+    match crate::clients::slack::auth_test(deps).await {
+        Ok(id) => *deps.identity.write().await = Some(id),
+        Err(e) => {
+            *deps.identity.write().await = None;
+            tracing::warn!(error = %e, "failed to refresh Slack identity (cleared cache)");
+        }
     }
     let cfg = deps.cfg().await;
     reconcile_socket(deps, cfg.socket_enabled()).await;
@@ -56,20 +60,28 @@ async fn reconcile_socket(deps: &Arc<Deps>, enabled: bool) {
 async fn reconcile_http(deps: &Arc<Deps>, enabled: bool) {
     let mut guard = deps.bridge_triggers.lock().await;
     if enabled && guard.is_empty() {
+        // Stage both routes; if either fails, roll back so a later reload retries
+        // cleanly rather than leaving the bridge half-registered.
+        let mut staged = Vec::new();
         for (id, path) in [
             (EVENTS_ID, EVENTS_API_PATH),
             (INTERACTIONS_ID, INTERACTIONS_API_PATH),
         ] {
             match register_route(&deps.iii, id, path) {
                 Ok(t) => {
-                    guard.push(t);
+                    staged.push(t);
                     tracing::info!(function_id = id, api_path = path, "bridge route registered");
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, function_id = id, "failed to register bridge route")
+                    for t in staged.drain(..) {
+                        t.unregister();
+                    }
+                    tracing::error!(error = %e, function_id = id, "failed to register bridge route; rolled back");
+                    return;
                 }
             }
         }
+        guard.extend(staged);
         if let Some(url) = deps.cfg().await.events_url() {
             tracing::info!(events_url = %url, "http bridge enabled — point Slack Event Subscriptions here");
         }
