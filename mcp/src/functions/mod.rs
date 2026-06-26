@@ -26,11 +26,22 @@ struct Ctx {
 /// Subset of `iii_sdk::types::ApiRequest` plus the engine-issued response
 /// channel writer ref. We deserialize directly off `serde_json::Value` so we
 /// can capture the `response` field that the typed `ApiRequest<T>` strips.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct McpRequest {
     #[serde(default)]
     body: Value,
     response: StreamChannelRef,
+}
+
+/// Build a published JSON Schema for `T`, stripping the root `$schema` key the
+/// registry publish validator has no meta-schema for (mirrors codex).
+fn schema_value<T: schemars::JsonSchema>() -> Value {
+    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let mut v = serde_json::to_value(root).expect("schema serializes");
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
 }
 
 /// Body to render onto the SSE response channel.
@@ -77,6 +88,8 @@ fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
                 respond_sse(&ctx, &envelope.response, payload).await
             }
         })
+        .request_format(schema_value::<McpRequest>())
+        .response_format(json!({ "type": "null" }))
         .description("MCP 2025-06-18 Streamable HTTP bridge."),
     );
 }
