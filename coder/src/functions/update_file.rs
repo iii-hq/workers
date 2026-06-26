@@ -2245,9 +2245,16 @@ mod handler_tests {
     #[tokio::test]
     async fn empty_files_array_rejected() {
         let (_tmp, r, c) = setup();
-        let err = handle(r, c, UpdateFileInput {  files: vec![], base_dir: None })
-            .await
-            .unwrap_err();
+        let err = handle(
+            r,
+            c,
+            UpdateFileInput {
+                files: vec![],
+                base_dir: None,
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("C210"));
     }
 

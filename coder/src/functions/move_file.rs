@@ -132,11 +132,7 @@ pub async fn handle(
 // Per-entry logic
 // ---------------------------------------------------------------------------
 
-fn move_one(
-    resolver: &PathResolver,
-    base_dir: Option<&str>,
-    spec: MoveFileSpec,
-) -> MoveFileResult {
+fn move_one(resolver: &PathResolver, base_dir: Option<&str>, spec: MoveFileSpec) -> MoveFileResult {
     // Resolve source.
     let abs_from = match resolver.require_writable_opt(base_dir, &spec.from) {
         Ok(p) => p,

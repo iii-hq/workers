@@ -135,7 +135,10 @@ async fn create_err(
     let out = create_file::handle(
         jail.resolver.clone(),
         cfg,
-        create_file::CreateFileInput {  files: vec![spec], base_dir: None },
+        create_file::CreateFileInput {
+            files: vec![spec],
+            base_dir: None,
+        },
     )
     .await
     .expect("create-file batches never fail top-level for per-entry errors");

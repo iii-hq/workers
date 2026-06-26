@@ -394,11 +394,7 @@ impl PathResolver {
     /// Dispatch helper: resolve `path` against `base_dir` when present,
     /// else exactly as `resolve` (the back-compat path is byte-for-byte
     /// unchanged). Handlers thread the per-call `base_dir` straight through.
-    pub fn resolve_opt(
-        &self,
-        base_dir: Option<&str>,
-        path: &str,
-    ) -> Result<PathBuf, CoderError> {
+    pub fn resolve_opt(&self, base_dir: Option<&str>, path: &str) -> Result<PathBuf, CoderError> {
         match base_dir {
             Some(b) => self.resolve_in(b, path),
             None => self.resolve(path),
@@ -1272,7 +1268,9 @@ mod tests {
         // require_writable_opt(None) must also mirror require_writable,
         // including the glob-denied C211.
         assert_eq!(
-            r.require_writable_opt(None, ".env").unwrap_err().to_string(),
+            r.require_writable_opt(None, ".env")
+                .unwrap_err()
+                .to_string(),
             r.require_writable(".env").unwrap_err().to_string(),
         );
         assert_eq!(
