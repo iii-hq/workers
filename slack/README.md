@@ -16,8 +16,8 @@ Slack as an iii worker. Two surfaces in one worker:
 ```bash
 # API surface only:
 iii worker add slack
-# For the bridge, also install the harness stack:
-iii worker add harness session-manager llm-router approval-gate
+# For the bridge, also install the harness stack and console:
+iii worker add harness console
 ```
 
 ## Configure
