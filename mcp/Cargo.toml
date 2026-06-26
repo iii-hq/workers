@@ -2,7 +2,7 @@
 
 [package]
 name = "mcp"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2021"
 publish = false
 
