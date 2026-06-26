@@ -130,6 +130,14 @@ pub async fn handle(
         }
     }
 
+    // Stamp the owning session onto a subscription control call (no-op for
+    // other functions) — the model can never widen the target.
+    crate::subscriptions::inject_owner_session(
+        &req.call.function_id,
+        &mut arguments,
+        &req.session_id,
+    );
+
     let raw = trigger::invoke_target(&engine, &policy, &req.call.function_id, &arguments).await;
     let data = if let Some(rec) = &record {
         deps.hooks

@@ -19,7 +19,11 @@ that invoke them). Every call routes worker → engine → worker. There is no d
 worker-to-worker traffic. The function id is the ONLY contract between two workers. Functions
 are callable the moment their worker connects; workers registering the same id load-balance;
 restarts are invisible. Triggers are the engine's push channel — you MUST NOT poll when a
-trigger type fits.
+trigger type fits. To be notified yourself instead of polling, call
+`harness::subscribe { trigger_type, config }` (cron, state, stream, or another worker's trigger
+type); it delivers a notification message into this session when it fires (non-blocking — keep
+working). For an ad-hoc signal, subscribe to `state` on a key and have the signaller call
+`state::set` on it. Tear it down with `harness::unsubscribe`.
 
 # Discovery
 

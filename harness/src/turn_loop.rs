@@ -371,7 +371,7 @@ pub async fn run_step(
             }
 
             // pre_trigger chain: deny / hold / rewrite arguments.
-            let (eff_args, pre_ann) = match deps
+            let (mut eff_args, pre_ann) = match deps
                 .hooks
                 .run_pre_trigger(
                     &record,
@@ -460,6 +460,14 @@ pub async fn run_step(
                 },
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
+            // Stamp the owning session onto a subscription control call so the
+            // model can never widen the target (no-op for other functions).
+            crate::subscriptions::inject_owner_session(
+                &call.function_id,
+                &mut eff_args,
+                &record.session_id,
+            );
 
             // Stamp the per-session working directory onto scoped shell/coder
             // calls as `base_dir` BEFORE invocation. The harness owns scoping:

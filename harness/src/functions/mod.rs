@@ -5,12 +5,15 @@
 
 pub mod function_resolve;
 pub mod function_trigger;
+pub mod on_session_deleted;
 pub mod send;
 pub mod spawn;
 pub mod status;
 pub mod stop;
+pub mod subscribe;
 pub mod sweep_pending;
 pub mod turn;
+pub mod unsubscribe;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -110,6 +113,22 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         status::handle(&d, r).await
     });
 
+    // Ephemeral event subscriptions (agent-facing).
+    register(
+        iii,
+        deps,
+        crate::subscriptions::SUBSCRIBE_ID,
+        crate::subscriptions::SUBSCRIBE_DESC,
+        |d, r| async move { subscribe::handle(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        crate::subscriptions::UNSUBSCRIBE_ID,
+        crate::subscriptions::UNSUBSCRIBE_DESC,
+        |d, r| async move { unsubscribe::handle(&d, r).await },
+    );
+
     // Internal cron target — registered, but kept off the public catalog.
     register(
         iii,
@@ -117,6 +136,15 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         sweep_pending::SWEEP_PENDING_ID,
         sweep_pending::SWEEP_PENDING_DESC,
         |d, r| async move { sweep_pending::handle(&d, r).await },
+    );
+
+    // Internal session::deleted cleanup — registered, kept off the catalog.
+    register(
+        iii,
+        deps,
+        crate::subscriptions::ON_SESSION_DELETED_ID,
+        crate::subscriptions::ON_SESSION_DELETED_DESC,
+        |d, r| async move { on_session_deleted::handle(&d, r).await },
     );
 
     tracing::info!("all harness::* functions registered");

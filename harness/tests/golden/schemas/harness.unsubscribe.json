@@ -1,0 +1,37 @@
+{
+  "function_id": "harness::unsubscribe",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "description": "Owning session; injected by the harness from the calling turn.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "subscription_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "subscription_id"
+    ],
+    "title": "UnsubscribeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "removed": {
+        "description": "True when a subscription existed and was removed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "removed"
+    ],
+    "title": "UnsubscribeResponse",
+    "type": "object"
+  }
+}

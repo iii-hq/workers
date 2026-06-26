@@ -21,7 +21,12 @@ Consequences worth internalising:
   registration. Restarting a worker is invisible to callers as long as it re-registers the
   same function ids; two workers registering the same id load-balance automatically.
 - Triggers are the engine's push channel. NEVER poll (a timer re-reading a queue, file, or
-  table) when a trigger type fits — bind a trigger instead.
+  table) when a trigger type fits — bind a trigger instead. To be notified yourself, call
+  `harness::subscribe { trigger_type, config }` (cron, state, stream, or another worker's custom
+  trigger type). When it fires a notification message arrives in this session — non-blocking, so
+  keep working; the event will reach you. For an ad-hoc signal, subscribe to `state` on a key and
+  have the signaller call `state::set` on it (the engine fans the trigger out to every
+  subscriber). Tear it down with `harness::unsubscribe`.
 
 # Discovery
 

@@ -40,6 +40,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::function::resolve",
             "harness::stop",
             "harness::status",
+            "harness::subscribe",
+            "harness::unsubscribe",
         ]
     );
 }

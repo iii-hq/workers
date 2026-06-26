@@ -22,7 +22,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput};
 use tokio::sync::RwLock;
 
 use harness::configuration::{self, ConfigCell, TriggerHandles};
@@ -133,12 +133,26 @@ async fn main() -> Result<()> {
     discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
     discovery::register_functions_trigger(&iii, functions_cell, cfg.dispatch_timeout_ms);
 
+    // Best-effort: drop a deleted session's ephemeral subscriptions. Carries no
+    // config and is never re-bound; a transient failure must not brick boot.
+    match iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "session::deleted".to_string(),
+        function_id: harness::subscriptions::ON_SESSION_DELETED_ID.to_string(),
+        config: serde_json::json!({}),
+        metadata: None,
+    }) {
+        Ok(_) => tracing::info!("bound session::deleted -> subscription cleanup"),
+        Err(e) => {
+            tracing::warn!(error = %e, "session::deleted binding failed (subscription cleanup best-effort)")
+        }
+    }
+
     // LAST: bind the configuration-change trigger.
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
     tracing::info!(
-        "harness ready: 8 harness::* functions + turn events + hook points + reactive function-registry cache"
+        "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
     );
 
     tokio::signal::ctrl_c().await?;

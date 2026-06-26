@@ -87,9 +87,18 @@ pub async fn resolve(
                 return Ok(not_resolved());
             }
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
-            let arguments = find_call_arguments(deps, &record, &req.function_call_id)
+            let mut arguments = find_call_arguments(deps, &record, &req.function_call_id)
                 .await
                 .unwrap_or(Value::Null);
+            // The inline loop dispatch stamps the owning session onto subscription
+            // control calls; this hold-then-release path bypasses that dispatch, so
+            // re-apply it here (a no-op for other functions). Without this a held
+            // `harness::subscribe` fails with "requires an owning session" on release.
+            crate::subscriptions::inject_owner_session(
+                &function_id,
+                &mut arguments,
+                &record.session_id,
+            );
 
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;
