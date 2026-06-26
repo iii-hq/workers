@@ -2,9 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::channel::{ChannelReader, ChannelWriter, StreamChannelRef};
+use iii_sdk::channels::extract_channel_refs;
+use iii_sdk::channels::{ChannelReader, ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
-use iii_sdk::helpers::extract_channel_refs;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -197,7 +197,7 @@ pub fn build_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::helpers::ChannelDirection;
+    use iii_sdk::channels::ChannelDirection;
     use serde_json::json;
 
     fn make_channel_ref(id: &str, dir: &str) -> Value {
