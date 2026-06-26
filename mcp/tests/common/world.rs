@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cucumber::World;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ use crate::common::engine::http_url;
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct McpWorld {
-    pub iii: Option<Arc<III>>,
+    pub iii: Option<Arc<IIIClient>>,
     pub http: reqwest::Client,
     pub http_url: String,
     pub unique_id: String,

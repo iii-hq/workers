@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 use iii_sdk::{
     channels::{ChannelWriter, StreamChannelRef},
-    IIIError, RegisterFunction, III,
+    errors::Error,
+    IIIClient, RegisterFunction,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,7 +18,7 @@ pub const FUNCTION_ID: &str = "mcp::handler";
 /// Per-handler context: shared engine handle, config, and a logger.
 #[derive(Clone)]
 struct Ctx {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     cfg: Arc<McpConfig>,
     log: Logger,
 }
@@ -25,11 +26,22 @@ struct Ctx {
 /// Subset of `iii_sdk::types::ApiRequest` plus the engine-issued response
 /// channel writer ref. We deserialize directly off `serde_json::Value` so we
 /// can capture the `response` field that the typed `ApiRequest<T>` strips.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct McpRequest {
     #[serde(default)]
     body: Value,
     response: StreamChannelRef,
+}
+
+/// Build a published JSON Schema for `T`, stripping the root `$schema` key the
+/// registry publish validator has no meta-schema for (mirrors codex).
+fn schema_value<T: schemars::JsonSchema>() -> Value {
+    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let mut v = serde_json::to_value(root).expect("schema serializes");
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
 }
 
 /// Body to render onto the SSE response channel.
@@ -40,12 +52,12 @@ enum RespondPayload {
     Notification,
 }
 
-pub fn register_all(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
+pub fn register_all(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
     register_handler(iii, cfg);
     tracing::info!(function_id = FUNCTION_ID, "all functions registered");
 }
 
-fn register_handler(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
+fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
     let ctx = Ctx {
         iii: iii.clone(),
         cfg: cfg.clone(),
@@ -76,6 +88,8 @@ fn register_handler(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
                 respond_sse(&ctx, &envelope.response, payload).await
             }
         })
+        .request_format(schema_value::<McpRequest>())
+        .response_format(json!({ "type": "null" }))
         .description("MCP 2025-06-18 Streamable HTTP bridge."),
     );
 }
@@ -84,7 +98,7 @@ async fn respond_sse(
     ctx: &Ctx,
     writer_ref: &StreamChannelRef,
     payload: RespondPayload,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     let writer = ChannelWriter::new(ctx.iii.address(), writer_ref);
 
     let status: u16 = match payload {
@@ -154,7 +168,7 @@ async fn respond_sse(
 /// status line and headers. Always advertises `text/event-stream`; even
 /// notification-only acks (which carry no body) keep the same content
 /// type so a browser EventSource can attach without surprises.
-async fn send_sse_control(writer: &ChannelWriter, status: u16) -> Result<(), IIIError> {
+async fn send_sse_control(writer: &ChannelWriter, status: u16) -> Result<(), Error> {
     writer
         .send_message(
             &serde_json::to_string(&json!({

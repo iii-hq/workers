@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::config::McpConfig;
@@ -42,13 +42,17 @@ fn handle_initialize(_params: &Value) -> Value {
     })
 }
 
-async fn dispatch_notification(_req: &JsonRpcRequest, _iii: &Arc<III>, _cfg: &Arc<McpConfig>) {
+async fn dispatch_notification(
+    _req: &JsonRpcRequest,
+    _iii: &Arc<IIIClient>,
+    _cfg: &Arc<McpConfig>,
+) {
     /* notifications/initialized and unknown notifications: no response body */
 }
 
 async fn dispatch_request(
     req: &JsonRpcRequest,
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &Arc<McpConfig>,
     id: JsonRpcResponseId,
 ) -> JsonRpcResponse {
@@ -89,7 +93,7 @@ async fn dispatch_request(
     }
 }
 
-pub async fn handle_mcp_body(body: &Value, iii: &Arc<III>, cfg: &Arc<McpConfig>) -> Outcome {
+pub async fn handle_mcp_body(body: &Value, iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) -> Outcome {
     if body.is_array() {
         return Outcome::Response(json_rpc_error(
             JsonRpcResponseId::Null,

@@ -4,15 +4,15 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
 /// Detects the engine error variants that mean "function not registered".
 /// Mirrors the TS `isMissingDelegate` predicate.
-fn is_missing_delegate(err: &IIIError) -> bool {
+fn is_missing_delegate(err: &Error) -> bool {
     match err {
-        IIIError::Remote { code, message, .. } => {
+        Error::Remote { code, message, .. } => {
             let upper = code.to_uppercase();
             if upper == "NOT_FOUND" || upper == "FUNCTION_NOT_FOUND" {
                 return true;
@@ -22,7 +22,7 @@ fn is_missing_delegate(err: &IIIError) -> bool {
                 || lower.contains("unknown function")
                 || lower.contains("no such function")
         }
-        IIIError::Runtime(message) | IIIError::Handler(message) => {
+        Error::Runtime(message) | Error::Handler(message) => {
             let lower = message.to_lowercase();
             lower.contains("not found")
                 || lower.contains("unknown function")
@@ -48,11 +48,11 @@ fn normalize_delegate_payload(payload: Value) -> Value {
 /// engine reports the function as missing, swap in `empty` so MCP clients see
 /// an empty list instead of an error. Other errors propagate.
 async fn delegate_or_empty(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     function_id: &str,
     payload: Value,
     empty: Value,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     // Mirror the TS bridge's `payload ?? {}` coercion: skills/prompts workers
     // expect a JSON object payload and treat `null` as missing/invalid input,
     // which would silently turn populated MCP resources/prompts lists empty.
@@ -194,7 +194,7 @@ fn empty_messages() -> Value {
     Value::Object(m)
 }
 
-pub async fn mcp_resources_list(iii: &Arc<III>, params: &Value) -> Result<Value, IIIError> {
+pub async fn mcp_resources_list(iii: &Arc<IIIClient>, params: &Value) -> Result<Value, Error> {
     let result = delegate_or_empty(
         iii,
         "skills::resources-list",
@@ -205,7 +205,7 @@ pub async fn mcp_resources_list(iii: &Arc<III>, params: &Value) -> Result<Value,
     Ok(filter_resources_list_response(result))
 }
 
-pub async fn mcp_resources_read(iii: &Arc<III>, params: &Value) -> Result<Value, IIIError> {
+pub async fn mcp_resources_read(iii: &Arc<IIIClient>, params: &Value) -> Result<Value, Error> {
     let uri = read_uri_param(params);
     let result = delegate_or_empty(
         iii,
@@ -221,9 +221,9 @@ pub async fn mcp_resources_read(iii: &Arc<III>, params: &Value) -> Result<Value,
 }
 
 pub async fn mcp_resources_templates_list(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     params: &Value,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     delegate_or_empty(
         iii,
         "skills::resources-templates",
@@ -233,11 +233,11 @@ pub async fn mcp_resources_templates_list(
     .await
 }
 
-pub async fn mcp_prompts_list(iii: &Arc<III>, params: &Value) -> Result<Value, IIIError> {
+pub async fn mcp_prompts_list(iii: &Arc<IIIClient>, params: &Value) -> Result<Value, Error> {
     delegate_or_empty(iii, "prompts::mcp-list", params.clone(), empty_prompts()).await
 }
 
-pub async fn mcp_prompts_get(iii: &Arc<III>, params: &Value) -> Result<Value, IIIError> {
+pub async fn mcp_prompts_get(iii: &Arc<IIIClient>, params: &Value) -> Result<Value, Error> {
     delegate_or_empty(iii, "prompts::mcp-get", params.clone(), empty_messages()).await
 }
 
@@ -368,25 +368,25 @@ footer";
 
     #[test]
     fn is_missing_delegate_recognises_remote_codes() {
-        let e = IIIError::Remote {
+        let e = Error::Remote {
             code: "FUNCTION_NOT_FOUND".to_string(),
             message: String::new(),
             stacktrace: None,
         };
         assert!(is_missing_delegate(&e));
-        let e = IIIError::Remote {
+        let e = Error::Remote {
             code: "not_found".to_string(),
             message: String::new(),
             stacktrace: None,
         };
         assert!(is_missing_delegate(&e));
-        let e = IIIError::Remote {
+        let e = Error::Remote {
             code: "OTHER".to_string(),
             message: "function not found".to_string(),
             stacktrace: None,
         };
         assert!(is_missing_delegate(&e));
-        let e = IIIError::Remote {
+        let e = Error::Remote {
             code: "OTHER".to_string(),
             message: "Unknown function: foo".to_string(),
             stacktrace: None,
@@ -396,13 +396,13 @@ footer";
 
     #[test]
     fn is_missing_delegate_rejects_other_errors() {
-        let e = IIIError::Remote {
+        let e = Error::Remote {
             code: "INVALID_ARGUMENT".to_string(),
             message: "bad input".to_string(),
             stacktrace: None,
         };
         assert!(!is_missing_delegate(&e));
-        let e = IIIError::Timeout;
+        let e = Error::Timeout;
         assert!(!is_missing_delegate(&e));
     }
 
