@@ -24,7 +24,7 @@ pub mod skills;
 
 use std::sync::Arc;
 
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source::{self, SourceKind};
@@ -47,7 +47,11 @@ impl From<&RegisteredTriggerTypes> for Subscribers {
     }
 }
 
-pub fn register_all(iii: &Arc<III>, cfg: &SharedConfig, trigger_types: &RegisteredTriggerTypes) {
+pub fn register_all(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    trigger_types: &RegisteredTriggerTypes,
+) {
     skills::register(iii, cfg);
     prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
@@ -62,7 +66,7 @@ pub fn register_all(iii: &Arc<III>, cfg: &SharedConfig, trigger_types: &Register
 }
 
 pub fn register_all_with_cache(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     trigger_types: &RegisteredTriggerTypes,
     cache: &std::sync::Arc<skills::RegisteredWorkersCache>,

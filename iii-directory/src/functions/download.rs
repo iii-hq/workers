@@ -11,7 +11,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, III};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -108,7 +109,7 @@ pub enum ClassifiedInput {
 /// with `master`-default repos can override via the `branch` field.
 pub const DEFAULT_REPO_BRANCH: &str = "main";
 
-pub fn register(iii: &Arc<III>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
+pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
     register_download(iii, cfg, subscribers);
     register_download_from_registry(iii, cfg, subscribers);
     register_download_from_repo(iii, cfg, subscribers);
@@ -117,16 +118,16 @@ pub fn register(iii: &Arc<III>, cfg: &SharedConfig, subscribers: &super::Subscri
 /// Shared pipeline for all three download functions: validate + classify
 /// the source, pull it, fan out the change notification, build the response.
 async fn run_and_fan_out(
-    iii: &III,
+    iii: &IIIClient,
     cfg: &SkillsConfig,
     skills_subs: &SubscriberSet,
     prompts_subs: &SubscriberSet,
     input: DownloadInput,
-) -> Result<DownloadOutput, IIIError> {
-    let classified = classify_input(input).map_err(IIIError::Handler)?;
+) -> Result<DownloadOutput, Error> {
+    let classified = classify_input(input).map_err(Error::Handler)?;
     let result = run_download(cfg, &classified)
         .await
-        .map_err(IIIError::Handler)?;
+        .map_err(Error::Handler)?;
     fan_out(iii, skills_subs, prompts_subs, &classified, &result).await;
     Ok(build_output(&classified, result))
 }
@@ -135,7 +136,7 @@ async fn run_and_fan_out(
 /// source set. Kept for back-compat; new callers should prefer the
 /// explicit `download_from_registry` / `download_from_repo`, whose
 /// schemas make the source unambiguous.
-fn register_download(iii: &Arc<III>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
+fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     let skills_subs = subscribers.skills.clone();
@@ -166,7 +167,7 @@ fn register_download(iii: &Arc<III>, cfg: &SharedConfig, subscribers: &super::Su
 /// The required `worker` field makes the source unambiguous at the
 /// schema level (no "specify exactly one of two groups" guesswork).
 fn register_download_from_registry(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     subscribers: &super::Subscribers,
 ) {
@@ -207,7 +208,7 @@ fn register_download_from_registry(
 /// The required `repo` + `skill` fields make the source unambiguous at
 /// the schema level.
 fn register_download_from_repo(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     subscribers: &super::Subscribers,
 ) {
@@ -368,7 +369,7 @@ fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> Downloa
 /// least one skill was written (and likewise for prompts) so noisy
 /// no-op downloads don't churn MCP `notifications/list_changed`.
 async fn fan_out(
-    iii: &III,
+    iii: &IIIClient,
     skills_subs: &SubscriberSet,
     prompts_subs: &SubscriberSet,
     classified: &ClassifiedInput,

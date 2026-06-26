@@ -26,10 +26,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    IIIError, RegisterTriggerType, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest,
-    III,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use serde_json::Value;
 
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
@@ -82,7 +82,7 @@ impl SubscriberSet {
 /// blocked on downstream latency). Failures are logged and swallowed
 /// because a slow / misbehaving subscriber must not break the write
 /// path.
-pub async fn dispatch(iii: &III, subscribers: &SubscriberSet, payload: Value) {
+pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Value) {
     let targets = subscribers.function_ids();
     for function_id in targets {
         let fid = function_id.clone();
@@ -110,7 +110,7 @@ pub struct RegisteredTriggerTypes {
     pub prompts: SubscriberSet,
 }
 
-pub fn register_all(iii: &Arc<III>) -> RegisteredTriggerTypes {
+pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
     let skills = SubscriberSet::new();
     let prompts = SubscriberSet::new();
 
@@ -147,7 +147,7 @@ impl SkillsTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for SkillsTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = %self.name,
             id = %config.id,
@@ -158,7 +158,7 @@ impl TriggerHandler for SkillsTriggerHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(
             trigger_type = %self.name,
             id = %config.id,

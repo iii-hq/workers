@@ -32,7 +32,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use iii_sdk::{IIIError, RegisterFunction, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -256,7 +258,7 @@ impl RegisteredWorkersCache {
     /// is acquired only to check / update the cache entry. A brief
     /// duplicate fetch on simultaneous cache misses is acceptable and
     /// far cheaper than serialising all reads behind a 5 s RPC.
-    pub async fn get_or_fetch(&self, iii: &III) -> Option<HashSet<String>> {
+    pub async fn get_or_fetch(&self, iii: &IIIClient) -> Option<HashSet<String>> {
         // Phase 1: check for a fresh cache entry under the lock.
         {
             let lock = self.inner.lock().await;
@@ -278,13 +280,13 @@ impl RegisteredWorkersCache {
     /// last-known set on error). Used by `directory::skills::index` so a
     /// just-registered worker shows up immediately instead of waiting on
     /// the TTL or a worker-add cache invalidation.
-    pub async fn get_fresh(&self, iii: &III) -> Option<HashSet<String>> {
+    pub async fn get_fresh(&self, iii: &IIIClient) -> Option<HashSet<String>> {
         self.fetch_and_store(iii).await
     }
 
     /// Fetch `worker::list` from the engine WITHOUT holding the lock,
     /// then store the result (or fall back to the stale set on error).
-    async fn fetch_and_store(&self, iii: &III) -> Option<HashSet<String>> {
+    async fn fetch_and_store(&self, iii: &IIIClient) -> Option<HashSet<String>> {
         let result = iii
             .trigger(TriggerRequest {
                 function_id: "worker::list".to_string(),
@@ -368,7 +370,7 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 pub async fn resolve_visible_skills(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
-    iii: &III,
+    iii: &IIIClient,
     fresh: bool,
 ) -> Vec<FsSkill> {
     let (merged, _skipped) =
@@ -440,7 +442,7 @@ pub(crate) fn filter_to_registered(
         .collect()
 }
 
-pub fn register(iii: &Arc<III>, cfg: &SharedConfig) {
+pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     let cache = Arc::new(RegisteredWorkersCache::new(
         cfg.load().registry_cache_ttl_ms,
     ));
@@ -458,7 +460,7 @@ pub fn make_registered_cache(ttl_ms: Arc<AtomicU64>) -> Arc<RegisteredWorkersCac
 
 /// Register all skills functions with a shared cache instance.
 pub fn register_with_cache(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
@@ -467,7 +469,11 @@ pub fn register_with_cache(
     register_index_skills(iii, cfg, cache);
 }
 
-fn register_list_skills(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<RegisteredWorkersCache>) {
+fn register_list_skills(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    cache: &Arc<RegisteredWorkersCache>,
+) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let cache_inner = cache.clone();
@@ -480,7 +486,7 @@ fn register_list_skills(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<Register
             async move {
                 let entries = resolve_visible_skills(&cfg, &cache, &iii, false).await;
                 let out = list_skills_filtered(entries, &input);
-                Ok::<_, IIIError>(ListSkillsOutput { skills: out })
+                Ok::<_, Error>(ListSkillsOutput { skills: out })
             }
         })
         .description(
@@ -552,7 +558,11 @@ fn list_skills_filtered(entries: Vec<FsSkill>, input: &ListSkillsInput) -> Vec<S
     rows
 }
 
-fn register_get_skill(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<RegisteredWorkersCache>) {
+fn register_get_skill(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    cache: &Arc<RegisteredWorkersCache>,
+) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let cache_inner = cache.clone();
@@ -565,7 +575,7 @@ fn register_get_skill(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<Registered
             async move {
                 get_skill_visible(&cfg, &cache, &iii, req)
                     .await
-                    .map_err(IIIError::Handler)
+                    .map_err(Error::Handler)
             }
         })
         .description(GET_DESCRIPTION)
@@ -573,7 +583,11 @@ fn register_get_skill(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<Registered
     );
 }
 
-fn register_index_skills(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<RegisteredWorkersCache>) {
+fn register_index_skills(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    cache: &Arc<RegisteredWorkersCache>,
+) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let cache_inner = cache.clone();
@@ -592,7 +606,7 @@ fn register_index_skills(iii: &Arc<III>, cfg: &SharedConfig, cache: &Arc<Registe
                     .collect();
                 let body = render_index_markdown(&rows);
                 let workers_count = rows.iter().filter(|e| is_index_overview(e)).count();
-                Ok::<_, IIIError>(IndexSkillsOutput {
+                Ok::<_, Error>(IndexSkillsOutput {
                     body,
                     workers_count,
                 })
@@ -839,7 +853,7 @@ fn worker_overview_redirect_note(
 async fn get_skill_visible(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
-    iii: &III,
+    iii: &IIIClient,
     req: SkillGetInput,
 ) -> Result<SkillGetOutput, String> {
     let id = normalize_get_id(&req.id)?;

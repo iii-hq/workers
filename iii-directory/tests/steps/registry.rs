@@ -6,7 +6,7 @@
 //! the shared wiremock server in `common::workers`.
 
 use cucumber::{given, then, when};
-use iii_sdk::TriggerRequest;
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::Value;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, Request, ResponseTemplate};

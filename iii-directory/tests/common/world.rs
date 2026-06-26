@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::World;
-use iii_sdk::III;
+use iii_sdk::IIIClient;
 use serde_json::Value;
 
 use iii_directory::config::SkillsConfig;
@@ -22,7 +22,7 @@ use iii_directory::config::SkillsConfig;
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct IiiSkillsWorld {
-    pub iii: Option<Arc<III>>,
+    pub iii: Option<Arc<IIIClient>>,
     pub cfg: Arc<SkillsConfig>,
     pub stash: HashMap<String, Value>,
     /// Path of the per-binary `skills_folder` tempdir. Mirrors what the
