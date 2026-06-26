@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -30,12 +31,12 @@ pub struct LoadedCustom {
 
 #[derive(Clone)]
 pub struct SessionClient {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     timeout_ms: u64,
 }
 
 impl SessionClient {
-    pub fn new(iii: Arc<III>, timeout_ms: u64) -> Self {
+    pub fn new(iii: Arc<IIIClient>, timeout_ms: u64) -> Self {
         Self { iii, timeout_ms }
     }
 

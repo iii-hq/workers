@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    IIIError, RegisterTriggerType, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest,
-    III,
-};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -118,15 +118,15 @@ struct TurnEventTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for TurnEventTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let id = config.id.clone();
         let function_id = config.function_id.clone();
-        self.set.add(config).map_err(IIIError::Handler)?;
+        self.set.add(config).map_err(Error::Handler)?;
         tracing::info!(trigger_type = self.type_id, %id, %function_id, "turn-event subscription registered");
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.set.remove(&config.id);
         Ok(())
     }
@@ -136,7 +136,7 @@ impl TriggerHandler for TurnEventTriggerHandler {
 /// fan-out. Cloned into [`crate::deps::Deps`].
 #[derive(Clone)]
 pub struct TurnEvents {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     started: SubscriberSet,
     completed: SubscriberSet,
 }
@@ -144,7 +144,7 @@ pub struct TurnEvents {
 impl TurnEvents {
     /// Register both trigger types and return the emitter. Must run before
     /// function registration so the handlers capture the subscriber sets.
-    pub fn register(iii: &Arc<III>) -> Self {
+    pub fn register(iii: &Arc<IIIClient>) -> Self {
         let started = SubscriberSet::default();
         let completed = SubscriberSet::default();
 

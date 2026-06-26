@@ -6,7 +6,8 @@
 //! returns the stored value directly (null when absent); `state::delete`
 //! returns the prior value.
 
-use iii_sdk::{TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::error::HarnessError;
@@ -16,7 +17,7 @@ pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
 
 async fn state_get(
-    iii: &III,
+    iii: &IIIClient,
     scope: &str,
     key: &str,
     timeout_ms: u64,
@@ -32,7 +33,7 @@ async fn state_get(
 }
 
 async fn state_set(
-    iii: &III,
+    iii: &IIIClient,
     scope: &str,
     key: &str,
     value: Value,
@@ -50,7 +51,7 @@ async fn state_set(
 }
 
 async fn state_delete(
-    iii: &III,
+    iii: &IIIClient,
     scope: &str,
     key: &str,
     timeout_ms: u64,
@@ -68,7 +69,7 @@ async fn state_delete(
 
 /// Read the turn record for a session (`None` when absent or null).
 pub async fn get_turn(
-    iii: &III,
+    iii: &IIIClient,
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<Option<TurnRecord>, HarnessError> {
@@ -83,19 +84,27 @@ pub async fn get_turn(
 
 /// Persist the turn record (whole-record write; the loop holds the only
 /// writer per session via the per-session lock).
-pub async fn put_turn(iii: &III, record: &TurnRecord, timeout_ms: u64) -> Result<(), HarnessError> {
+pub async fn put_turn(
+    iii: &IIIClient,
+    record: &TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
     let value = serde_json::to_value(record)
         .map_err(|e| HarnessError::State(format!("turn record serialize: {e}")))?;
     state_set(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await
 }
 
-pub async fn delete_turn(iii: &III, session_id: &str, timeout_ms: u64) -> Result<(), HarnessError> {
+pub async fn delete_turn(
+    iii: &IIIClient,
+    session_id: &str,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
     state_delete(iii, TURN_SCOPE, session_id, timeout_ms).await
 }
 
 /// List every turn record (the pending-call sweep scans these). `state::list`
 /// returns a values array (or an object map); both shapes are tolerated.
-pub async fn list_turns(iii: &III, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
+pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
     let v = iii
         .trigger(TriggerRequest {
             function_id: "state::list".into(),
@@ -129,7 +138,7 @@ fn parse_record_list(v: &Value) -> Vec<TurnRecord> {
 }
 
 pub async fn get_idem(
-    iii: &III,
+    iii: &IIIClient,
     key: &str,
     timeout_ms: u64,
 ) -> Result<Option<IdemRecord>, HarnessError> {
@@ -143,7 +152,7 @@ pub async fn get_idem(
 }
 
 pub async fn put_idem(
-    iii: &III,
+    iii: &IIIClient,
     key: &str,
     record: &IdemRecord,
     timeout_ms: u64,

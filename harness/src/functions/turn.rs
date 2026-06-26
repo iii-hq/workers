@@ -20,7 +20,7 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
         ("iii.session.id", session_id.as_str()),
         ("iii.message.id", turn_id.as_str()),
     ];
-    iii_observability::run_with_baggage(&baggage, run(deps, payload)).await
+    iii_helpers::observability::run_with_baggage(&baggage, run(deps, payload)).await
 }
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {

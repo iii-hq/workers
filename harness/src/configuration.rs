@@ -19,7 +19,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, Trigger, TriggerRequest, III};
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::trigger::Trigger;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -38,7 +41,7 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// Register the `harness` configuration schema. When `seed` is present its
 /// value is installed as `initial_value`; otherwise the built-in default is
 /// seeded only when nothing is stored yet (safe to call every boot).
-pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(), String> {
+pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     discard_legacy_harness_config_if_needed(iii).await?;
 
     let mut payload = json!({
@@ -61,7 +64,7 @@ pub async fn register_config(iii: &III, seed: Option<&WorkerConfig>) -> Result<(
 
 /// Read the live `harness` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
-pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
+pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
@@ -70,7 +73,7 @@ pub async fn fetch_config(iii: &III) -> Result<WorkerConfig, String> {
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
+async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
@@ -78,14 +81,14 @@ async fn should_seed_default_value(iii: &III) -> Result<bool, String> {
     }
 }
 
-async fn get_config_value(iii: &III) -> Result<Value, String> {
+async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
 /// Returns `Ok(None)` when the entry does not exist (codes vary in case).
-async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
@@ -121,7 +124,7 @@ fn legacy_harness_keys(value: &Value) -> Vec<&'static str> {
 /// can succeed. There is no `configuration::delete`; unlock a permissive schema,
 /// replace the value with built-in defaults, then let the caller register the
 /// real schema.
-async fn discard_legacy_harness_config_if_needed(iii: &III) -> Result<(), String> {
+async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), String> {
     let Some(value) = try_get_config_value(iii).await? else {
         return Ok(());
     };
@@ -178,7 +181,7 @@ pub struct TriggerHandles {
 /// Best-effort binding: the cron trigger type always exists (engine built-in),
 /// but a transient failure must not brick boot — it surfaces as a `None`
 /// handle.
-fn bind(iii: &III, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
+fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
     match iii.register_trigger(RegisterTriggerInput {
         trigger_type: trigger_type.to_string(),
         function_id: function_id.to_string(),
@@ -197,7 +200,7 @@ fn bind(iii: &III, trigger_type: &str, function_id: &str, config: Value) -> Opti
 }
 
 /// (Re)bind the cron pending-sweep from the current config.
-pub fn bind_sweep(iii: &III, cfg: &WorkerConfig) -> Option<Trigger> {
+pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
     bind(
         iii,
         "cron",
@@ -238,10 +241,10 @@ pub struct OnConfigChangeResponse {
 /// trigger. `handles` holds the live cron `Trigger` the handler re-binds when
 /// `sweep_expression` changes.
 pub fn register_config_trigger(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cell: ConfigCell,
     handles: Arc<TriggerHandles>,
-) -> Result<(), IIIError> {
+) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let handles_for_fn = handles.clone();
     let engine = iii.clone();
@@ -253,7 +256,7 @@ pub fn register_config_trigger(
             let engine = engine.clone();
             async move {
                 on_config_change(&engine, &cell, &handles).await;
-                Ok::<OnConfigChangeResponse, IIIError>(OnConfigChangeResponse { ok: true })
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
         .description(
@@ -277,7 +280,7 @@ pub fn register_config_trigger(
 
 /// Reload from the AUTHORITATIVE configuration. The caller-supplied trigger
 /// payload is intentionally ignored: a direct call can never inject config.
-async fn on_config_change(iii: &III, cell: &ConfigCell, handles: &TriggerHandles) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerHandles) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -296,7 +299,11 @@ async fn on_config_change(iii: &III, cell: &ConfigCell, handles: &TriggerHandles
     tracing::info!("harness configuration reloaded");
 }
 
-async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
+async fn trigger_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
