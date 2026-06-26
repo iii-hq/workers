@@ -15,7 +15,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{register_worker, IIIError, InitOptions, RegisterTriggerInput, TriggerRequest, III};
+use iii_sdk::{
+    errors::Error,
+    protocol::{RegisterTriggerInput, TriggerRequest},
+    register_worker, IIIClient, InitOptions,
+};
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::OnceCell;
@@ -28,7 +32,7 @@ use iii_mcp::{
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 const DEFAULT_HTTP_URL: &str = "http://127.0.0.1:3000/mcp";
 
-static ENGINE: OnceCell<Option<Arc<III>>> = OnceCell::const_new();
+static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
 
 pub fn ws_url() -> String {
     std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
@@ -54,7 +58,7 @@ async fn http_reachable(url: &str) -> Option<String> {
 /// Probe the engine via the cheapest call we know of (`engine::workers::list`).
 /// Retries for ~5s while the WebSocket completes the handshake. Returns
 /// `None` and prints a single skip notice when the engine is unreachable.
-pub async fn try_connect_raw() -> Option<Arc<III>> {
+pub async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
     let iii = Arc::new(register_worker(&url, InitOptions::default()));
 
@@ -70,7 +74,7 @@ pub async fn try_connect_raw() -> Option<Arc<III>> {
             .await;
         match probe {
             Ok(_) => return Some(iii),
-            Err(IIIError::NotConnected) => continue,
+            Err(Error::NotConnected) => continue,
             Err(_) => continue,
         }
     }
@@ -89,7 +93,7 @@ pub async fn try_connect_raw() -> Option<Arc<III>> {
 /// logged but not propagated so a polluted engine (e.g. a stale `mcp`
 /// binary still running) degrades to a soft skip rather than a hard
 /// failure inside cucumber's `before` hook.
-async fn register_bridge(iii: &Arc<III>) {
+async fn register_bridge(iii: &Arc<IIIClient>) {
     let cfg = Arc::new(McpConfig::default());
     functions::register_all(iii, &cfg);
 
@@ -125,7 +129,7 @@ async fn register_bridge(iii: &Arc<III>) {
 ///     (default `http://127.0.0.1:3000/mcp`). The bridge always speaks
 ///     HTTP, so an `iii` whose HTTP listener is disabled or on a
 ///     different port can't drive the `@engine` scenarios either.
-pub async fn get_or_init() -> Option<Arc<III>> {
+pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
         .get_or_init(|| async {
             let iii = try_connect_raw().await?;

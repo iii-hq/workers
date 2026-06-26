@@ -7,7 +7,9 @@
 
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput, WorkerMetadata};
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;

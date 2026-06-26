@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, TriggerRequest, III};
+use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
 use serde_json::{json, Map, Value};
 
 use crate::config::McpConfig;
@@ -94,7 +94,7 @@ fn unwrap_function_list(raw: &Value) -> Vec<Map<String, Value>> {
     Vec::new()
 }
 
-pub async fn mcp_tools_list(iii: &Arc<III>, cfg: &Arc<McpConfig>) -> Result<Value, IIIError> {
+pub async fn mcp_tools_list(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) -> Result<Value, Error> {
     let raw = iii
         .trigger(TriggerRequest {
             function_id: ENGINE_LIST_FUNCTIONS.to_string(),
@@ -134,7 +134,7 @@ fn stringify_result(v: &Value) -> String {
 }
 
 pub async fn mcp_tools_call(
-    iii: &Arc<III>,
+    iii: &Arc<IIIClient>,
     cfg: &Arc<McpConfig>,
     params: &Value,
 ) -> Result<Value, McpToolsCallError> {

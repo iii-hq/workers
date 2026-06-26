@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 use iii_sdk::{
     channels::{ChannelWriter, StreamChannelRef},
-    IIIError, RegisterFunction, III,
+    errors::Error,
+    IIIClient, RegisterFunction,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,7 +18,7 @@ pub const FUNCTION_ID: &str = "mcp::handler";
 /// Per-handler context: shared engine handle, config, and a logger.
 #[derive(Clone)]
 struct Ctx {
-    iii: Arc<III>,
+    iii: Arc<IIIClient>,
     cfg: Arc<McpConfig>,
     log: Logger,
 }
@@ -40,12 +41,12 @@ enum RespondPayload {
     Notification,
 }
 
-pub fn register_all(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
+pub fn register_all(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
     register_handler(iii, cfg);
     tracing::info!(function_id = FUNCTION_ID, "all functions registered");
 }
 
-fn register_handler(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
+fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
     let ctx = Ctx {
         iii: iii.clone(),
         cfg: cfg.clone(),
@@ -84,7 +85,7 @@ async fn respond_sse(
     ctx: &Ctx,
     writer_ref: &StreamChannelRef,
     payload: RespondPayload,
-) -> Result<Value, IIIError> {
+) -> Result<Value, Error> {
     let writer = ChannelWriter::new(ctx.iii.address(), writer_ref);
 
     let status: u16 = match payload {
@@ -154,7 +155,7 @@ async fn respond_sse(
 /// status line and headers. Always advertises `text/event-stream`; even
 /// notification-only acks (which carry no body) keep the same content
 /// type so a browser EventSource can attach without surprises.
-async fn send_sse_control(writer: &ChannelWriter, status: u16) -> Result<(), IIIError> {
+async fn send_sse_control(writer: &ChannelWriter, status: u16) -> Result<(), Error> {
     writer
         .send_message(
             &serde_json::to_string(&json!({
