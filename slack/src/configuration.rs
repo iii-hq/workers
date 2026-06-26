@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
+use crate::deps::Deps;
+use crate::ingress;
 
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
@@ -99,7 +101,11 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) -> bool {
     true
 }
 
-pub fn register_config_trigger(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result<(), Error> {
+pub fn register_config_trigger(
+    iii: &Arc<IIIClient>,
+    cell: ConfigCell,
+    deps: Arc<Deps>,
+) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -107,8 +113,9 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
             let cell = cell_for_fn.clone();
             let engine = engine.clone();
+            let deps = deps.clone();
             async move {
-                on_config_change(&engine, &cell).await;
+                on_config_change(&engine, &cell, &deps).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -129,11 +136,12 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result
     Ok(())
 }
 
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, deps: &Arc<Deps>) {
     let timeout_ms = cell.read().await.timeout_ms;
     match fetch_config_with_timeout(iii, timeout_ms).await {
         Ok(cfg) => {
             if apply_config(cell, cfg).await {
+                ingress::apply(deps).await;
                 tracing::info!("slack configuration reloaded");
             }
         }

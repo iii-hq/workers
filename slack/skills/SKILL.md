@@ -31,10 +31,14 @@ single configured bot token.
 
 ## Boundaries
 
-- Milestone 1 is the **API surface only**. There is no inbound bridge yet: the
-  worker does not receive Slack events or run harness turns. That lands later.
+- The **bridge** (inbound `app_mention`/DM → `harness::send`, streamed replies,
+  approvals) activates only when `signing_secret` + `public_base_url` are set and
+  the harness stack is connected. Without them the worker is API-surface-only.
+- In channels the bridge acts only on an explicit @mention; DMs always trigger.
+  Untagged messages are captured as context, never acted on alone.
 - Identity (team, workspace, bot user) is discovered via `auth.test`, never
-  configured. Provider/model concerns are out of scope for this worker.
+  configured. Models/providers come from `router::models::list` — no vendor names
+  are baked in.
 - `slack::search::messages` needs a `user_token` (`xoxp-`); bot tokens cannot
   search.
 

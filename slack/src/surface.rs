@@ -55,6 +55,15 @@ pub const FUNCTION_IDS: &[&str] = &[
     "slack::auth::test",
     "slack::config-status",
     "slack::call",
+    // bridge
+    "slack::notify",
+    "slack::events",
+    "slack::interactions",
+    "slack::on-message-added",
+    "slack::on-message-updated",
+    "slack::on-turn-completed",
+    "slack::on-pending-created",
+    "slack::on-pending-resolved",
 ];
 
 #[cfg(test)]

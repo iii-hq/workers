@@ -9,10 +9,14 @@
 
 pub mod admin;
 pub mod assistant;
+pub mod bindings;
 pub mod call;
 pub mod chat;
 pub mod conversations;
+pub mod events;
 pub mod files;
+pub mod interactions;
+pub mod notify;
 pub mod pins;
 pub mod reactions;
 pub mod search;
@@ -93,5 +97,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     assistant::register(iii, deps);
     admin::register(iii, deps);
     call::register(iii, deps);
+    // Bridge functions (harmless when the harness stack is absent; their sibling
+    // triggers simply fail to bind and the HTTP routes stay unregistered).
+    notify::register(iii, deps);
+    events::register(iii, deps);
+    interactions::register(iii, deps);
+    bindings::register(iii, deps);
     tracing::info!("all slack functions registered");
 }

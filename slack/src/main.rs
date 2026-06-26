@@ -6,16 +6,17 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
+use slack::approval_gate::{self, ApprovalGateStatus};
 use slack::clients::slack as slack_client;
 use slack::configuration::{self, ConfigCell};
 use slack::deps::Deps;
-use slack::functions;
-use slack::WorkerConfig;
+use slack::functions::{self, bindings};
+use slack::{ingress, WorkerConfig};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "slack",
-    about = "Slack Web API exposed as slack::* iii functions."
+    about = "Slack Web API + harness bridge as iii functions."
 )]
 struct Cli {
     #[arg(long)]
@@ -83,11 +84,22 @@ async fn main() -> Result<()> {
         .context("slack requires a non-empty bot_token in configuration")?;
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
-    let deps = Arc::new(Deps::new(iii.clone(), cell.clone()));
+    let gate = Arc::new(ApprovalGateStatus::new());
+    let deps = Arc::new(Deps::new(iii.clone(), cell.clone(), gate.clone()));
 
     functions::register_all(&iii, &deps);
 
-    configuration::register_config_trigger(&iii, cell)
+    // Probe the optional approval-gate worker; bind approval triggers if present.
+    gate.set_present(approval_gate::probe_presence(&iii).await);
+    bindings::bind_session_triggers(&iii);
+    if gate.is_available() {
+        bindings::bind_approval_triggers(&iii);
+        tracing::info!("approval-gate present — inline approvals enabled");
+    } else {
+        tracing::info!("approval-gate absent — approvals disabled");
+    }
+
+    configuration::register_config_trigger(&iii, cell, deps.clone())
         .map_err(anyhow::Error::msg)
         .context("binding configuration trigger")?;
 
@@ -100,9 +112,13 @@ async fn main() -> Result<()> {
         Err(e) => tracing::warn!(error = %e, "auth.test failed at boot (check bot_token)"),
     }
 
+    // Register the bridge HTTP routes if the bridge is configured.
+    ingress::apply(&deps).await;
+
     tracing::info!("slack worker ready, waiting for invocations");
     tokio::signal::ctrl_c().await?;
     tracing::info!("slack worker shutting down");
+    ingress::shutdown(&deps).await;
     iii.shutdown_async().await;
     Ok(())
 }

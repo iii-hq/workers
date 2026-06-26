@@ -1,21 +1,32 @@
 //! Operator-facing runtime configuration — hot-reloadable via the
 //! `configuration` worker (see [`crate::configuration`]).
 //!
-//! M1 covers the Slack **API surface** only: the bot/user tokens, optional
-//! scoping, and RPC timeout. The harness-bridge fields (`public_base_url`,
-//! `signing_secret`, `default_model`, streaming, …) land in later milestones;
-//! re-registering the schema then is safe (it replaces the schema, preserves
-//! the stored value).
+//! The Slack **API surface** needs only `bot_token`. The **bridge** (inbound
+//! events → `harness::send`, streamed replies) additionally needs
+//! `signing_secret` + `public_base_url`; when either is missing the worker runs
+//! API-surface-only and registers no HTTP routes.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Engine HTTP `api_path`s for the bridge ingress routes, and the suffixes
+/// appended to `public_base_url` to build the URLs Slack posts to.
+pub const EVENTS_API_PATH: &str = "slack/events";
+pub const INTERACTIONS_API_PATH: &str = "slack/interactions";
+
+/// Provider + model id pair forwarded to `harness::send`. Provider-agnostic:
+/// validated against `router::models::list`, never a baked-in default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelRef {
+    pub provider: String,
+    pub id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Required. Slack bot token (`xoxb-`). Env-expandable: `"${SLACK_BOT_TOKEN}"`.
-    /// Used for every `slack::*` call except `search.messages`.
     #[serde(default)]
     pub bot_token: String,
 
@@ -23,28 +34,71 @@ pub struct WorkerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_token: Option<String>,
 
-    /// Optional default channel id (e.g. `C0123ABC`) used as the target for
-    /// proactive/broadcast helpers when a call omits one. Reserved for the bridge.
+    /// Slack signing secret. Required to enable the inbound bridge (HMAC verify).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_secret: Option<String>,
+
+    /// Public root of the iii engine (e.g. `https://engine.example`). Slack posts
+    /// events to `{public_base_url}/slack/events`. Required to enable the bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_base_url: Option<String>,
+
+    /// Optional default channel id used as a fallback target for proactive sends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_channel: Option<String>,
 
-    /// Optional allowlist of channel ids the inbound bridge will respond in
-    /// (empty = all). Reserved for the bridge.
+    /// Optional allowlist of channel ids the bridge responds in (empty = all).
     #[serde(default)]
     pub allowed_channels: Vec<String>,
 
-    /// Optional allowlist of team ids accepted by the inbound bridge
-    /// (empty = all). Reserved for the bridge.
+    /// Optional allowlist of team ids the bridge accepts (empty = all).
     #[serde(default)]
     pub allowed_teams: Vec<String>,
+
+    /// Bridge: fire a harness turn in channels only on an explicit @bot mention.
+    /// DMs always trigger. Default true.
+    #[serde(default = "default_true")]
+    pub require_mention: bool,
+
+    /// Bridge: on the first mention in a thread, pull prior replies into the
+    /// session for context. Default true.
+    #[serde(default = "default_true")]
+    pub backfill_thread: bool,
+
+    /// Bridge: cap on backfilled/pending context messages (budget guard).
+    #[serde(default = "default_backfill_max")]
+    pub backfill_max_messages: u32,
+
+    /// Bridge: model for harness sends. OPTIONAL and provider-agnostic — if unset
+    /// the first model from `router::models::list` is used; if set it is validated
+    /// against that list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<ModelRef>,
+
+    /// Bridge: optional system prompt appended to every harness send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+
+    /// Bridge: globs passed to `harness::send` `options.functions.allow`.
+    #[serde(default = "default_functions_allow")]
+    pub functions_allow: Vec<String>,
 
     /// Timeout for Slack Web API and engine RPCs (ms).
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
 }
 
+fn default_true() -> bool {
+    true
+}
+fn default_backfill_max() -> u32 {
+    50
+}
 fn default_timeout_ms() -> u64 {
     10_000
+}
+fn default_functions_allow() -> Vec<String> {
+    vec!["slack::*".to_string()]
 }
 
 impl Default for WorkerConfig {
@@ -52,9 +106,17 @@ impl Default for WorkerConfig {
         Self {
             bot_token: String::new(),
             user_token: None,
+            signing_secret: None,
+            public_base_url: None,
             default_channel: None,
             allowed_channels: Vec::new(),
             allowed_teams: Vec::new(),
+            require_mention: true,
+            backfill_thread: true,
+            backfill_max_messages: default_backfill_max(),
+            default_model: None,
+            system_prompt: None,
+            functions_allow: default_functions_allow(),
             timeout_ms: default_timeout_ms(),
         }
     }
@@ -103,11 +165,33 @@ impl WorkerConfig {
         }
         Ok(())
     }
+
+    /// The inbound bridge is enabled when both a signing secret and a public
+    /// engine URL are configured.
+    pub fn bridge_enabled(&self) -> bool {
+        self.signing_secret
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            && self.public_base_url().is_some()
+    }
+
+    /// Normalized public engine root (no trailing slash), if set.
+    pub fn public_base_url(&self) -> Option<String> {
+        let raw = self
+            .public_base_url
+            .as_deref()?
+            .trim()
+            .trim_end_matches('/');
+        (!raw.is_empty()).then(|| raw.to_string())
+    }
+
+    pub fn events_url(&self) -> Option<String> {
+        self.public_base_url()
+            .map(|b| format!("{b}/{EVENTS_API_PATH}"))
+    }
 }
 
-/// Expand `${NAME}` against the process env (empty when unset). Mirrors the
-/// configuration worker's `${VAR}` read-time expansion for the `--config` seed
-/// path; the configuration worker handles expansion for stored values.
+/// Expand `${NAME}` against the process env (empty when unset).
 fn expand_env(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -136,8 +220,10 @@ mod tests {
     fn defaults_from_empty_json() {
         let cfg = WorkerConfig::from_json(&json!({})).unwrap();
         assert_eq!(cfg.timeout_ms, 10_000);
-        assert!(cfg.user_token.is_none());
-        assert!(cfg.allowed_channels.is_empty());
+        assert!(cfg.require_mention);
+        assert!(cfg.backfill_thread);
+        assert_eq!(cfg.backfill_max_messages, 50);
+        assert!(!cfg.bridge_enabled());
     }
 
     #[test]
@@ -155,12 +241,24 @@ mod tests {
     }
 
     #[test]
-    fn parses_tokens_and_scoping() {
-        let yaml = "bot_token: xoxb-a\nuser_token: xoxp-b\nallowed_channels: [C1, C2]\n";
-        let cfg = WorkerConfig::from_yaml(yaml).unwrap();
-        assert_eq!(cfg.bot_token, "xoxb-a");
-        assert_eq!(cfg.user_token.as_deref(), Some("xoxp-b"));
-        assert_eq!(cfg.allowed_channels, vec!["C1", "C2"]);
+    fn bridge_enabled_requires_secret_and_url() {
+        let cfg = WorkerConfig {
+            bot_token: "xoxb".into(),
+            signing_secret: Some("s".into()),
+            public_base_url: Some("https://engine.example/".into()),
+            ..WorkerConfig::default()
+        };
+        assert!(cfg.bridge_enabled());
+        assert_eq!(
+            cfg.events_url().as_deref(),
+            Some("https://engine.example/slack/events")
+        );
+
+        let no_url = WorkerConfig {
+            public_base_url: None,
+            ..cfg.clone()
+        };
+        assert!(!no_url.bridge_enabled());
     }
 
     #[test]

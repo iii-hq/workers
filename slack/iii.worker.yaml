@@ -4,7 +4,10 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: slack
-description: Slack as an iii worker — exposes the Slack Web API as slack::* functions, configurable from the console. (Harness bridge lands in later milestones.)
+description: Slack as an iii worker — exposes the Slack Web API as slack::* functions, plus a harness bridge (inbound events → harness::send, native streaming, approvals). Configurable from the console.
 
 dependencies:
   configuration: "^0.20.0"
+  iii-state: "^0.20.0"
+  harness: "^1.0.0"
+  session-manager: "^1.0.0"
