@@ -38,7 +38,13 @@ fn manifest_subcommand_emits_valid_json() {
         "default_config must be an object"
     );
     let cfg = manifest["default_config"].as_object().unwrap();
-    for key in ["host", "port", "engine_url", "expose_worker_internals", "rbac"] {
+    for key in [
+        "host",
+        "port",
+        "engine_url",
+        "expose_worker_internals",
+        "rbac",
+    ] {
         assert!(cfg.contains_key(key), "default_config.{key} missing");
     }
     assert_eq!(cfg["port"], 49200, "default public RBAC port");

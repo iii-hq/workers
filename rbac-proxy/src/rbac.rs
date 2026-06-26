@@ -294,9 +294,7 @@ impl Serialize for FunctionFilter {
         S: Serializer,
     {
         match self {
-            FunctionFilter::Match(p) => {
-                serializer.serialize_str(&format!("match(\"{}\")", p.raw))
-            }
+            FunctionFilter::Match(p) => serializer.serialize_str(&format!("match(\"{}\")", p.raw)),
             FunctionFilter::Metadata(map) => {
                 let mut inner = serde_json::Map::new();
                 for (k, v) in map {
@@ -673,7 +671,13 @@ mod tests {
     fn allowed_overrides_empty_expose() {
         let c = cfg(&[]);
         let allowed = vec!["test::fn".to_string()];
-        assert!(is_function_allowed("test::fn", Some(&c), &allowed, &[], None));
+        assert!(is_function_allowed(
+            "test::fn",
+            Some(&c),
+            &allowed,
+            &[],
+            None
+        ));
     }
 
     #[test]
@@ -696,7 +700,13 @@ mod tests {
     #[test]
     fn deny_by_default() {
         let c = cfg(&["api::*"]);
-        assert!(!is_function_allowed("internal::fn", Some(&c), &[], &[], None));
+        assert!(!is_function_allowed(
+            "internal::fn",
+            Some(&c),
+            &[],
+            &[],
+            None
+        ));
     }
 
     #[test]
@@ -730,7 +740,11 @@ mod tests {
 
     #[test]
     fn no_rbac_config_allows_everything() {
-        for id in ["api::anything", "internal::private", "engine::workers::list"] {
+        for id in [
+            "api::anything",
+            "internal::private",
+            "engine::workers::list",
+        ] {
             assert!(is_function_allowed(id, None, &[], &[], None));
         }
     }
@@ -787,7 +801,10 @@ mod tests {
     #[test]
     fn function_filter_serializes_to_operator_form() {
         let f = FunctionFilter::Match(WildcardPattern::new("api::*"));
-        assert_eq!(serde_json::to_value(&f).unwrap(), json!("match(\"api::*\")"));
+        assert_eq!(
+            serde_json::to_value(&f).unwrap(),
+            json!("match(\"api::*\")")
+        );
     }
 
     #[test]

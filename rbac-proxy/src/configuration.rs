@@ -68,7 +68,10 @@ pub async fn register_config(
 
 /// Read the live `rbac-proxy` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
-pub async fn fetch_config(iii: &IIIClient, default_engine_url: &str) -> Result<WorkerConfig, String> {
+pub async fn fetch_config(
+    iii: &IIIClient,
+    default_engine_url: &str,
+) -> Result<WorkerConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
@@ -247,7 +250,9 @@ pub fn bind_catalog_refresh(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
         metadata: None,
     }) {
         Ok(_) => tracing::info!("bound catalog-refresh trigger (engine::functions-available)"),
-        Err(e) => tracing::warn!(error = %e, "catalog-refresh trigger binding failed; relying on the TTL refresh"),
+        Err(e) => {
+            tracing::warn!(error = %e, "catalog-refresh trigger binding failed; relying on the TTL refresh")
+        }
     }
 }
 

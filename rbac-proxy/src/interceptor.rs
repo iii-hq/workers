@@ -215,7 +215,11 @@ impl Interceptor {
             return DownstreamAction::Drop;
         }
 
-        let bare_id = v.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let bare_id = v
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
 
         // Hook (bare id), then prefix — matches the engine ordering
         // (engine/mod.rs:1251-1282; the README "after prefix" wording is a doc
@@ -233,7 +237,11 @@ impl Interceptor {
             }
         }
 
-        let mapped_bare = v.get("id").and_then(Value::as_str).unwrap_or(&bare_id).to_string();
+        let mapped_bare = v
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or(&bare_id)
+            .to_string();
         let engine_id = self.apply_prefix(&mapped_bare);
         self.registered_ids.lock().await.insert(engine_id.clone());
         v["id"] = Value::String(engine_id);
@@ -336,7 +344,13 @@ impl Interceptor {
             "function_id": function_id,
             "error": { "code": "REGISTRATION_DENIED", "message": message },
         });
-        tracing::debug!(id, trigger_type, function_id, message, "trigger registration denied");
+        tracing::debug!(
+            id,
+            trigger_type,
+            function_id,
+            message,
+            "trigger registration denied"
+        );
         DownstreamAction::ReplyToClient(frame.to_string())
     }
 
@@ -771,7 +785,10 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_invoke_matches_expose_unprefixed() {
-        let i = interceptor(config_with(expose(&["api::*"]), None), session(Some("tenant1")));
+        let i = interceptor(
+            config_with(expose(&["api::*"]), None),
+            session(Some("tenant1")),
+        );
         let inv = json!({"type":"invokefunction","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"api::users::list","data":{}});
         let DownstreamAction::Forward(out) = i.handle_downstream(&inv.to_string()).await else {
             panic!("foreign exposed call should forward");

@@ -208,7 +208,11 @@ async fn end_to_end_rbac_through_proxy() {
     .expect("api::echo should be allowed");
     // The engine injects `_caller_worker_id` into dispatched payloads, so
     // assert the echoed field is present rather than full equality.
-    assert_eq!(echoed["hi"], json!(1), "exposed call should echo the payload");
+    assert_eq!(
+        echoed["hi"],
+        json!(1),
+        "exposed call should echo the payload"
+    );
 
     // (b) Forbidden call rejects with FORBIDDEN.
     let denied = client

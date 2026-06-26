@@ -65,7 +65,10 @@ impl OverrideOutcome {
         // existence — an intentional divergence not enabled here).
         OverrideOutcome::Error {
             code: "FORBIDDEN".to_string(),
-            message: format!("function '{}' not allowed (add to rbac.expose_functions)", function_id),
+            message: format!(
+                "function '{}' not allowed (add to rbac.expose_functions)",
+                function_id
+            ),
         }
     }
 
@@ -149,7 +152,9 @@ impl CatalogCache {
                 st.entries = entries;
                 st.fetched_at = Some(Instant::now());
             }
-            Err(e) => tracing::warn!(error = %e, "catalog refresh (engine::functions::list) failed; serving stale/empty catalog"),
+            Err(e) => {
+                tracing::warn!(error = %e, "catalog refresh (engine::functions::list) failed; serving stale/empty catalog")
+            }
         }
     }
 
@@ -167,7 +172,9 @@ impl CatalogCache {
                 st.by_type = by_type;
                 st.fetched_at = Some(Instant::now());
             }
-            Err(e) => tracing::warn!(error = %e, "binding refresh (engine::registered-triggers::list) failed; serving stale/empty index"),
+            Err(e) => {
+                tracing::warn!(error = %e, "binding refresh (engine::registered-triggers::list) failed; serving stale/empty index")
+            }
         }
     }
 
@@ -224,7 +231,10 @@ impl CatalogCache {
                 ) else {
                     continue;
                 };
-                by_type.entry(tt.to_string()).or_default().push(fid.to_string());
+                by_type
+                    .entry(tt.to_string())
+                    .or_default()
+                    .push(fid.to_string());
             }
         }
         Ok(by_type)
@@ -368,7 +378,11 @@ fn strip_str_field(obj: &mut serde_json::Map<String, Value>, key: &str, session:
     }
 }
 
-fn functions_list(mut result: Value, session: &ProxySession, cfg: &WorkerConfig) -> OverrideOutcome {
+fn functions_list(
+    mut result: Value,
+    session: &ProxySession,
+    cfg: &WorkerConfig,
+) -> OverrideOutcome {
     let kept: Vec<Value> = result
         .get("functions")
         .and_then(Value::as_array)
@@ -393,7 +407,11 @@ fn functions_list(mut result: Value, session: &ProxySession, cfg: &WorkerConfig)
     OverrideOutcome::Result(result)
 }
 
-fn functions_info(mut result: Value, session: &ProxySession, cfg: &WorkerConfig) -> OverrideOutcome {
+fn functions_info(
+    mut result: Value,
+    session: &ProxySession,
+    cfg: &WorkerConfig,
+) -> OverrideOutcome {
     let id = result
         .get("function_id")
         .and_then(Value::as_str)
@@ -509,7 +527,11 @@ async fn triggers_info(
 ) -> OverrideOutcome {
     // Recompute instance_count to the accessible subset so it cannot leak how
     // many *hidden* functions use the type. Schemas are kept.
-    let type_id = result.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+    let type_id = result
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let targets = catalog.functions_for_trigger_type(&type_id).await;
     let mut accessible = 0usize;
     for fid in &targets {
@@ -561,7 +583,10 @@ async fn registered_triggers_info(
         // denied function (defensive — it references this allowed function).
         if let Some(func) = obj.get("function") {
             if !func.is_null() {
-                let nested_id = func.get("function_id").and_then(Value::as_str).unwrap_or("");
+                let nested_id = func
+                    .get("function_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 let nested_md = func.get("metadata");
                 if !allowed(cfg, session, nested_id, nested_md) {
                     obj.insert("function".to_string(), Value::Null);
@@ -688,7 +713,8 @@ mod tests {
 
     #[tokio::test]
     async fn functions_info_forbidden_when_denied() {
-        let result = json!({ "function_id": "secret::do", "worker_name": "sec", "registered_triggers": [] });
+        let result =
+            json!({ "function_id": "secret::do", "worker_name": "sec", "registered_triggers": [] });
         let out = filter_result(
             "engine::functions::info",
             result,
@@ -709,7 +735,8 @@ mod tests {
 
     #[tokio::test]
     async fn functions_info_allows_and_strips() {
-        let result = json!({ "function_id": "tenant1::foo", "worker_name": "w", "registered_triggers": [] });
+        let result =
+            json!({ "function_id": "tenant1::foo", "worker_name": "w", "registered_triggers": [] });
         let out = filter_result(
             "engine::functions::info",
             result,
@@ -762,7 +789,9 @@ mod tests {
     #[tokio::test]
     async fn workers_list_keeps_internals_when_exposed() {
         let cache = CatalogCache::new(iii());
-        cache.seed_functions(&[("api::a", "api-worker", None)]).await;
+        cache
+            .seed_functions(&[("api::a", "api-worker", None)])
+            .await;
         let result = json!({
             "workers": [ { "name": "api-worker", "id": "1", "status": "connected", "function_count": 1, "connected_at_ms": 0, "active_invocations": 0, "ip_address": "10.0.0.9", "isolation": "vm" } ]
         });
@@ -856,7 +885,10 @@ mod tests {
             panic!("expected result");
         };
         let arr = v["registered_triggers"].as_array().unwrap();
-        let fids: Vec<&str> = arr.iter().map(|t| t["function_id"].as_str().unwrap()).collect();
+        let fids: Vec<&str> = arr
+            .iter()
+            .map(|t| t["function_id"].as_str().unwrap())
+            .collect();
         assert_eq!(fids, vec!["api::a", "foo"]); // secret::z dropped, tenant1::foo → foo
     }
 
@@ -866,7 +898,8 @@ mod tests {
         cache
             .seed_bindings(&[("cron", &["api::a", "secret::z", "api::b"])])
             .await;
-        let result = json!({ "id": "cron", "worker_name": "w", "description": "d", "instance_count": 3 });
+        let result =
+            json!({ "id": "cron", "worker_name": "w", "description": "d", "instance_count": 3 });
         let out = filter_result(
             "engine::triggers::info",
             result,
@@ -883,7 +916,8 @@ mod tests {
 
     #[tokio::test]
     async fn triggers_list_passes_through() {
-        let result = json!({ "triggers": [ { "id": "cron", "worker_name": "w", "description": "d" } ] });
+        let result =
+            json!({ "triggers": [ { "id": "cron", "worker_name": "w", "description": "d" } ] });
         let out = filter_result(
             "engine::triggers::list",
             result.clone(),
