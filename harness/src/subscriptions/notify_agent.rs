@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction};
+use iii_sdk::{IIIError, RegisterFunction, TriggerAction, TriggerRequest};
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
@@ -69,17 +69,15 @@ async fn on_fire(deps: &Deps, mut event: Value) {
             return; // already torn down; a concurrent fire won
         };
         if let Some(trigger_id) = trigger_id {
-            if let Err(e) = deps
-                .engine()
-                .await
-                .dispatch(
-                    crate::functions::subscribe::UNREGISTER_TRIGGER_ID,
-                    json!({ "id": trigger_id }),
-                )
-                .await
-            {
-                tracing::warn!(sub_id, error = %e, "once subscription teardown failed");
-            }
+            let _ = deps
+                .iii
+                .trigger(TriggerRequest {
+                    function_id: crate::functions::subscribe::UNREGISTER_TRIGGER_ID.to_string(),
+                    payload: json!({ "id": trigger_id }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                })
+                .await;
         }
         format!("e_notify_{sub_id}")
     } else {

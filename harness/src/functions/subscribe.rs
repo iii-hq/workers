@@ -6,6 +6,7 @@
 //! metadata are injected, and teardown stays owner-checked — the agent can never
 //! supply those. See [`crate::subscriptions`] for the routing / injection design.
 
+use iii_sdk::{TriggerAction, TriggerRequest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -131,9 +132,13 @@ async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> Re
         Some((_session, trigger_id)) => {
             if let Some(trigger_id) = trigger_id {
                 let _ = deps
-                    .engine()
-                    .await
-                    .dispatch(UNREGISTER_TRIGGER_ID, json!({ "id": trigger_id }))
+                    .iii
+                    .trigger(TriggerRequest {
+                        function_id: UNREGISTER_TRIGGER_ID.to_string(),
+                        payload: json!({ "id": trigger_id }),
+                        action: Some(TriggerAction::Void),
+                        timeout_ms: None,
+                    })
                     .await;
             }
             true
@@ -183,30 +188,36 @@ async fn handle(deps: &Deps, req: SubscribeRequest) -> Result<SubscribeResponse,
         "once": once,
     });
 
-    let engine = deps.engine().await;
-    let resp = engine
-        .dispatch(
-            REGISTER_TRIGGER_ID,
-            json!({
+    let resp = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: REGISTER_TRIGGER_ID.to_string(),
+            payload: json!({
                 "trigger_type": req.trigger_type,
                 "function_id": NOTIFY_AGENT_ID,
                 "config": req.config,
                 "metadata": metadata,
             }),
-        )
+            action: None,
+            timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
+        })
         .await;
 
     match resp.ok().and_then(|v| {
-        v.get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string)
+        v.get("id").and_then(Value::as_str).map(str::to_string)
     }) {
         Some(trigger_id) => {
             // Attach the engine-returned id. If the entry is already gone (a
             // `once` fire won the bind window), unregister the orphan trigger.
             if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
-                let _ = engine
-                    .dispatch(UNREGISTER_TRIGGER_ID, json!({ "id": trigger_id }))
+                let _ = deps
+                    .iii
+                    .trigger(TriggerRequest {
+                        function_id: UNREGISTER_TRIGGER_ID.to_string(),
+                        payload: json!({ "id": trigger_id }),
+                        action: Some(TriggerAction::Void),
+                        timeout_ms: None,
+                    })
                     .await;
             }
         }
