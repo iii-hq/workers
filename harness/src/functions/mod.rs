@@ -13,7 +13,6 @@ pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
 pub mod turn;
-pub mod unsubscribe;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -113,21 +112,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         status::handle(&d, r).await
     });
 
-    // Ephemeral event subscriptions (agent-facing).
-    register(
-        iii,
-        deps,
-        crate::subscriptions::SUBSCRIBE_ID,
-        crate::subscriptions::SUBSCRIBE_DESC,
-        |d, r| async move { subscribe::handle(&d, r).await },
-    );
-    register(
-        iii,
-        deps,
-        crate::subscriptions::UNSUBSCRIBE_ID,
-        crate::subscriptions::UNSUBSCRIBE_DESC,
-        |d, r| async move { unsubscribe::handle(&d, r).await },
-    );
+    // Ephemeral event subscriptions: the agent SUBSCRIBES / UNSUBSCRIBES by
+    // calling `engine::register_trigger` / `engine::unregister_trigger`, which the
+    // dispatch layer intercepts (see `subscribe::maybe_intercept`) to inject the
+    // trusted session and enforce ownership — so there are no agent-facing
+    // `harness::subscribe` / `harness::unsubscribe` functions.
 
     // Internal cron target — registered, but kept off the public catalog.
     register(
@@ -146,6 +135,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         crate::subscriptions::ON_SESSION_DELETED_DESC,
         |d, r| async move { on_session_deleted::handle(&d, r).await },
     );
+
+    // The single shared subscription fire handler — registered once, kept off
+    // the catalog. Bound to by every subscription's trigger via the engine proxy.
+    crate::subscriptions::notify_agent::register(deps.clone());
 
     tracing::info!("all harness::* functions registered");
 }

@@ -371,7 +371,7 @@ pub async fn run_step(
             }
 
             // pre_trigger chain: deny / hold / rewrite arguments.
-            let (mut eff_args, pre_ann) = match deps
+            let (eff_args, pre_ann) = match deps
                 .hooks
                 .run_pre_trigger(
                     &record,
@@ -461,14 +461,6 @@ pub async fn run_step(
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
-            // Stamp the owning session onto a subscription control call so the
-            // model can never widen the target (no-op for other functions).
-            crate::subscriptions::inject_owner_session(
-                &call.function_id,
-                &mut eff_args,
-                &record.session_id,
-            );
-
             // Stamp the per-session working directory onto scoped shell/coder
             // calls as `base_dir` BEFORE invocation. The harness owns scoping:
             // this overwrites any model-supplied base_dir so the model cannot
@@ -483,10 +475,18 @@ pub async fn run_step(
             let scoped_args =
                 crate::workspace_inject::inject(&call.function_id, eff_args, working_dir);
 
-            // Invoke the target, then run the post_trigger chain over the
-            // result before it is appended (redaction / truncation).
-            let raw =
-                trigger::invoke_target(&engine, &policy, &call.function_id, &scoped_args).await;
+            // Single dispatch chokepoint: subscription control calls are
+            // intercepted (trusted session injected); everything else invokes the
+            // target. Then the post_trigger chain runs over the result.
+            let raw = crate::functions::subscribe::dispatch_call(
+                deps,
+                &engine,
+                &policy,
+                &call.function_id,
+                &scoped_args,
+                &record.session_id,
+            )
+            .await;
             let (data, post_ann) = deps
                 .hooks
                 .run_post_trigger(&record, payload.step, &call.id, &call.function_id, raw)

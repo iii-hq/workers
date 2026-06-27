@@ -1,24 +1,42 @@
-//! `harness::subscribe` — register an ephemeral iii trigger and be notified
-//! when it fires, instead of polling (harness.md § Subscriptions). See
-//! [`crate::subscriptions`] for the routing / injection design.
+//! Subscriptions — register an ephemeral iii trigger and be notified when it
+//! fires, instead of polling (harness.md § Subscriptions). The agent calls
+//! `engine::register_trigger` / `engine::unregister_trigger`; the harness
+//! dispatch layer INTERCEPTS those calls (see [`maybe_intercept`]) so the trusted
+//! owning session, the `harness::notify_agent` target, and the subscription
+//! metadata are injected, and teardown stays owner-checked — the agent can never
+//! supply those. See [`crate::subscriptions`] for the routing / injection design.
 
-use std::sync::Arc;
-
-use iii_sdk::RegisterTriggerInput;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::clients::EngineClient;
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::subscriptions::{self, handler, registry::SubEntry};
+use crate::policy::CompiledPolicy;
+use crate::subscriptions::{self, NOTIFY_AGENT_ID};
+use crate::trigger::{self, ResultData};
+use crate::types::content::ContentBlock;
 
+/// The engine function the agent calls to subscribe. The harness dispatch
+/// intercepts it (the agent never reaches the raw engine registrar) so it can
+/// stamp the trusted session and bind the trigger to `harness::notify_agent`.
+pub const REGISTER_TRIGGER_ID: &str = "engine::register_trigger";
+
+/// The engine function the agent calls to unsubscribe. The harness dispatch
+/// intercepts it so it resolves the caller's subscription, enforces ownership,
+/// and unregisters the underlying engine trigger.
+pub const UNREGISTER_TRIGGER_ID: &str = "engine::unregister_trigger";
+
+/// Agent-facing contract — `session_id` is injected by the dispatch layer, not part of the advertised schema.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(rename = "SubscribeArgs")]
 pub struct SubscribeRequest {
     /// The owning session. Injected by the harness from the calling turn; a
     /// model-supplied value is overridden (you cannot subscribe for another
-    /// session).
+    /// session). Kept off the advertised schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
     pub session_id: Option<String>,
     /// The iii trigger type to listen on: `cron`, `state`, `stream`, or another
     /// worker's custom trigger type (e.g. `approval::pending-resolved`). For an
@@ -47,16 +65,89 @@ pub struct SubscribeResponse {
     pub once: bool,
 }
 
+/// The single per-call dispatch chokepoint. Subscription control calls
+/// (`engine::register_trigger` / `engine::unregister_trigger`) are handled inline
+/// with the trusted owning session injected — the model can never widen the
+/// target; everything else invokes the target normally. Every dispatch site (the
+/// turn loop, `harness::function::trigger`, and the hook-held release path) routes
+/// through here so the trusted injection can't be bypassed.
+pub async fn dispatch_call(
+    deps: &Deps,
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+) -> ResultData {
+    match function_id {
+        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id).await,
+        UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
+        _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+    }
+}
+
 /// Whether a trigger type recurs by nature (so `once` defaults to false).
 fn defaults_recurring(trigger_type: &str) -> bool {
     trigger_type == "cron"
 }
 
-pub async fn handle(deps: &Deps, req: SubscribeRequest) -> Result<SubscribeResponse, HarnessError> {
+/// Run an agent `engine::register_trigger` call as a subscription: deserialize
+/// the agent args, stamp the trusted owning session, then drive [`handle`]
+/// (which binds to `harness::notify_agent`, enforces the cap / forbidden-type
+/// guard, and tracks the local registry).
+async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
+    let mut req: SubscribeRequest = match serde_json::from_value(args.clone()) {
+        Ok(r) => r,
+        Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
+    };
+    // The trusted owning session is stamped here, never taken from the model.
+    req.session_id = Some(session_id.to_string());
+
+    match handle(deps, req).await {
+        Ok(resp) => ok_result(&resp),
+        Err(e) => error_result(e.to_string()),
+    }
+}
+
+/// Run an agent `engine::unregister_trigger` call as a subscription teardown.
+/// The `id` is the `subscription_id` the agent received from subscribing; it is
+/// owner-checked and mapped to the underlying engine trigger (so the agent can
+/// never unregister an arbitrary engine trigger). Idempotent.
+async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
+    let Some(id) = args.get("id").and_then(Value::as_str) else {
+        return error_result("engine::unregister_trigger requires an `id`".to_string());
+    };
+
+    // Owner check: only the owning session may tear down its subscription.
+    if let Some(owner) = deps.subscriptions.session_of(id) {
+        if owner != session_id {
+            return error_result("subscription belongs to a different session".to_string());
+        }
+    }
+
+    // Drop the local entry; unregister the engine trigger (which also drops its
+    // proxy). Idempotent: a missing entry reports removed: false.
+    let removed = match deps.subscriptions.take(id) {
+        Some((_session, trigger_id)) => {
+            if let Some(trigger_id) = trigger_id {
+                let _ = deps
+                    .engine()
+                    .await
+                    .dispatch(UNREGISTER_TRIGGER_ID, json!({ "id": trigger_id }))
+                    .await;
+            }
+            true
+        }
+        None => false,
+    };
+    ok_result(&json!({ "removed": removed }))
+}
+
+async fn handle(deps: &Deps, req: SubscribeRequest) -> Result<SubscribeResponse, HarnessError> {
     let session_id = req.session_id.clone().ok_or_else(|| {
         HarnessError::InvalidRequest(
-            "harness::subscribe requires an owning session (the harness injects it from the \
-             calling turn; it cannot be called out-of-band)"
+            "a subscription requires an owning session (the harness injects it when it \
+             intercepts engine::register_trigger; it cannot be created out-of-band)"
                 .to_string(),
         )
     })?;
@@ -68,54 +159,61 @@ pub async fn handle(deps: &Deps, req: SubscribeRequest) -> Result<SubscribeRespo
         )));
     }
 
-    let active = deps.subscriptions.count_for(&session_id);
-    if active >= subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION {
-        return Err(HarnessError::InvalidRequest(format!(
-            "subscription cap reached ({} active for this session); unsubscribe first",
-            subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION
-        )));
-    }
-
     let once = req.once.unwrap_or(!defaults_recurring(&req.trigger_type));
 
     let sub_id = format!("sub_{}", uuid::Uuid::new_v4().simple());
-    let fn_id = subscriptions::internal_fn_id(&sub_id);
 
-    // The handler closure outlives this call, so it owns its own `Deps` (cheap,
-    // Arc-backed clone — shares the same engine, config cell, and registry).
-    let deps_arc = Arc::new(deps.clone());
-    let function = handler::register_subscription_handler(deps_arc, sub_id.clone(), &fn_id);
+    // Enforce the per-session cap and reserve the local entry BEFORE binding, so
+    // an immediate fire still finds it. Atomic check-and-insert (no race).
+    deps.subscriptions
+        .try_insert(&sub_id, &session_id, subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION)
+        .map_err(|_| {
+            HarnessError::InvalidRequest(format!(
+                "subscription cap reached ({} active for this session); unsubscribe first",
+                subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION
+            ))
+        })?;
 
-    // Insert BEFORE binding the trigger so an immediate fire still finds the
-    // entry (the trigger handle is attached right after).
-    let entry = Arc::new(SubEntry {
-        id: sub_id.clone(),
-        session_id: session_id.clone(),
-        trigger_type: req.trigger_type.clone(),
-        label: req.label.clone(),
-        once,
-        fire_count: Default::default(),
-        function,
-        trigger: std::sync::Mutex::new(None),
+    // The engine binds the trigger to the shared `harness::notify_agent` via a
+    // proxy that round-trips this metadata into the fired payload.
+    let metadata = json!({
+        "subscription_id": sub_id,
+        "session_id": session_id,
+        "label": req.label,
+        "once": once,
     });
-    deps.subscriptions.insert(entry);
 
-    match deps.iii.register_trigger(RegisterTriggerInput {
-        trigger_type: req.trigger_type.clone(),
-        function_id: fn_id,
-        config: req.config.clone(),
-        metadata: Some(json!({
-            "subscription_id": sub_id,
-            "session_id": session_id,
-            "label": req.label,
-        })),
+    let engine = deps.engine().await;
+    let resp = engine
+        .dispatch(
+            REGISTER_TRIGGER_ID,
+            json!({
+                "trigger_type": req.trigger_type,
+                "function_id": NOTIFY_AGENT_ID,
+                "config": req.config,
+                "metadata": metadata,
+            }),
+        )
+        .await;
+
+    match resp.ok().and_then(|v| {
+        v.get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
     }) {
-        Ok(trigger) => deps.subscriptions.set_trigger(&sub_id, trigger),
-        Err(e) => {
-            // Unwind: remove() unregisters the function we just created.
-            deps.subscriptions.remove(&sub_id);
+        Some(trigger_id) => {
+            // Attach the engine-returned id. If the entry is already gone (a
+            // `once` fire won the bind window), unregister the orphan trigger.
+            if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
+                let _ = engine
+                    .dispatch(UNREGISTER_TRIGGER_ID, json!({ "id": trigger_id }))
+                    .await;
+            }
+        }
+        None => {
+            deps.subscriptions.take(&sub_id); // unwind the reserved entry
             return Err(HarnessError::Dependency(format!(
-                "register_trigger `{}`: {e}",
+                "{REGISTER_TRIGGER_ID} `{}` failed",
                 req.trigger_type
             )));
         }
@@ -125,6 +223,26 @@ pub async fn handle(deps: &Deps, req: SubscribeRequest) -> Result<SubscribeRespo
         subscription_id: sub_id,
         once,
     })
+}
+
+/// A normalised success result whose `details` is `value` rendered as JSON text.
+fn ok_result<T: Serialize>(value: &T) -> ResultData {
+    let details = serde_json::to_value(value).unwrap_or(Value::Null);
+    ResultData {
+        content: vec![ContentBlock::text(
+            serde_json::to_string(&details).unwrap_or_default(),
+        )],
+        is_error: false,
+        details,
+    }
+}
+
+fn error_result(msg: String) -> ResultData {
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": msg }),
+    }
 }
 
 #[cfg(test)]

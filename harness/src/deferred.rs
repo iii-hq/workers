@@ -87,19 +87,17 @@ pub async fn resolve(
                 return Ok(not_resolved());
             }
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
-            let mut arguments = find_call_arguments(deps, &record, &req.function_call_id)
+            let arguments = find_call_arguments(deps, &record, &req.function_call_id)
                 .await
                 .unwrap_or(Value::Null);
             // The inline loop dispatch stamps the owning session onto subscription
             // control calls; this hold-then-release path bypasses that dispatch, so
             // re-apply it here (a no-op for other functions). Without this a held
-            // `harness::subscribe` fails with "requires an owning session" on release.
-            crate::subscriptions::inject_owner_session(
-                &function_id,
-                &mut arguments,
-                &record.session_id,
-            );
-
+            // a held subscription control call (`engine::register_trigger` /
+            // `engine::unregister_trigger`) is intercepted on release so it
+            // injects the trusted session (subscribe binds to notify_agent;
+            // unsubscribe is owner-checked). This hold-release path bypasses the
+            // inline loop dispatch, so re-apply that interception here.
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;
             }
@@ -107,8 +105,19 @@ pub async fn resolve(
 
             let policy = crate::policy::CompiledPolicy::from(record.options.functions.as_ref());
             let engine = deps.engine().await;
-            let raw =
-                crate::trigger::invoke_target(&engine, &policy, &function_id, &arguments).await;
+            // Single dispatch chokepoint: subscription control calls are
+            // intercepted (trusted session injected); everything else invokes the
+            // target. This hold-release path bypasses the inline loop dispatch, so
+            // it routes through the same chokepoint here.
+            let raw = crate::functions::subscribe::dispatch_call(
+                deps,
+                &engine,
+                &policy,
+                &function_id,
+                &arguments,
+                &record.session_id,
+            )
+            .await;
             let (data, annotations) = deps
                 .hooks
                 .run_post_trigger(

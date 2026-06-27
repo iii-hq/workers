@@ -22,11 +22,12 @@ Consequences worth internalising:
   same function ids; two workers registering the same id load-balance automatically.
 - Triggers are the engine's push channel. NEVER poll (a timer re-reading a queue, file, or
   table) when a trigger type fits — bind a trigger instead. To be notified yourself, call
-  `harness::subscribe { trigger_type, config }` (cron, state, stream, or another worker's custom
-  trigger type). When it fires a notification message arrives in this session — non-blocking, so
-  keep working; the event will reach you. For an ad-hoc signal, subscribe to `state` on a key and
-  have the signaller call `state::set` on it (the engine fans the trigger out to every
-  subscriber). Tear it down with `harness::unsubscribe`.
+  `engine::register_trigger { trigger_type, config }` (cron, state, stream, or another worker's
+  custom trigger type; optional `once`, `label`). When it fires a notification message arrives in
+  this session — non-blocking, so keep working; the event will reach you. For an ad-hoc signal,
+  subscribe to `state` on a key and have the signaller call `state::set` on it (the engine fans
+  the trigger out to every subscriber). It returns a subscription_id; tear it down with
+  `engine::unregister_trigger { id: <subscription_id> }`.
 
 # Discovery
 

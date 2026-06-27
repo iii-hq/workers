@@ -13,13 +13,10 @@ use crate::functions::{
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
-    subscribe::{SubscribeRequest, SubscribeResponse},
-    unsubscribe::{UnsubscribeRequest, UnsubscribeResponse},
 };
 use crate::functions::{
     FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, SEND_ID, SPAWN_ID, STATUS_ID, STOP_ID, TURN_ID,
 };
-use crate::subscriptions::{SUBSCRIBE_ID, UNSUBSCRIBE_ID};
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
 pub struct FunctionSpec {
@@ -58,7 +55,5 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
-        spec::<SubscribeRequest, SubscribeResponse>(SUBSCRIBE_ID),
-        spec::<UnsubscribeRequest, UnsubscribeResponse>(UNSUBSCRIBE_ID),
     ]
 }

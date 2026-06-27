@@ -130,15 +130,17 @@ pub async fn handle(
         }
     }
 
-    // Stamp the owning session onto a subscription control call (no-op for
-    // other functions) — the model can never widen the target.
-    crate::subscriptions::inject_owner_session(
+    // Single dispatch chokepoint: subscription control calls are intercepted
+    // (trusted session injected); everything else invokes the target.
+    let raw = crate::functions::subscribe::dispatch_call(
+        deps,
+        &engine,
+        &policy,
         &req.call.function_id,
-        &mut arguments,
+        &arguments,
         &req.session_id,
-    );
-
-    let raw = trigger::invoke_target(&engine, &policy, &req.call.function_id, &arguments).await;
+    )
+    .await;
     let data = if let Some(rec) = &record {
         deps.hooks
             .run_post_trigger(rec, rec.step, &req.call.id, &req.call.function_id, raw)
