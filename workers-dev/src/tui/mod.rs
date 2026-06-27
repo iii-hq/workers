@@ -41,6 +41,18 @@ const LOG_HEIGHT_DEFAULT: u16 = 18;
 /// Minimum height (incl. border + header row) the worker table keeps, so the
 /// log pane can never squeeze the primary content off-screen.
 const MIN_TABLE_HEIGHT: u16 = 9;
+/// Two-column (master/detail) sizing. The worker list is content-fit on the
+/// left — 66 cols fits all five columns exactly — and the log pane flexes to
+/// fill the rest on the right. Below the combined minimum the two panes stack
+/// vertically instead, so neither is crushed on a narrow terminal.
+const TABLE_PANE_WIDTH: u16 = 66;
+const MIN_LOG_PANE_WIDTH: u16 = 36;
+/// Floor for the user-dragged divider (+/-): below this the list loses its
+/// less-critical right columns (PID, uptime) to hand width to the logs.
+const TABLE_WIDTH_MIN: u16 = 50;
+/// 1-col gutter keeps the two pane borders from fusing into a double seam.
+const PANE_GUTTER: u16 = 1;
+const TWO_COL_MIN_WIDTH: u16 = TABLE_PANE_WIDTH + PANE_GUTTER + MIN_LOG_PANE_WIDTH;
 
 /// Footer help, by available width. The narrowest tier always keeps the two
 /// keys a lost user needs (help, quit).
@@ -120,6 +132,9 @@ struct UiCtx<'a> {
     log_scroll: usize,
     follow: bool,
     log_height: u16,
+    /// Width of the worker-list pane in the two-column layout (user-dragged
+    /// with +/-); ignored in the stacked fallback.
+    table_width: u16,
     spinner_frame: usize,
     color_enabled: bool,
     /// Transient action-failure banner shown in the footer.
@@ -175,6 +190,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         let mut follow = true;
         let mut log_scroll: usize = 0;
         let mut log_height: u16 = LOG_HEIGHT_DEFAULT;
+        let mut table_width: u16 = TABLE_PANE_WIDTH;
         let mut spinner_frame: usize = 0;
         let mut error_banner: Option<(String, Instant)> = None;
         let mut running = true;
@@ -220,6 +236,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                     log_scroll,
                     follow,
                     log_height,
+                    table_width,
                     spinner_frame,
                     color_enabled,
                     error: error_banner.as_ref().map(|(s, _)| s.as_str()),
@@ -266,6 +283,10 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                 }
                             }
                             ModeKind::Dashboard => {
+                                let two_col = terminal
+                                    .size()
+                                    .map(|s| s.width >= TWO_COL_MIN_WIDTH)
+                                    .unwrap_or(true);
                                 running = handle_dashboard_key(
                                     &actions,
                                     key,
@@ -277,6 +298,8 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &mut follow,
                                     &mut log_scroll,
                                     &mut log_height,
+                                    &mut table_width,
+                                    two_col,
                                 );
                             }
                         }
@@ -325,6 +348,8 @@ fn handle_dashboard_key(
     follow: &mut bool,
     log_scroll: &mut usize,
     log_height: &mut u16,
+    table_width: &mut u16,
+    two_col: bool,
 ) -> bool {
     let selected = table_state.selected();
     let worker_name = selected_worker(display_rows, views, selected);
@@ -365,11 +390,21 @@ fn handle_dashboard_key(
                 *follow = true;
             }
         }
+        // `+` always gives the logs more room. Two-column: drag the divider left
+        // (shrink the list). Stacked: grow the log pane's height. `-` reverses it.
         KeyCode::Char('+') | KeyCode::Char('=') => {
-            *log_height = (*log_height + 2).min(LOG_HEIGHT_MAX);
+            if two_col {
+                *table_width = table_width.saturating_sub(4).max(TABLE_WIDTH_MIN);
+            } else {
+                *log_height = (*log_height + 2).min(LOG_HEIGHT_MAX);
+            }
         }
         KeyCode::Char('-') | KeyCode::Char('_') => {
-            *log_height = log_height.saturating_sub(2).max(LOG_HEIGHT_MIN);
+            if two_col {
+                *table_width = (*table_width + 4).min(TABLE_PANE_WIDTH);
+            } else {
+                *log_height = log_height.saturating_sub(2).max(LOG_HEIGHT_MIN);
+            }
         }
         KeyCode::Char('r') => {
             if let Some(name) = worker_name {
@@ -586,35 +621,65 @@ fn styled_if(enabled: bool, style: Style) -> Style {
 
 fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
     let area = f.area();
-    // Cap the log pane so the worker list (primary content) always keeps
-    // MIN_TABLE_HEIGHT. On tall terminals the table flexes to fill and the log
-    // pane holds at the user's preferred height; on short ones the log pane
-    // yields instead of starving the list to a couple of rows.
-    let avail = area.height.saturating_sub(4); // header (3) + footer (1)
-    let log_h = ctx
-        .log_height
-        .min(avail.saturating_sub(MIN_TABLE_HEIGHT))
-        .max(LOG_HEIGHT_MIN.min(avail));
+    // Header and footer span full width; the body between them carries the
+    // two panes.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(MIN_TABLE_HEIGHT),
-            Constraint::Length(log_h),
             Constraint::Length(1),
         ])
         .split(area);
+    let body = chunks[1];
 
     draw_header(f, chunks[0], ctx);
-    draw_table(f, chunks[1], table_state, ctx);
-    draw_log_pane(f, chunks[2], ctx);
-    draw_footer(f, chunks[3], ctx);
 
+    if body.width >= TWO_COL_MIN_WIDTH {
+        // Master/detail: the worker list (content-fit) on the left, its logs
+        // flexing to fill the rest on the right. Wide terminals give the logs
+        // the horizontal room they actually benefit from instead of squeezing
+        // them into a short strip under a half-empty table.
+        // Divider position: the user's preferred list width (+/-), never so wide
+        // it starves the logs below their minimum.
+        let table_w = ctx
+            .table_width
+            .clamp(TABLE_WIDTH_MIN, TABLE_PANE_WIDTH)
+            .min(body.width.saturating_sub(MIN_LOG_PANE_WIDTH + PANE_GUTTER));
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(table_w),
+                Constraint::Length(PANE_GUTTER),
+                Constraint::Min(MIN_LOG_PANE_WIDTH),
+            ])
+            .split(body);
+        draw_table(f, cols[0], table_state, ctx);
+        draw_log_pane(f, cols[2], ctx);
+    } else {
+        // Too narrow for two columns: stack them, with a user-resizable (+/-)
+        // log pane that can never starve the list below MIN_TABLE_HEIGHT.
+        let log_h = ctx
+            .log_height
+            .min(body.height.saturating_sub(MIN_TABLE_HEIGHT))
+            .max(LOG_HEIGHT_MIN.min(body.height));
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(MIN_TABLE_HEIGHT), Constraint::Length(log_h)])
+            .split(body);
+        draw_table(f, rows[0], table_state, ctx);
+        draw_log_pane(f, rows[1], ctx);
+    }
+
+    draw_footer(f, chunks[2], ctx);
+
+    // Modals center over the whole content area so they keep their width in
+    // either layout.
     if let UiMode::ConfirmRestart { name, dependents } = ctx.mode {
-        draw_confirm_overlay(f, chunks[1], name, dependents, ctx.color_enabled);
+        draw_confirm_overlay(f, body, name, dependents, ctx.color_enabled);
     }
     if matches!(ctx.mode, UiMode::Help) {
-        draw_help_overlay(f, f.area(), ctx.color_enabled);
+        draw_help_overlay(f, area, ctx.color_enabled);
     }
 }
 
@@ -765,8 +830,9 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
 }
 
 /// Process-column text + style. Carries the management/crash detail that used
-/// to crowd the name cell: `external` for workers this tool doesn't start, and
-/// the exit code on a crash.
+/// to crowd the name cell: `external` for workers this tool doesn't start,
+/// `elsewhere` for ones connected to the engine but started outside this tool,
+/// and the exit code on a crash.
 fn process_cell(v: &WorkerView, color: bool) -> (String, Style) {
     if !v.spawnable {
         return (
@@ -780,6 +846,15 @@ fn process_cell(v: &WorkerView, color: bool) -> (String, Style) {
             .map(|n| format!("exit {n}"))
             .unwrap_or_else(|| "crashed".to_string());
         return (txt, styled_if(color, Style::default().fg(Color::Red)));
+    }
+    // Connected to the engine but with no process of ours: it's running, just
+    // started elsewhere. Say so rather than printing "stopped" beside the
+    // engine's "connected", which reads as a contradiction.
+    if v.process_status == "stopped" && v.engine_status == "connected" {
+        return (
+            "elsewhere".to_string(),
+            styled_if(color, non_spawnable_style()),
+        );
     }
     (
         v.process_status.clone(),
@@ -922,7 +997,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("r", "restart selected + dependents"),
         ("f", "toggle live log follow"),
         ("PgUp PgDn", "scroll logs"),
-        ("+ -", "grow / shrink log pane"),
+        ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
         ("Ctrl+u", "start the harness stack"),
         ("Ctrl+a", "start all managed workers"),
@@ -957,7 +1032,11 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         Span::raw("stopped"),
     ]));
     lines.push(Line::from(Span::styled(
-        "   external = installed via `iii worker add`",
+        "   external  = installed via `iii worker add`",
+        styled_if(color, hint_style()),
+    )));
+    lines.push(Line::from(Span::styled(
+        "   elsewhere = connected, started outside workers-dev",
         styled_if(color, hint_style()),
     )));
     let popup = centered_rect(58, 75, area);
