@@ -16,7 +16,8 @@ import time
 import uuid
 from typing import Any
 
-from iii import ApiRequest, ApiResponse, IIIClient
+from iii import IIIClient
+from iii_helpers.http import HttpRequest, HttpResponse
 
 from . import hermes_cli
 from .iii_prompt import III_CONTEXT_PROMPT
@@ -187,7 +188,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
         # depends on a long-running gateway run (live-integration item).
         return {"session_id": session_id, "stopped": False, "reason": "hermes one-shot turns are not interruptible"}
 
-    async def inbound(req: ApiRequest[Any], log: logging.Logger) -> ApiResponse[Any]:
+    async def inbound(req: HttpRequest[Any], log: logging.Logger) -> HttpResponse[Any]:
         cfg = get_cfg()
         body = req.body or {}
         # Republish the inbound platform/webhook delivery so iii workers can
@@ -197,7 +198,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
         gid = str(body.get("session_id") or body.get("chat_id") or uuid.uuid4())
         await _emit(iii, cfg["raw_events_stream"], gid, {"type": "inbound", "body": body})
         log.info("hermes inbound delivery: group_id=%s", gid)
-        return ApiResponse(statusCode=200, body={"ok": True}, headers=JSON_HEADERS)
+        return HttpResponse(statusCode=200, body={"ok": True}, headers=JSON_HEADERS)
 
     return {
         "run": run,
