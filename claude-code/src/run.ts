@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { query, type Options, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
@@ -142,7 +142,7 @@ const live = new Map<string, LiveRun>();
 
 /** Best-effort: flip a session record to `error` so a failed background run
  *  never leaves it stuck in `working`. Swallows its own failure. */
-async function markSessionError(iii: ISdk, session_id: string): Promise<void> {
+async function markSessionError(iii: IIIClient, session_id: string): Promise<void> {
   try {
     const record = await loadSession(iii, session_id);
     if (record && record.status === 'working') {
@@ -167,7 +167,7 @@ export function extractPrompt(payload: RunPayload): string {
     .join('\n');
 }
 
-function gatedCanUseTool(iii: ISdk, session_id: string) {
+function gatedCanUseTool(iii: IIIClient, session_id: string) {
   return async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
     try {
       const res = await iii.trigger<unknown, { decision?: string; behavior?: string }>({
@@ -195,7 +195,7 @@ function callerOptions(payload: RunPayload, cfg: Config): Partial<Options> {
 }
 
 export async function executeRun(
-  iii: ISdk,
+  iii: IIIClient,
   cfg: Config,
   emit: Emit,
   emitRaw: Emit,
@@ -222,7 +222,7 @@ export async function executeRun(
 }
 
 async function runReserved(
-  iii: ISdk,
+  iii: IIIClient,
   cfg: Config,
   emit: Emit,
   emitRaw: Emit,
@@ -389,7 +389,7 @@ async function runReserved(
   };
 }
 
-export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
+export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
   iii.registerFunction(
     'claude::run',
     async (payload: unknown) =>
