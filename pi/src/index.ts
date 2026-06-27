@@ -27,23 +27,28 @@ const { values } = parseArgs({
 });
 
 const seed = await loadConfig(String(values.config));
-const url = values.url ? String(values.url) : seed.engine_url;
+const url = values.url
+  ? String(values.url)
+  : (process.env.III_URL ?? process.env.III_ENGINE_URL ?? seed.engine_url);
+const bootConfig: Config = { ...seed, engine_url: url };
 
 const iii = registerWorker(url, { workerName: 'pi' });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
 // from registering pi::*; it falls back to the seed via fetchRuntime.
 try {
-  await registerPiConfig(iii, seed);
+  await registerPiConfig(iii, bootConfig);
 } catch (err) {
   console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
 }
 
 // Live snapshot: start from the seed, then refresh from the configuration worker.
-const holder: ConfigHolder = { current: seed };
+const holder: ConfigHolder = { current: bootConfig };
 const refresh = async () => {
   const runtime = (await fetchRuntime(iii)) ?? undefined;
-  const merged: Config = runtime ? { engine_url: seed.engine_url, ...runtime } : { ...seed };
+  const merged: Config = runtime
+    ? { engine_url: bootConfig.engine_url, ...runtime }
+    : { ...bootConfig };
   holder.current = merged;
 };
 
