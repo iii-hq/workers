@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
@@ -171,7 +171,7 @@ const live = new Map<string, LiveRun>();
 
 /** Best-effort: flip a session record to `error` so a failed background run
  *  never leaves it stuck in `working`. Swallows its own failure. */
-async function markSessionError(iii: ISdk, session_id: string): Promise<void> {
+async function markSessionError(iii: IIIClient, session_id: string): Promise<void> {
   try {
     const record = await loadSession(iii, session_id);
     if (record && record.status === 'working') {
@@ -197,7 +197,7 @@ export function extractPrompt(payload: RunPayload): string {
 }
 
 export async function executeRun(
-  iii: ISdk,
+  iii: IIIClient,
   cfg: Config,
   emit: Emit,
   emitRaw: Emit,
@@ -223,7 +223,7 @@ export async function executeRun(
 }
 
 async function runReserved(
-  iii: ISdk,
+  iii: IIIClient,
   cfg: Config,
   emit: Emit,
   emitRaw: Emit,
@@ -387,7 +387,7 @@ async function runReserved(
   };
 }
 
-export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
+export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
   iii.registerFunction(
     'pi::run',
     async (payload: unknown) =>
