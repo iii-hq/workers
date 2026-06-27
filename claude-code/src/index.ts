@@ -28,14 +28,23 @@ const { values } = parseArgs({
 });
 
 const seed = await loadConfig(String(values.config));
-const url = values.url ? String(values.url) : seed.engine_url;
+const url =
+  (values.url ? String(values.url) : undefined) ??
+  process.env.III_URL ??
+  process.env.III_ENGINE_URL ??
+  seed.engine_url;
+const bootConfig: Config = {
+  ...seed,
+  engine_url: url,
+  claude_executable: resolveClaudeExecutable(seed.claude_executable),
+};
 
 const iii = registerWorker(url, { workerName: 'claude-code' });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
 // from registering claude::*; it falls back to the seed via fetchRuntime.
 try {
-  await registerClaudeConfig(iii, seed);
+  await registerClaudeConfig(iii, bootConfig);
 } catch (err) {
   console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
 }
@@ -43,10 +52,12 @@ try {
 // Live snapshot: start from the seed, then refresh from the configuration
 // worker. `claude_executable` is re-resolved on every refresh so a live change
 // to it (or an empty value) re-runs the PATH lookup.
-const holder: ConfigHolder = { current: seed };
+const holder: ConfigHolder = { current: bootConfig };
 const refresh = async () => {
   const runtime = (await fetchRuntime(iii)) ?? undefined;
-  const merged: Config = runtime ? { engine_url: seed.engine_url, ...runtime } : { ...seed };
+  const merged: Config = runtime
+    ? { engine_url: bootConfig.engine_url, ...runtime }
+    : { ...bootConfig };
   merged.claude_executable = resolveClaudeExecutable(merged.claude_executable);
   holder.current = merged;
 };
