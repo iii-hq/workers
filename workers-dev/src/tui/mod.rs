@@ -709,34 +709,22 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
             DisplayRowKind::Worker(idx) => {
                 let v = &ctx.views[idx];
                 let icon = status_icon(&v.display_status, ctx.spinner_frame);
-                let mut name_spans = vec![Span::styled(
+                // Name cell is just glyph + name. The wide "(iii worker add)"
+                // label and the crash exit code moved to the Process column, so
+                // the name sits right next to its status instead of behind a
+                // column sized for the longest label.
+                let name_cell = Cell::from(Span::styled(
                     format!("{icon} {}", v.name),
                     styled_if(color, status_style(&v.display_status)),
-                )];
-                if v.display_status == "crashed" {
-                    if let Some(code) = v.exit_code {
-                        name_spans.push(Span::styled(
-                            format!("  exit {code}"),
-                            styled_if(color, Style::default().fg(Color::Red)),
-                        ));
-                    }
-                }
-                if !v.spawnable {
-                    name_spans.push(Span::styled(
-                        " (iii worker add)",
-                        styled_if(color, non_spawnable_style()),
-                    ));
-                }
+                ));
+                let (process_text, process_st) = process_cell(v, color);
                 let pid = v
                     .local_pid
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "—".to_string());
                 Row::new(vec![
-                    Cell::from(Line::from(name_spans)),
-                    Cell::from(Span::styled(
-                        v.process_status.clone(),
-                        styled_if(color, process_style(&v.process_status)),
-                    )),
+                    name_cell,
+                    Cell::from(Span::styled(process_text, process_st)),
                     Cell::from(Span::styled(
                         v.engine_status.clone(),
                         styled_if(color, engine_style(&v.engine_status)),
@@ -754,13 +742,13 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         })
         .collect();
 
-    // Content-fit widths, left-packed: status sits right next to the worker
-    // name instead of floating across the row. Worker is wide enough for the
-    // longest "(iii worker add)" label; Uptime (Min) absorbs the right slack.
+    // Content-fit, left-packed widths: the worker name sits right next to its
+    // status. Worker only has to fit a name now (label/exit moved to Process),
+    // so it's tight; Uptime (Min) absorbs the right slack.
     let table = Table::new(
         rows,
         [
-            Constraint::Length(38),
+            Constraint::Length(24),
             Constraint::Length(10),
             Constraint::Length(11),
             Constraint::Length(7),
@@ -774,6 +762,29 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
     .block(Block::default().borders(Borders::ALL).title(" Workers "))
     .row_highlight_style(styled_if(color, selection_row_style()));
     f.render_stateful_widget(table, area, table_state);
+}
+
+/// Process-column text + style. Carries the management/crash detail that used
+/// to crowd the name cell: `external` for workers this tool doesn't start, and
+/// the exit code on a crash.
+fn process_cell(v: &WorkerView, color: bool) -> (String, Style) {
+    if !v.spawnable {
+        return (
+            "external".to_string(),
+            styled_if(color, non_spawnable_style()),
+        );
+    }
+    if v.process_status == "crashed" {
+        let txt = v
+            .exit_code
+            .map(|n| format!("exit {n}"))
+            .unwrap_or_else(|| "crashed".to_string());
+        return (txt, styled_if(color, Style::default().fg(Color::Red)));
+    }
+    (
+        v.process_status.clone(),
+        styled_if(color, process_style(&v.process_status)),
+    )
 }
 
 fn muted_cell_style_for(value: &str) -> Style {
@@ -945,6 +956,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         Span::styled("○ ", styled_if(color, muted_cell_style())),
         Span::raw("stopped"),
     ]));
+    lines.push(Line::from(Span::styled(
+        "   external = installed via `iii worker add`",
+        styled_if(color, hint_style()),
+    )));
     let popup = centered_rect(58, 75, area);
     f.render_widget(Clear, popup);
     f.render_widget(
