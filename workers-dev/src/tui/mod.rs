@@ -38,8 +38,16 @@ const LOG_PAGE: usize = 10;
 const LOG_HEIGHT_MIN: u16 = 6;
 const LOG_HEIGHT_MAX: u16 = 60;
 const LOG_HEIGHT_DEFAULT: u16 = 18;
+/// Minimum height (incl. border + header row) the worker table keeps, so the
+/// log pane can never squeeze the primary content off-screen.
+const MIN_TABLE_HEIGHT: u16 = 9;
 
-const HELP: &str = " ↑↓ select · s start · x stop · r restart · / filter · f follow · ? keys · q quit ";
+/// Footer help, by available width. The narrowest tier always keeps the two
+/// keys a lost user needs (help, quit).
+const HELP_FULL: &str =
+    " ↑↓ select · s start · x stop · r restart · / filter · f follow · ? keys · q quit ";
+const HELP_MID: &str = " s start · x stop · r restart · / filter · ? keys · q quit ";
+const HELP_MIN: &str = " / filter · ? keys · q quit ";
 
 enum UiMode {
     Dashboard,
@@ -577,15 +585,25 @@ fn styled_if(enabled: bool, style: Style) -> Style {
 }
 
 fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
+    let area = f.area();
+    // Cap the log pane so the worker list (primary content) always keeps
+    // MIN_TABLE_HEIGHT. On tall terminals the table flexes to fill and the log
+    // pane holds at the user's preferred height; on short ones the log pane
+    // yields instead of starving the list to a couple of rows.
+    let avail = area.height.saturating_sub(4); // header (3) + footer (1)
+    let log_h = ctx
+        .log_height
+        .min(avail.saturating_sub(MIN_TABLE_HEIGHT))
+        .max(LOG_HEIGHT_MIN.min(avail));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(LOG_HEIGHT_MIN),
-            Constraint::Length(ctx.log_height),
+            Constraint::Min(MIN_TABLE_HEIGHT),
+            Constraint::Length(log_h),
             Constraint::Length(1),
         ])
-        .split(f.area());
+        .split(area);
 
     draw_header(f, chunks[0], ctx);
     draw_table(f, chunks[1], table_state, ctx);
@@ -658,13 +676,27 @@ fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         ));
     }
 
-    let header = Paragraph::new(Line::from(spans))
-        .block(Block::default().borders(Borders::ALL).title(" workers-dev "));
+    // No box title: the accent "workers-dev" span already names the pane.
+    let header = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
     f.render_widget(header, area);
 }
 
 fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiCtx) {
     let color = ctx.color_enabled;
+    if ctx.display_rows.is_empty() {
+        let msg = if ctx.filter.is_empty() {
+            "(no workers discovered)".to_string()
+        } else {
+            format!("no workers match \"{}\"  ·  Esc to clear", ctx.filter)
+        };
+        let placeholder = Paragraph::new(Line::from(Span::styled(
+            format!("  {msg}"),
+            styled_if(color, hint_style()),
+        )))
+        .block(Block::default().borders(Borders::ALL).title(" Workers "));
+        f.render_widget(placeholder, area);
+        return;
+    }
     let rows: Vec<Row> = ctx
         .display_rows
         .iter()
@@ -722,14 +754,17 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         })
         .collect();
 
+    // Content-fit widths, left-packed: status sits right next to the worker
+    // name instead of floating across the row. Worker is wide enough for the
+    // longest "(iii worker add)" label; Uptime (Min) absorbs the right slack.
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(38),
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
-            Constraint::Percentage(12),
-            Constraint::Percentage(22),
+            Constraint::Length(38),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Min(8),
         ],
     )
     .header(
@@ -817,7 +852,16 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             format!(" filter: {}_   (Enter apply · Esc clear) ", ctx.filter),
             styled_if(color, Style::default().fg(Color::Yellow)),
         ),
-        _ => (HELP.to_string(), styled_if(color, footer_style())),
+        _ => {
+            let help = if area.width >= 86 {
+                HELP_FULL
+            } else if area.width >= 64 {
+                HELP_MID
+            } else {
+                HELP_MIN
+            };
+            (help.to_string(), styled_if(color, footer_style()))
+        }
     };
     f.render_widget(Paragraph::new(text).style(style), area);
 }
@@ -884,6 +928,23 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
             Span::raw(d),
         ]));
     }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "   status",
+        styled_if(color, Style::default().add_modifier(Modifier::BOLD)),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("   ● ", styled_if(color, Style::default().fg(Color::Green))),
+        Span::raw("connected     "),
+        Span::styled("◐ ", styled_if(color, Style::default().fg(Color::Yellow))),
+        Span::raw("compiling / disconnected"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("   ✗ ", styled_if(color, Style::default().fg(Color::Red))),
+        Span::raw("crashed       "),
+        Span::styled("○ ", styled_if(color, muted_cell_style())),
+        Span::raw("stopped"),
+    ]));
     let popup = centered_rect(58, 75, area);
     f.render_widget(Clear, popup);
     f.render_widget(
