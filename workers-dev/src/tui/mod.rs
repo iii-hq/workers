@@ -1,6 +1,7 @@
 mod theme;
 
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
@@ -33,6 +34,15 @@ enum UiMode {
     Busy(String),
 }
 
+/// Latest dashboard data produced by the background poller. Carries the
+/// engine-query error (if any) so the UI can show "engine unreachable" rather
+/// than silently rendering every worker as disconnected.
+#[derive(Clone, Default)]
+struct DashboardState {
+    views: Vec<WorkerView>,
+    engine_error: Option<String>,
+}
+
 enum DisplayRowKind {
     Header(WorkerGroup),
     Worker(usize),
@@ -51,25 +61,53 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         let backend = ratatui::backend::CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let mut views: Vec<WorkerView> = orchestrator.worker_views().await?;
-        let mut display_rows = build_display_rows(&views);
+        // Seed the dashboard, then poll the engine on a background task so a
+        // slow or unreachable engine query can't freeze keyboard input.
+        let (initial_views, initial_err) = orchestrator.dashboard_snapshot().await;
+        let (state_tx, state_rx) = tokio::sync::watch::channel(DashboardState {
+            views: initial_views,
+            engine_error: initial_err,
+        });
+        let poll_interval = Duration::from_millis(orchestrator.config.poll_interval_ms);
+        let poller = {
+            let orchestrator = orchestrator.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(poll_interval).await;
+                    let (views, engine_error) = orchestrator.dashboard_snapshot().await;
+                    if state_tx.send(DashboardState { views, engine_error }).is_err() {
+                        break; // UI gone
+                    }
+                }
+            })
+        };
+
+        // Number of worker actions (start/stop/restart) still running. The Busy
+        // overlay clears only when this hits zero, and a new action can't be
+        // fired while it's non-zero — preventing interleaved start/stop on the
+        // same worker from a fast keypress.
+        let in_flight = Arc::new(AtomicUsize::new(0));
+
+        let mut state = state_rx.borrow().clone();
+        let mut display_rows = build_display_rows(&state.views);
         let mut table_state = TableState::default();
         table_state.select(Some(first_worker_row(&display_rows).unwrap_or(0)));
 
         let mut mode = UiMode::Dashboard;
-        let poll = Duration::from_millis(orchestrator.config.poll_interval_ms);
-        let mut last_poll = Instant::now();
+        let mut last_busy_tick = Instant::now();
         let mut running = true;
 
         let color_enabled = orchestrator.config.color_mode.enabled_for_tui();
 
         while running {
-            display_rows = build_display_rows(&views);
+            state = state_rx.borrow().clone();
+            display_rows = build_display_rows(&state.views);
             terminal.draw(|f| {
                 draw_ui(
                     f,
                     &orchestrator.config.engine_url,
-                    &views,
+                    &state.views,
+                    state.engine_error.as_deref(),
                     &display_rows,
                     &mut table_state,
                     &mode,
@@ -77,12 +115,12 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                 );
             })?;
 
-            if last_poll.elapsed() >= poll {
-                if let Ok(v) = orchestrator.worker_views().await {
-                    views = v;
-                }
-                last_poll = Instant::now();
-                if matches!(mode, UiMode::Busy(_)) {
+            // Clear the Busy overlay once actions finish. Tick on the poll
+            // cadence so brief informational messages stay readable, but never
+            // clear while an action is still running.
+            if last_busy_tick.elapsed() >= poll_interval {
+                last_busy_tick = Instant::now();
+                if matches!(mode, UiMode::Busy(_)) && in_flight.load(Ordering::SeqCst) == 0 {
                     mode = UiMode::Dashboard;
                 }
             }
@@ -94,7 +132,11 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                             let worker = worker.clone();
                             match key.code {
                                 KeyCode::Char('y') | KeyCode::Enter => {
-                                    spawn_restart(orchestrator.clone(), worker.clone());
+                                    spawn_restart(
+                                        orchestrator.clone(),
+                                        in_flight.clone(),
+                                        worker.clone(),
+                                    );
                                     mode = UiMode::Busy(format!("restarting {worker} + dependents…"));
                                 }
                                 KeyCode::Char('n') | KeyCode::Esc => {
@@ -104,17 +146,22 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                             }
                         }
                         UiMode::Busy(_) => {
-                            if key.code == KeyCode::Esc {
+                            // Esc dismisses an informational message, but not an
+                            // action that's still running.
+                            if key.code == KeyCode::Esc
+                                && in_flight.load(Ordering::SeqCst) == 0
+                            {
                                 mode = UiMode::Dashboard;
                             }
                         }
                         UiMode::Dashboard => {
                             running = handle_dashboard_key(
                                 orchestrator.clone(),
+                                in_flight.clone(),
                                 key,
                                 &mut table_state,
                                 &display_rows,
-                                &views,
+                                &state.views,
                                 &mut mode,
                             )
                             .await?;
@@ -124,6 +171,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
             }
         }
 
+        poller.abort();
         Ok(())
     }
     .await;
@@ -136,6 +184,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn handle_dashboard_key(
     orchestrator: Arc<Orchestrator>,
+    in_flight: Arc<AtomicUsize>,
     key: KeyEvent,
     table_state: &mut TableState,
     display_rows: &[DisplayRow],
@@ -171,7 +220,7 @@ async fn handle_dashboard_key(
         KeyCode::Char('s') => {
             if let Some(name) = worker_name {
                 if views.iter().any(|v| v.name == name && v.spawnable) {
-                    spawn_start(orchestrator.clone(), vec![name.clone()]);
+                    spawn_start(orchestrator.clone(), in_flight.clone(), vec![name.clone()]);
                     *mode = UiMode::Busy(format!("starting {name}…"));
                 } else {
                     *mode = UiMode::Busy(
@@ -182,7 +231,7 @@ async fn handle_dashboard_key(
         }
         KeyCode::Char('x') => {
             if let Some(name) = worker_name {
-                spawn_stop(orchestrator.clone(), vec![name.clone()]);
+                spawn_stop(orchestrator.clone(), in_flight.clone(), vec![name.clone()]);
                 *mode = UiMode::Busy(format!("stopping {name}…"));
             }
         }
@@ -197,11 +246,15 @@ async fn handle_dashboard_key(
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            spawn_start_harness_stack(orchestrator.clone());
+            spawn_start_harness_stack(orchestrator.clone(), in_flight.clone());
             *mode = UiMode::Busy("starting harness stack…".to_string());
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            spawn_start(orchestrator.clone(), orchestrator.config.workers.clone());
+            spawn_start(
+                orchestrator.clone(),
+                in_flight.clone(),
+                orchestrator.config.workers.clone(),
+            );
             *mode = UiMode::Busy("starting all managed workers…".to_string());
         }
         _ => {}
@@ -209,35 +262,41 @@ async fn handle_dashboard_key(
     Ok(true)
 }
 
-fn spawn_start(orchestrator: Arc<Orchestrator>, names: Vec<String>) {
+/// Run a worker action on a detached task, counting it as in-flight for the
+/// whole duration so the UI keeps the Busy overlay up and refuses overlapping
+/// actions until it finishes.
+fn spawn_action<F>(in_flight: Arc<AtomicUsize>, fut: F)
+where
+    F: std::future::Future<Output = Result<()>> + Send + 'static,
+{
+    in_flight.fetch_add(1, Ordering::SeqCst);
     tokio::spawn(async move {
-        if let Err(err) = orchestrator.start_workers(&names, false).await {
-            eprintln!("workers-dev: start failed: {err:#}");
+        if let Err(err) = fut.await {
+            eprintln!("workers-dev: {err:#}");
         }
+        in_flight.fetch_sub(1, Ordering::SeqCst);
     });
 }
 
-fn spawn_start_harness_stack(orchestrator: Arc<Orchestrator>) {
-    tokio::spawn(async move {
-        if let Err(err) = orchestrator.start_harness_stack(false).await {
-            eprintln!("workers-dev: start failed: {err:#}");
-        }
+fn spawn_start(orchestrator: Arc<Orchestrator>, in_flight: Arc<AtomicUsize>, names: Vec<String>) {
+    spawn_action(in_flight, async move {
+        orchestrator.start_workers(&names, false).await
     });
 }
 
-fn spawn_stop(orchestrator: Arc<Orchestrator>, names: Vec<String>) {
-    tokio::spawn(async move {
-        if let Err(err) = orchestrator.stop_workers(&names).await {
-            eprintln!("workers-dev: stop failed: {err:#}");
-        }
+fn spawn_start_harness_stack(orchestrator: Arc<Orchestrator>, in_flight: Arc<AtomicUsize>) {
+    spawn_action(in_flight, async move {
+        orchestrator.start_harness_stack(false).await
     });
 }
 
-fn spawn_restart(orchestrator: Arc<Orchestrator>, worker: String) {
-    tokio::spawn(async move {
-        if let Err(err) = orchestrator.restart_worker(&worker).await {
-            eprintln!("workers-dev: restart failed: {err:#}");
-        }
+fn spawn_stop(orchestrator: Arc<Orchestrator>, in_flight: Arc<AtomicUsize>, names: Vec<String>) {
+    spawn_action(in_flight, async move { orchestrator.stop_workers(&names).await });
+}
+
+fn spawn_restart(orchestrator: Arc<Orchestrator>, in_flight: Arc<AtomicUsize>, worker: String) {
+    spawn_action(in_flight, async move {
+        orchestrator.restart_worker(&worker).await
     });
 }
 
@@ -311,10 +370,12 @@ fn styled_if(enabled: bool, style: Style) -> Style {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_ui(
     f: &mut Frame,
     engine_url: &str,
     views: &[WorkerView],
+    engine_error: Option<&str>,
     display_rows: &[DisplayRow],
     table_state: &mut TableState,
     mode: &UiMode,
@@ -330,16 +391,22 @@ fn draw_ui(
         ])
         .split(f.area());
 
-    let header = Paragraph::new(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(
             "workers-dev",
-            styled_if(color_enabled, header_accent_style())
-                .add_modifier(Modifier::BOLD),
+            styled_if(color_enabled, header_accent_style()).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  engine "),
         Span::styled(engine_url, styled_if(color_enabled, engine_url_style())),
-    ]))
-    .block(Block::default().borders(Borders::ALL).title(" workers-dev "));
+    ];
+    if engine_error.is_some() {
+        header_spans.push(Span::styled(
+            "  ⚠ unreachable",
+            styled_if(color_enabled, Style::default().fg(Color::Red)).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let header = Paragraph::new(Line::from(header_spans))
+        .block(Block::default().borders(Borders::ALL).title(" workers-dev "));
     f.render_widget(header, chunks[0]);
 
     let rows: Vec<Row> = display_rows

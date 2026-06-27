@@ -75,6 +75,11 @@ impl WorkerRuntime {
         }
     }
 
+    /// PID of the spawned child — the `cargo run` supervisor, not the worker
+    /// binary it forks. The engine doesn't expose the worker's own pid via
+    /// `engine::workers::list`, so this is the closest stable handle.
+    // ponytail: supervisor pid is fine for the dashboard; run the built binary
+    // directly (instead of `cargo run`) if the true worker pid is ever needed.
     pub fn pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(|c| c.id())
     }

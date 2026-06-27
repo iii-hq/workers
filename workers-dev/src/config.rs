@@ -9,6 +9,10 @@ use crate::discover::{discover_repo_workers, harness_stack_names, order_worker_n
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2000;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 120_000;
+/// Per-query timeout for `engine::workers::list`. Kept short so a slow or
+/// hung engine can't stall the status poll (and, with off-thread polling,
+/// can't freeze the TUI).
+pub const ENGINE_QUERY_TIMEOUT_MS: u64 = 3_000;
 pub const LOG_RING_CAPACITY: usize = 500;
 pub const DEFAULT_LOG_TAIL: usize = 100;
 pub const DASHBOARD_LOG_LINES: usize = 20;
@@ -17,8 +21,6 @@ pub const DASHBOARD_LOG_LINES: usize = 20;
 pub struct Config {
     pub repo_root: PathBuf,
     pub engine_url: String,
-    pub engine_host: String,
-    pub engine_port: u16,
     pub release: bool,
     pub poll_interval_ms: u64,
     pub connect_timeout_ms: u64,
@@ -67,10 +69,14 @@ impl Config {
             bail!("no workers discovered under {}", repo_root.display());
         }
 
-        let engine_url = engine_url
+        let raw_engine_url = engine_url
             .or(file_cfg.engine_url)
             .unwrap_or_else(|| DEFAULT_ENGINE_URL.to_string());
-        let (engine_host, engine_port) = parse_engine_url(&engine_url, port)?;
+        let (engine_host, engine_port) = parse_engine_url(&raw_engine_url, port)?;
+        // Canonicalize so a `--port` override is reflected in the URL the SDK
+        // actually connects to. The engine WS endpoint is always `/`, so any
+        // path in the original URL is intentionally dropped.
+        let engine_url = format!("ws://{engine_host}:{engine_port}");
 
         let discovered_names = order_worker_names(&worker_specs);
         let workers = file_cfg.workers.unwrap_or(discovered_names);
@@ -83,7 +89,9 @@ impl Config {
             .as_deref()
             .and_then(|s| {
                 ColorMode::parse(s).or_else(|| {
-                    eprintln!("warning: invalid color mode {s:?}; using auto");
+                    eprintln!(
+                        "warning: invalid color mode {s:?} (valid: auto, always, never); using auto"
+                    );
                     None
                 })
             })
@@ -92,8 +100,6 @@ impl Config {
         Ok(Self {
             repo_root,
             engine_url,
-            engine_host,
-            engine_port,
             release: release || file_cfg.release.unwrap_or(false),
             poll_interval_ms: file_cfg
                 .poll_interval_ms
@@ -183,7 +189,9 @@ pub fn parse_engine_url(url: &str, port_override: Option<u16>) -> Result<(String
     let (host, port) = if let Some((host, port_str)) = authority.rsplit_once(':') {
         let port: u16 = port_str
             .parse()
-            .with_context(|| format!("invalid port in engine url {url}"))?;
+            .with_context(|| {
+                format!("invalid port in engine url {url} (port must be a number, e.g. 49134)")
+            })?;
         (host.to_string(), port)
     } else {
         (authority.to_string(), 49134)

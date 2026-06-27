@@ -15,7 +15,7 @@ pub const HARNESS_STACK: &[&str] = &[
     "harness",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WorkerGroup {
     HarnessStack,
     Other,
@@ -76,9 +76,10 @@ pub fn discover_repo_workers(repo_root: &Path) -> Result<Vec<WorkerSpec>> {
             .with_context(|| format!("parse {}", yaml_path.display()))?;
         let name = parsed.name.clone().unwrap_or(folder.clone());
         if name != folder {
-            anyhow::bail!(
-                "worker folder {folder} has iii.worker.yaml name={name} (mismatch)"
+            eprintln!(
+                "warning: skipping worker folder {folder}: iii.worker.yaml name={name} (mismatch)"
             );
+            continue;
         }
 
         let group = if HARNESS_STACK.contains(&name.as_str()) {
@@ -96,19 +97,8 @@ pub fn discover_repo_workers(repo_root: &Path) -> Result<Vec<WorkerSpec>> {
         });
     }
 
-    specs.sort_by(|a, b| {
-        group_rank(a.group)
-            .cmp(&group_rank(b.group))
-            .then_with(|| a.name.cmp(&b.name))
-    });
+    specs.sort_by(|a, b| a.group.cmp(&b.group).then_with(|| a.name.cmp(&b.name)));
     Ok(specs)
-}
-
-fn group_rank(group: WorkerGroup) -> u8 {
-    match group {
-        WorkerGroup::HarnessStack => 0,
-        WorkerGroup::Other => 1,
-    }
 }
 
 fn classify_spawn(dir: &Path, yaml: &WorkerYaml) -> SpawnKind {

@@ -3,6 +3,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time;
@@ -18,21 +19,139 @@ pub struct Orchestrator {
     pub config: Config,
     pub graph: WorkerGraph,
     pub runtimes: SharedRuntimes,
+    /// When true, CLI start/restart paths stream per-worker progress to stderr.
+    /// Off for the TUI, which owns the screen and shows status in its own panes.
+    pub progress: bool,
+    /// One persistent engine connection, lazily opened on first status query
+    /// and reused for every poll. Replaces the per-poll `iii trigger`
+    /// subprocess that made the engine log a register/unregister pair every
+    /// tick.
+    engine_client: tokio::sync::OnceCell<IIIClient>,
 }
 
 impl Orchestrator {
-    pub fn new(config: Config) -> Result<Self> {
+    pub fn new(config: Config, progress: bool) -> Result<Self> {
         let graph = WorkerGraph::load(&config.repo_root, &config.workers)?;
         let runtimes = crate::runtime::new_runtimes(&config.workers);
         Ok(Self {
             config,
             graph,
             runtimes,
+            progress,
+            engine_client: tokio::sync::OnceCell::new(),
         })
     }
 
+    /// Lazily open (and cache) the shared engine connection. Connects only
+    /// when status is actually queried, and waits briefly for the background
+    /// handshake so the first query doesn't race it.
+    async fn engine_client(&self) -> &IIIClient {
+        self.engine_client
+            .get_or_init(|| async {
+                // Label the connection so it shows as `workers-dev` in engine
+                // logs / `engine::workers::list` instead of a bare hostname.
+                let client = register_worker(
+                    &self.config.engine_url,
+                    InitOptions {
+                        metadata: Some(iii_sdk::iii::WorkerMetadata {
+                            name: "workers-dev".to_string(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                );
+                let deadline = Instant::now() + Duration::from_millis(2000);
+                while Instant::now() < deadline
+                    && client.get_connection_state()
+                        != iii_sdk::iii::IIIConnectionState::Connected
+                {
+                    time::sleep(Duration::from_millis(50)).await;
+                }
+                client
+            })
+            .await
+    }
+
+    /// Fetch connected workers from the engine over the shared connection.
+    pub async fn engine_workers(&self) -> Result<Vec<EngineWorker>> {
+        let client = self.engine_client().await;
+        status::fetch_engine_workers(client, crate::config::ENGINE_QUERY_TIMEOUT_MS).await
+    }
+
+    /// Cleanly close the engine connection so the engine logs a prompt
+    /// unregister instead of waiting for the socket to time out.
+    pub async fn shutdown(&self) {
+        if let Some(client) = self.engine_client.get() {
+            client.shutdown_async().await;
+        }
+    }
+
+    /// Fast TCP probe of the engine's WebSocket port. Cheaper than a full
+    /// trigger round-trip, so the engine-boot wait loop can poll quickly.
+    async fn engine_reachable(&self) -> bool {
+        let Ok((host, port)) = crate::config::parse_engine_url(&self.config.engine_url, None) else {
+            return false;
+        };
+        matches!(
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                tokio::net::TcpStream::connect((host.as_str(), port)),
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    }
+
+    /// Ensure the engine is running, starting `iii -c harness/engine.config.yaml`
+    /// if it isn't. The engine is detached (own process group, no kill-on-drop)
+    /// so it outlives the dashboard, like the workers it hosts; then we wait for
+    /// it to accept connections.
+    pub async fn ensure_engine(&self) -> Result<()> {
+        if self.engine_reachable().await {
+            return Ok(());
+        }
+
+        let config_rel = "harness/engine.config.yaml";
+        let config_path = self.config.repo_root.join(config_rel);
+        if !config_path.is_file() {
+            bail!(
+                "engine not reachable at {} and {} not found — start it manually: iii -c {config_rel}",
+                self.config.engine_url,
+                config_path.display()
+            );
+        }
+
+        eprintln!(
+            "engine not reachable at {} — starting `iii -c {config_rel}`…",
+            self.config.engine_url
+        );
+
+        let mut cmd = Command::new("iii");
+        cmd.arg("-c").arg(config_rel);
+        cmd.current_dir(&self.config.repo_root);
+        // Detach: the engine should outlive the dashboard. Suppress its output
+        // so it can't corrupt the TUI's alternate screen; run it manually if
+        // you need to watch engine logs.
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        #[cfg(unix)]
+        cmd.process_group(0);
+        cmd.spawn().context("spawn iii engine")?;
+
+        let deadline = Instant::now() + Duration::from_millis(self.config.connect_timeout_ms);
+        while Instant::now() < deadline {
+            time::sleep(Duration::from_millis(200)).await;
+            if self.engine_reachable().await {
+                eprintln!("engine is up at {}", self.config.engine_url);
+                return Ok(());
+            }
+        }
+        bail!("started the engine but it did not become reachable within {}ms", self.config.connect_timeout_ms);
+    }
+
     pub async fn engine_preflight(&self) -> Result<()> {
-        status::fetch_engine_workers(&self.config)
+        self.engine_workers()
             .await
             .with_context(|| {
                 format!(
@@ -124,10 +243,20 @@ impl Orchestrator {
         cmd.env("CARGO_TERM_COLOR", "never");
         cmd.env("CARGO_TERM_PROGRESS", "never");
         cmd.env("CLICOLOR_FORCE", "0");
+        // Run the worker in its own process group so stopping it can signal the
+        // whole group. `cargo run` forks the worker binary as a child; killing
+        // only cargo orphans the worker (it keeps running, still connected to
+        // the engine). See `terminate_process_group`.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawn cargo run for {name}"))?;
+
+        if self.progress {
+            eprintln!("▶ {name}: starting (cargo run)…");
+        }
 
         let stdout = child.stdout.take().context("stdout pipe")?;
         let stderr = child.stderr.take().context("stderr pipe")?;
@@ -177,7 +306,7 @@ impl Orchestrator {
         };
 
         if let Some(mut child) = child {
-            let _ = child.start_kill();
+            terminate_process_group(&mut child).await;
             let _ = child.wait().await;
         }
 
@@ -197,13 +326,39 @@ impl Orchestrator {
             if Instant::now() >= deadline {
                 bail!("timed out waiting for {name} to connect to engine");
             }
-            let engine = status::fetch_engine_workers(&self.config).await.unwrap_or_default();
+            let engine = self.engine_workers().await.unwrap_or_default();
             if engine.iter().any(|w| w.name.as_deref() == Some(name) && w.status == "connected") {
+                if self.progress {
+                    let elapsed = {
+                        let runtimes = self.runtimes.read().await;
+                        runtimes
+                            .get(name)
+                            .and_then(|rt| rt.started_at)
+                            .map(|t| t.elapsed())
+                    };
+                    match elapsed {
+                        Some(d) => eprintln!("✓ {name} connected ({:.1}s)", d.as_secs_f64()),
+                        None => eprintln!("✓ {name} connected"),
+                    }
+                }
                 return Ok(());
             }
             let proc = self.proc_state(name).await;
             if proc == ProcState::Crashed || proc == ProcState::Stopped {
-                bail!("worker {name} exited before connecting to engine");
+                let exit_code = {
+                    let runtimes = self.runtimes.read().await;
+                    runtimes.get(name).and_then(|rt| rt.exit_code)
+                };
+                match exit_code {
+                    Some(code) => bail!(
+                        "worker {name} exited (status {code}) before connecting to engine — \
+                         check logs: workers-dev logs {name}"
+                    ),
+                    None => bail!(
+                        "worker {name} exited before connecting to engine — \
+                         check logs: workers-dev logs {name}"
+                    ),
+                }
             }
             time::sleep(Duration::from_millis(500)).await;
         }
@@ -218,9 +373,18 @@ impl Orchestrator {
     }
 
     pub async fn worker_views(&self) -> Result<Vec<WorkerView>> {
-        let engine = status::fetch_engine_workers(&self.config)
-            .await
-            .unwrap_or_default();
+        Ok(self.dashboard_snapshot().await.0)
+    }
+
+    /// Like `worker_views`, but also reports an engine-query error (if any) so
+    /// the dashboard can show "engine unreachable" instead of silently blanking
+    /// every engine status. Never fails: on engine error the views still render
+    /// (all disconnected) alongside the error string.
+    pub async fn dashboard_snapshot(&self) -> (Vec<WorkerView>, Option<String>) {
+        let (engine, engine_error) = match self.engine_workers().await {
+            Ok(list) => (list, None),
+            Err(err) => (Vec::new(), Some(format!("{err:#}"))),
+        };
         let engine_by_name: HashMap<String, EngineWorker> = engine
             .into_iter()
             .filter_map(|w| w.name.clone().map(|name| (name, w)))
@@ -233,7 +397,7 @@ impl Orchestrator {
             let spec = self.config.worker_spec(worker).expect("spec");
             views.push(build_view(spec, rt, engine_by_name.get(worker)));
         }
-        Ok(views)
+        (views, engine_error)
     }
 
     pub async fn logs_tail(&self, name: &str, n: usize) -> Result<Vec<String>> {
@@ -284,7 +448,6 @@ fn build_view(
         process_status: process,
         engine_status,
         local_pid: rt.pid(),
-        engine_pid: None,
         uptime,
         last_logs: rt.logs.tail(DASHBOARD_LOG_LINES),
     }
@@ -410,5 +573,84 @@ async fn wait_for_exit(worker: &str, expected_pid: Option<u32>, runtimes: Shared
             };
         }
         return;
+    }
+}
+
+/// Stop a worker and the process group it leads. `cargo run` forks the worker
+/// binary as a child; SIGKILLing only cargo would orphan the worker (it keeps
+/// running and connected to the engine). Workers are spawned in their own
+/// process group (see `start_one`), so signal the whole group: SIGTERM for a
+/// graceful stop, then SIGKILL if it hasn't exited within ~1s.
+#[cfg(unix)]
+async fn terminate_process_group(child: &mut tokio::process::Child) {
+    let Some(pid) = child.id() else {
+        let _ = child.start_kill();
+        return;
+    };
+    // The child is its own group leader, so its pid is the pgid; the negative
+    // pid targets the whole group.
+    let pgid = pid as i32;
+    unsafe {
+        libc::kill(-pgid, libc::SIGTERM);
+    }
+    for _ in 0..20 {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => time::sleep(Duration::from_millis(50)).await,
+            Err(_) => break,
+        }
+    }
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_group(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+
+    /// A worker started via `cargo run` forks the real worker binary as a
+    /// child. Group-killing must take BOTH down — killing only the supervisor
+    /// orphans the worker. Simulate with a parent shell that backgrounds a long
+    /// sleep (the "worker") in its own process group, then assert the
+    /// backgrounded pid is dead after `terminate_process_group`.
+    #[tokio::test]
+    async fn terminate_process_group_kills_forked_child() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 300 & echo $! ; wait");
+        cmd.stdout(Stdio::piped());
+        cmd.process_group(0);
+        let mut child = cmd.spawn().expect("spawn sh");
+
+        let stdout = child.stdout.take().expect("stdout");
+        let mut reader = BufReader::new(stdout).lines();
+        let line = reader
+            .next_line()
+            .await
+            .expect("read pid line")
+            .expect("pid line present");
+        let worker_pid: i32 = line.trim().parse().expect("parse worker pid");
+
+        // The backgrounded "worker" is alive before we stop the supervisor.
+        assert_eq!(unsafe { libc::kill(worker_pid, 0) }, 0, "worker should be running");
+
+        terminate_process_group(&mut child).await;
+        let _ = child.wait().await;
+
+        let mut dead = false;
+        for _ in 0..40 {
+            if unsafe { libc::kill(worker_pid, 0) } != 0 {
+                dead = true;
+                break;
+            }
+            time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(dead, "forked worker {worker_pid} was orphaned, not killed");
     }
 }

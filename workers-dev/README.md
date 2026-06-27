@@ -35,6 +35,8 @@ Workers are **discovered automatically** from top-level `*/iii.worker.yaml` in t
 
 Only **Rust `deploy: binary`** workers can be started with `cargo run`. Node/bundle workers show as `(iii worker add)` — install them via the iii registry instead.
 
+A worker can read **Process: stopped** while **Engine: connected**. That means it's connected to the engine but was not started by this `workers-dev` (e.g. started elsewhere, or via `iii worker add`) — `workers-dev` only tracks processes it spawned itself.
+
 ## Usage
 
 ```bash

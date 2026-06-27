@@ -15,13 +15,6 @@ pub fn normalize_log_line(raw: &str) -> String {
     stripped.trim_end().to_string()
 }
 
-pub fn format_for_display(line: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    truncate_chars(line, max_width)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogKind {
     CargoProgress,
@@ -79,21 +72,21 @@ pub fn log_line_to_ratatui(line: &str, max_width: usize, color_enabled: bool) ->
     }
 
     if !color_enabled {
-        return Line::from(format_for_display(line, max_width));
+        return Line::from(truncate_chars(line, max_width));
     }
 
     if let Some((ts, rest)) = split_tracing_timestamp(line) {
         let kind = classify_log_line(line);
         let mut spans = vec![
             Span::styled(
-                format_for_display(ts, max_width),
+                truncate_chars(ts, max_width),
                 log_timestamp_style(true),
             ),
             Span::raw(" "),
         ];
         let rest_width = max_width.saturating_sub(ts.chars().count().min(max_width) + 1);
         spans.push(Span::styled(
-            format_for_display(rest, rest_width),
+            truncate_chars(rest, rest_width),
             log_kind_style(kind, true),
         ));
         return Line::from(spans);
@@ -101,7 +94,7 @@ pub fn log_line_to_ratatui(line: &str, max_width: usize, color_enabled: bool) ->
 
     let kind = classify_log_line(line);
     Line::from(Span::styled(
-        format_for_display(line, max_width),
+        truncate_chars(line, max_width),
         log_kind_style(kind, true),
     ))
 }
@@ -140,21 +133,6 @@ fn log_crossterm_color(kind: LogKind) -> Option<CrosstermColor> {
     }
 }
 
-fn write_crossterm_colored_line(
-    line: &str,
-    kind: LogKind,
-    out: &mut impl Write,
-) -> std::io::Result<()> {
-    if let Some(color) = log_crossterm_color(kind) {
-        crossterm::execute!(out, SetForegroundColor(color))?;
-        write!(out, "{line}")?;
-        crossterm::execute!(out, ResetColor)?;
-    } else {
-        write!(out, "{line}")?;
-    }
-    Ok(())
-}
-
 pub fn print_colored_line(
     line: &str,
     color_enabled: bool,
@@ -164,8 +142,13 @@ pub fn print_colored_line(
         writeln!(out, "{line}")?;
         return Ok(());
     }
-    let kind = classify_log_line(line);
-    write_crossterm_colored_line(line, kind, out)?;
+    if let Some(color) = log_crossterm_color(classify_log_line(line)) {
+        crossterm::execute!(out, SetForegroundColor(color))?;
+        write!(out, "{line}")?;
+        crossterm::execute!(out, ResetColor)?;
+    } else {
+        write!(out, "{line}")?;
+    }
     writeln!(out)?;
     Ok(())
 }

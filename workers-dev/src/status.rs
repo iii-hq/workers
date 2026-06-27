@@ -1,13 +1,9 @@
-use std::process::Stdio;
-use std::time::Duration;
-
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::IIIClient;
 use serde::Deserialize;
-use tokio::process::Command;
-use tokio::time::timeout;
 
 use crate::discover::WorkerGroup;
-use crate::config::Config;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineWorkersResponse {
@@ -32,43 +28,26 @@ pub struct WorkerView {
     pub process_status: String,
     pub engine_status: String,
     pub local_pid: Option<u32>,
-    pub engine_pid: Option<u32>,
     pub uptime: String,
     pub last_logs: Vec<String>,
 }
 
-pub async fn fetch_engine_workers(config: &Config) -> Result<Vec<EngineWorker>> {
-    let mut cmd = Command::new("iii");
-    cmd.args([
-        "trigger",
-        "engine::workers::list",
-        "--json",
-        "{}",
-        "--address",
-        &config.engine_host,
-        "--port",
-        &config.engine_port.to_string(),
-    ]);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let output = timeout(Duration::from_secs(10), cmd.output())
+/// Query the engine for its connected workers over the shared persistent
+/// connection. Reuses one WebSocket instead of spawning `iii trigger` per
+/// poll, so the engine no longer logs a register/unregister pair every tick.
+pub async fn fetch_engine_workers(client: &IIIClient, timeout_ms: u64) -> Result<Vec<EngineWorker>> {
+    let result = client
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
         .await
-        .context("timed out waiting for iii trigger engine::workers::list")?
-        .context("spawn iii trigger (is iii on PATH?)")?;
+        .map_err(|e| anyhow!("engine::workers::list failed (is the engine running?): {e}"))?;
 
-    let out = String::from_utf8_lossy(&output.stdout).to_string();
-    let err = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "iii trigger engine::workers::list failed: {}",
-            err.trim()
-        );
-    }
-
-    let parsed: EngineWorkersResponse = serde_json::from_str(out.trim())
-        .with_context(|| format!("parse engine workers response: {}", out.trim()))?;
+    let parsed: EngineWorkersResponse = serde_json::from_value(result)
+        .context("parse engine workers response")?;
     Ok(parsed.workers)
 }
 
@@ -90,8 +69,7 @@ pub fn print_status_table(views: &[WorkerView]) {
             last_group = Some(v.group);
         }
         let pid = v
-            .engine_pid
-            .or(v.local_pid)
+            .local_pid
             .map(|p| p.to_string())
             .unwrap_or_else(|| "—".to_string());
         let name = if v.spawnable {
