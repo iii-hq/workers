@@ -62,6 +62,12 @@ describe('isJoinNode', () => {
     expect(isJoinNode(node('node:a', ['a']))).toBe(false)
     expect(isJoinNode(node('run_input', []))).toBe(false)
   })
+
+  it('does not throw on a source node that omits input', () => {
+    expect(isJoinNode(nodeDefSchema.parse({ agent: { model: 'm' } }))).toBe(
+      false,
+    )
+  })
 })
 
 describe('tallyNodes', () => {
@@ -100,6 +106,41 @@ describe('schema parsing', () => {
         output: { from: 'node:j' },
       },
       input: {},
+    })
+    expect(parsed.success).toBe(true)
+  })
+
+  it('parses a start request whose source node omits input (worker defaults it)', () => {
+    // The exact shape that blanked StartView: `generate_names` is a source node
+    // with only `agent` — no `input`. The worker injects run_input for it, so
+    // the parser must accept it instead of rejecting the whole def.
+    const parsed = startRequestSchema.safeParse({
+      await: true,
+      definition: {
+        nodes: {
+          generate_names: { agent: { model: 'm' } },
+          critic: {
+            agent: { model: 'm' },
+            depends_on: ['generate_names'],
+            fanout: { over: 'node:generate_names.names' },
+            input: { from: 'fanout_item' },
+          },
+          judge: {
+            agent: { model: 'm' },
+            depends_on: ['critic'],
+            input: { from: ['node:critic'] },
+          },
+        },
+        output: { from: 'node:judge' },
+      },
+      input: {},
+    })
+    expect(parsed.success).toBe(true)
+  })
+
+  it('parses a partial def (missing output / node missing model) so the view never blanks', () => {
+    const parsed = startRequestSchema.safeParse({
+      definition: { nodes: { gen: { agent: {} } } },
     })
     expect(parsed.success).toBe(true)
   })

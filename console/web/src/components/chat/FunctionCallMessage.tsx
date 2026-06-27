@@ -5,6 +5,10 @@ import {
   DirectoryToolView,
 } from '@/components/chat/directory'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import {
+  HarnessFunctionIdLabel,
+  HarnessToolView,
+} from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   SandboxFunctionIdLabel,
@@ -133,6 +137,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (RouterToolView.isRouterFunction(functionId)) {
     return <RouterFunctionIdLabel functionId={functionId} />
   }
+  if (HarnessToolView.isHarnessFunction(functionId)) {
+    return <HarnessFunctionIdLabel functionId={functionId} />
+  }
   return <span className="text-ink">{functionId}</span>
 }
 
@@ -162,7 +169,8 @@ export function FunctionCallMessage({
     CoderToolView.tryRenderPreview(message) ??
     ShellToolView.tryRenderPreview(message) ??
     WorkflowToolView.tryRenderPreview(message) ??
-    RouterToolView.tryRenderPreview(message)
+    RouterToolView.tryRenderPreview(message) ??
+    HarnessToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
@@ -172,7 +180,8 @@ export function FunctionCallMessage({
       CoderToolView.tryRender(message) ??
       ShellToolView.tryRender(message) ??
       WorkflowToolView.tryRender(message) ??
-      RouterToolView.tryRender(message))
+      RouterToolView.tryRender(message) ??
+      HarnessToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =

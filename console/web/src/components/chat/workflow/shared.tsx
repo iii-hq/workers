@@ -83,7 +83,9 @@ interface DagSummaryProps {
  *  This is the core "better view" — structure instead of a raw JSON blob. */
 export function DagSummary({ def, states }: DagSummaryProps) {
   const entries = Object.entries(def.nodes)
-  const outputId = def.output.from.replace(/^node:/, '').split('.')[0]
+  const outputId = def.output?.from
+    ? def.output.from.replace(/^node:/, '').split('.')[0]
+    : undefined
 
   return (
     <div className="border-b border-rule-2">
@@ -94,15 +96,17 @@ export function DagSummary({ def, states }: DagSummaryProps) {
         <span className="font-mono text-[11px] text-ink-faint">
           {entries.length} {entries.length === 1 ? 'node' : 'nodes'}
         </span>
-        <span className="font-mono text-[11px] text-ink-ghost">
-          → output <span className="text-accent">{outputId}</span>
-        </span>
+        {outputId ? (
+          <span className="font-mono text-[11px] text-ink-ghost">
+            → output <span className="text-accent">{outputId}</span>
+          </span>
+        ) : null}
       </div>
       <ul className="divide-y divide-rule-2">
         {entries.map(([id, node]) => {
           const deps = node.depends_on ?? []
           const join = isJoinNode(node)
-          const consumes = consumedDeps(node.input.from)
+          const consumes = consumedDeps(node.input?.from)
           const state = states?.[id]
           return (
             <li key={id} className="flex items-start gap-2 px-3 py-1.5">
@@ -121,7 +125,7 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                   ) : null}
                   {join ? <Chip className="text-accent">join</Chip> : null}
                   {node.fanout ? <Chip>fan-out</Chip> : null}
-                  <Chip>{node.agent.model}</Chip>
+                  {node.agent.model ? <Chip>{node.agent.model}</Chip> : null}
                 </div>
                 <DagEdges
                   deps={deps}

@@ -7,6 +7,7 @@ import { EditorEmptyState } from './EmptyState'
 import { parseSetError } from './errors'
 import { useConfigurationValue, useSetConfiguration } from './hooks'
 import { SaveBar, type SaveStatus } from './SaveBar'
+import { isObjectSchema } from './schema-form/guard'
 import { SchemaForm } from './schema-form/SchemaForm'
 import { wt } from './typography'
 
@@ -128,22 +129,29 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
           />
         ) : null}
         {!valueQuery.isLoading && !valueQuery.isError && draft !== undefined ? (
-          <>
-            <div className="mx-auto max-w-3xl w-full px-6 py-8">
-              <SchemaForm
-                schema={entry.schema}
-                value={draft}
-                onChange={handleDraftChange}
-                errors={errors}
+          isObjectSchema(entry.schema) ? (
+            <>
+              <div className="mx-auto max-w-3xl w-full px-6 py-8">
+                <SchemaForm
+                  schema={entry.schema}
+                  value={draft}
+                  onChange={handleDraftChange}
+                  errors={errors}
+                />
+              </div>
+              <SaveBar
+                dirty={dirty}
+                status={status}
+                onSave={handleSave}
+                onReset={handleReset}
               />
-            </div>
-            <SaveBar
-              dirty={dirty}
-              status={status}
-              onSave={handleSave}
-              onReset={handleReset}
+            </>
+          ) : (
+            <EditorEmptyState
+              title="no editable configuration"
+              description="this worker registered a configuration value but no schema, so there's nothing to edit here."
             />
-          </>
+          )
         ) : null}
       </div>
     </section>

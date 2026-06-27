@@ -50,17 +50,24 @@ export const nodeDefSchema = z
   .object({
     agent: z
       .object({
-        model: z.string(),
+        // Optional in the PARSER (not the worker): the worker requires a
+        // model, but rendering must never blank out on a malformed request —
+        // show what's there. The chip is guarded for an absent model.
+        model: z.string().optional(),
         provider: z.string().nullable().optional(),
         system_prompt: z.string().nullable().optional(),
       })
       .passthrough(),
+    // Optional: a SOURCE node legitimately omits `input` — the worker injects
+    // `{ from: "run_input" }` for it. Requiring it here rejected the whole def
+    // and rendered nothing (the request fell back to raw JSON).
     input: z
       .object({
         from: inputFromSchema,
         template: z.string().nullable().optional(),
       })
-      .passthrough(),
+      .passthrough()
+      .optional(),
     depends_on: z.array(z.string()).optional().default([]),
     fanout: z.object({ over: z.string() }).passthrough().nullable().optional(),
   })
@@ -71,7 +78,9 @@ export const workflowDefSchema = z
   .object({
     version: z.number().optional(),
     nodes: z.record(z.string(), nodeDefSchema),
-    output: z.object({ from: z.string() }).passthrough(),
+    // Optional in the PARSER so a partial/malformed def still renders its
+    // nodes instead of blanking; the worker still requires a valid output.
+    output: z.object({ from: z.string() }).passthrough().optional(),
   })
   .passthrough()
 export type WorkflowDef = z.infer<typeof workflowDefSchema>
@@ -188,7 +197,7 @@ export function consumedDeps(from: InputFrom | undefined): string[] {
  *  are where the multi-input wiring matters most. */
 export function isJoinNode(node: WorkflowNodeDef): boolean {
   return (
-    consumedDeps(node.input.from).length > 1 ||
+    consumedDeps(node.input?.from).length > 1 ||
     (node.depends_on?.length ?? 0) > 1
   )
 }
