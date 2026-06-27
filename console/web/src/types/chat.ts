@@ -59,6 +59,7 @@ export interface UserMessage extends BaseMessage {
   role: 'user'
   content: string
   attachments?: Attachment[]
+  notification?: { label?: string }
 }
 
 export interface AssistantMessage extends BaseMessage {

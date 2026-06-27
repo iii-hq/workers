@@ -381,6 +381,7 @@ export function useConversations(
                 entry_id: event.entry_id,
                 message: event.message,
                 custom: event.custom,
+                origin: event.origin,
               },
               { sessionId },
             ),
@@ -396,7 +397,11 @@ export function useConversations(
             ...c,
             messages: applyEntryUpsert(
               c.messages,
-              { entry_id: event.entry_id, message: event.message },
+              {
+                entry_id: event.entry_id,
+                message: event.message,
+                origin: event.origin,
+              },
               { sessionId, streaming: c.status === 'working' },
             ),
             updatedAt: event.timestamp,

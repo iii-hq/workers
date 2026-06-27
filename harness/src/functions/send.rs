@@ -197,6 +197,7 @@ pub async fn inject(
     session_id: &str,
     message: AgentMessage,
     entry_id: Option<&str>,
+    origin: Option<&Value>,
 ) -> Result<StartOutcome, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
@@ -211,10 +212,8 @@ pub async fn inject(
             ))
         })?;
 
-    // Append into the existing session (no `ensure` — a deleted session must
-    // not be resurrected; its subscriptions are cleaned on session::deleted).
     session
-        .append(session_id, &message, entry_id, None, None)
+        .append(session_id, &message, entry_id, None, origin)
         .await?;
     seed_or_merge(deps, &cfg, session_id, options).await
 }

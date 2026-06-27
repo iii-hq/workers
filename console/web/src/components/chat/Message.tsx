@@ -33,7 +33,11 @@ export function Message({
 }: MessageProps) {
   switch (message.role) {
     case 'user':
-      return <UserMessage message={message} />
+      return message.notification ? (
+        <NotificationMessage message={message} />
+      ) : (
+        <UserMessage message={message} />
+      )
     case 'assistant':
       return <AssistantMessage message={message} />
     case 'thought':
@@ -120,6 +124,15 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
           </pre>
         ) : null}
       </details>
+    </article>
+  )
+}
+
+function NotificationMessage({ message }: { message: UserMessageType }) {
+  return (
+    <article className="border-l-2 border-l-rule pl-3 py-1 font-mono text-[12px] text-ink-faint flex items-start gap-2">
+      <span aria-hidden="true">🔔</span>
+      <span className="break-words">{message.content}</span>
     </article>
   )
 }

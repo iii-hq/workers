@@ -25,8 +25,6 @@ pub struct Deps {
     pub events: TurnEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
-    /// In-memory ephemeral event subscriptions (harness::subscribe). Shared by
-    /// every handler and every per-subscription closure.
     pub subscriptions: Arc<SubscriptionRegistry>,
 }
 

@@ -52,11 +52,19 @@ async fn on_fire(deps: &Deps, sub_id: &str, event: Value) {
         None => format!("[notification] {summary}"),
     };
     let message = AgentMessage::user_text(text);
-    // Deterministic entry id so a redelivered identical fire is idempotent.
     let entry_id = format!("e_notify_{sub_id}_{fire_count}");
+    let origin = json!({
+        "notification": { "label": entry.label, "subscription_id": sub_id }
+    });
 
-    if let Err(e) =
-        crate::functions::send::inject(deps, &entry.session_id, message, Some(&entry_id)).await
+    if let Err(e) = crate::functions::send::inject(
+        deps,
+        &entry.session_id,
+        message,
+        Some(&entry_id),
+        Some(&origin),
+    )
+    .await
     {
         tracing::warn!(
             sub_id,
