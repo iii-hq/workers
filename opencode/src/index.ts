@@ -28,20 +28,29 @@ const { values } = parseArgs({
 });
 
 const seed = await loadConfig(String(values.config));
-const url = values.url ? String(values.url) : seed.engine_url;
+const url = values.url
+  ? String(values.url)
+  : (process.env.III_URL ?? process.env.III_ENGINE_URL ?? seed.engine_url);
+const bootConfig: Config = {
+  ...seed,
+  engine_url: url,
+  opencode_executable: resolveOpencodeExecutable(seed.opencode_executable),
+};
 
 const iii = registerWorker(url, { workerName: 'opencode' });
 
 try {
-  await registerOpencodeConfig(iii, seed);
+  await registerOpencodeConfig(iii, bootConfig);
 } catch (err) {
   console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
 }
 
-const holder: ConfigHolder = { current: seed };
+const holder: ConfigHolder = { current: bootConfig };
 const refresh = async () => {
   const runtime = (await fetchRuntime(iii)) ?? undefined;
-  const merged: Config = runtime ? { engine_url: seed.engine_url, ...runtime } : { ...seed };
+  const merged: Config = runtime
+    ? { engine_url: bootConfig.engine_url, ...runtime }
+    : { ...bootConfig };
   merged.opencode_executable = resolveOpencodeExecutable(merged.opencode_executable);
   holder.current = merged;
 };
