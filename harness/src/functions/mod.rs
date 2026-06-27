@@ -112,12 +112,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         status::handle(&d, r).await
     });
 
-    // Ephemeral event subscriptions: the agent SUBSCRIBES / UNSUBSCRIBES by
-    // calling `engine::register_trigger` / `engine::unregister_trigger`, which the
-    // dispatch layer intercepts (see `subscribe::maybe_intercept`) to inject the
-    // trusted session and enforce ownership — so there are no agent-facing
-    // `harness::subscribe` / `harness::unsubscribe` functions.
-
     // Internal cron target — registered, but kept off the public catalog.
     register(
         iii,
