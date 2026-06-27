@@ -8,7 +8,7 @@
  * workers refuse a topology change. Every other field hot-reloads.
  */
 
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import {
   type Config,
   type RuntimeConfig,
@@ -24,7 +24,7 @@ const TIMEOUT_MS = 5_000;
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
 export type ConfigHolder = { current: Config };
 
-export async function registerClaudeConfig(iii: ISdk, seed: Config): Promise<void> {
+export async function registerClaudeConfig(iii: IIIClient, seed: Config): Promise<void> {
   await iii.trigger({
     function_id: 'configuration::register',
     payload: {
@@ -40,7 +40,7 @@ export async function registerClaudeConfig(iii: ISdk, seed: Config): Promise<voi
 }
 
 /** Fetch the live runtime config; null when unset/unreachable. */
-export async function fetchRuntime(iii: ISdk): Promise<RuntimeConfig | null> {
+export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {
   try {
     const res = await iii.trigger<unknown, { value?: unknown }>({
       function_id: 'configuration::get',
@@ -60,7 +60,10 @@ export async function fetchRuntime(iii: ISdk): Promise<RuntimeConfig | null> {
  * Register the change handler + bind the `configuration` trigger. `onChange` is
  * called once now (reconcile) and on every `configuration:updated`.
  */
-export async function bindConfigTrigger(iii: ISdk, onChange: () => Promise<void>): Promise<void> {
+export async function bindConfigTrigger(
+  iii: IIIClient,
+  onChange: () => Promise<void>,
+): Promise<void> {
   await onChange();
   iii.registerFunction(
     CONFIG_FN_ID,
