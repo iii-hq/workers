@@ -10,7 +10,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
@@ -121,7 +121,7 @@ const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(Session
 type LiveRun = { kill: () => void };
 const live = new Map<string, LiveRun>();
 
-async function markSessionError(iii: ISdk, session_id: string): Promise<void> {
+async function markSessionError(iii: IIIClient, session_id: string): Promise<void> {
   try {
     const record = await loadSession(iii, session_id);
     if (record && record.status === 'working') {
@@ -166,7 +166,7 @@ export function buildArgs(
 }
 
 export async function executeRun(
-  iii: ISdk,
+  iii: IIIClient,
   cfg: Config,
   emit: Emit,
   emitRaw: Emit,
@@ -187,7 +187,7 @@ export async function executeRun(
 }
 
 async function runReserved(
-  iii: ISdk,
+  iii: IIIClient,
   cfg: Config,
   emit: Emit,
   emitRaw: Emit,
@@ -358,7 +358,7 @@ async function runReserved(
   return envelope;
 }
 
-export function register(iii: ISdk, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
+export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
   iii.registerFunction(
     'opencode::run',
     async (payload: unknown) =>

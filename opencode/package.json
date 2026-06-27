@@ -23,7 +23,7 @@
     "opencode-worker": "./dist/index.js"
   },
   "dependencies": {
-    "iii-sdk": "^0.19.2",
+    "iii-sdk": "^0.20.0",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },
