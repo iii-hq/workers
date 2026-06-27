@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time;
 
-use crate::config::{Config, DASHBOARD_LOG_LINES};
+use crate::config::Config;
 use crate::discover::SpawnKind;
 use crate::graph::WorkerGraph;
 use crate::logs;
@@ -449,7 +449,7 @@ fn build_view(
         engine_status,
         local_pid: rt.pid(),
         uptime,
-        last_logs: rt.logs.tail(DASHBOARD_LOG_LINES),
+        exit_code: rt.exit_code,
     }
 }
 

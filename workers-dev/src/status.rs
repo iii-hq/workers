@@ -29,7 +29,9 @@ pub struct WorkerView {
     pub engine_status: String,
     pub local_pid: Option<u32>,
     pub uptime: String,
-    pub last_logs: Vec<String>,
+    /// Exit code of the last run when the process crashed. Surfaced inline so a
+    /// failure is visible in the table without opening the log pane.
+    pub exit_code: Option<i32>,
 }
 
 /// Query the engine for its connected workers over the shared persistent

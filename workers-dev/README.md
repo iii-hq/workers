@@ -67,16 +67,20 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 
 | Key | Action |
 |-----|--------|
-| `↑`/`↓` | Select worker (skips group headers) |
+| `↑`/`↓` (or `k`/`j`) | Select worker (skips group headers) |
 | `s` | Start selected worker |
 | `x` | Stop selected worker |
-| `r` | Restart selected worker + dependents |
-| `l` | Follow logs |
+| `r` | Restart selected worker + dependents (confirm shows the blast radius) |
+| `f` | Toggle live-follow of the selected worker's logs |
+| `PgUp`/`PgDn` | Scroll the log pane (pauses follow; resumes at the bottom) |
+| `+`/`-` | Grow / shrink the log pane |
+| `/` | Filter workers by name (Enter applies, Esc clears) |
 | `Ctrl+u` | Start harness stack |
 | `Ctrl+a` | Start all managed Rust workers |
+| `?` | Toggle the key-reference overlay |
 | `q` | Quit |
 
-The log pane shows the last 20 lines for the **selected worker only** (cargo build output + worker logs). Lines are sanitized (no ANSI, no `\r` overwrite garbage).
+The header shows an at-a-glance health summary (`●` connected, `◐` compiling, `✗` crashed, `○` stopped) and flags the engine as `⚠ unreachable` when a status query fails. The log pane shows the **selected worker only**, scrollable through the full ring buffer, following the live tail by default. Crashed workers show their exit code inline. Lines are sanitized (no ANSI, no `\r` overwrite garbage).
 
 ## Config (`workers-dev.yaml`)
 

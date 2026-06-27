@@ -15,7 +15,6 @@ pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 120_000;
 pub const ENGINE_QUERY_TIMEOUT_MS: u64 = 3_000;
 pub const LOG_RING_CAPACITY: usize = 500;
 pub const DEFAULT_LOG_TAIL: usize = 100;
-pub const DASHBOARD_LOG_LINES: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct Config {
