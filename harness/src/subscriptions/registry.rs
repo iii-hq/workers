@@ -4,7 +4,9 @@
 //! harness keeps only the small bookkeeping it needs LOCALLY: the owning session
 //! (per-session cap, ownership check, session-deleted cleanup), a fire counter
 //! (for idempotent notification entry ids), and the engine-returned trigger id
-//! (to unregister). No iii handles are held here.
+//! (to unregister). Fire context such as label / once is carried by the
+//! engine's registration metadata proxy, not duplicated here. No iii handles are
+//! held here.
 //!
 //! Subscriptions are intentionally NOT persisted: they live for the harness
 //! process only (the "ephemeral" contract). Lifecycle is covered by explicit
@@ -21,8 +23,6 @@ pub struct SubEntry {
     /// Owning session — captured at registration from the trusted dispatch
     /// layer; the agent can never widen the target.
     pub session_id: String,
-    pub label: Option<String>,
-    once: bool,
     /// Monotonic fire count, used only for an idempotent notification entry id.
     seq: AtomicU64,
     /// The engine-returned trigger id; attached just after registration (see
@@ -32,11 +32,9 @@ pub struct SubEntry {
 }
 
 impl SubEntry {
-    fn new(session_id: String, once: bool, label: Option<String>) -> Self {
+    fn new(session_id: String) -> Self {
         Self {
             session_id,
-            label,
-            once,
             seq: AtomicU64::new(0),
             trigger_id: Mutex::new(None),
         }
@@ -47,21 +45,11 @@ impl SubEntry {
 #[derive(Debug)]
 pub struct CapExceeded;
 
-/// A claimed fire, resolved against the local registry authority.
-pub struct ClaimedFire {
-    pub session_id: String,
-    pub label: Option<String>,
+/// A liveness/ownership-checked fired subscription.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FireClaim {
+    pub entry_id: String,
     pub trigger_id: Option<String>,
-    pub sequence: Option<u64>,
-}
-
-impl ClaimedFire {
-    pub fn entry_id(&self, sub_id: &str) -> String {
-        match self.sequence {
-            Some(seq) => format!("e_notify_{sub_id}_{seq}"),
-            None => format!("e_notify_{sub_id}"),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -93,8 +81,6 @@ impl SubscriptionRegistry {
         &self,
         sub_id: &str,
         session_id: &str,
-        once: bool,
-        label: Option<String>,
         max: usize,
     ) -> Result<(), CapExceeded> {
         let mut inner = self.lock();
@@ -113,7 +99,7 @@ impl SubscriptionRegistry {
             .insert(sub_id.to_string());
         inner.by_id.insert(
             sub_id.to_string(),
-            Arc::new(SubEntry::new(session_id.to_string(), once, label)),
+            Arc::new(SubEntry::new(session_id.to_string())),
         );
         Ok(())
     }
@@ -132,26 +118,30 @@ impl SubscriptionRegistry {
         }
     }
 
-    /// Claim a fired subscription using local registry authority. One-shot
-    /// subscriptions are removed; recurring subscriptions keep their entry and
-    /// receive a monotonic sequence.
-    pub fn claim_fire(&self, sub_id: &str) -> Option<ClaimedFire> {
+    /// Claim a fired subscription against local liveness/ownership. One-shot
+    /// fires remove the entry and return the trigger id for teardown; recurring
+    /// fires keep the entry and return a monotonic notification entry id.
+    pub fn claim_fire(&self, sub_id: &str, session_id: &str, once: bool) -> Option<FireClaim> {
         let mut inner = self.lock();
         let entry = inner.by_id.get(sub_id).cloned()?;
-        if entry.once {
+        if entry.session_id != session_id {
+            return None;
+        }
+
+        if once {
             let entry = remove_entry(&mut inner, sub_id)?;
-            return Some(ClaimedFire {
-                session_id: entry.session_id.clone(),
-                label: entry.label.clone(),
+            return Some(FireClaim {
+                entry_id: format!("e_notify_{sub_id}"),
                 trigger_id: trigger_id(&entry),
-                sequence: None,
             });
         }
-        Some(ClaimedFire {
-            session_id: entry.session_id.clone(),
-            label: entry.label.clone(),
+
+        Some(FireClaim {
+            entry_id: format!(
+                "e_notify_{sub_id}_{}",
+                entry.seq.fetch_add(1, Ordering::SeqCst) + 1
+            ),
             trigger_id: None,
-            sequence: Some(entry.seq.fetch_add(1, Ordering::SeqCst) + 1),
         })
     }
 
@@ -221,17 +211,17 @@ mod tests {
     #[test]
     fn try_insert_enforces_cap_atomically() {
         let reg = SubscriptionRegistry::new();
-        assert!(reg.try_insert("sub_1", "s", false, None, 2).is_ok());
-        assert!(reg.try_insert("sub_2", "s", false, None, 2).is_ok());
-        assert!(reg.try_insert("sub_3", "s", false, None, 2).is_err());
+        assert!(reg.try_insert("sub_1", "s", 2).is_ok());
+        assert!(reg.try_insert("sub_2", "s", 2).is_ok());
+        assert!(reg.try_insert("sub_3", "s", 2).is_err());
         // A different session has its own budget.
-        assert!(reg.try_insert("sub_4", "s2", false, None, 2).is_ok());
+        assert!(reg.try_insert("sub_4", "s2", 2).is_ok());
     }
 
     #[test]
     fn set_trigger_id_then_take_returns_it() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
+        reg.try_insert("sub_1", "s", 8).unwrap();
         assert!(reg.set_trigger_id("sub_1", "trig_1"));
         let (session, trigger_id) = reg.take("sub_1").expect("entry present");
         assert_eq!(session, "s");
@@ -241,16 +231,39 @@ mod tests {
     #[test]
     fn set_trigger_id_false_after_take() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
+        reg.try_insert("sub_1", "s", 8).unwrap();
         assert!(reg.take("sub_1").is_some());
         // Entry gone (a once-fire won the window): caller must unregister the orphan.
         assert!(!reg.set_trigger_id("sub_1", "trig_1"));
     }
 
     #[test]
+    fn claim_recurring_fire_is_monotonic_and_owner_checked() {
+        let reg = SubscriptionRegistry::new();
+        reg.try_insert("sub_1", "owner", 8).unwrap();
+        assert_eq!(reg.claim_fire("sub_1", "other", false), None);
+        assert_eq!(
+            reg.claim_fire("sub_1", "owner", false),
+            Some(FireClaim {
+                entry_id: "e_notify_sub_1_1".to_string(),
+                trigger_id: None,
+            })
+        );
+        assert_eq!(
+            reg.claim_fire("sub_1", "owner", false),
+            Some(FireClaim {
+                entry_id: "e_notify_sub_1_2".to_string(),
+                trigger_id: None,
+            })
+        );
+        reg.take("sub_1");
+        assert_eq!(reg.claim_fire("sub_1", "owner", false), None);
+    }
+
+    #[test]
     fn take_is_idempotent_winner_takes_all() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
+        reg.try_insert("sub_1", "s", 8).unwrap();
         assert!(reg.take("sub_1").is_some());
         assert!(reg.take("sub_1").is_none());
     }
@@ -258,8 +271,8 @@ mod tests {
     #[test]
     fn session_of_and_take_session() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
-        reg.try_insert("sub_2", "s", false, None, 8).unwrap();
+        reg.try_insert("sub_1", "s", 8).unwrap();
+        reg.try_insert("sub_2", "s", 8).unwrap();
         reg.set_trigger_id("sub_1", "trig_1");
         assert_eq!(reg.session_of("sub_1").as_deref(), Some("s"));
         let mut dropped = reg.take_session("s");
@@ -270,34 +283,20 @@ mod tests {
     }
 
     #[test]
-    fn claim_once_fire_uses_registry_owner_and_removes_entry() {
+    fn claim_once_fire_removes_only_for_matching_owner() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "owner", true, Some("done".to_string()), 8)
-            .unwrap();
+        reg.try_insert("sub_1", "owner", 8).unwrap();
         reg.set_trigger_id("sub_1", "trig_1");
 
-        let claim = reg.claim_fire("sub_1").expect("entry present");
-        assert_eq!(claim.session_id, "owner");
-        assert_eq!(claim.label.as_deref(), Some("done"));
-        assert_eq!(claim.trigger_id.as_deref(), Some("trig_1"));
-        assert_eq!(claim.sequence, None);
-        assert_eq!(claim.entry_id("sub_1"), "e_notify_sub_1");
-        assert!(reg.session_of("sub_1").is_none());
-        assert!(reg.claim_fire("sub_1").is_none());
-    }
-
-    #[test]
-    fn claim_recurring_fire_uses_registry_owner_and_keeps_entry() {
-        let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "owner", false, None, 8).unwrap();
-
-        let first = reg.claim_fire("sub_1").expect("first fire");
-        let second = reg.claim_fire("sub_1").expect("second fire");
-        assert_eq!(first.session_id, "owner");
-        assert_eq!(first.sequence, Some(1));
-        assert_eq!(first.entry_id("sub_1"), "e_notify_sub_1_1");
-        assert_eq!(second.sequence, Some(2));
-        assert_eq!(second.entry_id("sub_1"), "e_notify_sub_1_2");
+        assert_eq!(reg.claim_fire("sub_1", "other", true), None);
         assert_eq!(reg.session_of("sub_1").as_deref(), Some("owner"));
+        assert_eq!(
+            reg.claim_fire("sub_1", "owner", true),
+            Some(FireClaim {
+                entry_id: "e_notify_sub_1".to_string(),
+                trigger_id: Some("trig_1".to_string()),
+            })
+        );
+        assert!(reg.session_of("sub_1").is_none());
     }
 }

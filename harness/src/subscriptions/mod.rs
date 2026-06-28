@@ -17,11 +17,11 @@
 //! Routing: the interceptor registers a trigger (via `engine::register_trigger`)
 //! bound to the ONE shared `harness::notify_agent` function. The engine's
 //! per-subscription proxy round-trips the registration metadata into the fired
-//! payload under [`TRIGGER_META_KEY`] (`__metadata`). That metadata carries only
-//! the subscription id; the local registry is the authority for owner, label,
-//! and `once`. The owning session is injected by the harness when it intercepts
-//! the agent's `engine::register_trigger` call, never trusted from model
-//! arguments or fired payloads.
+//! payload under [`TRIGGER_META_KEY`] (`__metadata`). That metadata carries the
+//! subscription id, owning session, label, and `once`; the local registry
+//! validates liveness/ownership for cleanup. The owning session is injected by
+//! the harness when it intercepts the agent's `engine::register_trigger` call,
+//! never trusted from model arguments.
 
 pub mod notify_agent;
 pub mod registry;

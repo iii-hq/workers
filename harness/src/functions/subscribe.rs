@@ -2,8 +2,8 @@
 //! fires, instead of polling (harness.md § Subscriptions). The agent calls
 //! `engine::register_trigger` / `engine::unregister_trigger`; the harness
 //! intercepts those calls (see [`invoke`]) so the trusted owning session,
-//! `harness::notify_agent` target, and subscription metadata are injected, and
-//! teardown stays owner-checked — the agent can never supply those.
+//! `harness::notify_agent` target, and engine-proxied subscription metadata are
+//! injected, and teardown stays owner-checked — the agent can never supply those.
 
 use iii_sdk::{TriggerAction, TriggerRequest};
 use schemars::JsonSchema;
@@ -87,7 +87,7 @@ fn defaults_recurring(trigger_type: &str) -> bool {
 
 /// Run an agent `engine::register_trigger` call as a subscription: deserialize
 /// the agent args, then bind to `harness::notify_agent` with the trusted owning
-/// session stored in the local registry.
+/// session stored in engine-proxied metadata.
 async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
     let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
         Ok(r) => r,
@@ -152,8 +152,6 @@ async fn handle(
         .try_insert(
             &sub_id,
             session_id,
-            once,
-            req.label.clone(),
             subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION,
         )
         .map_err(|_| {
@@ -167,6 +165,9 @@ async fn handle(
     // proxy that round-trips this metadata into the fired payload.
     let metadata = json!({
         "subscription_id": sub_id,
+        "session_id": session_id,
+        "label": req.label,
+        "once": once,
     });
 
     let resp = deps

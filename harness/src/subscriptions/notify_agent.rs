@@ -3,17 +3,29 @@
 //! Every subscription binds (via `engine::register_trigger`) to this single
 //! function. The engine's per-subscription proxy injects the registration
 //! `metadata` into the fired payload under [`TRIGGER_META_KEY`]
-//! (`__metadata`). The payload carries only the subscription id; the local
-//! registry remains the authority for owner, label, and one-shot semantics.
+//! (`__metadata`). That trusted metadata carries the subscription id, owning
+//! session, label, and one-shot semantics; the local registry validates liveness
+//! and ownership for cleanup.
 
 use std::sync::Arc;
 
 use iii_sdk::{IIIError, RegisterFunction};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::subscriptions::{NOTIFY_AGENT_DESC, NOTIFY_AGENT_ID, TRIGGER_META_KEY};
 use crate::types::message::AgentMessage;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct NotifyMetadata {
+    subscription_id: String,
+    session_id: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    once: bool,
+}
 
 /// Register the single shared `harness::notify_agent` handler (once, at boot).
 pub fn register(deps: Arc<Deps>) {
@@ -31,8 +43,9 @@ pub fn register(deps: Arc<Deps>) {
     );
 }
 
-/// Handle a fired subscription: recover its id from `__metadata`, claim it from
-/// the registry, build the notification, inject it, and self-tear-down (`once`).
+/// Handle a fired subscription: recover trusted context from `__metadata`,
+/// validate it against the local registry, build the notification, inject it,
+/// and self-tear-down (`once`).
 async fn on_fire(deps: &Deps, mut event: Value) {
     // Extract and STRIP the engine-injected metadata so it never leaks into the
     // notification text shown to the agent.
@@ -44,45 +57,45 @@ async fn on_fire(deps: &Deps, mut event: Value) {
         return;
     };
 
-    let sub_id = meta
-        .get("subscription_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let Some(sub_id) = sub_id else {
-        tracing::warn!("notify_agent metadata missing subscription_id; dropping");
-        return;
+    let meta = match serde_json::from_value::<NotifyMetadata>(meta) {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::warn!(error = %e, "notify_agent metadata invalid; dropping");
+            return;
+        }
     };
 
-    let Some(claim) = deps.subscriptions.claim_fire(&sub_id) else {
-        return; // torn down or a concurrent one-shot fire won
+    let Some(claim) =
+        deps.subscriptions
+            .claim_fire(&meta.subscription_id, &meta.session_id, meta.once)
+    else {
+        // Torn down, owner mismatch, or a concurrent one-shot fire won.
+        return;
     };
     if let Some(trigger_id) = claim.trigger_id.as_deref() {
         crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
     }
 
-    let entry_id = claim.entry_id(&sub_id);
     let summary = summarize_event(&event);
-    let text = match &claim.label {
+    let text = match &meta.label {
         Some(label) => format!("[notification: {label}] {summary}"),
         None => format!("[notification] {summary}"),
     };
     let message = AgentMessage::user_text(text);
-    let origin = json!({
-        "notification": { "label": claim.label, "subscription_id": sub_id }
-    });
+    let origin = json!({ "notification": true });
 
     if let Err(e) = crate::functions::send::inject(
         deps,
-        &claim.session_id,
+        &meta.session_id,
         message,
-        Some(&entry_id),
+        Some(&claim.entry_id),
         Some(&origin),
     )
     .await
     {
         tracing::warn!(
-            sub_id,
-            session_id = %claim.session_id,
+            sub_id = %meta.subscription_id,
+            session_id = %meta.session_id,
             error = %e,
             "subscription notification injection failed"
         );
@@ -133,5 +146,16 @@ mod tests {
         let s = summarize_event(&event);
         assert!(!s.contains("s_secret"));
         assert!(s.contains("event_type"));
+    }
+
+    #[test]
+    fn notify_metadata_defaults_optional_fields() {
+        let meta: NotifyMetadata =
+            serde_json::from_value(json!({ "subscription_id": "sub_1", "session_id": "s_1" }))
+                .unwrap();
+        assert_eq!(meta.subscription_id, "sub_1");
+        assert_eq!(meta.session_id, "s_1");
+        assert_eq!(meta.label, None);
+        assert!(!meta.once);
     }
 }
