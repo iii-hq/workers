@@ -366,11 +366,13 @@ fn capability_ladder_ordering() {
 }
 
 #[test]
-fn default_variant_matches_legacy_default_body() {
-    // Length snapshot guards accidental prompt edits. Updated for the
-    // coder→shell merge: the code-file routing text dropped the "install the
-    // coder registry worker" instruction (coder::* is served by shell now).
-    assert_eq!(variants::DEFAULT.len(), 11_960);
+fn default_variant_routes_coder_surface_through_shell() {
+    // Semantic guard for the coder→shell merge. A byte-length snapshot is
+    // brittle; what matters is that the default prompt does not regress back
+    // to installing a standalone coder registry worker.
+    assert!(variants::DEFAULT.contains("engine::functions::list { prefix: \"coder::\" }"));
+    assert!(variants::DEFAULT.contains("served by the shell worker"));
+    assert!(!variants::DEFAULT.contains("registry\", name: \"coder\""));
 }
 
 fn extract_directory_ids(text: &str) -> Vec<String> {

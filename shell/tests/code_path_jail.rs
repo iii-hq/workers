@@ -12,6 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use shell::code::config::CoderConfig;
+use shell::code::functions::create_file::{
+    handle as create_handle, CreateFileInput, CreateFileSpec,
+};
+use shell::code::functions::delete_file::{handle as delete_handle, DeleteFileInput};
 use shell::code::functions::read_file::{handle as read_handle, ReadFileInput};
 use shell::code::path::PathResolver;
 use tempfile::tempdir;
@@ -145,10 +149,82 @@ fn nested_dotenv_blocked_by_glob() {
     assert!(r.is_non_accessible(&abs));
 }
 
+#[tokio::test]
+async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
+    let tmp = tempdir().unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("inside.txt"), b"inside").unwrap();
+    std::fs::write(tmp.path().join("sibling.txt"), b"sibling").unwrap();
+    let (r, c) = make_resolver(tmp.path().to_path_buf(), vec![]);
+    let base_dir = project.to_string_lossy().into_owned();
+
+    // `../sibling.txt` is still inside the worker's allowed root, so a plain
+    // jail check is not enough. Session-scoped calls must reject it with C218.
+    let read_err = read_handle(
+        r.clone(),
+        c.clone(),
+        ReadFileInput {
+            path: Some("../sibling.txt".into()),
+            base_dir: Some(base_dir.clone()),
+            ..ReadFileInput::default()
+        },
+    )
+    .await
+    .expect_err("scoped read must not escape the session dir");
+    assert_eq!(wire_err_code(&read_err), "C218");
+
+    let create = create_handle(
+        r.clone(),
+        c,
+        CreateFileInput {
+            files: vec![CreateFileSpec {
+                path: "../created-outside.txt".into(),
+                content: "oops".into(),
+                mode: "0644".into(),
+                parents: true,
+                overwrite: false,
+            }],
+            base_dir: Some(base_dir.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    let create_error = create.results[0].error.as_ref().expect("create rejected");
+    assert_eq!(create_error.code, "C218");
+    assert!(
+        !tmp.path().join("created-outside.txt").exists(),
+        "rejected create must not write into a sibling of the session dir"
+    );
+
+    let delete = delete_handle(
+        r,
+        DeleteFileInput {
+            paths: vec!["../sibling.txt".into()],
+            recursive: false,
+            base_dir: Some(base_dir),
+        },
+    )
+    .await
+    .unwrap();
+    let delete_error = delete.results[0].error.as_ref().expect("delete rejected");
+    assert_eq!(delete_error.code, "C218");
+    assert!(
+        tmp.path().join("sibling.txt").exists(),
+        "rejected delete must leave sibling files untouched"
+    );
+}
+
 fn tokio_test_block_on<F: std::future::Future>(fut: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(fut)
+}
+
+fn wire_err_code(err: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(err)
+        .unwrap_or_else(|e| panic!("handler error is not JSON: {e}: {err}"));
+    v["code"].as_str().expect("wire error code").to_string()
 }
