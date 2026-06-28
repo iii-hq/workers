@@ -130,9 +130,9 @@ pub async fn handle(
         }
     }
 
-    // Single dispatch chokepoint: subscription control calls are intercepted
+    // Single invocation chokepoint: subscription control calls are intercepted
     // (trusted session injected); everything else invokes the target.
-    let raw = crate::functions::subscribe::dispatch_call(
+    let raw = crate::functions::subscribe::invoke(
         deps,
         &engine,
         &policy,

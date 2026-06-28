@@ -21,6 +21,8 @@ pub struct SubEntry {
     /// Owning session — captured at registration from the trusted dispatch
     /// layer; the agent can never widen the target.
     pub session_id: String,
+    pub label: Option<String>,
+    once: bool,
     /// Monotonic fire count, used only for an idempotent notification entry id.
     seq: AtomicU64,
     /// The engine-returned trigger id; attached just after registration (see
@@ -30,9 +32,11 @@ pub struct SubEntry {
 }
 
 impl SubEntry {
-    fn new(session_id: String) -> Self {
+    fn new(session_id: String, once: bool, label: Option<String>) -> Self {
         Self {
             session_id,
+            label,
+            once,
             seq: AtomicU64::new(0),
             trigger_id: Mutex::new(None),
         }
@@ -42,6 +46,23 @@ impl SubEntry {
 /// Returned by [`SubscriptionRegistry::try_insert`] when the per-session cap is hit.
 #[derive(Debug)]
 pub struct CapExceeded;
+
+/// A claimed fire, resolved against the local registry authority.
+pub struct ClaimedFire {
+    pub session_id: String,
+    pub label: Option<String>,
+    pub trigger_id: Option<String>,
+    pub sequence: Option<u64>,
+}
+
+impl ClaimedFire {
+    pub fn entry_id(&self, sub_id: &str) -> String {
+        match self.sequence {
+            Some(seq) => format!("e_notify_{sub_id}_{seq}"),
+            None => format!("e_notify_{sub_id}"),
+        }
+    }
+}
 
 #[derive(Default)]
 struct Inner {
@@ -72,6 +93,8 @@ impl SubscriptionRegistry {
         &self,
         sub_id: &str,
         session_id: &str,
+        once: bool,
+        label: Option<String>,
         max: usize,
     ) -> Result<(), CapExceeded> {
         let mut inner = self.lock();
@@ -88,9 +111,10 @@ impl SubscriptionRegistry {
             .entry(session_id.to_string())
             .or_default()
             .insert(sub_id.to_string());
-        inner
-            .by_id
-            .insert(sub_id.to_string(), Arc::new(SubEntry::new(session_id.to_string())));
+        inner.by_id.insert(
+            sub_id.to_string(),
+            Arc::new(SubEntry::new(session_id.to_string(), once, label)),
+        );
         Ok(())
     }
 
@@ -108,11 +132,27 @@ impl SubscriptionRegistry {
         }
     }
 
-    /// Bump and return the fire sequence for a recurring delivery. `None` only
-    /// when the subscription is already gone (a liveness check for recurring fires).
-    pub fn next_seq(&self, sub_id: &str) -> Option<u64> {
-        let entry = self.lock().by_id.get(sub_id).cloned()?;
-        Some(entry.seq.fetch_add(1, Ordering::SeqCst) + 1)
+    /// Claim a fired subscription using local registry authority. One-shot
+    /// subscriptions are removed; recurring subscriptions keep their entry and
+    /// receive a monotonic sequence.
+    pub fn claim_fire(&self, sub_id: &str) -> Option<ClaimedFire> {
+        let mut inner = self.lock();
+        let entry = inner.by_id.get(sub_id).cloned()?;
+        if entry.once {
+            let entry = remove_entry(&mut inner, sub_id)?;
+            return Some(ClaimedFire {
+                session_id: entry.session_id.clone(),
+                label: entry.label.clone(),
+                trigger_id: trigger_id(&entry),
+                sequence: None,
+            });
+        }
+        Some(ClaimedFire {
+            session_id: entry.session_id.clone(),
+            label: entry.label.clone(),
+            trigger_id: None,
+            sequence: Some(entry.seq.fetch_add(1, Ordering::SeqCst) + 1),
+        })
     }
 
     /// The owning session of a subscription (unsubscribe ownership check).
@@ -125,19 +165,8 @@ impl SubscriptionRegistry {
     /// unsubscribe claim that guarantees at-most-once delivery + teardown.
     pub fn take(&self, sub_id: &str) -> Option<(String, Option<String>)> {
         let mut inner = self.lock();
-        let entry = inner.by_id.remove(sub_id)?;
-        if let Some(set) = inner.by_session.get_mut(&entry.session_id) {
-            set.remove(sub_id);
-            if set.is_empty() {
-                inner.by_session.remove(&entry.session_id);
-            }
-        }
-        let trigger_id = entry
-            .trigger_id
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        Some((entry.session_id.clone(), trigger_id))
+        let entry = remove_entry(&mut inner, sub_id)?;
+        Some((entry.session_id.clone(), trigger_id(&entry)))
     }
 
     /// Remove every subscription owned by a session and return each
@@ -152,9 +181,31 @@ impl SubscriptionRegistry {
                 .unwrap_or_default()
         };
         ids.into_iter()
-            .filter_map(|id| self.take(&id).map(|(_session, trigger_id)| (id, trigger_id)))
+            .filter_map(|id| {
+                self.take(&id)
+                    .map(|(_session, trigger_id)| (id, trigger_id))
+            })
             .collect()
     }
+}
+
+fn trigger_id(entry: &SubEntry) -> Option<String> {
+    entry
+        .trigger_id
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+fn remove_entry(inner: &mut Inner, sub_id: &str) -> Option<Arc<SubEntry>> {
+    let entry = inner.by_id.remove(sub_id)?;
+    if let Some(set) = inner.by_session.get_mut(&entry.session_id) {
+        set.remove(sub_id);
+        if set.is_empty() {
+            inner.by_session.remove(&entry.session_id);
+        }
+    }
+    Some(entry)
 }
 
 impl Default for SubscriptionRegistry {
@@ -170,17 +221,17 @@ mod tests {
     #[test]
     fn try_insert_enforces_cap_atomically() {
         let reg = SubscriptionRegistry::new();
-        assert!(reg.try_insert("sub_1", "s", 2).is_ok());
-        assert!(reg.try_insert("sub_2", "s", 2).is_ok());
-        assert!(reg.try_insert("sub_3", "s", 2).is_err());
+        assert!(reg.try_insert("sub_1", "s", false, None, 2).is_ok());
+        assert!(reg.try_insert("sub_2", "s", false, None, 2).is_ok());
+        assert!(reg.try_insert("sub_3", "s", false, None, 2).is_err());
         // A different session has its own budget.
-        assert!(reg.try_insert("sub_4", "s2", 2).is_ok());
+        assert!(reg.try_insert("sub_4", "s2", false, None, 2).is_ok());
     }
 
     #[test]
     fn set_trigger_id_then_take_returns_it() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", 8).unwrap();
+        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
         assert!(reg.set_trigger_id("sub_1", "trig_1"));
         let (session, trigger_id) = reg.take("sub_1").expect("entry present");
         assert_eq!(session, "s");
@@ -190,26 +241,16 @@ mod tests {
     #[test]
     fn set_trigger_id_false_after_take() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", 8).unwrap();
+        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
         assert!(reg.take("sub_1").is_some());
         // Entry gone (a once-fire won the window): caller must unregister the orphan.
         assert!(!reg.set_trigger_id("sub_1", "trig_1"));
     }
 
     #[test]
-    fn next_seq_is_monotonic_then_none_after_take() {
-        let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", 8).unwrap();
-        assert_eq!(reg.next_seq("sub_1"), Some(1));
-        assert_eq!(reg.next_seq("sub_1"), Some(2));
-        reg.take("sub_1");
-        assert_eq!(reg.next_seq("sub_1"), None);
-    }
-
-    #[test]
     fn take_is_idempotent_winner_takes_all() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", 8).unwrap();
+        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
         assert!(reg.take("sub_1").is_some());
         assert!(reg.take("sub_1").is_none());
     }
@@ -217,8 +258,8 @@ mod tests {
     #[test]
     fn session_of_and_take_session() {
         let reg = SubscriptionRegistry::new();
-        reg.try_insert("sub_1", "s", 8).unwrap();
-        reg.try_insert("sub_2", "s", 8).unwrap();
+        reg.try_insert("sub_1", "s", false, None, 8).unwrap();
+        reg.try_insert("sub_2", "s", false, None, 8).unwrap();
         reg.set_trigger_id("sub_1", "trig_1");
         assert_eq!(reg.session_of("sub_1").as_deref(), Some("s"));
         let mut dropped = reg.take_session("s");
@@ -226,5 +267,37 @@ mod tests {
         assert_eq!(dropped.len(), 2);
         assert!(reg.session_of("sub_1").is_none());
         assert!(reg.take_session("s").is_empty());
+    }
+
+    #[test]
+    fn claim_once_fire_uses_registry_owner_and_removes_entry() {
+        let reg = SubscriptionRegistry::new();
+        reg.try_insert("sub_1", "owner", true, Some("done".to_string()), 8)
+            .unwrap();
+        reg.set_trigger_id("sub_1", "trig_1");
+
+        let claim = reg.claim_fire("sub_1").expect("entry present");
+        assert_eq!(claim.session_id, "owner");
+        assert_eq!(claim.label.as_deref(), Some("done"));
+        assert_eq!(claim.trigger_id.as_deref(), Some("trig_1"));
+        assert_eq!(claim.sequence, None);
+        assert_eq!(claim.entry_id("sub_1"), "e_notify_sub_1");
+        assert!(reg.session_of("sub_1").is_none());
+        assert!(reg.claim_fire("sub_1").is_none());
+    }
+
+    #[test]
+    fn claim_recurring_fire_uses_registry_owner_and_keeps_entry() {
+        let reg = SubscriptionRegistry::new();
+        reg.try_insert("sub_1", "owner", false, None, 8).unwrap();
+
+        let first = reg.claim_fire("sub_1").expect("first fire");
+        let second = reg.claim_fire("sub_1").expect("second fire");
+        assert_eq!(first.session_id, "owner");
+        assert_eq!(first.sequence, Some(1));
+        assert_eq!(first.entry_id("sub_1"), "e_notify_sub_1_1");
+        assert_eq!(second.sequence, Some(2));
+        assert_eq!(second.entry_id("sub_1"), "e_notify_sub_1_2");
+        assert_eq!(reg.session_of("sub_1").as_deref(), Some("owner"));
     }
 }

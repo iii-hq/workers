@@ -22,7 +22,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, RegisterTriggerInput};
+use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
 use harness::configuration::{self, ConfigCell, TriggerHandles};
@@ -124,28 +124,15 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // Bind the cron pending-sweep; retain the handle so a sweep_expression
-    // change re-binds it live.
-    let handles = Arc::new(TriggerHandles {
-        sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
-    });
+    // Bind lifecycle triggers and retain their handles for the worker lifetime.
+    // The sweep binding is hot-reloaded when sweep_expression changes.
+    let handles = Arc::new(TriggerHandles::new(
+        configuration::bind_sweep(&iii, &cfg),
+        configuration::bind_session_deleted(&iii),
+    ));
 
     discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
     discovery::register_functions_trigger(&iii, functions_cell, cfg.dispatch_timeout_ms);
-
-    // Best-effort: drop a deleted session's ephemeral subscriptions. Carries no
-    // config and is never re-bound; a transient failure must not brick boot.
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "session::deleted".to_string(),
-        function_id: harness::subscriptions::ON_SESSION_DELETED_ID.to_string(),
-        config: serde_json::json!({}),
-        metadata: None,
-    }) {
-        Ok(_) => tracing::info!("bound session::deleted -> subscription cleanup"),
-        Err(e) => {
-            tracing::warn!(error = %e, "session::deleted binding failed (subscription cleanup best-effort)")
-        }
-    }
 
     // LAST: bind the configuration-change trigger.
     configuration::register_config_trigger(&iii, cell, handles)

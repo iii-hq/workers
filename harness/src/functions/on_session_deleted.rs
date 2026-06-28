@@ -1,7 +1,6 @@
 //! `harness::on-session-deleted` — drop a deleted session's ephemeral
 //! subscriptions. Bound to session-manager's `session::deleted` trigger.
 
-use iii_sdk::{TriggerAction, TriggerRequest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -29,15 +28,7 @@ pub async fn handle(
     if removed > 0 {
         for (_sub_id, trigger_id) in dropped {
             if let Some(trigger_id) = trigger_id {
-                let _ = deps
-                    .iii
-                    .trigger(TriggerRequest {
-                        function_id: crate::functions::subscribe::UNREGISTER_TRIGGER_ID.to_string(),
-                        payload: serde_json::json!({ "id": trigger_id }),
-                        action: Some(TriggerAction::Void),
-                        timeout_ms: None,
-                    })
-                    .await;
+                crate::functions::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
             }
         }
         tracing::info!(

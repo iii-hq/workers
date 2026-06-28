@@ -28,6 +28,7 @@ use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::functions::sweep_pending::SWEEP_PENDING_ID;
+use crate::subscriptions::ON_SESSION_DELETED_ID;
 
 /// Hot-swappable config snapshot shared with every handler.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
@@ -173,9 +174,19 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Live handle for the one hot-reloadable trigger binding — the cron sweep.
+/// Live trigger handles retained for the worker lifetime.
 pub struct TriggerHandles {
     pub sweep: std::sync::Mutex<Option<Trigger>>,
+    _session_deleted: Option<Trigger>,
+}
+
+impl TriggerHandles {
+    pub fn new(sweep: Option<Trigger>, session_deleted: Option<Trigger>) -> Self {
+        Self {
+            sweep: std::sync::Mutex::new(sweep),
+            _session_deleted: session_deleted,
+        }
+    }
 }
 
 /// Best-effort binding: the cron trigger type always exists (engine built-in),
@@ -207,6 +218,10 @@ pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
         SWEEP_PENDING_ID,
         json!({ "expression": cfg.sweep_expression }),
     )
+}
+
+pub fn bind_session_deleted(iii: &III) -> Option<Trigger> {
+    bind(iii, "session::deleted", ON_SESSION_DELETED_ID, json!({}))
 }
 
 /// Store the freshly-registered handle, then unregister the old one

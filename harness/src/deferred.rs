@@ -90,14 +90,6 @@ pub async fn resolve(
             let arguments = find_call_arguments(deps, &record, &req.function_call_id)
                 .await
                 .unwrap_or(Value::Null);
-            // The inline loop dispatch stamps the owning session onto subscription
-            // control calls; this hold-then-release path bypasses that dispatch, so
-            // re-apply it here (a no-op for other functions). Without this a held
-            // a held subscription control call (`engine::register_trigger` /
-            // `engine::unregister_trigger`) is intercepted on release so it
-            // injects the trusted session (subscribe binds to notify_agent;
-            // unsubscribe is owner-checked). This hold-release path bypasses the
-            // inline loop dispatch, so re-apply that interception here.
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;
             }
@@ -105,11 +97,10 @@ pub async fn resolve(
 
             let policy = crate::policy::CompiledPolicy::from(record.options.functions.as_ref());
             let engine = deps.engine().await;
-            // Single dispatch chokepoint: subscription control calls are
-            // intercepted (trusted session injected); everything else invokes the
-            // target. This hold-release path bypasses the inline loop dispatch, so
-            // it routes through the same chokepoint here.
-            let raw = crate::functions::subscribe::dispatch_call(
+            // Held calls resume outside the inline loop, so use the same
+            // invocation chokepoint to keep subscription session injection/owner
+            // checks.
+            let raw = crate::functions::subscribe::invoke(
                 deps,
                 &engine,
                 &policy,

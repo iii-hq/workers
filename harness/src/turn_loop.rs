@@ -475,10 +475,10 @@ pub async fn run_step(
             let scoped_args =
                 crate::workspace_inject::inject(&call.function_id, eff_args, working_dir);
 
-            // Single dispatch chokepoint: subscription control calls are
+            // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
-            let raw = crate::functions::subscribe::dispatch_call(
+            let raw = crate::functions::subscribe::invoke(
                 deps,
                 &engine,
                 &policy,

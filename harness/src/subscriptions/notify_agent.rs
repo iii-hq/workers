@@ -3,12 +3,12 @@
 //! Every subscription binds (via `engine::register_trigger`) to this single
 //! function. The engine's per-subscription proxy injects the registration
 //! `metadata` into the fired payload under [`TRIGGER_META_KEY`]
-//! (`__metadata`), so this handler recovers which session/subscription a fire
-//! belongs to from the payload — no per-subscription function is registered.
+//! (`__metadata`). The payload carries only the subscription id; the local
+//! registry remains the authority for owner, label, and one-shot semantics.
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction, TriggerAction, TriggerRequest};
+use iii_sdk::{IIIError, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
@@ -31,8 +31,8 @@ pub fn register(deps: Arc<Deps>) {
     );
 }
 
-/// Handle a fired subscription: recover its context from `__metadata`, build the
-/// notification, inject it into the owning session, and self-tear-down (`once`).
+/// Handle a fired subscription: recover its id from `__metadata`, claim it from
+/// the registry, build the notification, inject it, and self-tear-down (`once`).
 async fn on_fire(deps: &Deps, mut event: Value) {
     // Extract and STRIP the engine-injected metadata so it never leaks into the
     // notification text shown to the agent.
@@ -48,62 +48,41 @@ async fn on_fire(deps: &Deps, mut event: Value) {
         .get("subscription_id")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let session_id = meta
-        .get("session_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let (Some(sub_id), Some(session_id)) = (sub_id, session_id) else {
-        tracing::warn!("notify_agent metadata missing subscription_id/session_id; dropping");
+    let Some(sub_id) = sub_id else {
+        tracing::warn!("notify_agent metadata missing subscription_id; dropping");
         return;
     };
-    let label = meta
-        .get("label")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let once = meta.get("once").and_then(Value::as_bool).unwrap_or(false);
 
-    // Claim the fire: `once` removes the entry (winner-takes-all → at-most-once),
-    // recurring just bumps the sequence (and confirms the entry is still live).
-    let entry_id = if once {
-        let Some((_session, trigger_id)) = deps.subscriptions.take(&sub_id) else {
-            return; // already torn down; a concurrent fire won
-        };
-        if let Some(trigger_id) = trigger_id {
-            let _ = deps
-                .iii
-                .trigger(TriggerRequest {
-                    function_id: crate::functions::subscribe::UNREGISTER_TRIGGER_ID.to_string(),
-                    payload: json!({ "id": trigger_id }),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
-        }
-        format!("e_notify_{sub_id}")
-    } else {
-        let Some(seq) = deps.subscriptions.next_seq(&sub_id) else {
-            return; // torn down between fire and handling
-        };
-        format!("e_notify_{sub_id}_{seq}")
+    let Some(claim) = deps.subscriptions.claim_fire(&sub_id) else {
+        return; // torn down or a concurrent one-shot fire won
     };
+    if let Some(trigger_id) = claim.trigger_id.as_deref() {
+        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    }
 
+    let entry_id = claim.entry_id(&sub_id);
     let summary = summarize_event(&event);
-    let text = match &label {
+    let text = match &claim.label {
         Some(label) => format!("[notification: {label}] {summary}"),
         None => format!("[notification] {summary}"),
     };
     let message = AgentMessage::user_text(text);
     let origin = json!({
-        "notification": { "label": label, "subscription_id": sub_id }
+        "notification": { "label": claim.label, "subscription_id": sub_id }
     });
 
-    if let Err(e) =
-        crate::functions::send::inject(deps, &session_id, message, Some(&entry_id), Some(&origin))
-            .await
+    if let Err(e) = crate::functions::send::inject(
+        deps,
+        &claim.session_id,
+        message,
+        Some(&entry_id),
+        Some(&origin),
+    )
+    .await
     {
         tracing::warn!(
             sub_id,
-            session_id = %session_id,
+            session_id = %claim.session_id,
             error = %e,
             "subscription notification injection failed"
         );

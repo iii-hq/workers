@@ -1,7 +1,7 @@
 //! Agent-facing ephemeral event subscriptions (harness.md § Subscriptions).
 //!
 //! The agent SUBSCRIBES by calling `engine::register_trigger`, which the harness
-//! dispatch layer INTERCEPTS (see [`crate::functions::subscribe::intercept`]) to
+//! INTERCEPTS (see [`crate::functions::subscribe::invoke`]) to
 //! register an EPHEMERAL listener on any iii trigger type (`cron`, `state`,
 //! `stream`, or another worker's custom trigger type) and be NOTIFIED when it
 //! fires — instead of polling. When it fires, the shared `harness::notify_agent`
@@ -17,10 +17,11 @@
 //! Routing: the interceptor registers a trigger (via `engine::register_trigger`)
 //! bound to the ONE shared `harness::notify_agent` function. The engine's
 //! per-subscription proxy round-trips the registration metadata into the fired
-//! payload under [`TRIGGER_META_KEY`] (`__metadata`), so the shared handler
-//! recovers the owning session/subscription from the payload. The owning session
-//! is injected by the trusted dispatch layer (it intercepts the agent's
-//! `engine::register_trigger` call), never trusted from model arguments.
+//! payload under [`TRIGGER_META_KEY`] (`__metadata`). That metadata carries only
+//! the subscription id; the local registry is the authority for owner, label,
+//! and `once`. The owning session is injected by the harness when it intercepts
+//! the agent's `engine::register_trigger` call, never trusted from model
+//! arguments or fired payloads.
 
 pub mod notify_agent;
 pub mod registry;
@@ -36,7 +37,7 @@ pub const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 64;
 pub const NOTIFY_AGENT_ID: &str = "harness::notify_agent";
 pub const NOTIFY_AGENT_DESC: &str =
     "Internal: the shared subscription fire handler — injects a notification into the owning \
-     session (recovered from the trigger metadata). Not called directly.";
+     session (resolved from the local subscription registry). Not called directly.";
 
 /// Reserved payload key under which the engine's subscription proxy round-trips a
 /// trigger's registration metadata into the fired payload. MUST match the engine
