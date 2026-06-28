@@ -57,6 +57,23 @@ pub struct ShellConfig {
     #[serde(default)]
     pub sandbox: SandboxConfig,
 
+    /// The folded `code` surface (`coder::*`) config: glob protection
+    /// (`non_accessible_globs`), noise excludes (`default_exclude_globs`), and
+    /// per-file/response budgets. The code resolver's ROOTS are NOT taken from
+    /// here — it uses `fs.host_roots` so there is a single jail config; any
+    /// `base_path`/`base_paths` set under `code` is ignored.
+    #[serde(default)]
+    pub code: crate::code::config::CoderConfig,
+
+    /// One-shot migration marker (D4/T5): set true once the legacy `coder`
+    /// config entry has been folded into this value at boot. Persisted in the
+    /// stored value so the fold runs exactly once, but hidden from the operator
+    /// schema (not a knob anyone edits). PERSISTS (no `skip`) — that is the
+    /// whole point of an idempotency marker.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub migrated_from_coder: bool,
+
     #[serde(default, skip)]
     #[schemars(skip)]
     pub compiled_denylist: Vec<Regex>,
@@ -92,8 +109,18 @@ fn default_job_retention_secs() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FsConfig {
+    /// Legacy single jail root. Honored as a one-entry `host_roots` list.
+    /// Setting BOTH `host_root` and `host_roots` is a config error
+    /// (`validate_fs_jail`). Prefer `host_roots`.
     #[serde(default)]
     pub host_root: Option<PathBuf>,
+    /// Allowed jail roots. The FIRST entry is the PRIMARY root: relative wire
+    /// paths and a relative per-call `cwd`/`base_dir` resolve against it.
+    /// Absolute paths are accepted when they canonicalize inside ANY listed
+    /// root. Empty (and `host_root` unset) means unjailed — refused at boot
+    /// unless `allow_unjailed` is true.
+    #[serde(default)]
+    pub host_roots: Vec<PathBuf>,
     /// Operator opt-in for running with `host_root: null`. When false (the
     /// default) the worker refuses to start unjailed — the entire host
     /// filesystem is reachable through `shell::fs::*` aside from the small
@@ -133,10 +160,32 @@ fn default_sandbox_enabled() -> bool {
     true
 }
 
+impl FsConfig {
+    /// Effective jail roots, in priority order (index 0 = primary). Returns
+    /// `host_roots` when set, else the legacy `host_root` as a one-entry list,
+    /// else empty (unjailed). Does NOT canonicalize — that happens once at
+    /// backend construction. `validate_fs_jail` rejects setting both keys.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        if !self.host_roots.is_empty() {
+            self.host_roots.clone()
+        } else if let Some(r) = &self.host_root {
+            vec![r.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// True when a jail boundary is configured (at least one root).
+    pub fn is_jailed(&self) -> bool {
+        !self.host_roots.is_empty() || self.host_root.is_some()
+    }
+}
+
 impl Default for FsConfig {
     fn default() -> Self {
         Self {
             host_root: None,
+            host_roots: Vec::new(),
             allow_unjailed: false,
             max_read_bytes: default_max_read_bytes(),
             max_write_bytes: default_max_write_bytes(),
@@ -170,6 +219,8 @@ impl Default for ShellConfig {
             job_retention_secs: default_job_retention_secs(),
             fs: FsConfig::default(),
             sandbox: SandboxConfig::default(),
+            code: crate::code::config::CoderConfig::default(),
+            migrated_from_coder: false,
             compiled_denylist: Vec::new(),
         }
     }
@@ -204,8 +255,32 @@ impl ShellConfig {
                 denylist_paths: vec![PathBuf::from("/etc/passwd"), PathBuf::from("/etc/shadow")],
                 ..FsConfig::default()
             },
+            // D4: secrets are protected out of the box, so a zero-config boot
+            // matches the shipped config.yaml's `code.non_accessible_globs`.
+            // Both surfaces (coder::* C211, shell::fs::* S215) honor these.
+            code: crate::code::config::CoderConfig {
+                non_accessible_globs: vec![
+                    "**/.env".into(),
+                    "**/.env.*".into(),
+                    "**/*.pem".into(),
+                    "**/*.key".into(),
+                    "**/secrets/**".into(),
+                ],
+                ..Default::default()
+            },
             ..Self::default()
         }
+    }
+
+    /// Assemble the `CoderConfig` the code `PathResolver` is built from: the
+    /// glob/budget settings from the `code` block, but with ROOTS taken from
+    /// `fs.host_roots` (the unified jail) — never from `code.base_paths`. This
+    /// is what keeps the merge's promise that the operator sets the root once.
+    pub fn code_resolver_config(&self) -> crate::code::config::CoderConfig {
+        let mut c = self.code.clone();
+        c.base_path = None;
+        c.base_paths = self.fs.roots();
+        c
     }
 }
 
@@ -223,11 +298,17 @@ impl ShellConfig {
     /// behind only the (advisory) denylist — the operator must either pin a
     /// host_root jail or explicitly opt in via `fs.allow_unjailed: true`.
     pub fn validate_fs_jail(&self) -> Result<()> {
-        if self.fs.host_root.is_none() && !self.fs.allow_unjailed {
+        if self.fs.host_root.is_some() && !self.fs.host_roots.is_empty() {
             anyhow::bail!(
-                "fs.host_root is unset and fs.allow_unjailed is false — refusing to start \
-                 unjailed. Set fs.host_root to a directory you intend to expose, or set \
-                 fs.allow_unjailed: true to accept that the entire host filesystem is \
+                "both fs.host_root and fs.host_roots are set — set either fs.host_root (legacy \
+                 single root) or fs.host_roots (the list form), not both. Keep only fs.host_roots."
+            );
+        }
+        if !self.fs.is_jailed() && !self.fs.allow_unjailed {
+            anyhow::bail!(
+                "fs.host_root/fs.host_roots are unset and fs.allow_unjailed is false — refusing \
+                 to start unjailed. Set fs.host_roots to the directories you intend to expose, or \
+                 set fs.allow_unjailed: true to accept that the entire host filesystem is \
                  reachable through shell::fs::* (subject only to the advisory denylist)."
             );
         }
@@ -285,26 +366,30 @@ impl ShellConfig {
             // binary" here, so reject ALL command paths and require a bare,
             // PATH-resolved name. (In jailed mode the check below is precise:
             // only paths inside host_root are rejected.)
-            if self.fs.host_root.is_none() {
+            if !self.fs.is_jailed() {
                 return Err(format!(
                     "command path '{}' is not allowed when fs is unjailed \
-                     (fs.host_root is null): any host path is writable via \
+                     (no fs.host_root/fs.host_roots): any host path is writable via \
                      shell::fs::write, so a command path could execute \
                      agent-planted bytes and bypass the allowlist. Use a bare \
                      command name (PATH-resolved).",
                     cmd
                 ));
             }
-            if let Some(host_root) = &self.fs.host_root {
-                if let Ok(canon_cmd) = std::fs::canonicalize(&cmd) {
-                    if let Ok(canon_root) = std::fs::canonicalize(host_root) {
+            // Jailed: reject a command path that canonicalizes inside ANY
+            // writable root. A binary planted via shell::fs::write under any
+            // root would otherwise pass the basename allowlist and execute —
+            // host RCE. All roots are writable, so all must be checked.
+            if let Ok(canon_cmd) = std::fs::canonicalize(&cmd) {
+                for root in self.fs.roots() {
+                    if let Ok(canon_root) = std::fs::canonicalize(&root) {
                         if canon_cmd.starts_with(&canon_root) {
                             return Err(format!(
                                 "command path '{}' resolves inside the writable fs jail ({}); \
                                  executing files written via shell::fs::write is not allowed. \
                                  Use a bare command name (PATH-resolved) or a path outside the jail.",
                                 cmd,
-                                host_root.display()
+                                root.display()
                             ));
                         }
                     }
@@ -655,6 +740,78 @@ sandbox:
         let mut c = ShellConfig::default();
         c.fs.host_root = Some(std::path::PathBuf::from("/tmp/something"));
         c.validate_fs_jail().expect("pinned host_root is valid");
+    }
+
+    #[test]
+    fn validate_fs_jail_accepts_host_roots_list() {
+        let mut c = ShellConfig::default();
+        c.fs.host_roots = vec!["/tmp/a".into(), "/tmp/b".into()];
+        c.validate_fs_jail().expect("host_roots list is valid");
+    }
+
+    #[test]
+    fn validate_fs_jail_rejects_both_host_root_and_host_roots() {
+        let mut c = ShellConfig::default();
+        c.fs.host_root = Some("/tmp/a".into());
+        c.fs.host_roots = vec!["/tmp/b".into()];
+        let err = c.validate_fs_jail().expect_err("both set must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("both fs.host_root and fs.host_roots"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn roots_prefers_host_roots_then_legacy_host_root() {
+        let mut c = FsConfig::default();
+        assert!(c.roots().is_empty(), "unset = unjailed");
+        assert!(!c.is_jailed());
+        c.host_root = Some("/tmp/legacy".into());
+        assert_eq!(c.roots(), vec![std::path::PathBuf::from("/tmp/legacy")]);
+        assert!(c.is_jailed());
+        c.host_roots = vec!["/tmp/a".into(), "/tmp/b".into()];
+        // host_roots wins when both are present (validate_fs_jail rejects that
+        // combo at boot, but roots() stays deterministic).
+        assert_eq!(
+            c.roots(),
+            vec![
+                std::path::PathBuf::from("/tmp/a"),
+                std::path::PathBuf::from("/tmp/b")
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_guard_rejects_command_path_inside_any_root() {
+        // SECURITY: the planted-binary guard must check EVERY writable root,
+        // not just the first. A binary planted via shell::fs::write under the
+        // SECOND root must be rejected exactly like one under the primary.
+        let root_a = std::env::temp_dir().join(format!("shell-mr-a-{}", uuid::Uuid::new_v4()));
+        let root_b = std::env::temp_dir().join(format!("shell-mr-b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        std::fs::write(root_b.join("ls"), "#!/bin/sh\necho pwned\n").unwrap();
+
+        let mut c = ShellConfig {
+            allowlist: vec!["ls".into()],
+            ..Default::default()
+        };
+        c.fs.host_roots = vec![root_a.clone(), root_b.clone()];
+        c.compile_denylist().unwrap();
+
+        // Planted under the SECOND root → rejected with a jail-mentioning error.
+        let planted = root_b.join("ls").to_string_lossy().to_string();
+        let err = c
+            .is_command_allowed(&[planted])
+            .expect_err("a command path inside the 2nd root must be rejected");
+        assert!(err.contains("jail"), "got: {err}");
+
+        // A bare name still PATH-resolves and is allowed.
+        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
+
+        std::fs::remove_dir_all(&root_a).ok();
+        std::fs::remove_dir_all(&root_b).ok();
     }
 
     #[test]

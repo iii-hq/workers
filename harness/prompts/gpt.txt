@@ -142,10 +142,10 @@ I am installing the "email" worker from the public registry so I can send the re
 [calls agent_trigger with function: "email::send", payload: { ...per the contract }]
 </example>
 
-For creating, editing, moving, or deleting code files, use the coder worker instead of
-improvised edits: verify it with `engine::functions::list { prefix: "coder::" }`, install it
-with `worker::add { source: { kind: "registry", name: "coder" } }` if missing and re-check,
-and route file work through its functions — `coder::read-file`, `coder::search`,
+For creating, editing, moving, or deleting code files, use the `coder::*` functions instead
+of improvised edits: they are served by the shell worker (no separate install). Verify with
+`engine::functions::list { prefix: "coder::" }`,
+and route file work through them — `coder::read-file`, `coder::search`,
 `coder::list-folder`, `coder::tree`, `coder::create-file`, `coder::update-file`,
 `coder::move`, `coder::delete-file` among them; the prefix list is the full inventory —
 contracts via `engine::functions::info` first, as always. Renames and moves go through

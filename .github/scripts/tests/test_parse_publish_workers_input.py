@@ -22,13 +22,13 @@ class TestParseWorkers:
         assert parse_workers("  ALL  ") == list(ALLOWED_WORKERS)
 
     def test_comma_separated_list(self):
-        assert parse_workers("shell,coder") == ["shell", "coder"]
+        assert parse_workers("shell,storage") == ["shell", "storage"]
 
     def test_dedupe_preserves_order(self):
-        assert parse_workers("shell,coder,shell") == ["shell", "coder"]
+        assert parse_workers("shell,storage,shell") == ["shell", "storage"]
 
     def test_whitespace_trimmed(self):
-        assert parse_workers(" shell , coder ") == ["shell", "coder"]
+        assert parse_workers(" shell , storage ") == ["shell", "storage"]
 
     def test_unknown_worker_raises(self):
         with pytest.raises(ValueError, match="unknown worker"):
@@ -54,13 +54,13 @@ def run_script(workers: str, github_output: Path) -> subprocess.CompletedProcess
 def test_cli_writes_matrix_to_github_output(tmp_path):
     out_file = tmp_path / "output"
     out_file.write_text("")
-    result = run_script("shell,coder", out_file)
+    result = run_script("shell,storage", out_file)
     assert result.returncode == 0
     lines = out_file.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     key, value = lines[0].split("=", 1)
     assert key == "matrix"
-    assert json.loads(value) == ["shell", "coder"]
+    assert json.loads(value) == ["shell", "storage"]
 
 
 def test_cli_unknown_worker_exits_nonzero():

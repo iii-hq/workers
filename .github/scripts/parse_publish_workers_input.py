@@ -14,7 +14,6 @@ import sys
 
 ALLOWED_WORKERS: tuple[str, ...] = (
     "acp",
-    "coder",
     "console",
     "database",
     "harness",

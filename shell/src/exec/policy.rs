@@ -126,16 +126,19 @@ impl ExecOverrides {
 /// `HostFsBackend::try_new` does, so the confinement helpers see the identical
 /// inputs. An unreachable root is an operator config error (surfaced S216); a
 /// non-existent denylist entry can't be escaped through, so it is kept as-is.
-fn jail_inputs(cfg: &ShellConfig) -> Result<(Option<PathBuf>, Vec<PathBuf>), ExecError> {
-    let host_root_canon = match &cfg.fs.host_root {
-        Some(root) => Some(std::fs::canonicalize(root).map_err(|e| {
+fn jail_inputs(cfg: &ShellConfig) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ExecError> {
+    let mut host_roots_canon = Vec::new();
+    for root in cfg.fs.roots() {
+        let canon = std::fs::canonicalize(&root).map_err(|e| {
             ExecError::new(
                 "S216",
                 format!("host_root unreachable ({}): {e}", root.display()),
             )
-        })?),
-        None => None,
-    };
+        })?;
+        if !host_roots_canon.contains(&canon) {
+            host_roots_canon.push(canon);
+        }
+    }
     let mut denylist_canon = Vec::with_capacity(cfg.fs.denylist_paths.len());
     for deny in &cfg.fs.denylist_paths {
         match std::fs::canonicalize(deny) {
@@ -143,7 +146,7 @@ fn jail_inputs(cfg: &ShellConfig) -> Result<(Option<PathBuf>, Vec<PathBuf>), Exe
             Err(_) => denylist_canon.push(deny.clone()),
         }
     }
-    Ok((host_root_canon, denylist_canon))
+    Ok((host_roots_canon, denylist_canon))
 }
 
 /// Verify a directory operand exists and is a directory (following one symlink
@@ -174,22 +177,22 @@ fn require_existing_dir(canon: &PathBuf, raw: &str, kind: &str) -> Result<(), Ex
 /// unjailed worker has no ceiling, so a supplied `base_dir` is rejected S210.
 fn confine_base_dir(
     base_dir: Option<&str>,
-    host_root_canon: Option<&std::path::Path>,
+    host_roots_canon: &[PathBuf],
     denylist_canon: &[PathBuf],
 ) -> Result<Option<PathBuf>, ExecError> {
     let Some(base_dir) = base_dir else {
         return Ok(None);
     };
-    if host_root_canon.is_none() {
+    if host_roots_canon.is_empty() {
         return Err(ExecError::new(
             "S210",
             format!(
                 "base_dir {base_dir} is only honored when the worker is jailed \
-                 (fs.host_root is set); this worker is unjailed"
+                 (fs.host_root/fs.host_roots is set); this worker is unjailed"
             ),
         ));
     }
-    let canon = crate::fs::host::confine_path(base_dir, host_root_canon, denylist_canon)
+    let canon = crate::fs::host::confine_path(base_dir, host_roots_canon, denylist_canon)
         .map_err(|e| ExecError::new(static_code(e.code), e.message))?;
     require_existing_dir(&canon, base_dir, "base_dir")?;
     Ok(Some(canon))
@@ -205,13 +208,13 @@ fn confine_base_dir(
 /// the fs backend) because the exec handler reads the live config snapshot.
 fn confine_cwd(
     cwd: &str,
-    host_root_canon: Option<&std::path::Path>,
+    host_roots_canon: &[PathBuf],
     base_dir_canon: Option<&std::path::Path>,
     denylist_canon: &[PathBuf],
 ) -> Result<PathBuf, ExecError> {
     let canon = crate::fs::host::confine_path_with_base_dir(
         cwd,
-        host_root_canon,
+        host_roots_canon,
         base_dir_canon,
         denylist_canon,
     )
@@ -303,15 +306,15 @@ pub fn build_overrides(
     base_dir: Option<&str>,
     cfg: &ShellConfig,
 ) -> Result<ExecOverrides, ExecError> {
-    let (host_root_canon, denylist_canon) = jail_inputs(cfg)?;
+    let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
     // Resolve the session directory first: it gates the cwd confinement below
     // and, when no cwd is supplied, becomes the working directory itself.
-    let base_dir_canon = confine_base_dir(base_dir, host_root_canon.as_deref(), &denylist_canon)?;
+    let base_dir_canon = confine_base_dir(base_dir, &host_roots_canon, &denylist_canon)?;
 
     let cwd = match cwd {
         Some(c) => Some(confine_cwd(
             c,
-            host_root_canon.as_deref(),
+            &host_roots_canon,
             base_dir_canon.as_deref(),
             &denylist_canon,
         )?),
@@ -469,8 +472,8 @@ mod tests {
     /// no-base_dir cwd tests keep asserting the same contract against the new
     /// four-arg `confine_cwd`.
     fn confine_cwd_via_cfg(cwd: &str, cfg: &ShellConfig) -> Result<PathBuf, ExecError> {
-        let (host_root_canon, denylist_canon) = jail_inputs(cfg)?;
-        confine_cwd(cwd, host_root_canon.as_deref(), None, &denylist_canon)
+        let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
+        confine_cwd(cwd, &host_roots_canon, None, &denylist_canon)
     }
 
     #[test]

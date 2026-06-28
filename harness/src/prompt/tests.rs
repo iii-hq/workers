@@ -176,7 +176,10 @@ fn directory_bootstrap_degrade() {
 fn coder_routing() {
     let out = default_prompt();
     assert!(out.contains("engine::functions::list { prefix: \"coder::\" }"));
-    assert!(out.contains("{ source: { kind: \"registry\", name: \"coder\" } }"));
+    // The code surface is served by the shell worker now — the prompt must NOT
+    // tell agents to install a separate `coder` registry worker.
+    assert!(!out.contains("registry\", name: \"coder\""));
+    assert!(out.contains("served by the shell worker"));
     for id in [
         "coder::read-file",
         "coder::search",
@@ -364,7 +367,10 @@ fn capability_ladder_ordering() {
 
 #[test]
 fn default_variant_matches_legacy_default_body() {
-    assert_eq!(variants::DEFAULT.len(), 12_005);
+    // Length snapshot guards accidental prompt edits. Updated for the
+    // coder→shell merge: the code-file routing text dropped the "install the
+    // coder registry worker" instruction (coder::* is served by shell now).
+    assert_eq!(variants::DEFAULT.len(), 11_960);
 }
 
 fn extract_directory_ids(text: &str) -> Vec<String> {

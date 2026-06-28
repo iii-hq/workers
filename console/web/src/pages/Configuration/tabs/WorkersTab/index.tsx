@@ -35,7 +35,11 @@ export function WorkersTab({
   onDirtyChange,
 }: WorkersTabProps) {
   const listQuery = useConfigurationsList()
-  const entries = listQuery.data ?? []
+  // Tombstone: the `coder` worker was folded into `shell`. Its configuration
+  // entry is kept (inert) as a one-shot migration/rollback artifact, but it is
+  // no longer a live worker, so hide it from the editor — surfacing it would
+  // read as a second, editable filesystem config.
+  const entries = (listQuery.data ?? []).filter((e) => e.id !== 'coder')
 
   // React to workers added/removed out of band (CLI `iii worker add/remove`)
   // by invalidating the list so a freshly-installed worker's config appears

@@ -72,3 +72,24 @@ fs:
 # whether iii-sandbox itself is running.
 sandbox:
   enabled: true
+
+# The folded `coder::*` code surface. Its ROOTS are NOT set here — the code
+# resolver uses fs.host_roots above, so the operator sets the project root
+# ONCE. `non_accessible_globs` is the unified protected-paths list: BOTH the
+# code functions (visible-but-locked, C211) and shell::fs::* (hard-reject,
+# S215) honor it, so secrets are declared once. `default_exclude_globs` is a
+# hide-only noise filter for coder::tree / coder::search.
+code:
+  non_accessible_globs:
+    - "**/.env"
+    - "**/.env.*"
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/secrets/**"
+  default_exclude_globs:
+    - "**/.git/**"
+    - "**/node_modules/**"
+    - "**/target/**"
+    - "**/dist/**"
+    - "**/.venv/**"
+    - "**/__pycache__/**"

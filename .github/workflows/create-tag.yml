@@ -12,7 +12,6 @@ on:
           - acp
           - approval-gate
           - claude-code
-          - coder
           - codex
           - console
           - context-manager
