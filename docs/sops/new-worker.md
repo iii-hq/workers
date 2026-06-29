@@ -1,7 +1,7 @@
 # New worker onboarding
 
 **Sources of truth:** this checklist; language scaffolds in
-[`binary-worker.md`](binary-worker.md) and the todo-worker templates; CI in
+[`binary-worker.md`](binary-worker.md); CI in
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml); release in
 [`release.md`](release.md). On conflict, the workflow wins — update this doc.
 
@@ -39,8 +39,8 @@ Pick a scaffold by `deploy` + `language`:
 | `deploy` | `language` | Scaffold |
 |---|---|---|
 | `binary` | `rust` | [`binary-worker.md`](binary-worker.md) |
-| `image` | `javascript` / `node` | [`todo-worker/`](../../todo-worker/) |
-| `image` | `python` | [`todo-worker-python/`](../../todo-worker-python/) |
+| `image` | `javascript` / `node` | [`deploy-modes.md`](../architecture/deploy-modes.md) §Image |
+| `image` | `python` | [`deploy-modes.md`](../architecture/deploy-modes.md) §Image |
 | `bundle` | `javascript` | [`harness/`](../../harness/) (monorepo bundle) |
 
 `iii.worker.yaml` must declare valid `deploy` (`binary` | `image` | `bundle`)

@@ -62,8 +62,6 @@ npx skills add iii-hq/iii --all
 | [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider behind `llm-router` — `provider::openai::stream` with reasoning support and live chat-model discovery. |
 | [`shell`](shell/) | Rust | Unix shell + filesystem worker — `shell::exec` with allowlist/denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
-| [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
-| [`todo-worker-python`](todo-worker-python/) | Python | Quickstart CRUD todo worker using the Python iii SDK. |
 
 ## SDK
 
