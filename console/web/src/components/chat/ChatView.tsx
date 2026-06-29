@@ -172,6 +172,14 @@ export function ChatView({
       : false)
   const approvalSettings = useApprovalSettings(sessionId, approvalEnabled)
 
+  // The working-directory picker + banner only make sense with the `shell`
+  // worker connected: the picker browses via shell-served `coder::*` functions
+  // and the chosen dir scopes shell exec/file calls. Hide both when shell is
+  // absent so we never render controls that call functions that don't exist.
+  const workingDirEnabled =
+    backend.id === 'real' &&
+    (conversationsCtx ? conversationsCtx.shellAvailable : false)
+
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
@@ -201,18 +209,6 @@ export function ChatView({
         onAppendMessage(
           conversationId,
           makeSystemNotice('select a model before sending.', 'warn'),
-        )
-        return
-      }
-
-      // Confine the session to a project directory before any work runs.
-      if (backend.id === 'real' && !conversation.workingDir) {
-        onAppendMessage(
-          conversationId,
-          makeSystemNotice(
-            'choose a working directory before sending.',
-            'warn',
-          ),
         )
         return
       }
@@ -734,7 +730,7 @@ export function ChatView({
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
-          {backend.id === 'real' ? (
+          {workingDirEnabled ? (
             <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
               <Folder size={12} className="shrink-0" aria-hidden />
               {conversation.workingDir ? (
@@ -749,7 +745,7 @@ export function ChatView({
                 </span>
               ) : (
                 <span className="lowercase text-ink-ghost">
-                  no working directory — choose one before sending
+                  no working directory — using default workspace
                 </span>
               )}
             </div>
@@ -767,7 +763,7 @@ export function ChatView({
             onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
-            showWorkingDir={backend.id === 'real'}
+            showWorkingDir={workingDirEnabled}
             workingDir={conversation.workingDir ?? null}
             workingDirLocked={false}
             onWorkingDirChange={handleWorkingDirChange}

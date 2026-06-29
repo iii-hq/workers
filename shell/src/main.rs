@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::errors::Error;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::Value;
 
@@ -35,6 +36,22 @@ struct Cli {
     url: String,
 }
 
+/// Identify this worker to the engine as `shell` (name, runtime, version, pid)
+/// so it appears as `shell` in `engine::workers::list` and the `worker`
+/// lifecycle stream — not the default `Host:<pid>` identity. Console surfaces
+/// gate the working-directory picker on this name, mirroring `approval-gate`.
+fn worker_metadata() -> WorkerMetadata {
+    WorkerMetadata {
+        runtime: "rust".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        name: "shell".to_string(),
+        os: std::env::consts::OS.to_string(),
+        pid: Some(std::process::id()),
+        telemetry: None,
+        ..WorkerMetadata::default()
+    }
+}
+
 /// JSON Schema for a typed request/response struct, attached to a `Value`
 /// handler via `request_format`/`response_format` so the engine publishes the
 /// full contract while the handler keeps its legacy `S210` deserialization.
@@ -59,6 +76,7 @@ async fn main() -> Result<()> {
         &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
+            metadata: Some(worker_metadata()),
             ..Default::default()
         },
     );

@@ -18,6 +18,7 @@ import {
   isHarnessAvailable,
   useHarnessStatus,
 } from '@/hooks/use-harness-status'
+import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
@@ -55,6 +56,14 @@ interface ConversationsContextValue extends ConversationsApi {
    * than triggering "function not found". Only meaningful on the real backend.
    */
   approvalGateAvailable: boolean
+  /**
+   * Whether the optional `shell` worker is connected. Gates the chat
+   * working-directory picker + status banner: the picker browses via the
+   * shell-served `coder::*` functions and the chosen dir scopes shell exec/file
+   * calls, so with shell absent the controls would call functions that don't
+   * exist. Only meaningful on the real backend.
+   */
+  shellAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -79,6 +88,7 @@ export function ConversationsProvider({
   const approvalGateAvailable = isApprovalGateAvailable(
     useApprovalGateStatus(backend.id === 'real'),
   )
+  const shellAvailable = isShellAvailable(useShellStatus(backend.id === 'real'))
   const {
     modelOptions,
     catalogKeys,
@@ -124,6 +134,7 @@ export function ConversationsProvider({
     refreshingModels,
     harnessStatus,
     approvalGateAvailable,
+    shellAvailable,
   }
 
   return (
