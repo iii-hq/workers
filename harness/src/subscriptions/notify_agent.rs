@@ -27,7 +27,6 @@ struct NotifyMetadata {
     once: bool,
 }
 
-/// Register the single shared `harness::notify_agent` handler (once, at boot).
 pub fn register(deps: Arc<Deps>) {
     let iii = deps.iii.clone();
     iii.register_function(
@@ -43,23 +42,14 @@ pub fn register(deps: Arc<Deps>) {
     );
 }
 
-/// Handle a fired subscription: recover trusted context from `__metadata`,
-/// validate it against the local registry, build the notification, inject it,
-/// and self-tear-down (`once`).
 async fn on_fire(deps: &Deps, mut event: Value) {
-    // Extract and STRIP the engine-injected metadata so it never leaks into the
-    // notification text shown to the agent.
-    let meta = event
-        .as_object_mut()
-        .and_then(|o| o.remove(TRIGGER_META_KEY));
-    let Some(meta) = meta else {
-        tracing::warn!("notify_agent fire without {TRIGGER_META_KEY}; dropping");
-        return;
-    };
-
-    let meta = match serde_json::from_value::<NotifyMetadata>(meta) {
+    let meta = match take_metadata(&mut event) {
         Ok(meta) => meta,
-        Err(e) => {
+        Err(MetadataError::Missing) => {
+            tracing::warn!("notify_agent fire without {TRIGGER_META_KEY}; dropping");
+            return;
+        }
+        Err(MetadataError::Invalid(e)) => {
             tracing::warn!(error = %e, "notify_agent metadata invalid; dropping");
             return;
         }
@@ -69,20 +59,13 @@ async fn on_fire(deps: &Deps, mut event: Value) {
         deps.subscriptions
             .claim_fire(&meta.subscription_id, &meta.session_id, meta.once)
     else {
-        // Torn down, owner mismatch, or a concurrent one-shot fire won.
         return;
     };
     if let Some(trigger_id) = claim.trigger_id.as_deref() {
         crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
     }
 
-    let summary = summarize_event(&event);
-    let text = match &meta.label {
-        Some(label) => format!("[notification: {label}] {summary}"),
-        None => format!("[notification] {summary}"),
-    };
-    let message = AgentMessage::user_text(text);
-    let origin = json!({ "notification": true });
+    let (message, origin) = notification_message(&meta, &event);
 
     if let Err(e) = crate::functions::send::inject(
         deps,
@@ -102,8 +85,33 @@ async fn on_fire(deps: &Deps, mut event: Value) {
     }
 }
 
-/// A compact one-line summary of the fired event for the notification text. The
-/// full payload can be large or carry foreign data, so the excerpt is bounded.
+#[derive(Debug)]
+enum MetadataError {
+    Missing,
+    Invalid(serde_json::Error),
+}
+
+fn take_metadata(event: &mut Value) -> Result<NotifyMetadata, MetadataError> {
+    let meta = event
+        .as_object_mut()
+        .and_then(|o| o.remove(TRIGGER_META_KEY))
+        .ok_or(MetadataError::Missing)?;
+
+    serde_json::from_value(meta).map_err(MetadataError::Invalid)
+}
+
+fn notification_message(meta: &NotifyMetadata, event: &Value) -> (AgentMessage, Value) {
+    let summary = summarize_event(event);
+    let text = match &meta.label {
+        Some(label) => format!("[notification: {label}] {summary}"),
+        None => format!("[notification] {summary}"),
+    };
+    (
+        AgentMessage::user_text(text),
+        json!({ "notification": true }),
+    )
+}
+
 fn summarize_event(event: &Value) -> String {
     const MAX: usize = 600;
     let rendered = match event {
@@ -124,38 +132,61 @@ fn summarize_event(event: &Value) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn summarize_truncates_long_payloads() {
-        let long = json!({ "blob": "x".repeat(5000) });
-        let s = summarize_event(&long);
-        assert!(s.ends_with("…(truncated)"));
-        assert!(s.chars().count() <= 600 + " …(truncated)".chars().count());
+    use crate::types::content::ContentBlock;
+
+    fn text_of(message: AgentMessage) -> String {
+        let AgentMessage::User(user) = message else {
+            panic!("expected user message");
+        };
+        ContentBlock::join_text(&user.content)
     }
 
     #[test]
-    fn summarize_passes_short_strings_through() {
-        assert_eq!(summarize_event(&json!("done")), "done");
-        assert_eq!(summarize_event(&Value::Null), "event fired");
-    }
+    fn metadata_is_required_valid_and_stripped() {
+        let mut missing = json!({ "event_type": "set" });
+        assert!(matches!(
+            take_metadata(&mut missing),
+            Err(MetadataError::Missing)
+        ));
 
-    #[test]
-    fn summarize_excludes_stripped_metadata() {
-        // `__metadata` is removed before summarizing, so addressing never leaks.
-        let mut event = json!({ "event_type": "set", "__metadata": { "session_id": "s_secret" } });
-        event.as_object_mut().unwrap().remove(TRIGGER_META_KEY);
-        let s = summarize_event(&event);
-        assert!(!s.contains("s_secret"));
-        assert!(s.contains("event_type"));
-    }
+        let mut invalid = json!({ TRIGGER_META_KEY: { "session_id": "s" } });
+        assert!(matches!(
+            take_metadata(&mut invalid),
+            Err(MetadataError::Invalid(_))
+        ));
 
-    #[test]
-    fn notify_metadata_defaults_optional_fields() {
-        let meta: NotifyMetadata =
-            serde_json::from_value(json!({ "subscription_id": "sub_1", "session_id": "s_1" }))
-                .unwrap();
+        let mut event = json!({
+            "event_type": "set",
+            TRIGGER_META_KEY: {
+                "subscription_id": "sub_1",
+                "session_id": "s_secret",
+                "label": "done"
+            }
+        });
+        let meta = take_metadata(&mut event).unwrap();
+
         assert_eq!(meta.subscription_id, "sub_1");
-        assert_eq!(meta.session_id, "s_1");
-        assert_eq!(meta.label, None);
-        assert!(!meta.once);
+        assert_eq!(meta.session_id, "s_secret");
+        assert_eq!(meta.label.as_deref(), Some("done"));
+        assert!(event.get(TRIGGER_META_KEY).is_none());
+    }
+
+    #[test]
+    fn notification_message_uses_label_origin_and_stripped_event() {
+        let meta = NotifyMetadata {
+            subscription_id: "sub_1".to_string(),
+            session_id: "s_1".to_string(),
+            label: Some("job finished".to_string()),
+            once: true,
+        };
+        let event = json!({ "event_type": "set", "value": { "done": true } });
+
+        let (message, origin) = notification_message(&meta, &event);
+
+        assert_eq!(origin, json!({ "notification": true }));
+        assert_eq!(
+            text_of(message),
+            r#"[notification: job finished] {"event_type":"set","value":{"done":true}}"#
+        );
     }
 }

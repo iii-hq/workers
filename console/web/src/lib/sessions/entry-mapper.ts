@@ -108,7 +108,7 @@ export function entrySegments(
     case 'user': {
       const notif = (item.origin as { notification?: unknown } | undefined)
         ?.notification
-      const isNotif = notif != null || item.entry_id.startsWith('e_notify_')
+      const isNotif = notif === true || item.entry_id.startsWith('e_notify_')
       const msg: UserMessage = {
         id: item.entry_id,
         role: 'user',
