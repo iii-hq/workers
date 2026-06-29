@@ -74,15 +74,19 @@ pub fn log_line_to_ratatui(line: &str, max_width: usize, color_enabled: bool) ->
 
     if let Some((ts, rest)) = split_tracing_timestamp(line) {
         let kind = classify_log_line(line);
-        let mut spans = vec![
-            Span::styled(truncate_chars(ts, max_width), log_timestamp_style(true)),
-            Span::raw(" "),
-        ];
-        let rest_width = max_width.saturating_sub(ts.chars().count().min(max_width) + 1);
-        spans.push(Span::styled(
-            truncate_chars(rest, rest_width),
-            log_kind_style(kind, true),
-        ));
+        let ts_str = truncate_chars(ts, max_width);
+        let ts_width: usize = ts_str.chars().map(unicode_width).sum();
+        let mut spans = vec![Span::styled(ts_str, log_timestamp_style(true))];
+        // Only append the separator + message when columns remain. If the
+        // timestamp alone fills max_width, a trailing space would push the line
+        // one column past the pane and wrap it onto a second row.
+        if ts_width < max_width {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                truncate_chars(rest, max_width - ts_width - 1),
+                log_kind_style(kind, true),
+            ));
+        }
         return Line::from(spans);
     }
 
@@ -251,5 +255,21 @@ mod tests {
         let line = log_line_to_ratatui("   Compiling harness v1.0.0", 10, true);
         assert_eq!(line.spans.len(), 1);
         assert_eq!(line.spans[0].content, "   Compili");
+    }
+
+    #[test]
+    fn log_line_to_ratatui_timestamp_fits_narrow_pane() {
+        // Timestamp alone fills the pane — the trailing separator must not push
+        // the rendered line one column past max_width (would wrap onto two rows).
+        let max = 10;
+        let line =
+            log_line_to_ratatui("2026-06-22T15:47:56.851170Z  INFO harness: ready", max, true);
+        let total: usize = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .map(unicode_width)
+            .sum();
+        assert!(total <= max, "rendered width {total} exceeds {max}");
     }
 }

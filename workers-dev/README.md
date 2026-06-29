@@ -33,7 +33,7 @@ Workers are **discovered automatically** from top-level `*/iii.worker.yaml` in t
 | **harness stack** | `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness` | `workers-dev up`, `Ctrl+u` in TUI, `workers-dev start` |
 | **other** | All remaining repo workers (e.g. `telegram-bot`, `shell`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
 
-Only **Rust `deploy: binary`** workers can be started with `cargo run`. Node/bundle workers show as `(iii worker add)` — install them via the iii registry instead.
+Only **Rust `deploy: binary`** workers can be started with `cargo run`. Non-Rust (Node/bundle) workers show **Process: external** — install them via the iii registry (`iii worker add`) instead.
 
 A worker connected to the engine but not started by this `workers-dev` shows **Process: elsewhere** beside **Engine: connected** (`workers-dev` only tracks processes it spawned itself). Non-Rust workers installed via `iii worker add` show **Process: external**.
 

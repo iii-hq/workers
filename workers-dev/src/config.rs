@@ -74,11 +74,39 @@ impl Config {
         let (engine_host, engine_port) = parse_engine_url(&raw_engine_url, port)?;
         // Canonicalize so a `--port` override is reflected in the URL the SDK
         // actually connects to. The engine WS endpoint is always `/`, so any
-        // path in the original URL is intentionally dropped.
-        let engine_url = format!("ws://{engine_host}:{engine_port}");
+        // path in the original URL is intentionally dropped. Preserve a `wss://`
+        // scheme so a TLS engine endpoint isn't silently downgraded to plaintext.
+        let scheme = if raw_engine_url.starts_with("wss://") {
+            "wss"
+        } else {
+            "ws"
+        };
+        let engine_url = format!("{scheme}://{engine_host}:{engine_port}");
 
         let discovered_names = order_worker_names(&worker_specs);
-        let workers = file_cfg.workers.unwrap_or(discovered_names);
+        // An explicit `workers:` list may name folders that auto-discovery
+        // skipped (folder/name mismatch or missing iii.worker.yaml). Drop those
+        // with a warning instead of letting WorkerGraph::load abort startup —
+        // mirroring discover_repo_workers' skip-and-continue behavior.
+        let workers = match file_cfg.workers {
+            Some(requested) => {
+                let valid: std::collections::HashSet<&str> =
+                    discovered_names.iter().map(String::as_str).collect();
+                requested
+                    .into_iter()
+                    .filter(|w| {
+                        let ok = valid.contains(w.as_str());
+                        if !ok {
+                            eprintln!(
+                                "warning: skipping configured worker {w}: not a discovered worker (folder/name mismatch or missing iii.worker.yaml)"
+                            );
+                        }
+                        ok
+                    })
+                    .collect()
+            }
+            None => discovered_names,
+        };
         let harness_stack = file_cfg
             .harness_stack
             .unwrap_or_else(|| harness_stack_names(&worker_specs));

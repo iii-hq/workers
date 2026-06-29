@@ -445,8 +445,14 @@ fn handle_dashboard_key(
         }
         KeyCode::Char('x') => {
             if let Some(name) = worker_name {
-                spawn_stop(actions, vec![name.clone()]);
-                *mode = UiMode::Busy(format!("stopping {name}…"));
+                // Only stop workers with a live local child; `external` and
+                // `elsewhere` rows have no process workers-dev can kill.
+                if views.iter().any(|v| v.name == name && v.local_pid.is_some()) {
+                    spawn_stop(actions, vec![name.clone()]);
+                    *mode = UiMode::Busy(format!("stopping {name}…"));
+                } else {
+                    *mode = UiMode::Busy("nothing to stop: not running under workers-dev".into());
+                }
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -904,10 +910,14 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     let start = end.saturating_sub(inner_height);
 
     let mut lines: Vec<Line> = if total == 0 {
-        vec![Line::from(Span::styled(
-            "(no output yet — press s to start this worker, or Ctrl+u to start the harness stack)",
-            styled_if(color, hint_style()),
-        ))]
+        // No selection (e.g. the filter hid every worker) needs a different hint
+        // than a selected worker that simply hasn't produced output yet.
+        let msg = if ctx.selected_name.is_none() {
+            "(select a worker to view logs)"
+        } else {
+            "(no output yet — press s to start this worker, or Ctrl+u to start the harness stack)"
+        };
+        vec![Line::from(Span::styled(msg, styled_if(color, hint_style())))]
     } else {
         ctx.log_lines[start..end]
             .iter()

@@ -323,11 +323,27 @@ impl Orchestrator {
 
     pub async fn wait_connected(&self, name: &str) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(self.config.connect_timeout_ms);
+        let mut last_engine_err: Option<anyhow::Error> = None;
         loop {
             if Instant::now() >= deadline {
-                bail!("timed out waiting for {name} to connect to engine");
+                match last_engine_err {
+                    Some(err) => bail!(
+                        "timed out waiting for {name} to connect to engine \
+                         (engine query failing: {err:#})"
+                    ),
+                    None => bail!("timed out waiting for {name} to connect to engine"),
+                }
             }
-            let engine = self.engine_workers().await.unwrap_or_default();
+            let engine = match self.engine_workers().await {
+                Ok(engine) => {
+                    last_engine_err = None;
+                    engine
+                }
+                Err(err) => {
+                    last_engine_err = Some(err);
+                    Vec::new()
+                }
+            };
             if engine
                 .iter()
                 .any(|w| w.name.as_deref() == Some(name) && w.status == "connected")
