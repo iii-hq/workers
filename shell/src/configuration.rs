@@ -106,17 +106,20 @@ pub fn prepare_config(cfg: &ShellConfig) -> Result<Arc<ShellConfig>, String> {
 /// Build the live runtime: validate the config, then build the host fs backend.
 pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime, String> {
     let config = prepare_config(cfg)?;
-    if config.fs.host_root.is_none() {
+    if !config.fs.is_jailed() {
         tracing::warn!(
-            "fs.host_root is unset — host backend is unjailed; every absolute path \
-             is reachable by shell::fs::* (denylist still applies)"
+            "fs.host_root/fs.host_roots are unset — host backend is unjailed; every absolute \
+             path is reachable by shell::fs::* (denylist still applies)"
         );
     }
     let host_fs_cfg = Arc::new(HostFsConfig {
-        host_root: config.fs.host_root.clone(),
+        host_roots: config.fs.roots(),
         max_read_bytes: config.fs.max_read_bytes,
         max_write_bytes: config.fs.max_write_bytes,
         denylist_paths: config.fs.denylist_paths.clone(),
+        // D4: shell::fs honors the SAME protected globs the code surface uses,
+        // so secrets are declared once (under `code.non_accessible_globs`).
+        non_accessible_globs: config.code.non_accessible_globs.clone(),
         allow_special_bits: config.fs.allow_special_bits,
     });
     let chan_maker = Arc::new(IiiChannelMaker::new(iii.clone()));
@@ -128,6 +131,144 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
         config,
         host_backend,
     })
+}
+
+/// Fold a legacy `coder` config value into the `shell` config value, ONCE.
+///
+/// Returns `Some(merged)` when the stored `shell` value should be rewritten
+/// (gaps filled and/or the one-shot marker set), or `None` when the fold has
+/// already run (`migrated_from_coder` is set) — making it idempotent across
+/// reboots even while the inert `coder` entry still exists.
+///
+/// SECURITY — NEVER WIDEN. The fold only FILLS gaps; it never broadens access:
+///   * Roots: coder's roots are adopted ONLY when `shell` has no jail at all.
+///     If `shell` is already jailed its roots are kept untouched — adopting
+///     coder's would silently widen the jail. coder's *implicit* default
+///     (no `base_path`/`base_paths`) is never migrated.
+///   * Protected globs / code tuning: adopted only into an UNTOUCHED `code`
+///     block; a `shell` value that already tuned `code` keeps its values, and
+///     a non-empty `non_accessible_globs` is never dropped.
+///
+/// The roots that land in the merged value go to `fs.host_roots` (the unified
+/// jail), never to `code.base_paths`.
+pub fn fold_coder_into_shell(
+    mut shell: ShellConfig,
+    coder: &crate::code::config::CoderConfig,
+) -> Option<ShellConfig> {
+    if shell.migrated_from_coder {
+        return None;
+    }
+
+    // Roots — NEVER WIDEN. Only when shell has no jail do we adopt coder's
+    // EXPLICIT roots (its implicit ["./","/tmp"] default is not migrated).
+    if !shell.fs.is_jailed() {
+        let coder_roots: Vec<std::path::PathBuf> = if !coder.base_paths.is_empty() {
+            coder.base_paths.clone()
+        } else if let Some(p) = &coder.base_path {
+            vec![p.clone()]
+        } else {
+            Vec::new()
+        };
+        if !coder_roots.is_empty() {
+            shell.fs.host_roots = coder_roots;
+        }
+    }
+
+    // Code block — fill an UNTOUCHED block wholesale (globs + excludes +
+    // budgets), minus the roots (which live in fs.host_roots). A tuned block
+    // keeps its values; only an empty protected-glob list is back-filled.
+    let default_code = crate::code::config::CoderConfig::default();
+    // "Untouched" means the ENTIRE code block is still at its defaults (roots
+    // excluded — they live in fs and are cleared on both sides). Comparing the
+    // whole struct, not just the glob lists, prevents the fold from silently
+    // overwriting a tuned numeric knob (e.g. max_read_bytes) that the operator
+    // set while leaving the default globs.
+    let code_untouched = {
+        let mut probe = shell.code.clone();
+        probe.base_path = None;
+        probe.base_paths = Vec::new();
+        probe == default_code
+    };
+    if code_untouched {
+        let mut adopted = coder.clone();
+        adopted.base_path = None;
+        adopted.base_paths = Vec::new();
+        shell.code = adopted;
+    } else if shell.code.non_accessible_globs.is_empty() {
+        shell.code.non_accessible_globs = coder.non_accessible_globs.clone();
+    }
+
+    shell.migrated_from_coder = true;
+    Some(shell)
+}
+
+/// Fetch the stored value for an arbitrary configuration id (`Ok(None)` when
+/// the entry does not exist). Generalises [`try_get_config_value`] so the
+/// migration can read both `coder` and `shell`.
+async fn try_get_value_for(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
+    match trigger_with_retry(iii, "configuration::get", json!({ "id": id })).await {
+        Ok(resp) => Ok(resp.get("value").cloned()),
+        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// One-shot boot migration: fold a legacy `coder` config entry into the `shell`
+/// value (see [`fold_coder_into_shell`]). MUST run AFTER schema registration
+/// and BEFORE the initial fetch so `build_runtime` sees the merged value.
+///
+/// BEST-EFFORT / NON-FATAL: a missing `coder` entry, an unparseable value, or a
+/// write failure logs and returns without aborting boot — the worker proceeds
+/// with the existing `shell` config. The legacy `coder` entry is left intact
+/// (inert) as the rollback artifact; the console annotates it (T8).
+pub async fn migrate_legacy_coder(iii: &IIIClient) {
+    let coder_value = match try_get_value_for(iii, "coder").await {
+        Ok(Some(v)) if !v.is_null() => v,
+        Ok(_) => return, // no legacy entry — fresh install or already gone
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read legacy coder config; skipping migration");
+            return;
+        }
+    };
+    let coder = match crate::code::config::CoderConfig::from_json(&coder_value) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "legacy coder config unparseable; skipping migration");
+            return;
+        }
+    };
+    // Current shell value, or the (invalid, unjailed) default when none is
+    // stored yet — the latter is the "only coder was configured" upgrade path,
+    // where the fold derives a valid jailed shell config from coder's roots.
+    let shell = match try_get_value_for(iii, CONFIG_ID).await {
+        Ok(Some(v)) if !v.is_null() => match ShellConfig::from_json(&v) {
+            Ok(c) => c,
+            // A stored-but-unparseable shell value must NOT be silently
+            // overwritten by a default+coder fold — that would clobber a
+            // possibly-recoverable config. Skip; the subsequent fetch_config
+            // surfaces the parse error and boot fails closed cleanly.
+            Err(e) => {
+                tracing::warn!(error = %e, "stored shell config is unparseable; skipping coder migration");
+                return;
+            }
+        },
+        _ => ShellConfig::default(),
+    };
+    match fold_coder_into_shell(shell, &coder) {
+        None => tracing::debug!("coder→shell migration already applied; skipping"),
+        Some(merged) => {
+            let payload = json!({ "id": CONFIG_ID, "value": merged.to_json() });
+            match trigger_with_retry(iii, "configuration::set", payload).await {
+                Ok(_) => tracing::info!(
+                    "folded the legacy coder config into the shell config (one-shot)"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "failed to persist coder→shell migration; continuing with the existing shell config"
+                ),
+            }
+        }
+    }
 }
 
 /// Register the `shell` configuration schema with the configuration worker.
@@ -232,8 +373,8 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 async fn apply_config(state: &AppState, cfg: ShellConfig) -> Result<(), String> {
     let new_runtime = build_runtime(&cfg, &state.iii)?;
     let mut guard = state.runtime.write().await;
-    let was_jailed = guard.config.fs.host_root.is_some();
-    let now_jailed = new_runtime.config.fs.host_root.is_some();
+    let was_jailed = guard.config.fs.is_jailed();
+    let now_jailed = new_runtime.config.fs.is_jailed();
     if was_jailed && !now_jailed {
         tracing::warn!(
             "configuration change WIDENED the fs jail (host_root cleared); the entire \
@@ -451,6 +592,146 @@ mod tests {
         let mut c = ShellConfig::default();
         c.fs.host_root = Some(std::path::PathBuf::from("/tmp/shell"));
         prepare_config(&c).expect("pinned host_root is valid");
+    }
+
+    #[test]
+    fn legacy_host_root_only_config_boots_jailed_to_that_root() {
+        // REGRESSION (T6, CRITICAL): a pre-merge shell config — a single
+        // fs.host_root, NO fs.host_roots, NO `code:` block — must still
+        // deserialize via serde defaults, boot, and jail shell::fs to that one
+        // root. This guards every existing shell deployment across the coder
+        // merge. (Byte-identical fs *behaviour* is additionally proven by the
+        // unchanged shell::fs test suite continuing to pass.)
+        let dir = std::env::temp_dir().join("shell-t6-legacy-regression");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Exactly the pre-merge config shape — nothing the merge added.
+        let yaml = format!("allowlist: []\nfs:\n  host_root: {}\n", dir.display());
+        let cfg = ShellConfig::from_yaml(&yaml).expect("legacy yaml parses via serde defaults");
+        assert!(
+            cfg.fs.host_roots.is_empty(),
+            "a legacy config carries no host_roots"
+        );
+        assert_eq!(cfg.fs.host_root.as_deref(), Some(dir.as_path()));
+        // The added `code` block defaulted (empty), and the effective jail is
+        // the single legacy root via the compatibility alias.
+        assert_eq!(cfg.fs.roots(), vec![dir.clone()]);
+        assert!(cfg.code.non_accessible_globs.is_empty());
+
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:59571", iii_sdk::InitOptions::default());
+        let runtime = build_runtime(&cfg, &iii).expect("legacy config still builds a runtime");
+        assert!(runtime.config.fs.is_jailed());
+        assert_eq!(runtime.config.fs.roots(), vec![dir.clone()]);
+    }
+
+    #[test]
+    fn fold_never_widens_an_already_jailed_shell() {
+        // SECURITY: shell already has a jail root; coder declares DIFFERENT
+        // roots. The fold must KEEP shell's roots (adopting coder's would widen
+        // the jail) and only fill the empty code protected-globs.
+        let mut shell = ShellConfig::default();
+        shell.fs.host_root = Some("/srv/app".into());
+        let coder = crate::code::config::CoderConfig {
+            base_paths: vec!["/etc".into(), "/var".into()],
+            non_accessible_globs: vec!["**/.env".into()],
+            ..Default::default()
+        };
+        let merged = fold_coder_into_shell(shell, &coder).expect("a change (marker + globs)");
+        assert_eq!(
+            merged.fs.host_root.as_deref(),
+            Some(std::path::Path::new("/srv/app"))
+        );
+        assert!(
+            merged.fs.host_roots.is_empty(),
+            "coder roots must NOT be adopted into an already-jailed shell (no widening)"
+        );
+        assert_eq!(
+            merged.fs.roots(),
+            vec![std::path::PathBuf::from("/srv/app")]
+        );
+        assert_eq!(
+            merged.code.non_accessible_globs,
+            vec!["**/.env".to_string()]
+        );
+        assert!(merged.migrated_from_coder);
+    }
+
+    #[test]
+    fn fold_adopts_coder_roots_only_when_shell_unjailed() {
+        // The "only coder was configured" upgrade path: shell has no jail, coder
+        // does — derive shell's jail from coder's roots + tuning.
+        let shell = ShellConfig::default();
+        assert!(!shell.fs.is_jailed());
+        let coder = crate::code::config::CoderConfig {
+            base_paths: vec!["/work/project".into()],
+            non_accessible_globs: vec!["**/*.pem".into()],
+            ..Default::default()
+        };
+        let merged = fold_coder_into_shell(shell, &coder).expect("a change");
+        assert_eq!(
+            merged.fs.host_roots,
+            vec![std::path::PathBuf::from("/work/project")]
+        );
+        assert!(merged.fs.is_jailed());
+        assert_eq!(
+            merged.code.non_accessible_globs,
+            vec!["**/*.pem".to_string()]
+        );
+        assert!(merged.migrated_from_coder);
+    }
+
+    #[test]
+    fn fold_is_idempotent_once_marked() {
+        let shell = ShellConfig {
+            migrated_from_coder: true,
+            ..Default::default()
+        };
+        let coder = crate::code::config::CoderConfig::default();
+        assert!(
+            fold_coder_into_shell(shell, &coder).is_none(),
+            "an already-migrated shell value is a no-op"
+        );
+    }
+
+    #[test]
+    fn fold_never_drops_existing_shell_protected_globs() {
+        // shell already tuned its protected globs; the fold must not overwrite.
+        let mut shell = ShellConfig::default();
+        shell.fs.host_root = Some("/srv".into());
+        shell.code.non_accessible_globs = vec!["**/secret.key".into()];
+        let coder = crate::code::config::CoderConfig {
+            non_accessible_globs: vec!["**/.env".into()],
+            ..Default::default()
+        };
+        let merged = fold_coder_into_shell(shell, &coder).expect("marker set");
+        assert_eq!(
+            merged.code.non_accessible_globs,
+            vec!["**/secret.key".to_string()],
+            "shell's own protected globs must be preserved"
+        );
+    }
+
+    #[test]
+    fn fold_preserves_a_tuned_code_knob_with_default_globs() {
+        // Regression: a shell that tuned a numeric knob (max_read_bytes) but
+        // left default globs is NOT "untouched" — the fold must keep the knob,
+        // not overwrite the whole code block with coder's defaults.
+        let mut shell = ShellConfig::default();
+        shell.fs.host_root = Some("/srv".into());
+        shell.code.max_read_bytes = 5_000_000;
+        let coder = crate::code::config::CoderConfig {
+            non_accessible_globs: vec!["**/.env".into()],
+            ..Default::default()
+        };
+        let merged = fold_coder_into_shell(shell, &coder).expect("a change");
+        assert_eq!(
+            merged.code.max_read_bytes, 5_000_000,
+            "a tuned numeric knob must survive the fold"
+        );
+        // The empty protected globs are still back-filled from coder.
+        assert_eq!(
+            merged.code.non_accessible_globs,
+            vec!["**/.env".to_string()]
+        );
     }
 
     #[test]

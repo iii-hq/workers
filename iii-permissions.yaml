@@ -83,7 +83,8 @@ rules:
   - '!storage::on-config-change'
   - '!database::on-config-change'
   - '!session::on-config-change'
-  - '!coder::on-config-change'
+  # (coder::on-config-change retired: the code surface folded into the shell
+  # worker, whose shell::on-config-change is already denied above.)
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # turn is the internal loop step; function::trigger/resolve forge call ids
@@ -150,8 +151,8 @@ rules:
   # search-before-build ladder starts here. worker::add stays approval-gated.
   - directory::registry::workers::list
   - directory::registry::workers::info
-  # Read-only coder surface. Mutating ops (create/update/move/delete-file)
-  # stay approval-gated.
+  # Read-only code surface (coder::*, now served by the shell worker).
+  # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info
   - coder::read-file
   - coder::search

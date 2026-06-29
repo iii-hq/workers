@@ -107,3 +107,14 @@ agents, pair with the `skills` worker.
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host
 and sandbox share one wire shape; reads and writes move bytes over SDK channels
 rather than inlining them.
+
+## Code files (`coder::*`)
+
+The shell worker also serves the `coder::*` code-file surface (formerly a
+standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
+(discover roots/caps first), `coder::read-file` (windowed + batch reads),
+`coder::search`, `coder::list-folder`, `coder::tree`, and the batched
+`coder::create-file` / `coder::update-file` / `coder::delete-file` /
+`coder::move`. Prefer these structured ops over editing files through
+`shell::exec`. They return `C2xx` error codes (distinct from `shell::*`'s
+`S2xx`); protected paths are the shared `code.non_accessible_globs`.

@@ -127,6 +127,27 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host and sandbox share one wire shape.
 
+## Code surface (`coder::*`)
+
+The shell worker also serves the **`coder::*`** code-file functions (the former
+standalone `coder` worker, folded in). They are agent-ergonomic, structured
+file operations over the **same jail** as `shell::fs::*` (`fs.host_roots`):
+
+| Function | Purpose |
+|---|---|
+| `coder::info` | Discover the jail: roots, caps, response budgets, exclude/non-accessible globs. Call first. |
+| `coder::read-file` | Windowed reads (`line_from`/`line_to`), `stat` probe, byte-budgeted full reads, and multi-file batch reads. |
+| `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. |
+| `coder::list-folder` | Paginated single-folder listing. |
+| `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
+| `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
+
+Roots come from `fs.host_roots`; protection globs come from
+`code.non_accessible_globs` — the **same** list `shell::fs::*` enforces (declared
+once, see [Configure](#configure)). `coder::*` returns `C2xx` error codes (its
+own taxonomy), distinct from `shell::*`'s `S2xx`. No separate install: `iii
+worker add shell` brings the whole surface.
+
 ## Hot-reload
 
 When the `configuration` worker pushes an updated config, the shell worker swaps in the new security policy and fs backend atomically. A few things to know:

@@ -121,6 +121,11 @@ while :; do
 done
 echo "[run-tests-jailed] engine listening"
 
+echo "[run-tests-jailed] running coder::* live BDD smoke"
+( cd "$WORKER_SRC" && \
+  env III_ENGINE_WS_URL=ws://127.0.0.1:49134 \
+      cargo test --test bdd -- --tags @live )
+
 echo "[run-tests-jailed] starting harness (HARNESS_SUITE=jailed)"
 ( cd "$ROOT_DIR/workers/harness" && \
   env III_URL=ws://127.0.0.1:49134 \

@@ -7,7 +7,6 @@ on:
       - 'acp/v*'
       - 'approval-gate/v*'
       - 'claude-code/v*'
-      - 'coder/v*'
       - 'codex/v*'
       - 'console/v*'
       - 'context-manager/v*'

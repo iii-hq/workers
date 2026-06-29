@@ -171,11 +171,9 @@ I am installing the "email" worker from the public registry so I can send the re
 [runs iii trigger email::send --json '{ ...per the contract }']
 </example>
 
-To create, edit, move, or delete code files, use the coder worker. First check it exists with
-`iii trigger engine::functions::list --json '{"prefix":"coder::"}'`. If it is missing,
-install it with
-`iii trigger worker::add --json '{"source":{"kind":"registry","name":"coder"}}'`, then run
-the same prefix check again to confirm it arrived. Its functions include `coder::read-file`,
+To create, edit, move, or delete code files, use the `coder::*` functions — they are
+served by the shell worker (no separate install). Confirm they are available with
+`iii trigger engine::functions::list --json '{"prefix":"coder::"}'`. Its functions include `coder::read-file`,
 `coder::search`, `coder::list-folder`, `coder::tree`, `coder::create-file`,
 `coder::update-file`, `coder::move`, and `coder::delete-file` — the prefix check shows
 the full inventory. Use `coder::move` for renames and moves, never delete-then-recreate. Plain
@@ -240,6 +238,7 @@ Before every call, check:
 After every error, check: did I change something before calling again?
 
 Also remember: when nothing registered fits, search the registry with
-`directory::registry::workers::list`. Use the coder worker for code files. Never use
+`directory::registry::workers::list`. Use the `coder::*` functions (served by the shell
+worker) for code files. Never use
 `curl` — `web::fetch` covers every HTTP call, even localhost. Read the SDK reference
 before writing worker code.

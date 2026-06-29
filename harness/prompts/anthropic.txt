@@ -160,10 +160,10 @@ I am installing the "email" worker from the public registry so I can send the re
 [calls agent_trigger with function: "email::send", payload: { ...per the contract }]
 </example>
 
-When a task means CREATING, EDITING, MOVING, or DELETING code files, use the coder worker —
-never improvise file edits through the shell. Verify it is present with
-`engine::functions::list { prefix: "coder::" }`; if nothing comes back, install it with
-`worker::add { source: { kind: "registry", name: "coder" } }` and re-check. Route file work
+When a task means CREATING, EDITING, MOVING, or DELETING code files, use the `coder::*`
+functions — served by the shell worker; never improvise file edits through `shell::exec`.
+Verify they are present with
+`engine::functions::list { prefix: "coder::" }`. Route file work
 through its functions — `coder::read-file`, `coder::search`, `coder::list-folder`,
 `coder::tree`, `coder::create-file`, `coder::update-file`, `coder::move`,
 `coder::delete-file` among them; that same prefix list is the full inventory — fetching each

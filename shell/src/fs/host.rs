@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use iii_sdk::channel::Channel;
 use iii_sdk::errors::Error;
 
 use crate::fs::error::FsError;
+use crate::path::{canonicalize_with_fallback, normalize_lexical};
 
 /// RAII guard that unlinks a temp path on drop unless `commit()` is called.
 /// Sync `remove_file` in `Drop` is deliberate — best-effort cleanup on
@@ -70,10 +72,21 @@ impl ChannelMaker for IiiChannelMaker {
 
 #[derive(Debug, Clone, Default)]
 pub struct HostFsConfig {
-    pub host_root: Option<PathBuf>,
+    /// Effective jail roots (index 0 = primary; empty = unjailed). Built from
+    /// `FsConfig::roots()` so the legacy single `host_root` and the
+    /// `host_roots` list both land here as one canonical list.
+    pub host_roots: Vec<PathBuf>,
     pub max_read_bytes: usize,
     pub max_write_bytes: usize,
     pub denylist_paths: Vec<PathBuf>,
+    /// Unified protected-paths globs (D4): the SAME list the folded `code`
+    /// surface reads (`code.non_accessible_globs`). A path whose form relative
+    /// to its containing root matches is hard-rejected (S215) for read / write
+    /// / delete / move. Matched files stay VISIBLE to `shell::fs::ls` (the
+    /// directory listing is not gated) — visible but locked, declared once for
+    /// both surfaces. Glob syntax + root-relative matching mirror the code
+    /// resolver; the legacy absolute-prefix `denylist_paths` stays alongside.
+    pub non_accessible_globs: Vec<String>,
     /// Permit setuid/setgid/sticky bits (`mode & 0o7000`) in mkdir/chmod/write.
     /// Default false rejects them with S210 — they are a privesc primitive
     /// when the worker runs as root inside the jail.
@@ -139,16 +152,21 @@ fn check_pattern_len(pattern: &str) -> Result<(), FsError> {
 pub struct HostFsBackend {
     cfg: Arc<HostFsConfig>,
     chan: Arc<dyn ChannelMaker>,
-    /// Canonical form of `cfg.host_root`, computed once at construction.
-    /// Pre-fix `validate_path` recanonicalized this on every fs op (and
-    /// every denylist entry) — a real perf hit on hot paths and an
-    /// operator-config-error vector that surfaced silently. Caching here
-    /// also fails loudly at startup if `host_root` is unreachable.
-    host_root_canon: Option<PathBuf>,
+    /// Canonical form of each `cfg.host_roots` entry (index 0 = primary;
+    /// empty = unjailed), computed once at construction. Pre-fix
+    /// `validate_path` recanonicalized this on every fs op (and every denylist
+    /// entry) — a real perf hit on hot paths and an operator-config-error
+    /// vector that surfaced silently. Caching here also fails loudly at startup
+    /// if any root is unreachable.
+    host_roots_canon: Vec<PathBuf>,
     /// Canonical form of each `cfg.denylist_paths` entry. Same rationale
-    /// as `host_root_canon`; an entry that can't canonicalize is a config
+    /// as `host_roots_canon`; an entry that can't canonicalize is a config
     /// error and the worker refuses to start.
     denylist_canon: Vec<PathBuf>,
+    /// Compiled `cfg.non_accessible_globs` (D4). Checked against a path's
+    /// form relative to its containing root; a match hard-rejects access. A
+    /// bad glob is a config error and the worker refuses to start (fail-closed).
+    non_accessible: GlobSet,
 }
 
 impl HostFsBackend {
@@ -169,15 +187,20 @@ impl HostFsBackend {
     /// exist, can't be canonicalized, etc.) and the worker should refuse to
     /// start instead of degrading to lexical fallback per-call.
     pub fn try_new(cfg: Arc<HostFsConfig>, chan: Arc<dyn ChannelMaker>) -> Result<Self, FsError> {
-        let host_root_canon = match &cfg.host_root {
-            Some(root) => Some(std::fs::canonicalize(root).map_err(|e| {
+        let mut host_roots_canon = Vec::with_capacity(cfg.host_roots.len());
+        for root in &cfg.host_roots {
+            let canon = std::fs::canonicalize(root).map_err(|e| {
                 FsError::new(
                     "S216",
                     format!("host_root unreachable ({}): {e}", root.display()),
                 )
-            })?),
-            None => None,
-        };
+            })?;
+            // Dedup after canonicalization (a root listed twice, or once
+            // verbatim and once canonical, collapses to one).
+            if !host_roots_canon.contains(&canon) {
+                host_roots_canon.push(canon);
+            }
+        }
         let mut denylist_canon = Vec::with_capacity(cfg.denylist_paths.len());
         for deny in &cfg.denylist_paths {
             let canon = canonicalize_with_fallback(Path::new(deny)).map_err(|e| {
@@ -188,30 +211,58 @@ impl HostFsBackend {
             })?;
             denylist_canon.push(canon);
         }
+        let mut builder = GlobSetBuilder::new();
+        for pat in &cfg.non_accessible_globs {
+            let g = Glob::new(pat).map_err(|e| {
+                FsError::new("S210", format!("invalid non_accessible glob {pat:?}: {e}"))
+            })?;
+            builder.add(g);
+        }
+        let non_accessible = builder.build().map_err(|e| {
+            FsError::new("S210", format!("non_accessible globset build failed: {e}"))
+        })?;
         Ok(Self {
             cfg,
             chan,
-            host_root_canon,
+            host_roots_canon,
             denylist_canon,
+            non_accessible,
         })
+    }
+
+    /// Primary jail root (index 0), if any. Relative paths and relative
+    /// lexical operands anchor here.
+    fn primary_root(&self) -> Option<&Path> {
+        self.host_roots_canon.first().map(PathBuf::as_path)
+    }
+
+    /// True when `canon` (a path already confined inside a root) matches a
+    /// `non_accessible` glob, matched against its form relative to the
+    /// containing root (so `**/.env` blocks `.env` under every root). D4: the
+    /// access gate shared with the code surface — visible to `ls`, locked here.
+    fn is_non_accessible(&self, canon: &Path) -> bool {
+        path_is_non_accessible(canon, &self.host_roots_canon, &self.non_accessible)
     }
 
     /// TOCTOU: check-then-use gate, open to a race against an attacker who
     /// can mutate the filesystem between validation and subsequent syscalls.
     /// Use the sandbox backend for untrusted input.
     pub(crate) fn validate_path(&self, path: &str) -> Result<PathBuf, FsError> {
-        confine_path(path, self.host_root_canon.as_deref(), &self.denylist_canon)
+        let canon = confine_path(path, &self.host_roots_canon, &self.denylist_canon)?;
+        if self.is_non_accessible(&canon) {
+            return Err(FsError::new(
+                "S215",
+                format!("path is protected (non_accessible): {path}"),
+            ));
+        }
+        Ok(canon)
     }
 
     /// Resolve and validate an optional per-call `base_dir` against this
     /// backend's configured jail. `None` ⇒ `Ok(None)` (unchanged behaviour);
     /// see [`confine_base_dir`].
     fn confine_base_dir(&self, base_dir: Option<&str>) -> Result<Option<PathBuf>, FsError> {
-        confine_base_dir(
-            base_dir,
-            self.host_root_canon.as_deref(),
-            &self.denylist_canon,
-        )
+        confine_base_dir(base_dir, &self.host_roots_canon, &self.denylist_canon)
     }
 
     /// base_dir-aware form of [`Self::validate_path`]. When `base_dir_canon`
@@ -224,15 +275,23 @@ impl HostFsBackend {
         path: &str,
         base_dir_canon: Option<&Path>,
     ) -> Result<PathBuf, FsError> {
-        match base_dir_canon {
-            None => self.validate_path(path),
+        let canon = match base_dir_canon {
+            // validate_path already applies the non_accessible gate.
+            None => return self.validate_path(path),
             Some(_) => confine_path_with_base_dir(
                 path,
-                self.host_root_canon.as_deref(),
+                &self.host_roots_canon,
                 base_dir_canon,
                 &self.denylist_canon,
-            ),
+            )?,
+        };
+        if self.is_non_accessible(&canon) {
+            return Err(FsError::new(
+                "S215",
+                format!("path is protected (non_accessible): {path}"),
+            ));
         }
+        Ok(canon)
     }
 
     /// Lexical operand for handlers whose semantics forbid canonicalizing
@@ -241,7 +300,7 @@ impl HostFsBackend {
     /// against, so the validated path and the operated-on path can never
     /// diverge (the worker's CWD is unrelated to the jail).
     fn lexical_operand(&self, path: &str) -> PathBuf {
-        lexical_operand_with(path, self.host_root_canon.as_deref())
+        lexical_operand_with(path, self.primary_root())
     }
 
     /// base_dir-aware form of [`Self::lexical_operand`]. When a session
@@ -270,7 +329,7 @@ impl HostFsBackend {
 /// duplicating the canonicalize / starts_with(host_root) / denylist logic.
 pub(crate) fn confine_path(
     path: &str,
-    host_root_canon: Option<&Path>,
+    host_roots_canon: &[PathBuf],
     denylist_canon: &[PathBuf],
 ) -> Result<PathBuf, FsError> {
     let p = Path::new(path);
@@ -279,11 +338,11 @@ pub(crate) fn confine_path(
         p
     } else if path.is_empty() {
         return Err(FsError::new("S210", "path must not be empty"));
-    } else if let Some(root_canon) = host_root_canon {
-        // Relative paths resolve against the jail root. The canonical
-        // starts_with(host_root) check below still runs on the joined
-        // path, so `..` in the relative form cannot escape the jail.
-        joined = root_canon.join(p);
+    } else if let Some(primary) = host_roots_canon.first() {
+        // Relative paths resolve against the PRIMARY (first) jail root. The
+        // canonical containment check below still runs on the joined path, so
+        // `..` in the relative form cannot escape the jail.
+        joined = primary.join(p);
         joined.as_path()
     } else {
         return Err(FsError::new(
@@ -303,13 +362,17 @@ pub(crate) fn confine_path(
             FsError::new("S210", format!("{path}: {msg}"))
         }
     })?;
-    if let Some(root_canon) = host_root_canon {
-        if !canon.starts_with(root_canon) {
-            // Name the jail root so a caller (human or agent) can
+    if !host_roots_canon.is_empty() {
+        // Accept when the canonical path is inside ANY allowed root.
+        if !host_roots_canon.iter().any(|r| canon.starts_with(r)) {
+            // Name the jail roots so a caller (human or agent) can
             // self-correct in one step instead of guessing paths.
             return Err(FsError::new(
                 "S215",
-                format!("path escapes host_root {}: {path}", root_canon.display()),
+                format!(
+                    "path escapes the fs jail roots [{}]: {path}",
+                    display_roots(host_roots_canon)
+                ),
             ));
         }
     }
@@ -321,14 +384,54 @@ pub(crate) fn confine_path(
     Ok(canon)
 }
 
+/// D4 protected-paths gate, factored out so the handlers that confine paths
+/// inside a `spawn_blocking` closure (sed, grep — which can't borrow `&self`)
+/// apply the SAME check as `HostFsBackend::validate_path`. `canon` is a path
+/// already confined inside a root.
+///
+/// A path is non-accessible when its form RELATIVE TO ANY containing root
+/// matches a `non_accessible` glob. Checking EVERY containing root (not just
+/// the first) closes a gap with nested roots: a root-anchored glob like
+/// `secrets.json` matched against the inner root's relative form would be
+/// missed if only the outer root's form were tested. Fail-closed: more roots
+/// checked can only ADD matches, never drop one.
+fn path_is_non_accessible(
+    canon: &Path,
+    host_roots_canon: &[PathBuf],
+    non_accessible: &GlobSet,
+) -> bool {
+    if non_accessible.is_empty() {
+        return false;
+    }
+    for root in host_roots_canon {
+        if let Ok(rel) = canon.strip_prefix(root) {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !rel.is_empty() && non_accessible.is_match(&rel) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Comma-separated display of the jail roots, for S215 messages.
+fn display_roots(roots: &[PathBuf]) -> String {
+    roots
+        .iter()
+        .map(|r| r.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Free-function form of `HostFsBackend::lexical_operand`, for use inside a
 /// `spawn_blocking` closure that can't borrow `&self`. Anchors relative inputs
-/// to the SAME jail root, identical to the method form.
-fn lexical_operand_with(path: &str, host_root_canon: Option<&Path>) -> PathBuf {
+/// to the given anchor (the primary jail root, or a session `base_dir`),
+/// identical to the method form.
+fn lexical_operand_with(path: &str, anchor_canon: Option<&Path>) -> PathBuf {
     let p = Path::new(path);
     if p.is_relative() {
-        if let Some(root_canon) = host_root_canon {
-            return normalize_lexical(&root_canon.join(p));
+        if let Some(anchor) = anchor_canon {
+            return normalize_lexical(&anchor.join(p));
         }
     }
     normalize_lexical(p)
@@ -351,25 +454,25 @@ fn lexical_operand_with(path: &str, host_root_canon: Option<&Path>) -> PathBuf {
 /// `base_dir` is rejected S210 rather than silently treated as the ceiling.
 fn confine_base_dir(
     base_dir: Option<&str>,
-    host_root_canon: Option<&Path>,
+    host_roots_canon: &[PathBuf],
     denylist_canon: &[PathBuf],
 ) -> Result<Option<PathBuf>, FsError> {
     let Some(base_dir) = base_dir else {
         return Ok(None);
     };
-    let Some(_root) = host_root_canon else {
+    if host_roots_canon.is_empty() {
         return Err(FsError::new(
             "S210",
             format!(
                 "base_dir {base_dir} is only honored when the worker is jailed \
-                 (fs.host_root is set); this worker is unjailed"
+                 (fs.host_root/fs.host_roots is set); this worker is unjailed"
             ),
         ));
-    };
-    // The session dir must itself canonicalize inside host_root + miss the
+    }
+    // The session dir must itself canonicalize inside an allowed root + miss the
     // denylist — reuse the SAME confinement the fs ops enforce so a base_dir
     // that escapes the jail (or a denylisted one) is rejected identically.
-    let canon = confine_path(base_dir, host_root_canon, denylist_canon)?;
+    let canon = confine_path(base_dir, host_roots_canon, denylist_canon)?;
     Ok(Some(canon))
 }
 
@@ -394,32 +497,31 @@ fn confine_base_dir(
 /// duplicating the layering.
 pub(crate) fn confine_path_with_base_dir(
     path: &str,
-    host_root_canon: Option<&Path>,
+    host_roots_canon: &[PathBuf],
     base_dir_canon: Option<&Path>,
     denylist_canon: &[PathBuf],
 ) -> Result<PathBuf, FsError> {
     let Some(base) = base_dir_canon else {
         // No session scope: identical to the unscoped jail check.
-        return confine_path(path, host_root_canon, denylist_canon);
+        return confine_path(path, host_roots_canon, denylist_canon);
     };
     // Scope the confinement to base_dir: relative paths anchor at base_dir and
-    // the canonical result must start_with(base_dir). Since base_dir ⊆
-    // host_root (validated by confine_base_dir), this is strictly tighter than
-    // the host_root check.
-    match confine_path(path, Some(base), denylist_canon) {
+    // the canonical result must start_with(base_dir). Since base_dir ⊆ some
+    // allowed root (validated by confine_base_dir), this is strictly tighter
+    // than the host-roots check. base_dir becomes the sole effective root.
+    let scoped_roots = [base.to_path_buf()];
+    match confine_path(path, &scoped_roots, denylist_canon) {
         Ok(canon) => Ok(canon),
         Err(e) => {
-            // DX-1: an absolute path that is inside host_root but outside
-            // base_dir would otherwise surface the generic "escapes host_root
-            // <base_dir>" S215, which is confusing — the path IS inside an
-            // allowed root, just not this session's. Detect that case and emit
-            // a session-scoped S220 naming base_dir so the agent corrects to a
+            // DX-1: an absolute path that is inside an allowed root but outside
+            // base_dir would otherwise surface the generic "escapes the fs jail
+            // roots" S215, which is confusing — the path IS inside an allowed
+            // root, just not this session's. Detect that case and emit a
+            // session-scoped S220 naming base_dir so the agent corrects to a
             // path under the session directory rather than guessing roots.
             if e.code == "S215" && Path::new(path).is_absolute() {
                 if let Ok(canon) = canonicalize_with_fallback(Path::new(path)) {
-                    let inside_host_root = host_root_canon
-                        .map(|hr| canon.starts_with(hr))
-                        .unwrap_or(false);
+                    let inside_host_root = host_roots_canon.iter().any(|hr| canon.starts_with(hr));
                     let denied = denylist_canon.iter().any(|d| canon.starts_with(d));
                     if inside_host_root && !canon.starts_with(base) && !denied {
                         return Err(FsError::new(
@@ -439,76 +541,12 @@ pub(crate) fn confine_path_with_base_dir(
     }
 }
 
-// MIRROR-INVARIANT: `canonicalize_with_fallback` + `normalize_lexical`
-// below are mirrored in `coder/src/path/mod.rs` (the coder worker's
-// PathResolver). The two implementations are the same jail-safety
-// algorithm and MUST evolve in lockstep — port any fix in one file to
-// the other.
-// Canonical case matrix for this invariant: `coder/tests/parity.rs`.
-/// Resolve `p` to a canonical path that is symlink-free for every existing
-/// ancestor, even when `p` itself doesn't yet exist. The naive fallback —
-/// "canonicalize, on ENOENT use the lexical path" — is a jail-escape vector
-/// when the path traverses a symlink whose target is outside the jail: the
-/// lexical form still `starts_with(host_root)`, but the kernel will follow
-/// the link on the subsequent syscall. Walking up to the longest existing
-/// ancestor and canonicalizing *that* forces every symlink in the existing
-/// portion to be resolved; the non-existent tail can't itself contain
-/// symlinks (it doesn't exist) but can still contain `..`/`.`, which we
-/// then collapse lexically against the canonical prefix so the
-/// `starts_with(host_root)` check is sound.
-fn canonicalize_with_fallback(p: &Path) -> std::io::Result<PathBuf> {
-    if let Ok(c) = std::fs::canonicalize(p) {
-        return Ok(c);
-    }
-    // Walk ancestors top-down (longest prefix first) until canonicalize
-    // succeeds. ancestors() yields p first; skip it because we already
-    // tried it. After we find the longest canonicalizable ancestor, walk
-    // forward through each tail component and reject if any of them is a
-    // *dangling* symlink: canonicalize fails on dangling symlinks (target
-    // doesn't exist), so they'd otherwise survive into the lexical tail
-    // and let `starts_with(host_root)` succeed against a path the kernel
-    // would resolve outside the jail. Existing-but-resolvable symlinks
-    // are caught by the top-of-function canonicalize.
-    for anc in p.ancestors().skip(1) {
-        if let Ok(canon_anc) = std::fs::canonicalize(anc) {
-            let suffix = match p.strip_prefix(anc) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let mut walk = canon_anc;
-            for component in suffix.components() {
-                walk.push(component);
-                if let Ok(md) = std::fs::symlink_metadata(&walk) {
-                    if md.file_type().is_symlink() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!("dangling symlink in path: {}", walk.display()),
-                        ));
-                    }
-                }
-            }
-            return Ok(normalize_lexical(&walk));
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        "no existing ancestor to canonicalize",
-    ))
-}
-
-fn normalize_lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
-}
+// The jail-safety LEAF (`canonicalize_with_fallback` + `normalize_lexical`)
+// now lives in `crate::path` and is shared by every jail surface in this
+// crate (this `fs::host` backend and the folded `code` `PathResolver`). It
+// used to be duplicated byte-for-byte here and in coder; the merge removed
+// that MIRROR-INVARIANT hazard. See `crate::path` for the algorithm + the
+// canonicalization parity vectors.
 
 /// Mirrors `iii-init/fs_handler/ops.rs::temp_sibling`.
 fn temp_sibling(target: &Path) -> PathBuf {
@@ -1111,6 +1149,10 @@ impl FsBackend for HostFsBackend {
         let exclude_glob = req.exclude_glob;
         let recursive = req.recursive;
         let req_path = req.path;
+        // D4: skip protected files during a directory walk (the gate that
+        // validate_path_scoped applies to single-file/other ops).
+        let host_roots_canon = self.host_roots_canon.clone();
+        let non_accessible = self.non_accessible.clone();
 
         let join = tokio::task::spawn_blocking(move || -> Result<_, FsError> {
             let md =
@@ -1249,6 +1291,13 @@ impl FsBackend for HostFsBackend {
                     if !should_scan(&rel) {
                         continue;
                     }
+                    // D4: a directory grep must not LEAK the content of a
+                    // protected file under it (the dir itself isn't protected,
+                    // but files matching non_accessible are). Skip them — the
+                    // file stays "visible but locked", same as the other ops.
+                    if path_is_non_accessible(entry.path(), &host_roots_canon, &non_accessible) {
+                        continue;
+                    }
                     if scan(entry.path())? {
                         truncated = true;
                         break;
@@ -1355,8 +1404,11 @@ impl FsBackend for HostFsBackend {
         let recursive = req.recursive;
         let include_glob = req.include_glob;
         let exclude_glob = req.exclude_glob;
-        let host_root_canon = self.host_root_canon.clone();
+        let host_roots_canon = self.host_roots_canon.clone();
         let denylist_canon = self.denylist_canon.clone();
+        // D4: the protected-paths gate must run on the blocking thread too —
+        // sed validates via the free confine fns, not validate_path_scoped.
+        let non_accessible = self.non_accessible.clone();
         // Resolve the optional session base_dir up front (on the async fn) so the
         // blocking closure confines + anchors every operand to it instead of the
         // global host_root. None ⇒ unchanged host_root behaviour.
@@ -1383,11 +1435,13 @@ impl FsBackend for HostFsBackend {
                 SedSource::Dir(root) => {
                     confine_path_with_base_dir(
                         &root,
-                        host_root_canon.as_deref(),
+                        &host_roots_canon,
                         base_dir_canon.as_deref(),
                         &denylist_canon,
                     )?;
-                    let anchor = base_dir_canon.as_deref().or(host_root_canon.as_deref());
+                    let anchor = base_dir_canon
+                        .as_deref()
+                        .or(host_roots_canon.first().map(|p| p.as_path()));
                     let root_anchored = lexical_operand_with(&root, anchor);
                     let root_path = root_anchored.as_path();
                     let _ = root_path
@@ -1416,18 +1470,28 @@ impl FsBackend for HostFsBackend {
             // touching any file, so a single bad path aborts the whole call
             // with nothing written. base_dir (when set) scopes each file.
             for f in &files {
-                confine_path_with_base_dir(
+                let canon = confine_path_with_base_dir(
                     f,
-                    host_root_canon.as_deref(),
+                    &host_roots_canon,
                     base_dir_canon.as_deref(),
                     &denylist_canon,
                 )?;
+                // D4: a protected file is locked for modification, exactly like
+                // shell::fs::write/rm (which route through validate_path_scoped).
+                if path_is_non_accessible(&canon, &host_roots_canon, &non_accessible) {
+                    return Err(FsError::new(
+                        "S215",
+                        format!("path is protected (non_accessible): {f}"),
+                    ));
+                }
             }
 
             // Anchor every file to its jail-relative operand (the operated-on
             // path, not its canonical target — sed acts on the link itself).
-            // The anchor is the session base_dir when set, else host_root.
-            let file_anchor = base_dir_canon.as_deref().or(host_root_canon.as_deref());
+            // The anchor is the session base_dir when set, else the primary root.
+            let file_anchor = base_dir_canon
+                .as_deref()
+                .or(host_roots_canon.first().map(|p| p.as_path()));
             let anchored: Vec<(String, PathBuf)> = files
                 .into_iter()
                 .map(|f| {
@@ -1599,24 +1663,32 @@ impl FsBackend for HostFsBackend {
         check_special_bits(bits, self.cfg.allow_special_bits)?;
 
         // Defense-in-depth: re-check parent against the effective canonical
-        // root before creating intermediate directories. validate_path already
-        // enforces this on `p`, but parents:true is S-C1's second site so we
-        // keep the belt. The ceiling is the session base_dir when set, else
-        // host_root — so parents can never climb out of the session directory.
-        let parent_ceiling = base.as_deref().or(self.host_root_canon.as_deref());
+        // ceiling(s) before creating intermediate directories. validate_path
+        // already enforces this on `p`, but parents:true is S-C1's second site
+        // so we keep the belt. The ceiling is the session base_dir when set,
+        // else ALL host roots — so parents can never climb out of the session
+        // directory (or, unscoped, out of every allowed root).
+        let parent_ceilings: Vec<&Path> = match base.as_deref() {
+            Some(b) => vec![b],
+            None => self.host_roots_canon.iter().map(PathBuf::as_path).collect(),
+        };
         if req.parents {
             if let Some(parent) = p.parent() {
-                if let Some(root_canon) = parent_ceiling {
-                    if !parent.starts_with(root_canon) {
-                        return Err(FsError::new(
-                            "S215",
-                            format!(
-                                "parent escapes host_root {}: {}",
-                                root_canon.display(),
-                                req.path
-                            ),
-                        ));
-                    }
+                if !parent_ceilings.is_empty()
+                    && !parent_ceilings.iter().any(|c| parent.starts_with(c))
+                {
+                    let ceil_display = parent_ceilings
+                        .iter()
+                        .map(|c| c.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(FsError::new(
+                        "S215",
+                        format!(
+                            "parent escapes the allowed roots [{ceil_display}]: {}",
+                            req.path
+                        ),
+                    ));
                 }
                 tokio::fs::create_dir_all(parent)
                     .await
@@ -1820,13 +1892,104 @@ mod tests {
     #[test]
     fn try_new_returns_err_on_unreachable_host_root() {
         let cfg = Arc::new(HostFsConfig {
-            host_root: Some(PathBuf::from("/nonexistent/shell-jail-xyz")),
+            host_roots: vec![PathBuf::from("/nonexistent/shell-jail-xyz")],
             ..HostFsConfig::default()
         });
         let chan: Arc<dyn ChannelMaker> = Arc::new(StubChan);
         let res = HostFsBackend::try_new(cfg, chan);
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().code, "S216");
+    }
+
+    #[test]
+    fn confine_path_multi_root_absolute_any_relative_primary() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(a.path().join("fa.txt"), b"a").unwrap();
+        std::fs::write(b.path().join("fb.txt"), b"b").unwrap();
+        let roots = vec![
+            std::fs::canonicalize(a.path()).unwrap(),
+            std::fs::canonicalize(b.path()).unwrap(),
+        ];
+        // Absolute inside the SECOND root is accepted.
+        let in_b =
+            confine_path(&b.path().join("fb.txt").display().to_string(), &roots, &[]).unwrap();
+        assert!(in_b.starts_with(std::fs::canonicalize(b.path()).unwrap()));
+        // A relative path anchors at the PRIMARY (first) root, never root #2.
+        let rel = confine_path("fa.txt", &roots, &[]).unwrap();
+        assert!(rel.starts_with(std::fs::canonicalize(a.path()).unwrap()));
+        // A path outside BOTH roots is rejected S215, naming the roots.
+        let err = confine_path("/etc/passwd", &roots, &[]).unwrap_err();
+        assert_eq!(err.code, "S215");
+        assert!(
+            err.message.contains("fs jail roots"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn confine_path_nested_roots_contained() {
+        // Root A contains root B (nested/overlapping). A path inside B is
+        // accepted; the inner root is honored as its own boundary.
+        let a = tempfile::tempdir().unwrap();
+        let b = a.path().join("inner");
+        std::fs::create_dir(&b).unwrap();
+        std::fs::write(b.join("x.txt"), b"x").unwrap();
+        let roots = vec![
+            std::fs::canonicalize(a.path()).unwrap(),
+            std::fs::canonicalize(&b).unwrap(),
+        ];
+        let got = confine_path(&b.join("x.txt").display().to_string(), &roots, &[]).unwrap();
+        assert!(got.starts_with(std::fs::canonicalize(&b).unwrap()));
+    }
+
+    #[test]
+    fn try_new_dedups_canonically_equal_roots() {
+        // The same dir listed twice collapses to one canonical root.
+        let a = tempfile::tempdir().unwrap();
+        let canon = std::fs::canonicalize(a.path()).unwrap();
+        let cfg = Arc::new(HostFsConfig {
+            host_roots: vec![a.path().to_path_buf(), canon.clone()],
+            ..HostFsConfig::default()
+        });
+        let chan: Arc<dyn ChannelMaker> = Arc::new(StubChan);
+        let backend = HostFsBackend::try_new(cfg, chan).unwrap();
+        assert_eq!(backend.host_roots_canon, vec![canon]);
+    }
+
+    #[test]
+    fn validate_path_rejects_non_accessible_glob_but_allows_others() {
+        // D4: shell::fs hard-rejects a path matching the unified protected
+        // globs (the same list the code surface uses), while non-matching paths
+        // pass. The directory listing is NOT gated here, so the file stays
+        // visible to `ls` — visible but locked.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".env"), b"secret").unwrap();
+        std::fs::write(tmp.path().join("ok.txt"), b"x").unwrap();
+        let cfg = Arc::new(HostFsConfig {
+            host_roots: vec![tmp.path().to_path_buf()],
+            non_accessible_globs: vec!["**/.env".to_string()],
+            ..HostFsConfig::default()
+        });
+        let backend = HostFsBackend::try_new(cfg, Arc::new(StubChan)).unwrap();
+        let err = backend.validate_path(".env").unwrap_err();
+        assert_eq!(err.code, "S215");
+        assert!(err.message.contains("protected"), "got: {}", err.message);
+        assert!(backend.validate_path("ok.txt").is_ok());
+    }
+
+    #[test]
+    fn try_new_rejects_bad_non_accessible_glob() {
+        // Fail-closed (D2): a malformed protected glob aborts backend init.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = Arc::new(HostFsConfig {
+            host_roots: vec![tmp.path().to_path_buf()],
+            non_accessible_globs: vec!["[".to_string()],
+            ..HostFsConfig::default()
+        });
+        let err = HostFsBackend::try_new(cfg, Arc::new(StubChan)).unwrap_err();
+        assert_eq!(err.code, "S210");
     }
 
     fn stub_ref() -> iii_sdk::channels::StreamChannelRef {
@@ -1852,7 +2015,7 @@ mod tests {
         let root = tmp();
         fs::create_dir(root.join("sub")).unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -1866,7 +2029,7 @@ mod tests {
     fn relative_dotdot_cannot_escape_host_root() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -1878,7 +2041,7 @@ mod tests {
     fn empty_path_rejected_even_under_host_root() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root),
+            host_roots: vec![root],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -1893,7 +2056,7 @@ mod tests {
         // the jail root.
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -1922,7 +2085,7 @@ mod tests {
         let root = tmp();
         fs::write(root.join("victim.txt"), "x").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -1943,7 +2106,7 @@ mod tests {
         let root = tmp();
         fs::write(root.join("a.txt"), "content").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -1967,7 +2130,7 @@ mod tests {
         let root = tmp();
         fs::write(root.join("f.txt"), "x").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -1996,7 +2159,7 @@ mod tests {
         let root = tmp();
         fs::write(root.join("s.txt"), "hello world\n").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2023,6 +2186,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn path_is_non_accessible_checks_all_nested_roots() {
+        // D4 fix: with nested roots, a ROOT-ANCHORED glob ("secrets.json") must
+        // match against the INNER root's relative form, not only the outer's.
+        let outer = tmp();
+        let inner = outer.join("proj");
+        fs::create_dir(&inner).unwrap();
+        let roots = vec![
+            std::fs::canonicalize(&outer).unwrap(),
+            std::fs::canonicalize(&inner).unwrap(),
+        ];
+        let mut bld = GlobSetBuilder::new();
+        bld.add(Glob::new("secrets.json").unwrap());
+        let gs = bld.build().unwrap();
+        let secret = std::fs::canonicalize(&inner).unwrap().join("secrets.json");
+        assert!(
+            path_is_non_accessible(&secret, &roots, &gs),
+            "must block via the inner root's relative form"
+        );
+        let ok = std::fs::canonicalize(&outer).unwrap().join("ok.txt");
+        assert!(!path_is_non_accessible(&ok, &roots, &gs));
+    }
+
+    #[tokio::test]
+    async fn sed_rejects_non_accessible_file_s215() {
+        // D4: sed confines in a spawn_blocking closure (not validate_path_scoped)
+        // — it must still hard-reject a protected file, exactly like write/rm.
+        let root = tmp();
+        fs::write(root.join(".env"), "SECRET=hello\n").unwrap();
+        let cfg = HostFsConfig {
+            host_roots: vec![root.clone()],
+            non_accessible_globs: vec!["**/.env".into()],
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let err = b
+            .sed(crate::fs::SedArgs {
+                base_dir: None,
+                files: vec![".env".into()],
+                path: None,
+                recursive: true,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                pattern: "hello".into(),
+                replacement: "pwned".into(),
+                regex: false,
+                first_only: false,
+                ignore_case: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S215");
+        // The protected file is untouched.
+        assert_eq!(
+            fs::read_to_string(root.join(".env")).unwrap(),
+            "SECRET=hello\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_skips_non_accessible_files_in_dir_walk() {
+        // D4: a directory grep must not LEAK the content of a protected file.
+        let root = tmp();
+        fs::write(root.join(".env"), "SECRET=needle\n").unwrap();
+        fs::write(root.join("ok.txt"), "needle here\n").unwrap();
+        let cfg = HostFsConfig {
+            host_roots: vec![root.clone()],
+            non_accessible_globs: vec!["**/.env".into()],
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let res = b
+            .grep(crate::fs::GrepArgs {
+                path: ".".into(),
+                pattern: "needle".into(),
+                recursive: true,
+                ignore_case: false,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                max_matches: 0,
+                max_line_bytes: 0,
+                base_dir: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.matches.len(), 1, "the protected .env must be skipped");
+        assert!(
+            !res.matches.iter().any(|m| m.path.contains(".env")),
+            "no .env content leaked through grep"
+        );
+    }
+
     #[tokio::test]
     async fn write_parents_true_escaping_path_returns_s215_naming_root() {
         // validate_path pre-empts the parents:true defense-in-depth branch,
@@ -2030,7 +2285,7 @@ mod tests {
         // write with parents:true is S215 and the message names the root.
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2063,7 +2318,7 @@ mod tests {
     fn rejects_path_outside_host_root() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -2076,7 +2331,7 @@ mod tests {
         let root = tmp();
         fs::create_dir(root.join("sub")).unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -2089,7 +2344,7 @@ mod tests {
         fs::create_dir(root.join("etc")).unwrap();
         fs::write(root.join("etc/shadow"), b"x").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             denylist_paths: vec![root.join("etc/shadow")],
             ..Default::default()
         };
@@ -2104,7 +2359,7 @@ mod tests {
     fn nonexistent_path_with_dotdot_cannot_escape_root() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -2640,7 +2895,7 @@ mod tests {
     async fn write_rejects_path_outside_host_root_with_s215() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2662,7 +2917,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2697,7 +2952,7 @@ mod tests {
     async fn write_inline_respects_max_write_bytes_cap() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             max_write_bytes: 4,
             ..Default::default()
         };
@@ -2723,7 +2978,7 @@ mod tests {
     async fn write_inline_escaping_path_returns_s215() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2768,7 +3023,7 @@ mod tests {
         let canon_root = std::fs::canonicalize(&root).unwrap();
         let missing = canon_root.join("nope.txt").to_string_lossy().to_string();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2787,7 +3042,7 @@ mod tests {
         let root = tmp();
         let dir = root.to_string_lossy().to_string();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2807,7 +3062,7 @@ mod tests {
         let f = root.join("big.bin");
         std::fs::write(&f, vec![0u8; 1024]).unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             max_read_bytes: 10,
             ..Default::default()
         };
@@ -2826,7 +3081,7 @@ mod tests {
     async fn read_rejects_path_outside_host_root_with_s215() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -2846,7 +3101,7 @@ mod tests {
         let f = root.join("ok.txt");
         std::fs::write(&f, b"hello").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -3220,7 +3475,7 @@ mod tests {
         let f = root.join("c.txt");
         fs::write(&f, b"x").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -3250,7 +3505,7 @@ mod tests {
         let f = root.join("c.txt");
         fs::write(&f, b"x").unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             allow_special_bits: true,
             ..Default::default()
         };
@@ -3275,7 +3530,7 @@ mod tests {
     async fn mkdir_setgid_mode_rejected_by_default_s210() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let h = stub_backend(cfg);
@@ -3297,7 +3552,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             allow_special_bits: true,
             ..Default::default()
         };
@@ -3324,7 +3579,7 @@ mod tests {
     async fn write_sticky_mode_rejected_by_default_s210() {
         let root = tmp();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -3474,7 +3729,7 @@ mod tests {
         // target resolves there must be caught by the canonical jail check.
         symlink("/etc", root.join("escape")).unwrap();
         let cfg = HostFsConfig {
-            host_root: Some(root.clone()),
+            host_roots: vec![root.clone()],
             ..Default::default()
         };
         let b = stub_backend(cfg);
@@ -3512,7 +3767,7 @@ mod tests {
     /// Helper: a jailed backend rooted at `root`.
     fn jailed_backend(root: &std::path::Path) -> HostFsBackend {
         stub_backend(HostFsConfig {
-            host_root: Some(root.to_path_buf()),
+            host_roots: vec![root.to_path_buf()],
             ..Default::default()
         })
     }

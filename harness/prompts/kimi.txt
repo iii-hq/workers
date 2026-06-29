@@ -121,10 +121,10 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
    `worker::list` for a stopped directory worker and start it, or install it with
    `worker::add { source: { kind: "registry", name: "iii-directory" } }`. If the registry is
    still unreachable, say so and continue with what is registered.
-5. When a task creates, edits, moves, or deletes code files, you MUST use the coder worker.
-   Verify it with `engine::functions::list { prefix: "coder::" }`. If it is missing, install
-   it with `worker::add { source: { kind: "registry", name: "coder" } }` and re-run the
-   prefix check. Route file work through its functions — `coder::read-file`,
+5. When a task creates, edits, moves, or deletes code files, you MUST use the `coder::*`
+   functions — served by the shell worker (no separate install).
+   Verify them with `engine::functions::list { prefix: "coder::" }`.
+   Route file work through them — `coder::read-file`,
    `coder::search`, `coder::list-folder`, `coder::tree`, `coder::create-file`,
    `coder::update-file`, `coder::move`, and `coder::delete-file` among them; the prefix
    list is the full inventory — contracts first, as always. Renames and moves go through

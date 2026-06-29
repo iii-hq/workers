@@ -2,9 +2,11 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::errors::Error;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::Value;
 
+mod code;
 mod config;
 mod configuration;
 mod exec;
@@ -12,6 +14,7 @@ mod exec_dispatch;
 mod fs;
 mod functions;
 mod jobs;
+mod path;
 mod scode;
 mod target;
 mod telemetry;
@@ -31,6 +34,22 @@ struct Cli {
 
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
+}
+
+/// Identify this worker to the engine as `shell` (name, runtime, version, pid)
+/// so it appears as `shell` in `engine::workers::list` and the `worker`
+/// lifecycle stream — not the default `Host:<pid>` identity. Console surfaces
+/// gate the working-directory picker on this name, mirroring `approval-gate`.
+fn worker_metadata() -> WorkerMetadata {
+    WorkerMetadata {
+        runtime: "rust".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        name: "shell".to_string(),
+        os: std::env::consts::OS.to_string(),
+        pid: Some(std::process::id()),
+        telemetry: None,
+        ..WorkerMetadata::default()
+    }
 }
 
 /// JSON Schema for a typed request/response struct, attached to a `Value`
@@ -57,6 +76,7 @@ async fn main() -> Result<()> {
         &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
+            metadata: Some(worker_metadata()),
             ..Default::default()
         },
     );
@@ -81,6 +101,11 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering shell configuration schema")?;
+
+    // One-shot, best-effort fold of a legacy `coder` config entry into the
+    // `shell` value (never-widen; idempotent). Runs after schema registration
+    // and before the fetch below so the merged value is what we boot from.
+    configuration::migrate_legacy_coder(&iii).await;
 
     let cfg = configuration::fetch_config(&iii)
         .await
@@ -130,6 +155,27 @@ async fn main() -> Result<()> {
         .context(
             "boot reconcile of configuration failed (refusing to serve a possibly stale policy)",
         )?;
+
+    // Code surface (folded coder::*): build the path-jail resolver from the
+    // UNIFIED roots (fs.host_roots) + the `code` block's protected globs, then
+    // register the 9 code functions. The resolver IS the jail. A bad glob /
+    // unreachable root makes PathResolver::new fail and aborts startup — the
+    // whole worker fails closed (no half-booted surface). The code surface
+    // requires a jail: unjailed shells don't expose coder::*.
+    if cfg.fs.is_jailed() {
+        let code_cfg = cfg.code_resolver_config();
+        let resolver = code::path::PathResolver::new(&code_cfg)
+            .map_err(|e| anyhow::anyhow!("failed to build code PathResolver (coder::*): {e}"))?;
+        let cell: code::ConfigCell =
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(code_cfg)));
+        code::register_all(&iii, std::sync::Arc::new(resolver), cell);
+        tracing::info!("code surface (coder::*) registered over the unified fs jail");
+    } else {
+        tracing::warn!(
+            "fs is unjailed (no fs.host_root/fs.host_roots) — code surface (coder::*) NOT \
+             registered; coder file functions require a jail root"
+        );
+    }
 
     // exec / exec_bg / list read the live config snapshot from AppState.
     {
