@@ -53,7 +53,7 @@ impl Orchestrator {
                 let client = register_worker(
                     &self.config.engine_url,
                     InitOptions {
-                        metadata: Some(iii_sdk::iii::WorkerMetadata {
+                        metadata: Some(iii_sdk::runtime::WorkerMetadata {
                             name: "workers-dev".to_string(),
                             ..Default::default()
                         }),
@@ -63,7 +63,7 @@ impl Orchestrator {
                 let deadline = Instant::now() + Duration::from_millis(2000);
                 while Instant::now() < deadline
                     && client.get_connection_state()
-                        != iii_sdk::iii::IIIConnectionState::Connected
+                        != iii_sdk::runtime::IIIConnectionState::Connected
                 {
                     time::sleep(Duration::from_millis(50)).await;
                 }
