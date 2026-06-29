@@ -69,7 +69,18 @@ export function TopNav({ route }: { route: Route }) {
           </a>
         )}
 
-        <div className="ml-auto shrink-0">
+        <div className="ml-auto flex items-center gap-x-4 shrink-0">
+          <a
+            href="#/spec"
+            className={cn(
+              'font-mono text-[12px] lowercase whitespace-nowrap transition-colors',
+              route.kind === 'page' && route.slug === 'spec'
+                ? 'text-accent'
+                : 'text-ink-faint hover:text-ink',
+            )}
+          >
+            spec
+          </a>
           <ModeToggle
             value={theme}
             onChange={setTheme}

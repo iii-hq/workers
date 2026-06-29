@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react'
 
 export type Route =
   | { kind: 'home' }
-  | { kind: 'page'; slug: string }
+  | { kind: 'page'; slug: string; rest: string[] }
 
 function parse(hash: string): Route {
-  // `#/<slug>` (and `#/<group>/<slug>`) are deep-dive page routes; the slug is
-  // the final segment, matched against the PAGES registry in App.tsx.
+  // `#/<slug>` (and `#/<slug>/<sub>/...`) are page routes; the slug is the
+  // FIRST segment, matched against the PAGES registry in App.tsx, and any
+  // further segments are exposed as `rest` (e.g. the spec viewer's file).
   const m = hash.match(/^#\/(.+)$/)
   if (m) {
     const segments = m[1].split('/').filter(Boolean)
-    const slug = segments[segments.length - 1]
-    if (slug) return { kind: 'page', slug }
+    const [slug, ...rest] = segments
+    if (slug) return { kind: 'page', slug, rest }
   }
   return { kind: 'home' }
 }

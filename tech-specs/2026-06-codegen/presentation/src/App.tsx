@@ -4,6 +4,7 @@ import { TopNav } from '@/components/TopNav'
 import { Sheet } from '@/components/schematic/Sheet'
 import { useHashRoute } from '@/hooks/useHashRoute'
 import { HarnessConsumerPage } from '@/pages/HarnessConsumerPage'
+import { SpecPage } from '@/pages/SpecPage'
 import { Hero } from '@/sections/Hero'
 import { WhySection } from '@/sections/WhySection'
 import { RunItSection } from '@/sections/RunItSection'
@@ -33,6 +34,7 @@ const SECTIONS: ComponentType[] = [
 /** deep-dive pages, keyed by the `#/<slug>` route slug. */
 const PAGES: Record<string, ComponentType> = {
   'harness-consumer': HarnessConsumerPage,
+  spec: SpecPage,
 }
 
 function Home() {
