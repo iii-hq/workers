@@ -13,6 +13,17 @@ use crate::{dispatch, httpio};
 
 pub const EVENTS_ID: &str = "slack::events";
 
+/// Published request shape for `slack::events` (an HTTP trigger payload). The
+/// handler reads the raw body from the request channel; this typed struct exists
+/// so the function publishes a typed schema rather than AnyValue.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct EventsHttpRequest {
+    /// The Slack event envelope (also delivered raw on the request_body channel).
+    #[serde(default)]
+    body: Value,
+}
+
 pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     let deps = deps.clone();
     iii.register_function(
@@ -24,6 +35,8 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                 Ok::<_, Error>(Value::Null)
             }
         })
+        .request_format(super::schema_value::<EventsHttpRequest>())
+        .response_format(serde_json::json!({ "type": "null" }))
         .description("Slack Events API ingress (signature-verified)."),
     );
 }
