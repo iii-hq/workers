@@ -1,0 +1,41 @@
+{
+  "description": "Approval binding.",
+  "function_id": "slack::on-pending-created",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "arguments_excerpt": {
+        "default": null
+      },
+      "function_call_id": {
+        "type": "string"
+      },
+      "function_id": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "function_call_id",
+      "function_id",
+      "session_id"
+    ],
+    "title": "PendingApprovalRecord",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "BindingAck",
+    "type": "object"
+  }
+}

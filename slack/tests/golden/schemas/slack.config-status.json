@@ -1,0 +1,70 @@
+{
+  "description": "Config + identity status.",
+  "function_id": "slack::config-status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConfigStatusReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bot_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "bot_user_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "bridge_enabled": {
+        "description": "Whether the inbound bridge is enabled (socket or http transport configured).",
+        "type": "boolean"
+      },
+      "enterprise_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "ok": {
+        "description": "True when the configured bot_token authenticates against Slack.",
+        "type": "boolean"
+      },
+      "team": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "team_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "url": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "bridge_enabled",
+      "ok"
+    ],
+    "title": "ConfigStatus",
+    "type": "object"
+  }
+}

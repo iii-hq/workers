@@ -1,0 +1,42 @@
+{
+  "description": "Call any Slack method.",
+  "function_id": "slack::call",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "as_user": {
+        "default": false,
+        "description": "Use the configured user token (`xoxp-`) instead of the bot token.",
+        "type": "boolean"
+      },
+      "method": {
+        "description": "Slack Web API method name, e.g. `chat.postMessage`, `team.info`.",
+        "type": "string"
+      },
+      "params": {
+        "default": null,
+        "description": "Method params object (defaults to `{}`)."
+      }
+    },
+    "required": [
+      "method"
+    ],
+    "title": "CallReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

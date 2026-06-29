@@ -1,0 +1,73 @@
+{
+  "description": "Upload a file.",
+  "function_id": "slack::files::upload",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "channel_id": {
+        "description": "Channel id to share the file into.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "content": {
+        "description": "UTF-8 text content. Provide this OR `content_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "content_base64": {
+        "description": "Base64-encoded binary content. Provide this OR `content`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "filename": {
+        "type": "string"
+      },
+      "initial_comment": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "thread_ts": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "filename"
+    ],
+    "title": "UploadReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "file_id": {
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "file_id",
+      "ok"
+    ],
+    "title": "UploadResponse",
+    "type": "object"
+  }
+}

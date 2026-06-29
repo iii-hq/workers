@@ -1,0 +1,36 @@
+{
+  "description": "Delete a message.",
+  "function_id": "slack::chat::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "channel": {
+        "type": "string"
+      },
+      "ts": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel",
+      "ts"
+    ],
+    "title": "DeleteReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

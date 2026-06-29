@@ -1,0 +1,69 @@
+{
+  "description": "Set suggested prompts.",
+  "function_id": "slack::assistant::set-suggested-prompts",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SuggestedPrompt": {
+        "properties": {
+          "message": {
+            "description": "Text sent to the assistant when the prompt is clicked.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Clickable label shown to the user.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "channel_id": {
+        "type": "string"
+      },
+      "prompts": {
+        "description": "Up to 4 prompts.",
+        "items": {
+          "$ref": "#/definitions/SuggestedPrompt"
+        },
+        "type": "array"
+      },
+      "thread_ts": {
+        "type": "string"
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "channel_id",
+      "prompts",
+      "thread_ts"
+    ],
+    "title": "SetSuggestedPromptsReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

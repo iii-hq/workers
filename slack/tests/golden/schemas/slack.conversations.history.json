@@ -1,0 +1,59 @@
+{
+  "description": "Fetch history.",
+  "function_id": "slack::conversations::history",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "channel": {
+        "type": "string"
+      },
+      "cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "latest": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "oldest": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "channel"
+    ],
+    "title": "HistoryReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "description": "Post a message.",
+  "function_id": "slack::chat::post-message",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "blocks": {
+        "description": "Block Kit blocks (array). Mutually exclusive with `markdown_text`."
+      },
+      "channel": {
+        "description": "Channel, DM, or user id to post to (e.g. `C0123ABC` or `U0123ABC`).",
+        "type": "string"
+      },
+      "markdown_text": {
+        "description": "Markdown body (≤12000 chars). Mutually exclusive with `blocks`/`text`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "thread_ts": {
+        "description": "Parent message ts to reply in a thread.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "channel"
+    ],
+    "title": "PostMessageReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

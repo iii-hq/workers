@@ -1,0 +1,39 @@
+[workspace]
+
+[package]
+name = "slack"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "slack"
+path = "src/main.rs"
+
+[lib]
+name = "slack"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.20.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+schemars = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+dashmap = "6"
+urlencoding = "2"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,0 +1,37 @@
+{
+  "description": "Open a modal.",
+  "function_id": "slack::views::open",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "trigger_id": {
+        "description": "Interaction trigger_id (expires ~3s after the interaction).",
+        "type": "string"
+      },
+      "view": {
+        "description": "Block Kit view object."
+      }
+    },
+    "required": [
+      "trigger_id",
+      "view"
+    ],
+    "title": "OpenReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}

@@ -108,6 +108,15 @@ rules:
   - '!telegram-bot::on-turn-completed'
   - '!telegram-bot::on-pending-created'
   - '!telegram-bot::on-pending-resolved'
+  # slack: deny operator-only ingress, internal bindings, and config reload.
+  - '!slack::events'
+  - '!slack::interactions'
+  - '!slack::on-config-change'
+  - '!slack::on-message-added'
+  - '!slack::on-message-updated'
+  - '!slack::on-turn-completed'
+  - '!slack::on-pending-created'
+  - '!slack::on-pending-resolved'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

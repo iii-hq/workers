@@ -1,0 +1,49 @@
+{
+  "description": "Update a view.",
+  "function_id": "slack::views::update",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "external_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "hash": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "view": true,
+      "view_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "view"
+    ],
+    "title": "UpdateReq",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": true,
+    "properties": {
+      "ok": {
+        "description": "Slack's success flag (always true here; failures surface as errors).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "SlackResponse",
+    "type": "object"
+  }
+}
