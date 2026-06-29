@@ -144,6 +144,19 @@ jobs:
             "$WORKER/$MANIFEST" --expected "$NEW_VERSION"
           echo "Validated $WORKER/$MANIFEST = $NEW_VERSION"
 
+      # The bump only rewrites Cargo.toml. Without this, the crate's own entry
+      # in Cargo.lock keeps the old version until someone's local `cargo build`
+      # rewrites it, so every developer pulls a dirty lockfile. Sync it here so
+      # `git add -A` below commits the lockfile alongside the manifest. No-op
+      # for non-Rust workers and crates without a committed Cargo.lock.
+      - name: Sync Cargo.lock to bumped version
+        env:
+          WORKER: ${{ inputs.worker }}
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/manifest_version.py sync-lock "$WORKER/$MANIFEST"
+
       - name: Check tag does not exist
         env:
           TAG: ${{ steps.versions.outputs.tag }}

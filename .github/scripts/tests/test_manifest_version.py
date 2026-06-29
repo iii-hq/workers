@@ -81,6 +81,50 @@ class TestVerifySubcommand:
         assert "9.9.9" in (r.stderr + r.stdout)
 
 
+class TestSyncLockSubcommand:
+    def _lock(self, dir_path: Path, name: str, version: str) -> Path:
+        p = dir_path / "Cargo.lock"
+        p.write_text(
+            'version = 3\n\n'
+            '[[package]]\n'
+            'name = "leftpad"\n'
+            'version = "1.0.0"\n\n'
+            '[[package]]\n'
+            f'name = "{name}"\n'
+            f'version = "{version}"\n'
+            'dependencies = [\n'
+            ' "leftpad",\n'
+            ']\n'
+        )
+        return p
+
+    def test_syncs_stale_self_version(self, cargo_manifest):
+        # cargo_manifest is name="smoke" version="0.1.0"; lock is stale at 0.0.9.
+        lock = self._lock(cargo_manifest.parent, "smoke", "0.0.9")
+        r = run_script("sync-lock", str(cargo_manifest))
+        assert r.returncode == 0, r.stderr
+        body = lock.read_text()
+        assert 'name = "smoke"\nversion = "0.1.0"' in body
+        # The unrelated dependency entry is untouched.
+        assert 'name = "leftpad"\nversion = "1.0.0"' in body
+
+    def test_idempotent_when_already_synced(self, cargo_manifest):
+        lock = self._lock(cargo_manifest.parent, "smoke", "0.1.0")
+        before = lock.read_text()
+        r = run_script("sync-lock", str(cargo_manifest))
+        assert r.returncode == 0
+        assert "already in sync" in r.stdout
+        assert lock.read_text() == before
+
+    def test_noop_without_lockfile(self, cargo_manifest):
+        r = run_script("sync-lock", str(cargo_manifest))
+        assert r.returncode == 0  # no Cargo.lock present -> nothing to do
+
+    def test_noop_for_non_cargo_manifest(self, package_json_manifest):
+        r = run_script("sync-lock", str(package_json_manifest))
+        assert r.returncode == 0
+
+
 class TestDeployModeSubcommand:
     def test_binary_yields_release_binary(self, tmp_path):
         (tmp_path / "iii.worker.yaml").write_text(

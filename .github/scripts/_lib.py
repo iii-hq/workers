@@ -144,6 +144,62 @@ def write_version(manifest_path: Path, new_version: str) -> None:
     raise ValueError(f"unhandled manifest kind: {kind}")
 
 
+def read_cargo_package_name(manifest_path: Path) -> str:
+    """Reads `name = "X"` from a Cargo.toml `[package]` section."""
+    in_section = False
+    for line in manifest_path.read_text().splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_section = (s == "[package]")
+            continue
+        if in_section:
+            m = re.match(r'^name\s*=\s*"([^"]+)"', s)
+            if m:
+                return m.group(1)
+    raise ValueError(f"no name field in [package] section of {manifest_path}")
+
+
+def sync_cargo_lock_self_version(lock_path: Path, name: str, new_version: str) -> bool:
+    """Update a worker's own `[[package]]` version in its Cargo.lock to match
+    its bumped Cargo.toml.
+
+    Bumping only rewrites Cargo.toml, so the crate's own entry in Cargo.lock
+    keeps the old version until the next local `cargo build` rewrites it —
+    leaving every developer with a dirty lockfile. Rewriting the matching block
+    here, at tag time, keeps the committed lock in sync. Only the crate's own
+    version line changes; the dependency graph is untouched (a bump never alters
+    resolution).
+
+    Returns True if the version was changed, False if it already matched.
+    Raises ValueError if no `[[package]]` block named `name` exists.
+    """
+    text = lock_path.read_text()
+    out: list[str] = []
+    in_target = False
+    found = replaced = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s == "[[package]]":
+            in_target = False
+        else:
+            m = re.match(r'^name = "([^"]+)"$', s)
+            if m:
+                in_target = (m.group(1) == name)
+                found = found or in_target
+            elif in_target and re.match(r'^version = "[^"]+"$', s):
+                new_line = f'version = "{new_version}"'
+                replaced = replaced or (new_line != s)
+                line = new_line
+                in_target = False
+        out.append(line)
+    if not found:
+        raise ValueError(f"package {name!r} not found in {lock_path}")
+    if replaced:
+        trailing = "\n" if text.endswith("\n") else ""
+        lock_path.write_text("\n".join(out) + trailing)
+    return replaced
+
+
 @dataclass(frozen=True)
 class WorkerManifest:
     """Parsed view of a `<worker>/iii.worker.yaml` file."""

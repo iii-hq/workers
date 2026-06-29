@@ -225,3 +225,53 @@ class TestReadTagAnnotation:
         monkeypatch.chdir(tmp_path)
         ann = _lib.read_tag_annotation("v0")
         assert ann == {"key": "val", "other": "more"}
+
+
+class TestCargoLockSelfVersion:
+    LOCK = (
+        'version = 3\n\n'
+        '[[package]]\n'
+        'name = "dep"\n'
+        'version = "2.0.0"\n\n'
+        '[[package]]\n'
+        'name = "harness"\n'
+        'version = "1.0.4"\n'
+        'dependencies = [\n'
+        ' "dep",\n'
+        ']\n'
+    )
+
+    def test_read_cargo_package_name(self, tmp_path):
+        m = tmp_path / "Cargo.toml"
+        m.write_text('[package]\nname = "harness"\nversion = "1.0.6"\n')
+        assert _lib.read_cargo_package_name(m) == "harness"
+
+    def test_read_name_ignores_dependency_sections(self, tmp_path):
+        m = tmp_path / "Cargo.toml"
+        m.write_text(
+            '[package]\nname = "harness"\nversion = "1.0.6"\n\n'
+            '[dependencies]\nname = "not-this"\n'
+        )
+        assert _lib.read_cargo_package_name(m) == "harness"
+
+    def test_sync_updates_only_self_entry(self, tmp_path):
+        lock = tmp_path / "Cargo.lock"
+        lock.write_text(self.LOCK)
+        changed = _lib.sync_cargo_lock_self_version(lock, "harness", "1.0.6")
+        assert changed is True
+        body = lock.read_text()
+        assert 'name = "harness"\nversion = "1.0.6"' in body
+        assert 'name = "dep"\nversion = "2.0.0"' in body  # untouched
+
+    def test_sync_is_idempotent(self, tmp_path):
+        lock = tmp_path / "Cargo.lock"
+        lock.write_text(self.LOCK.replace('"1.0.4"', '"1.0.6"'))
+        before = lock.read_text()
+        assert _lib.sync_cargo_lock_self_version(lock, "harness", "1.0.6") is False
+        assert lock.read_text() == before
+
+    def test_sync_raises_when_package_absent(self, tmp_path):
+        lock = tmp_path / "Cargo.lock"
+        lock.write_text(self.LOCK)
+        with pytest.raises(ValueError, match="not found"):
+            _lib.sync_cargo_lock_self_version(lock, "ghost", "9.9.9")
