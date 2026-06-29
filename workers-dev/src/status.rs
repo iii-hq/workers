@@ -37,7 +37,10 @@ pub struct WorkerView {
 /// Query the engine for its connected workers over the shared persistent
 /// connection. Reuses one WebSocket instead of spawning `iii trigger` per
 /// poll, so the engine no longer logs a register/unregister pair every tick.
-pub async fn fetch_engine_workers(client: &IIIClient, timeout_ms: u64) -> Result<Vec<EngineWorker>> {
+pub async fn fetch_engine_workers(
+    client: &IIIClient,
+    timeout_ms: u64,
+) -> Result<Vec<EngineWorker>> {
     let result = client
         .trigger(TriggerRequest {
             function_id: "engine::workers::list".to_string(),
@@ -48,8 +51,8 @@ pub async fn fetch_engine_workers(client: &IIIClient, timeout_ms: u64) -> Result
         .await
         .map_err(|e| anyhow!("engine::workers::list failed (is the engine running?): {e}"))?;
 
-    let parsed: EngineWorkersResponse = serde_json::from_value(result)
-        .context("parse engine workers response")?;
+    let parsed: EngineWorkersResponse =
+        serde_json::from_value(result).context("parse engine workers response")?;
     Ok(parsed.workers)
 }
 

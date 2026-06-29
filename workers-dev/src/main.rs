@@ -122,9 +122,7 @@ async fn main() -> Result<()> {
             commands::run_start(&orchestrator, workers, all).await
         }
         Some(Command::Stop { workers }) => commands::run_stop(&orchestrator, workers).await,
-        Some(Command::Restart { worker }) => {
-            commands::run_restart(&orchestrator, &worker).await
-        }
+        Some(Command::Restart { worker }) => commands::run_restart(&orchestrator, &worker).await,
         Some(Command::Logs {
             worker,
             follow,

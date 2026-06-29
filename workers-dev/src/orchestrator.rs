@@ -89,7 +89,8 @@ impl Orchestrator {
     /// Fast TCP probe of the engine's WebSocket port. Cheaper than a full
     /// trigger round-trip, so the engine-boot wait loop can poll quickly.
     async fn engine_reachable(&self) -> bool {
-        let Ok((host, port)) = crate::config::parse_engine_url(&self.config.engine_url, None) else {
+        let Ok((host, port)) = crate::config::parse_engine_url(&self.config.engine_url, None)
+        else {
             return false;
         };
         matches!(
@@ -147,18 +148,19 @@ impl Orchestrator {
                 return Ok(());
             }
         }
-        bail!("started the engine but it did not become reachable within {}ms", self.config.connect_timeout_ms);
+        bail!(
+            "started the engine but it did not become reachable within {}ms",
+            self.config.connect_timeout_ms
+        );
     }
 
     pub async fn engine_preflight(&self) -> Result<()> {
-        self.engine_workers()
-            .await
-            .with_context(|| {
-                format!(
-                    "engine not reachable at {} (start with: iii -c harness/engine.config.yaml)",
-                    self.config.engine_url
-                )
-            })?;
+        self.engine_workers().await.with_context(|| {
+            format!(
+                "engine not reachable at {} (start with: iii -c harness/engine.config.yaml)",
+                self.config.engine_url
+            )
+        })?;
         Ok(())
     }
 
@@ -320,14 +322,16 @@ impl Orchestrator {
     }
 
     pub async fn wait_connected(&self, name: &str) -> Result<()> {
-        let deadline =
-            Instant::now() + Duration::from_millis(self.config.connect_timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(self.config.connect_timeout_ms);
         loop {
             if Instant::now() >= deadline {
                 bail!("timed out waiting for {name} to connect to engine");
             }
             let engine = self.engine_workers().await.unwrap_or_default();
-            if engine.iter().any(|w| w.name.as_deref() == Some(name) && w.status == "connected") {
+            if engine
+                .iter()
+                .any(|w| w.name.as_deref() == Some(name) && w.status == "connected")
+            {
                 if self.progress {
                     let elapsed = {
                         let runtimes = self.runtimes.read().await;
@@ -406,7 +410,10 @@ impl Orchestrator {
         Ok(rt.logs.tail(n))
     }
 
-    pub async fn subscribe_logs(&self, name: &str) -> Result<tokio::sync::broadcast::Receiver<String>> {
+    pub async fn subscribe_logs(
+        &self,
+        name: &str,
+    ) -> Result<tokio::sync::broadcast::Receiver<String>> {
         let runtimes = self.runtimes.read().await;
         let rt = runtimes.get(name).context("unknown worker")?;
         Ok(rt.subscribe_logs())
@@ -420,10 +427,7 @@ fn build_view(
 ) -> WorkerView {
     let process = rt.proc_state.label().to_string();
     let (engine_status, uptime) = if let Some(w) = engine {
-        (
-            w.status.clone(),
-            format_uptime(w.connected_at_ms),
-        )
+        (w.status.clone(), format_uptime(w.connected_at_ms))
     } else {
         ("—".to_string(), "—".to_string())
     };
@@ -566,9 +570,11 @@ async fn wait_for_exit(worker: &str, expected_pid: Option<u32>, runtimes: Shared
             rt.proc_state = if status.success() {
                 ProcState::Stopped
             } else {
-                let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "?".into());
-                rt.logs
-                    .push(format!("process exited with status {code}"));
+                let code = status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".into());
+                rt.logs.push(format!("process exited with status {code}"));
                 ProcState::Crashed
             };
         }
@@ -638,7 +644,11 @@ mod tests {
         let worker_pid: i32 = line.trim().parse().expect("parse worker pid");
 
         // The backgrounded "worker" is alive before we stop the supervisor.
-        assert_eq!(unsafe { libc::kill(worker_pid, 0) }, 0, "worker should be running");
+        assert_eq!(
+            unsafe { libc::kill(worker_pid, 0) },
+            0,
+            "worker should be running"
+        );
 
         terminate_process_group(&mut child).await;
         let _ = child.wait().await;

@@ -6,11 +6,7 @@ use ratatui::text::{Line, Span};
 
 /// Normalize process output for TUI display and ring-buffer storage.
 pub fn normalize_log_line(raw: &str) -> String {
-    let segment = raw
-        .rsplit('\r')
-        .next()
-        .unwrap_or(raw)
-        .trim_end();
+    let segment = raw.rsplit('\r').next().unwrap_or(raw).trim_end();
     let stripped = strip_ansi(segment);
     stripped.trim_end().to_string()
 }
@@ -42,7 +38,8 @@ pub fn classify_log_line(line: &str) -> LogKind {
     {
         return LogKind::CargoProgress;
     }
-    if line.contains("Finished `") && line.contains("profile") || line.contains("Running `target/") {
+    if line.contains("Finished `") && line.contains("profile") || line.contains("Running `target/")
+    {
         return LogKind::CargoDone;
     }
     if contains_level_token(line, "WARN") {
@@ -78,10 +75,7 @@ pub fn log_line_to_ratatui(line: &str, max_width: usize, color_enabled: bool) ->
     if let Some((ts, rest)) = split_tracing_timestamp(line) {
         let kind = classify_log_line(line);
         let mut spans = vec![
-            Span::styled(
-                truncate_chars(ts, max_width),
-                log_timestamp_style(true),
-            ),
+            Span::styled(truncate_chars(ts, max_width), log_timestamp_style(true)),
             Span::raw(" "),
         ];
         let rest_width = max_width.saturating_sub(ts.chars().count().min(max_width) + 1);
@@ -200,7 +194,11 @@ fn truncate_chars(input: &str, max_width: usize) -> String {
 }
 
 fn unicode_width(ch: char) -> usize {
-    if ch.is_ascii() { 1 } else { 2 }
+    if ch.is_ascii() {
+        1
+    } else {
+        2
+    }
 }
 
 #[cfg(test)]
@@ -210,16 +208,16 @@ mod tests {
     #[test]
     fn strips_ansi_and_carriage_return_overwrites() {
         let raw = "    Blocking waiting\r    Blocking waiting for file lock\r    Compiling harness v1.0.0";
-        assert_eq!(
-            normalize_log_line(raw),
-            "    Compiling harness v1.0.0"
-        );
+        assert_eq!(normalize_log_line(raw), "    Compiling harness v1.0.0");
     }
 
     #[test]
     fn strips_color_codes() {
         let raw = "\x1b[2m2026-06-22T15:47:56 INFO\x1b[0m harness: ready";
-        assert_eq!(normalize_log_line(raw), "2026-06-22T15:47:56 INFO harness: ready");
+        assert_eq!(
+            normalize_log_line(raw),
+            "2026-06-22T15:47:56 INFO harness: ready"
+        );
     }
 
     #[test]
@@ -229,7 +227,9 @@ mod tests {
             LogKind::CargoProgress
         );
         assert_eq!(
-            classify_log_line("    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.21s"),
+            classify_log_line(
+                "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.21s"
+            ),
             LogKind::CargoDone
         );
         assert_eq!(

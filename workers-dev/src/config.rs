@@ -173,7 +173,10 @@ fn validate_repo_root(path: &Path) -> Result<()> {
     if count > 0 {
         Ok(())
     } else {
-        bail!("no top-level iii.worker.yaml workers under {}", path.display())
+        bail!(
+            "no top-level iii.worker.yaml workers under {}",
+            path.display()
+        )
     }
 }
 
@@ -186,11 +189,9 @@ pub fn parse_engine_url(url: &str, port_override: Option<u16>) -> Result<(String
     let authority = stripped.split('/').next().unwrap_or(stripped);
 
     let (host, port) = if let Some((host, port_str)) = authority.rsplit_once(':') {
-        let port: u16 = port_str
-            .parse()
-            .with_context(|| {
-                format!("invalid port in engine url {url} (port must be a number, e.g. 49134)")
-            })?;
+        let port: u16 = port_str.parse().with_context(|| {
+            format!("invalid port in engine url {url} (port must be a number, e.g. 49134)")
+        })?;
         (host.to_string(), port)
     } else {
         (authority.to_string(), 49134)

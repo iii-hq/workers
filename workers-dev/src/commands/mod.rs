@@ -74,7 +74,8 @@ pub async fn run_logs(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                 let proc = orchestrator.worker_views().await?;
                 match proc.iter().find(|v| v.name == worker) {
-                    Some(v) if v.process_status == "running" || v.process_status == "compiling" => {}
+                    Some(v) if v.process_status == "running" || v.process_status == "compiling" => {
+                    }
                     _ => break,
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;

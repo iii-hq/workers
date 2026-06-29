@@ -164,7 +164,13 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                 loop {
                     tokio::time::sleep(poll_interval).await;
                     let (views, engine_error) = orchestrator.dashboard_snapshot().await;
-                    if state_tx.send(DashboardState { views, engine_error }).is_err() {
+                    if state_tx
+                        .send(DashboardState {
+                            views,
+                            engine_error,
+                        })
+                        .is_err()
+                    {
                         break; // UI gone
                     }
                 }
@@ -273,12 +279,19 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                         error_banner = None; // any keypress acknowledges the banner
                         match mode_kind(&mode) {
                             ModeKind::Filter => {
-                                handle_filter_key(key, &mut filter, &mut mode, &mut table_state, &state.views);
+                                handle_filter_key(
+                                    key,
+                                    &mut filter,
+                                    &mut mode,
+                                    &mut table_state,
+                                    &state.views,
+                                );
                             }
                             ModeKind::Help => mode = UiMode::Dashboard, // any key closes help
                             ModeKind::Confirm => handle_confirm_key(key, &mut mode, &actions),
                             ModeKind::Busy => {
-                                if key.code == KeyCode::Esc && in_flight.load(Ordering::SeqCst) == 0 {
+                                if key.code == KeyCode::Esc && in_flight.load(Ordering::SeqCst) == 0
+                                {
                                     mode = UiMode::Dashboard;
                                 }
                             }
@@ -528,7 +541,10 @@ fn spawn_start_harness_stack(actions: &Actions) {
 
 fn spawn_stop(actions: &Actions, names: Vec<String>) {
     let orchestrator = actions.orchestrator.clone();
-    spawn_action(actions, async move { orchestrator.stop_workers(&names).await });
+    spawn_action(
+        actions,
+        async move { orchestrator.stop_workers(&names).await },
+    );
 }
 
 fn spawn_restart(actions: &Actions, worker: String) {
@@ -730,7 +746,10 @@ fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         }
         if stopped > 0 {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(format!("○{stopped}"), styled_if(color, muted_cell_style())));
+            spans.push(Span::styled(
+                format!("○{stopped}"),
+                styled_if(color, muted_cell_style()),
+            ));
         }
     }
 
@@ -766,11 +785,10 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         .display_rows
         .iter()
         .map(|row| match row.kind {
-            DisplayRowKind::Header(group) => Row::new(vec![Cell::from(format!(
-                "── {} ──",
-                group.label()
-            ))
-            .style(styled_if(color, group_header_style(group)))]),
+            DisplayRowKind::Header(group) => {
+                Row::new(vec![Cell::from(format!("── {} ──", group.label()))
+                    .style(styled_if(color, group_header_style(group)))])
+            }
             DisplayRowKind::Worker(idx) => {
                 let v = &ctx.views[idx];
                 let icon = status_icon(&v.display_status, ctx.spinner_frame);
@@ -904,7 +922,10 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     let mut title = vec![Span::raw(" logs")];
     if let Some(name) = ctx.selected_name {
         title.push(Span::raw(": "));
-        title.push(Span::styled(name.to_string(), styled_if(color, log_title_style())));
+        title.push(Span::styled(
+            name.to_string(),
+            styled_if(color, log_title_style()),
+        ));
     }
     title.push(Span::raw("  "));
     if ctx.follow {
@@ -919,8 +940,11 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         ));
     }
 
-    let pane = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(title)));
+    let pane = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
+    );
     f.render_widget(pane, area);
 }
 

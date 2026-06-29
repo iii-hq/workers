@@ -72,8 +72,8 @@ pub fn discover_repo_workers(repo_root: &Path) -> Result<Vec<WorkerSpec>> {
 
         let raw = fs::read_to_string(&yaml_path)
             .with_context(|| format!("read {}", yaml_path.display()))?;
-        let parsed: WorkerYaml = serde_yaml::from_str(&raw)
-            .with_context(|| format!("parse {}", yaml_path.display()))?;
+        let parsed: WorkerYaml =
+            serde_yaml::from_str(&raw).with_context(|| format!("parse {}", yaml_path.display()))?;
         let name = parsed.name.clone().unwrap_or(folder.clone());
         if name != folder {
             eprintln!(
@@ -165,7 +165,11 @@ mod tests {
         assert_eq!(specs[2].name, "telegram-bot");
         assert_eq!(specs[2].group, WorkerGroup::Other);
         assert!(matches!(
-            specs.iter().find(|s| s.name == "claude-code").unwrap().spawn,
+            specs
+                .iter()
+                .find(|s| s.name == "claude-code")
+                .unwrap()
+                .spawn,
             SpawnKind::Unsupported { .. }
         ));
     }
