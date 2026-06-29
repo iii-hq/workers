@@ -67,48 +67,21 @@ Anthropic** / **configure OpenAI** to paste a key. It is stored in the
 `llm-router` worker config and the model catalog populates within seconds.
 Until a provider is configured the picker is empty and chat will not generate.
 
+<p align="center">
+  <img src="https://iii.dev/blog/_astro/provider-configuration.DWWh-ski_Z2rzBYt.webp" alt="Configure a provider key in the iii console" width="100%">
+</p>
+
 `iii worker add harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one. The harness enqueues turn steps on the
-engine's built-in `default` queue, provided by the `iii-queue` worker (see
+`default` queue (the `iii-queue` worker; see
 [`engine.config.yaml`](engine.config.yaml)).
 
-## Send a turn from code
+Every turn, sub-agent spawn, and provider call is one correlated trace: the
+harness turn waterfall in the console.
 
-Send a message and let the loop run; render the conversation by binding
-`session-manager`'s triggers, and observe turn boundaries with
-`harness::turn-completed`.
-
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-    // Fire-and-return: persists the user message and kicks off a turn.
-    let accepted = iii
-        .trigger(TriggerRequest {
-            function_id: "harness::send".into(),
-            payload: json!({
-                "message": "Summarise the repo README",
-                "model": "claude-sonnet-4",
-                "provider": "anthropic",
-                "options": { "functions": { "allow": ["shell::*", "fs::*"] } }
-            }),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await?;
-    println!("{accepted:#?}"); // { session_id, turn_id, accepted: true }
-    Ok(())
-}
-```
-
-Want a typed result back? Add an output contract
-(`options.output: { type: "json", schema }`) and read the result off the
-[`harness::turn-completed`](#custom-trigger-types) event — bind it filtered to
-your session and the result arrives when the turn finishes.
+<p align="center">
+  <img src="https://iii.dev/blog/_astro/harness-turn-waterfall.CVg_Sl12_23G6C5.webp" alt="Harness turn waterfall in the iii console" width="100%">
+</p>
 
 The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat
@@ -150,7 +123,7 @@ are invisible; the function id is the only contract.
 
 **5. Triggers, not polling.** To react to events (HTTP, schedule, webhook, file change), bind a trigger instead of polling. Discover the type with `engine::triggers::list`, copy config from its schema, and confirm the binding fires with a real call (e.g. `web::fetch` to its local URL).
 
-**6. Handy built-ins.**
+**6. Handy workers.**
 - `web::fetch` — all HTTP(S); pass `format: "markdown"` to read docs without flooding context
 - `coder::*` — file ops for any code task (read/search/create/update/move/delete)
 - `slack::*` — post to Slack
@@ -182,9 +155,9 @@ engine-grounded identity prompt at send time: four provider-specific variants
 (`anthropic`, `openai` → gpt, `kimi`, and a step-by-step default for local
 runtimes) selected from `provider`, plus an optional `mode` (`plan` | `ask` |
 `agent`) that prepends a short operating-mode paragraph. A non-empty
-`system_prompt` is combined with the built-in prompt per
+`system_prompt` is combined with the default prompt per
 `options.system_prompt_strategy`: `override` (default) uses it verbatim, while
-`enrich` appends it to the built-in prompt. Prompt bodies live in
+`enrich` appends it to the default prompt. Prompt bodies live in
 [`prompts/`](prompts/) and are tested in [`src/prompt/tests.rs`](src/prompt/tests.rs).
 
 ## Custom trigger types
