@@ -127,6 +127,20 @@ with `config-jailed.yaml` (`host_root: /private/tmp/iii-shell-jailed-root`)
 and runs only the C1 repro — the rest of the suite assumes
 `host_root: null` and would mis-fail with a jail set.
 
+## Coder BDD coverage
+
+The folded `coder::*` surface has a Cucumber stack under
+`shell/tests/features/coder/`.
+
+```sh
+cargo test --test bdd -- --tags @direct
+```
+
+The direct scenarios call the real Rust handlers against temporary jailed
+roots. `run-tests-jailed.sh` also runs the `@live` smoke while the engine is
+up, using `III_ENGINE_WS_URL=ws://127.0.0.1:49134`, to prove the shell worker
+actually registered the engine-dispatched `coder::*` functions.
+
 ## Troubleshooting
 
 - **`worker binary missing`**: run without `--no-build` once.
