@@ -220,7 +220,7 @@ pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
     )
 }
 
-pub fn bind_session_deleted(iii: &III) -> Option<Trigger> {
+pub fn bind_session_deleted(iii: &IIIClient) -> Option<Trigger> {
     bind(iii, "session::deleted", ON_SESSION_DELETED_ID, json!({}))
 }
 

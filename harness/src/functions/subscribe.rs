@@ -5,7 +5,8 @@
 //! `harness::notify_agent` target, and engine-proxied subscription metadata are
 //! injected, and teardown stays owner-checked — the agent can never supply those.
 
-use iii_sdk::{TriggerAction, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::TriggerAction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

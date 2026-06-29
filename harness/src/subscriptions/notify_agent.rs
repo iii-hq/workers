@@ -9,7 +9,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunction};
+use iii_sdk::errors::Error;
+use iii_sdk::RegisterFunction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -35,7 +36,7 @@ pub fn register(deps: Arc<Deps>) {
             let deps = deps.clone();
             async move {
                 on_fire(&deps, event).await;
-                Ok::<Value, IIIError>(json!({ "ok": true }))
+                Ok::<Value, Error>(json!({ "ok": true }))
             }
         })
         .description(NOTIFY_AGENT_DESC),
