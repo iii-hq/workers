@@ -27,8 +27,10 @@ pub async fn apply(deps: &Arc<Deps>) {
     match crate::clients::slack::auth_test(deps).await {
         Ok(id) => *deps.identity.write().await = Some(id),
         Err(e) => {
-            *deps.identity.write().await = None;
-            tracing::warn!(error = %e, "failed to refresh Slack identity (cleared cache)");
+            // Keep the last-known-good identity: a transient auth.test failure on
+            // reload must not blind mention/self detection. An explicit token
+            // problem surfaces via `slack::config-status` (which does clear it).
+            tracing::warn!(error = %e, "failed to refresh Slack identity (keeping cached)");
         }
     }
     let cfg = deps.cfg().await;

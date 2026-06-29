@@ -1,6 +1,11 @@
 //! Stream assistant output back into Slack using native streaming
 //! (`chat.startStream`/`appendStream`/`stopStream`), with a `chat.update`
 //! fallback for workspaces without AI-app streaming.
+//!
+//! All state transitions for a session are serialized by a per-session lock
+//! (`RuntimeState::stream_lock`) and gated by `message-updated` revision, so
+//! concurrent revision events cannot lose appended text or open two streams
+//! (mirrors telegram-bot's per-entry lock + revision monotonicity).
 
 use iii_sdk::errors::Error;
 use serde_json::{json, Value};
@@ -9,36 +14,57 @@ use crate::clients::slack;
 use crate::deps::{Deps, StreamState};
 use crate::kv;
 
-/// Handle a streamed assistant text revision for a session.
-pub async fn on_assistant_text(deps: &Deps, session_id: &str, text: &str) -> Result<(), Error> {
+/// Handle a streamed assistant text revision for a session. `revision` is the
+/// `message-updated` revision (0 for the initial `message-added`).
+pub async fn on_assistant_text(
+    deps: &Deps,
+    session_id: &str,
+    text: &str,
+    revision: u64,
+) -> Result<(), Error> {
     if text.is_empty() {
         return Ok(());
     }
 
-    // Ensure we have a stream state seeded from the session's target.
+    let lock = deps.runtime.stream_lock(session_id);
+    let _guard = lock.lock().await;
+
+    // Seed stream state from the session's target on first sight.
     if !deps.runtime.streams.contains_key(session_id) {
         let Some(target) = kv::session_target(deps, session_id).await else {
             return Ok(());
         };
+        let is_dm = channel_is_dm(&target.channel);
         deps.runtime.streams.insert(
             session_id.to_string(),
             StreamState {
                 channel: target.channel,
                 thread_ts: target.thread_ts,
-                recipient_user_id: target.recipient_user_id,
+                recipient_user_id: if is_dm {
+                    None
+                } else {
+                    target.recipient_user_id
+                },
+                recipient_team_id: if is_dm { None } else { target.team },
+                is_dm,
                 ts: None,
                 last_text: String::new(),
+                last_revision: 0,
             },
         );
     }
 
-    // Clone the current snapshot (avoid holding the dashmap guard across awaits).
     let mut st = deps
         .runtime
         .streams
         .get(session_id)
         .map(|r| r.clone())
         .unwrap();
+
+    // Drop stale/out-of-order revisions once streaming has started.
+    if should_skip_revision(st.ts.is_some(), revision, st.last_revision) {
+        return Ok(());
+    }
 
     if st.ts.is_none() {
         match start_stream(deps, &st).await {
@@ -52,6 +78,7 @@ pub async fn on_assistant_text(deps: &Deps, session_id: &str, text: &str) -> Res
                 let ts = post_message(deps, &st, text).await?;
                 st.ts = Some(format!("update:{ts}"));
                 st.last_text = text.to_string();
+                st.last_revision = st.last_revision.max(revision);
                 deps.runtime.streams.insert(session_id.to_string(), st);
                 return Ok(());
             }
@@ -60,22 +87,39 @@ pub async fn on_assistant_text(deps: &Deps, session_id: &str, text: &str) -> Res
 
     let ts = st.ts.clone().unwrap();
     if let Some(real_ts) = ts.strip_prefix("update:") {
+        // Edit transport can replace the whole message, including a rewrite.
         update_message(deps, &st, real_ts, text).await?;
         st.last_text = text.to_string();
     } else {
-        let delta = delta(&st.last_text, text);
-        if !delta.is_empty() {
-            append_stream(deps, &st, &ts, &delta).await?;
-            st.last_text = text.to_string();
+        // Native append can only add text; a non-prefix rewrite can't be
+        // retracted, so skip it rather than duplicate content.
+        match delta(&st.last_text, text) {
+            Delta::Append(suffix) if !suffix.is_empty() => {
+                append_stream(deps, &st, &ts, &suffix).await?;
+                st.last_text = text.to_string();
+            }
+            Delta::Append(_) => {}
+            Delta::Reset => {
+                tracing::warn!(
+                    session_id,
+                    "assistant text rewritten mid-stream; skipping append"
+                );
+            }
         }
     }
+    st.last_revision = st.last_revision.max(revision);
     deps.runtime.streams.insert(session_id.to_string(), st);
     Ok(())
 }
 
 /// Finalize the stream at turn end.
 pub async fn finalize(deps: &Deps, session_id: &str) -> Result<(), Error> {
-    let Some((_, st)) = deps.runtime.streams.remove(session_id) else {
+    let lock = deps.runtime.stream_lock(session_id);
+    let _guard = lock.lock().await;
+
+    let removed = deps.runtime.streams.remove(session_id);
+    let Some((_, st)) = removed else {
+        deps.runtime.stream_locks.remove(session_id);
         return Ok(());
     };
     if let Some(ts) = &st.ts {
@@ -98,13 +142,20 @@ pub async fn finalize(deps: &Deps, session_id: &str) -> Result<(), Error> {
         json!({ "channel_id": st.channel, "thread_ts": st.thread_ts, "status": "" }),
     )
     .await;
+    deps.runtime.stream_locks.remove(session_id);
     Ok(())
 }
 
 async fn start_stream(deps: &Deps, st: &StreamState) -> Result<String, Error> {
     let mut params = json!({ "channel": st.channel, "thread_ts": st.thread_ts });
-    if let Some(uid) = &st.recipient_user_id {
-        params["recipient_user_id"] = json!(uid);
+    // Streaming into a channel (not a DM) requires both recipient fields.
+    if !st.is_dm {
+        if let Some(uid) = &st.recipient_user_id {
+            params["recipient_user_id"] = json!(uid);
+        }
+        if let Some(team) = &st.recipient_team_id {
+            params["recipient_team_id"] = json!(team);
+        }
     }
     let resp = slack::call(deps, "chat.startStream", params).await?;
     resp.get("ts")
@@ -151,12 +202,31 @@ async fn update_message(deps: &Deps, st: &StreamState, ts: &str, text: &str) -> 
     Ok(())
 }
 
-/// New suffix of `cur` beyond `prev` (or the whole string on a reset).
-fn delta(prev: &str, cur: &str) -> String {
+/// How `cur` relates to the already-sent `prev`.
+enum Delta {
+    /// `cur` extends `prev`; carries the new suffix.
+    Append(String),
+    /// `cur` is not an extension of `prev` (a rewrite).
+    Reset,
+}
+
+fn delta(prev: &str, cur: &str) -> Delta {
     match cur.strip_prefix(prev) {
-        Some(suffix) => suffix.to_string(),
-        None => cur.to_string(),
+        Some(suffix) => Delta::Append(suffix.to_string()),
+        None => Delta::Reset,
     }
+}
+
+/// True for a Slack DM channel id (`D…`); DMs take no streaming recipients.
+fn channel_is_dm(channel: &str) -> bool {
+    channel.starts_with('D')
+}
+
+/// Whether a streamed revision should be skipped as stale/out-of-order. Once a
+/// stream message exists, only strictly-newer revisions apply; revision 0 (the
+/// initial `message-added`) is never skipped.
+fn should_skip_revision(stream_started: bool, revision: u64, last_revision: u64) -> bool {
+    stream_started && revision != 0 && revision <= last_revision
 }
 
 #[cfg(test)]
@@ -165,13 +235,36 @@ mod tests {
 
     #[test]
     fn delta_returns_suffix() {
-        assert_eq!(delta("hel", "hello"), "lo");
-        assert_eq!(delta("", "hi"), "hi");
-        assert_eq!(delta("abc", "abc"), "");
+        assert!(matches!(delta("hel", "hello"), Delta::Append(s) if s == "lo"));
+        assert!(matches!(delta("", "hi"), Delta::Append(s) if s == "hi"));
+        assert!(matches!(delta("abc", "abc"), Delta::Append(s) if s.is_empty()));
     }
 
     #[test]
     fn delta_handles_reset() {
-        assert_eq!(delta("abc", "xyz"), "xyz");
+        assert!(matches!(delta("abc", "xyz"), Delta::Reset));
+        // A shorter rewrite (truncation) is also a reset, not a prefix.
+        assert!(matches!(delta("abcdef", "abc"), Delta::Reset));
+    }
+
+    #[test]
+    fn channel_is_dm_detects_dm_ids() {
+        assert!(channel_is_dm("D012ABC"));
+        assert!(!channel_is_dm("C012ABC")); // public channel
+        assert!(!channel_is_dm("G012ABC")); // private channel / mpim
+        assert!(!channel_is_dm(""));
+    }
+
+    #[test]
+    fn revision_guard_skips_stale_once_started() {
+        // Before the stream message exists, nothing is skipped.
+        assert!(!should_skip_revision(false, 5, 9));
+        // Initial message-added (revision 0) is never skipped.
+        assert!(!should_skip_revision(true, 0, 7));
+        // Newer revision applies.
+        assert!(!should_skip_revision(true, 8, 7));
+        // Equal or older revision is stale -> skipped.
+        assert!(should_skip_revision(true, 7, 7));
+        assert!(should_skip_revision(true, 3, 7));
     }
 }

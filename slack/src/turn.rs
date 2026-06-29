@@ -198,11 +198,17 @@ fn build_system_prompt(
     }
 }
 
-/// Remove a leading/standalone `<@BOTID>` mention from the text.
+/// Remove the bot's `<@BOTID>` mention(s) from the text and tidy whitespace left
+/// behind (e.g. the gap in "hey <@U1> do x").
 fn strip_mention(text: &str, bot_id: Option<&str>) -> String {
     let mut out = text.to_string();
     if let Some(id) = bot_id {
-        out = out.replace(&format!("<@{id}>"), " ");
+        out = out.replace(&format!("<@{id}>"), "");
+        // Collapse spaces/tabs left by the removed mention, but keep newlines.
+        while out.contains("  ") {
+            out = out.replace("  ", " ");
+        }
+        out = out.replace(" \n", "\n").replace("\n ", "\n");
     }
     out.trim().to_string()
 }
@@ -222,6 +228,34 @@ mod tests {
     fn strip_mention_removes_bot_tag() {
         assert_eq!(strip_mention("<@U1> hello", Some("U1")), "hello");
         assert_eq!(strip_mention("hi there", Some("U1")), "hi there");
+    }
+
+    #[test]
+    fn strip_mention_collapses_interior_gap() {
+        // Mention in the middle must not leave a double space.
+        assert_eq!(strip_mention("hey <@U1> do x", Some("U1")), "hey do x");
+        // Multiple mentions of the bot are all removed.
+        assert_eq!(strip_mention("<@U1> a <@U1> b", Some("U1")), "a b");
+    }
+
+    #[test]
+    fn strip_mention_preserves_newlines() {
+        // Newlines (e.g. code blocks) survive; only the mention gap is tidied.
+        assert_eq!(
+            strip_mention("<@U1> line1\nline2", Some("U1")),
+            "line1\nline2"
+        );
+    }
+
+    #[test]
+    fn strip_mention_keeps_other_user_mentions() {
+        // Only the bot's own id is stripped; other mentions stay.
+        assert_eq!(strip_mention("<@U1> ping <@U2>", Some("U1")), "ping <@U2>");
+    }
+
+    #[test]
+    fn strip_mention_noop_without_bot_id() {
+        assert_eq!(strip_mention("<@U1> hello", None), "<@U1> hello");
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             if let Some(msg) = &evt.message {
                 if msg.role == "assistant" {
                     let text = msg.text();
-                    if let Err(e) = stream::on_assistant_text(&d, &evt.session_id, &text).await {
+                    if let Err(e) = stream::on_assistant_text(&d, &evt.session_id, &text, 0).await {
                         tracing::warn!(error = %e, "on-message-added stream failed");
                     }
                 }
@@ -57,7 +57,9 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, evt: MessageUpdatedEvent| async move {
             if evt.message.role == "assistant" {
                 let text = evt.message.text();
-                if let Err(e) = stream::on_assistant_text(&d, &evt.session_id, &text).await {
+                if let Err(e) =
+                    stream::on_assistant_text(&d, &evt.session_id, &text, evt.revision).await
+                {
                     tracing::warn!(error = %e, "on-message-updated stream failed");
                 }
             }
