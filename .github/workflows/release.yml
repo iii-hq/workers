@@ -25,6 +25,7 @@ on:
       - 'provider-anthropic/v*'
       - 'provider-openai/v*'
       - 'session-manager/v*'
+      - 'slack/v*'
       - 'telegram-bot/v*'
       - 'shell/v*'
       - 'storage/v*'

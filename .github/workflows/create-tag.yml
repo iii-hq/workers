@@ -31,6 +31,7 @@ on:
           - provider-anthropic
           - provider-openai
           - session-manager
+          - slack
           - telegram-bot
           - shell
           - storage
