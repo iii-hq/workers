@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
 import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
+import { harnessFixtures } from '@/stories/fixtures/harness-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
@@ -166,4 +167,9 @@ export const WorkflowFamily: Story = {
 export const RouterFamily: Story = {
   name: 'router family',
   render: () => <FamilyGallery fixtures={routerFixtures} />,
+}
+
+export const HarnessFamily: Story = {
+  name: 'harness family',
+  render: () => <FamilyGallery fixtures={harnessFixtures} />,
 }
