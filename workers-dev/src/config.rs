@@ -9,16 +9,17 @@ use crate::discover::{discover_repo_workers, harness_stack_names, order_worker_n
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2000;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 120_000;
+/// Per-query timeout for `engine::workers::list`. Kept short so a slow or
+/// hung engine can't stall the status poll (and, with off-thread polling,
+/// can't freeze the TUI).
+pub const ENGINE_QUERY_TIMEOUT_MS: u64 = 3_000;
 pub const LOG_RING_CAPACITY: usize = 500;
 pub const DEFAULT_LOG_TAIL: usize = 100;
-pub const DASHBOARD_LOG_LINES: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub repo_root: PathBuf,
     pub engine_url: String,
-    pub engine_host: String,
-    pub engine_port: u16,
     pub release: bool,
     pub poll_interval_ms: u64,
     pub connect_timeout_ms: u64,
@@ -67,13 +68,45 @@ impl Config {
             bail!("no workers discovered under {}", repo_root.display());
         }
 
-        let engine_url = engine_url
+        let raw_engine_url = engine_url
             .or(file_cfg.engine_url)
             .unwrap_or_else(|| DEFAULT_ENGINE_URL.to_string());
-        let (engine_host, engine_port) = parse_engine_url(&engine_url, port)?;
+        let (engine_host, engine_port) = parse_engine_url(&raw_engine_url, port)?;
+        // Canonicalize so a `--port` override is reflected in the URL the SDK
+        // actually connects to. The engine WS endpoint is always `/`, so any
+        // path in the original URL is intentionally dropped. Preserve a `wss://`
+        // scheme so a TLS engine endpoint isn't silently downgraded to plaintext.
+        let scheme = if raw_engine_url.starts_with("wss://") {
+            "wss"
+        } else {
+            "ws"
+        };
+        let engine_url = format!("{scheme}://{engine_host}:{engine_port}");
 
         let discovered_names = order_worker_names(&worker_specs);
-        let workers = file_cfg.workers.unwrap_or(discovered_names);
+        // An explicit `workers:` list may name folders that auto-discovery
+        // skipped (folder/name mismatch or missing iii.worker.yaml). Drop those
+        // with a warning instead of letting WorkerGraph::load abort startup —
+        // mirroring discover_repo_workers' skip-and-continue behavior.
+        let workers = match file_cfg.workers {
+            Some(requested) => {
+                let valid: std::collections::HashSet<&str> =
+                    discovered_names.iter().map(String::as_str).collect();
+                requested
+                    .into_iter()
+                    .filter(|w| {
+                        let ok = valid.contains(w.as_str());
+                        if !ok {
+                            eprintln!(
+                                "warning: skipping configured worker {w}: not a discovered worker (folder/name mismatch or missing iii.worker.yaml)"
+                            );
+                        }
+                        ok
+                    })
+                    .collect()
+            }
+            None => discovered_names,
+        };
         let harness_stack = file_cfg
             .harness_stack
             .unwrap_or_else(|| harness_stack_names(&worker_specs));
@@ -83,7 +116,9 @@ impl Config {
             .as_deref()
             .and_then(|s| {
                 ColorMode::parse(s).or_else(|| {
-                    eprintln!("warning: invalid color mode {s:?}; using auto");
+                    eprintln!(
+                        "warning: invalid color mode {s:?} (valid: auto, always, never); using auto"
+                    );
                     None
                 })
             })
@@ -92,8 +127,6 @@ impl Config {
         Ok(Self {
             repo_root,
             engine_url,
-            engine_host,
-            engine_port,
             release: release || file_cfg.release.unwrap_or(false),
             poll_interval_ms: file_cfg
                 .poll_interval_ms
@@ -168,7 +201,10 @@ fn validate_repo_root(path: &Path) -> Result<()> {
     if count > 0 {
         Ok(())
     } else {
-        bail!("no top-level iii.worker.yaml workers under {}", path.display())
+        bail!(
+            "no top-level iii.worker.yaml workers under {}",
+            path.display()
+        )
     }
 }
 
@@ -181,9 +217,9 @@ pub fn parse_engine_url(url: &str, port_override: Option<u16>) -> Result<(String
     let authority = stripped.split('/').next().unwrap_or(stripped);
 
     let (host, port) = if let Some((host, port_str)) = authority.rsplit_once(':') {
-        let port: u16 = port_str
-            .parse()
-            .with_context(|| format!("invalid port in engine url {url}"))?;
+        let port: u16 = port_str.parse().with_context(|| {
+            format!("invalid port in engine url {url} (port must be a number, e.g. 49134)")
+        })?;
         (host.to_string(), port)
     } else {
         (authority.to_string(), 49134)

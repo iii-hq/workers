@@ -9,11 +9,11 @@ pub fn header_accent_style() -> Style {
 }
 
 pub fn engine_url_style() -> Style {
-    Style::default().fg(Color::Gray)
+    muted_cell_style()
 }
 
 pub fn footer_style() -> Style {
-    Style::default().fg(Color::DarkGray)
+    muted_cell_style()
 }
 
 /// Selected row background: ~10% blue tint on a dark terminal (no fg override).
@@ -24,7 +24,7 @@ pub fn selection_row_style() -> Style {
 pub fn group_header_style(group: WorkerGroup) -> Style {
     match group {
         WorkerGroup::HarnessStack => Style::default().fg(Color::Cyan),
-        WorkerGroup::Other => Style::default().fg(Color::DarkGray),
+        WorkerGroup::Other => muted_cell_style(),
     }
 }
 
@@ -33,7 +33,7 @@ pub fn status_style(display_status: &str) -> Style {
         "connected" => Style::default().fg(Color::Green),
         "compiling" | "disconnected" => Style::default().fg(Color::Yellow),
         "crashed" => Style::default().fg(Color::Red),
-        _ => Style::default().fg(Color::DarkGray),
+        _ => muted_cell_style(),
     }
 }
 
@@ -42,28 +42,33 @@ pub fn process_style(process_status: &str) -> Style {
         "running" => Style::default().fg(Color::Green),
         "compiling" => Style::default().fg(Color::Yellow),
         "crashed" => Style::default().fg(Color::Red),
-        _ => Style::default().fg(Color::DarkGray),
+        _ => muted_cell_style(),
     }
 }
 
 pub fn engine_style(engine_status: &str) -> Style {
     match engine_status {
         "connected" => Style::default().fg(Color::Green),
-        "—" => Style::default().fg(Color::DarkGray),
+        "—" => muted_cell_style(),
         _ => Style::default().fg(Color::Yellow),
     }
 }
 
+/// Canonical muted style. Applies DIM to the terminal's default foreground
+/// instead of a fixed gray, so muted text de-emphasizes relative to the active
+/// theme on both dark and light backgrounds — a fixed ANSI gray always fails one
+/// polarity. Terminals without DIM fall back to normal-intensity default fg:
+/// still readable, just not muted.
 pub fn muted_cell_style() -> Style {
-    Style::default().fg(Color::DarkGray)
+    Style::default().add_modifier(Modifier::DIM)
 }
 
 pub fn non_spawnable_style() -> Style {
-    Style::default().fg(Color::DarkGray)
+    muted_cell_style()
 }
 
 pub fn hint_style() -> Style {
-    Style::default().fg(Color::DarkGray)
+    muted_cell_style()
 }
 
 pub fn confirm_prompt_style() -> Style {

@@ -63,6 +63,7 @@ enum Command {
     Up,
     /// Start workers (default: harness stack; use --all for every worker)
     Start {
+        /// Worker name(s) to start; default = the harness stack
         #[arg(value_name = "WORKER")]
         workers: Vec<String>,
         /// Start every discovered worker instead of the harness stack
@@ -71,15 +72,18 @@ enum Command {
     },
     /// Stop workers (default: all managed)
     Stop {
+        /// Worker name(s) to stop; default = all managed workers
         #[arg(value_name = "WORKER")]
         workers: Vec<String>,
     },
     /// Rebuild and restart a worker, then restart its dependents
     Restart {
+        /// Worker to rebuild and restart (its dependents restart too)
         worker: String,
     },
     /// Print worker logs from the local ring buffer
     Logs {
+        /// Worker whose logs to print
         worker: String,
         /// Follow log output
         #[arg(short = 'f', long)]
@@ -105,7 +109,11 @@ async fn main() -> Result<()> {
         Some(cli.color),
     )?;
 
-    let orchestrator = Arc::new(Orchestrator::new(config)?);
+    let progress = matches!(
+        &cli.command,
+        Some(Command::Start { .. }) | Some(Command::Restart { .. })
+    );
+    let orchestrator = Arc::new(Orchestrator::new(config, progress)?);
 
     let result = match cli.command {
         None => crate::tui::run(orchestrator.clone()).await,
@@ -114,9 +122,7 @@ async fn main() -> Result<()> {
             commands::run_start(&orchestrator, workers, all).await
         }
         Some(Command::Stop { workers }) => commands::run_stop(&orchestrator, workers).await,
-        Some(Command::Restart { worker }) => {
-            commands::run_restart(&orchestrator, &worker).await
-        }
+        Some(Command::Restart { worker }) => commands::run_restart(&orchestrator, &worker).await,
         Some(Command::Logs {
             worker,
             follow,
@@ -130,6 +136,8 @@ async fn main() -> Result<()> {
             eprintln!("warning: {err:#}");
         }
     }
+
+    orchestrator.shutdown().await;
 
     result
 }

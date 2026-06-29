@@ -33,7 +33,9 @@ Workers are **discovered automatically** from top-level `*/iii.worker.yaml` in t
 | **harness stack** | `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness` | `workers-dev up`, `Ctrl+u` in TUI, `workers-dev start` |
 | **other** | All remaining repo workers (e.g. `telegram-bot`, `shell`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
 
-Only **Rust `deploy: binary`** workers can be started with `cargo run`. Node/bundle workers show as `(iii worker add)` — install them via the iii registry instead.
+Only **Rust `deploy: binary`** workers can be started with `cargo run`. Non-Rust (Node/bundle) workers show **Process: external** — install them via the iii registry (`iii worker add`) instead.
+
+A worker connected to the engine but not started by this `workers-dev` shows **Process: elsewhere** beside **Engine: connected** (`workers-dev` only tracks processes it spawned itself). Non-Rust workers installed via `iii worker add` show **Process: external**.
 
 ## Usage
 
@@ -65,16 +67,22 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 
 | Key | Action |
 |-----|--------|
-| `↑`/`↓` | Select worker (skips group headers) |
+| `↑`/`↓` (or `k`/`j`) | Select worker (skips group headers) |
 | `s` | Start selected worker |
 | `x` | Stop selected worker |
-| `r` | Restart selected worker + dependents |
-| `l` | Follow logs |
+| `r` | Restart selected worker + dependents (confirm shows the blast radius) |
+| `f` | Toggle live-follow of the selected worker's logs |
+| `PgUp`/`PgDn` | Scroll the log pane (pauses follow; resumes at the bottom) |
+| `+`/`-` | Resize the log pane (drags the divider in two columns, the height when stacked) |
+| `/` | Filter workers by name (Enter applies, Esc clears) |
 | `Ctrl+u` | Start harness stack |
 | `Ctrl+a` | Start all managed Rust workers |
+| `?` | Toggle the key-reference overlay |
 | `q` | Quit |
 
-The log pane shows the last 20 lines for the **selected worker only** (cargo build output + worker logs). Lines are sanitized (no ANSI, no `\r` overwrite garbage).
+On a wide terminal the dashboard is a two-column **master/detail** layout: the worker list on the left (sized to fit its columns), the selected worker's logs filling the rest on the right, with `+`/`-` dragging the divider between them. Below ~100 columns the two panes stack vertically instead, and `+`/`-` trade height.
+
+The header shows an at-a-glance health summary (`●` connected, `◐` compiling, `✗` crashed, `○` stopped) and flags the engine as `⚠ unreachable` when a status query fails. The log pane shows the **selected worker only**, scrollable through the full ring buffer, following the live tail by default. Crashed workers show their exit code inline. Lines are sanitized (no ANSI, no `\r` overwrite garbage).
 
 ## Config (`workers-dev.yaml`)
 

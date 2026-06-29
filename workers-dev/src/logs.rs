@@ -6,20 +6,9 @@ use ratatui::text::{Line, Span};
 
 /// Normalize process output for TUI display and ring-buffer storage.
 pub fn normalize_log_line(raw: &str) -> String {
-    let segment = raw
-        .rsplit('\r')
-        .next()
-        .unwrap_or(raw)
-        .trim_end();
+    let segment = raw.rsplit('\r').next().unwrap_or(raw).trim_end();
     let stripped = strip_ansi(segment);
     stripped.trim_end().to_string()
-}
-
-pub fn format_for_display(line: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    truncate_chars(line, max_width)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +38,8 @@ pub fn classify_log_line(line: &str) -> LogKind {
     {
         return LogKind::CargoProgress;
     }
-    if line.contains("Finished `") && line.contains("profile") || line.contains("Running `target/") {
+    if line.contains("Finished `") && line.contains("profile") || line.contains("Running `target/")
+    {
         return LogKind::CargoDone;
     }
     if contains_level_token(line, "WARN") {
@@ -79,29 +69,30 @@ pub fn log_line_to_ratatui(line: &str, max_width: usize, color_enabled: bool) ->
     }
 
     if !color_enabled {
-        return Line::from(format_for_display(line, max_width));
+        return Line::from(truncate_chars(line, max_width));
     }
 
     if let Some((ts, rest)) = split_tracing_timestamp(line) {
         let kind = classify_log_line(line);
-        let mut spans = vec![
-            Span::styled(
-                format_for_display(ts, max_width),
-                log_timestamp_style(true),
-            ),
-            Span::raw(" "),
-        ];
-        let rest_width = max_width.saturating_sub(ts.chars().count().min(max_width) + 1);
-        spans.push(Span::styled(
-            format_for_display(rest, rest_width),
-            log_kind_style(kind, true),
-        ));
+        let ts_str = truncate_chars(ts, max_width);
+        let ts_width: usize = ts_str.chars().map(unicode_width).sum();
+        let mut spans = vec![Span::styled(ts_str, log_timestamp_style(true))];
+        // Only append the separator + message when columns remain. If the
+        // timestamp alone fills max_width, a trailing space would push the line
+        // one column past the pane and wrap it onto a second row.
+        if ts_width < max_width {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                truncate_chars(rest, max_width - ts_width - 1),
+                log_kind_style(kind, true),
+            ));
+        }
         return Line::from(spans);
     }
 
     let kind = classify_log_line(line);
     Line::from(Span::styled(
-        format_for_display(line, max_width),
+        truncate_chars(line, max_width),
         log_kind_style(kind, true),
     ))
 }
@@ -140,21 +131,6 @@ fn log_crossterm_color(kind: LogKind) -> Option<CrosstermColor> {
     }
 }
 
-fn write_crossterm_colored_line(
-    line: &str,
-    kind: LogKind,
-    out: &mut impl Write,
-) -> std::io::Result<()> {
-    if let Some(color) = log_crossterm_color(kind) {
-        crossterm::execute!(out, SetForegroundColor(color))?;
-        write!(out, "{line}")?;
-        crossterm::execute!(out, ResetColor)?;
-    } else {
-        write!(out, "{line}")?;
-    }
-    Ok(())
-}
-
 pub fn print_colored_line(
     line: &str,
     color_enabled: bool,
@@ -164,8 +140,13 @@ pub fn print_colored_line(
         writeln!(out, "{line}")?;
         return Ok(());
     }
-    let kind = classify_log_line(line);
-    write_crossterm_colored_line(line, kind, out)?;
+    if let Some(color) = log_crossterm_color(classify_log_line(line)) {
+        crossterm::execute!(out, SetForegroundColor(color))?;
+        write!(out, "{line}")?;
+        crossterm::execute!(out, ResetColor)?;
+    } else {
+        write!(out, "{line}")?;
+    }
     writeln!(out)?;
     Ok(())
 }
@@ -217,7 +198,11 @@ fn truncate_chars(input: &str, max_width: usize) -> String {
 }
 
 fn unicode_width(ch: char) -> usize {
-    if ch.is_ascii() { 1 } else { 2 }
+    if ch.is_ascii() {
+        1
+    } else {
+        2
+    }
 }
 
 #[cfg(test)]
@@ -227,16 +212,16 @@ mod tests {
     #[test]
     fn strips_ansi_and_carriage_return_overwrites() {
         let raw = "    Blocking waiting\r    Blocking waiting for file lock\r    Compiling harness v1.0.0";
-        assert_eq!(
-            normalize_log_line(raw),
-            "    Compiling harness v1.0.0"
-        );
+        assert_eq!(normalize_log_line(raw), "    Compiling harness v1.0.0");
     }
 
     #[test]
     fn strips_color_codes() {
         let raw = "\x1b[2m2026-06-22T15:47:56 INFO\x1b[0m harness: ready";
-        assert_eq!(normalize_log_line(raw), "2026-06-22T15:47:56 INFO harness: ready");
+        assert_eq!(
+            normalize_log_line(raw),
+            "2026-06-22T15:47:56 INFO harness: ready"
+        );
     }
 
     #[test]
@@ -246,7 +231,9 @@ mod tests {
             LogKind::CargoProgress
         );
         assert_eq!(
-            classify_log_line("    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.21s"),
+            classify_log_line(
+                "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.21s"
+            ),
             LogKind::CargoDone
         );
         assert_eq!(
@@ -268,5 +255,21 @@ mod tests {
         let line = log_line_to_ratatui("   Compiling harness v1.0.0", 10, true);
         assert_eq!(line.spans.len(), 1);
         assert_eq!(line.spans[0].content, "   Compili");
+    }
+
+    #[test]
+    fn log_line_to_ratatui_timestamp_fits_narrow_pane() {
+        // Timestamp alone fills the pane — the trailing separator must not push
+        // the rendered line one column past max_width (would wrap onto two rows).
+        let max = 10;
+        let line =
+            log_line_to_ratatui("2026-06-22T15:47:56.851170Z  INFO harness: ready", max, true);
+        let total: usize = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .map(unicode_width)
+            .sum();
+        assert!(total <= max, "rendered width {total} exceeds {max}");
     }
 }

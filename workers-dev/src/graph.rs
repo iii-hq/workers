@@ -30,9 +30,7 @@ impl WorkerGraph {
 
             if let Some(name) = &parsed.name {
                 if name != worker {
-                    bail!(
-                        "worker folder {worker} has iii.worker.yaml name={name} (mismatch)"
-                    );
+                    bail!("worker folder {worker} has iii.worker.yaml name={name} (mismatch)");
                 }
             }
 
@@ -57,10 +55,7 @@ impl WorkerGraph {
     }
 
     pub fn dependencies(&self, worker: &str) -> &[String] {
-        self.deps
-            .get(worker)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.deps.get(worker).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Topological start order (dependencies before dependents).
@@ -86,9 +81,7 @@ impl WorkerGraph {
                     continue;
                 }
                 *in_degree.entry(worker.as_str()).or_insert(0) += 1;
-                adj.entry(dep.as_str())
-                    .or_default()
-                    .push(worker.as_str());
+                adj.entry(dep.as_str()).or_default().push(worker.as_str());
             }
         }
 
@@ -139,8 +132,7 @@ impl WorkerGraph {
 
         while let Some(current) = queue.pop_front() {
             for candidate in &self.workers {
-                if self.dependencies(candidate).contains(&current)
-                    && seen.insert(candidate.clone())
+                if self.dependencies(candidate).contains(&current) && seen.insert(candidate.clone())
                 {
                     queue.push_back(candidate.clone());
                 }
@@ -216,13 +208,17 @@ mod tests {
         write_worker_yaml(tmp.path(), "provider-anthropic", &["llm-router"]);
         write_worker_yaml(tmp.path(), "provider-openai", &["llm-router"]);
         write_worker_yaml(tmp.path(), "approval-gate", &["session-manager"]);
-        write_worker_yaml(tmp.path(), "harness", &[
-            "session-manager",
-            "context-manager",
-            "approval-gate",
-            "provider-anthropic",
-            "provider-openai",
-        ]);
+        write_worker_yaml(
+            tmp.path(),
+            "harness",
+            &[
+                "session-manager",
+                "context-manager",
+                "approval-gate",
+                "provider-anthropic",
+                "provider-openai",
+            ],
+        );
         tmp
     }
 

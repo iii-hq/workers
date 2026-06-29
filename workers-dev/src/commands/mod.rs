@@ -8,7 +8,10 @@ use crate::orchestrator::Orchestrator;
 use crate::status;
 
 pub async fn run_status(orchestrator: &Orchestrator) -> Result<()> {
-    let views = orchestrator.worker_views().await?;
+    let (views, engine_error) = orchestrator.dashboard_snapshot().await;
+    if let Some(err) = engine_error {
+        eprintln!("warning: engine unreachable: {err}");
+    }
     status::print_status_table(&views);
     Ok(())
 }
@@ -49,19 +52,14 @@ pub async fn run_logs(
     follow: bool,
     lines: usize,
 ) -> Result<()> {
-    if !follow {
-        let tail = orchestrator.logs_tail(&worker, lines).await?;
-        let color_enabled = orchestrator.config.color_mode.enabled_for_stdout();
-        for line in tail {
-            logs::print_colored_line(&line, color_enabled, &mut io::stdout())?;
-        }
-        return Ok(());
-    }
-
     let tail = orchestrator.logs_tail(&worker, lines).await?;
     let color_enabled = orchestrator.config.color_mode.enabled_for_stdout();
     for line in tail {
         logs::print_colored_line(&line, color_enabled, &mut io::stdout())?;
+    }
+
+    if !follow {
+        return Ok(());
     }
     io::stdout().flush()?;
 
@@ -76,7 +74,8 @@ pub async fn run_logs(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                 let proc = orchestrator.worker_views().await?;
                 match proc.iter().find(|v| v.name == worker) {
-                    Some(v) if v.process_status == "running" || v.process_status == "compiling" => {}
+                    Some(v) if v.process_status == "running" || v.process_status == "compiling" => {
+                    }
                     _ => break,
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -88,6 +87,7 @@ pub async fn run_logs(
 }
 
 pub async fn run_up(orchestrator: Arc<Orchestrator>) -> Result<()> {
+    orchestrator.ensure_engine().await?;
     orchestrator.start_harness_stack(false).await?;
     crate::tui::run(orchestrator).await
 }
