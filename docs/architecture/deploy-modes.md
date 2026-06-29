@@ -29,8 +29,6 @@ Release dispatcher: [`release.yml`](../../.github/workflows/release.yml) reads
   image itself is not booted; `runtime`/`scripts.start` drive the local run).
 - **Registry payload:** the built image reference (`image_tag` output).
 
-Templates: [`todo-worker/`](../../todo-worker/), [`todo-worker-python/`](../../todo-worker-python/).
-
 ## Bundle
 
 - **Build:** esbuild single-file `index.mjs` + `iii.worker.yaml` packed into

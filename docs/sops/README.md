@@ -15,8 +15,6 @@ YAML, **the workflow wins** — update these docs.
 1. Read [`new-worker.md`](new-worker.md) §1–§6 and pick a deploy mode.
 2. Follow the language-specific scaffold:
    - Rust binary → [`binary-worker.md`](binary-worker.md)
-   - Node container → [`todo-worker/`](../../todo-worker/) template
-   - Python container → [`todo-worker-python/`](../../todo-worker-python/) template
    - Node bundle → [`harness/`](../../harness/) (monorepo pattern)
 3. Open a PR; CI runs per [`architecture/testing-and-ci.md`](../architecture/testing-and-ci.md).
 4. Ship via [`release.md`](release.md).

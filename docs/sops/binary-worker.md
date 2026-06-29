@@ -197,7 +197,7 @@ triple.
 Two paths. Pick one per worker; do not mix them in production boot.
 
 **Path A (baseline — static config)** — for simple workers not on the
-configuration worker yet (e.g. `todo-worker`, unreleased scaffolds):
+configuration worker yet (unreleased scaffolds):
 
 - Committed `config.yaml` + `load_config()` + `--config` default `./config.yaml`
 - Sections below through "Reactive config" describe Path A.
