@@ -7,7 +7,6 @@ graphify-out
 
 # Dependencies
 node_modules
-package-lock.json
 yarn.lock
 !iii-database/tests/e2e/workers/harness/package-lock.json
 !shell/tests/e2e/workers/harness/package-lock.json

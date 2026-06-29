@@ -1,0 +1,63 @@
+name: rbac-proxy E2E
+
+on:
+  pull_request:
+    paths:
+      - 'rbac-proxy/**'
+      - '.github/workflows/rbac-proxy-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: rbac-proxy-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Auth / gating / namespacing / discovery / channels through the proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rbac-proxy
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: rbac-proxy/tests/e2e/workers/harness/package-lock.json
+
+      - name: Install iii engine (next)
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify engine
+        run: iii --version
+
+      - name: Run harness
+        working-directory: rbac-proxy/tests/e2e
+        run: ./run-tests.sh
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbac-proxy-e2e-report
+          path: |
+            rbac-proxy/tests/e2e/reports/
+          retention-days: 7

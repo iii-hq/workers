@@ -1,0 +1,20 @@
+{
+  "name": "rbac-proxy-tests-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Self-asserting e2e harness for the iii rbac-proxy worker — drives a downstream worker THROUGH the proxy port and asserts the RBAC contract.",
+  "scripts": {
+    "dev": "tsx src/worker.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "iii-sdk": "0.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "Apache-2.0"
+}

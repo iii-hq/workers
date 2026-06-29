@@ -1,0 +1,52 @@
+{
+  "description": "Health/identity probe: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, and the live downstream connection count.",
+  "function_id": "rbac-proxy::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StatusInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "active_connections": {
+        "description": "Live downstream connections.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "engine_url": {
+        "description": "Upstream engine URL, with any `user:pass@` credentials redacted.",
+        "type": "string"
+      },
+      "host": {
+        "description": "Bound public host.",
+        "type": "string"
+      },
+      "port": {
+        "description": "Bound public RBAC port.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "rbac_enabled": {
+        "description": "Whether an `auth_function_id` is configured.",
+        "type": "boolean"
+      },
+      "version": {
+        "description": "Worker version (matches `Cargo.toml`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "active_connections",
+      "engine_url",
+      "host",
+      "port",
+      "rbac_enabled",
+      "version"
+    ],
+    "title": "StatusOutput",
+    "type": "object"
+  }
+}
