@@ -1,4 +1,34 @@
+<div align="center">
+
 # harness
+
+**A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
+
+<p>
+  <a href="#install"><img alt="Install: iii worker add harness" src="https://img.shields.io/badge/install-iii%20worker%20add%20harness-0a84ff?style=flat-square"></a>
+  <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
+  <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
+</p>
+
+<p><sub><b>INSTALLS WITH HARNESS</b></sub></p>
+
+<p>
+  <a href="../iii-directory"><img alt="iii-directory" src="https://img.shields.io/badge/iii--directory-2b2b2b?style=flat-square"></a>
+  <a href="../session-manager"><img alt="session-manager" src="https://img.shields.io/badge/session--manager-2b2b2b?style=flat-square"></a>
+  <a href="../context-manager"><img alt="context-manager" src="https://img.shields.io/badge/context--manager-2b2b2b?style=flat-square"></a>
+  <a href="../provider-anthropic"><img alt="provider-anthropic" src="https://img.shields.io/badge/provider--anthropic-2b2b2b?style=flat-square"></a>
+  <a href="../provider-openai"><img alt="provider-openai" src="https://img.shields.io/badge/provider--openai-2b2b2b?style=flat-square"></a>
+  <a href="../shell"><img alt="shell" src="https://img.shields.io/badge/shell-2b2b2b?style=flat-square"></a>
+  <a href="../web"><img alt="web" src="https://img.shields.io/badge/web-2b2b2b?style=flat-square"></a>
+  <a href="https://github.com/iii-hq/iii"><img alt="iii-state" src="https://img.shields.io/badge/iii--state-2b2b2b?style=flat-square"></a>
+  <a href="https://github.com/iii-hq/iii"><img alt="iii-queue" src="https://img.shields.io/badge/iii--queue-2b2b2b?style=flat-square"></a>
+  <a href="https://github.com/iii-hq/iii"><img alt="iii-cron" src="https://img.shields.io/badge/iii--cron-2b2b2b?style=flat-square"></a>
+  <a href="https://github.com/iii-hq/iii"><img alt="iii-stream" src="https://img.shields.io/badge/iii--stream-2b2b2b?style=flat-square"></a>
+  <a href="https://github.com/iii-hq/iii"><img alt="iii-observability" src="https://img.shields.io/badge/iii--observability-2b2b2b?style=flat-square"></a>
+  <a href="https://github.com/iii-hq/iii"><img alt="configuration" src="https://img.shields.io/badge/configuration-2b2b2b?style=flat-square"></a>
+</p>
+
+</div>
 
 `harness` is the thin, durable turn loop that turns a model plus a few iii
 workers into an agent. It takes an incoming message, persists it, assembles a
