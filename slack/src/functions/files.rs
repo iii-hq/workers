@@ -105,18 +105,21 @@ async fn upload(deps: &Deps, req: UploadReq) -> Result<UploadResponse, Error> {
         .ok_or_else(|| Error::Handler("files.upload: missing file_id".into()))?
         .to_string();
 
-    // 2. PUT the bytes to the reserved URL
-    let put = deps
+    // 2. POST the bytes to the reserved URL as multipart/form-data (the `file`
+    //    field), matching Slack's documented `curl -F file=@...` upload.
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(req.filename.clone());
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let upload = deps
         .http
         .post(upload_url)
-        .body(bytes)
+        .multipart(form)
         .send()
         .await
-        .map_err(|e| Error::Handler(format!("files.upload PUT: {}", e.without_url())))?;
-    if !put.status().is_success() {
+        .map_err(|e| Error::Handler(format!("files.upload post: {}", e.without_url())))?;
+    if !upload.status().is_success() {
         return Err(Error::Handler(format!(
             "files.upload: upload returned HTTP {}",
-            put.status()
+            upload.status()
         )));
     }
 

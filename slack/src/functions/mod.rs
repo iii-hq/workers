@@ -34,6 +34,19 @@ use serde::Serialize;
 
 use crate::deps::Deps;
 
+/// JSON Schema (as a `Value`) for a type, with the `$schema` key stripped — used
+/// to attach typed request/response schemas to raw-`Value` HTTP handlers (which
+/// would otherwise publish the permissive AnyValue schema) via
+/// `RegisterFunction::request_format`/`response_format`.
+pub(crate) fn schema_value<T: JsonSchema>() -> serde_json::Value {
+    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let mut v = serde_json::to_value(root).expect("schema serializes");
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
+}
+
 /// Register a typed async function with the engine. Shared by hand-written
 /// handlers and the [`slack_method!`] macro.
 pub(crate) fn register<Req, Resp, F, Fut>(

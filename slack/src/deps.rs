@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use dashmap::DashMap;
 use iii_sdk::IIIClient;
@@ -27,20 +28,40 @@ pub struct Identity {
 pub struct StreamState {
     pub channel: String,
     pub thread_ts: String,
-    /// Recipient user (required when streaming into a channel, not a DM).
+    /// Recipient user — required (with `recipient_team_id`) when streaming into a
+    /// channel; omitted for DMs.
     pub recipient_user_id: Option<String>,
+    /// Recipient team — required alongside `recipient_user_id` for channel streams.
+    pub recipient_team_id: Option<String>,
+    /// Whether the target is a DM (no recipients sent).
+    pub is_dm: bool,
     /// ts of the streaming message once `chat.startStream` has run.
     pub ts: Option<String>,
     /// Full assistant text already sent, to compute the next append delta.
     pub last_text: String,
+    /// Highest `message-updated` revision applied (drop older/stale revisions).
+    pub last_revision: u64,
 }
 
 #[derive(Default)]
 pub struct RuntimeState {
     /// session_id -> active stream.
     pub streams: DashMap<String, StreamState>,
-    /// Seen Slack `event_id`s (retry dedupe).
-    pub seen_events: DashMap<String, ()>,
+    /// Per-session lock serializing the stream read-modify-write across awaits.
+    pub stream_locks: DashMap<String, Arc<Mutex<()>>>,
+    /// Seen Slack `event_id`s -> first-seen time (retry dedupe, time-windowed).
+    pub seen_events: DashMap<String, Instant>,
+}
+
+impl RuntimeState {
+    /// Per-session mutex so concurrent `message-*`/finalize handlers cannot
+    /// interleave the stream state (mirrors telegram-bot's entry locks).
+    pub fn stream_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        self.stream_locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
 }
 
 #[derive(Clone)]
@@ -87,5 +108,33 @@ impl Deps {
             .await
             .as_ref()
             .and_then(|i| i.user_id.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_lock_is_per_session() {
+        let rt = RuntimeState::default();
+        let a1 = rt.stream_lock("s1");
+        let a2 = rt.stream_lock("s1");
+        let b = rt.stream_lock("s2");
+        // Same session -> same underlying mutex; different session -> different.
+        assert!(Arc::ptr_eq(&a1, &a2));
+        assert!(!Arc::ptr_eq(&a1, &b));
+    }
+
+    #[tokio::test]
+    async fn stream_lock_serializes_same_session() {
+        let rt = RuntimeState::default();
+        let lock = rt.stream_lock("s1");
+        let held = lock.lock().await;
+        // A second acquisition of the same session lock cannot proceed while held.
+        assert!(rt.stream_lock("s1").try_lock().is_err());
+        drop(held);
+        // A different session is independent.
+        assert!(rt.stream_lock("s2").try_lock().is_ok());
     }
 }

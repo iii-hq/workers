@@ -285,6 +285,49 @@ mod tests {
     }
 
     #[test]
+    fn socket_mode_enabled_by_app_token() {
+        let cfg = WorkerConfig {
+            bot_token: "xoxb".into(),
+            app_token: Some("xapp-1".into()),
+            ..WorkerConfig::default()
+        };
+        assert!(cfg.socket_enabled());
+        assert!(cfg.bridge_enabled());
+        // An empty/whitespace app_token does not enable socket mode.
+        let blank = WorkerConfig {
+            app_token: Some("  ".into()),
+            ..cfg.clone()
+        };
+        assert!(!blank.socket_enabled());
+    }
+
+    #[test]
+    fn socket_takes_precedence_over_http() {
+        // Both transports configured: socket wins, http bridge is suppressed.
+        let cfg = WorkerConfig {
+            bot_token: "xoxb".into(),
+            app_token: Some("xapp-1".into()),
+            signing_secret: Some("s".into()),
+            public_base_url: Some("https://engine.example".into()),
+            ..WorkerConfig::default()
+        };
+        assert!(cfg.socket_enabled());
+        assert!(!cfg.http_bridge_enabled());
+        assert!(cfg.bridge_enabled());
+    }
+
+    #[test]
+    fn no_bridge_without_any_transport() {
+        let cfg = WorkerConfig {
+            bot_token: "xoxb".into(),
+            ..WorkerConfig::default()
+        };
+        assert!(!cfg.socket_enabled());
+        assert!(!cfg.http_bridge_enabled());
+        assert!(!cfg.bridge_enabled());
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         assert!(WorkerConfig::from_yaml("bogus_field: 1\n").is_err());
     }
