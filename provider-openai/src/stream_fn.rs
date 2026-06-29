@@ -71,14 +71,10 @@ async fn run_stream_call(
     };
     let cfg = match config_from_resolve(&model, input.max_output_tokens, &resolved) {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
             let _ = send_event(
                 sink,
-                &synthetic_error_event(
-                    "provider openai not configured (no api_key in the llm-router entry and OPENAI_API_KEY unset)",
-                    &model,
-                    ErrorKind::Permanent,
-                ),
+                &synthetic_error_event(&e.to_string(), &model, ErrorKind::Permanent),
             );
             return;
         }
