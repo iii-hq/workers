@@ -40,7 +40,7 @@ export const SEQ_STEPS: SeqStep[] = [
     to: 'codegen',
     label: 'request_schema · response_schema',
     title: 'the schema, verbatim',
-    desc: 'the exact json schema the worker registered at startup. nothing approximated, nothing invented.',
+    desc: 'the exact json schema the worker derived from its real input and output types at startup. nothing approximated, nothing invented.',
   },
   {
     from: 'codegen',

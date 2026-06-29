@@ -157,7 +157,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   engine: {
     id: 'engine',
     kindLabel: 'the source of truth',
-    role: 'already describes every connected worker in json schema. codegen invents no schema of its own.',
+    role: 'already describes every connected worker in json schema, derived from real worker types. codegen invents no schema of its own.',
     sections: [
       {
         heading: 'discovery surface',
