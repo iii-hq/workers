@@ -26,12 +26,9 @@ pub struct MoveFileInput {
     /// Entries to move. Each entry is processed independently so a single
     /// failure never aborts the rest.
     pub files: Vec<MoveFileSpec>,
-    /// Optional per-call session working directory. When set, relative
-    /// `from`/`to` paths anchor here instead of the primary allowed root,
-    /// and BOTH resolved endpoints must stay inside it. `base_dir` itself
-    /// must canonicalize inside an allowed root (`coder::info` lists them).
-    /// Omit to resolve against the primary allowed root exactly as before.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 

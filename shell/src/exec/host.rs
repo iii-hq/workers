@@ -388,8 +388,9 @@ mod tests {
         std::fs::create_dir_all(root.join("session")).unwrap();
         let mut cfg = test_cfg();
         cfg.fs.host_root = Some(root.clone());
+        let base = root.join("session").to_string_lossy().into_owned();
 
-        let overrides = crate::exec::policy::build_overrides(None, None, Some("session"), &cfg)
+        let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), &cfg)
             .expect("session is inside the jail");
         let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
             .await

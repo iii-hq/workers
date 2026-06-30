@@ -46,12 +46,9 @@ pub struct TreeInput {
     /// are omitted. Pass `false` to list everything.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
-    /// Optional per-call session working directory. When set, a relative
-    /// `path` anchors here instead of the primary allowed root, and the
-    /// resolved base folder must stay inside it. `base_dir` itself must
-    /// canonicalize inside an allowed root (`coder::info` lists them). Omit
-    /// to resolve against the primary allowed root exactly as before.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 

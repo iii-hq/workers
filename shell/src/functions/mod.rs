@@ -4,6 +4,7 @@ pub mod kill;
 pub mod list;
 pub mod status;
 pub mod types;
+pub mod workspace;
 
 pub mod fs_chmod;
 pub mod fs_dispatch;

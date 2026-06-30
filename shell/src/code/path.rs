@@ -27,6 +27,7 @@
 //! old MIRROR-INVARIANT between two copies is gone).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -151,6 +152,35 @@ impl PathResolver {
         &self.roots_canon
     }
 
+    /// Return a resolver that also treats a trusted, existing session
+    /// directory as an allowed root. The configured roots stay intact; the
+    /// session root is additive and only used for calls whose request still
+    /// carries `base_dir`, so [`resolve_in`] continues to enforce the stricter
+    /// "all paths stay under base_dir" containment check.
+    pub fn session_scoped(self: &Arc<Self>, base_dir: Option<&str>) -> Arc<Self> {
+        let Some(base_dir) = base_dir else {
+            return self.clone();
+        };
+        let base_path = Path::new(base_dir);
+        if !base_path.is_absolute() {
+            return self.clone();
+        }
+        let Ok(base_canon) = self.canonicalize_wire(base_dir, base_path) else {
+            return self.clone();
+        };
+        if !base_canon.is_dir() || self.roots_canon.contains(&base_canon) {
+            return self.clone();
+        }
+        let mut roots_canon = self.roots_canon.clone();
+        roots_canon.push(base_canon);
+        Arc::new(Self {
+            roots_canon,
+            non_accessible: self.non_accessible.clone(),
+            default_exclude: self.default_exclude.clone(),
+            default_exclude_dirs: self.default_exclude_dirs.clone(),
+        })
+    }
+
     /// True when `p` is exactly one of the allowed roots.
     pub fn is_root(&self, p: &Path) -> bool {
         self.roots_canon.iter().any(|r| r == p)
@@ -178,7 +208,11 @@ impl PathResolver {
     /// [`resolve_in`]: Self::resolve_in
     /// [`is_root`]: Self::is_root
     pub fn session_root(&self, base_dir: &str) -> Option<PathBuf> {
-        let base_canon = self.canonicalize_wire(base_dir, Path::new(base_dir)).ok()?;
+        let base_path = Path::new(base_dir);
+        if !base_path.is_absolute() {
+            return None;
+        }
+        let base_canon = self.canonicalize_wire(base_dir, base_path).ok()?;
         self.containing_root(&base_canon)
             .is_some()
             .then_some(base_canon)
@@ -333,8 +367,8 @@ impl PathResolver {
     /// MIRROR-INVARIANT jail core is untouched.
     ///
     /// Semantics (all three checks, in order):
-    /// 1. `base_dir` itself must canonicalise inside one of the configured
-    ///    allowed roots — else `C215` (an operator/route error: the session
+    /// 1. `base_dir` itself must be absolute and canonicalise inside one of the
+    ///    configured allowed roots — else `C215` (an operator/route error: the session
     ///    was scoped to a directory the worker is not allowed to serve).
     /// 2. relative `path` anchors at `base_dir` (not the primary root);
     ///    absolute `path` is taken as-is. Either form runs through the SAME
@@ -346,12 +380,18 @@ impl PathResolver {
     /// This is strictly NARROWER than `resolve`: it can only reject paths
     /// `resolve` would accept (those inside an allowed root but outside the
     /// session), never widen access. `base_dir = None` callers use
-    /// `resolve`/`require_writable` and are byte-for-byte unchanged.
+    /// `resolve`/`require_writable`.
     pub fn resolve_in(&self, base_dir: &str, path: &str) -> Result<PathBuf, CoderError> {
+        let base_path = Path::new(base_dir);
+        if !base_path.is_absolute() {
+            return Err(CoderError::BadInput(format!(
+                "base_dir must be an absolute path: {base_dir}"
+            )));
+        }
         // (c) base_dir must canonicalise inside an EXISTING allowed root.
         // Reuse the shared canonicalisation so a `..`/symlink escape in the
         // session dir itself fails closed exactly like a wire path would.
-        let base_canon = self.canonicalize_wire(base_dir, Path::new(base_dir))?;
+        let base_canon = self.canonicalize_wire(base_dir, base_path)?;
         if self.containing_root(&base_canon).is_none() {
             return Err(CoderError::OutsideBase(format!(
                 "base_dir is outside every allowed root: {base_dir}. \
@@ -407,9 +447,9 @@ impl PathResolver {
         Ok(abs)
     }
 
-    /// Dispatch helper: resolve `path` against `base_dir` when present,
-    /// else exactly as `resolve` (the back-compat path is byte-for-byte
-    /// unchanged). Handlers thread the per-call `base_dir` straight through.
+    /// Dispatch helper: resolve `path` against `base_dir` when present, else
+    /// use the normal resolver. Handlers thread the per-call `base_dir` straight
+    /// through.
     pub fn resolve_opt(&self, base_dir: Option<&str>, path: &str) -> Result<PathBuf, CoderError> {
         match base_dir {
             Some(b) => self.resolve_in(b, path),
@@ -473,6 +513,7 @@ fn with_dir_companions(patterns: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn cfg_roots(roots: Vec<PathBuf>, globs: Vec<&str>) -> CoderConfig {
@@ -1141,6 +1182,44 @@ mod tests {
             "C215 must explain the base_dir is unserveable; got: {msg}"
         );
         assert!(msg.contains(C215_ROOTS_PREFIX));
+    }
+
+    /// The live registration layer can trust a harness-provided `base_dir` by
+    /// adding that directory as an ephemeral session root. This lets console
+    /// sessions work in a selected host directory that is outside the configured
+    /// coder roots while keeping every operation confined below that directory.
+    #[test]
+    fn session_scoped_base_dir_outside_roots_becomes_effective_root() {
+        let jail = tempdir().unwrap();
+        let selected = tempdir().unwrap();
+        std::fs::create_dir(selected.path().join("sub")).unwrap();
+        std::fs::write(selected.path().join("sub/a.txt"), b"hi").unwrap();
+        let r = Arc::new(PathResolver::new(&cfg_with(jail.path().to_path_buf(), vec![])).unwrap());
+        let base = selected.path().display().to_string();
+
+        assert!(
+            r.resolve_in(&base, "sub/a.txt").is_err(),
+            "unscoped resolver must still reject a base_dir outside configured roots"
+        );
+
+        let scoped = r.session_scoped(Some(&base));
+        let got = scoped.resolve_in(&base, "sub/a.txt").unwrap();
+        assert_eq!(got, canon(&selected.path().join("sub/a.txt")));
+    }
+
+    #[test]
+    fn session_scoped_base_dir_outside_roots_applies_non_accessible_globs() {
+        let jail = tempdir().unwrap();
+        let selected = tempdir().unwrap();
+        std::fs::write(selected.path().join(".env"), b"secret").unwrap();
+        let r = Arc::new(
+            PathResolver::new(&cfg_with(jail.path().to_path_buf(), vec!["**/.env"])).unwrap(),
+        );
+        let base = selected.path().display().to_string();
+
+        let scoped = r.session_scoped(Some(&base));
+        let err = scoped.require_writable_in(&base, ".env").unwrap_err();
+        assert_eq!(err.code(), "C211");
     }
 
     /// A `..` escape from base_dir that lands OUTSIDE every allowed root is

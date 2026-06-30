@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTurnMetadata } from './real'
+import { buildTurnMetadata, FALLBACK_FUNCTION_POLICY } from './real'
 
 /**
  * C1 regression: working_dir must ride options.metadata so the harness sees it
@@ -22,5 +22,11 @@ describe('buildTurnMetadata — working_dir forwarding', () => {
         message_id: 'm-1',
       })
     }
+  })
+})
+
+describe('fallback function policy', () => {
+  it('does not expose workspace picker functions to the agent', () => {
+    expect(FALLBACK_FUNCTION_POLICY.deny).toContain('shell::workspace::*')
   })
 })

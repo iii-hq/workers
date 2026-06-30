@@ -18,33 +18,36 @@ const BASE_DIR_FIELD: &str = "base_dir";
 /// True when `function_id` names a workspace-scoped worker call (`shell::*` or
 /// `coder::*`) whose paths must be anchored at the session working directory.
 fn is_scoped_function(function_id: &str) -> bool {
-    function_id.starts_with("shell::") || function_id.starts_with("coder::")
+    (function_id.starts_with("shell::") && !function_id.starts_with("shell::workspace::"))
+        || function_id.starts_with("coder::")
 }
 
 /// Stamp the session `working_dir` onto a scoped call's arguments as `base_dir`.
 ///
 /// Returns a NEW `Value` (the codebase favours immutability — no in-place
-/// mutation of the caller's args). The original is returned UNCHANGED when any
-/// of the following holds:
-///   * `working_dir` is `None` (no per-session scope is active — the
-///     byte-for-byte back-compat path);
-///   * `function_id` is not a `shell::*` / `coder::*` call;
-///   * `args` is not a JSON object (nowhere to place a top-level field).
+/// mutation of the caller's args). The original is returned unchanged when
+/// `function_id` is not a `shell::*` / `coder::*` call, or when `args` is not a
+/// JSON object (nowhere to place a top-level field).
 ///
 /// When it does apply, the top-level `base_dir` is SET to `working_dir`,
-/// OVERWRITING any caller-supplied value — the harness controls scoping and the
+/// OVERWRITING any caller-supplied value. If no `working_dir` is active, a
+/// caller-supplied `base_dir` is removed. The harness controls scoping and the
 /// model must not be able to widen it.
 pub fn inject(function_id: &str, args: Value, working_dir: Option<&str>) -> Value {
-    let Some(dir) = working_dir else {
-        return args;
-    };
     if !is_scoped_function(function_id) {
         return args;
     }
     let Value::Object(mut map) = args else {
         return args;
     };
-    map.insert(BASE_DIR_FIELD.to_string(), Value::String(dir.to_string()));
+    match working_dir {
+        Some(dir) => {
+            map.insert(BASE_DIR_FIELD.to_string(), Value::String(dir.to_string()));
+        }
+        None => {
+            map.remove(BASE_DIR_FIELD);
+        }
+    }
     Value::Object(map)
 }
 
@@ -95,11 +98,21 @@ mod tests {
     }
 
     #[test]
-    fn leaves_args_unchanged_when_working_dir_absent() {
-        // Back-compat: with no session scope the args pass through verbatim,
-        // including any caller-supplied base_dir.
+    fn strips_caller_supplied_base_dir_when_working_dir_absent() {
+        // With no session scope, the model must not be able to invent one.
         let args = json!({ "command": "ls", "base_dir": "/etc" });
-        let out = inject("shell::exec", args.clone(), None);
+        let out = inject("shell::exec", args, None);
+        assert_eq!(out, json!({ "command": "ls" }));
+    }
+
+    #[test]
+    fn passthrough_for_workspace_control_plane_functions() {
+        let args = json!({ "path": "/Users/example/project" });
+        let out = inject(
+            "shell::workspace::validate",
+            args.clone(),
+            Some("/work/session-7"),
+        );
         assert_eq!(out, args);
     }
 

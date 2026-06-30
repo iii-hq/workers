@@ -244,6 +244,11 @@ impl HostFsBackend {
         path_is_non_accessible(canon, &self.host_roots_canon, &self.non_accessible)
     }
 
+    fn is_non_accessible_scoped(&self, canon: &Path, base_dir_canon: Option<&Path>) -> bool {
+        let roots = access_roots(&self.host_roots_canon, base_dir_canon);
+        path_is_non_accessible(canon, &roots, &self.non_accessible)
+    }
+
     /// TOCTOU: check-then-use gate, open to a race against an attacker who
     /// can mutate the filesystem between validation and subsequent syscalls.
     /// Use the sandbox backend for untrusted input.
@@ -258,18 +263,16 @@ impl HostFsBackend {
         Ok(canon)
     }
 
-    /// Resolve and validate an optional per-call `base_dir` against this
-    /// backend's configured jail. `None` ⇒ `Ok(None)` (unchanged behaviour);
-    /// see [`confine_base_dir`].
+    /// Resolve and validate an optional trusted per-call `base_dir`; see
+    /// [`confine_base_dir`].
     fn confine_base_dir(&self, base_dir: Option<&str>) -> Result<Option<PathBuf>, FsError> {
-        confine_base_dir(base_dir, &self.host_roots_canon, &self.denylist_canon)
+        confine_base_dir(base_dir, &self.denylist_canon)
     }
 
     /// base_dir-aware form of [`Self::validate_path`]. When `base_dir_canon`
     /// is `Some`, the path is scoped to that session directory (relative
     /// anchors there; an absolute path outside it is S220). When `None`, it
-    /// delegates to [`Self::validate_path`] — byte-for-byte the prior jail
-    /// check.
+    /// delegates to [`Self::validate_path`].
     fn validate_path_scoped(
         &self,
         path: &str,
@@ -285,7 +288,7 @@ impl HostFsBackend {
                 &self.denylist_canon,
             )?,
         };
-        if self.is_non_accessible(&canon) {
+        if self.is_non_accessible_scoped(&canon, base_dir_canon) {
             return Err(FsError::new(
                 "S215",
                 format!("path is protected (non_accessible): {path}"),
@@ -414,6 +417,16 @@ fn path_is_non_accessible(
     false
 }
 
+fn access_roots(host_roots_canon: &[PathBuf], base_dir_canon: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = host_roots_canon.to_vec();
+    if let Some(base) = base_dir_canon {
+        if !roots.iter().any(|r| r == base) {
+            roots.push(base.to_path_buf());
+        }
+    }
+    roots
+}
+
 /// Comma-separated display of the jail roots, for S215 messages.
 fn display_roots(roots: &[PathBuf]) -> String {
     roots
@@ -437,42 +450,52 @@ fn lexical_operand_with(path: &str, anchor_canon: Option<&Path>) -> PathBuf {
     normalize_lexical(p)
 }
 
-/// Resolve and validate an OPTIONAL per-call `base_dir` against the worker's
-/// configured jail. Returns:
-/// - `Ok(None)` when no `base_dir` was supplied — the caller then takes the
-///   unchanged `host_root`-anchored path (byte-for-byte the prior behaviour).
-/// - `Ok(Some(canon))` when `base_dir` canonicalizes INSIDE the configured
-///   `host_root` (and misses the denylist) — `canon` is the effective root that
-///   relative paths anchor against and that absolute paths must stay inside.
-/// - `Err(_)` when `base_dir` itself escapes the jail (or is otherwise invalid):
-///   the worker is jailed to `host_root`, so a session directory outside it is
-///   never honored. The error reuses `confine_path`'s S210/S215 taxonomy so a
-///   bad `base_dir` reads the same as a bad path.
-///
-/// `base_dir` MUST be confined by `host_root`; an unjailed worker
-/// (`host_root: None`) has no ceiling to validate against, so a supplied
-/// `base_dir` is rejected S210 rather than silently treated as the ceiling.
+/// Resolve and validate an OPTIONAL trusted per-call `base_dir`. Returns:
+/// - `Ok(None)` when no `base_dir` was supplied.
+/// - `Ok(Some(canon))` when `base_dir` canonicalizes to an existing directory
+///   that misses the absolute denylist. That directory becomes the effective
+///   root for this call, even if it is outside the configured host roots.
+/// - `Err(_)` when `base_dir` is empty, relative, not a directory, denylisted,
+///   or otherwise cannot be canonicalized.
 fn confine_base_dir(
     base_dir: Option<&str>,
-    host_roots_canon: &[PathBuf],
     denylist_canon: &[PathBuf],
 ) -> Result<Option<PathBuf>, FsError> {
     let Some(base_dir) = base_dir else {
         return Ok(None);
     };
-    if host_roots_canon.is_empty() {
+    if base_dir.is_empty() {
+        return Err(FsError::new("S210", "base_dir must not be empty"));
+    }
+    let p = Path::new(base_dir);
+    if !p.is_absolute() {
         return Err(FsError::new(
             "S210",
-            format!(
-                "base_dir {base_dir} is only honored when the worker is jailed \
-                 (fs.host_root/fs.host_roots is set); this worker is unjailed"
-            ),
+            format!("base_dir must be an absolute path: {base_dir}"),
         ));
     }
-    // The session dir must itself canonicalize inside an allowed root + miss the
-    // denylist — reuse the SAME confinement the fs ops enforce so a base_dir
-    // that escapes the jail (or a denylisted one) is rejected identically.
-    let canon = confine_path(base_dir, host_roots_canon, denylist_canon)?;
+    let canon = canonicalize_with_fallback(p).map_err(|e| {
+        let msg = format!("{e}");
+        if msg.contains("dangling symlink in path") {
+            FsError::new("S215", format!("{base_dir}: {msg}"))
+        } else {
+            FsError::new("S210", format!("{base_dir}: {msg}"))
+        }
+    })?;
+    if !canon.is_dir() {
+        return Err(FsError::new(
+            "S212",
+            format!("base_dir is not a directory: {base_dir}"),
+        ));
+    }
+    for deny_canon in denylist_canon {
+        if canon.starts_with(deny_canon) {
+            return Err(FsError::new(
+                "S215",
+                format!("base_dir is denylisted: {base_dir}"),
+            ));
+        }
+    }
     Ok(Some(canon))
 }
 
@@ -480,17 +503,15 @@ fn confine_base_dir(
 /// `base_dir_canon` is `Some`, the call is scoped to that session directory:
 /// relative paths anchor at `base_dir` (not `host_root`) and the resolved path
 /// must land INSIDE `base_dir`. When it is `None`, this is exactly
-/// [`confine_path`] against `host_root` — the back-compat path, unchanged.
+/// [`confine_path`] against `host_root`.
 ///
 /// The core jail algorithm (`confine_path` →
 /// `canonicalize_with_fallback`/`normalize_lexical`) is reused verbatim, not
 /// re-implemented: passing `base_dir` as the effective root gives both the
-/// relative-anchor and the containment check for free, because `base_dir` is
-/// already known to sit inside `host_root` (the denylist is threaded through
-/// too). The only addition is the DX-1 error refinement: an ABSOLUTE path that
-/// is inside `host_root` but outside `base_dir` is rejected with S220 naming
-/// the session directory, instead of the generic "escapes host_root" S215 —
-/// which would contradict the worker's own configured roots.
+/// relative-anchor and the containment check. The only addition is the DX-1
+/// error refinement: an ABSOLUTE path that is inside a configured host root but
+/// outside `base_dir` is rejected with S220 naming the session directory,
+/// instead of the generic "escapes host_root" S215.
 ///
 /// `pub(crate)` so the exec backend can confine a per-call `cwd` against the
 /// SAME session-scoped jail (shell::exec/exec_bg `base_dir`) instead of
@@ -1152,6 +1173,7 @@ impl FsBackend for HostFsBackend {
         // D4: skip protected files during a directory walk (the gate that
         // validate_path_scoped applies to single-file/other ops).
         let host_roots_canon = self.host_roots_canon.clone();
+        let access_roots = access_roots(&host_roots_canon, base.as_deref());
         let non_accessible = self.non_accessible.clone();
 
         let join = tokio::task::spawn_blocking(move || -> Result<_, FsError> {
@@ -1295,7 +1317,7 @@ impl FsBackend for HostFsBackend {
                     // protected file under it (the dir itself isn't protected,
                     // but files matching non_accessible are). Skip them — the
                     // file stays "visible but locked", same as the other ops.
-                    if path_is_non_accessible(entry.path(), &host_roots_canon, &non_accessible) {
+                    if path_is_non_accessible(entry.path(), &access_roots, &non_accessible) {
                         continue;
                     }
                     if scan(entry.path())? {
@@ -1413,6 +1435,7 @@ impl FsBackend for HostFsBackend {
         // blocking closure confines + anchors every operand to it instead of the
         // global host_root. None ⇒ unchanged host_root behaviour.
         let base_dir_canon = self.confine_base_dir(req.base_dir.as_deref())?;
+        let access_roots = access_roots(&host_roots_canon, base_dir_canon.as_deref());
         // Per-file read cap: sed builds a same-size output String in memory, so
         // an unbounded file is an OOM vector (grep skips binary + bounds its
         // line read; sed did neither). Honor the backend's max_read_bytes; a 0
@@ -1478,7 +1501,7 @@ impl FsBackend for HostFsBackend {
                 )?;
                 // D4: a protected file is locked for modification, exactly like
                 // shell::fs::write/rm (which route through validate_path_scoped).
-                if path_is_non_accessible(&canon, &host_roots_canon, &non_accessible) {
+                if path_is_non_accessible(&canon, &access_roots, &non_accessible) {
                     return Err(FsError::new(
                         "S215",
                         format!("path is protected (non_accessible): {f}"),
@@ -3780,13 +3803,14 @@ mod tests {
         let root = tmp();
         fs::create_dir_all(root.join("session")).unwrap();
         let b = jailed_backend(&root);
+        let base = root.join("session").to_string_lossy().into_owned();
         let resp = b
             .write(crate::fs::WriteArgs {
                 path: "out.txt".into(),
                 mode: "0644".into(),
                 parents: false,
                 content: crate::fs::WriteContent::Inline("scoped\n".into()),
-                base_dir: Some("session".into()),
+                base_dir: Some(base),
             })
             .await
             .expect("relative write under base_dir succeeds");
@@ -3809,11 +3833,12 @@ mod tests {
         fs::write(root.join("session/victim.txt"), "x").unwrap();
         fs::write(root.join("victim.txt"), "sibling").unwrap();
         let b = jailed_backend(&root);
+        let base = root.join("session").to_string_lossy().into_owned();
         let resp = b
             .rm(crate::fs::RmArgs {
                 path: "victim.txt".into(),
                 recursive: false,
-                base_dir: Some("session".into()),
+                base_dir: Some(base),
             })
             .await
             .expect("rm under base_dir succeeds");
@@ -3835,12 +3860,13 @@ mod tests {
         fs::create_dir_all(root.join("session")).unwrap();
         fs::write(root.join("session/a.txt"), "content").unwrap();
         let b = jailed_backend(&root);
+        let base = root.join("session").to_string_lossy().into_owned();
         let resp = b
             .mv(crate::fs::MvArgs {
                 src: "a.txt".into(),
                 dst: "b.txt".into(),
                 overwrite: false,
-                base_dir: Some("session".into()),
+                base_dir: Some(base),
             })
             .await
             .expect("mv under base_dir succeeds");
@@ -3866,10 +3892,11 @@ mod tests {
         // Absolute path that resolves inside host_root/other — a sibling of the
         // session dir, still inside an allowed root, but not this session.
         let abs = root.join("other/secret.txt").canonicalize().unwrap();
+        let base = root.join("session").to_string_lossy().into_owned();
         let err = b
             .read(crate::fs::ReadArgs {
                 path: abs.to_string_lossy().into_owned(),
-                base_dir: Some("session".into()),
+                base_dir: Some(base),
             })
             .await
             .expect_err("abs path outside base_dir must reject");
@@ -3887,10 +3914,49 @@ mod tests {
         );
     }
 
-    /// base_dir itself must canonicalize inside host_root; a session dir that
-    /// escapes the jail is rejected S215 (it is never honored).
+    /// A harness-provided base_dir is trusted as the per-call root even when it
+    /// sits outside the configured host roots. The operation is then confined
+    /// under that selected directory.
     #[tokio::test]
-    async fn base_dir_escaping_host_root_is_rejected_s215() {
+    async fn base_dir_outside_host_root_is_honored_as_selected_root() {
+        let root = tmp();
+        let selected = tmp();
+        fs::create_dir_all(selected.join("project")).unwrap();
+        fs::write(selected.join("project/a.txt"), "x").unwrap();
+        let b = jailed_backend(&root);
+        let resp = b
+            .ls(LsArgs {
+                path: ".".into(),
+                base_dir: Some(selected.join("project").to_string_lossy().into_owned()),
+            })
+            .await
+            .expect("selected base_dir outside host roots should be honored");
+        assert_eq!(resp.entries.len(), 1);
+        assert_eq!(resp.entries[0].name, "a.txt");
+    }
+
+    #[tokio::test]
+    async fn base_dir_outside_host_root_still_applies_non_accessible_globs() {
+        let root = tmp();
+        let selected = tmp();
+        fs::write(selected.join(".env"), "secret").unwrap();
+        let b = stub_backend(HostFsConfig {
+            host_roots: vec![root],
+            non_accessible_globs: vec!["**/.env".into()],
+            ..Default::default()
+        });
+        let err = b
+            .read(crate::fs::ReadArgs {
+                path: ".env".into(),
+                base_dir: Some(selected.to_string_lossy().into_owned()),
+            })
+            .await
+            .expect_err("protected file under selected base_dir must stay locked");
+        assert_eq!(err.code, "S215");
+    }
+
+    #[tokio::test]
+    async fn relative_base_dir_is_rejected() {
         let root = tmp();
         let b = jailed_backend(&root);
         let err = b
@@ -3899,8 +3965,8 @@ mod tests {
                 base_dir: Some("../../etc".into()),
             })
             .await
-            .expect_err("a base_dir outside the jail must reject");
-        assert_eq!(err.code, "S215");
+            .expect_err("relative base_dir is not part of the trusted contract");
+        assert_eq!(err.code, "S210");
     }
 
     /// A genuinely jail-escaping absolute path (outside host_root entirely)
@@ -3911,19 +3977,19 @@ mod tests {
         let root = tmp();
         fs::create_dir_all(root.join("session")).unwrap();
         let b = jailed_backend(&root);
+        let base = root.join("session").to_string_lossy().into_owned();
         let err = b
             .read(crate::fs::ReadArgs {
                 path: "/etc/hostname".into(),
-                base_dir: Some("session".into()),
+                base_dir: Some(base),
             })
             .await
             .expect_err("abs path outside the jail must reject");
         assert_eq!(err.code, "S215", "outside every allowed root stays S215");
     }
 
-    /// Back-compat: base_dir=None reproduces the prior behaviour byte-for-byte.
-    /// A relative write still anchors at host_root (not at any session dir) and
-    /// lands exactly where it did before this feature.
+    /// With no session scope, a relative write still anchors at host_root (not
+    /// at any session dir).
     #[tokio::test]
     async fn base_dir_none_reproduces_host_root_anchoring() {
         let root = tmp();

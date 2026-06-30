@@ -219,14 +219,9 @@ pub struct ReadFileInput {
     /// neither is set.
     #[serde(default)]
     pub paths: Option<Vec<ReadTarget>>,
-    /// Optional per-call session working directory. When set, every relative
-    /// path (the single `path` or each `paths[]` entry, in both the bare
-    /// string and `{path,...}` object forms) anchors here instead of the
-    /// primary allowed root, and every resolved path must stay inside it.
-    /// `base_dir` itself must canonicalize inside an allowed root
-    /// (`coder::info` lists them). Omit to resolve against the primary
-    /// allowed root exactly as before.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 

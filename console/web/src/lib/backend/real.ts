@@ -55,9 +55,9 @@ interface RunParams {
  * via `agent_trigger`. The approval-gate rules supply the structural floor;
  * the gate hook remains the human decision surface.
  */
-const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
+export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: ['approval::*', 'configuration::*'],
+  deny: ['approval::*', 'configuration::*', 'shell::workspace::*'],
   expose: 'agent_trigger',
 }
 

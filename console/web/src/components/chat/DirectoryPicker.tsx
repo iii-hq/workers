@@ -19,13 +19,13 @@ import { cn } from '@/lib/utils'
  * Per-session working-directory picker, project-switcher style.
  *
  * Opens to your remembered projects (most-recent first) — pick one in a click,
- * or "browse to add" a new directory. Browsing lists the operator's coder roots
- * (`coder::info`) one level at a time (`coder::list-folder`, lazy). The search
- * box filters the current level live; typing/pasting an absolute path jumps
- * straight there (browse) or selects it (projects). A pasted/remembered dir is
- * validated against the live roots before it's accepted. The chosen dir is what
- * the harness scopes the chat to (`base_dir`); it is re-scopable mid-conversation
- * (a change drops a visible transcript marker).
+ * or "browse to add" a new directory. Browsing uses shell's operator workspace
+ * control plane one level at a time. The search box filters the current level
+ * live; typing/pasting an absolute path jumps straight there (browse) or
+ * selects it (projects). A pasted/remembered dir is validated against the live
+ * shell worker before it's accepted. The chosen dir is what the harness scopes
+ * the chat to (`base_dir`); it is re-scopable mid-conversation (a change drops
+ * a visible transcript marker).
  */
 
 interface DirectoryPickerProps {
@@ -36,19 +36,23 @@ interface DirectoryPickerProps {
   className?: string
 }
 
-interface CoderInfo {
-  base_paths?: string[]
+interface WorkspaceRootsResult {
+  roots?: string[]
 }
 
 interface DirEntry {
   name: string
   kind: string
-  non_accessible?: boolean
+  path: string
 }
 
-interface ListFolderResult {
+interface WorkspaceListResult {
   path: string
   entries?: DirEntry[]
+}
+
+interface WorkspaceValidateResult {
+  path: string
 }
 
 function basename(p: string): string {
@@ -68,6 +72,10 @@ function parentOf(p: string): string {
 }
 
 const isAbsPath = (s: string) => s.trim().startsWith('/')
+
+export const WORKSPACE_ROOTS_FUNCTION_ID = 'shell::workspace::roots'
+export const WORKSPACE_LIST_FUNCTION_ID = 'shell::workspace::list'
+export const WORKSPACE_VALIDATE_FUNCTION_ID = 'shell::workspace::validate'
 
 /**
  * iii triggers reject with a plain object `{ code, message }`, not an Error, and
@@ -140,8 +148,11 @@ export function DirectoryPicker({
     setError(null)
     try {
       const client = await getIiiClient()
-      const info = await client.trigger<CoderInfo>('coder::info', {})
-      const r = info?.base_paths ?? []
+      const info = await client.trigger<WorkspaceRootsResult>(
+        WORKSPACE_ROOTS_FUNCTION_ID,
+        {},
+      )
+      const r = info?.roots ?? []
       setRoots(r)
       return r
     } catch (err) {
@@ -158,13 +169,16 @@ export function DirectoryPicker({
     setError(null)
     try {
       const client = await getIiiClient()
-      const res = await client.trigger<ListFolderResult>('coder::list-folder', {
-        path: target,
-        page_size: 200,
-      })
+      const res = await client.trigger<WorkspaceListResult>(
+        WORKSPACE_LIST_FUNCTION_ID,
+        {
+          path: target,
+          page_size: 200,
+        },
+      )
       const names = (res?.entries ?? [])
-        .filter((e) => e.kind === 'dir' && !e.non_accessible)
-        .map((e) => `${target.replace(/\/+$/, '')}/${e.name}`)
+        .filter((e) => e.kind === 'dir')
+        .map((e) => e.path)
         .sort((a, b) => a.localeCompare(b))
       setDirs(names)
     } catch (err) {
@@ -235,7 +249,13 @@ export function DirectoryPicker({
       setView('browse')
       setQuery('')
       const r = await ensureRoots()
-      setRoot(r.find((x) => p === x || p.startsWith(`${x}/`)) ?? r[0] ?? null)
+      const matchedRoot =
+        [...r]
+          .sort((a, b) => b.length - a.length)
+          .find((x) => p === x || p.startsWith(`${x}/`)) ??
+        r[0] ??
+        null
+      setRoot(matchedRoot)
       setPath(p)
       await loadFolder(p)
     },
@@ -260,13 +280,12 @@ export function DirectoryPicker({
       setValidating(dir)
       try {
         const client = await getIiiClient()
-        const res = await client.trigger<ListFolderResult>(
-          'coder::list-folder',
-          { path: dir, page_size: 1 },
+        const res = await client.trigger<WorkspaceValidateResult>(
+          WORKSPACE_VALIDATE_FUNCTION_ID,
+          { path: dir },
         )
-        // Select the CANONICAL resolved dir the worker echoes back — not the
-        // raw input — so what's stored is exactly what coder will resolve to
-        // (a file path errors C210; a non-existent path errors C211).
+        // Select the canonical resolved dir the worker echoes back, not raw
+        // input, so stored recent projects are stable across symlinks.
         select(res?.path ?? dir)
       } catch (err) {
         setError(`can't use ${dir} — ${errMsg(err)}`)
