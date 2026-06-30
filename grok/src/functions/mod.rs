@@ -1,0 +1,196 @@
+//! Register the grok::* surface. Handlers parse at the unknown boundary and
+//! delegate to the grok turn loop; schemas are published via request_format
+//! so `iii trigger grok::run --help` prints the parameter table.
+
+pub mod types;
+
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
+use serde_json::{json, Value};
+
+use crate::configuration::ConfigCell;
+use crate::grok;
+use crate::state::{list_sessions, load_session, mark_error};
+use types::{RunRequest, SessionIdRequest};
+
+fn schema_value<T: schemars::JsonSchema>() -> Value {
+    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let mut v = serde_json::to_value(root).expect("schema serializes");
+    // The registry publish validator has no meta-schema registered, so the
+    // `$schema` key schemars stamps at the root fails publish. Strip it; the
+    // schema body is what the engine + registry consume.
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
+}
+
+fn run_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "session_id": { "type": "string" },
+            "grok_thread_id": { "type": ["string", "null"] },
+            "result": { "type": "string" },
+            "stop_reason": { "type": "string" },
+            "is_error": { "type": "boolean" },
+            "num_turns": { "type": "integer" },
+            "usage": { "type": ["object", "null"] },
+            "busy": { "type": "boolean" },
+            "reason": { "type": "string" },
+        },
+    })
+}
+
+pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
+    // grok::run — run a turn and wait for the result.
+    {
+        let iii_h = iii.clone();
+        let cell_h = cell.clone();
+        iii.register_function(
+            "grok::run",
+            RegisterFunction::new_async(move |req: RunRequest| {
+                let iii_h = iii_h.clone();
+                let cell_h = cell_h.clone();
+                async move {
+                    let cfg = { cell_h.read().await.clone() };
+                    Ok::<Value, Error>(grok::run(iii_h, cfg, req).await)
+                }
+            })
+            .request_format(schema_value::<RunRequest>())
+            .response_format(run_response_schema())
+            .description(
+                "Run one Grok turn and wait for the result. Accepts `prompt` or a `messages` \
+                 array; streams raw Grok events onto grok::events, AgentEvent frames onto \
+                 agent::events, and returns {session_id, result, usage}.",
+            ),
+        );
+    }
+
+    // grok::start — fire-and-forget; progress on the streams.
+    {
+        let iii_h = iii.clone();
+        let cell_h = cell.clone();
+        iii.register_function(
+            "grok::start",
+            RegisterFunction::new_async(move |req: RunRequest| {
+                let iii_h = iii_h.clone();
+                let cell_h = cell_h.clone();
+                async move {
+                    let session_id = req
+                        .session_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    let mut started = req;
+                    started.session_id = Some(session_id.clone());
+                    let bg_iii = iii_h.clone();
+                    let bg_id = session_id.clone();
+                    let cfg = { cell_h.read().await.clone() };
+                    // Supervise the run: run() persists terminal state itself,
+                    // but if the task panics that never happens — the
+                    // supervisor catches the JoinError and marks the session
+                    // error so it can't stay stuck in `working`.
+                    tokio::spawn(async move {
+                        let run_iii = bg_iii.clone();
+                        let inner = tokio::spawn(grok::run(run_iii, cfg, started));
+                        match inner.await {
+                            Ok(res) => {
+                                if res.get("is_error").and_then(Value::as_bool) == Some(true) {
+                                    mark_error(&bg_iii, &bg_id).await;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(session_id = %bg_id, error = %e, "grok::start task panicked");
+                                mark_error(&bg_iii, &bg_id).await;
+                            }
+                        }
+                    });
+                    Ok::<Value, Error>(json!({ "session_id": session_id, "started": true }))
+                }
+            })
+            .request_format(schema_value::<RunRequest>())
+            .response_format(json!({
+                "type": "object",
+                "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
+            }))
+            .description(
+                "Start a Grok turn and return immediately; watch grok::events / agent::events \
+                 (group_id = session_id) for progress and turn_end.",
+            ),
+        );
+    }
+
+    // grok::stop — interrupt a live run.
+    iii.register_function(
+        "grok::stop",
+        RegisterFunction::new_async(move |req: SessionIdRequest| async move {
+            let stopped = grok::stop(&req.session_id).await;
+            Ok::<Value, Error>(json!({
+                "session_id": req.session_id,
+                "stopped": stopped,
+                "reason": if stopped { Value::Null } else { json!("no live run") },
+            }))
+        })
+        .request_format(schema_value::<SessionIdRequest>())
+        .response_format(json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string" },
+                "stopped": { "type": "boolean" },
+                "reason": { "type": "string" },
+            },
+        }))
+        .description("Interrupt a live Grok run for a session."),
+    );
+
+    // grok::status — point-in-time session view.
+    {
+        let iii_h = iii.clone();
+        iii.register_function(
+            "grok::status",
+            RegisterFunction::new_async(move |req: SessionIdRequest| {
+                let iii_h = iii_h.clone();
+                async move {
+                    let record = load_session(&iii_h, &req.session_id).await.ok().flatten();
+                    let live = grok::is_live(&req.session_id).await;
+                    Ok::<Value, Error>(json!({
+                        "session_id": req.session_id,
+                        "live": live,
+                        "record": record,
+                    }))
+                }
+            })
+            .request_format(schema_value::<SessionIdRequest>())
+            .response_format(json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "live": { "type": "boolean" },
+                    "record": { "type": ["object", "null"] },
+                },
+            }))
+            .description("Point-in-time status of a Grok session."),
+        );
+    }
+
+    // grok::sessions::list — every session this worker has run.
+    {
+        let iii_h = iii.clone();
+        iii.register_function(
+            "grok::sessions::list",
+            RegisterFunction::new_async(move |_req: Value| {
+                let iii_h = iii_h.clone();
+                async move {
+                    let sessions = list_sessions(&iii_h).await.unwrap_or_default();
+                    Ok::<Value, Error>(json!({ "sessions": sessions }))
+                }
+            })
+            .request_format(json!({ "type": "object", "properties": {} }))
+            .response_format(json!({
+                "type": "object",
+                "properties": { "sessions": { "type": "array", "items": { "type": "object" } } },
+            }))
+            .description("List every Grok session this worker has run."),
+        );
+    }
+}
