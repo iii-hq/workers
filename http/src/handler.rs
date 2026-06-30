@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
+use crate::middleware::{self, MiddlewareOutcome};
 use crate::trigger::RouteTable;
 use crate::types::{HttpRequest, HttpResponse, TriggerMetadata};
 
@@ -71,6 +72,47 @@ pub async fn dynamic_handler(
     let Some((route, path_params)) = matched else {
         return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found");
     };
+
+    // Global middleware (config-driven, sorted by priority at config-load
+    // time), run before the matched route's per-route middleware and handler.
+    for mw in state
+        .config
+        .middleware
+        .iter()
+        .filter(|mw| mw.phase == "preHandler")
+    {
+        let mw_input =
+            middleware::build_middleware_input(&path_params, &query_params, &headers, method.as_str());
+        match middleware::execute_middleware(
+            &state.iii,
+            &mw.function_id,
+            mw_input,
+            state.config.default_timeout,
+        )
+        .await
+        {
+            Ok(MiddlewareOutcome::Continue) => {}
+            Err(response) => return response,
+        }
+    }
+
+    // Per-route middleware (trigger config-driven), run after the route match,
+    // before invoking the handler.
+    for mw_fn_id in &route.middleware_function_ids {
+        let mw_input =
+            middleware::build_middleware_input(&path_params, &query_params, &headers, method.as_str());
+        match middleware::execute_middleware(
+            &state.iii,
+            mw_fn_id,
+            mw_input,
+            state.config.default_timeout,
+        )
+        .await
+        {
+            Ok(MiddlewareOutcome::Continue) => {}
+            Err(response) => return response,
+        }
+    }
 
     // Read the full body and parse as JSON; empty/invalid bodies become null.
     let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
