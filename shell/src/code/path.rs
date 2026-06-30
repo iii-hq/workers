@@ -27,6 +27,7 @@
 //! old MIRROR-INVARIANT between two copies is gone).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -432,6 +433,67 @@ impl PathResolver {
             None => self.require_writable(rel),
         }
     }
+
+    /// Clone this resolver with `base_canon` ADDED to the allowed roots —
+    /// the per-session working directory the harness scoped the call to.
+    /// A *selected* directory is thereby folded into the jail, so every
+    /// downstream check treats it as a first-class root: containment in
+    /// [`resolve`]/[`resolve_in`], the non-accessible denylist (which
+    /// relativises via [`containing_root`]), [`is_root`], and
+    /// [`session_root`]. No-op (the root is not duplicated) when
+    /// `base_canon` already sits inside a configured root — the existing
+    /// in-jail behaviour is byte-for-byte unchanged.
+    ///
+    /// [`resolve`]: Self::resolve
+    /// [`resolve_in`]: Self::resolve_in
+    /// [`containing_root`]: Self::containing_root
+    /// [`is_root`]: Self::is_root
+    /// [`session_root`]: Self::session_root
+    fn with_session_root(&self, base_canon: PathBuf) -> Self {
+        let mut roots_canon = self.roots_canon.clone();
+        if !roots_canon.iter().any(|r| base_canon.starts_with(r)) {
+            roots_canon.push(base_canon);
+        }
+        Self {
+            roots_canon,
+            non_accessible: self.non_accessible.clone(),
+            default_exclude: self.default_exclude.clone(),
+            default_exclude_dirs: self.default_exclude_dirs.clone(),
+        }
+    }
+
+    /// Per-call jail for a session scoped to `base_dir`: returns a resolver
+    /// whose roots include the SELECTED working directory, so a directory
+    /// the operator picked in the console (delivered as `base_dir`) is
+    /// reachable instead of rejected with C215.
+    ///
+    /// Returns the shared resolver UNCHANGED when there is no `base_dir`,
+    /// when `base_dir` already canonicalises inside a configured root (the
+    /// common case — only an `Arc` bump), or when it cannot be
+    /// canonicalised (the handler's own `resolve_in` then produces the
+    /// precise error). Only when the selected directory sits OUTSIDE the
+    /// configured jail is it added via [`with_session_root`].
+    ///
+    /// This is safe to widen on: `base_dir` is stamped by the harness
+    /// control plane (workspace injection), never by the model, so only
+    /// operator-chosen directories grow the jail — and `resolve_in` still
+    /// scopes access to the session directory, while the non-accessible
+    /// denylist still applies because the selected directory is now a real
+    /// root.
+    ///
+    /// [`with_session_root`]: Self::with_session_root
+    pub fn session_scoped(self: &Arc<Self>, base_dir: Option<&str>) -> Arc<Self> {
+        let Some(bd) = base_dir else {
+            return self.clone();
+        };
+        let Ok(base_canon) = self.canonicalize_wire(bd, Path::new(bd)) else {
+            return self.clone();
+        };
+        if self.containing_root(&base_canon).is_some() {
+            return self.clone();
+        }
+        Arc::new(self.with_session_root(base_canon))
+    }
 }
 
 fn compile_globset(patterns: &[String], key: &str) -> Result<GlobSet, CoderError> {
@@ -719,6 +781,50 @@ mod tests {
             .unwrap();
         assert!(r.is_non_accessible(&abs_a), ".env in root[0] must match");
         assert!(r.is_non_accessible(&abs_b), ".env in root[1] must match");
+    }
+
+    #[test]
+    fn session_scoped_adds_selected_dir_outside_jail() {
+        // A directory the operator selects (delivered as `base_dir`) that
+        // lives OUTSIDE the configured jail must become reachable — added
+        // into the effective roots — while the denylist still applies and
+        // access stays scoped to that directory.
+        let jail = tempdir().unwrap();
+        let selected = tempdir().unwrap();
+        std::fs::write(selected.path().join("a.txt"), b"x").unwrap();
+        std::fs::write(selected.path().join(".env"), b"secret").unwrap();
+        let r = std::sync::Arc::new(
+            PathResolver::new(&cfg_roots(vec![jail.path().to_path_buf()], vec!["**/.env"]))
+                .unwrap(),
+        );
+        let sel = selected.path().display().to_string();
+
+        // Before scoping: the selected dir is outside every allowed root.
+        assert!(
+            r.resolve_in(&sel, "a.txt").is_err(),
+            "selected dir outside the jail must reject until added"
+        );
+
+        // session_scoped folds the selected dir into the jail roots.
+        let scoped = r.session_scoped(Some(&sel));
+        let abs = scoped
+            .resolve_in(&sel, "a.txt")
+            .expect("selected dir reachable once added to host_roots");
+        assert!(abs.starts_with(canon(selected.path())));
+
+        // The non-accessible denylist still guards the added root.
+        let env_abs = scoped.resolve_in(&sel, ".env").unwrap();
+        assert!(
+            scoped.is_non_accessible(&env_abs),
+            "**/.env must still be blocked inside the selected dir"
+        );
+
+        // A base_dir already inside a configured root is a no-op.
+        let inside = r.session_scoped(Some(&jail.path().display().to_string()));
+        assert_eq!(inside.roots().len(), r.roots().len());
+
+        // No base_dir is a no-op too.
+        assert_eq!(r.session_scoped(None).roots().len(), r.roots().len());
     }
 
     #[test]
