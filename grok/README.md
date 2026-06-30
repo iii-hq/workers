@@ -65,6 +65,12 @@ iii trigger grok::stop session_id=<session_id>
 iii trigger grok::run --help
 ```
 
+A turn from the CLI, and the published request schema served by `--help`:
+
+![iii trigger grok::run returning the result over the bus](https://raw.githubusercontent.com/iii-hq/workers/main/grok/assets/cli-run.png)
+
+![iii trigger grok::run --help printing the typed request schema as a parameter table](https://raw.githubusercontent.com/iii-hq/workers/main/grok/assets/cli-help.png)
+
 Call `grok::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Grok session ids in engine state and resumes automatically (sessions persist in `~/.grok/sessions`).
 
 Two ids come back from every run. `session_id` is the iii session id: the key for `grok::status`, `grok::stop`, resume, and the stream group. `grok_thread_id` is Grok's own session id (what the worker passes to `--resume` on the next turn) — returned for reference, not a lookup key.
@@ -116,6 +122,10 @@ By default every turn carries the iii runtime context, prepended to the prompt o
 iii trigger grok::run --timeout-ms 300000 \
   --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
+
+With the context on, Grok reaches for `iii trigger engine::workers::list` itself and reports the live mesh — every worker and what it does — instead of guessing from `ps` and config files:
+
+![Grok answering a live-system question by querying the engine through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/grok/assets/iii-context.png)
 
 The context is injected once at the start of a session; resumed turns rely on the existing session history. Turn it off per call with `"iii_context": false` or globally in `config.yaml`.
 
