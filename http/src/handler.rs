@@ -1,17 +1,28 @@
-//! Buffered request handler.
+//! Request handler with streaming request/response over SDK channels.
 //!
-//! Ported from the in-engine `iii-http` `dynamic_handler` (`views.rs`),
-//! reduced to the buffered path: read the whole request body, invoke the
-//! target function over the bus, turn its return value into an HTTP response.
+//! Ported from the in-engine `iii-http` `dynamic_handler` (`views.rs`). For
+//! every request the worker creates two SDK channels via
+//! [`iii_sdk::helpers::create_channel`]:
 //!
-//! **No streaming in this phase.** `HttpRequest` carries non-`Option`
-//! `request_body` / `response` [`StreamChannelRef`] fields (wire fidelity with
-//! the builtin). Here we fill them with `StreamChannelRef::default()`
-//! placeholders -- the buffered backend never reads them. Fase 7 replaces this
-//! with a real `create_channel` pair and the streaming dispatch path.
+//! - **request-body channel**: the worker WRITES the request body; the target
+//!   function READS it. The worker keeps `req.writer` and passes
+//!   `req.reader_ref` to the function as [`HttpRequest::request_body`].
+//! - **response channel**: the target function WRITES the response; the worker
+//!   READS it. The worker keeps `res.reader` and passes `res.writer_ref` to the
+//!   function as [`HttpRequest::response`].
+//!
+//! This mirrors the engine's `take_sender`/`take_receiver` semantics exactly
+//! (engine `views.rs:391-466`).
+//!
+//! The worker then races the response channel against the function invocation:
+//! a function that writes to the response channel streams its body (control
+//! Text messages set status/headers, Binary frames carry the body); a function
+//! that returns a non-null value without touching the channel produces a
+//! buffered response (backward-compatible path).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::convert::Infallible;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use axum::{
     Extension,
@@ -21,16 +32,17 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use iii_sdk::IIIClient;
-use iii_sdk::channel::StreamChannelRef;
+use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::TriggerRequest;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 
 use crate::condition::check_condition;
 use crate::config::RestApiConfig;
 use crate::middleware::{self, MiddlewareOutcome, error_body, generate_error_id};
 use crate::trigger::RouteTable;
-use crate::types::{HttpRequest, HttpResponse, TriggerMetadata};
+use crate::types::{ControlMessage, HttpRequest, HttpResponse, TriggerMetadata};
 
 /// Shared state injected into the handler via an axum `Extension`.
 pub struct AppState {
@@ -39,9 +51,13 @@ pub struct AppState {
     pub config: RestApiConfig,
 }
 
-/// Maximum request body size read into memory (buffered path). Matches a
-/// conservative default; streaming bodies arrive in Fase 7.
+/// Maximum request body size read into memory before it is streamed into the
+/// request-body channel.
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Channel buffer size for both request-body and response channels (matches the
+/// engine default in `views.rs`).
+const CHANNEL_BUFFER: usize = 64;
 
 /// Standardized error envelope, identical in shape to the engine's:
 /// `{"error": {"code", "message"}}`.
@@ -53,9 +69,32 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// Apply a parsed control message to the accumulated response status/headers.
+///
+/// Field-tolerant by construction: a `SetHeaders` with non-string values keeps
+/// the valid entries and skips the rest. Malformed messages never reach this
+/// function -- [`ControlMessage::parse`] rejects them and the caller logs+skips,
+/// carrying the current status/headers forward (engine `apply_control_message`
+/// tolerance).
+fn apply_control(msg: ControlMessage, status_code: &mut u16, headers: &mut HashMap<String, String>) {
+    match msg {
+        ControlMessage::SetStatus { status_code: sc } => *status_code = sc,
+        ControlMessage::SetHeaders { headers: h } => {
+            if let Some(obj) = h.as_object() {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        headers.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Catch-all (fallback) handler. Matches the request against the route table
-/// and, on a hit, invokes the bound function and maps its return value to an
-/// HTTP response. Unmatched requests get the stable `NOT_FOUND` envelope.
+/// and, on a hit, invokes the bound function and maps its return value (or its
+/// streamed response channel output) to an HTTP response. Unmatched requests
+/// get the stable `NOT_FOUND` envelope.
 pub async fn dynamic_handler(
     Extension(state): Extension<Arc<AppState>>,
     method: Method,
@@ -97,10 +136,11 @@ pub async fn dynamic_handler(
         }
     }
 
-    // Read the full body and parse as JSON; empty/invalid bodies become null.
-    let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
-        Ok(bytes) if bytes.is_empty() => Value::Null,
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    // Read the full body. Empty/invalid bodies parse to null for the
+    // backward-compatible `body` field; the raw bytes are streamed into the
+    // request-body channel regardless.
+    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+        Ok(bytes) => bytes,
         Err(_) => {
             return error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -109,6 +149,53 @@ pub async fn dynamic_handler(
             );
         }
     };
+    let parsed_body: Value = if body_bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body_bytes).unwrap_or(Value::Null)
+    };
+
+    // Create the request-body and response channels. The worker keeps the
+    // request-body writer and the response reader; the matching refs are handed
+    // to the function (see module docs for the direction mapping).
+    let req_channel = match create_channel(&state.iii, Some(CHANNEL_BUFFER)).await {
+        Ok(c) => c,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &format!("failed to create request channel: {e}"),
+            );
+        }
+    };
+    let res_channel = match create_channel(&state.iii, Some(CHANNEL_BUFFER)).await {
+        Ok(c) => c,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &format!("failed to create response channel: {e}"),
+            );
+        }
+    };
+
+    let req_writer = req_channel.writer;
+    let req_reader_ref = req_channel.reader_ref;
+    let res_reader = res_channel.reader;
+    let res_writer_ref = res_channel.writer_ref;
+
+    // Stream the request body into the request-body channel, then close it so
+    // the function's reader observes EOF. Detached: the function reads it
+    // concurrently and the response path must not block on it.
+    {
+        let bytes = body_bytes.clone();
+        tokio::spawn(async move {
+            if !bytes.is_empty() {
+                let _ = req_writer.write(&bytes).await;
+            }
+            let _ = req_writer.close().await;
+        });
+    }
 
     let header_map: HashMap<String, String> = headers
         .iter()
@@ -121,16 +208,14 @@ pub async fn dynamic_handler(
         headers: header_map,
         path: route.http_path.clone(),
         method: method.as_str().to_string(),
-        body,
+        body: parsed_body,
         trigger: Some(TriggerMetadata {
             trigger_type: "http".to_string(),
             path: Some(actual_path),
             method: Some(method.as_str().to_string()),
         }),
-        // Buffered phase: placeholder channel refs (see module docs). The
-        // backend does not read these; Fase 7 wires real channels.
-        request_body: StreamChannelRef::default(),
-        response: StreamChannelRef::default(),
+        request_body: req_reader_ref,
+        response: res_writer_ref,
     };
 
     let payload = match serde_json::to_value(&request) {
@@ -146,8 +231,8 @@ pub async fn dynamic_handler(
 
     // Conditional execution (trigger config-driven), runs after global
     // middleware and before per-route middleware/handler. The condition
-    // function receives the serialized request minus the buffered-phase
-    // channel placeholders, which carry no useful signal.
+    // function receives the serialized request minus the channel refs, which
+    // carry no useful signal.
     if let Some(condition_id) = &route.condition_function_id {
         let mut condition_input = payload.clone();
         if let Some(obj) = condition_input.as_object_mut() {
@@ -170,6 +255,7 @@ pub async fn dynamic_handler(
                     condition_function_id = %condition_id,
                     "Condition check failed, skipping handler"
                 );
+                drop(res_reader);
                 let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
                 body["skipped"] = json!(true);
                 return (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response();
@@ -182,6 +268,7 @@ pub async fn dynamic_handler(
                     error_id = %error_id,
                     "Error invoking condition function"
                 );
+                drop(res_reader);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
@@ -209,24 +296,177 @@ pub async fn dynamic_handler(
         .await
         {
             Ok(MiddlewareOutcome::Continue) => {}
-            Err(response) => return response,
+            Err(response) => {
+                drop(res_reader);
+                return response;
+            }
         }
     }
 
-    let result = state
-        .iii
-        .trigger(TriggerRequest {
-            function_id: route.function_id.clone(),
-            payload,
-            action: None,
-            timeout_ms: Some(state.config.default_timeout),
-        })
-        .await;
+    // Accumulated response control state. Text control messages on the response
+    // channel are dispatched (in order, ahead of the next Binary frame) to the
+    // `on_message` callback, which updates this shared state. A malformed
+    // control message is logged and skipped -- it never kills the stream
+    // (carry-forward: the current status/headers stay in effect).
+    let control = Arc::new(StdMutex::new((200u16, HashMap::<String, String>::new())));
+    {
+        let control = control.clone();
+        res_reader
+            .on_message(move |text| match ControlMessage::parse(&text) {
+                Some(msg) => {
+                    if let Ok(mut guard) = control.lock() {
+                        let (status, headers) = &mut *guard;
+                        apply_control(msg, status, headers);
+                    }
+                }
+                None => {
+                    tracing::warn!(msg = %text, "Response channel: skipping malformed control message");
+                }
+            })
+            .await;
+    }
 
-    match result {
-        Ok(value) => HttpResponse::from_function_return(value).into_axum_response(),
-        Err(e) => {
-            tracing::error!(function_id = %route.function_id, error = %e, "function invocation failed");
+    // Forward Binary frames off the response reader into an mpsc channel. This
+    // keeps the reader off the `select!` (its `next_binary` future is not
+    // cancellation-safe), so racing the channel against the invocation cannot
+    // corrupt the reader. Text frames are consumed internally by `next_binary`
+    // and applied via the callback above. The task ends (dropping the reader,
+    // closing its socket) when the function closes the response channel.
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER);
+    let forward = tokio::spawn(async move {
+        loop {
+            match res_reader.next_binary().await {
+                Ok(Some(data)) => {
+                    if tx.send(data).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+    });
+
+    // Spawn the invocation so it runs concurrently with draining the response
+    // channel.
+    let mut call = {
+        let iii = state.iii.clone();
+        let function_id = route.function_id.clone();
+        let timeout_ms = state.config.default_timeout;
+        tokio::spawn(async move {
+            iii.trigger(TriggerRequest {
+                function_id,
+                payload,
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            })
+            .await
+        })
+    };
+
+    // Race the response channel against the invocation result.
+    //
+    // - A Binary frame -> the function is streaming; begin building the body.
+    // - The invocation completing with a non-null value -> buffered response
+    //   (the function never touched the channel).
+    // - The invocation completing with `null` -> the function streamed (or
+    //   produced no body); drain the remaining channel frames into the body.
+    // Biased: prefer a ready channel frame over the invocation result, so a
+    // streaming function's first Binary frame wins the race even if its return
+    // value arrives in the same poll. All arms either capture the first chunk
+    // (then fall through to build the streaming body) or return outright.
+    let first_chunk: Option<Vec<u8>> = tokio::select! {
+        biased;
+        item = rx.recv() => item, // Some -> stream body; None -> closed, empty body
+        result = &mut call => {
+            match result {
+                Ok(Ok(value)) => {
+                    if value.is_null() {
+                        // Streamed (or empty) body -- drain the channel below.
+                        None
+                    } else {
+                        // Buffered response: the function returned a value
+                        // without streaming. Abort the (idle) reader task.
+                        forward.abort();
+                        return HttpResponse::from_function_return(value).into_axum_response();
+                    }
+                }
+                Ok(Err(err)) => {
+                    forward.abort();
+                    let error_id = generate_error_id();
+                    tracing::error!(
+                        function_id = %route.function_id,
+                        error = %err,
+                        error_id = %error_id,
+                        "function invocation failed"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
+                    )
+                        .into_response();
+                }
+                Err(join_err) => {
+                    forward.abort();
+                    let error_id = generate_error_id();
+                    tracing::error!(
+                        function_id = %route.function_id,
+                        error = %join_err,
+                        error_id = %error_id,
+                        "function invocation task panicked"
+                    );
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        "Internal Server Error",
+                    );
+                }
+            }
+        }
+    };
+
+    // Streaming response. The invocation handle is left to complete on its own
+    // (the function's return value is irrelevant once it streams); the forward
+    // task keeps feeding `rx` until the function closes the channel.
+    let (status_code, response_headers) = {
+        let guard = control.lock().expect("control mutex poisoned");
+        (guard.0, guard.1.clone())
+    };
+
+    let stream = futures::stream::unfold(
+        (first_chunk, rx),
+        |(pending, mut rx)| async move {
+            if let Some(chunk) = pending {
+                return Some((Ok::<Vec<u8>, Infallible>(chunk), (None, rx)));
+            }
+            rx.recv().await.map(|data| (Ok(data), (None, rx)))
+        },
+    );
+
+    let mut builder = axum::http::Response::builder()
+        .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK));
+    for (k, v) in &response_headers {
+        match (
+            axum::http::header::HeaderName::try_from(k.as_str()),
+            axum::http::header::HeaderValue::try_from(v.as_str()),
+        ) {
+            (Ok(name), Ok(value)) => {
+                builder = builder.header(name, value);
+            }
+            _ => {
+                tracing::warn!(header_name = %k, "Skipping invalid response header");
+            }
+        }
+    }
+
+    match builder.body(Body::from_stream(stream)) {
+        Ok(resp) => resp.into_response(),
+        Err(err) => {
+            let error_id = generate_error_id();
+            tracing::error!(
+                error = ?err,
+                error_id = %error_id,
+                "Failed to build streaming response"
+            );
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
