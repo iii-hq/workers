@@ -11,6 +11,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenBlock {
+    Thinking,
     Text,
     Call(usize),
 }
@@ -24,6 +25,8 @@ struct PartialFunctionCall {
 
 pub struct PartialState {
     text: String,
+    /// Accumulated `delta.reasoning_content` (xAI reasoning models).
+    thinking: String,
     function_calls: Vec<PartialFunctionCall>,
     open_block: Option<OpenBlock>,
     usage: Usage,
@@ -38,6 +41,7 @@ impl PartialState {
     pub fn new(warnings: Vec<String>) -> Self {
         PartialState {
             text: String::new(),
+            thinking: String::new(),
             function_calls: Vec::new(),
             open_block: None,
             usage: Usage::default(),
@@ -72,6 +76,12 @@ pub fn empty_assistant(model: &str) -> AssistantMessage {
 
 fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     let mut out = Vec::new();
+    if !state.thinking.is_empty() {
+        out.push(ContentBlock::Thinking {
+            text: state.thinking.clone(),
+            signature: None,
+        });
+    }
     if !state.text.is_empty() {
         out.push(ContentBlock::Text {
             text: state.text.clone(),
@@ -178,6 +188,9 @@ fn close_open_block(
     events: &mut Vec<AssistantMessageEvent>,
 ) {
     match state.open_block.take() {
+        Some(OpenBlock::Thinking) => events.push(AssistantMessageEvent::ThinkingEnd {
+            partial: build_partial(state, model),
+        }),
         Some(OpenBlock::Text) => events.push(AssistantMessageEvent::TextEnd {
             partial: build_partial(state, model),
         }),
@@ -226,6 +239,25 @@ pub fn handle_chunk(
     };
 
     if let Some(delta) = choice.get("delta") {
+        // xAI reasoning models stream chain-of-thought as `reasoning_content`
+        // deltas ahead of the answer `content`. Surface it as a thinking block
+        // so the console renders the thoughts instead of a bare "thinking…".
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+            if !reasoning.is_empty() {
+                if state.open_block != Some(OpenBlock::Thinking) {
+                    close_open_block(state, model, &mut events);
+                    state.open_block = Some(OpenBlock::Thinking);
+                    events.push(AssistantMessageEvent::ThinkingStart {
+                        partial: build_partial(state, model),
+                    });
+                }
+                state.thinking.push_str(reasoning);
+                events.push(AssistantMessageEvent::ThinkingDelta {
+                    partial: build_partial(state, model),
+                    delta: reasoning.to_string(),
+                });
+            }
+        }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             if !text.is_empty() {
                 if state.open_block != Some(OpenBlock::Text) {
@@ -314,6 +346,9 @@ mod tests {
                 AssistantMessageEvent::TextStart { .. } => "text_start",
                 AssistantMessageEvent::TextDelta { .. } => "text_delta",
                 AssistantMessageEvent::TextEnd { .. } => "text_end",
+                AssistantMessageEvent::ThinkingStart { .. } => "thinking_start",
+                AssistantMessageEvent::ThinkingDelta { .. } => "thinking_delta",
+                AssistantMessageEvent::ThinkingEnd { .. } => "thinking_end",
                 AssistantMessageEvent::FunctioncallStart { .. } => "functioncall_start",
                 AssistantMessageEvent::FunctioncallDelta { .. } => "functioncall_delta",
                 AssistantMessageEvent::FunctioncallEnd { .. } => "functioncall_end",
@@ -358,6 +393,39 @@ mod tests {
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));
+    }
+
+    #[test]
+    fn reasoning_content_streams_as_thinking_block_before_text() {
+        let (state, events) = run(&[
+            json!({"choices":[{"index":0,"delta":{"reasoning_content":"let me "}}]}),
+            json!({"choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"42"}}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+        ]);
+        assert_eq!(
+            tags(&events),
+            vec![
+                "thinking_start",
+                "thinking_delta",
+                "thinking_delta",
+                "thinking_end",
+                "text_start",
+                "text_delta",
+                "text_end",
+            ]
+        );
+        let final_msg = build_final(&state, "grok-test");
+        assert_eq!(
+            final_msg.content,
+            vec![
+                ContentBlock::Thinking {
+                    text: "let me think".into(),
+                    signature: None,
+                },
+                ContentBlock::Text { text: "42".into() },
+            ]
+        );
     }
 
     #[test]

@@ -33,10 +33,19 @@ pub fn classify_bus_error(err: &Error) -> ErrorKind {
     }
 }
 
-/// The xAI error envelope: `{ "error": { "message", "type", "code" } }`.
-/// `code` is the precise signal; `type` and the message text are fallbacks.
+/// xAI sends two error envelopes: OpenAI-style
+/// `{ "error": { "message", "type", "code" } }` and gRPC-style
+/// `{ "code": "invalid-argument", "error": "<message>" }`. `code` is the
+/// precise signal; `type` and the message text are fallbacks.
 fn classify_xai_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
     let err = v.get("error")?;
+    // Envelope 2: `error` is a bare string message — sniff it directly.
+    if let Some(text) = err.as_str() {
+        if is_context_overflow_message(text) {
+            return Some(ErrorKind::ContextOverflow);
+        }
+        return None;
+    }
     let code = err.get("code").and_then(Value::as_str).unwrap_or("");
     let err_type = err.get("type").and_then(Value::as_str).unwrap_or("");
     let msg = err.get("message").and_then(Value::as_str).unwrap_or("");
@@ -70,6 +79,11 @@ fn is_context_overflow_message(message: &str) -> bool {
         || m.contains("too many tokens")
         || m.contains("exceeds context")
         || m.contains("context window")
+        // xAI phrasing: "This model's maximum prompt length is 256000 but the
+        // request contains N tokens." — different envelope + wording than the
+        // OpenAI-style context_length_exceeded code.
+        || m.contains("maximum prompt length")
+        || m.contains("prompt is too long")
 }
 
 /// Invalid handler input surfaced on the bus in the `{ code, message }`
@@ -125,6 +139,15 @@ mod tests {
 
         let body = r#"{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","code":"invalid_api_key"}}"#;
         assert_eq!(classify(Some(401), body), ErrorKind::AuthExpired);
+    }
+
+    #[test]
+    fn xai_grpc_style_prompt_length_overflow_is_context_overflow() {
+        // The real envelope grok-build returns on prompt overflow: top-level
+        // `code`, `error` as a bare string. Must classify as ContextOverflow so
+        // the harness compacts and retries instead of failing the turn.
+        let body = r#"{"code":"invalid-argument","error":"This model's maximum prompt length is 256000 but the request contains 295444 tokens."}"#;
+        assert_eq!(classify(Some(400), body), ErrorKind::ContextOverflow);
     }
 
     #[test]
