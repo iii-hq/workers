@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use axum::{
     Extension,
@@ -334,14 +335,9 @@ pub async fn dynamic_handler(
     // closing its socket) when the function closes the response channel.
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER);
     let forward = tokio::spawn(async move {
-        loop {
-            match res_reader.next_binary().await {
-                Ok(Some(data)) => {
-                    if tx.send(data).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(None) | Err(_) => break,
+        while let Ok(Some(data)) = res_reader.next_binary().await {
+            if tx.send(data).await.is_err() {
+                break;
             }
         }
     });
@@ -363,6 +359,15 @@ pub async fn dynamic_handler(
         })
     };
 
+    // Overall bound for the streaming drain. The engine bounds an open response
+    // channel via `channel_mgr.remove_channel` (drops the origin sender, forcing
+    // EOF). The SDK exposes no worker-side `remove_channel`, so the worker cannot
+    // replicate that and would otherwise hang the client forever on a
+    // null-returning function that never closes its writer. Instead we bound each
+    // `rx.recv()` wait with the request timeout as an *idle* timeout (simplest
+    // safe choice: total-timeout would penalize legitimate slow long streams).
+    let stream_timeout = Duration::from_millis(state.config.default_timeout);
+
     // Race the response channel against the invocation result.
     //
     // - A Binary frame -> the function is streaming; begin building the body.
@@ -372,17 +377,24 @@ pub async fn dynamic_handler(
     //   produced no body); drain the remaining channel frames into the body.
     // Biased: prefer a ready channel frame over the invocation result, so a
     // streaming function's first Binary frame wins the race even if its return
-    // value arrives in the same poll. All arms either capture the first chunk
-    // (then fall through to build the streaming body) or return outright.
-    let first_chunk: Option<Vec<u8>> = tokio::select! {
+    // value arrives in the same poll.
+    enum Race {
+        /// The channel produced first: `Some(chunk)` body data, or `None` if it
+        /// closed with no body. Control preceding this point is already applied.
+        Chunk(Option<Vec<u8>>),
+        /// The invocation returned `null` first: the body (and any control) may
+        /// still be in flight on the channel socket -- drain before snapshotting.
+        Streamed,
+    }
+
+    let race = tokio::select! {
         biased;
-        item = rx.recv() => item, // Some -> stream body; None -> closed, empty body
+        item = rx.recv() => Race::Chunk(item),
         result = &mut call => {
             match result {
                 Ok(Ok(value)) => {
                     if value.is_null() {
-                        // Streamed (or empty) body -- drain the channel below.
-                        None
+                        Race::Streamed
                     } else {
                         // Buffered response: the function returned a value
                         // without streaming. Abort the (idle) reader task.
@@ -424,21 +436,58 @@ pub async fn dynamic_handler(
         }
     };
 
+    // Bug-1 fix: when the invocation result wins the race, control messages
+    // (`set_status`/`set_headers`) may still be travelling the separate channel
+    // socket. Do NOT snapshot status/headers yet -- wait for the first body
+    // chunk first. The forward task folds each control Text into `control`
+    // synchronously (inside `next_binary`) before yielding the Binary that
+    // follows it, so once a chunk is observed all preceding control is applied.
+    // Bug-2 fix: bound this wait with `stream_timeout` (see above).
+    let first_chunk: Option<Vec<u8>> = match race {
+        Race::Chunk(item) => item,
+        Race::Streamed => match tokio::time::timeout(stream_timeout, rx.recv()).await {
+            Ok(item) => item,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = state.config.default_timeout,
+                    function_id = %route.function_id,
+                    "Streaming drain timed out waiting for first frame; ending stream"
+                );
+                forward.abort();
+                None
+            }
+        },
+    };
+
     // Streaming response. The invocation handle is left to complete on its own
     // (the function's return value is irrelevant once it streams); the forward
-    // task keeps feeding `rx` until the function closes the channel.
+    // task keeps feeding `rx` until the function closes the channel. Snapshot
+    // status/headers now -- all control preceding `first_chunk` is applied.
     let (status_code, response_headers) = {
         let guard = control.lock().expect("control mutex poisoned");
         (guard.0, guard.1.clone())
     };
 
+    // Abort handle so the unfold can stop the forward task on idle timeout (the
+    // forward task may be parked in `next_binary` and would not observe `rx`
+    // being dropped). Dropping the `forward` JoinHandle itself does not abort it.
+    let forward_abort = forward.abort_handle();
     let stream = futures::stream::unfold(
-        (first_chunk, rx),
-        |(pending, mut rx)| async move {
+        (first_chunk, rx, forward_abort),
+        move |(pending, mut rx, abort)| async move {
             if let Some(chunk) = pending {
-                return Some((Ok::<Vec<u8>, Infallible>(chunk), (None, rx)));
+                return Some((Ok::<Vec<u8>, Infallible>(chunk), (None, rx, abort)));
             }
-            rx.recv().await.map(|data| (Ok(data), (None, rx)))
+            // Bug-2 fix: idle-bound each subsequent frame wait.
+            match tokio::time::timeout(stream_timeout, rx.recv()).await {
+                Ok(Some(data)) => Some((Ok(data), (None, rx, abort))),
+                Ok(None) => None,
+                Err(_) => {
+                    tracing::warn!("Streaming drain idle timeout; ending stream");
+                    abort.abort();
+                    None
+                }
+            }
         },
     );
 

@@ -54,6 +54,50 @@ async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_meth
     .expect("register http trigger for stream backend");
 }
 
+/// Register a function that forces the "trigger result wins the race" ordering:
+/// it returns `null` *immediately*, then -- from a detached task, after a delay
+/// -- sends `set_status 201` + two body chunks on the response channel. Because
+/// the trigger return reliably beats the first channel frame, the worker must
+/// drain control before snapshotting status/headers (Bug 1). If it snapshots
+/// early the client sees 200 instead of 201.
+async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
+    let function_id = format!("test.late_stream {http_method} {api_path}");
+    let ws_url = engine::ws_url();
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |req: HttpRequest| {
+            let ws_url = ws_url.clone();
+            let response_ref = req.response.clone();
+            async move {
+                tokio::spawn(async move {
+                    // Delay so the immediate `null` return wins the worker's
+                    // select race before any frame reaches the response channel.
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    let writer = ChannelWriter::new(&ws_url, &response_ref);
+                    let _ = writer
+                        .send_message(
+                            &json!({ "type": "set_status", "status_code": 201 }).to_string(),
+                        )
+                        .await;
+                    let _ = writer.write(b"late-1").await;
+                    let _ = writer.write(b"late-2").await;
+                    let _ = writer.close().await;
+                });
+                Ok::<Value, Error>(Value::Null)
+            }
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        function_id,
+        config: json!({ "api_path": api_path, "http_method": http_method }),
+        metadata: None,
+    })
+    .expect("register http trigger for late stream backend");
+}
+
 #[tokio::test]
 #[serial]
 async fn streamed_response_chunks_and_status() {
@@ -69,6 +113,27 @@ async fn streamed_response_chunks_and_status() {
     assert_eq!(resp.status(), 201);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "chunk-1chunk-2");
+
+    boot.shutdown().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn streamed_response_when_trigger_returns_first() {
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    register_late_stream_backend(&iii, "/late-stream", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/late-stream").await;
+
+    let url = format!("http://{}/late-stream", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    // Control (set_status 201) is sent *after* the trigger returns null; the
+    // worker must still apply it before snapshotting the response status.
+    assert_eq!(resp.status(), 201);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "late-1late-2");
 
     boot.shutdown().await;
 }
