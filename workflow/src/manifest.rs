@@ -1,0 +1,22 @@
+use crate::config::WorkerConfig;
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct ModuleManifest {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub default_config: serde_json::Value,
+    pub supported_targets: Vec<String>,
+}
+
+pub fn build_manifest() -> ModuleManifest {
+    ModuleManifest {
+        name: env!("CARGO_PKG_NAME").to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        description: "Deterministic multi-agent workflow orchestrator over harness turns."
+            .to_string(),
+        default_config: WorkerConfig::default().to_json(),
+        supported_targets: vec!["binary".into()],
+    }
+}
