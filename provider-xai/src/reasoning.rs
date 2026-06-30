@@ -2,9 +2,12 @@
 //! Each branch traces to xAI's documented behaviour — a wrong effort string
 //! fails the whole request.
 //!
-//! xAI specifics: only `grok-3-mini` accepts `reasoning_effort`, and only
-//! `low` / `high` (no minimal/medium/xhigh/none). `grok-4`/`grok-4.x` always
-//! reason but REJECT the param, so it must be omitted for them.
+//! xAI specifics (verified empirically against api.x.ai, 2026-06):
+//!   - `grok-4.3` accepts the full ladder `none`/`low`/`medium`/`high`/`xhigh`.
+//!   - `grok-3-mini` accepts `low`/`high` only.
+//!   - every other current model — `grok-build`, the `grok-4.20-*` snapshots
+//!     (reasoning, non-reasoning, multi-agent) — returns HTTP 400
+//!     "does not support parameter reasoningEffort", so the param is omitted.
 use llm_router::types::model::ThinkingLevel;
 
 /// Full effort vocabulary in ascending order (superset across families).
@@ -21,11 +24,14 @@ pub fn is_reasoning_model(model: &str, catalog_supports_thinking: Option<bool>) 
     id.starts_with("grok-4") || id.starts_with("grok-3-mini") || id.contains("code-fast")
 }
 
-/// Efforts the model family accepts; empty = don't send the param. xAI only
-/// exposes the effort knob on `grok-3-mini` (`low`/`high`). Every other family
-/// either rejects the param (grok-4.x) or is non-reasoning.
+/// Efforts the model family accepts; empty = don't send the param. Verified
+/// against api.x.ai: `grok-4.3` takes the full ladder, `grok-3-mini` takes
+/// `low`/`high`, and every other current model rejects the param with a 400.
 fn supported_efforts(model: &str) -> &'static [&'static str] {
     let id = model.to_ascii_lowercase();
+    if id.starts_with("grok-4.3") {
+        return &["none", "low", "medium", "high", "xhigh"];
+    }
     if id.starts_with("grok-3-mini") {
         return &["low", "high"];
     }
@@ -83,22 +89,32 @@ mod tests {
     }
 
     #[test]
-    fn only_grok_3_mini_takes_the_effort_param() {
+    fn effort_param_per_model_matches_api() {
+        // grok-4.3 takes the full ladder
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "grok-4.3"),
+            Some("high")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "grok-4.3"),
+            Some("xhigh")
+        );
+        // grok-3-mini takes low/high
         assert_eq!(
             reasoning_effort_for(Some(ThinkingLevel::Low), "grok-3-mini"),
             Some("low")
         );
+        // the grok-4.20-* snapshots and grok-build reject the param entirely
         assert_eq!(
-            reasoning_effort_for(Some(ThinkingLevel::High), "grok-3-mini"),
-            Some("high")
-        );
-        // grok-4 reasons but rejects the param entirely
-        assert_eq!(
-            reasoning_effort_for(Some(ThinkingLevel::High), "grok-4"),
+            reasoning_effort_for(Some(ThinkingLevel::High), "grok-4.20-0309-reasoning"),
             None
         );
         assert_eq!(
-            reasoning_effort_for(Some(ThinkingLevel::High), "grok-4.3"),
+            reasoning_effort_for(Some(ThinkingLevel::High), "grok-4.20-multi-agent-0309"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "grok-build-0.1"),
             None
         );
     }

@@ -82,6 +82,9 @@ pub fn display_for(id: &str) -> String {
 pub fn enrich(id: &str) -> Model {
     let base = base_id(id);
     let display_name = Some(display_for(id));
+    // Only grok-4.3 accepts `reasoning_effort: xhigh` (verified against api.x.ai);
+    // every other family rejects it or takes low/high only.
+    let supports_xhigh = base.to_ascii_lowercase().starts_with("grok-4.3");
     match family_meta(base) {
         Some((context_window, max_output_tokens, reasoning, vision, pricing)) => Model {
             id: id.into(),
@@ -91,7 +94,7 @@ pub fn enrich(id: &str) -> Model {
             max_output_tokens,
             input_limit: None,
             supports_thinking: Some(reasoning),
-            supports_xhigh: Some(false), // xAI reasoning_effort is low/high only
+            supports_xhigh: Some(supports_xhigh),
             supports_tools: Some(true),
             supports_vision: Some(vision),
             supports_cache: Some(true),
@@ -122,7 +125,10 @@ pub fn enrich(id: &str) -> Model {
 /// `grok-2-1212` → `grok-2`). xAI pins dated snapshots with a 4-digit
 /// month-day tail; undated aliases carry no suffix.
 pub fn base_id(id: &str) -> &str {
-    if id.len() > 5 {
+    // Guard the byte split against non-ASCII ids (custom OpenAI-compatible
+    // servers can serve arbitrarily-named models): a char-boundary check
+    // avoids a panic on a multibyte tail.
+    if id.len() > 5 && id.is_char_boundary(id.len() - 5) {
         let (head, tail) = id.split_at(id.len() - 5);
         let bytes = tail.as_bytes();
         if bytes[0] == b'-' && tail[1..].chars().all(|c| c.is_ascii_digit()) {

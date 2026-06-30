@@ -35,10 +35,13 @@ chat/reasoning families ∪ curated capability snapshot →
   strict `json_schema` mode; without one, `json_object` mode (the caller
   must mention "JSON" in the prompt per xAI's rules). Every curated
   record declares `supports_structured_output: true`.
-- **Reasoning:** `thinking_level` maps to `reasoning_effort` per model
-  family (`src/reasoning.rs` — the ladders encode real 400s: o1 and
-  chat-tuned variants take no param, pro is high-only, xhigh is gpt-5.2+).
-  No reasoning text is streamed back on Chat Completions;
+- **Reasoning:** `thinking_level` maps to `reasoning_effort` per grok family
+  (`src/reasoning.rs`, verified against api.x.ai): `grok-4.3` takes the full
+  ladder `none`/`low`/`medium`/`high`/`xhigh`, `grok-3-mini` takes `low`/`high`,
+  and every other current model (`grok-build`, the `grok-4.20-*` snapshots)
+  rejects the param with a 400, so it is omitted. Reasoning models stream their
+  chain of thought as `reasoning_content` deltas, which the worker surfaces as
+  `thinking` blocks on the channel (`src/sse.rs`);
   `completion_tokens_details.reasoning_tokens` lands on `usage.reasoning`.
 - **Prompt caching:** automatic on xAI's side — no request markers.
   `prompt_tokens_details.cached_tokens` lands on `usage.cache_read`.
