@@ -117,13 +117,20 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         }
     };
 
-    // A load failure is corruption/transient, not "no prior session": log it
-    // and proceed fresh rather than silently masking it.
+    // A load failure is corruption/transient, NOT "no prior session" (that is
+    // Ok(None)). Proceeding fresh would overwrite an existing session's turns +
+    // grok_thread_id with a blank record and break the next --resume, so fail
+    // the turn and leave the stored state untouched.
     let prior = match load_session(&iii, &session_id).await {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(session_id, error = %e, "load_session failed; proceeding without resume");
-            None
+            release(&session_id).await;
+            return json!({
+                "session_id": session_id,
+                "is_error": true,
+                "stop_reason": "error",
+                "result": format!("could not load prior session state: {e}")
+            });
         }
     };
     let prior_thread = prior.as_ref().and_then(|r| r.grok_thread_id.clone());
