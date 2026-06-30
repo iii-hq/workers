@@ -234,30 +234,78 @@ pub fn catalog() -> Vec<FunctionSpec> {
     ]
 }
 
+/// Register a coder function whose request carries a `base_dir`, folding the
+/// operator-selected session directory into the jail
+/// ([`PathResolver::session_scoped`]) ONCE — here, not copy-pasted per verb —
+/// before delegating to the typed handler. The standard arm threads the live
+/// `CoderConfig` snapshot; [`register_scoped_no_cfg`] is the variant for
+/// handlers that don't read config.
+///
+/// [`PathResolver::session_scoped`]: crate::code::path::PathResolver::session_scoped
+macro_rules! register_scoped {
+    ($iii:expr, $id:expr, $desc:expr, $resolver:expr, $cfg:expr, $req:ty, $handle:path $(,)?) => {{
+        let resolver = $resolver;
+        let cfg = $cfg;
+        $iii.register_function(
+            $id,
+            RegisterFunction::new_async(move |req: $req| {
+                let resolver = resolver.clone();
+                let cfg = cfg.clone();
+                async move {
+                    let cfg = cfg.read().await.clone();
+                    let resolver = resolver.session_scoped(req.base_dir.as_deref());
+                    $handle(resolver, cfg, req).await.map_err(Error::from)
+                }
+            })
+            .description($desc),
+        );
+    }};
+}
+
+/// `base_dir`-scoping registrar for handlers that take no `CoderConfig`.
+/// Mirrors [`register_scoped`] without the config read.
+macro_rules! register_scoped_no_cfg {
+    ($iii:expr, $id:expr, $desc:expr, $resolver:expr, $req:ty, $handle:path $(,)?) => {{
+        let resolver = $resolver;
+        $iii.register_function(
+            $id,
+            RegisterFunction::new_async(move |req: $req| {
+                let resolver = resolver.clone();
+                async move {
+                    let resolver = resolver.session_scoped(req.base_dir.as_deref());
+                    $handle(resolver, req).await.map_err(Error::from)
+                }
+            })
+            .description($desc),
+        );
+    }};
+}
+
 pub fn register_all(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    // DRIFT GUARD: the register_* calls below and the entries in
-    // `catalog()` must stay 1:1 — catalog() feeds the wire-schema goldens
+    // DRIFT GUARD: the registrations below and the entries in `catalog()`
+    // must stay 1:1 — catalog() feeds the wire-schema goldens
     // (tests/code_golden_schemas.rs). Adding a function to one list but not
     // the other trips the debug_assert below (exercised engine-free by
     // `tests::register_all_count_matches_catalog`).
     let mut registered: usize = 0;
+    // `info` carries no `base_dir`, so it is registered unscoped.
     register_info(iii, resolver.clone(), cfg.clone());
     registered += 1;
-    register_read_file(iii, resolver.clone(), cfg.clone());
+    register_scoped!(iii, READ_FILE_ID, READ_FILE_DESC, resolver.clone(), cfg.clone(), read_file::ReadFileInput, read_file::handle);
     registered += 1;
-    register_search(iii, resolver.clone(), cfg.clone());
+    register_scoped!(iii, SEARCH_ID, SEARCH_DESC, resolver.clone(), cfg.clone(), search::SearchInput, search::handle);
     registered += 1;
-    register_update_file(iii, resolver.clone(), cfg.clone());
+    register_scoped!(iii, UPDATE_FILE_ID, UPDATE_FILE_DESC, resolver.clone(), cfg.clone(), update_file::UpdateFileInput, update_file::handle);
     registered += 1;
-    register_create_file(iii, resolver.clone(), cfg.clone());
+    register_scoped!(iii, CREATE_FILE_ID, CREATE_FILE_DESC, resolver.clone(), cfg.clone(), create_file::CreateFileInput, create_file::handle);
     registered += 1;
-    register_delete_file(iii, resolver.clone());
+    register_scoped!(iii, LIST_FOLDER_ID, LIST_FOLDER_DESC, resolver.clone(), cfg.clone(), list_folder::ListFolderInput, list_folder::handle);
     registered += 1;
-    register_list_folder(iii, resolver.clone(), cfg.clone());
+    register_scoped!(iii, TREE_ID, TREE_DESC, resolver.clone(), cfg.clone(), tree::TreeInput, tree::handle);
     registered += 1;
-    register_tree(iii, resolver.clone(), cfg.clone());
+    register_scoped_no_cfg!(iii, DELETE_FILE_ID, DELETE_FILE_DESC, resolver.clone(), delete_file::DeleteFileInput, delete_file::handle);
     registered += 1;
-    register_move_file(iii, resolver);
+    register_scoped_no_cfg!(iii, MOVE_FILE_ID, MOVE_FILE_DESC, resolver, move_file::MoveFileInput, move_file::handle);
     registered += 1;
     debug_assert_eq!(
         registered,
@@ -281,142 +329,6 @@ fn register_info(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) 
             }
         })
         .description(INFO_DESC),
-    );
-}
-
-fn register_read_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    iii.register_function(
-        READ_FILE_ID,
-        RegisterFunction::new_async(move |req: read_file::ReadFileInput| {
-            let resolver = resolver.clone();
-            let cfg = cfg.clone();
-            async move {
-                let cfg = cfg.read().await.clone();
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                read_file::handle(resolver, cfg, req)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(READ_FILE_DESC),
-    );
-}
-
-fn register_search(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    iii.register_function(
-        SEARCH_ID,
-        RegisterFunction::new_async(move |req: search::SearchInput| {
-            let resolver = resolver.clone();
-            let cfg = cfg.clone();
-            async move {
-                let cfg = cfg.read().await.clone();
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                search::handle(resolver, cfg, req)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(SEARCH_DESC),
-    );
-}
-
-fn register_update_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    iii.register_function(
-        UPDATE_FILE_ID,
-        RegisterFunction::new_async(move |req: update_file::UpdateFileInput| {
-            let resolver = resolver.clone();
-            let cfg = cfg.clone();
-            async move {
-                let cfg = cfg.read().await.clone();
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                update_file::handle(resolver, cfg, req)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(UPDATE_FILE_DESC),
-    );
-}
-
-fn register_create_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    iii.register_function(
-        CREATE_FILE_ID,
-        RegisterFunction::new_async(move |req: create_file::CreateFileInput| {
-            let resolver = resolver.clone();
-            let cfg = cfg.clone();
-            async move {
-                let cfg = cfg.read().await.clone();
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                create_file::handle(resolver, cfg, req)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(CREATE_FILE_DESC),
-    );
-}
-
-fn register_delete_file(iii: &IIIClient, resolver: Arc<PathResolver>) {
-    iii.register_function(
-        DELETE_FILE_ID,
-        RegisterFunction::new_async(move |req: delete_file::DeleteFileInput| {
-            let resolver = resolver.clone();
-            async move {
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                delete_file::handle(resolver, req)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(DELETE_FILE_DESC),
-    );
-}
-
-fn register_list_folder(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    iii.register_function(
-        LIST_FOLDER_ID,
-        RegisterFunction::new_async(move |req: list_folder::ListFolderInput| {
-            let resolver = resolver.clone();
-            let cfg = cfg.clone();
-            async move {
-                let cfg = cfg.read().await.clone();
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                list_folder::handle(resolver, cfg, req)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(LIST_FOLDER_DESC),
-    );
-}
-
-fn register_tree(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) {
-    iii.register_function(
-        TREE_ID,
-        RegisterFunction::new_async(move |req: tree::TreeInput| {
-            let resolver = resolver.clone();
-            let cfg = cfg.clone();
-            async move {
-                let cfg = cfg.read().await.clone();
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                tree::handle(resolver, cfg, req).await.map_err(Error::from)
-            }
-        })
-        .description(TREE_DESC),
-    );
-}
-
-fn register_move_file(iii: &IIIClient, resolver: Arc<PathResolver>) {
-    iii.register_function(
-        MOVE_FILE_ID,
-        RegisterFunction::new_async(move |req: move_file::MoveFileInput| {
-            let resolver = resolver.clone();
-            async move {
-                let resolver = resolver.session_scoped(req.base_dir.as_deref());
-                move_file::handle(resolver, req).await.map_err(Error::from)
-            }
-        })
-        .description(MOVE_FILE_DESC),
     );
 }
 
