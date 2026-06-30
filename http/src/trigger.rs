@@ -46,6 +46,15 @@ pub fn route_signature(http_method: &str, http_path: &str) -> String {
     format!("{}:{}", http_method.to_uppercase(), shape)
 }
 
+/// Counts the `:param` segments in a registered path. Used to rank matching
+/// routes so literal segments win over parameters.
+fn param_segment_count(registered_path: &str) -> usize {
+    registered_path
+        .split('/')
+        .filter(|s| s.starts_with(':'))
+        .count()
+}
+
 /// Matches `actual_path` against `registered_path` (which may contain
 /// `:param` segments), returning extracted path params. Returns `None` if
 /// the segment counts differ or any literal segment doesn't match exactly.
@@ -116,21 +125,31 @@ impl RouteTable {
         self.by_id.remove(id).is_some()
     }
 
-    /// Finds the first registered route whose method matches (case
-    /// insensitive) and whose path matches `actual_path`, returning a clone
-    /// of the route plus its extracted path params.
+    /// Finds the registered route whose method matches (case insensitive) and
+    /// whose path matches `actual_path`, returning a clone of the route plus
+    /// its extracted path params.
+    ///
+    /// When several routes match (e.g. `/items/:id` and `/items/copy` both
+    /// match `/items/copy`), the more literal route wins: candidates are
+    /// scored by their number of `:param` segments and the lowest score is
+    /// chosen. Iteration order over the backing `HashMap` is nondeterministic,
+    /// so this scoring is what makes the result stable. The engine gets the
+    /// same precedence for free from axum's matcher.
     pub fn match_route(
         &self,
         method: &str,
         actual_path: &str,
     ) -> Option<(Route, HashMap<String, String>)> {
         let method = method.to_uppercase();
-        self.by_id.values().find_map(|route| {
-            if route.http_method.to_uppercase() != method {
-                return None;
-            }
-            extract_path_params(&route.http_path, actual_path).map(|params| (route.clone(), params))
-        })
+        self.by_id
+            .values()
+            .filter(|route| route.http_method.to_uppercase() == method)
+            .filter_map(|route| {
+                extract_path_params(&route.http_path, actual_path)
+                    .map(|params| (param_segment_count(&route.http_path), route.clone(), params))
+            })
+            .min_by_key(|(score, _, _)| *score)
+            .map(|(_, route, params)| (route, params))
     }
 }
 
@@ -258,6 +277,24 @@ mod tests {
         table.insert(route("t1", "GET", "/users/:id")).unwrap();
 
         let (matched, params) = table.match_route("GET", "/users/42").unwrap();
+        assert_eq!(matched.trigger_id, "t1");
+        assert_eq!(params.get("id"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn match_route_prefers_literal_over_param() {
+        // `/items/copy` and `/items/:id` both match `/items/copy`; the literal
+        // route must win regardless of HashMap iteration order.
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/items/:id")).unwrap();
+        table.insert(route("t2", "GET", "/items/copy")).unwrap();
+
+        let (matched, params) = table.match_route("GET", "/items/copy").unwrap();
+        assert_eq!(matched.trigger_id, "t2");
+        assert!(params.is_empty());
+
+        // A non-literal path still falls through to the param route.
+        let (matched, params) = table.match_route("GET", "/items/42").unwrap();
         assert_eq!(matched.trigger_id, "t1");
         assert_eq!(params.get("id"), Some(&"42".to_string()));
     }

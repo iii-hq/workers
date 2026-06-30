@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// Metadata describing the trigger that produced an `HttpRequest`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TriggerMetadata {
     #[serde(rename = "type")]
     pub trigger_type: String,
@@ -25,7 +25,7 @@ pub struct TriggerMetadata {
 }
 
 /// Request payload sent to the invoked function over the wire.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequest {
     pub query_params: HashMap<String, String>,
     pub path_params: HashMap<String, String>,
@@ -147,7 +147,7 @@ fn default_http_method() -> String {
 
 /// Configuration carried by an `http` trigger instance, as read from the
 /// trigger's `config` value.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpTriggerConfig {
     pub api_path: String,
     #[serde(default = "default_http_method")]
