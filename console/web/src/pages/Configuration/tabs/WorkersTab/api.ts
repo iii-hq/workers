@@ -45,7 +45,8 @@ export interface ConfigurationSchemaView {
   id: string
   name: string
   description: string
-  schema: JsonSchema
+  /** Null when the worker registered a config value but no JSON schema. */
+  schema: JsonSchema | null
   metadata?: JsonValue
 }
 

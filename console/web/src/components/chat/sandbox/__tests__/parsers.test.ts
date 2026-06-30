@@ -26,6 +26,7 @@ import {
   fsWriteResponseSchema,
   isSandboxErrorWire,
   listResponseSchema,
+  parseDispatchDenial,
   parseSandboxErrorDisplay,
   runRequestSchema,
   runResponseSchema,
@@ -233,6 +234,49 @@ describe('parseSandboxErrorDisplay', () => {
     if (out?.variant === 'wire') {
       expect(out.error.code).toBe('S220')
     }
+  })
+
+  it('detects a fail-closed dispatch-policy denial and names the function', () => {
+    const out = parseSandboxErrorDisplay({
+      error: {
+        kind: 'function_error',
+        message:
+          "function web::fetch is not permitted by this agent's dispatch policy (no allow-glob match or a deny-glob match)",
+      },
+    })
+    expect(out?.variant).toBe('dispatch-denied')
+    if (out?.variant === 'dispatch-denied') {
+      expect(out.error.functionId).toBe('web::fetch')
+      expect(out.error.namespace).toBe('web')
+    }
+  })
+
+  it('dispatch denial wins over the generic invocation fallback', () => {
+    // Same envelope the screenshot produced (previously rendered 'invocation').
+    const out = parseSandboxErrorDisplay({
+      error: {
+        kind: 'function_error',
+        message:
+          "function coder::create-file is not permitted by this agent's dispatch policy (no allow-glob match or a deny-glob match)",
+        content: [{ type: 'text', text: 'blocked' }],
+      },
+    })
+    expect(out?.variant).toBe('dispatch-denied')
+  })
+})
+
+describe('parseDispatchDenial', () => {
+  it('extracts the function id and namespace from a bare message', () => {
+    const d = parseDispatchDenial(
+      "function workflow::start is not permitted by this agent's dispatch policy",
+    )
+    expect(d?.functionId).toBe('workflow::start')
+    expect(d?.namespace).toBe('workflow')
+  })
+
+  it('returns null for unrelated errors', () => {
+    expect(parseDispatchDenial({ message: 'path is required' })).toBeNull()
+    expect(parseDispatchDenial('timed out')).toBeNull()
   })
 })
 

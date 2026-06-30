@@ -9,6 +9,7 @@ import type { JsonValue } from './api'
 import { isDirty } from './dirty'
 import { EditorEmptyState } from './EmptyState'
 import { SaveBar, type SaveStatus } from './SaveBar'
+import { isObjectSchema } from './schema-form/guard'
 import { SchemaForm } from './schema-form/SchemaForm'
 import { wt } from './typography'
 import { WorkersList } from './WorkersList'
@@ -102,7 +103,6 @@ function WorkerConfigHarness() {
     }, SAVE_LATENCY_MS)
   }
 
-
   return (
     <div className="border border-rule bg-bg h-full">
       <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
@@ -142,21 +142,30 @@ function WorkerConfigHarness() {
               ) : null}
             </header>
             <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
-              <div className="mx-auto max-w-3xl w-full px-6 py-8">
-                <SchemaForm
-                  key={selectedView.id}
-                  schema={selectedView.schema}
-                  value={draft}
-                  onChange={handleChange}
-                  errors={errors}
+              {isObjectSchema(selectedView.schema) ? (
+                <>
+                  <div className="mx-auto max-w-3xl w-full px-6 py-8">
+                    <SchemaForm
+                      key={selectedView.id}
+                      schema={selectedView.schema}
+                      value={draft}
+                      onChange={handleChange}
+                      errors={errors}
+                    />
+                  </div>
+                  <SaveBar
+                    dirty={dirty}
+                    status={status}
+                    onSave={handleSave}
+                    onReset={handleReset}
+                  />
+                </>
+              ) : (
+                <EditorEmptyState
+                  title="no editable configuration"
+                  description="this worker registered a configuration value but no schema, so there's nothing to edit here."
                 />
-              </div>
-              <SaveBar
-                dirty={dirty}
-                status={status}
-                onSave={handleSave}
-                onReset={handleReset}
-              />
+              )}
             </div>
           </section>
         ) : (

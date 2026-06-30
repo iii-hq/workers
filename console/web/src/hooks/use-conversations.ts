@@ -31,6 +31,7 @@ import {
   deleteSession,
   ensureSession as ensureSessionApi,
   fetchTranscript,
+  getSession,
   listSessions,
   setSessionMeta,
 } from '@/lib/sessions/api'
@@ -132,6 +133,11 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.working_dir === 'string' && md.working_dir.length > 0
         ? md.working_dir
         : null,
+    parentId:
+      typeof md.parent_session_id === 'string'
+        ? md.parent_session_id
+        : undefined,
+    depth: typeof md.depth === 'number' ? md.depth : undefined,
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,
@@ -268,6 +274,27 @@ export function useConversations(
             }
             return [stub, ...prev]
           })
+          // `session::created` carries no metadata (by contract), so a spawned
+          // sub-agent / workflow node arrives here with no parent link and would
+          // sit flat until a reload re-lists it. Fetch its meta once to learn
+          // parent_session_id so it nests live in the sidebar tree.
+          void getSession(event.session_id)
+            .then((meta) => {
+              if (cancelled || !meta) return
+              const md = meta.metadata ?? {}
+              const parentId =
+                typeof md.parent_session_id === 'string'
+                  ? md.parent_session_id
+                  : undefined
+              if (!parentId) return
+              const depth = typeof md.depth === 'number' ? md.depth : undefined
+              patchConversation(event.session_id, (c) => ({
+                ...c,
+                parentId,
+                depth,
+              }))
+            })
+            .catch(() => {})
         },
         onMetaUpdated: (event) => {
           patchConversation(event.session_id, (c) => {
@@ -281,6 +308,11 @@ export function useConversations(
                   ? md.model
                   : c.model,
               mode: isMode(md.mode) ? md.mode : c.mode,
+              parentId:
+                typeof md.parent_session_id === 'string'
+                  ? md.parent_session_id
+                  : c.parentId,
+              depth: typeof md.depth === 'number' ? md.depth : c.depth,
               updatedAt: event.timestamp,
             }
           })

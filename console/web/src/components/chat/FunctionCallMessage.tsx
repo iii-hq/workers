@@ -6,12 +6,21 @@ import {
 } from '@/components/chat/directory'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
 import {
+  HarnessFunctionIdLabel,
+  HarnessToolView,
+} from '@/components/chat/harness'
+import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
+import {
   SandboxFunctionIdLabel,
   SandboxToolView,
 } from '@/components/chat/sandbox'
 import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
 import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
+import {
+  WorkflowFunctionIdLabel,
+  WorkflowToolView,
+} from '@/components/chat/workflow'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -122,6 +131,15 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (ShellToolView.isShellFunction(functionId)) {
     return <ShellFunctionIdLabel functionId={functionId} />
   }
+  if (WorkflowToolView.isWorkflowFunction(functionId)) {
+    return <WorkflowFunctionIdLabel functionId={functionId} />
+  }
+  if (RouterToolView.isRouterFunction(functionId)) {
+    return <RouterFunctionIdLabel functionId={functionId} />
+  }
+  if (HarnessToolView.isHarnessFunction(functionId)) {
+    return <HarnessFunctionIdLabel functionId={functionId} />
+  }
   return <span className="text-ink">{functionId}</span>
 }
 
@@ -149,7 +167,10 @@ export function FunctionCallMessage({
     WorkerToolView.tryRenderPreview(message) ??
     WebToolView.tryRenderPreview(message) ??
     CoderToolView.tryRenderPreview(message) ??
-    ShellToolView.tryRenderPreview(message)
+    ShellToolView.tryRenderPreview(message) ??
+    WorkflowToolView.tryRenderPreview(message) ??
+    RouterToolView.tryRenderPreview(message) ??
+    HarnessToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
@@ -157,7 +178,10 @@ export function FunctionCallMessage({
       WorkerToolView.tryRender(message) ??
       WebToolView.tryRender(message) ??
       CoderToolView.tryRender(message) ??
-      ShellToolView.tryRender(message))
+      ShellToolView.tryRender(message) ??
+      WorkflowToolView.tryRender(message) ??
+      RouterToolView.tryRender(message) ??
+      HarnessToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =

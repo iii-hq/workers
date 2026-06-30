@@ -2,6 +2,7 @@ import { AnsiOutput } from '@/components/chat/sandbox/terminal/AnsiOutput'
 import { Badge } from '@/components/ui/Badge'
 import {
   execResponseSchema,
+  type SandboxDispatchDenial,
   type SandboxErrorDisplay,
   type SandboxErrorWire,
   type SandboxInvocationError,
@@ -14,6 +15,10 @@ interface ErrorViewProps {
 
 interface InvocationErrorViewProps {
   error: SandboxInvocationError
+}
+
+interface DispatchDeniedViewProps {
+  denial: SandboxDispatchDenial
 }
 
 interface SandboxErrorViewProps {
@@ -131,9 +136,77 @@ export function InvocationErrorView({ error }: InvocationErrorViewProps) {
   )
 }
 
+/**
+ * A fail-closed dispatch-policy denial. Unlike a generic invocation failure,
+ * this is structural and actionable: the calling agent's `functions` allow-list
+ * doesn't cover the function. The card names the blocked id and tells the
+ * operator exactly where to grant it (a workflow node's `agent.functions` /
+ * the def's `default_functions`, or a session's `options.functions.allow`).
+ */
+export function DispatchDeniedView({ denial }: DispatchDeniedViewProps) {
+  const fn = denial.functionId
+  return (
+    <div className="border-t border-rule-2 bg-bg">
+      <div className="px-3 py-3 flex flex-col gap-2 border-l-2 border-warn">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="warn" className="border border-warn px-1.5 py-0.5">
+            denied
+          </Badge>
+          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            dispatch policy
+          </span>
+        </div>
+
+        {fn ? (
+          <div className="font-mono text-[12px] leading-[1.6] text-ink-faint">
+            <span className="uppercase tracking-[0.06em] text-[11px]">
+              blocked
+            </span>{' '}
+            <code className="text-ink">{fn}</code>
+          </div>
+        ) : null}
+
+        <div className="font-mono text-[12.5px] leading-[1.6] text-ink">
+          {fn ? (
+            <>
+              This agent's allow-list doesn't include <code>{fn}</code>. Grant
+              it where the agent is defined:
+            </>
+          ) : (
+            <>
+              This function isn't in the agent's allow-list. Grant it where the
+              agent is defined:
+            </>
+          )}
+          <ul className="mt-1.5 flex flex-col gap-1 text-[12px] text-ink-faint">
+            <li>
+              <span className="text-ink">workflow node</span> — its{' '}
+              <code className="text-ink">agent.functions</code> (or the def's{' '}
+              <code className="text-ink">default_functions</code>) narrows it
+              out. Widen that, or drop the narrowing — nodes inherit the run's
+              full reach by default.
+            </li>
+            <li>
+              <span className="text-ink">chat / session</span> — add it to{' '}
+              <code className="text-ink">options.functions.allow</code>.
+            </li>
+          </ul>
+        </div>
+
+        <pre className="font-mono text-[11.5px] leading-[1.55] text-ink-faint whitespace-pre-wrap break-words m-0">
+          <code>{denial.message}</code>
+        </pre>
+      </div>
+    </div>
+  )
+}
+
 export function SandboxErrorView({ display }: SandboxErrorViewProps) {
   if (display.variant === 'wire') {
     return <ErrorView error={display.error} />
+  }
+  if (display.variant === 'dispatch-denied') {
+    return <DispatchDeniedView denial={display.error} />
   }
   return <InvocationErrorView error={display.error} />
 }

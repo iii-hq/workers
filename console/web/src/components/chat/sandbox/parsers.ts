@@ -400,9 +400,24 @@ export type SandboxInvocationError = {
   detailText?: string
 }
 
+/**
+ * A fail-closed dispatch-policy denial: the calling agent's `functions`
+ * allow-list does not cover the function it tried. Distinct from a permission
+ * denial (approval gate) — this is structural and the agent cannot retry it.
+ */
+export interface SandboxDispatchDenial {
+  /** The blocked function id, when the message names it (`function <id> …`). */
+  functionId?: string
+  /** Namespace prefix of `functionId` (e.g. `web` from `web::fetch`). */
+  namespace?: string
+  /** The raw engine message, kept verbatim under the actionable hint. */
+  message: string
+}
+
 export type SandboxErrorDisplay =
   | { variant: 'wire'; error: SandboxErrorWire }
   | { variant: 'invocation'; error: SandboxInvocationError }
+  | { variant: 'dispatch-denied'; error: SandboxDispatchDenial }
 
 function contentBlocksText(content: unknown): string | undefined {
   if (!Array.isArray(content)) return undefined
@@ -543,6 +558,41 @@ export function collectErrorCandidates(value: unknown): unknown[] {
   return out
 }
 
+/** Engine fail-closed dispatch-policy denial signature (harness policy.rs). */
+const DISPATCH_DENIAL_RE = /not permitted by this agent.?s dispatch policy/i
+/** `function <id> is not permitted …` — captures the blocked function id. */
+const DISPATCH_FN_RE = /function\s+([A-Za-z0-9_:-]+)\s+is not permitted/i
+
+/** A message-like string from a candidate, for signature scanning. */
+function candidateText(candidate: unknown): string | undefined {
+  if (typeof candidate === 'string') return candidate
+  if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+    const msg = (candidate as Record<string, unknown>).message
+    if (typeof msg === 'string') return msg
+  }
+  return undefined
+}
+
+/**
+ * Detect a fail-closed dispatch-policy denial in any failure shape. Scans the
+ * same candidate set as `parseSandboxErrorDisplay` for the engine signature and
+ * pulls the blocked function id out of the message when present.
+ */
+export function parseDispatchDenial(
+  value: unknown,
+): SandboxDispatchDenial | null {
+  for (const candidate of collectErrorCandidates(value)) {
+    const text = candidateText(candidate)
+    if (!text || !DISPATCH_DENIAL_RE.test(text)) continue
+    const functionId = text.match(DISPATCH_FN_RE)?.[1]
+    const namespace = functionId?.includes('::')
+      ? functionId.split('::')[0]
+      : undefined
+    return { functionId, namespace, message: text }
+  }
+  return null
+}
+
 /**
  * Normalise every failure shape the console may receive for sandbox calls:
  * flat `SandboxErrorWire`, harness `{ content, details }` wrappers, the
@@ -553,6 +603,13 @@ export function parseSandboxErrorDisplay(
   value: unknown,
 ): SandboxErrorDisplay | null {
   const candidates = collectErrorCandidates(value)
+
+  // Dispatch-policy denial is the most specific + actionable shape — detect it
+  // before the generic invocation-failed fallback swallows it as raw text.
+  const dispatchDenial = parseDispatchDenial(value)
+  if (dispatchDenial) {
+    return { variant: 'dispatch-denied', error: dispatchDenial }
+  }
 
   for (const candidate of candidates) {
     const wire = tryParseWire(candidate)
