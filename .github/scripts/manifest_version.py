@@ -97,6 +97,29 @@ def cmd_deploy_mode(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync_lock(args: argparse.Namespace) -> int:
+    """Sync a Rust worker's own version in Cargo.lock to its bumped Cargo.toml.
+
+    No-op (exit 0) when the manifest is not a Cargo.toml or the worker has no
+    committed Cargo.lock — non-Rust workers and lockless crates need nothing.
+    """
+    manifest = Path(args.manifest)
+    if manifest.name != "Cargo.toml":
+        return 0
+    lock = manifest.with_name("Cargo.lock")
+    if not lock.exists():
+        return 0
+    try:
+        name = _lib.read_cargo_package_name(manifest)
+        version = _lib.read_version(manifest)
+        changed = _lib.sync_cargo_lock_self_version(lock, name, version)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"{name} {version}" + ("" if changed else " (already in sync)"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="manifest_version.py")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -118,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     p_dm = sub.add_parser("deploy-mode", help="print the interface-collection mode")
     p_dm.add_argument("worker_dir")
     p_dm.set_defaults(func=cmd_deploy_mode)
+
+    p_sl = sub.add_parser("sync-lock", help="sync Cargo.lock self-version to Cargo.toml")
+    p_sl.add_argument("manifest", help="path to the bumped Cargo.toml")
+    p_sl.set_defaults(func=cmd_sync_lock)
 
     args = p.parse_args(argv)
     return args.func(args)
