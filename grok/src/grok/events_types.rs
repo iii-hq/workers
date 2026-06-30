@@ -18,7 +18,7 @@ pub enum GrokEvent {
     Text { data: String },
     /// Reasoning delta (reasoning models only): `{ "type": "thought", "data": "<chunk>" }`.
     Thought { data: String },
-    /// Terminal frame: `{ "type": "end", "stopReason", "sessionId", "requestId" }`.
+    /// Terminal frame: `{ "type": "end", "stopReason", "sessionId" }`.
     End(EndEvent),
     /// Failure: `{ "type": "error", "message": "<msg>" }`.
     Error { message: String },
@@ -32,6 +32,4 @@ pub struct EndEvent {
     pub stop_reason: String,
     #[serde(rename = "sessionId", default)]
     pub session_id: String,
-    #[serde(rename = "requestId", default)]
-    pub request_id: String,
 }

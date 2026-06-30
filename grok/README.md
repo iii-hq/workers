@@ -108,7 +108,6 @@ defaults:
 events_stream: agent::events     # translated AgentEvent frames
 raw_events_stream: grok::events  # verbatim Grok streaming-json events
 grok_executable: ""              # path to the grok CLI; empty = PATH resolution
-base_url: ""                     # override the xAI API base URL; empty = default
 ```
 
 Auth is the Grok CLI's own: the worker inherits `XAI_API_KEY` from its environment. `always_approve` keeps headless turns from blocking on an interactive approval prompt; set it to `false` to let the CLI's approval policy gate tool execution.

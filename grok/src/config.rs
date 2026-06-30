@@ -35,7 +35,6 @@ pub struct Config {
     pub events_stream: String,
     pub raw_events_stream: String,
     pub grok_executable: String,
-    pub base_url: String,
     pub iii_context: bool,
 }
 
@@ -46,7 +45,6 @@ impl Default for Config {
             events_stream: "agent::events".to_string(),
             raw_events_stream: "grok::events".to_string(),
             grok_executable: String::new(),
-            base_url: String::new(),
             iii_context: true,
         }
     }

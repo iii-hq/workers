@@ -1,6 +1,6 @@
 //! Integration with the `configuration` worker — register the grok config
 //! schema, fetch the live value, and hot-reload it on change. Every field is a
-//! runtime tuning knob (model/sandbox defaults, stream names, executable path,
+//! runtime tuning knob (per-turn defaults, stream names, executable path,
 //! iii-context toggle), so a change hot-swaps the whole snapshot — there is no
 //! security topology to refuse like the path-jail workers.
 
@@ -33,7 +33,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Grok",
-        "description": "xAI Grok CLI worker: per-turn defaults (model, working directory, auto-approve), the agent::events / grok::events stream names, the grok CLI path, an optional xAI API base URL, and whether to inject the iii runtime context into the prompt.",
+        "description": "xAI Grok CLI worker: per-turn defaults (model, working directory, auto-approve), the agent::events / grok::events stream names, the grok CLI path, and whether to inject the iii runtime context into the prompt.",
         "schema": Config::json_schema(),
     });
     if let Some(seed) = seed {

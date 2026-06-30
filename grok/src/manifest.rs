@@ -27,7 +27,6 @@ pub fn build_manifest() -> ModuleManifest {
             "events_stream": "agent::events",
             "raw_events_stream": "grok::events",
             "grok_executable": "",
-            "base_url": "",
             "iii_context": true,
         }),
         supported_targets: vec![env!("TARGET").to_string()],

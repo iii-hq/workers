@@ -21,6 +21,3 @@ iii_context: true
 
 # Path to the Grok CLI binary. Empty = the `grok` binary on PATH.
 grok_executable: ""
-
-# Override the xAI API base URL. Empty = default. Auth via XAI_API_KEY in env.
-base_url: ""
