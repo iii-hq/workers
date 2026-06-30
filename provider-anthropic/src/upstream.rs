@@ -31,6 +31,24 @@ pub fn spawn_upstream(
     rx
 }
 
+/// Flatten an error and its `source()` chain into one string. reqwest's
+/// top-level Display for a builder error is just "builder error"; the real
+/// cause (invalid header value, bad URL) lives in the source chain, so without
+/// this the message is undiagnosable.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        let next = s.to_string();
+        if !msg.ends_with(&next) {
+            msg.push_str(": ");
+            msg.push_str(&next);
+        }
+        src = s.source();
+    }
+    msg
+}
+
 /// Append chunk bytes to `text`, retaining any trailing incomplete UTF-8 sequence.
 fn append_utf8_chunk(byte_buf: &mut Vec<u8>, text: &mut String, chunk: &[u8]) {
     byte_buf.extend_from_slice(chunk);
@@ -113,7 +131,7 @@ async fn run_upstream(
         Err(e) => {
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("anthropic fetch failed: {e}"),
+                    &format!("anthropic fetch failed: {}", error_chain(&e)),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -241,6 +259,29 @@ mod tests {
     const HAPPY: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
     const TRUNCATED: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn builder_error_surfaces_its_source_not_just_builder_error() {
+        // A header value with a newline is an invalid HeaderValue → reqwest
+        // raises a builder error before connecting. The frame must name the
+        // cause, not stop at the opaque "builder error".
+        let mut a = args("http://127.0.0.1:1/v1/messages".into());
+        a.headers = vec![("x-api-key", "sk-bad\ninjected".into())];
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                let msg = error.error_message.as_deref().unwrap_or_default();
+                assert!(msg.starts_with("anthropic fetch failed: "), "got {msg:?}");
+                assert_ne!(
+                    msg, "anthropic fetch failed: builder error",
+                    "source dropped"
+                );
+                assert!(msg.matches(':').count() >= 2, "no source segment: {msg:?}");
+            }
+            other => panic!("want error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn utf8_split_across_chunks_is_preserved() {

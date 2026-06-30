@@ -28,6 +28,25 @@ pub fn spawn_upstream(
     rx
 }
 
+/// Flatten an error and its `source()` chain into one string. reqwest's
+/// top-level Display for a builder error is just "builder error"; the real
+/// cause (invalid header value, bad URL) lives in the source chain, so without
+/// this the message is undiagnosable.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        let next = s.to_string();
+        // reqwest sometimes nests the same text; skip exact repeats.
+        if !msg.ends_with(&next) {
+            msg.push_str(": ");
+            msg.push_str(&next);
+        }
+        src = s.source();
+    }
+    msg
+}
+
 /// Last `data: ` payload in an SSE block, if any.
 fn data_line(block: &str) -> Option<&str> {
     block
@@ -50,7 +69,7 @@ async fn run_upstream(
         Err(e) => {
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("openai fetch failed: {e}"),
+                    &format!("openai fetch failed: {}", error_chain(&e)),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -227,6 +246,27 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
+            }
+            other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn builder_error_surfaces_its_source_not_just_builder_error() {
+        // A header value with a newline is an invalid HeaderValue → reqwest
+        // raises a builder error before connecting. The frame must name the
+        // cause, not stop at the opaque "builder error".
+        let mut a = args("http://127.0.0.1:1/v1/chat/completions".into());
+        a.headers = vec![("authorization", "Bearer sk-bad\ninjected".into())];
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                let msg = error.error_message.as_deref().unwrap_or_default();
+                assert!(msg.starts_with("openai fetch failed: "), "got {msg:?}");
+                // The source chain was appended past the bare "builder error".
+                assert_ne!(msg, "openai fetch failed: builder error", "source dropped");
+                assert!(msg.matches(':').count() >= 2, "no source segment: {msg:?}");
             }
             other => panic!("want error, got {other:?}"),
         }
