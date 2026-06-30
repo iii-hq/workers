@@ -1,4 +1,34 @@
+<div align="center">
+
 # harness
+
+**A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
+
+<p>
+  <a href="#install"><img alt="Install: iii worker add harness" src="https://img.shields.io/badge/install-iii%20worker%20add%20harness-0a84ff?style=flat-square"></a>
+  <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
+  <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
+</p>
+
+<p><sub><b>INSTALLS WITH HARNESS</b></sub></p>
+
+<p>
+  <a href="https://workers.iii.dev/workers/iii-directory"><img alt="iii-directory" src="https://workers.iii.dev/workers/iii-directory/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/session-manager"><img alt="session-manager" src="https://workers.iii.dev/workers/session-manager/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/context-manager"><img alt="context-manager" src="https://workers.iii.dev/workers/context-manager/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/provider-anthropic"><img alt="provider-anthropic" src="https://workers.iii.dev/workers/provider-anthropic/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/provider-openai"><img alt="provider-openai" src="https://workers.iii.dev/workers/provider-openai/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/shell"><img alt="shell" src="https://workers.iii.dev/workers/shell/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/web"><img alt="web" src="https://workers.iii.dev/workers/web/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/iii-state"><img alt="iii-state" src="https://workers.iii.dev/workers/iii-state/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/iii-queue"><img alt="iii-queue" src="https://workers.iii.dev/workers/iii-queue/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/iii-cron"><img alt="iii-cron" src="https://workers.iii.dev/workers/iii-cron/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/iii-stream"><img alt="iii-stream" src="https://workers.iii.dev/workers/iii-stream/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/iii-observability"><img alt="iii-observability" src="https://workers.iii.dev/workers/iii-observability/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/configuration"><img alt="configuration" src="https://workers.iii.dev/workers/configuration/badge.svg"></a>
+</p>
+
+</div>
 
 `harness` is the thin, durable turn loop that turns a model plus a few iii
 workers into an agent. It takes an incoming message, persists it, assembles a
@@ -9,62 +39,49 @@ restart picks up mid-turn. It wires [`session-manager`](../session-manager)
 dependency), and [`llm-router`](../llm-router) (generation); install those
 alongside it for the full loop.
 
-## Install
-
-```bash
-iii worker add harness
-```
-
-`iii worker add` fetches the binary, registers the `harness` configuration
-entry, and the engine starts the worker on the next `iii start`. Add the
-workers it wires so the loop has something to call:
-
-```bash
-iii worker add session-manager
-iii worker add llm-router
-iii worker add context-manager
-```
-
-The harness enqueues turn steps on the engine's built-in `default` queue, provided
-by the `iii-queue` worker (see [`engine.config.yaml`](engine.config.yaml)).
-
 ## Quickstart
 
-Send a message and let the loop run; render the conversation by binding
-`session-manager`'s triggers, and observe turn boundaries with
-`harness::turn-completed`.
+Install the engine, start it, then add harness and the console from a second
+terminal in the same folder:
 
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-    // Fire-and-return: persists the user message and kicks off a turn.
-    let accepted = iii
-        .trigger(TriggerRequest {
-            function_id: "harness::send".into(),
-            payload: json!({
-                "message": "Summarise the repo README",
-                "model": "claude-sonnet-4",
-                "provider": "anthropic",
-                "options": { "functions": { "allow": ["shell::*", "fs::*"] } }
-            }),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await?;
-    println!("{accepted:#?}"); // { session_id, turn_id, accepted: true }
-    Ok(())
-}
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+mkdir iii-app && cd iii-app
+touch config.yaml
+iii -c config.yaml
 ```
 
-Want a typed result back? Add an output contract
-(`options.output: { type: "json", schema }`) and read the result off the
-[`harness::turn-completed`](#custom-trigger-types) event — bind it filtered to
-your session and the result arrives when the turn finishes.
+```bash
+# New terminal, SAME folder. `iii worker add` writes to the config.yaml in the
+# current directory, so it has to match the directory the engine runs in.
+cd iii-app
+iii worker add harness console
+```
+
+```bash
+open http://localhost:3113
+```
+
+Add a model key from the console: open the model picker and use **configure
+Anthropic** / **configure OpenAI** to paste a key. It is stored in the
+`llm-router` worker config and the model catalog populates within seconds.
+Until a provider is configured the picker is empty and chat will not generate.
+
+<p align="center">
+  <img src="https://iii.dev/blog/_astro/provider-configuration.DWWh-ski_Z2rzBYt.webp" alt="Configure a provider key in the iii console" width="100%">
+</p>
+
+`iii worker add harness` installs every worker the loop needs (see the badges
+above); you do not add them one by one. The harness enqueues turn steps on the
+`default` queue (the `iii-queue` worker; see
+[`engine.config.yaml`](engine.config.yaml)).
+
+Every turn, sub-agent spawn, and provider call is one correlated trace: the
+harness turn waterfall in the console.
+
+<p align="center">
+  <img src="https://iii.dev/blog/_astro/harness-turn-waterfall.CVg_Sl12_23G6C5.webp" alt="Harness turn waterfall in the iii console" width="100%">
+</p>
 
 The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat
@@ -79,6 +96,41 @@ any event-driven loop on top of the harness? Start with the integration
 contract in
 [`architecture/integration.md`](architecture/integration.md): the functions to
 trigger, the triggers to bind, and the canonical consumer patterns.
+
+## Working with iii
+
+iii is a WebSocket-routed worker mesh. One engine holds a live registry of every
+connected worker, their functions, and the triggers bound to them. Calls route
+worker to engine to worker, so the language, runtime, and location of a worker
+are invisible; the function id is the only contract.
+
+**1. Discover what is already there (the engine is the source of truth)**
+- `engine::functions::list` — every function across all workers (filter with `prefix` / `search` / `worker`)
+- `engine::functions::info { function_id }` — the request/response schema for ONE function (this is your API reference)
+- `engine::workers::list` / `engine::workers::info { name }` — connected workers and their surface
+- `engine::triggers::list` / `engine::triggers::info { id }` — legal trigger types and their config schemas
+- `engine::registered-triggers::list` — every trigger instance already bound
+
+**2. Call a function.** Use `agent_trigger` with `{ function: "<worker>::<fn>", payload: { ... } }`. Two rules: payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
+
+**3. Need a capability that is not registered?**
+- `directory::registry::workers::list { search: "<capability>" }`
+- `directory::registry::workers::info { name }` to judge fit
+- `worker::add { source: { kind: "registry", name: "<name>" } }` to install
+- confirm with `engine::functions::list { prefix: "<worker>::" }` and fetch each contract
+
+**4. Worker lifecycle.** `worker::list`, `worker::add`, `worker::start`, `worker::stop`, `worker::update`, `worker::remove`, `worker::clear`. Destructive ops require exactly `yes: true`.
+
+**5. Triggers, not polling.** To react to events (HTTP, schedule, webhook, file change), bind a trigger instead of polling. Discover the type with `engine::triggers::list`, copy config from its schema, and confirm the binding fires with a real call (e.g. `web::fetch` to its local URL).
+
+**6. Handy workers.**
+- `web::fetch` — all HTTP(S); pass `format: "markdown"` to read docs without flooding context
+- `coder::*` — file ops for any code task (read/search/create/update/move/delete)
+- `slack::*` — post to Slack
+
+**7. Authoring a worker.** Read the SDK reference for your language first (Node / Python / Rust / Browser / Engine WS) at https://iii.dev/docs/sdk-reference/. Use the SDK's `registerWorker(...)` and call `iii.registerFunction` / `iii.registerTrigger` / `iii.trigger` on the returned value; they are methods, not top-level exports. Always declare `description`, `request_format`, and `response_format` so the next caller gets a real contract.
+
+TL;DR: list, info, call. The engine tells you the truth; trust it over memory.
 
 ## Configuration
 
@@ -103,9 +155,9 @@ engine-grounded identity prompt at send time: four provider-specific variants
 (`anthropic`, `openai` → gpt, `kimi`, and a step-by-step default for local
 runtimes) selected from `provider`, plus an optional `mode` (`plan` | `ask` |
 `agent`) that prepends a short operating-mode paragraph. A non-empty
-`system_prompt` is combined with the built-in prompt per
+`system_prompt` is combined with the default prompt per
 `options.system_prompt_strategy`: `override` (default) uses it verbatim, while
-`enrich` appends it to the built-in prompt. Prompt bodies live in
+`enrich` appends it to the default prompt. Prompt bodies live in
 [`prompts/`](prompts/) and are tested in [`src/prompt/tests.rs`](src/prompt/tests.rs).
 
 ## Custom trigger types
