@@ -54,11 +54,19 @@ pub fn extract_prompt(req: &RunRequest) -> anyhow::Result<String> {
     })?;
     match &last.content {
         Value::String(s) => Ok(s.clone()),
-        Value::Array(blocks) => Ok(blocks
-            .iter()
-            .filter_map(|b| b.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n")),
+        Value::Array(blocks) => {
+            let text = blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "grok::run message content has no text blocks"
+                ));
+            }
+            Ok(text)
+        }
         _ => Err(anyhow::anyhow!(
             "unsupported message content: expected a string or an array of content blocks"
         )),

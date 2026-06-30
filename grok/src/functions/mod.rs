@@ -136,7 +136,7 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             "properties": {
                 "session_id": { "type": "string" },
                 "stopped": { "type": "boolean" },
-                "reason": { "type": "string" },
+                "reason": { "type": ["string", "null"] },
             },
         }))
         .description("Interrupt a live Grok run for a session."),

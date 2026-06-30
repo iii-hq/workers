@@ -55,7 +55,10 @@ fn unsupported_message_content_errors() {
 
 #[test]
 fn config_defaults_when_file_missing() {
-    let cfg = Config::load("/nonexistent/config.yaml").unwrap();
+    // Guaranteed-missing path inside a temp dir (portable; no host assumptions).
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist.yaml");
+    let cfg = Config::load(missing.to_str().unwrap()).unwrap();
     assert_eq!(cfg.defaults.model, "");
     assert!(cfg.defaults.always_approve);
     assert_eq!(cfg.raw_events_stream, "grok::events");

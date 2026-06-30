@@ -41,10 +41,10 @@ worker to the bus instead of bolting anything onto this one.
 - Spawns the host `grok` CLI per turn — needs Grok installed and
   authenticated (`XAI_API_KEY`); not available inside a bare container without
   it.
-- Tool/command execution is the Grok CLI's own; headless turns run with
-  `always_approve: true` so they don't block on an interactive approval
-  prompt. Set `always_approve: false` to let the CLI's approval policy gate
-  execution.
+- Tool/command execution is the Grok CLI's own; headless turns auto-approve
+  by default (`always_approve: true`) so they don't block on an interactive
+  approval prompt. Set `always_approve: false` to let the CLI's approval
+  policy gate execution.
 - One turn per session at a time: check `grok::status` (`live: true`)
   before sending another `grok::run` for the same `session_id`; parallel
   runs against one session race on the underlying session resume.

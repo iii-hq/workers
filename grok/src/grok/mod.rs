@@ -349,15 +349,30 @@ async fn stream_turn(
     outcome
 }
 
-/// Drain a child's stderr in the background into a captured tail, so a chatty
-/// process can't block on a full pipe. Returns a handle yielding the text.
+/// Bytes of stderr tail retained — only the last 2000 chars are ever surfaced,
+/// so a small headroom over that keeps memory bounded for a chatty child.
+const STDERR_TAIL_CAP: usize = 8192;
+
+/// Drain a child's stderr in the background into a bounded rolling tail, so a
+/// chatty process can neither block on a full pipe nor grow memory without
+/// bound. Returns a handle yielding the retained tail text.
 fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> tokio::task::JoinHandle<String> {
     tokio::spawn(async move {
-        let mut buf = String::new();
+        let mut tail: Vec<u8> = Vec::new();
         if let Some(mut e) = stderr {
             use tokio::io::AsyncReadExt;
-            let _ = e.read_to_string(&mut buf).await;
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = e.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                tail.extend_from_slice(&chunk[..n]);
+                if tail.len() > STDERR_TAIL_CAP {
+                    let drop = tail.len() - STDERR_TAIL_CAP;
+                    tail.drain(..drop);
+                }
+            }
         }
-        buf
+        String::from_utf8_lossy(&tail).into_owned()
     })
 }

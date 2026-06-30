@@ -94,3 +94,14 @@ fn resolve_falls_back_to_prior_then_config_defaults() {
     assert_eq!(o.model, "prior-model");
     assert_eq!(o.cwd, "/prior");
 }
+
+#[test]
+fn resolve_falls_through_to_config_defaults_when_no_prior() {
+    // No payload, no prior session: resolution lands on Config::default().
+    let req = RunRequest::default();
+    let cfg = Config::default();
+    let o = resolve(&req, &cfg, None, None, None);
+    assert_eq!(o.model, cfg.defaults.model);
+    assert_eq!(o.cwd, cfg.defaults.cwd);
+    assert_eq!(o.always_approve, cfg.defaults.always_approve);
+}

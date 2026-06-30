@@ -1,11 +1,10 @@
 //! Stream emitter: writes frames via the engine's `stream::set` builtin with a
-//! per-process epoch + per-session monotonic sequence so item_ids never
-//! collide across restarts (matches the harness emitter). Failures are logged,
-//! not propagated — the streams are best-effort observability; the function's
-//! return value and the session record are the source of truth.
+//! per-process epoch + a process-wide monotonic sequence so item_ids never
+//! collide across restarts. Failures are logged, not propagated — the streams
+//! are best-effort observability; the function's return value and the session
+//! record are the source of truth.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -14,13 +13,11 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 static EPOCH: Lazy<String> = Lazy::new(|| Uuid::new_v4().to_string());
-static SEQ: Lazy<Mutex<HashMap<String, u64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+// Process-wide counter: globally unique without retaining per-session state.
+static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn next_item_id(session_id: &str) -> String {
-    let mut map = SEQ.lock().expect("seq mutex");
-    let n = map.entry(session_id.to_string()).or_insert(0);
-    let seq = *n;
-    *n += 1;
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     format!("{session_id}-{}-{:08}", &*EPOCH, seq)
 }
 

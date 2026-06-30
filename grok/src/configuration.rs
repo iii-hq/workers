@@ -153,7 +153,9 @@ async fn trigger_with_retry(
             Err(e) => {
                 last_err = e.to_string();
                 if attempt < CONFIG_RETRIES {
-                    tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+                    // Exponential backoff: 250ms, 500ms, 1000ms, …
+                    let backoff = 250u64 << (attempt - 1);
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
                 }
             }
         }
