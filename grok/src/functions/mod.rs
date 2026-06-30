@@ -35,7 +35,6 @@ fn run_response_schema() -> Value {
             "stop_reason": { "type": "string" },
             "is_error": { "type": "boolean" },
             "num_turns": { "type": "integer" },
-            "usage": { "type": ["object", "null"] },
             "busy": { "type": "boolean" },
             "reason": { "type": "string" },
         },
@@ -62,7 +61,7 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .description(
                 "Run one Grok turn and wait for the result. Accepts `prompt` or a `messages` \
                  array; streams raw Grok events onto grok::events, AgentEvent frames onto \
-                 agent::events, and returns {session_id, result, usage}.",
+                 agent::events, and returns {session_id, result, stop_reason}.",
             ),
         );
     }

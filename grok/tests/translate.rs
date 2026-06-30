@@ -1,17 +1,18 @@
-//! Full per-turn translation: feed a scripted Grok event sequence through the
-//! pure stepper and assert the agent::events frame sequence + accumulated turn
-//! state (thread id, usage, result, error). This is the orchestration the
-//! stream loop runs, exercised without a live engine.
+//! Full per-turn translation: feed a scripted Grok streaming-json sequence
+//! through the pure stepper and assert the agent::events frame sequence +
+//! accumulated turn state (session id, result, error). This is the
+//! orchestration the stream loop runs, exercised without a live engine.
+//! Event shapes captured from Grok CLI 0.2.77.
 
-use grok::grok::events_types::ThreadEvent;
+use grok::grok::events_types::GrokEvent;
 use grok::grok::translate::{step, TurnState};
 use serde_json::{json, Value};
 
 fn run(events: &[Value]) -> (TurnState, Vec<Value>) {
-    let mut state = TurnState::new("gpt-5.2-grok".into());
+    let mut state = TurnState::new("grok-4.20-0309-non-reasoning".into());
     let mut frames = Vec::new();
     for ev in events {
-        let parsed: ThreadEvent = serde_json::from_value(ev.clone()).unwrap();
+        let parsed: GrokEvent = serde_json::from_value(ev.clone()).unwrap();
         frames.extend(step(&mut state, parsed));
     }
     (state, frames)
@@ -25,82 +26,41 @@ fn types(frames: &[Value]) -> Vec<String> {
 }
 
 #[test]
-fn full_command_turn_produces_ordered_frames_and_state() {
+fn text_deltas_accumulate_and_end_emits_message_complete() {
     let (state, frames) = run(&[
-        json!({ "type": "thread.started", "thread_id": "th-1" }),
-        json!({ "type": "turn.started" }),
-        json!({ "type": "item.started", "item": { "id": "i1", "type": "command_execution", "command": "ls", "aggregated_output": "", "status": "in_progress" } }),
-        json!({ "type": "item.completed", "item": { "id": "i1", "type": "command_execution", "command": "ls", "aggregated_output": "files", "exit_code": 0, "status": "completed" } }),
-        json!({ "type": "item.completed", "item": { "id": "i2", "type": "agent_message", "text": "done" } }),
-        json!({ "type": "turn.completed", "usage": { "input_tokens": 5, "cached_input_tokens": 3, "output_tokens": 2, "reasoning_output_tokens": 1 } }),
+        json!({ "type": "text", "data": "Hello" }),
+        json!({ "type": "text", "data": " world" }),
+        json!({ "type": "end", "stopReason": "EndTurn", "sessionId": "sess-1", "requestId": "req-1" }),
     ]);
 
-    assert_eq!(
-        types(&frames),
-        vec![
-            "function_execution_start",
-            "function_execution_end",
-            "message_complete",
-        ]
-    );
-    // exec frames carry the mapped function id + args/result
-    assert_eq!(frames[0]["function_id"], "grok::shell");
-    assert_eq!(frames[0]["args"]["command"], "ls");
-    assert_eq!(frames[1]["is_error"], false);
-    assert_eq!(frames[1]["result"]["content"][0]["text"], "files");
-    // message_complete stamps the model
-    assert_eq!(frames[2]["message"]["model"], "gpt-5.2-grok");
-    assert_eq!(frames[2]["message"]["provider"], "grok");
-
-    assert_eq!(state.thread_id.as_deref(), Some("th-1"));
-    assert_eq!(state.result_text, "done");
-    assert!(!state.is_error);
-    let u = state.usage.unwrap();
-    assert_eq!(u.input_tokens, 5);
-    assert_eq!(u.cache_read_tokens, 3);
-    assert_eq!(u.reasoning_tokens, 1);
-}
-
-#[test]
-fn started_then_completed_emits_single_start() {
-    // item.started already emitted the start; item.completed must not repeat it.
-    let (_s, frames) = run(&[
-        json!({ "type": "item.started", "item": { "id": "i1", "type": "command_execution", "command": "x", "status": "in_progress" } }),
-        json!({ "type": "item.completed", "item": { "id": "i1", "type": "command_execution", "command": "x", "aggregated_output": "ok", "exit_code": 0, "status": "completed" } }),
-    ]);
-    assert_eq!(
-        types(&frames),
-        vec!["function_execution_start", "function_execution_end"]
-    );
-}
-
-#[test]
-fn completed_without_prior_start_synthesizes_start() {
-    // a completed exec item with no preceding started event still gets a start.
-    let (_s, frames) = run(&[
-        json!({ "type": "item.completed", "item": { "id": "i9", "type": "command_execution", "command": "x", "aggregated_output": "", "exit_code": 1, "status": "failed" } }),
-    ]);
-    assert_eq!(
-        types(&frames),
-        vec!["function_execution_start", "function_execution_end"]
-    );
-    assert_eq!(frames[1]["is_error"], true);
-}
-
-#[test]
-fn reasoning_maps_to_thinking_message() {
-    let (_s, frames) = run(&[
-        json!({ "type": "item.completed", "item": { "id": "r1", "type": "reasoning", "text": "hmm" } }),
-    ]);
     assert_eq!(types(&frames), vec!["message_complete"]);
-    assert_eq!(frames[0]["message"]["content"][0]["type"], "thinking");
+    assert_eq!(frames[0]["message"]["content"][0]["text"], "Hello world");
+    assert_eq!(
+        frames[0]["message"]["model"],
+        "grok-4.20-0309-non-reasoning"
+    );
+    assert_eq!(frames[0]["message"]["provider"], "grok");
+    assert_eq!(frames[0]["message"]["stop_reason"], "end");
+
+    assert_eq!(state.thread_id.as_deref(), Some("sess-1"));
+    assert_eq!(state.result_text, "Hello world");
+    assert!(!state.is_error);
+    assert_eq!(state.stop_reason, "end");
 }
 
 #[test]
-fn turn_failed_sets_error_state_and_emits_no_frame() {
+fn text_only_before_end_emits_no_frames() {
+    let (state, frames) = run(&[json!({ "type": "text", "data": "partial" })]);
+    assert!(frames.is_empty());
+    assert_eq!(state.result_text, "partial");
+    assert!(state.thread_id.is_none());
+}
+
+#[test]
+fn error_event_sets_error_state_and_emits_no_frame() {
     let (state, frames) = run(&[
-        json!({ "type": "thread.started", "thread_id": "th-1" }),
-        json!({ "type": "turn.failed", "error": { "message": "model exploded" } }),
+        json!({ "type": "text", "data": "ignored" }),
+        json!({ "type": "error", "message": "model exploded" }),
     ]);
     assert!(frames.is_empty());
     assert!(state.is_error);
@@ -109,12 +69,40 @@ fn turn_failed_sets_error_state_and_emits_no_frame() {
 }
 
 #[test]
-fn mcp_tool_call_maps_to_server_tool_id() {
-    let (_s, frames) = run(&[
-        json!({ "type": "item.completed", "item": { "id": "m1", "type": "mcp_tool_call", "server": "github", "tool": "create_issue", "arguments": { "title": "x" }, "status": "completed" } }),
+fn unknown_event_type_is_skipped() {
+    let (state, frames) = run(&[
+        json!({ "type": "tool_call", "name": "shell" }),
+        json!({ "type": "text", "data": "ok" }),
+        json!({ "type": "end", "stopReason": "EndTurn", "sessionId": "s2", "requestId": "r2" }),
     ]);
-    assert_eq!(
-        frames.last().unwrap()["function_id"],
-        "github::create_issue"
-    );
+    assert_eq!(types(&frames), vec!["message_complete"]);
+    assert_eq!(state.result_text, "ok");
+    assert_eq!(state.thread_id.as_deref(), Some("s2"));
+}
+
+#[test]
+fn thought_deltas_render_as_thinking_block_before_text() {
+    let (state, frames) = run(&[
+        json!({ "type": "thought", "data": "let me " }),
+        json!({ "type": "thought", "data": "think" }),
+        json!({ "type": "text", "data": "answer" }),
+        json!({ "type": "end", "stopReason": "EndTurn", "sessionId": "s4", "requestId": "r4" }),
+    ]);
+    assert_eq!(types(&frames), vec!["message_complete"]);
+    let content = &frames[0]["message"]["content"];
+    assert_eq!(content[0]["type"], "thinking");
+    assert_eq!(content[0]["text"], "let me think");
+    assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[1]["text"], "answer");
+    // the returned answer excludes the reasoning
+    assert_eq!(state.result_text, "answer");
+    assert_eq!(state.thought_text, "let me think");
+}
+
+#[test]
+fn non_endturn_stop_reason_maps() {
+    let (state, _frames) = run(&[
+        json!({ "type": "end", "stopReason": "MaxTokens", "sessionId": "s3", "requestId": "r3" }),
+    ]);
+    assert_eq!(state.stop_reason, "max_tokens");
 }

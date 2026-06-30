@@ -28,8 +28,6 @@ pub struct RunRequest {
     pub cwd: Option<String>,
     /// Auto-approve tool/command execution for this headless turn (--always-approve).
     pub always_approve: Option<bool>,
-    /// Additional readable/writable directories alongside the working root (--add-dir).
-    pub additional_directories: Option<Vec<String>>,
     /// Inject the iii runtime discovery prompt as the leading instructions (default true via config).
     pub iii_context: Option<bool>,
     /// Reserved for callers; not forwarded.

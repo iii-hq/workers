@@ -1,4 +1,4 @@
-//! The Grok turn: spawn `grok --print <prompt> --output-format streaming-json`,
+//! The Grok turn: spawn `grok --single <prompt> --output-format streaming-json`,
 //! parse the streaming-json event stream, mirror it verbatim onto
 //! `grok::events`, translate it onto `agent::events`, and persist the session
 //! record.
@@ -25,7 +25,7 @@ use crate::functions::types::{extract_prompt, RunRequest};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
 use crate::state::{load_session, save_session};
 use crate::wire::{assistant_message, now_ms, ContentBlock, SessionRecord, Status};
-use events_types::ThreadEvent;
+use events_types::GrokEvent;
 
 /// A minimal cancellation token (avoids pulling tokio-util just for this).
 mod tokio_util_compat {
@@ -150,7 +150,6 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         model: opts.model.clone(),
         status: Status::Working,
         turns: 0,
-        usage: None,
         updated_at_ms: now_ms(),
     });
     record.cwd = opts.cwd.clone();
@@ -172,7 +171,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         }
     };
 
-    // Prompt is passed as an argv flag (`--print <prompt>`); close stdin so the
+    // Prompt is passed as an argv flag (`--single <prompt>`); close stdin so the
     // headless run never blocks waiting on it.
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.shutdown().await;
@@ -206,9 +205,6 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         Status::Done
     };
     record.turns += 1;
-    if outcome.usage.is_some() {
-        record.usage = outcome.usage.clone();
-    }
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
 
@@ -218,7 +214,6 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
             text: outcome.result_text.clone(),
         }],
         &record.model,
-        record.usage.clone(),
         &outcome.stop_reason,
     );
     emit(
@@ -243,7 +238,6 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         "stop_reason": outcome.stop_reason,
         "is_error": outcome.is_error,
         "num_turns": record.turns,
-        "usage": record.usage,
     })
 }
 
@@ -251,7 +245,6 @@ struct Outcome {
     result_text: String,
     stop_reason: String,
     is_error: bool,
-    usage: Option<crate::wire::Usage>,
 }
 
 async fn stream_turn(
@@ -266,7 +259,6 @@ async fn stream_turn(
         result_text: String::new(),
         stop_reason: "end".to_string(),
         is_error: false,
-        usage: None,
     };
     let stdout = match child.stdout.take() {
         Some(s) => s,
@@ -313,7 +305,7 @@ async fn stream_turn(
         // verbatim onto the raw stream
         emit(iii, &cfg.raw_events_stream, session_id, raw.clone()).await;
 
-        let event: ThreadEvent = match serde_json::from_value(raw) {
+        let event: GrokEvent = match serde_json::from_value(raw) {
             Ok(e) => e,
             Err(_) => continue,
         };
@@ -338,7 +330,6 @@ async fn stream_turn(
         outcome.stop_reason = state.stop_reason;
         outcome.result_text = state.result_text;
     }
-    outcome.usage = state.usage;
     // Backstop: a non-zero exit with no error event observed (e.g. the CLI
     // crashed) must not be reported as success. The aborted path is expected
     // to exit non-zero and is left as-is.

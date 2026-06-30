@@ -1,7 +1,7 @@
 //! Build the `grok` argv from a run request. The worker drives the Grok CLI in
-//! headless print mode (`grok -p <prompt> --output-format streaming-json`) so
-//! the turn streams machine-readable events on stdout. Mirrors the documented
-//! Grok Build CLI flags at <https://docs.x.ai>.
+//! headless single-turn mode (`grok --single <prompt> --output-format
+//! streaming-json`) so the turn streams machine-readable events on stdout.
+//! Flags captured from Grok CLI 0.2.77 (`grok --help`).
 
 use crate::functions::types::RunRequest;
 
@@ -11,8 +11,6 @@ pub struct ResolvedOptions {
     pub cwd: String,
     /// Auto-approve tool/command execution in headless runs.
     pub always_approve: bool,
-    /// Extra directories the agent may read/write.
-    pub additional_directories: Vec<String>,
     /// developer/system instructions prepended to the prompt (the iii block).
     pub instructions: Option<String>,
 }
@@ -34,13 +32,12 @@ pub fn build_args(
         _ => prompt.to_string(),
     };
     let mut a: Vec<String> = vec![
-        "--print".into(),
+        "--single".into(),
         prompt,
         "--output-format".into(),
         "streaming-json".into(),
-        // Headless: never paint the TUI alt-screen or self-update mid-run.
+        // Headless: run inline, never paint the TUI alternate screen.
         "--no-alt-screen".into(),
-        "--no-auto-update".into(),
     ];
 
     if !opts.model.is_empty() {
@@ -54,12 +51,8 @@ pub fn build_args(
     if opts.always_approve {
         a.push("--always-approve".into());
     }
-    for dir in &opts.additional_directories {
-        a.push("--add-dir".into());
-        a.push(dir.clone());
-    }
     if let Some(session) = resume_session {
-        a.push("--session".into());
+        a.push("--resume".into());
         a.push(session.to_string());
     }
     a
@@ -92,7 +85,6 @@ pub fn resolve(
         model,
         cwd,
         always_approve: req.always_approve.unwrap_or(d.always_approve),
-        additional_directories: req.additional_directories.clone().unwrap_or_default(),
         instructions: iii_prompt.map(str::to_string),
     }
 }

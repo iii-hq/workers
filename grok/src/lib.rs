@@ -8,6 +8,5 @@ pub mod functions;
 pub mod grok;
 pub mod iii_prompt;
 pub mod manifest;
-pub mod map;
 pub mod state;
 pub mod wire;

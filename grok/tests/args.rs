@@ -1,4 +1,5 @@
 //! Arg + config resolution tests for the headless Grok invocation.
+//! Flags captured from Grok CLI 0.2.77.
 
 use grok::config::Config;
 use grok::functions::types::RunRequest;
@@ -9,7 +10,6 @@ fn opts() -> ResolvedOptions {
         model: String::new(),
         cwd: String::new(),
         always_approve: false,
-        additional_directories: vec![],
         instructions: None,
     }
 }
@@ -17,21 +17,20 @@ fn opts() -> ResolvedOptions {
 #[test]
 fn builds_base_streaming_json_invocation() {
     let a = build_args("hello", &opts(), None);
-    assert_eq!(a[0], "--print");
+    assert_eq!(a[0], "--single");
     assert_eq!(a[1], "hello");
     let f = a.iter().position(|s| s == "--output-format").unwrap();
     assert_eq!(a[f + 1], "streaming-json");
     assert!(a.contains(&"--no-alt-screen".to_string()));
-    assert!(a.contains(&"--no-auto-update".to_string()));
 }
 
 #[test]
-fn resume_appends_session_flag() {
+fn resume_appends_resume_flag() {
     let a = build_args("hi", &opts(), Some("sess-1"));
     let i = a
         .iter()
-        .position(|s| s == "--session")
-        .expect("--session present");
+        .position(|s| s == "--resume")
+        .expect("--resume present");
     assert_eq!(a[i + 1], "sess-1");
 }
 
@@ -44,18 +43,26 @@ fn always_approve_flag_emitted_when_set() {
 }
 
 #[test]
-fn model_cwd_and_add_dir_mapped() {
+fn model_and_cwd_mapped() {
     let mut o = opts();
-    o.model = "grok-build-0.1".into();
+    o.model = "grok-4.20-0309-non-reasoning".into();
     o.cwd = "/repo".into();
-    o.additional_directories = vec!["/extra".into()];
     let a = build_args("hi", &o, None);
     let m = a.iter().position(|s| s == "--model").unwrap();
-    assert_eq!(a[m + 1], "grok-build-0.1");
+    assert_eq!(a[m + 1], "grok-4.20-0309-non-reasoning");
     let c = a.iter().position(|s| s == "--cwd").unwrap();
     assert_eq!(a[c + 1], "/repo");
-    let d = a.iter().position(|s| s == "--add-dir").unwrap();
-    assert_eq!(a[d + 1], "/extra");
+}
+
+#[test]
+fn instructions_prepended_on_fresh_turn_only() {
+    let mut o = opts();
+    o.instructions = Some("IIICTX".into());
+    let fresh = build_args("do it", &o, None);
+    assert_eq!(fresh[1], "IIICTX\n\ndo it");
+    // on resume the session already carries the context
+    let resumed = build_args("do it", &o, Some("sess-1"));
+    assert_eq!(resumed[1], "do it");
 }
 
 #[test]
