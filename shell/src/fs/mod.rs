@@ -66,12 +66,11 @@ impl From<iii_sdk::channels::StreamChannelRef> for ContentRef {
 
 // Backend args — `FsBackend` trait inputs, no `target`, no `JsonSchema`.
 //
-// Every backend args struct carries an OPTIONAL per-call `base_dir`. When set,
-// the op is scoped to that session directory: relative paths anchor at
-// `base_dir` (not the global `host_root`) and an absolute path outside it is
-// rejected. `base_dir` must itself sit inside the configured `host_root`. When
-// `None` (the default, and the wire-absent case) the op behaves exactly as
-// before — see `crate::fs::host::confine_path_with_base_dir`.
+// Every backend args struct carries an OPTIONAL trusted per-call `base_dir`.
+// When set, the op is scoped to that session directory: relative paths anchor
+// at `base_dir` and an absolute path outside it is rejected. The directory is
+// supplied by harness metadata, not by the published tool schema. When `None`
+// (the default, and the wire-absent case) the op behaves exactly as before.
 
 #[derive(Debug, Deserialize)]
 pub struct LsArgs {
@@ -218,13 +217,8 @@ pub struct ReadArgs {
 // Registration-boundary requests — each carries `target` plus the matching
 // `*Args` fields and derives `JsonSchema` for the SDK.
 
-/// Shared doc for the optional per-call `base_dir` field on every
-/// `shell::fs::*` request. Scopes the call to a session directory: relative
-/// paths anchor here (instead of the global `fs.host_root`) and an absolute
-/// path outside it is rejected (S220). `base_dir` must itself canonicalize
-/// inside `fs.host_root`. Omit to use the global jail root (unchanged default).
-///
-/// (Documented once; each request field below repeats the one-line summary.)
+/// `base_dir` is accepted at deserialization time for trusted harness metadata,
+/// but is omitted from every published `shell::fs::*` request schema.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LsRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
@@ -232,9 +226,9 @@ pub struct LsRequest {
     pub target: Target,
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl LsRequest {
@@ -256,9 +250,9 @@ pub struct StatRequest {
     pub target: Target,
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl StatRequest {
@@ -286,9 +280,9 @@ pub struct MkdirRequest {
     /// Create missing parent directories.
     #[serde(default)]
     pub parents: bool,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl MkdirRequest {
@@ -315,9 +309,9 @@ pub struct RmRequest {
     /// Required to delete a non-empty directory.
     #[serde(default)]
     pub recursive: bool,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl RmRequest {
@@ -351,9 +345,9 @@ pub struct ChmodRequest {
     /// Apply mode/owner change to all files under the path recursively.
     #[serde(default)]
     pub recursive: bool,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl ChmodRequest {
@@ -384,10 +378,9 @@ pub struct MvRequest {
     /// Replace an existing destination instead of returning an error.
     #[serde(default)]
     pub overwrite: bool,
-    /// Optional per-call session directory. BOTH src and dst anchor here when
-    /// relative; an absolute src/dst outside it is rejected (S220). Must be
-    /// inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl MvRequest {
@@ -431,9 +424,9 @@ pub struct GrepRequest {
     /// Skip lines longer than this many bytes (default 4 096).
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl GrepRequest {
@@ -488,10 +481,9 @@ pub struct SedRequest {
     /// Match pattern case-insensitively.
     #[serde(default)]
     pub ignore_case: bool,
-    /// Optional per-call session directory. Relative `files`/`path` anchor
-    /// here; an absolute one outside it is rejected (S220). Must be inside
-    /// fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl SedRequest {
@@ -582,10 +574,9 @@ pub struct WriteRequest {
     /// single-file fields (`path`/`content`/`mode`/`parents`) must be omitted.
     #[serde(default)]
     pub files: Option<Vec<WriteFileSpec>>,
-    /// Optional per-call session directory, applied to the single-file `path`
-    /// AND to every batch `files[].path`. Relative paths anchor here; an
-    /// absolute one outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl WriteRequest {
@@ -661,9 +652,9 @@ pub struct ReadRequest {
     pub target: Target,
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
-    /// Optional per-call session directory. Relative paths anchor here; an
-    /// absolute path outside it is rejected (S220). Must be inside fs.host_root.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 impl ReadRequest {

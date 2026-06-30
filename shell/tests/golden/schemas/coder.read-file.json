@@ -75,14 +75,6 @@
       }
     ],
     "properties": {
-      "base_dir": {
-        "default": null,
-        "description": "Optional per-call session working directory. When set, every relative path (the single `path` or each `paths[]` entry, in both the bare string and `{path,...}` object forms) anchors here instead of the primary allowed root, and every resolved path must stay inside it. `base_dir` itself must canonicalize inside an allowed root (`coder::info` lists them). Omit to resolve against the primary allowed root exactly as before.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "line_from": {
         "default": null,
         "description": "First line of the window, 1-based inclusive (must be >= 1; 0 is rejected with C210). Setting `line_from` and/or `line_to` switches to windowed mode: the file is streamed and only the requested lines are returned, so files larger than `max_read_bytes` stay readable slice by slice — the byte cap then applies to the returned window, never the file size. Defaults to 1 when only `line_to` is set. A window starting past EOF succeeds with empty content and reports the file's `total_lines`. Only valid in single-path mode (`path`); ignored when `paths` is set. Lines are 0x0A- or EOF-terminated segments; a trailing newline does not create a phantom line (same convention as `coder::update-file`).",

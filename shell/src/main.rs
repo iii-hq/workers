@@ -328,6 +328,8 @@ async fn main() -> Result<()> {
         );
     }
 
+    register_workspace(&iii, &state);
+
     // fs::* keep Value handlers (preserving S210) and read the live host backend
     // + sandbox toggle from AppState; the typed schema is attached separately.
     register_fs(&iii, &state);
@@ -361,6 +363,70 @@ async fn main() -> Result<()> {
 
     iii.shutdown_async().await;
     Ok(())
+}
+
+/// Register operator control-plane functions used by the console working-dir
+/// picker. These are intentionally separate from shell::fs::* and coder::*:
+/// they browse existing host directories for UI selection, while the harness
+/// injects the chosen path as trusted per-turn metadata.
+fn register_workspace(iii: &iii_sdk::IIIClient, state: &AppState) {
+    {
+        let st = state.clone();
+        iii.register_function(
+            "shell::workspace::roots",
+            RegisterFunction::new_async(
+                move |_req: functions::workspace::WorkspaceRootsRequest| {
+                    let st = st.clone();
+                    telemetry::record_call("shell::workspace::roots", async move {
+                        let cfg = { st.runtime.read().await.config.clone() };
+                        Ok::<_, Error>(functions::workspace::workspace_roots(&cfg))
+                    })
+                },
+            )
+            .description(
+                "Console-only workspace picker control plane: return canonical host directory \
+                 anchors that an operator can browse before choosing a per-session working \
+                 directory.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "shell::workspace::validate",
+            RegisterFunction::new_async(
+                move |req: functions::workspace::WorkspaceValidateRequest| {
+                    let st = st.clone();
+                    telemetry::record_call("shell::workspace::validate", async move {
+                        let cfg = { st.runtime.read().await.config.clone() };
+                        functions::workspace::validate_workspace_path(req, &cfg)
+                            .map_err(Error::from)
+                    })
+                },
+            )
+            .description(
+                "Console-only workspace picker control plane: validate that `path` is an \
+                 existing host directory and return its canonical path.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "shell::workspace::list",
+            RegisterFunction::new_async(move |req: functions::workspace::WorkspaceListRequest| {
+                let st = st.clone();
+                telemetry::record_call("shell::workspace::list", async move {
+                    let cfg = { st.runtime.read().await.config.clone() };
+                    functions::workspace::list_workspace_dirs(req, &cfg).map_err(Error::from)
+                })
+            })
+            .description(
+                "Console-only workspace picker control plane: list child directories under an \
+                 existing host directory. Returns canonical paths and never returns files.",
+            ),
+        );
+    }
 }
 
 /// Detached task that prunes finished `JobRecord`s on a fixed cadence using the

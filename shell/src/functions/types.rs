@@ -111,18 +111,11 @@ pub struct ExecRequest {
     /// inside `host_root` and miss the denylist — a path that escapes returns
     /// S215. Must already exist and be a directory. Omit to use the configured
     /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
-    /// When `base_dir` is set, a relative `cwd` anchors there and an absolute
-    /// `cwd` must resolve inside `base_dir`.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Optional per-call session directory (host target only). When set, it
-    /// becomes BOTH the working directory (in place of the configured
-    /// `working_dir`) AND the confinement root for `cwd`: a relative `cwd`
-    /// anchors at `base_dir` and an absolute `cwd` must resolve inside it (else
-    /// S220). `base_dir` must itself canonicalize inside `fs.host_root` (else
-    /// rejected). Omit for the unchanged behaviour. Rejected (S210) on a sandbox
-    /// target, like `cwd`/`env`.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
     /// Optional per-call environment values (host target only). A key may be
     /// set ONLY if the operator listed it in `allowed_env`, and NEVER for an
@@ -167,14 +160,12 @@ pub struct ExecBgRequest {
     /// Optional working directory for this job (host target only). Same jail
     /// confinement and rules as [`ExecRequest::cwd`]: canonicalized, must
     /// resolve inside `host_root` (S215 on escape) and be an existing
-    /// directory. Rejected (S210) on a sandbox target. Scoped to `base_dir`
-    /// when that is set.
+    /// directory. Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Optional per-call session directory (host target only). See
-    /// [`ExecRequest::base_dir`]: becomes both the working directory and the
-    /// confinement root for `cwd`. Rejected (S210) on a sandbox target.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
     /// Optional per-call environment values (host target only). Same gating as
     /// [`ExecRequest::env`]: a key must be in `allowed_env` and must not be an

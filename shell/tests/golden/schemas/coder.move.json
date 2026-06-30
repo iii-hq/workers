@@ -48,14 +48,6 @@
       }
     ],
     "properties": {
-      "base_dir": {
-        "default": null,
-        "description": "Optional per-call session working directory. When set, relative `from`/`to` paths anchor here instead of the primary allowed root, and BOTH resolved endpoints must stay inside it. `base_dir` itself must canonicalize inside an allowed root (`coder::info` lists them). Omit to resolve against the primary allowed root exactly as before.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "files": {
         "description": "Entries to move. Each entry is processed independently so a single failure never aborts the rest.",
         "items": {

@@ -1,13 +1,13 @@
 import {
-  type WorkerPresence,
   isWorkerPresent,
   useWorkerPresence,
+  type WorkerPresence,
 } from './use-worker-presence'
 
 /**
  * Presence probe for the `shell` worker. Shell owns the chat's working-directory
- * surface: the `coder::*` directory-discovery functions the `DirectoryPicker`
- * browses, and the `shell::*` exec/file calls the chosen dir scopes. It is
+ * surface: the `shell::workspace::*` picker control plane and the `shell::*` /
+ * `coder::*` calls the chosen dir scopes. It is
  * OPTIONAL, so the console gates the working-directory picker + banner on its
  * presence rather than rendering controls that would call functions that don't
  * exist. Thin wrapper over the generic worker-presence probe.

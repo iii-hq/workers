@@ -17,12 +17,9 @@ use crate::code::path::PathResolver;
 #[schemars(example = "example_create_file_input")]
 pub struct CreateFileInput {
     pub files: Vec<CreateFileSpec>,
-    /// Optional per-call session working directory. When set, relative
-    /// `path`s anchor here instead of the primary allowed root, and every
-    /// resolved path must stay inside it. `base_dir` itself must canonicalize
-    /// inside an allowed root (`coder::info` lists them). Omit to resolve
-    /// against the primary allowed root exactly as before.
+    /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
+    #[schemars(skip)]
     pub base_dir: Option<String>,
 }
 

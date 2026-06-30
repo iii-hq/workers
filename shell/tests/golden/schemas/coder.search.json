@@ -17,14 +17,6 @@
       }
     ],
     "properties": {
-      "base_dir": {
-        "default": null,
-        "description": "Optional per-call session working directory. When set, a relative `path` anchors here instead of the primary allowed root, and the walk root must stay inside it. `base_dir` itself must canonicalize inside an allowed root (`coder::info` lists them). Result paths stay absolute. Omit to resolve against the primary allowed root exactly as before.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "context_lines_after": {
         "default": null,
         "description": "Lines of context to return AFTER each content match. Same max (10), truncation, and budget rules as `context_lines_before`; unset = 0.",

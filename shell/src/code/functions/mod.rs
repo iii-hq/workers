@@ -291,6 +291,7 @@ fn register_read_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigC
             let resolver = resolver.clone();
             let cfg = cfg.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 let cfg = cfg.read().await.clone();
                 read_file::handle(resolver, cfg, req)
                     .await
@@ -308,6 +309,7 @@ fn register_search(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell
             let resolver = resolver.clone();
             let cfg = cfg.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 let cfg = cfg.read().await.clone();
                 search::handle(resolver, cfg, req)
                     .await
@@ -325,6 +327,7 @@ fn register_update_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: Confi
             let resolver = resolver.clone();
             let cfg = cfg.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 let cfg = cfg.read().await.clone();
                 update_file::handle(resolver, cfg, req)
                     .await
@@ -342,6 +345,7 @@ fn register_create_file(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: Confi
             let resolver = resolver.clone();
             let cfg = cfg.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 let cfg = cfg.read().await.clone();
                 create_file::handle(resolver, cfg, req)
                     .await
@@ -358,6 +362,7 @@ fn register_delete_file(iii: &IIIClient, resolver: Arc<PathResolver>) {
         RegisterFunction::new_async(move |req: delete_file::DeleteFileInput| {
             let resolver = resolver.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 delete_file::handle(resolver, req)
                     .await
                     .map_err(Error::from)
@@ -374,6 +379,7 @@ fn register_list_folder(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: Confi
             let resolver = resolver.clone();
             let cfg = cfg.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 let cfg = cfg.read().await.clone();
                 list_folder::handle(resolver, cfg, req)
                     .await
@@ -391,6 +397,7 @@ fn register_tree(iii: &IIIClient, resolver: Arc<PathResolver>, cfg: ConfigCell) 
             let resolver = resolver.clone();
             let cfg = cfg.clone();
             async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
                 let cfg = cfg.read().await.clone();
                 tree::handle(resolver, cfg, req).await.map_err(Error::from)
             }
@@ -404,7 +411,10 @@ fn register_move_file(iii: &IIIClient, resolver: Arc<PathResolver>) {
         MOVE_FILE_ID,
         RegisterFunction::new_async(move |req: move_file::MoveFileInput| {
             let resolver = resolver.clone();
-            async move { move_file::handle(resolver, req).await.map_err(Error::from) }
+            async move {
+                let resolver = resolver.session_scoped(req.base_dir.as_deref());
+                move_file::handle(resolver, req).await.map_err(Error::from)
+            }
         })
         .description(MOVE_FILE_DESC),
     );
