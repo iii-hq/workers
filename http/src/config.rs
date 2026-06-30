@@ -94,7 +94,19 @@ impl RestApiConfig {
 
     pub fn json_schema() -> serde_json::Value {
         let root = schemars::schema_for!(RestApiConfig);
-        serde_json::to_value(&root.schema).expect("schema serializes")
+        let mut schema = serde_json::to_value(&root.schema).expect("schema serializes");
+        // Nested types (CorsConfig, MiddlewareConfig) are emitted as `$ref`s into
+        // `#/definitions`; without carrying the definitions the schema has
+        // dangling refs and `configuration::register` rejects it as invalid.
+        if let Some(obj) = schema.as_object_mut() {
+            if !root.definitions.is_empty() {
+                obj.insert(
+                    "definitions".into(),
+                    serde_json::to_value(&root.definitions).expect("definitions serialize"),
+                );
+            }
+        }
+        schema
     }
 }
 

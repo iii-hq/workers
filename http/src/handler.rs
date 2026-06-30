@@ -40,7 +40,7 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
 use crate::condition::check_condition;
-use crate::config::RestApiConfig;
+use crate::configuration::ConfigCell;
 use crate::middleware::{self, MiddlewareOutcome, error_body, generate_error_id};
 use crate::trigger::RouteTable;
 use crate::types::{ControlMessage, HttpRequest, HttpResponse, TriggerMetadata};
@@ -49,7 +49,9 @@ use crate::types::{ControlMessage, HttpRequest, HttpResponse, TriggerMetadata};
 pub struct AppState {
     pub routes: Arc<RwLock<RouteTable>>,
     pub iii: Arc<IIIClient>,
-    pub config: RestApiConfig,
+    /// Live config cell, read once per request so `middleware`/`default_timeout`
+    /// changes hot-reload (see [`crate::configuration`]).
+    pub config: ConfigCell,
 }
 
 /// Maximum request body size read into memory before it is streamed into the
@@ -106,6 +108,11 @@ pub async fn dynamic_handler(
 ) -> Response {
     let actual_path = uri.path().to_string();
 
+    // Snapshot the live config once for the whole request, so `middleware` and
+    // `default_timeout` reflect the latest hot-reloaded value (see
+    // `crate::configuration`) while staying consistent within this request.
+    let config = state.config.read().await.clone();
+
     let matched = {
         let table = state.routes.read().await;
         table.match_route(method.as_str(), &actual_path)
@@ -116,19 +123,14 @@ pub async fn dynamic_handler(
 
     // Global middleware (config-driven, sorted by priority at config-load
     // time), run before the matched route's per-route middleware and handler.
-    for mw in state
-        .config
-        .middleware
-        .iter()
-        .filter(|mw| mw.phase == "preHandler")
-    {
+    for mw in config.middleware.iter().filter(|mw| mw.phase == "preHandler") {
         let mw_input =
             middleware::build_middleware_input(&path_params, &query_params, &headers, method.as_str());
         match middleware::execute_middleware(
             &state.iii,
             &mw.function_id,
             mw_input,
-            state.config.default_timeout,
+            config.default_timeout,
         )
         .await
         {
@@ -241,12 +243,7 @@ pub async fn dynamic_handler(
             obj.remove("response");
         }
 
-        match check_condition(
-            &state.iii,
-            condition_id,
-            condition_input,
-            state.config.default_timeout,
-        )
+        match check_condition(&state.iii, condition_id, condition_input, config.default_timeout)
         .await
         {
             Ok(true) => {}
@@ -288,12 +285,7 @@ pub async fn dynamic_handler(
             &headers,
             method.as_str(),
         );
-        match middleware::execute_middleware(
-            &state.iii,
-            mw_fn_id,
-            mw_input,
-            state.config.default_timeout,
-        )
+        match middleware::execute_middleware(&state.iii, mw_fn_id, mw_input, config.default_timeout)
         .await
         {
             Ok(MiddlewareOutcome::Continue) => {}
@@ -347,7 +339,7 @@ pub async fn dynamic_handler(
     let mut call = {
         let iii = state.iii.clone();
         let function_id = route.function_id.clone();
-        let timeout_ms = state.config.default_timeout;
+        let timeout_ms = config.default_timeout;
         tokio::spawn(async move {
             iii.trigger(TriggerRequest {
                 function_id,
@@ -366,7 +358,7 @@ pub async fn dynamic_handler(
     // null-returning function that never closes its writer. Instead we bound each
     // `rx.recv()` wait with the request timeout as an *idle* timeout (simplest
     // safe choice: total-timeout would penalize legitimate slow long streams).
-    let stream_timeout = Duration::from_millis(state.config.default_timeout);
+    let stream_timeout = Duration::from_millis(config.default_timeout);
 
     // Race the response channel against the invocation result.
     //
@@ -449,7 +441,7 @@ pub async fn dynamic_handler(
             Ok(item) => item,
             Err(_) => {
                 tracing::warn!(
-                    timeout_ms = state.config.default_timeout,
+                    timeout_ms = config.default_timeout,
                     function_id = %route.function_id,
                     "Streaming drain timed out waiting for first frame; ending stream"
                 );

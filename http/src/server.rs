@@ -28,6 +28,7 @@ use tower_http::{
 };
 
 use crate::config::RestApiConfig;
+use crate::configuration::ConfigCell;
 use crate::handler::{self, AppState};
 use crate::trigger::RouteTable;
 
@@ -87,21 +88,29 @@ pub fn build_cors_layer(config: &RestApiConfig) -> CorsLayer {
 /// assemble the router, and spawn the serving task. Returns the resolved local
 /// address (so callers can reach an ephemeral port) plus the task/shutdown
 /// handles.
+///
+/// The CORS, outer timeout, and concurrency tower layers are built from a
+/// snapshot taken here at serve time, so they are fixed for the life of the
+/// listener (restart-only — see [`crate::configuration`]). The shared
+/// [`ConfigCell`] is handed to the handler, which reads `middleware` and
+/// `default_timeout` from it per-request, so those fields hot-reload.
 pub async fn serve(
     routes: Arc<RwLock<RouteTable>>,
     iii: Arc<IIIClient>,
-    config: RestApiConfig,
+    config: ConfigCell,
 ) -> anyhow::Result<ServerHandle> {
-    let addr = format!("{}:{}", config.host, config.port);
+    let snapshot: Arc<RestApiConfig> = config.read().await.clone();
+
+    let addr = format!("{}:{}", snapshot.host, snapshot.port);
     let listener = TcpListener::bind(&addr).await?;
     let local_addr = listener.local_addr()?;
 
-    let cors = build_cors_layer(&config);
+    let cors = build_cors_layer(&snapshot);
     let timeout = TimeoutLayer::with_status_code(
         StatusCode::GATEWAY_TIMEOUT,
-        Duration::from_millis(config.default_timeout),
+        Duration::from_millis(snapshot.default_timeout),
     );
-    let concurrency = ConcurrencyLimitLayer::new(config.concurrency_request_limit);
+    let concurrency = ConcurrencyLimitLayer::new(snapshot.concurrency_request_limit);
 
     let state = Arc::new(AppState {
         routes,

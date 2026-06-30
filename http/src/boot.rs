@@ -11,15 +11,18 @@ use tokio::task::JoinHandle;
 
 use crate::TRIGGER_TYPE;
 use crate::config::RestApiConfig;
+use crate::configuration::{self, ConfigCell};
 use crate::server::{self, ServerHandle};
 use crate::trigger::{HttpTriggerHandler, RouteTable};
 use crate::types::{HttpRequest, HttpTriggerConfig};
 
-/// Handle to a running worker: the bound address, the shared route table, and
-/// a graceful-shutdown trigger.
+/// Handle to a running worker: the bound address, the shared route table, the
+/// live config cell (so the caller can wire the `configuration:updated` trigger
+/// and observe hot-reloads), and a graceful-shutdown trigger.
 pub struct BootHandle {
     pub local_addr: SocketAddr,
     pub routes: Arc<RwLock<RouteTable>>,
+    pub config: ConfigCell,
     shutdown: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
 }
@@ -37,7 +40,7 @@ impl BootHandle {
 /// Register the `http` trigger type and start the server. Returns once the
 /// listener is bound (its address available in [`BootHandle::local_addr`]).
 pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result<BootHandle> {
-    let config = config.normalized();
+    let cell = configuration::new_cell(config.normalized());
 
     let handler = HttpTriggerHandler::new();
     let routes = handler.routes.clone();
@@ -54,11 +57,12 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
         local_addr,
         join,
         shutdown,
-    } = server::serve(routes.clone(), iii, config).await?;
+    } = server::serve(routes.clone(), iii, cell.clone()).await?;
 
     Ok(BootHandle {
         local_addr,
         routes,
+        config: cell,
         shutdown: Some(shutdown),
         join,
     })
