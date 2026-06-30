@@ -317,6 +317,34 @@ pub struct StartResponse {
 // Validation
 // ---------------------------------------------------------------------------
 
+/// Fold each node's `input.from` / `fanout.over` `"node:<id>"` reads into its
+/// `depends_on` (deduped; any explicitly-declared entries are kept and ordered
+/// first). A read is a data dependency, but scheduling consults only `depends_on`
+/// (see `dag::deps_done` / `ready_frontier`); aligning them here means a node never
+/// fires before a node it reads — without forcing callers to restate the edge — and
+/// keeps `validate_def`'s cycle check honest about the graph that actually executes.
+/// Run BEFORE `validate_def`. Idempotent.
+fn add_read_dependencies(def: &mut WorkflowDef) {
+    for node in def.nodes.values_mut() {
+        let mut refs: Vec<String> = Vec::new();
+        for src in node.input.from.sources() {
+            if let Some(rest) = src.strip_prefix("node:") {
+                refs.push(rest.split('.').next().unwrap_or(rest).to_string());
+            }
+        }
+        if let Some(fanout) = &node.fanout {
+            if let Some(rest) = fanout.over.strip_prefix("node:") {
+                refs.push(rest.split('.').next().unwrap_or(rest).to_string());
+            }
+        }
+        for r in refs {
+            if !node.depends_on.contains(&r) {
+                node.depends_on.push(r);
+            }
+        }
+    }
+}
+
 /// Validate a `WorkflowDef` for structural correctness.
 ///
 /// Rules:
@@ -352,12 +380,14 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
         )));
     }
 
-    // Rule 0c: node ids must not contain the reserved separators '#' (fanout
-    // item index) or '.' (over-path), which would mis-parse at dispatch time.
+    // Rule 0c: node ids must not contain the reserved separators '#' (fanout item
+    // index), '.' (over-path), or '/' (the run_id/node_uid storage-key separator —
+    // see ids::node_result_key), any of which would mis-parse at dispatch time or
+    // corrupt result-key composition.
     for node_id in def.nodes.keys() {
-        if node_id.contains('#') || node_id.contains('.') {
+        if node_id.contains('#') || node_id.contains('.') || node_id.contains('/') {
             return Err(WorkflowError::InvalidDef(format!(
-                "node id '{}' must not contain '#' or '.'",
+                "node id '{}' must not contain '#', '.', or '/'",
                 node_id
             )));
         }
@@ -859,7 +889,15 @@ async fn caller_workflow_depth(
 /// the caller gets the `run_id` back immediately and receives the outcome via
 /// `reply_to` / `notify` (or by polling `workflow::status`); the harness turn is
 /// never blocked.
-pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, WorkflowError> {
+pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse, WorkflowError> {
+    // A node's reads ARE its dependencies: fold every `input.from`/`fanout.over`
+    // `"node:<id>"` ref into `depends_on` before validating or persisting. Scheduling
+    // consults only `depends_on` (dag::deps_done / ready_frontier), so without this a
+    // node that reads `node:x` but doesn't also list it could fire before `x` finishes
+    // and read null while the run still reports success. Folding reads in keeps the
+    // declared graph — and the cycle check in validate_def — aligned with what
+    // actually executes, and lets callers omit the redundant depends_on entries.
+    add_read_dependencies(&mut req.definition);
     validate_def(&req.definition)?;
 
     // Resolve the caller/orchestrator session ONCE: the hook-stamped caller, then a
@@ -1026,6 +1064,24 @@ mod tests {
             },
             default_functions: None,
         }
+    }
+
+    #[test]
+    fn add_read_dependencies_folds_reads_into_depends_on() {
+        // well_formed_def: `read` reads node:plan (BOTH input.from and fanout.over)
+        // with depends_on=[]; `summarize` reads node:read with depends_on=[].
+        let mut def = well_formed_def();
+        add_read_dependencies(&mut def);
+        // Read-refs become scheduling edges; the duplicate plan ref dedups to one.
+        assert_eq!(def.nodes["read"].depends_on, vec!["plan".to_string()]);
+        assert_eq!(def.nodes["summarize"].depends_on, vec!["read".to_string()]);
+        // `plan` reads run input (no node ref) → nothing added.
+        assert!(def.nodes["plan"].depends_on.is_empty());
+        // Idempotent: a second pass changes nothing.
+        add_read_dependencies(&mut def);
+        assert_eq!(def.nodes["read"].depends_on, vec!["plan".to_string()]);
+        // The folded def is exactly the well-formed shape, so it still validates.
+        assert!(validate_def(&def).is_ok());
     }
 
     #[test]

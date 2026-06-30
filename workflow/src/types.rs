@@ -52,9 +52,9 @@ pub struct WorkflowDef {
     /// so callers never need to send it.
     #[serde(default = "default_def_version")]
     pub version: u32,
-    /// Nodes keyed by node id. A node id must not contain `#` or `.` (reserved
-    /// for fanout-item / over-path parsing). The graph formed by every node's
-    /// `depends_on` must be acyclic.
+    /// Nodes keyed by node id. A node id must not contain `#`, `.`, or `/` (reserved
+    /// for fanout-item / over-path parsing and result-key composition). The graph
+    /// formed by every node's `depends_on` must be acyclic.
     pub nodes: BTreeMap<String, NodeDef>,
     /// Which node's result the whole run returns.
     pub output: OutputRef,

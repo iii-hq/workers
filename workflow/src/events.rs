@@ -88,19 +88,18 @@ fn reply_send_payload(
         Some(t) if !t.is_empty() => format!("{t}\n\n{body}"),
         _ => body,
     };
-    // Deliver the outcome into the caller's session. If the stamp hook captured the
-    // caller's dispatch policy, WAKE the caller (`run: true`) with that exact reach
-    // so an idle caller — one told to END YOUR TURN after `reply_to` — actually
-    // receives the result. Without a captured policy, fall back to a passive
-    // transcript append (`run: false`): waking with no policy is a deny-all turn,
-    // which would strip the caller's reach.
-    let wake = reply.functions.is_some();
+    // `harness::send` ALWAYS drives a turn — it seeds a fresh turn or merges into the
+    // caller's in-flight one; it has no passive-append / "run" flag (see harness
+    // SendRequest/SendOptions). The only lever over the woken turn is its per-turn
+    // dispatch policy: when the stamp hook captured the caller's reach, pass it
+    // through as `options.functions` so the turn keeps that reach instead of running
+    // fail-closed (deny-all, tool-less). Without a captured policy we still deliver
+    // the outcome message; that turn simply runs with no tool reach.
     let mut payload = serde_json::json!({
         "session_id": session_id,
         // Deterministic so an at-least-once re-fire is a harness-side no-op.
         "idempotency_key": format!("wfreply_{}", record.run_id),
         "message": message,
-        "run": wake,
     });
     if let Some(f) = &reply.functions {
         payload["options"] = serde_json::json!({ "functions": f });
@@ -186,14 +185,14 @@ mod tests {
         let msg = p["message"].as_str().unwrap();
         assert!(msg.starts_with("Done:"), "msg: {msg}");
         assert!(msg.contains("winner"), "msg: {msg}");
-        // No captured caller policy in this reply → delivery stays PASSIVE
-        // (run:false): waking with no policy is a deny-all, tool-less turn. The
-        // wake-with-reach path (policy captured) is covered separately below.
-        assert_eq!(p["run"], false);
+        // No captured caller policy → no `options.functions`, so the woken turn runs
+        // fail-closed. (`harness::send` always drives a turn; there is no run/passive
+        // flag — the wake-with-reach path is covered below.)
         assert!(
             p.get("options").is_none(),
             "no options without a captured policy"
         );
+        assert!(p.get("run").is_none(), "no phantom top-level `run` field");
     }
 
     #[test]
@@ -208,8 +207,7 @@ mod tests {
             })),
             "s1",
         );
-        // A captured caller policy means WAKE the caller (run:true) with that reach.
-        assert_eq!(p["run"], true);
+        // A captured caller policy is passed through as the woken turn's reach.
         assert_eq!(p["options"]["functions"]["allow"][0], "*");
         assert_eq!(p["options"]["functions"]["deny"][0], "workflow::*");
     }

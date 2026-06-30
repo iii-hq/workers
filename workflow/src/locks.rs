@@ -11,13 +11,13 @@
 //! instance handles all writes for a given run — no new code required.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::OwnedMutexGuard;
 
 #[derive(Clone, Default)]
 pub struct WorkflowLocks {
-    map: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    map: Arc<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
 }
 
 impl WorkflowLocks {
@@ -25,9 +25,22 @@ impl WorkflowLocks {
     pub async fn guard(&self, run_id: &str) -> OwnedMutexGuard<()> {
         let lock = {
             let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
-            map.entry(run_id.to_string())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
+            // Reuse the live lock while any guard is still outstanding; once all
+            // guards drop, the Weak lapses and we mint a fresh one. Storing Weak
+            // (not Arc) lets a finished run's mutex deallocate instead of pinning
+            // it in the map forever.
+            // ponytail: a lapsed Weak entry still lingers per distinct run_id (tiny
+            // — a key + 16-byte Weak, no mutex). Add a periodic `retain(|_, w|
+            // w.strong_count() > 0)` prune only if run-id cardinality makes even
+            // that matter.
+            match map.get(run_id).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    map.insert(run_id.to_string(), Arc::downgrade(&lock));
+                    lock
+                }
+            }
         };
         lock.lock_owned().await
     }

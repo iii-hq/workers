@@ -90,10 +90,18 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering workflow configuration schema")?;
-    let cfg = configuration::fetch_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("loading workflow configuration")?;
+    // Don't brick boot on a transient config-worker hiccup: warn and come up
+    // inert on defaults, then recover on the next config-change hot-reload (same
+    // resilience stance as on_config_change keeping the previous config on a
+    // fetch failure). Matches the warn-and-default convention of the other
+    // worker binaries in this repo.
+    let cfg = match configuration::fetch_config(&iii).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "loading workflow configuration failed; using defaults");
+            workflow::config::WorkerConfig::default()
+        }
+    };
 
     // Wire the state-layer RPC timeout from the authoritative config at boot
     // (kept in sync afterwards by configuration::apply_config on hot-reload).

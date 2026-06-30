@@ -25,8 +25,8 @@ pub struct NodeResultRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NodeResultResponse {
     /// The node's stored JSON result, or null if the node has not completed (or
-    /// produced no stored result).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// produced no stored result). Always serialized — even when absent it is an
+    /// explicit `{ "result": null }`, so callers never special-case a missing key.
     pub result: Option<Value>,
 }
 
@@ -62,9 +62,12 @@ mod tests {
     }
 
     #[test]
-    fn node_result_response_omits_none() {
+    fn node_result_response_serializes_explicit_null() {
         let v = serde_json::to_value(NodeResultResponse { result: None }).expect("serialize");
-        assert!(v.get("result").is_none(), "result omitted when None");
+        // Contract: an absent result is an explicit `{ "result": null }`, never a
+        // missing key — so callers don't have to special-case the key being gone.
+        assert!(v.get("result").is_some(), "result key is always present");
+        assert!(v["result"].is_null(), "result is null when None");
     }
 
     #[test]

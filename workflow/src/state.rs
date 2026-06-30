@@ -159,21 +159,30 @@ pub async fn list_runs(iii: &IIIClient) -> Result<Vec<WorkflowRunRecord>, Workfl
     Ok(parse_record_list(&v))
 }
 
-/// Delete a terminal run's persisted state: its node-result blobs, then its
-/// definition, then the run record itself. Used by the sweep to GC runs past the
-/// retention window so `list_runs` doesn't deserialize unbounded history every
-/// cycle. The run record is deleted LAST so a mid-delete crash leaves the next
-/// sweep able to retry (the record still lists the result/def keys). The session
-/// reverse-index is intentionally left as-is: a stale entry resolves to a now-missing
-/// run, which `run_id_for_session` callers already tolerate (get_run → None ends the
-/// ancestry walk).
+/// Delete a terminal run's persisted state: its node-result blobs and per-node
+/// session reverse-index entries, then its definition, then the run record itself.
+/// Used by the sweep to GC runs past the retention window so `list_runs` doesn't
+/// deserialize unbounded history every cycle.
+///
+/// Every child delete is propagated (`?`). The run record is the retry anchor — it
+/// still lists the result/def keys and each node's session id — so it is deleted
+/// LAST and only once all child deletes have succeeded. A transient failure leaves
+/// the record in place for the next sweep to retry, instead of orphaning the
+/// result/def/index rows forever. (`state::delete` is idempotent on a missing key,
+/// so a retry that re-deletes an already-removed child is a harmless no-op.)
 pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(), WorkflowError> {
     for cp in record.nodes.values() {
         if let Some(key) = &cp.result_ref {
-            let _ = state_delete(iii, SCOPE_RESULT, key).await;
+            state_delete(iii, SCOPE_RESULT, key).await?;
+        }
+        // Clear the session → run reverse index (used by workflow::wake) so a
+        // long-lived worker doesn't accumulate orphaned index rows for every run
+        // it GCs.
+        if let Some(session_id) = &cp.session_id {
+            state_delete(iii, SCOPE_INDEX, session_id).await?;
         }
     }
-    let _ = state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await;
+    state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
     state_delete(iii, SCOPE_RUN, &record.run_id).await
 }
 

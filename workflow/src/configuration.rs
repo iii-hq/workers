@@ -198,12 +198,17 @@ async fn try_bind_harness_hooks(iii: &IIIClient, bound: &AtomicBool) {
              stamp-reply, pre-generate → inject-guidance (guidance injection active)"
         );
     } else {
+        // A bind transiently failed. Release the claim so a later engine::*-available
+        // event retries, instead of leaving the missing hook(s) unbound until restart.
+        // Re-binding an already-bound hook on retry is tolerated: the bound hooks
+        // (turn-completed → wake, pre-trigger → stamp) are idempotent downstream.
+        bound.store(false, Ordering::Release);
         tracing::warn!(
             turn_completed,
             pre_trigger,
             pre_generate,
-            "not all workflow harness hooks bound; some hooks (e.g. guidance injection) \
-             may be inactive"
+            "not all workflow harness hooks bound; releasing the bind claim to retry on the \
+             next registry-change event"
         );
     }
 }
@@ -391,13 +396,27 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerH
     let old = cell.read().await.clone();
     // Re-bind the cron sweep only when a boot-relevant field changes — one baked
     // into a live trigger binding rather than hot-applied per call. Today that is
-    // only the sweep schedule.
-    if old.sweep_expression != cfg.sweep_expression {
-        rebind_slot(&handles.sweep, bind_sweep(iii, &cfg));
-        tracing::info!("workflow sweep re-bound (sweep_expression changed)");
+    // only the sweep schedule. Commit the new expression into the live snapshot
+    // ONLY when the rebind actually succeeds; on failure keep the old expression so
+    // the next config-change still sees a diff and retries — otherwise the snapshot
+    // would advertise a schedule the active cron trigger isn't running.
+    let mut applied = cfg;
+    if old.sweep_expression != applied.sweep_expression {
+        match bind_sweep(iii, &applied) {
+            Some(trigger) => {
+                rebind_slot(&handles.sweep, Some(trigger));
+                tracing::info!("workflow sweep re-bound (sweep_expression changed)");
+            }
+            None => {
+                applied.sweep_expression = old.sweep_expression.clone();
+                tracing::error!(
+                    "workflow sweep rebind failed; keeping the previous sweep binding and schedule"
+                );
+            }
+        }
     }
 
-    apply_config(cell, cfg).await;
+    apply_config(cell, applied).await;
     tracing::info!("workflow configuration reloaded");
 }
 

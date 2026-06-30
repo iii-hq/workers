@@ -76,7 +76,7 @@ topology choice.
 
 ### No record-level CAS available
 
-iii-state (sdk 0.19.2) exposes `state::get`, `state::set`, `state::delete`,
+iii-state (sdk 0.20.0) exposes `state::get`, `state::set`, `state::delete`,
 `state::list`, and `state::update` (atomic per-field ops).  None carry a
 precondition or version check — `state::set` is an unconditional overwrite.
 There is no `state::cas` or `if_match` parameter.
