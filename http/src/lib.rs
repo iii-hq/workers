@@ -2,8 +2,8 @@ pub const TRIGGER_TYPE: &str = "http";
 
 pub mod config;
 pub mod manifest;
+pub mod types;
 // liberados por fase:
-// pub mod types;
 // pub mod trigger;
 // pub mod middleware;
 // pub mod condition;
