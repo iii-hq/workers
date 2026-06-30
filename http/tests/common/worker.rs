@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 use iii_http::boot::{self, BootHandle};
-use iii_http::config::{MiddlewareConfig, RestApiConfig};
+use iii_http::config::{CorsConfig, MiddlewareConfig, RestApiConfig};
 
 /// Start the HTTP worker on an ephemeral loopback port. Returns the
 /// [`BootHandle`] whose `local_addr` the test issues requests against and
@@ -54,6 +54,24 @@ pub async fn start_http_worker_with_global_middleware(
             port: 0,
             host: "127.0.0.1".to_string(),
             middleware,
+            ..RestApiConfig::default()
+        },
+    )
+    .await
+    .expect("http worker should boot")
+}
+
+/// Same as [`start_http_worker`], but boots with `config.cors` set to `cors`,
+/// so CORS-from-config tests can exercise the non-permissive path of
+/// `build_cors_layer`.
+#[allow(dead_code)]
+pub async fn start_http_worker_with_cors(iii: Arc<IIIClient>, cors: CorsConfig) -> BootHandle {
+    boot::start(
+        iii,
+        RestApiConfig {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            cors: Some(cors),
             ..RestApiConfig::default()
         },
     )
