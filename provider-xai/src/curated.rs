@@ -27,54 +27,52 @@ pub fn is_legacy_generation(model_id: &str) -> bool {
     base.starts_with("grok-1") || base.starts_with("grok-2")
 }
 
-/// Per-family metadata: (display, context_window, max_output_tokens,
+/// Per-family capability metadata: (context_window, max_output_tokens,
 /// reasoning, vision, pricing). Matched on the lowercased base id, most
-/// specific family first.
-fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, bool, Pricing)> {
+/// specific family first. Display names are derived per-id by `display_for`,
+/// so distinct snapshots in one family never collapse to a single label.
+fn family_meta(base: &str) -> Option<(u64, u64, bool, bool, Pricing)> {
     let b = base.to_ascii_lowercase();
     if b.starts_with("grok-build") {
-        return Some(("Grok Build", 256_000, 16_384, false, false, price(1.0, 2.0)));
+        return Some((256_000, 16_384, false, false, price(1.0, 2.0)));
     }
     if b.contains("code-fast") {
-        return Some((
-            "Grok Code Fast",
-            256_000,
-            16_384,
-            true,
-            false,
-            price(0.20, 1.50),
-        ));
+        return Some((256_000, 16_384, true, false, price(0.20, 1.50)));
     }
     if b.starts_with("grok-4.3") {
-        return Some(("Grok 4.3", 1_000_000, 64_000, true, false, price(1.25, 2.5)));
+        return Some((1_000_000, 64_000, true, false, price(1.25, 2.5)));
     }
     if b.contains("grok-4") && b.contains("fast") {
-        return Some((
-            "Grok 4 Fast",
-            2_000_000,
-            32_768,
-            true,
-            true,
-            price(0.20, 0.50),
-        ));
+        return Some((2_000_000, 32_768, true, true, price(0.20, 0.50)));
     }
     if b.starts_with("grok-4") {
-        return Some(("Grok 4", 256_000, 32_768, true, true, price(3.0, 15.0)));
+        return Some((256_000, 32_768, true, true, price(3.0, 15.0)));
     }
     if b.starts_with("grok-3-mini") {
-        return Some((
-            "Grok 3 Mini",
-            131_072,
-            16_384,
-            true,
-            false,
-            price(0.30, 0.50),
-        ));
+        return Some((131_072, 16_384, true, false, price(0.30, 0.50)));
     }
     if b.starts_with("grok-3") {
-        return Some(("Grok 3", 131_072, 16_384, false, false, price(3.0, 15.0)));
+        return Some((131_072, 16_384, false, false, price(3.0, 15.0)));
     }
     None
+}
+
+/// Human-readable, per-id display name so the model picker shows distinct
+/// rows: `grok-4.20-0309-non-reasoning` -> "Grok 4.20 Non Reasoning",
+/// `grok-4.3` -> "Grok 4.3". The 4-digit `MMDD` snapshot segment is dropped;
+/// every other segment is title-cased and joined with spaces.
+pub fn display_for(id: &str) -> String {
+    id.split('-')
+        .filter(|seg| !(seg.len() == 4 && seg.bytes().all(|b| b.is_ascii_digit())))
+        .map(|seg| {
+            let mut chars = seg.chars();
+            match chars.next() {
+                Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One live id → catalog Model: known-family metadata when the base id
@@ -83,11 +81,12 @@ fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, bool, Pricin
 /// unrecognized families — reasoning.rs id-patterns decide per request).
 pub fn enrich(id: &str) -> Model {
     let base = base_id(id);
+    let display_name = Some(display_for(id));
     match family_meta(base) {
-        Some((display, context_window, max_output_tokens, reasoning, vision, pricing)) => Model {
+        Some((context_window, max_output_tokens, reasoning, vision, pricing)) => Model {
             id: id.into(),
             provider: PROVIDER_ID.into(),
-            display_name: Some(display.into()),
+            display_name,
             context_window,
             max_output_tokens,
             input_limit: None,
@@ -103,7 +102,7 @@ pub fn enrich(id: &str) -> Model {
         None => Model {
             id: id.into(),
             provider: PROVIDER_ID.into(),
-            display_name: None,
+            display_name,
             context_window: 131_072,
             max_output_tokens: 16_384,
             input_limit: None,
@@ -157,7 +156,7 @@ mod tests {
         assert_eq!(m.pricing.as_ref().unwrap().input, Some(1.25));
 
         let build = enrich("grok-build-0.1");
-        assert_eq!(build.display_name.as_deref(), Some("Grok Build"));
+        assert_eq!(build.display_name.as_deref(), Some("Grok Build 0.1"));
         assert_eq!(build.supports_thinking, Some(false));
         assert_eq!(build.pricing.as_ref().unwrap().output, Some(2.0));
 
@@ -167,9 +166,29 @@ mod tests {
     }
 
     #[test]
+    fn distinct_grok4_snapshots_get_distinct_display_names() {
+        // the bug: all grok-4.x collapsed to "Grok 4" in the picker
+        assert_eq!(
+            enrich("grok-4.20-0309-non-reasoning")
+                .display_name
+                .as_deref(),
+            Some("Grok 4.20 Non Reasoning")
+        );
+        assert_eq!(
+            enrich("grok-4.20-0309-reasoning").display_name.as_deref(),
+            Some("Grok 4.20 Reasoning")
+        );
+        assert_eq!(
+            enrich("grok-4.20-multi-agent-0309").display_name.as_deref(),
+            Some("Grok 4.20 Multi Agent")
+        );
+    }
+
+    #[test]
     fn enrich_defaults_conservatively_for_unknown_families() {
         let m = enrich("grok-9-experimental");
-        assert_eq!(m.display_name, None);
+        // unknown family still gets a distinct display + conservative caps
+        assert_eq!(m.display_name.as_deref(), Some("Grok 9 Experimental"));
         assert_eq!(m.context_window, 131_072);
         assert_eq!(m.supports_thinking, None);
         assert_eq!(m.supports_tools, Some(true));
