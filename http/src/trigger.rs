@@ -7,6 +7,14 @@
 //! `RouteTable` keyed by trigger id.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use iii_sdk::errors::Error;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use tokio::sync::RwLock;
+
+use crate::types::HttpTriggerConfig;
 
 /// A single registered HTTP route, derived from an `http` trigger instance.
 #[derive(Debug, Clone)]
@@ -123,6 +131,54 @@ impl RouteTable {
             }
             extract_path_params(&route.http_path, actual_path).map(|params| (route.clone(), params))
         })
+    }
+}
+
+/// Bridges the SDK's `TriggerHandler` callbacks to the [`RouteTable`]: turns
+/// `register_trigger`/`unregister_trigger` calls (issued by the engine when
+/// functions bind `http` triggers) into route inserts/removals.
+///
+/// Cheap to clone -- the table is shared via `Arc<RwLock<_>>` so the same
+/// handle can be handed to the server task that reads routes to match
+/// incoming requests.
+#[derive(Clone, Default)]
+pub struct HttpTriggerHandler {
+    pub routes: Arc<RwLock<RouteTable>>,
+}
+
+impl HttpTriggerHandler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A fresh, empty, shareable route table -- handed to both this handler
+    /// and the server task so they observe the same registrations.
+    pub fn shared_routes() -> Arc<RwLock<RouteTable>> {
+        Arc::new(RwLock::new(RouteTable::default()))
+    }
+}
+
+#[async_trait]
+impl TriggerHandler for HttpTriggerHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        let tc: HttpTriggerConfig = serde_json::from_value(config.config.clone())
+            .map_err(|e| Error::Handler(format!("invalid http trigger config: {e}")))?;
+        let route = Route {
+            trigger_id: config.id.clone(),
+            function_id: config.function_id.clone(),
+            http_path: tc.api_path,
+            http_method: tc.http_method.to_uppercase(),
+            condition_function_id: tc.condition_function_id,
+            middleware_function_ids: tc.middleware_function_ids,
+        };
+        self.routes.write().await.insert(route).map_err(Error::Handler)
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        // The SDK only populates `id` for unregister -- function_id/config
+        // are stubs -- so the table must be (and is) keyed by trigger id.
+        self.routes.write().await.remove_by_trigger_id(&config.id);
+        Ok(())
     }
 }
 
@@ -251,5 +307,67 @@ mod tests {
         assert!(table.remove_by_trigger_id("t1"));
         assert!(!table.remove_by_trigger_id("t1"));
         assert!(table.match_route("GET", "/users/42").is_none());
+    }
+
+    // =========================================================================
+    // HttpTriggerHandler
+    // =========================================================================
+
+    fn trigger_config(id: &str, function_id: &str, config: serde_json::Value) -> TriggerConfig {
+        TriggerConfig {
+            id: id.to_string(),
+            function_id: function_id.to_string(),
+            config,
+            metadata: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn register_trigger_inserts_matchable_route() {
+        let handler = HttpTriggerHandler::new();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "fn.a",
+                serde_json::json!({"api_path": "/a", "http_method": "POST"}),
+            ))
+            .await
+            .unwrap();
+
+        let routes = handler.routes.read().await;
+        let (matched, _) = routes.match_route("POST", "/a").unwrap();
+        assert_eq!(matched.function_id, "fn.a");
+        assert_eq!(matched.trigger_id, "t1");
+    }
+
+    #[tokio::test]
+    async fn register_trigger_rejects_invalid_config() {
+        let handler = HttpTriggerHandler::new();
+        let result = handler
+            .register_trigger(trigger_config("t1", "fn.a", serde_json::json!({})))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_removes_route_using_only_id_stub() {
+        let handler = HttpTriggerHandler::new();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "fn.a",
+                serde_json::json!({"api_path": "/a", "http_method": "post"}),
+            ))
+            .await
+            .unwrap();
+
+        // The SDK passes a stub on unregister: only `id` is populated.
+        handler
+            .unregister_trigger(trigger_config("t1", "", serde_json::Value::Null))
+            .await
+            .unwrap();
+
+        let routes = handler.routes.read().await;
+        assert!(routes.match_route("POST", "/a").is_none());
     }
 }
