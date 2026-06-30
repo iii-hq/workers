@@ -112,3 +112,63 @@ pub fn register_respond_middleware(iii: &Arc<IIIClient>, function_id: &str) {
         }),
     );
 }
+
+/// Register `test.echo` (same as [`register_echo_backend`]) bound to an
+/// `http` trigger that also carries `condition_function_id`, so the
+/// conditional-execution path runs before the per-route middleware/handler.
+/// The function id embeds method+path+a marker so it doesn't collide with
+/// other routes registered elsewhere in the same test binary.
+pub async fn register_echo_backend_with_condition(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+    condition_function_id: &str,
+) {
+    let function_id = format!("test.echo.cond {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |req: HttpRequest| async move {
+            Ok::<Value, Error>(json!({
+                "status_code": 200,
+                "body": {
+                    "method": req.method,
+                    "path_params": req.path_params,
+                    "query_params": req.query_params,
+                    "headers": req.headers,
+                    "body": req.body,
+                }
+            }))
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        function_id,
+        config: json!({
+            "api_path": api_path,
+            "http_method": http_method,
+            "condition_function_id": condition_function_id,
+        }),
+        metadata: None,
+    })
+    .expect("register http trigger with condition");
+}
+
+/// Register a condition function that always returns `true` (so the gated
+/// route proceeds to its handler).
+pub fn register_condition_pass(iii: &Arc<IIIClient>, function_id: &str) {
+    iii.register_function(
+        function_id.to_string(),
+        RegisterFunction::new_async(|_req: Value| async move { Ok::<Value, Error>(json!(true)) }),
+    );
+}
+
+/// Register a condition function that always returns `false` (so the gated
+/// route is skipped with `422 CONDITION_NOT_MET`).
+pub fn register_condition_fail(iii: &Arc<IIIClient>, function_id: &str) {
+    iii.register_function(
+        function_id.to_string(),
+        RegisterFunction::new_async(|_req: Value| async move { Ok::<Value, Error>(json!(false)) }),
+    );
+}

@@ -26,8 +26,9 @@ use iii_sdk::protocol::TriggerRequest;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
+use crate::condition::check_condition;
 use crate::config::RestApiConfig;
-use crate::middleware::{self, MiddlewareOutcome};
+use crate::middleware::{self, MiddlewareOutcome, error_body, generate_error_id};
 use crate::trigger::RouteTable;
 use crate::types::{HttpRequest, HttpResponse, TriggerMetadata};
 
@@ -96,24 +97,6 @@ pub async fn dynamic_handler(
         }
     }
 
-    // Per-route middleware (trigger config-driven), run after the route match,
-    // before invoking the handler.
-    for mw_fn_id in &route.middleware_function_ids {
-        let mw_input =
-            middleware::build_middleware_input(&path_params, &query_params, &headers, method.as_str());
-        match middleware::execute_middleware(
-            &state.iii,
-            mw_fn_id,
-            mw_input,
-            state.config.default_timeout,
-        )
-        .await
-        {
-            Ok(MiddlewareOutcome::Continue) => {}
-            Err(response) => return response,
-        }
-    }
-
     // Read the full body and parse as JSON; empty/invalid bodies become null.
     let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(bytes) if bytes.is_empty() => Value::Null,
@@ -160,6 +143,75 @@ pub async fn dynamic_handler(
             );
         }
     };
+
+    // Conditional execution (trigger config-driven), runs after global
+    // middleware and before per-route middleware/handler. The condition
+    // function receives the serialized request minus the buffered-phase
+    // channel placeholders, which carry no useful signal.
+    if let Some(condition_id) = &route.condition_function_id {
+        let mut condition_input = payload.clone();
+        if let Some(obj) = condition_input.as_object_mut() {
+            obj.remove("request_body");
+            obj.remove("response");
+        }
+
+        match check_condition(
+            &state.iii,
+            condition_id,
+            condition_input,
+            state.config.default_timeout,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    function_id = %route.function_id,
+                    condition_function_id = %condition_id,
+                    "Condition check failed, skipping handler"
+                );
+                let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
+                body["skipped"] = json!(true);
+                return (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response();
+            }
+            Err(err) => {
+                let error_id = generate_error_id();
+                tracing::error!(
+                    condition_function_id = %condition_id,
+                    error = %err,
+                    error_id = %error_id,
+                    "Error invoking condition function"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Per-route middleware (trigger config-driven), runs after the condition
+    // check, before invoking the handler.
+    for mw_fn_id in &route.middleware_function_ids {
+        let mw_input = middleware::build_middleware_input(
+            &request.path_params,
+            &request.query_params,
+            &headers,
+            method.as_str(),
+        );
+        match middleware::execute_middleware(
+            &state.iii,
+            mw_fn_id,
+            mw_input,
+            state.config.default_timeout,
+        )
+        .await
+        {
+            Ok(MiddlewareOutcome::Continue) => {}
+            Err(response) => return response,
+        }
+    }
 
     let result = state
         .iii

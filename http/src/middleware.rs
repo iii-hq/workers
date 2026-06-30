@@ -27,7 +27,7 @@ pub enum MiddlewareOutcome {
 
 /// Generates a short, time-based id correlating an error response with server
 /// logs. Not cryptographically unique -- just enough to grep for.
-fn generate_error_id() -> String {
+pub(crate) fn generate_error_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -37,7 +37,7 @@ fn generate_error_id() -> String {
 }
 
 /// Standardized error envelope: `{"error": {"code", "message", "error_id"?}}`.
-fn error_body(code: &str, message: &str, error_id: Option<&str>) -> Value {
+pub(crate) fn error_body(code: &str, message: &str, error_id: Option<&str>) -> Value {
     let mut error = json!({ "code": code, "message": message });
     if let Some(id) = error_id {
         error["error_id"] = json!(id);
