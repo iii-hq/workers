@@ -12,11 +12,20 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
+    /// Model id used when a run omits one. Empty = the Codex CLI's own default.
     pub model: String,
+    /// Codex sandbox mode: read-only | workspace-write | danger-full-access.
     pub sandbox_mode: String,
+    /// Codex approval policy: never | on-request | on-failure | untrusted.
+    /// Headless callers leave it at never.
     pub approval_policy: String,
+    /// Model reasoning effort: minimal | low | medium | high | xhigh.
+    /// Empty = the Codex default.
     pub reasoning_effort: String,
+    /// Default working directory a turn runs in when a run omits `cwd`.
+    /// Empty = the worker's process directory.
     pub cwd: String,
+    /// Allow running outside a git repository (skip the repo check).
     pub skip_git_repo_check: bool,
 }
 
@@ -36,11 +45,21 @@ impl Default for Defaults {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
+    /// Per-turn defaults applied when a `codex::run` payload omits a field.
     pub defaults: Defaults,
+    /// Stream that carries the translated AgentEvent frames (what the console
+    /// and acp worker render). Grouped by session_id.
     pub events_stream: String,
+    /// Stream that carries the raw Codex thread events, verbatim. Grouped by
+    /// session_id.
     pub raw_events_stream: String,
+    /// Path to the Codex CLI binary. Empty = resolve `codex` on PATH.
     pub codex_executable: String,
+    /// Override the API base URL (passed to the SDK as baseUrl). Empty =
+    /// default.
     pub base_url: String,
+    /// Prepend the iii runtime context to the turn so the agent discovers and
+    /// calls engine functions through the `iii` CLI.
     pub iii_context: bool,
 }
 
