@@ -11,13 +11,17 @@
 //! (`url_citation`), `response.custom_tool_call_input.*` (the searches), and
 //! `response.completed` (final, with usage).
 
+use crate::errors::classify;
+use crate::sse::synthetic_error_event;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use futures::StreamExt;
 use llm_router::types::content::ContentBlock;
-use llm_router::types::events::{AssistantMessageEvent, StopReason, Usage};
+use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AgentMessage, AssistantMessage, AssistantRoleTag};
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 /// Derive the `/v1/responses` endpoint from the configured completions URL
 /// (`…/v1/chat/completions` → `…/v1/responses`).
@@ -192,13 +196,11 @@ pub fn handle_event(
                 state.citations.push(url.to_string());
             }
         }
-        "response.output_text.done" => {
-            if state.open_text {
-                state.open_text = false;
-                out.push(AssistantMessageEvent::TextEnd {
-                    partial: partial(state, model),
-                });
-            }
+        "response.output_text.done" if state.open_text => {
+            state.open_text = false;
+            out.push(AssistantMessageEvent::TextEnd {
+                partial: partial(state, model),
+            });
         }
         "response.completed" => {
             close_thinking(state, model, &mut out);
@@ -236,6 +238,148 @@ fn merge_usage(raw: &Value, into: &mut Usage) {
     {
         into.reasoning = Some(v);
     }
+}
+
+/// Parse an SSE block into `(event_name, data_json_str)`. Responses events are
+/// `event: <name>\ndata: <json>`.
+fn event_and_data(block: &str) -> Option<(&str, &str)> {
+    let mut ev = None;
+    let mut data = None;
+    for line in block.lines() {
+        if let Some(v) = line.strip_prefix("event: ") {
+            ev = Some(v.trim());
+        } else if let Some(v) = line.strip_prefix("data: ") {
+            data = Some(v);
+        }
+    }
+    match (ev, data) {
+        (Some(e), Some(d)) => Some((e, d)),
+        _ => None,
+    }
+}
+
+pub struct ResponsesUpstreamArgs {
+    pub api_url: String,
+    pub model: String,
+    pub body: Value,
+    pub headers: Vec<(&'static str, String)>,
+    pub warnings: Vec<String>,
+}
+
+/// POST `/v1/responses` (stream) → SSE → mpsc<AssistantMessageEvent>. Mirrors
+/// `upstream::spawn_upstream` but parses the Responses `event:`/`data:` frames.
+pub fn spawn_responses_upstream(
+    client: reqwest::Client,
+    args: ResponsesUpstreamArgs,
+) -> mpsc::Receiver<AssistantMessageEvent> {
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(async move {
+        run_responses_upstream(client, args, tx).await;
+    });
+    rx
+}
+
+async fn run_responses_upstream(
+    client: reqwest::Client,
+    args: ResponsesUpstreamArgs,
+    tx: mpsc::Sender<AssistantMessageEvent>,
+) {
+    let mut req = client.post(&args.api_url);
+    for (name, value) in &args.headers {
+        req = req.header(*name, value);
+    }
+    let resp = match req.json(&args.body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(synthetic_error_event(
+                    &format!("xai responses fetch failed: {e}"),
+                    &args.model,
+                    ErrorKind::Transient,
+                ))
+                .await;
+            return;
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let kind = classify(Some(status.as_u16()), &text);
+        let msg = if text.is_empty() {
+            format!("xai responses http {status}")
+        } else {
+            text
+        };
+        let _ = tx
+            .send(synthetic_error_event(&msg, &args.model, kind))
+            .await;
+        return;
+    }
+
+    let mut state = ResponsesState::new(args.warnings);
+    if tx
+        .send(AssistantMessageEvent::Start {
+            partial: partial(&state, &args.model),
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx
+                    .send(synthetic_error_event(
+                        &format!("stream read failed: {e}"),
+                        &args.model,
+                        ErrorKind::Transient,
+                    ))
+                    .await;
+                return;
+            }
+        };
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(idx) = buf.find("\n\n") {
+            let block: String = buf.drain(..idx + 2).collect();
+            let Some((event_type, data)) = event_and_data(&block) else {
+                continue;
+            };
+            let Ok(parsed) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            for ev in handle_event(event_type, &parsed, &mut state, &args.model) {
+                if tx.send(ev).await.is_err() {
+                    return;
+                }
+            }
+            if event_type == "response.completed" {
+                let _ = tx
+                    .send(AssistantMessageEvent::Stop {
+                        stop_reason: state.stop_reason(),
+                        error_message: None,
+                        error_kind: None,
+                    })
+                    .await;
+                let _ = tx
+                    .send(AssistantMessageEvent::Done {
+                        message: build_final(&state, &args.model),
+                    })
+                    .await;
+                return;
+            }
+        }
+    }
+    // Stream ended without response.completed: still terminal.
+    let _ = tx
+        .send(AssistantMessageEvent::Done {
+            message: build_final(&state, &args.model),
+        })
+        .await;
 }
 
 #[cfg(test)]

@@ -2,9 +2,13 @@
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
+use crate::configuration::ConfigCell;
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
 use crate::request::{build_body, build_headers, BodyArgs};
+use crate::responses::{
+    build_responses_body, responses_url, spawn_responses_upstream, ResponsesUpstreamArgs,
+};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::{router_client, state};
@@ -24,15 +28,17 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
+    cell: ConfigCell,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http) = (iii.clone(), http.clone());
+        let (iii, http, cell) = (iii.clone(), http.clone(), cell.clone());
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, input, sink.as_ref()).await;
+            let wc = { cell.read().await.clone() };
+            run_stream_call(&iii, http, &wc, input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -48,6 +54,7 @@ fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<(), ()
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
+    wc: &crate::config::WorkerConfig,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
@@ -79,6 +86,34 @@ async fn run_stream_call(
             return;
         }
     };
+
+    // Agent Tools path (opt-in via the console config): when enabled, route to
+    // the /v1/responses API with server-side tools (x_search / web_search) so
+    // the model can pull live X / web data. Otherwise fall through to the plain
+    // Chat Completions path below.
+    if wc.tools_enabled && !wc.tool_sources.is_empty() {
+        let system_prompt = input.system_prompt.clone().unwrap_or_default();
+        let body = build_responses_body(
+            &cfg.model,
+            &system_prompt,
+            &input.messages,
+            &wc.tool_sources,
+            cfg.max_tokens,
+        );
+        let headers = build_headers(&cfg);
+        let rx = spawn_responses_upstream(
+            http,
+            ResponsesUpstreamArgs {
+                api_url: responses_url(&cfg.api_url),
+                model,
+                body,
+                headers,
+                warnings,
+            },
+        );
+        pump(rx, sink, PING_INTERVAL).await;
+        return;
+    }
 
     // model_meta is a hint, never source of truth (spec): absent → the
     // catalog is authoritative → curated snapshot as a last resort.

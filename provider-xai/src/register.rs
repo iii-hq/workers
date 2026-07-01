@@ -111,10 +111,26 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .build()
         .expect("reqwest client");
 
+    // Worker-config cell (Agent Tools toggle): register its schema + hot-reload
+    // trigger so operators flip live X/web tools in the console sidebar. The
+    // schema register + first fetch run off the boot path (the configuration
+    // worker may not be up yet).
+    let cell = crate::configuration::new_cell();
+    let _ = crate::configuration::register_config_trigger(&iii, cell.clone());
+    {
+        let (iii_cfg, cell_cfg) = (iii.clone(), cell.clone());
+        tokio::spawn(async move {
+            if let Err(e) = crate::configuration::register_config(&iii_cfg).await {
+                eprintln!("[provider-xai] register_config failed ({e})");
+            }
+            crate::configuration::reconcile(&iii_cfg, &cell_cfg).await;
+        });
+    }
+
     iii.register_function(
         surface::STREAM_ID,
         RegisterFunction::new_async_with_bad_request(
-            make_stream(iii.clone(), http.clone()),
+            make_stream(iii.clone(), http.clone(), cell.clone()),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC),

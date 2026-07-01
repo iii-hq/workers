@@ -4,9 +4,50 @@
 //! `max_tokens` (from resolve) → the worker default.
 use llm_router::types::credential::Credential;
 use llm_router::types::router::ProviderResolveResponse;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const DEFAULT_API_URL: &str = "https://api.x.ai/v1/chat/completions";
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
+
+/// Operator-tunable worker config, registered with the `configuration` worker
+/// so it renders as an editable item in the console configuration sidebar.
+/// Distinct from the per-request `XaiConfig` (credentials/url/max_tokens come
+/// from the llm-router resolve step); this only governs xAI's Agent Tools
+/// (server-side `x_search` / `web_search` on the `/v1/responses` API).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct WorkerConfig {
+    /// Enable xAI Agent Tools (live X / web search via the /v1/responses API).
+    /// Off = the provider is a plain Chat Completions inference wrapper.
+    pub tools_enabled: bool,
+    /// Server-side tools offered when enabled: x_search, web_search,
+    /// code_interpreter, collections_search.
+    pub tool_sources: Vec<String>,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            tools_enabled: false,
+            tool_sources: vec!["x_search".to_string(), "web_search".to_string()],
+        }
+    }
+}
+
+impl WorkerConfig {
+    pub fn json_schema() -> Value {
+        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<WorkerConfig>();
+        serde_json::to_value(root).expect("config schema serializes")
+    }
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).expect("config serializes")
+    }
+    pub fn from_json(value: &Value) -> Result<WorkerConfig, serde_json::Error> {
+        serde_json::from_value(value.clone())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct XaiConfig {
