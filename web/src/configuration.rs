@@ -321,6 +321,9 @@ mod tests {
         assert!(!all_trigger_types_present(&partial, &HARNESS_TRIGGER_TYPES));
 
         // No triggers field at all (engine unreachable / empty) → NOT ready.
-        assert!(!all_trigger_types_present(&json!({}), &HARNESS_TRIGGER_TYPES));
+        assert!(!all_trigger_types_present(
+            &json!({}),
+            &HARNESS_TRIGGER_TYPES
+        ));
     }
 }
