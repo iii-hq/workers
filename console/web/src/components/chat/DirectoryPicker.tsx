@@ -22,10 +22,11 @@ import { cn } from '@/lib/utils'
  * or "browse to add" a new directory. Browsing uses shell's operator workspace
  * control plane one level at a time. The search box filters the current level
  * live; typing/pasting an absolute path jumps straight there (browse) or
- * selects it (projects). A pasted/remembered dir is validated against the live
- * shell worker before it's accepted. The chosen dir is what the harness scopes
- * the chat to (`base_dir`); it is re-scopable mid-conversation (a change drops
- * a visible transcript marker).
+ * selects it (projects). Every selection — pasted, remembered, or browsed — is
+ * validated against the live shell worker before it's accepted, and the
+ * worker-echoed canonical path is what gets stored. The chosen dir is what the
+ * harness scopes the chat to (`base_dir`); it is re-scopable mid-conversation
+ * (a change drops a visible transcript marker).
  */
 
 interface DirectoryPickerProps {
@@ -270,9 +271,11 @@ export function DirectoryPicker({
     [onChange],
   )
 
-  // Validate a pasted/remembered dir against the LIVE worker roots before
-  // accepting it — a remembered project may be deleted, on another machine, or
-  // outside the configured roots. Browsed dirs are already known-valid.
+  // Validate a dir against the LIVE worker before accepting it — a
+  // remembered project may be deleted, on another machine, or denylisted, and
+  // even a just-browsed dir can vanish between listing and clicking. Every
+  // selection path goes through here so the worker-echoed canonical path is
+  // what gets stored.
   const validateAndSelect = useCallback(
     async (raw: string) => {
       const dir = raw.trim().replace(/\/+$/, '') || '/'
@@ -503,8 +506,9 @@ export function DirectoryPicker({
                 {path ? (
                   <button
                     type="button"
-                    onClick={() => select(path)}
-                    className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] lowercase text-accent hover:underline"
+                    disabled={validating !== null}
+                    onClick={() => void validateAndSelect(path)}
+                    className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] lowercase text-accent hover:underline disabled:opacity-50"
                   >
                     <Check size={12} aria-hidden /> use this folder
                   </button>
