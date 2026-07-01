@@ -85,4 +85,14 @@ export const PRESENTATIONS: Presentation[] = [
     tags: ['security', 'rbac', 'workers'],
     status: 'live',
   },
+  {
+    slug: '2026-06-codegen',
+    title: 'iii codegen — typed worker integrations',
+    tagline:
+      'one command generates the types and wrappers you need to call any worker, projected from the engine\'s live json-schema catalog.',
+    spec: 'tech-specs/2026-06-codegen',
+    date: '2026-06',
+    tags: ['codegen', 'dx', 'workers'],
+    status: 'live',
+  },
 ]
