@@ -1,12 +1,12 @@
 //! In-memory ephemeral subscription index (harness.md § Subscriptions).
 //!
-//! The engine owns each subscription's trigger AND its delivery proxy; the
-//! harness keeps only the small bookkeeping it needs LOCALLY: the owning session
-//! (per-session cap, ownership check, session-deleted cleanup), a fire counter
-//! (for idempotent notification entry ids), and the engine-returned trigger id
-//! (to unregister). Fire context such as label / once is carried by the
-//! engine's registration metadata proxy, not duplicated here. No iii handles are
-//! held here.
+//! The engine owns each subscription's trigger AND its fire-time metadata
+//! delivery; the harness keeps only the small bookkeeping it needs LOCALLY: the
+//! owning session (per-session cap, ownership check, session-deleted cleanup),
+//! a fire counter (for idempotent notification entry ids), and the
+//! engine-returned trigger id (to unregister). Fire context such as label /
+//! once is carried by the engine's `Trigger` metadata, not duplicated here. No
+//! iii handles are held here.
 //!
 //! Subscriptions are intentionally NOT persisted: they live for the harness
 //! process only (the "ephemeral" contract). Lifecycle is covered by explicit

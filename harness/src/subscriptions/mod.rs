@@ -15,13 +15,14 @@
 //! `state` on a key and have the signaller call the existing `state::set`.
 //!
 //! Routing: the interceptor registers a trigger (via `engine::register_trigger`)
-//! bound to the ONE shared `harness::notify_agent` function. The engine's
-//! per-subscription proxy round-trips the registration metadata into the fired
-//! payload under [`TRIGGER_META_KEY`] (`__metadata`). That metadata carries the
-//! subscription id, owning session, label, and `once`; the local registry
-//! validates liveness/ownership for cleanup. The owning session is injected by
-//! the harness when it intercepts the agent's `engine::register_trigger` call,
-//! never trusted from model arguments.
+//! bound to the ONE shared `harness::notify_agent` function, with the
+//! registration metadata stored on the engine's `Trigger` and delivered back
+//! to the handler as a distinct invocation argument at fire time (not folded
+//! into the fired payload). That metadata carries the subscription id, owning
+//! session, label, and `once`; the local registry validates liveness/ownership
+//! for cleanup. The owning session is injected by the harness when it
+//! intercepts the agent's `engine::register_trigger` call, never trusted from
+//! model arguments.
 
 pub mod notify_agent;
 pub mod registry;
@@ -38,11 +39,6 @@ pub const NOTIFY_AGENT_ID: &str = "harness::notify_agent";
 pub const NOTIFY_AGENT_DESC: &str =
     "Internal: the shared subscription fire handler — injects a notification into the owning \
      session (resolved from the local subscription registry). Not called directly.";
-
-/// Reserved payload key under which the engine's subscription proxy round-trips a
-/// trigger's registration metadata into the fired payload. MUST match the engine
-/// constant `iii::trigger::TRIGGER_META_KEY`.
-pub const TRIGGER_META_KEY: &str = "__metadata";
 
 /// Internal `session::deleted` cleanup handler id.
 pub const ON_SESSION_DELETED_ID: &str = "harness::on-session-deleted";

@@ -1,11 +1,11 @@
 //! `harness::notify_agent` — the ONE shared subscription fire handler.
 //!
 //! Every subscription binds (via `engine::register_trigger`) to this single
-//! function. The engine's per-subscription proxy injects the registration
-//! `metadata` into the fired payload under [`TRIGGER_META_KEY`]
-//! (`__metadata`). That trusted metadata carries the subscription id, owning
-//! session, label, and one-shot semantics; the local registry validates liveness
-//! and ownership for cleanup.
+//! function. The engine stores the registration `metadata` on the `Trigger`
+//! and delivers it at fire time as a distinct invocation argument (not folded
+//! into the fired payload). That trusted metadata carries the subscription id,
+//! owning session, label, and one-shot semantics; the local registry validates
+//! liveness and ownership for cleanup.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
-use crate::subscriptions::{NOTIFY_AGENT_DESC, NOTIFY_AGENT_ID, TRIGGER_META_KEY};
+use crate::subscriptions::{NOTIFY_AGENT_DESC, NOTIFY_AGENT_ID};
 use crate::types::message::AgentMessage;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -32,10 +32,10 @@ pub fn register(deps: Arc<Deps>) {
     let iii = deps.iii.clone();
     iii.register_function(
         NOTIFY_AGENT_ID,
-        RegisterFunction::new_async(move |event: Value| {
+        RegisterFunction::new_async_with_metadata(move |event: Value, metadata: Option<Value>| {
             let deps = deps.clone();
             async move {
-                on_fire(&deps, event).await;
+                on_fire(&deps, event, metadata).await;
                 Ok::<Value, Error>(json!({ "ok": true }))
             }
         })
@@ -43,11 +43,11 @@ pub fn register(deps: Arc<Deps>) {
     );
 }
 
-async fn on_fire(deps: &Deps, mut event: Value) {
-    let meta = match take_metadata(&mut event) {
+async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
+    let meta = match parse_metadata(metadata) {
         Ok(meta) => meta,
         Err(MetadataError::Missing) => {
-            tracing::warn!("notify_agent fire without {TRIGGER_META_KEY}; dropping");
+            tracing::warn!("notify_agent fire without trigger metadata; dropping");
             return;
         }
         Err(MetadataError::Invalid(e)) => {
@@ -92,12 +92,8 @@ enum MetadataError {
     Invalid(serde_json::Error),
 }
 
-fn take_metadata(event: &mut Value) -> Result<NotifyMetadata, MetadataError> {
-    let meta = event
-        .as_object_mut()
-        .and_then(|o| o.remove(TRIGGER_META_KEY))
-        .ok_or(MetadataError::Missing)?;
-
+fn parse_metadata(metadata: Option<Value>) -> Result<NotifyMetadata, MetadataError> {
+    let meta = metadata.ok_or(MetadataError::Missing)?;
     serde_json::from_value(meta).map_err(MetadataError::Invalid)
 }
 
@@ -143,37 +139,29 @@ mod tests {
     }
 
     #[test]
-    fn metadata_is_required_valid_and_stripped() {
-        let mut missing = json!({ "event_type": "set" });
-        assert!(matches!(
-            take_metadata(&mut missing),
-            Err(MetadataError::Missing)
-        ));
+    fn metadata_is_required_and_validated() {
+        assert!(matches!(parse_metadata(None), Err(MetadataError::Missing)));
 
-        let mut invalid = json!({ TRIGGER_META_KEY: { "session_id": "s" } });
+        let invalid = Some(json!({ "session_id": "s" }));
         assert!(matches!(
-            take_metadata(&mut invalid),
+            parse_metadata(invalid),
             Err(MetadataError::Invalid(_))
         ));
 
-        let mut event = json!({
-            "event_type": "set",
-            TRIGGER_META_KEY: {
-                "subscription_id": "sub_1",
-                "session_id": "s_secret",
-                "label": "done"
-            }
-        });
-        let meta = take_metadata(&mut event).unwrap();
+        let valid = Some(json!({
+            "subscription_id": "sub_1",
+            "session_id": "s_secret",
+            "label": "done"
+        }));
+        let meta = parse_metadata(valid).unwrap();
 
         assert_eq!(meta.subscription_id, "sub_1");
         assert_eq!(meta.session_id, "s_secret");
         assert_eq!(meta.label.as_deref(), Some("done"));
-        assert!(event.get(TRIGGER_META_KEY).is_none());
     }
 
     #[test]
-    fn notification_message_uses_label_origin_and_stripped_event() {
+    fn notification_message_uses_label_and_origin() {
         let meta = NotifyMetadata {
             subscription_id: "sub_1".to_string(),
             session_id: "s_1".to_string(),

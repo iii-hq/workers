@@ -2,8 +2,10 @@
 //! fires, instead of polling (harness.md § Subscriptions). The agent calls
 //! `engine::register_trigger` / `engine::unregister_trigger`; the harness
 //! intercepts those calls (see [`invoke`]) so the trusted owning session,
-//! `harness::notify_agent` target, and engine-proxied subscription metadata are
-//! injected, and teardown stays owner-checked — the agent can never supply those.
+//! `harness::notify_agent` target, and subscription metadata are injected, and
+//! teardown stays owner-checked — the agent can never supply those. The engine
+//! stores this metadata on the `Trigger` and delivers it to `notify_agent` as a
+//! distinct invocation argument at fire time (not folded into the payload).
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::TriggerAction;
