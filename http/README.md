@@ -102,5 +102,4 @@ from `{ status_code, headers, body }`.
 
 The `http` trigger type collides with the built-in `iii-http` worker if both
 run against the same engine — whichever registers last wins. Run this worker
-against an engine with the built-in `iii-http` disabled, or give this
-worker's trigger type a distinct id if you need both on the same engine.
+against an engine with the built-in `iii-http` disabled.
