@@ -139,22 +139,26 @@ pub fn collect_blocks(html: &str) -> Vec<Block> {
     };
     let parser = dom.parser();
 
-    // Precompute anchors sorted by start for O(n log n) binary-search attribution.
-    // ponytail: prefix-sum over sorted anchors; well-nested HTML guarantees start containment is sufficient.
-    let mut anchors: Vec<(usize, usize)> = Vec::new(); // (start, text_len)
+    // Anchors sorted by start for O(log n) attribution. `prefix` sums descendant
+    // anchor text (anchor start inside the block); `end_max` (prefix-max of end)
+    // detects an ancestor anchor wrapping the block. ponytail: well-nested HTML
+    // lets start/end offsets alone decide descendant vs. ancestor containment.
+    let mut anchors: Vec<(usize, usize, usize)> = Vec::new(); // (start, end, text_len)
     for node in dom.nodes() {
         if let Some(tag) = node.as_tag() {
             if tag.name().as_utf8_str().eq_ignore_ascii_case("a") {
-                let (s, _) = tag.boundaries(parser);
-                anchors.push((s, tag.inner_text(parser).chars().count()));
+                let (s, e) = tag.boundaries(parser);
+                anchors.push((s, e, tag.inner_text(parser).chars().count()));
             }
         }
     }
-    anchors.sort_unstable_by_key(|&(s, _)| s);
-    let starts: Vec<usize> = anchors.iter().map(|&(s, _)| s).collect();
+    anchors.sort_unstable_by_key(|&(s, _, _)| s);
+    let starts: Vec<usize> = anchors.iter().map(|&(s, _, _)| s).collect();
     let mut prefix = vec![0usize; anchors.len() + 1];
-    for (i, &(_, len)) in anchors.iter().enumerate() {
+    let mut end_max = vec![0usize; anchors.len() + 1];
+    for (i, &(_, e, len)) in anchors.iter().enumerate() {
         prefix[i + 1] = prefix[i] + len;
+        end_max[i + 1] = end_max[i].max(e);
     }
 
     let mut blocks = Vec::new();
@@ -170,8 +174,15 @@ pub fn collect_blocks(html: &str) -> Vec<Block> {
         let words = text.split_whitespace().count();
         let lo = starts.partition_point(|&s| s < start);
         let hi = starts.partition_point(|&s| s <= end);
-        let link_chars = prefix[hi] - prefix[lo];
-        let link_density = (link_chars as f64 / text_chars as f64).min(1.0);
+        // A block fully enclosed by an ancestor <a> (valid HTML5) is entirely link
+        // text, so score it as fully linked; otherwise attribute descendant anchors.
+        let enclosing = starts.partition_point(|&s| s <= start);
+        let link_density = if enclosing > 0 && end_max[enclosing] >= end {
+            1.0
+        } else {
+            let link_chars = prefix[hi] - prefix[lo];
+            (link_chars as f64 / text_chars as f64).min(1.0)
+        };
         let attrs = tag.attributes();
         let class_id = format!(
             "{} {}",
@@ -488,5 +499,21 @@ mod tests {
         assert!(!out.contains("Terms")); // nested footer removed
                                          // and meaningfully shorter than the input
         assert!(out.len() < html.len());
+    }
+
+    #[test]
+    fn prune_drops_block_wrapped_in_ancestor_anchor() {
+        // Valid HTML5: <a> wrapping block content (a fully-linked "card"). The block
+        // starts after the <a>, so start-based attribution alone sees zero link text
+        // and scores the card as prose; the ancestor anchor must make it fully linked.
+        let html = r#"<body>
+            <a href="/card"><div class="card"><p>Read this featured teaser blurb that is long
+            and wordy enough to look like genuine prose to the density scorer right here.</p></div></a>
+            <article><p>The quick brown fox jumps over the lazy dog through a long substantive
+            paragraph of genuine article prose with many ordinary words and very few links.</p></article>
+        </body>"#;
+        let out = prune(html, 0.48, false, None);
+        assert!(out.contains("quick brown fox")); // real article kept
+        assert!(!out.contains("featured teaser")); // fully-linked card dropped
     }
 }

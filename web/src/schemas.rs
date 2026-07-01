@@ -154,6 +154,8 @@ impl FetchPayload {
         if let Some(cf) = &self.content_filter {
             if let Some(t) = cf.threshold {
                 match cf.kind {
+                    // Pruning scores are normalized to [0,1] (a product of factors each
+                    // <= 1): 0 keeps everything, 1 is strictest; outside is degenerate.
                     FilterType::Pruning => {
                         if !(0.0..=1.0).contains(&t) {
                             return Err(

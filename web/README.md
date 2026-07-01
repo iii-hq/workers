@@ -156,7 +156,7 @@ ignored.
 - **`format: "text"`** — `text/html` → plain text.
 - **`format: "html"`** — raw HTML.
 
-When `content_filter` is set, `body` is the filtered output (there is no separate field) — feed it straight to a model.
+When `content_filter` is set, `body` is the filtered output (there is no separate field) — feed it straight to a model. (If filtering would empty the page, or the page is too large or deeply nested to transform, `body` falls back to the unfiltered content.)
 
 In page-reading mode the request goes out with a browser User-Agent +
 format-matched `Accept` header, and retries once with the honest UA on a

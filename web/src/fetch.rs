@@ -495,7 +495,9 @@ async fn shape_response(
             if let Some(r) = pc.rendered {
                 body = r;
                 transformed = Some(format_label(pf));
-                if resp.truncated {
+                // Don't inject a plain-text note into HTML output; `bytes_truncated`
+                // already signals truncation for every format.
+                if resp.truncated && !matches!(pf, PageFormat::Html) {
                     body.push_str("\n\n[Content truncated at max_bytes — the page continues beyond this point]");
                 }
             }
