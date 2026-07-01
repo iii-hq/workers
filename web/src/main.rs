@@ -103,6 +103,12 @@ async fn main() -> Result<()> {
 
     let shared = cfg.into_shared();
     functions::register_all(&iii, &shared);
+
+    // Bind the harness pre-generate hook (web::inject-guidance) once the harness's hook
+    // trigger type appears — reacts to engine::*-available, no polling. Presence-gated:
+    // the guidance is injected only while this worker is connected.
+    configuration::setup_harness_hooks(&iii).await;
+
     configuration::register_config_trigger(
         &iii,
         configuration::SharedState {
@@ -111,7 +117,7 @@ async fn main() -> Result<()> {
     )
     .context("registering configuration change trigger")?;
 
-    tracing::info!("web ready: web::fetch + configuration hot-reload");
+    tracing::info!("web ready: web::fetch + guidance injection + configuration hot-reload");
     tokio::signal::ctrl_c().await?;
     tracing::info!("web shutting down");
     iii.shutdown_async().await;

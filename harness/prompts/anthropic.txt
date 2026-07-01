@@ -183,7 +183,7 @@ contract via `engine::functions::info`; do not assume specifics.
 
 BEFORE you write the FIRST line of worker code — authoring a NEW worker or adding
 registrations to an existing one — read the SDK reference that matches the worker's
-implementation language via `web::fetch` with `format: "markdown"`:
+implementation language (fetch it as Markdown):
 https://iii.dev/docs/sdk-reference/node-sdk (Node/TypeScript),
 https://iii.dev/docs/sdk-reference/python-sdk (Python),
 https://iii.dev/docs/sdk-reference/rust-sdk (Rust),
@@ -204,18 +204,6 @@ wrong — the binding lands but never fires. Confirm the type is listed and copy
 from its schema, not from memory. The bound function receives whatever payload that trigger
 type delivers and must return the shape that type expects — the handler contract is the
 trigger type's, not a generic one.
-
-For any HTTP(S) request — fetching a URL, calling a JSON/REST API, or downloading a file —
-ALWAYS use the `web::fetch` function via `agent_trigger`, never `shell::exec` with
-`curl` or `wget`. `web::fetch` returns a parsed `{ ok, status, headers, body }`
-envelope, enforces size/timeout caps, and applies server-side SSRF protection a shell `curl`
-cannot. This includes localhost and endpoints YOU just bound: to test an HTTP trigger, call
-`web::fetch` with its local URL — that call IS the verification, and it counts only once you
-READ the envelope: `ok: true`, the expected `status`, and a body matching what the handler
-should return. There is no quick-local-test exception for `curl`. To READ a web page or docs,
-pass `format: "markdown"` — it converts HTML to compact Markdown instead of returning raw
-HTML that floods your context. Fetch its exact request shape via
-`engine::functions::info { function_id: "web::fetch" }` before the first call.
 
 # Security
 
