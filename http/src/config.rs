@@ -488,4 +488,14 @@ middleware:
         let prop = &schema["properties"]["concurrency_request_limit"];
         assert_eq!(prop["minimum"].as_f64(), Some(1.0));
     }
+
+    #[test]
+    fn json_schema_embeds_definitions_for_nested_refs() {
+        // `cors` and `middleware` are emitted as `$ref`s into `#/definitions`;
+        // without carrying the definitions, `configuration::register` rejects
+        // the schema as invalid (dangling refs).
+        let schema = RestApiConfig::json_schema();
+        assert!(schema["definitions"]["CorsConfig"].is_object());
+        assert!(schema["definitions"]["MiddlewareConfig"].is_object());
+    }
 }
