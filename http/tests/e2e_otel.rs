@@ -21,6 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use common::{backend, engine, worker};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use serial_test::serial;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
@@ -42,11 +43,38 @@ fn captured() -> &'static Mutex<Vec<SpanFields>> {
     CAPTURED.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Process-wide in-memory OTel span exporter. Populated by the
+/// `tracing_opentelemetry` bridge layer installed in [`install_capture`]. The
+/// trace-context test reads exported spans (their events + trace ids) from here;
+/// the field-based Phase-1 tests ignore it.
+fn exported_spans() -> &'static InMemorySpanExporter {
+    static EXPORTER: OnceLock<InMemorySpanExporter> = OnceLock::new();
+    EXPORTER.get_or_init(InMemorySpanExporter::default)
+}
+
 /// Install the global capture subscriber exactly once for this test binary.
+///
+/// Two layers share the registry: [`CaptureLayer`] records span *fields* for the
+/// Phase-1 tag assertions, and a `tracing_opentelemetry` bridge exports each span
+/// (with the OTel `set_parent`/`add_event` data) into [`exported_spans`]. The
+/// bridge is required for `set_parent` to resolve at all -- without an OTel layer
+/// its `WithContext` downcast fails and parent propagation is a no-op.
 fn install_capture() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
-        tracing_subscriber::registry().with(CaptureLayer).init();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exported_spans().clone())
+            .build();
+        let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "e2e-otel-test");
+        // Keep the provider alive for the whole test binary; dropping it would
+        // shut down the exporter.
+        Box::leak(Box::new(provider));
+
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        tracing_subscriber::registry()
+            .with(CaptureLayer)
+            .with(otel_layer)
+            .init();
     });
 }
 
@@ -180,6 +208,86 @@ async fn otel_span_tags_for_404() {
     assert_eq!(span.get("http.route").map(String::as_str), Some("/otel/missing"));
     assert_eq!(span.get("otel.status_code").map(String::as_str), Some("ERROR"));
     assert_eq!(span.get("http.response.status_code").map(String::as_str), Some("404"));
+
+    boot.shutdown().await;
+}
+
+/// Poll the exported OTel spans for the closed `HTTP` span whose `url.path`
+/// attribute matches, up to ~2s. Returns owned `SpanData` (events + context).
+async fn wait_for_exported_span(url_path: &str) -> opentelemetry_sdk::trace::SpanData {
+    for _ in 0..40 {
+        let found = exported_spans()
+            .get_finished_spans()
+            .unwrap_or_default()
+            .into_iter()
+            // The OTel span name is derived from the `otel.name` field
+            // (e.g. "GET /otel/trace/:id"), not the tracing metadata name
+            // "HTTP", so match on the `url.path` attribute instead.
+            .find(|s| {
+                s.attributes
+                    .iter()
+                    .any(|kv| kv.key.as_str() == "url.path" && kv.value.as_str() == url_path)
+            });
+        if let Some(span) = found {
+            return span;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no exported HTTP span for url.path {url_path}");
+}
+
+/// Phase 2: an inbound `traceparent` makes the worker's HTTP span a child of the
+/// caller's trace. The known trace id is carried by the header; the handler
+/// records it back on the span via the `traceparent.propagated` event (matching
+/// the engine). We assert both the event's `parent.trace_id` attribute and the
+/// exported span's own trace id equal the known value -- proving the header was
+/// parsed and set as the span's parent.
+#[tokio::test]
+#[serial]
+async fn otel_span_propagates_inbound_traceparent() {
+    install_capture();
+    let iii = engine::get_or_init().await;
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/otel/trace/:id", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/otel/trace/:id").await;
+
+    // W3C example traceparent; the 32-hex trace id is the value we expect to see
+    // propagated onto the server span.
+    const TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const KNOWN_TRACE_ID: &str = "0af7651916cd43dd8448eb211c80319c";
+
+    let url = format!("http://{}/otel/trace/7", boot.local_addr);
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header("traceparent", TRACEPARENT)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/trace/7").await;
+
+    // The span's own trace id is inherited from the parent traceparent.
+    assert_eq!(
+        format!("{}", span.span_context.trace_id()),
+        KNOWN_TRACE_ID,
+        "server span should inherit the inbound traceparent trace id"
+    );
+
+    // The `traceparent.propagated` event carries `parent.trace_id` (engine parity).
+    let event = span
+        .events
+        .iter()
+        .find(|e| e.name == "traceparent.propagated")
+        .expect("HTTP span should carry a traceparent.propagated event");
+    let parent_trace_id = event
+        .attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == "parent.trace_id")
+        .map(|kv| kv.value.as_str().to_string())
+        .expect("event should carry parent.trace_id");
+    assert_eq!(parent_trace_id, KNOWN_TRACE_ID);
 
     boot.shutdown().await;
 }

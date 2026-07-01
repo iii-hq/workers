@@ -144,14 +144,25 @@ pub async fn dynamic_handler(
     };
 
     // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
-    // (`views.rs`) minus trace-context parent propagation and the request
-    // metric (later phases). `route_path` is the matched route pattern (e.g.
+    // (`views.rs`) minus the request metric (a later phase). Trace-context
+    // parent propagation is applied just below (after the span is built).
+    // `route_path` is the matched route pattern (e.g.
     // `/users/:id`) when a route matches, else the actual request path (404).
     // The final status is recorded via `record_status` at every return point.
     let route_path = matched
         .as_ref()
         .map(|(route, _)| route.http_path.clone())
         .unwrap_or_else(|| actual_path.clone());
+
+    // W3C trace-context parent propagation: read the inbound headers before the
+    // span is built. `tracestate` is read for completeness but NOT propagated --
+    // the SDK's `extract_context` takes only `traceparent` + `baggage` (unlike
+    // the engine's with-state variant). See `set_parent` below.
+    let header_str = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let traceparent = header_str("traceparent");
+    let _tracestate = header_str("tracestate");
+    let baggage = header_str("baggage");
+
     let span = tracing::info_span!(
         "HTTP",
         otel.name = %format!("{} {}", method, route_path),
@@ -162,6 +173,43 @@ pub async fn dynamic_handler(
         "url.path" = %actual_path,
         "http.response.status_code" = tracing::field::Empty,
     );
+
+    // Make this span a child of the caller's trace when the request carries
+    // `traceparent`/`baggage`. `set_parent` operates on the built span
+    // regardless of its `is_contextual` flag, so it is applied here after
+    // `info_span!` (mirrors the engine's `with_parent_headers`). On success we
+    // emit a `traceparent.propagated` event carrying the parent trace id, so the
+    // link is visible in the OTel export (field names identical to the engine).
+    if traceparent.is_some() || baggage.is_some() {
+        use iii_helpers::observability::opentelemetry::KeyValue;
+        use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+        let parent_cx =
+            iii_helpers::observability::extract_context(traceparent.as_deref(), baggage.as_deref());
+        let parent_trace_id = parent_cx.span().span_context().trace_id();
+        match span.set_parent(parent_cx) {
+            Ok(()) => {
+                span.add_event(
+                    "traceparent.propagated",
+                    vec![
+                        KeyValue::new("parent.trace_id", format!("{parent_trace_id}")),
+                        KeyValue::new(
+                            "traceparent",
+                            traceparent.clone().unwrap_or_default(),
+                        ),
+                    ],
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    parent_trace_id = %parent_trace_id,
+                    "failed to set parent trace context on HTTP span"
+                );
+            }
+        }
+    }
 
     async move {
     let Some((route, path_params)) = matched else {
