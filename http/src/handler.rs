@@ -202,7 +202,11 @@ pub async fn dynamic_handler(
                 );
             }
             Err(err) => {
-                tracing::warn!(
+                // Expected on every request until the OTel tracing bridge layer
+                // is wired into the worker's subscriber (no layer ->
+                // SetParentError::LayerNotFound). Keep at debug to avoid
+                // per-request WARN spam; promote to warn! once the bridge lands.
+                tracing::debug!(
                     error = %err,
                     parent_trace_id = %parent_trace_id,
                     "failed to set parent trace context on HTTP span"
