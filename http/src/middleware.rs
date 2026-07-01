@@ -45,6 +45,19 @@ pub(crate) fn error_body(code: &str, message: &str, error_id: Option<&str>) -> V
     json!({ "error": error })
 }
 
+/// Builds the 500 error envelope for a failed `IIIClient::trigger` call,
+/// propagating the invoked function's own error code/message when available
+/// (mirrors the engine's `Error::Remote` -> `{code, message}` propagation, see
+/// `engine/src/workers/rest_api/views.rs:248-251,518`). Falls back to
+/// `"INTERNAL_ERROR"` + the error's `Display` for non-remote errors (timeouts,
+/// transport/serde failures, etc).
+pub(crate) fn error_body_for_call_error(err: &Error, error_id: Option<&str>) -> Value {
+    match err.invocation_error() {
+        Some(inv) => error_body(&inv.code, &inv.message, error_id),
+        None => error_body("INTERNAL_ERROR", &err.to_string(), error_id),
+    }
+}
+
 fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
     headers
         .iter()
@@ -156,7 +169,7 @@ pub async fn execute_middleware(
             );
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
+                Json(error_body_for_call_error(&err, Some(&error_id))),
             )
                 .into_response())
         }
@@ -247,5 +260,30 @@ mod tests {
     fn error_body_includes_error_id_when_present() {
         let body = error_body("INTERNAL_ERROR", "boom", Some("abc123"));
         assert_eq!(body["error"]["error_id"], "abc123");
+    }
+
+    // =========================================================================
+    // error_body_for_call_error
+    // =========================================================================
+
+    #[test]
+    fn error_body_for_call_error_propagates_remote_code_and_message() {
+        let err = Error::Remote {
+            code: "CUSTOM".to_string(),
+            message: "boom".to_string(),
+            stacktrace: None,
+        };
+        let body = error_body_for_call_error(&err, Some("abc123"));
+        assert_eq!(body["error"]["code"], "CUSTOM");
+        assert_eq!(body["error"]["message"], "boom");
+        assert_eq!(body["error"]["error_id"], "abc123");
+    }
+
+    #[test]
+    fn error_body_for_call_error_falls_back_to_internal_error_for_non_remote() {
+        let body = error_body_for_call_error(&Error::Timeout, None);
+        assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
+        assert_eq!(body["error"]["message"], "invocation timed out");
+        assert!(body["error"].get("error_id").is_none());
     }
 }

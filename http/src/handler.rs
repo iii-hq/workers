@@ -405,7 +405,10 @@ pub async fn dynamic_handler(
                     );
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
+                        axum::Json(middleware::error_body_for_call_error(
+                            &err,
+                            Some(&error_id),
+                        )),
                     )
                         .into_response();
                 }

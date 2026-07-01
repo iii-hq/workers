@@ -172,3 +172,30 @@ pub fn register_condition_fail(iii: &Arc<IIIClient>, function_id: &str) {
         RegisterFunction::new_async(|_req: Value| async move { Ok::<Value, Error>(json!(false)) }),
     );
 }
+
+/// Register `test.error` bound to an `http` trigger; the function always
+/// fails with a structured `Error::Remote { code: "CUSTOM_BOOM", .. }`. Used
+/// to assert the worker's 500 envelope propagates the function's own
+/// code/message instead of a hard-coded `INTERNAL_ERROR`.
+pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
+    let function_id = format!("test.error {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |_req: HttpRequest| async move {
+            Err::<Value, Error>(Error::Remote {
+                code: "CUSTOM_BOOM".to_string(),
+                message: "backend exploded".to_string(),
+                stacktrace: None,
+            })
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        function_id,
+        config: json!({ "api_path": api_path, "http_method": http_method }),
+        metadata: None,
+    })
+    .expect("register http trigger");
+}
