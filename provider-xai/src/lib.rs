@@ -9,6 +9,7 @@ pub mod manifest;
 pub mod reasoning;
 pub mod register;
 pub mod request;
+pub mod responses;
 pub mod router_client;
 pub mod sse;
 pub mod state;
