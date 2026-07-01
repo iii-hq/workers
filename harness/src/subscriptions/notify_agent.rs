@@ -32,7 +32,7 @@ pub fn register(deps: Arc<Deps>) {
     let iii = deps.iii.clone();
     iii.register_function(
         NOTIFY_AGENT_ID,
-        RegisterFunction::new_async_with_metadata(move |event: Value, metadata: Option<Value>| {
+        RegisterFunction::new_async(move |event: Value, metadata: Option<Value>| {
             let deps = deps.clone();
             async move {
                 on_fire(&deps, event, metadata).await;
