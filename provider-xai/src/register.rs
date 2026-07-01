@@ -116,14 +116,31 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // schema register + first fetch run off the boot path (the configuration
     // worker may not be up yet).
     let cell = crate::configuration::new_cell();
-    let _ = crate::configuration::register_config_trigger(&iii, cell.clone());
+    if let Err(e) = crate::configuration::register_config_trigger(&iii, cell.clone()) {
+        eprintln!("[provider-xai] config-change trigger registration failed ({e})");
+    }
     {
         let (iii_cfg, cell_cfg) = (iii.clone(), cell.clone());
         tokio::spawn(async move {
-            if let Err(e) = crate::configuration::register_config(&iii_cfg).await {
-                eprintln!("[provider-xai] register_config failed ({e})");
+            // Retry until the configuration worker is reachable, so the console
+            // config is eventually loaded and `make_stream` never serves the
+            // default snapshot forever when the config bus was down at boot.
+            let mut delay = Duration::from_millis(500);
+            loop {
+                match crate::configuration::register_config(&iii_cfg).await {
+                    Ok(()) => {
+                        crate::configuration::reconcile(&iii_cfg, &cell_cfg).await;
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[provider-xai] config bootstrap failed ({e}); retrying in {delay:?}"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(10));
+                    }
+                }
             }
-            crate::configuration::reconcile(&iii_cfg, &cell_cfg).await;
         });
     }
 

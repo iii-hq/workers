@@ -24,11 +24,17 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 /// Derive the `/v1/responses` endpoint from the configured completions URL
-/// (`…/v1/chat/completions` → `…/v1/responses`).
+/// (`…/v1/chat/completions` → `…/v1/responses`). When the configured URL does
+/// not have the expected `/chat/completions` suffix (a custom origin), keep
+/// that origin and swap the trailing path segment to `responses` rather than
+/// silently jumping to the public xAI endpoint.
 pub fn responses_url(api_url: &str) -> String {
-    match api_url.strip_suffix("/chat/completions") {
-        Some(base) => format!("{base}/responses"),
-        None => "https://api.x.ai/v1/responses".to_string(),
+    if let Some(base) = api_url.strip_suffix("/chat/completions") {
+        return format!("{base}/responses");
+    }
+    match api_url.rsplit_once('/') {
+        Some((base, _last)) if !base.is_empty() => format!("{base}/responses"),
+        _ => "https://api.x.ai/v1/responses".to_string(),
     }
 }
 
@@ -111,6 +117,9 @@ fn partial(state: &ResponsesState, model: &str) -> AssistantMessage {
     // AssistantMessage has no dedicated citation field, and warnings already
     // surface non-fatal side-band info to the console.
     let mut warnings = state.warnings.clone();
+    if !state.tool_calls.is_empty() {
+        warnings.push(format!("tools used: {}", state.tool_calls.join(", ")));
+    }
     if !state.citations.is_empty() {
         warnings.push(format!("citations: {}", state.citations.join(", ")));
     }
@@ -240,6 +249,11 @@ fn merge_usage(raw: &Value, into: &mut Usage) {
     }
 }
 
+/// Byte offset of the first `\n\n` SSE frame terminator, if present.
+fn find_frame_boundary(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\n\n")
+}
+
 /// Parse an SSE block into `(event_name, data_json_str)`. Responses events are
 /// `event: <name>\ndata: <json>`.
 fn event_and_data(block: &str) -> Option<(&str, &str)> {
@@ -328,7 +342,10 @@ async fn run_responses_upstream(
     }
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    // Accumulate raw bytes and only decode a complete SSE frame (up to the
+    // `\n\n` boundary) as UTF-8, so a multi-byte character split across two
+    // network chunks is never corrupted — X content is unicode-heavy.
+    let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
@@ -343,9 +360,10 @@ async fn run_responses_upstream(
                 return;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let block: String = buf.drain(..idx + 2).collect();
+        buf.extend_from_slice(&chunk);
+        while let Some(idx) = find_frame_boundary(&buf) {
+            let frame: Vec<u8> = buf.drain(..idx + 2).collect();
+            let block = String::from_utf8_lossy(&frame);
             let Some((event_type, data)) = event_and_data(&block) else {
                 continue;
             };
@@ -374,11 +392,15 @@ async fn run_responses_upstream(
             }
         }
     }
-    // Stream ended without response.completed: still terminal.
+    // Stream ended without `response.completed`: the turn was truncated, not
+    // completed. Surface a transient error so callers can distinguish this from
+    // a real terminal completion (and retry).
     let _ = tx
-        .send(AssistantMessageEvent::Done {
-            message: build_final(&state, &args.model),
-        })
+        .send(synthetic_error_event(
+            "xai responses stream ended before completion",
+            &args.model,
+            ErrorKind::Transient,
+        ))
         .await;
 }
 
@@ -405,9 +427,11 @@ mod tests {
             responses_url("http://127.0.0.1:9/v1/chat/completions"),
             "http://127.0.0.1:9/v1/responses"
         );
+        // custom origin without the chat/completions suffix: keep the origin,
+        // swap the trailing segment — never silently jump to public xAI.
         assert_eq!(
-            responses_url("https://p/custom"),
-            "https://api.x.ai/v1/responses"
+            responses_url("https://proxy.internal/v1/foo"),
+            "https://proxy.internal/v1/responses"
         );
     }
 

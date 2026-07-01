@@ -92,12 +92,33 @@ async fn run_stream_call(
     // the model can pull live X / web data. Otherwise fall through to the plain
     // Chat Completions path below.
     if wc.tools_enabled && !wc.tool_sources.is_empty() {
+        // Report-and-continue: the Responses path carries the conversation +
+        // server-side tools, but not the chat-path per-request controls, so
+        // name each dropped one instead of silently ignoring it.
+        if input.tools.as_ref().is_some_and(|t| !t.is_empty()) {
+            warnings.push(
+                "client function tools are not sent on the xAI Agent Tools path; \
+                 disable provider-xai tools to use function calling"
+                    .to_string(),
+            );
+        }
+        if input.response_format.is_some() {
+            warnings.push("response_format is not applied on the xAI Agent Tools path".to_string());
+        }
+        if input.thinking_level.is_some() {
+            warnings.push("thinking_level is not applied on the xAI Agent Tools path".to_string());
+        }
         let system_prompt = input.system_prompt.clone().unwrap_or_default();
+        let tool_types: Vec<String> = wc
+            .tool_sources
+            .iter()
+            .map(|t| t.as_type().to_string())
+            .collect();
         let body = build_responses_body(
             &cfg.model,
             &system_prompt,
             &input.messages,
-            &wc.tool_sources,
+            &tool_types,
             cfg.max_tokens,
         );
         let headers = build_headers(&cfg);
