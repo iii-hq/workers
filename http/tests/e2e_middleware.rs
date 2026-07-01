@@ -72,19 +72,32 @@ async fn per_route_middleware_respond_short_circuits_before_handler() {
 async fn global_middleware_respond_short_circuits_every_route() {
     let iii = engine::get_or_init().await;
 
-    backend::register_respond_middleware(&iii, "test.mw.global_respond");
+    let mw_calls = backend::register_respond_middleware(&iii, "test.mw.global_respond");
     let boot =
         worker::start_http_worker_with_global_middleware(iii.clone(), &["test.mw.global_respond"])
             .await;
 
-    backend::register_echo_backend(&iii, "/mw-global", "GET").await;
-    common::wait_for_route(&boot.routes, "GET", "/mw-global").await;
+    // Two different routes: global middleware must fire on each.
+    backend::register_echo_backend(&iii, "/mw-global-a", "GET").await;
+    backend::register_echo_backend(&iii, "/mw-global-b", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/mw-global-a").await;
+    common::wait_for_route(&boot.routes, "GET", "/mw-global-b").await;
 
-    let url = format!("http://{}/mw-global", boot.local_addr);
-    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
-    assert_eq!(resp.status(), 403);
-    let v: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(v, serde_json::json!({ "denied": true }));
+    let client = reqwest::Client::new();
+    for path in ["/mw-global-a", "/mw-global-b"] {
+        let url = format!("http://{}{path}", boot.local_addr);
+        let resp = client.get(&url).send().await.unwrap();
+        assert_eq!(resp.status(), 403, "global middleware should short-circuit {path}");
+        let v: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(v, serde_json::json!({ "denied": true }));
+    }
+
+    // Global middleware ran on both routes (2 requests -> 2 invocations).
+    assert_eq!(
+        mw_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "global middleware should have run once per request across both routes"
+    );
 
     boot.shutdown().await;
 }

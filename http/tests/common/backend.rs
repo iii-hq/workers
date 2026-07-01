@@ -108,19 +108,28 @@ pub fn register_continue_middleware(iii: &Arc<IIIClient>, function_id: &str) -> 
 
 /// Register a middleware function that always short-circuits with a 403
 /// response carrying `{"denied": true}`.
-pub fn register_respond_middleware(iii: &Arc<IIIClient>, function_id: &str) {
+/// Returns a call counter the middleware increments on every invocation, so a
+/// test can assert how many requests it short-circuited.
+pub fn register_respond_middleware(iii: &Arc<IIIClient>, function_id: &str) -> Arc<AtomicUsize> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
     iii.register_function(
         function_id.to_string(),
-        RegisterFunction::new_async(|_req: Value| async move {
-            Ok::<Value, Error>(json!({
-                "action": "respond",
-                "response": {
-                    "status_code": 403,
-                    "body": { "denied": true },
-                },
-            }))
+        RegisterFunction::new_async(move |_req: Value| {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<Value, Error>(json!({
+                    "action": "respond",
+                    "response": {
+                        "status_code": 403,
+                        "body": { "denied": true },
+                    },
+                }))
+            }
         }),
     );
+    calls
 }
 
 /// Register `test.echo` (same as [`register_echo_backend`]) bound to an
