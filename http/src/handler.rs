@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use axum::{
@@ -32,6 +32,8 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
+use iii_helpers::observability::opentelemetry::KeyValue;
+use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_sdk::IIIClient;
 use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::TriggerRequest;
@@ -72,19 +74,22 @@ fn otel_status_for(status_code: u16) -> &'static str {
     if status_code < 400 { "OK" } else { "ERROR" }
 }
 
-/// Record the final response status on the current per-request HTTP span
-/// (`otel.status_code` + `http.response.status_code`) and return the response
-/// unchanged, so it can wrap any `return <response>` expression.
+/// Per-request OTEL request counter (`iii.http.requests`), created once from the
+/// global meter. Incremented one-per-request in the `record_status` closure.
 ///
-/// Reading the status from the already-built response records it in exactly
-/// one place per return path -- the engine records the same pair wherever the
-/// status becomes known (`views.rs`).
-fn record_status(response: Response) -> Response {
-    let code = response.status().as_u16();
-    let span = tracing::Span::current();
-    span.record("otel.status_code", otel_status_for(code));
-    span.record("http.response.status_code", code);
-    response
+/// Uses `opentelemetry::global::meter`, so the instrument binds to whatever
+/// meter provider is installed when this `OnceLock` first initializes (the SDK's
+/// `init_otel` sets one on connect; otherwise it is a cheap no-op). The counter
+/// is the standalone-worker analogue of the engine's internal `track_api_request`
+/// atomic (`engine/.../telemetry/collector.rs`), but exportable via OTLP.
+fn request_counter() -> &'static Counter<u64> {
+    static COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+    COUNTER.get_or_init(|| {
+        iii_helpers::observability::opentelemetry::global::meter("iii-http")
+            .u64_counter("iii.http.requests")
+            .with_description("Count of HTTP requests handled by the iii http worker")
+            .build()
+    })
 }
 
 /// Standardized error envelope, identical in shape to the engine's:
@@ -214,6 +219,33 @@ pub async fn dynamic_handler(
             }
         }
     }
+
+    // Record the final response status on the current per-request HTTP span
+    // (`otel.status_code` + `http.response.status_code`) and increment the OTEL
+    // request counter once, then return the response unchanged so it can wrap
+    // any `return <response>` expression.
+    //
+    // Reading the status from the already-built response records+counts it in
+    // exactly one place per return path -- the engine records the same pair
+    // wherever the status becomes known (`views.rs`). The counter attributes
+    // mirror the span tags: method + matched route (captured here) + status.
+    let method_attr = method.as_str().to_string();
+    let route_attr = route_path.clone();
+    let record_status = move |response: Response| -> Response {
+        let code = response.status().as_u16();
+        let span = tracing::Span::current();
+        span.record("otel.status_code", otel_status_for(code));
+        span.record("http.response.status_code", code);
+        request_counter().add(
+            1,
+            &[
+                KeyValue::new("http.request.method", method_attr.clone()),
+                KeyValue::new("http.route", route_attr.clone()),
+                KeyValue::new("http.response.status_code", i64::from(code)),
+            ],
+        );
+        response
+    };
 
     async move {
     let Some((route, path_params)) = matched else {
