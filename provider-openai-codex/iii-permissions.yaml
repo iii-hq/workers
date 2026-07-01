@@ -1,0 +1,10 @@
+# Agent permissions for the provider-openai-codex worker.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # Direct provider calls bypass the router's accounting, budgets, and retry
+  # policy — never agent-callable. The router invokes these worker-to-worker.
+  - '!provider::openai-codex::stream'
+  - '!provider::openai-codex::refresh_models'
+  - '!provider::openai-codex::on_router_ready'

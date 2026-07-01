@@ -1,0 +1,8 @@
+# provider-openai-codex has no file-based configuration.
+#
+# Credentials come from the auth-credentials vault (or a local
+# ~/.codex/auth.json dev fallback); `api_url` / `max_tokens` arrive per request
+# from llm-router's resolve step.
+#
+# This file exists to satisfy the standard worker layout
+# (docs/sops/new-worker.md §2). Keys placed here are ignored with a warning.
