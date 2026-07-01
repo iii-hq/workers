@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::trigger::Trigger;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
 
@@ -43,6 +44,36 @@ pub async fn register_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_me
         metadata: None,
     })
     .expect("register http trigger");
+}
+
+/// Like [`register_echo_backend`], but returns the trigger handle so a test can
+/// call [`Trigger::unregister`] to remove the route and assert the subsequent
+/// 404. The trigger does NOT unregister on drop, so ignoring the returned
+/// handle keeps the route registered.
+pub async fn register_removable_echo_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+) -> Trigger {
+    let function_id = format!("test.echo {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |req: HttpRequest| async move {
+            Ok::<Value, Error>(json!({
+                "status_code": 200,
+                "body": { "method": req.method, "path": req.path },
+            }))
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        function_id,
+        config: json!({ "api_path": api_path, "http_method": http_method }),
+        metadata: None,
+    })
+    .expect("register http trigger")
 }
 
 /// Register `test.echo` (same as [`register_echo_backend`]) bound to an

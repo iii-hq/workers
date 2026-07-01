@@ -86,13 +86,26 @@ async fn custom_header_passes_through() {
 
 #[tokio::test]
 #[serial]
-async fn unregistered_route_returns_404_not_found() {
+async fn route_serves_then_404s_after_unregister() {
     let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/removable", boot.local_addr);
 
-    let url = format!("http://{}/no-such-route-here", boot.local_addr);
-    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
-    assert_eq!(resp.status(), 404);
+    // Register the route, wait for it to land, and confirm it serves (200).
+    let trigger = backend::register_removable_echo_backend(&iii, "/removable", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/removable").await;
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "route should serve while registered");
+    assert_eq!(resp.json::<serde_json::Value>().await.unwrap()["method"], "GET");
+
+    // Unregister the trigger; the route must disappear and now 404.
+    trigger.unregister();
+    common::wait_for_no_route(&boot.routes, "GET", "/removable").await;
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 404, "route should 404 after unregister");
     let v: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(v["error"]["code"], "NOT_FOUND");
 
