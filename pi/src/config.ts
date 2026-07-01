@@ -6,18 +6,32 @@ const ConfigSchema = z.object({
   engine_url: z.string().default('ws://127.0.0.1:49134'),
   defaults: z
     .object({
-      model: z.string().default(''),
+      model: z
+        .string()
+        .default('')
+        .describe('Model id used when a run omits one; empty = Pi default'),
       thinking_level: z
         .enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
-        .default('medium'),
-      cwd: z.string().default(''),
-      tools: z.array(z.string()).default([]),
-      agent_dir: z.string().default(''),
+        .default('medium')
+        .describe('Reasoning effort for the turn'),
+      cwd: z.string().default('').describe('Default working directory a turn runs in'),
+      tools: z.array(z.string()).default([]).describe('Tools Pi may use (empty = its default set)'),
+      agent_dir: z.string().default('').describe('Directory of custom Pi agent definitions'),
     })
-    .prefault({}),
-  events_stream: z.string().default('agent::events'),
-  raw_events_stream: z.string().default('pi::events'),
-  iii_context: z.boolean().default(true),
+    .prefault({})
+    .describe('Per-turn defaults applied when a pi::run payload omits a field'),
+  events_stream: z
+    .string()
+    .default('agent::events')
+    .describe('Stream carrying the translated AgentEvent frames'),
+  raw_events_stream: z
+    .string()
+    .default('pi::events')
+    .describe('Stream carrying the raw Pi events, verbatim'),
+  iii_context: z
+    .boolean()
+    .default(true)
+    .describe('Prepend the iii runtime context so the agent discovers engine functions'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

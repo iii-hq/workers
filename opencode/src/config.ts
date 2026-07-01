@@ -6,15 +6,31 @@ const ConfigSchema = z.object({
   engine_url: z.string().default('ws://127.0.0.1:49134'),
   defaults: z
     .object({
-      model: z.string().default(''),
-      cwd: z.string().default(''),
-      agent: z.string().default(''),
+      model: z
+        .string()
+        .default('')
+        .describe('Model id used when a run omits one; empty = OpenCode default'),
+      cwd: z.string().default('').describe('Default working directory a turn runs in'),
+      agent: z.string().default('').describe('Named OpenCode agent to run the turn as'),
     })
-    .prefault({}),
-  events_stream: z.string().default('agent::events'),
-  raw_events_stream: z.string().default('opencode::events'),
-  iii_context: z.boolean().default(true),
-  opencode_executable: z.string().default(''),
+    .prefault({})
+    .describe('Per-turn defaults applied when an opencode::run payload omits a field'),
+  events_stream: z
+    .string()
+    .default('agent::events')
+    .describe('Stream carrying the translated AgentEvent frames'),
+  raw_events_stream: z
+    .string()
+    .default('opencode::events')
+    .describe('Stream carrying the raw OpenCode JSON events, verbatim'),
+  iii_context: z
+    .boolean()
+    .default(true)
+    .describe('Prepend the iii runtime context so the agent discovers engine functions'),
+  opencode_executable: z
+    .string()
+    .default('')
+    .describe('Path to the opencode CLI; empty = resolve on PATH'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
