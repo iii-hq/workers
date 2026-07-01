@@ -150,8 +150,7 @@ pub async fn import_codex_home_if_absent(iii: &IIIClient) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use base64::Engine as _;
+    use super::*; // brings `base64::Engine as _` into scope for `.encode()`
 
     fn jwt_with(payload: Value) -> String {
         let b = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
