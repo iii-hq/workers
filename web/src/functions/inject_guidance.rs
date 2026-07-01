@@ -76,4 +76,22 @@ mod tests {
         // A missing/empty base must not produce a leading blank block.
         assert_eq!(enrich(""), WEB_GUIDANCE);
     }
+
+    #[test]
+    fn web_fetch_mandate_present() {
+        // These assertions moved here from the harness prompt tests
+        // (web_fetch_localhost_mandate): the mandate now lives in the injected
+        // guidance, not the static prompt.
+        for needle in [
+            "includes localhost",
+            "IS the verification",
+            "web::fetch",
+            "never `shell::exec` with",
+            "`curl` or `wget`",
+            "{ ok, status, headers, body }",
+            "format: \"markdown\"",
+        ] {
+            assert!(WEB_GUIDANCE.contains(needle), "missing: {needle}");
+        }
+    }
 }

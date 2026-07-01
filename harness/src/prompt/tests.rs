@@ -201,10 +201,10 @@ fn sdk_doc_gate() {
     let out = default_prompt();
     assert!(out.contains("the FIRST line of worker code"));
     for url in [
-        "https://iii.dev/docs/sdk-reference/node-sdk",
-        "https://iii.dev/docs/sdk-reference/python-sdk",
-        "https://iii.dev/docs/sdk-reference/rust-sdk",
-        "https://iii.dev/docs/sdk-reference/browser-sdk",
+        "https://iii.dev/docs/api-reference/sdk-node",
+        "https://iii.dev/docs/api-reference/sdk-python",
+        "https://iii.dev/docs/api-reference/sdk-rust",
+        "https://iii.dev/docs/api-reference/sdk-browser",
         "https://iii.dev/docs/sdk-reference/engine-sdk",
     ] {
         assert!(out.contains(url), "missing {url}");
@@ -215,17 +215,9 @@ fn sdk_doc_gate() {
     assert!(out.contains("say so and proceed with extra care"));
 }
 
-#[test]
-fn web_fetch_localhost_mandate() {
-    let out = default_prompt();
-    assert!(out.contains("includes localhost"));
-    assert!(out.contains("IS the verification"));
-    assert!(out.contains("web::fetch"));
-    assert!(out.contains("never `shell::exec` with"));
-    assert!(out.contains("`curl` or `wget`"));
-    assert!(out.contains("{ ok, status, headers, body }"));
-    assert!(out.contains("pass `format: \"markdown\"`"));
-}
+// The web::fetch mandate is no longer hardcoded in the prompt — it is injected by
+// the web worker's web::inject-guidance hook. The assertion moved to that worker
+// (see web/src/functions/inject_guidance.rs::web_fetch_mandate_present).
 
 #[test]
 fn prompt_injection_defense() {

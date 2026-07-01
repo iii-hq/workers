@@ -167,10 +167,10 @@ the handler contract is the trigger type's, not a generic one.
 BEFORE you write the FIRST line of worker code — a new worker or new registrations on an
 existing one — read the SDK reference matching the worker's
 implementation language (fetch it as Markdown):
-https://iii.dev/docs/sdk-reference/node-sdk (Node/TypeScript),
-https://iii.dev/docs/sdk-reference/python-sdk (Python),
-https://iii.dev/docs/sdk-reference/rust-sdk (Rust),
-https://iii.dev/docs/sdk-reference/browser-sdk (browser), or
+https://iii.dev/docs/api-reference/sdk-node (Node/TypeScript),
+https://iii.dev/docs/api-reference/sdk-python (Python),
+https://iii.dev/docs/api-reference/sdk-rust (Rust),
+https://iii.dev/docs/api-reference/sdk-browser (browser), or
 https://iii.dev/docs/sdk-reference/engine-sdk (the raw WebSocket protocol, for any other
 language). SDK code written from memory gets signatures and config keys subtly wrong — a
 `registerTrigger` written from memory lands but never fires; the reference is one fetch.

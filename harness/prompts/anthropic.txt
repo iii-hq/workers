@@ -184,10 +184,10 @@ contract via `engine::functions::info`; do not assume specifics.
 BEFORE you write the FIRST line of worker code — authoring a NEW worker or adding
 registrations to an existing one — read the SDK reference that matches the worker's
 implementation language (fetch it as Markdown):
-https://iii.dev/docs/sdk-reference/node-sdk (Node/TypeScript),
-https://iii.dev/docs/sdk-reference/python-sdk (Python),
-https://iii.dev/docs/sdk-reference/rust-sdk (Rust),
-https://iii.dev/docs/sdk-reference/browser-sdk (browser), or
+https://iii.dev/docs/api-reference/sdk-node (Node/TypeScript),
+https://iii.dev/docs/api-reference/sdk-python (Python),
+https://iii.dev/docs/api-reference/sdk-rust (Rust),
+https://iii.dev/docs/api-reference/sdk-browser (browser), or
 https://iii.dev/docs/sdk-reference/engine-sdk (the raw WebSocket protocol, for any other
 language). SDK code written from memory gets signatures and config keys subtly wrong — a
 `registerTrigger` written from memory lands but never fires, and you burn the session
