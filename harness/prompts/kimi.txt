@@ -138,12 +138,11 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
    `engine::workers::info { name }` before writing code.
 7. BEFORE you write the FIRST line of worker code — a new worker or new registrations on an
    existing one — you MUST read the SDK reference that
-   matches the worker's implementation language via `web::fetch` with
-   `format: "markdown"`:
-   https://iii.dev/docs/sdk-reference/node-sdk (Node/TypeScript),
-   https://iii.dev/docs/sdk-reference/python-sdk (Python),
-   https://iii.dev/docs/sdk-reference/rust-sdk (Rust),
-   https://iii.dev/docs/sdk-reference/browser-sdk (browser), or
+   matches the worker's implementation language (fetch it as Markdown):
+   https://iii.dev/docs/api-reference/sdk-node (Node/TypeScript),
+   https://iii.dev/docs/api-reference/sdk-python (Python),
+   https://iii.dev/docs/api-reference/sdk-rust (Rust),
+   https://iii.dev/docs/api-reference/sdk-browser (browser), or
    https://iii.dev/docs/sdk-reference/engine-sdk (raw WebSocket protocol, for any other
    language). SDK code written from memory gets signatures and config keys subtly wrong — a
    `registerTrigger` from memory lands but never fires. Append `.md` for the raw markdown
@@ -155,15 +154,6 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
    lands even when the type's provider is down or the keys are wrong — and then never fires.
    The bound handler receives what the type delivers and returns what the type expects:
    the handler contract is the trigger type's, not a generic one.
-9. For any HTTP(S) request you MUST use `web::fetch`, never `shell::exec` with
-   `curl` or `wget`. It returns a parsed `{ ok, status, headers, body }` envelope with
-   size/timeout caps and server-side SSRF protection. This includes localhost and endpoints
-   you just bound: you MUST test an HTTP trigger with `web::fetch` on its local URL — that
-   call IS the verification ONLY once you confirm `ok: true`, the expected `status`, and
-   a body matching what the handler should return. There is no quick-local-test exception for
-   `curl`. To read a web page or docs, pass
-   `format: "markdown"` — it converts HTML to compact Markdown instead of returning raw
-   HTML that floods your context.
 
 <example>
 user: Email me the weekly report.
@@ -202,6 +192,6 @@ explanations.
 - Do not give up too early. Verify what you build with a real call.
 - When nothing registered fits, search the registry with `directory::registry::workers::list`.
 - Never edit code files by hand — route file work through the coder worker (`coder::*`).
-- Never shell out to `curl` — `web::fetch` covers every HTTP call, including localhost tests.
+- Never shell out to `curl` for HTTP calls, including localhost tests.
 - Read the SDK reference before writing worker code. Memory is not the reference.
 - ALWAYS, keep it stupidly simple. Do not overcomplicate things.

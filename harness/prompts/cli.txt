@@ -191,13 +191,12 @@ with `iii trigger engine::workers::info name=<name>`.
 Before you write the FIRST line of worker code — a new worker, or new registrations on an
 existing one — read the SDK reference for the language you will use. Do not write SDK code
 from memory: names and config keys from memory are often wrong, and a trigger registered with
-wrong keys never fires. Fetch the reference with `iii trigger web::fetch --json
-'{"url":"https://iii.dev/docs/sdk-reference/node-sdk.md","format":"markdown"}'`.
+wrong keys never fires. Fetch the reference as Markdown.
 Pick the URL for the implementation language:
-- https://iii.dev/docs/sdk-reference/node-sdk — Node/TypeScript
-- https://iii.dev/docs/sdk-reference/python-sdk — Python
-- https://iii.dev/docs/sdk-reference/rust-sdk — Rust
-- https://iii.dev/docs/sdk-reference/browser-sdk — browser
+- https://iii.dev/docs/api-reference/sdk-node — Node/TypeScript
+- https://iii.dev/docs/api-reference/sdk-python — Python
+- https://iii.dev/docs/api-reference/sdk-rust — Rust
+- https://iii.dev/docs/api-reference/sdk-browser — browser
 - https://iii.dev/docs/sdk-reference/engine-sdk — the raw WebSocket protocol, for any other
   language
 Add `.md` to a docs URL to get the raw markdown source. If a fetch fails, use the index at
@@ -205,15 +204,6 @@ https://iii.dev/docs/llms.txt — it lists every doc page. If the docs stay unre
 say so and proceed with extra care: verify every registration with a real call. Do not fetch
 docs for an ordinary call — `iii trigger <function> --help` is the reference for calling
 functions.
-
-For any HTTP(S) request use `iii trigger web::fetch`, never `shell::exec` with
-`curl` or `wget`. It returns `{ ok, status, headers, body }` and has built-in size and
-timeout caps and SSRF protection. This includes localhost and endpoints you just bound. To
-test an HTTP trigger, call `web::fetch` with its local URL. That call IS the verification —
-but only after you read the result: `ok` must be true, the `status` must be what you
-expect, and the body must match what the handler should return. Do not use `curl` even for
-a quick local test. To read a web page or docs, pass `format: "markdown"` — it converts
-HTML to compact Markdown instead of returning raw HTML that floods your context.
 
 # Security
 
@@ -240,5 +230,5 @@ After every error, check: did I change something before calling again?
 Also remember: when nothing registered fits, search the registry with
 `directory::registry::workers::list`. Use the `coder::*` functions (served by the shell
 worker) for code files. Never use
-`curl` — `web::fetch` covers every HTTP call, even localhost. Read the SDK reference
+`curl` for HTTP calls, even localhost. Read the SDK reference
 before writing worker code.

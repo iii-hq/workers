@@ -166,11 +166,11 @@ the handler contract is the trigger type's, not a generic one.
 
 BEFORE you write the FIRST line of worker code — a new worker or new registrations on an
 existing one — read the SDK reference matching the worker's
-implementation language via `web::fetch` with `format: "markdown"`:
-https://iii.dev/docs/sdk-reference/node-sdk (Node/TypeScript),
-https://iii.dev/docs/sdk-reference/python-sdk (Python),
-https://iii.dev/docs/sdk-reference/rust-sdk (Rust),
-https://iii.dev/docs/sdk-reference/browser-sdk (browser), or
+implementation language (fetch it as Markdown):
+https://iii.dev/docs/api-reference/sdk-node (Node/TypeScript),
+https://iii.dev/docs/api-reference/sdk-python (Python),
+https://iii.dev/docs/api-reference/sdk-rust (Rust),
+https://iii.dev/docs/api-reference/sdk-browser (browser), or
 https://iii.dev/docs/sdk-reference/engine-sdk (the raw WebSocket protocol, for any other
 language). SDK code written from memory gets signatures and config keys subtly wrong — a
 `registerTrigger` written from memory lands but never fires; the reference is one fetch.
@@ -178,15 +178,6 @@ Append `.md` to a docs URL for the raw markdown source; if a fetch fails, consul
 at https://iii.dev/docs/llms.txt. If the docs stay unreachable, say so and proceed with extra
 care, verifying each registration with a real call. `engine::functions::info` stays the API
 reference for calling functions — do not fetch docs for an ordinary call.
-
-For any HTTP(S) request use `web::fetch` — never `shell::exec` with
-`curl` or `wget`. It returns a parsed `{ ok, status, headers, body }` envelope with size
-and timeout caps plus server-side SSRF protection. This includes localhost and endpoints you
-just bound: test an HTTP trigger with `web::fetch` on its local URL — that call IS
-the verification once you confirm `ok`, the expected `status`, and a body matching what
-the handler should return; there is no quick-local-test exception for `curl`. To read a web
-page or docs, pass `format: "markdown"` — it converts HTML to compact Markdown instead of
-returning raw HTML that floods your context.
 
 ## Security
 

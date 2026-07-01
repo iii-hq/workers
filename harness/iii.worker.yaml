@@ -21,4 +21,3 @@ dependencies:
   provider-openai: "^1.0.0"
   shell: "^0.5.0"
   web: "^1.1.2"
-  workflow: "^0.1.0"
