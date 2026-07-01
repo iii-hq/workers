@@ -30,6 +30,7 @@ on:
           - pi
           - provider-anthropic
           - provider-openai
+          - provider-xai
           - rbac-proxy
           - session-manager
           - slack

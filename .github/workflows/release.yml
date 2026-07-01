@@ -24,6 +24,7 @@ on:
       - 'pi/v*'
       - 'provider-anthropic/v*'
       - 'provider-openai/v*'
+      - 'provider-xai/v*'
       - 'rbac-proxy/v*'
       - 'session-manager/v*'
       - 'slack/v*'
