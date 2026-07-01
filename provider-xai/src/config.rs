@@ -4,9 +4,73 @@
 //! `max_tokens` (from resolve) → the worker default.
 use llm_router::types::credential::Credential;
 use llm_router::types::router::ProviderResolveResponse;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const DEFAULT_API_URL: &str = "https://api.x.ai/v1/chat/completions";
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
+
+/// The xAI server-side tools we support on the `/v1/responses` path. An enum
+/// so the config schema (and thus the console + deserialize path) rejects an
+/// unknown tool name before it can be stored or forwarded to the API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSource {
+    XSearch,
+    WebSearch,
+    CodeInterpreter,
+    CollectionsSearch,
+}
+
+impl ToolSource {
+    /// The `type` string sent in the `/v1/responses` `tools` array.
+    pub fn as_type(self) -> &'static str {
+        match self {
+            ToolSource::XSearch => "x_search",
+            ToolSource::WebSearch => "web_search",
+            ToolSource::CodeInterpreter => "code_interpreter",
+            ToolSource::CollectionsSearch => "collections_search",
+        }
+    }
+}
+
+/// Operator-tunable worker config, registered with the `configuration` worker
+/// so it renders as an editable item in the console configuration sidebar.
+/// Distinct from the per-request `XaiConfig` (credentials/url/max_tokens come
+/// from the llm-router resolve step); this only governs xAI's Agent Tools
+/// (server-side `x_search` / `web_search` on the `/v1/responses` API).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct WorkerConfig {
+    /// Enable xAI Agent Tools (live X / web search via the /v1/responses API).
+    /// Off = the provider is a plain Chat Completions inference wrapper.
+    pub tools_enabled: bool,
+    /// Server-side tools offered when enabled.
+    pub tool_sources: Vec<ToolSource>,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            tools_enabled: false,
+            tool_sources: vec![ToolSource::XSearch, ToolSource::WebSearch],
+        }
+    }
+}
+
+impl WorkerConfig {
+    pub fn json_schema() -> Value {
+        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<WorkerConfig>();
+        serde_json::to_value(root).expect("config schema serializes")
+    }
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).expect("config serializes")
+    }
+    pub fn from_json(value: &Value) -> Result<WorkerConfig, serde_json::Error> {
+        serde_json::from_value(value.clone())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct XaiConfig {
@@ -92,6 +156,22 @@ pub fn config_from_resolve(
 mod tests {
     use super::*;
     use llm_router::types::router::CredentialSource;
+
+    #[test]
+    fn worker_config_rejects_unknown_tool_and_maps_types() {
+        // valid enum values round-trip and carry the right API type strings
+        let cfg = WorkerConfig::from_json(&serde_json::json!({ "tools_enabled": true,
+                "tool_sources": ["x_search", "code_interpreter"] }))
+        .unwrap();
+        assert!(cfg.tools_enabled);
+        assert_eq!(cfg.tool_sources[0].as_type(), "x_search");
+        assert_eq!(cfg.tool_sources[1].as_type(), "code_interpreter");
+        // an unknown tool name is rejected at the deserialize boundary
+        assert!(
+            WorkerConfig::from_json(&serde_json::json!({ "tool_sources": ["not_a_tool"] }))
+                .is_err()
+        );
+    }
 
     fn resolved(
         credential: Option<Credential>,

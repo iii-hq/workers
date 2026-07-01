@@ -111,10 +111,43 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .build()
         .expect("reqwest client");
 
+    // Worker-config cell (Agent Tools toggle): register its schema + hot-reload
+    // trigger so operators flip live X/web tools in the console sidebar. The
+    // schema register + first fetch run off the boot path (the configuration
+    // worker may not be up yet).
+    let cell = crate::configuration::new_cell();
+    if let Err(e) = crate::configuration::register_config_trigger(&iii, cell.clone()) {
+        eprintln!("[provider-xai] config-change trigger registration failed ({e})");
+    }
+    {
+        let (iii_cfg, cell_cfg) = (iii.clone(), cell.clone());
+        tokio::spawn(async move {
+            // Retry until the configuration worker is reachable, so the console
+            // config is eventually loaded and `make_stream` never serves the
+            // default snapshot forever when the config bus was down at boot.
+            let mut delay = Duration::from_millis(500);
+            loop {
+                match crate::configuration::register_config(&iii_cfg).await {
+                    Ok(()) => {
+                        crate::configuration::reconcile(&iii_cfg, &cell_cfg).await;
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[provider-xai] config bootstrap failed ({e}); retrying in {delay:?}"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(10));
+                    }
+                }
+            }
+        });
+    }
+
     iii.register_function(
         surface::STREAM_ID,
         RegisterFunction::new_async_with_bad_request(
-            make_stream(iii.clone(), http.clone()),
+            make_stream(iii.clone(), http.clone(), cell.clone()),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC),

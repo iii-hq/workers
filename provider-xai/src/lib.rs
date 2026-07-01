@@ -2,6 +2,7 @@
 //! Spec: tech-specs/2026-06-agentic/llm-router.md § The provider protocol.
 
 pub mod config;
+pub mod configuration;
 pub mod curated;
 pub mod discovery;
 pub mod errors;
@@ -9,6 +10,7 @@ pub mod manifest;
 pub mod reasoning;
 pub mod register;
 pub mod request;
+pub mod responses;
 pub mod router_client;
 pub mod sse;
 pub mod state;
