@@ -1,0 +1,14 @@
+# Agent permissions for the grok worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# grok::run / grok::start spawn a full Grok coding agent with the host's
+# filesystem and shell — an agent invoking those without human approval is a
+# privilege escalation, so they are NOT allow-listed and stay at the
+# needs_approval default. Read-only introspection is safe to allow.
+version: 1
+
+rules:
+  # internal config-reload callback — bus-internal, never agent-callable
+  - '!grok::on-config-change'
+  - grok::status
+  - grok::sessions::list

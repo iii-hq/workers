@@ -9,6 +9,7 @@ on:
       - 'claude-code/v*'
       - 'codex/v*'
       - 'console/v*'
+      - 'grok/v*'
       - 'context-manager/v*'
       - 'database/v*'
       - 'email/v*'

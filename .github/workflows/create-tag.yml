@@ -14,6 +14,7 @@ on:
           - claude-code
           - codex
           - console
+          - grok
           - context-manager
           - database
           - email
