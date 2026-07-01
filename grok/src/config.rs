@@ -12,9 +12,14 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
+    /// Model id used when a run omits one. Empty = the Grok CLI's own default
+    /// (e.g. grok-build-0.1).
     pub model: String,
+    /// Default working directory a turn runs in when a run omits `cwd`.
+    /// Empty = the worker's process directory.
     pub cwd: String,
-    /// Auto-approve tool/command execution on headless turns.
+    /// Auto-approve tool/command execution on headless turns so they never
+    /// block on an interactive approval prompt.
     pub always_approve: bool,
 }
 
@@ -31,10 +36,18 @@ impl Default for Defaults {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
+    /// Per-turn defaults applied when a `grok::run` payload omits a field.
     pub defaults: Defaults,
+    /// Stream that carries the translated AgentEvent frames (what the console
+    /// and acp worker render). Grouped by session_id.
     pub events_stream: String,
+    /// Stream that carries the raw Grok streaming-json events, verbatim.
+    /// Grouped by session_id.
     pub raw_events_stream: String,
+    /// Path to the Grok CLI binary. Empty = resolve `grok` on PATH.
     pub grok_executable: String,
+    /// Prepend the iii runtime context to the first prompt of a session so the
+    /// agent discovers and calls engine functions through the `iii` CLI.
     pub iii_context: bool,
 }
 
