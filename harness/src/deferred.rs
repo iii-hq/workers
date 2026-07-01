@@ -90,7 +90,6 @@ pub async fn resolve(
             let arguments = find_call_arguments(deps, &record, &req.function_call_id)
                 .await
                 .unwrap_or(Value::Null);
-
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;
             }
@@ -98,8 +97,18 @@ pub async fn resolve(
 
             let policy = crate::policy::CompiledPolicy::from(record.options.functions.as_ref());
             let engine = deps.engine().await;
-            let raw =
-                crate::trigger::invoke_target(&engine, &policy, &function_id, &arguments).await;
+            // Held calls resume outside the inline loop, so use the same
+            // invocation chokepoint to keep subscription session injection/owner
+            // checks.
+            let raw = crate::functions::subscribe::invoke(
+                deps,
+                &engine,
+                &policy,
+                &function_id,
+                &arguments,
+                &record.session_id,
+            )
+            .await;
             let (data, annotations) = deps
                 .hooks
                 .run_post_trigger(

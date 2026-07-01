@@ -9,9 +9,14 @@ import {
 } from './entry-mapper'
 import type { AgentMessage, TranscriptItem } from './types'
 
-function userItem(entryId: string, text: string): TranscriptItem {
+function userItem(
+  entryId: string,
+  text: string,
+  origin?: TranscriptItem['origin'],
+): TranscriptItem {
   return {
     entry_id: entryId,
+    ...(origin ? { origin } : {}),
     message: { role: 'user', content: [{ type: 'text', text }], timestamp: 1 },
   }
 }
@@ -63,6 +68,18 @@ describe('entrySegments', () => {
     })
   })
 
+  it('marks only trusted notification user entries', () => {
+    expect(
+      entrySegments(userItem('e-1', 'normal', { notification: false }))[0],
+    ).not.toHaveProperty('notification')
+    expect(
+      entrySegments(userItem('e-2', 'wake', { notification: true }))[0],
+    ).toMatchObject({ notification: true })
+    expect(entrySegments(userItem('e_notify_sub_1', 'wake'))[0]).toMatchObject({
+      notification: true,
+    })
+  })
+
   it('splits an assistant entry into thought/text/function-call segments by block', () => {
     const segments = entrySegments(
       assistantItem('e-a', [
@@ -82,7 +99,6 @@ describe('entrySegments', () => {
       ['e-a:1', 'assistant'],
       ['e-a:2', 'function-call'],
     ])
-    // agent_trigger is unwrapped to the real target for display.
     expect(segments[2]).toMatchObject({
       functionId: 'shell::run',
       input: { command: 'ls' },
@@ -128,7 +144,6 @@ describe('applyEntryUpsert', () => {
     )
     expect(next).toHaveLength(1)
     expect(next[0]).toMatchObject({ id: 'msg-1-user-0', content: 'hello' })
-    // Attachments are client-only; preserved across the replacement.
     expect((next[0] as { attachments?: unknown[] }).attachments).toHaveLength(1)
   })
 
@@ -199,8 +214,6 @@ describe('applyEntryUpsert', () => {
   })
 
   it('absorbs a locally-created fcall row (pending approval) into the entry segment', () => {
-    // The live approval flow appended a local row before the assistant
-    // snapshot arrived.
     const local: Message = {
       id: 'local-1',
       role: 'function-call',

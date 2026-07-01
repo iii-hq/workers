@@ -124,11 +124,12 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // Bind the cron pending-sweep; retain the handle so a sweep_expression
-    // change re-binds it live.
-    let handles = Arc::new(TriggerHandles {
-        sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
-    });
+    // Bind lifecycle triggers and retain their handles for the worker lifetime.
+    // The sweep binding is hot-reloaded when sweep_expression changes.
+    let handles = Arc::new(TriggerHandles::new(
+        configuration::bind_sweep(&iii, &cfg),
+        configuration::bind_session_deleted(&iii),
+    ));
 
     discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
     discovery::register_functions_trigger(&iii, functions_cell, cfg.dispatch_timeout_ms);
@@ -138,7 +139,7 @@ async fn main() -> Result<()> {
         .context("registering the configuration change trigger")?;
 
     tracing::info!(
-        "harness ready: 8 harness::* functions + turn events + hook points + reactive function-registry cache"
+        "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
     );
 
     tokio::signal::ctrl_c().await?;

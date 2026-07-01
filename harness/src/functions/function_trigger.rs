@@ -130,7 +130,17 @@ pub async fn handle(
         }
     }
 
-    let raw = trigger::invoke_target(&engine, &policy, &req.call.function_id, &arguments).await;
+    // Single invocation chokepoint: subscription control calls are intercepted
+    // (trusted session injected); everything else invokes the target.
+    let raw = crate::functions::subscribe::invoke(
+        deps,
+        &engine,
+        &policy,
+        &req.call.function_id,
+        &arguments,
+        &req.session_id,
+    )
+    .await;
     let data = if let Some(rec) = &record {
         deps.hooks
             .run_post_trigger(rec, rec.step, &req.call.id, &req.call.function_id, raw)

@@ -71,6 +71,7 @@ export type TranscriptItem = {
   entry_id: string
   message?: AgentMessage
   custom?: { custom_type: string; data: unknown }
+  origin?: Record<string, unknown>
 }
 
 export const SESSION_TRIGGER_TYPES = [

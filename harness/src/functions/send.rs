@@ -182,6 +182,42 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     Ok(outcome)
 }
 
+/// Inject a message into an EXISTING session and wake/steer a turn, reusing the
+/// session's last turn options (model / provider / dispatch policy / prompt) so
+/// a woken turn keeps the agent's capabilities. Used by ephemeral subscriptions
+/// to deliver a notification without polling — the opposite of `harness::spawn`:
+/// the agent is never parked; the event arrives as a message.
+///
+/// Unlike [`start`], this never creates a session. It errors if the session has
+/// no prior turn to inherit options from — in practice a session always has a
+/// turn before it subscribes. A deterministic `entry_id` makes a redelivered
+/// identical fire idempotent.
+pub async fn inject(
+    deps: &Deps,
+    session_id: &str,
+    message: AgentMessage,
+    entry_id: Option<&str>,
+    origin: Option<&Value>,
+) -> Result<StartOutcome, HarnessError> {
+    let cfg = deps.cfg().await;
+    let session = deps.session().await;
+
+    let options = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
+        .await?
+        .map(|rec| rec.options)
+        .ok_or_else(|| {
+            HarnessError::InvalidRequest(format!(
+                "cannot deliver notification to session `{session_id}`: it has no prior turn to \
+                 inherit model/options from"
+            ))
+        })?;
+
+    session
+        .append(session_id, &message, entry_id, None, origin)
+        .await?;
+    seed_or_merge(deps, &cfg, session_id, options).await
+}
+
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
     match input {
         MessageInput::Text(text) => Ok(AgentMessage::User(UserMessage {

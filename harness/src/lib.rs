@@ -25,6 +25,7 @@ pub mod policy;
 pub mod prompt;
 pub mod state;
 pub mod subagent;
+pub mod subscriptions;
 pub mod surface;
 pub mod trigger;
 pub mod turn_loop;

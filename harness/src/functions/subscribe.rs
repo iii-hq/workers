@@ -1,0 +1,321 @@
+//! Subscriptions — register an ephemeral iii trigger and be notified when it
+//! fires, instead of polling (harness.md § Subscriptions). The agent calls
+//! `engine::register_trigger` / `engine::unregister_trigger`; the harness
+//! intercepts those calls (see [`invoke`]) so the trusted owning session,
+//! `harness::notify_agent` target, and engine-proxied subscription metadata are
+//! injected, and teardown stays owner-checked — the agent can never supply those.
+
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::TriggerAction;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::clients::EngineClient;
+use crate::deps::Deps;
+use crate::error::HarnessError;
+use crate::policy::CompiledPolicy;
+use crate::subscriptions::{self, NOTIFY_AGENT_ID};
+use crate::trigger::{self, ResultData};
+use crate::types::content::ContentBlock;
+
+/// The engine function the agent calls to subscribe. The harness intercepts it
+/// (the agent never reaches the raw engine registrar) so it can stamp the
+/// trusted session and bind the trigger to `harness::notify_agent`.
+pub const REGISTER_TRIGGER_ID: &str = "engine::register_trigger";
+
+/// The engine function the agent calls to unsubscribe. The harness intercepts it
+/// so it resolves the caller's subscription, enforces ownership, and unregisters
+/// the underlying engine trigger.
+pub const UNREGISTER_TRIGGER_ID: &str = "engine::unregister_trigger";
+
+/// Agent-facing subscription contract.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(rename = "SubscribeArgs")]
+pub struct SubscribeRequest {
+    /// The iii trigger type to listen on: `cron`, `state`, `stream`, or another
+    /// worker's custom trigger type (e.g. `approval::pending-resolved`). For an
+    /// ad-hoc signal, subscribe to `state` on a key and have the signaller call
+    /// `state::set` on it (no dedicated emit needed — the engine fans the trigger
+    /// out to every subscriber).
+    pub trigger_type: String,
+    /// The trigger config, passed verbatim to the engine — e.g.
+    /// `{ "expression": "0 */5 * * * *" }` for cron, or a `state` scope/key.
+    #[serde(default)]
+    pub config: Value,
+    /// A short human label echoed back in the notification text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Auto-unsubscribe after the first delivered notification. Defaults to true
+    /// for one-shot-ish types (state / stream / custom trigger types), false for
+    /// recurring `cron`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubscribeResponse {
+    pub subscription_id: String,
+    /// The effective `once` flag applied (after the per-type default).
+    pub once: bool,
+}
+
+/// The single per-call invocation chokepoint. Subscription control calls
+/// (`engine::register_trigger` / `engine::unregister_trigger`) are handled inline
+/// with the trusted owning session injected — the model can never widen the
+/// target; everything else invokes the target normally. Every call site (the
+/// turn loop, `harness::function::trigger`, and the hook-held release path) routes
+/// through here so the trusted injection can't be bypassed.
+pub async fn invoke(
+    deps: &Deps,
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+) -> ResultData {
+    match function_id {
+        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id).await,
+        UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
+        _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+    }
+}
+
+fn defaults_recurring(trigger_type: &str) -> bool {
+    trigger_type == "cron"
+}
+
+fn effective_once(req: &SubscribeRequest) -> bool {
+    req.once.unwrap_or(!defaults_recurring(&req.trigger_type))
+}
+
+async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
+    let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
+        Ok(r) => r,
+        Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
+    };
+
+    match handle(deps, req, session_id).await {
+        Ok(resp) => ok_result(&resp),
+        Err(e) => error_result(e.to_string()),
+    }
+}
+
+async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
+    let id = match unregister_subscription_id(args) {
+        Ok(id) => id,
+        Err(e) => return error_result(e),
+    };
+
+    if let Some(owner) = deps.subscriptions.session_of(id) {
+        if owner != session_id {
+            return error_result("subscription belongs to a different session".to_string());
+        }
+    }
+
+    let removed = match deps.subscriptions.take(id) {
+        Some((_session, trigger_id)) => {
+            if let Some(trigger_id) = trigger_id {
+                unregister_engine_trigger(deps, &trigger_id).await;
+            }
+            true
+        }
+        None => false,
+    };
+    ok_result(&json!({ "removed": removed }))
+}
+
+fn unregister_subscription_id(args: &Value) -> Result<&str, String> {
+    args.get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "engine::unregister_trigger requires an `id`".to_string())
+}
+
+async fn handle(
+    deps: &Deps,
+    req: SubscribeRequest,
+    session_id: &str,
+) -> Result<SubscribeResponse, HarnessError> {
+    if subscriptions::is_forbidden_trigger_type(&req.trigger_type) {
+        return Err(HarnessError::InvalidRequest(format!(
+            "cannot bind harness-internal trigger type `{}` (self-notification guard)",
+            req.trigger_type
+        )));
+    }
+
+    let once = effective_once(&req);
+
+    let sub_id = format!("sub_{}", uuid::Uuid::new_v4().simple());
+
+    deps.subscriptions
+        .try_insert(
+            &sub_id,
+            session_id,
+            subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION,
+        )
+        .map_err(|_| {
+            HarnessError::InvalidRequest(format!(
+                "subscription cap reached ({} active for this session); unsubscribe first",
+                subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION
+            ))
+        })?;
+
+    let resp = deps
+        .iii
+        .trigger(register_trigger_request(
+            &req,
+            &sub_id,
+            session_id,
+            once,
+            deps.cfg().await.dispatch_timeout_ms,
+        ))
+        .await;
+
+    match resp
+        .ok()
+        .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+    {
+        Some(trigger_id) => {
+            if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
+                unregister_engine_trigger(deps, &trigger_id).await;
+            }
+        }
+        None => {
+            deps.subscriptions.take(&sub_id);
+            return Err(HarnessError::Dependency(format!(
+                "{REGISTER_TRIGGER_ID} `{}` failed",
+                req.trigger_type
+            )));
+        }
+    }
+
+    Ok(SubscribeResponse {
+        subscription_id: sub_id,
+        once,
+    })
+}
+
+fn register_trigger_request(
+    req: &SubscribeRequest,
+    sub_id: &str,
+    session_id: &str,
+    once: bool,
+    timeout_ms: u64,
+) -> TriggerRequest {
+    TriggerRequest {
+        function_id: REGISTER_TRIGGER_ID.to_string(),
+        payload: json!({
+            "trigger_type": req.trigger_type,
+            "function_id": NOTIFY_AGENT_ID,
+            "config": req.config.clone(),
+            "metadata": {
+                "subscription_id": sub_id,
+                "session_id": session_id,
+                "label": req.label.clone(),
+                "once": once,
+            },
+        }),
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    }
+}
+
+pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) {
+    if let Err(e) = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: UNREGISTER_TRIGGER_ID.to_string(),
+            payload: json!({ "id": trigger_id }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        })
+        .await
+    {
+        tracing::warn!(trigger_id, error = %e, "subscription trigger unregister failed");
+    }
+}
+
+fn ok_result<T: Serialize>(value: &T) -> ResultData {
+    let details = serde_json::to_value(value).unwrap_or(Value::Null);
+    ResultData {
+        content: vec![ContentBlock::text(
+            serde_json::to_string(&details).unwrap_or_default(),
+        )],
+        is_error: false,
+        details,
+    }
+}
+
+fn error_result(msg: String) -> ResultData {
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": msg }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_request_stamps_trusted_target_and_session() {
+        let req: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "state",
+            "config": { "scope": "job", "key": "42" },
+            "label": "done",
+            "once": false,
+            "function_id": "evil::handler",
+            "metadata": { "session_id": "s_attacker" }
+        }))
+        .unwrap();
+
+        let request = register_trigger_request(&req, "sub_trusted", "s_trusted", false, 123);
+
+        assert_eq!(request.function_id, REGISTER_TRIGGER_ID);
+        assert_eq!(request.timeout_ms, Some(123));
+        assert_eq!(request.payload["trigger_type"], "state");
+        assert_eq!(request.payload["function_id"], NOTIFY_AGENT_ID);
+        assert_eq!(
+            request.payload["config"],
+            json!({ "scope": "job", "key": "42" })
+        );
+        assert_eq!(
+            request.payload["metadata"]["subscription_id"],
+            "sub_trusted"
+        );
+        assert_eq!(request.payload["metadata"]["session_id"], "s_trusted");
+        assert_eq!(request.payload["metadata"]["label"], "done");
+        assert_eq!(request.payload["metadata"]["once"], false);
+    }
+
+    #[test]
+    fn once_defaults_to_recurring_only_for_cron() {
+        let state: SubscribeRequest =
+            serde_json::from_value(json!({ "trigger_type": "state" })).unwrap();
+        let cron: SubscribeRequest =
+            serde_json::from_value(json!({ "trigger_type": "cron" })).unwrap();
+        let explicit: SubscribeRequest =
+            serde_json::from_value(json!({ "trigger_type": "cron", "once": true })).unwrap();
+
+        assert!(effective_once(&state));
+        assert!(!effective_once(&cron));
+        assert!(effective_once(&explicit));
+    }
+
+    #[test]
+    fn unregister_requires_string_subscription_id() {
+        assert_eq!(
+            unregister_subscription_id(&json!({})).unwrap_err(),
+            "engine::unregister_trigger requires an `id`"
+        );
+        assert_eq!(
+            unregister_subscription_id(&json!({ "id": 42 })).unwrap_err(),
+            "engine::unregister_trigger requires an `id`"
+        );
+        assert_eq!(
+            unregister_subscription_id(&json!({ "id": "sub_1" })).unwrap(),
+            "sub_1"
+        );
+    }
+}

@@ -5,10 +5,12 @@
 
 pub mod function_resolve;
 pub mod function_trigger;
+pub mod on_session_deleted;
 pub mod send;
 pub mod spawn;
 pub mod status;
 pub mod stop;
+pub mod subscribe;
 pub mod sweep_pending;
 pub mod turn;
 
@@ -118,6 +120,19 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         sweep_pending::SWEEP_PENDING_DESC,
         |d, r| async move { sweep_pending::handle(&d, r).await },
     );
+
+    // Internal session::deleted cleanup — registered, kept off the catalog.
+    register(
+        iii,
+        deps,
+        crate::subscriptions::ON_SESSION_DELETED_ID,
+        crate::subscriptions::ON_SESSION_DELETED_DESC,
+        |d, r| async move { on_session_deleted::handle(&d, r).await },
+    );
+
+    // The single shared subscription fire handler — registered once, kept off
+    // the catalog. Bound to by every subscription's trigger via the engine proxy.
+    crate::subscriptions::notify_agent::register(deps.clone());
 
     tracing::info!("all harness::* functions registered");
 }

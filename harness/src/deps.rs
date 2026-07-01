@@ -15,6 +15,7 @@ use crate::discovery::FunctionsCell;
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
 use crate::locks::SessionLocks;
+use crate::subscriptions::SubscriptionRegistry;
 
 #[derive(Clone)]
 pub struct Deps {
@@ -24,6 +25,7 @@ pub struct Deps {
     pub events: TurnEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
+    pub subscriptions: Arc<SubscriptionRegistry>,
 }
 
 impl Deps {
@@ -41,6 +43,7 @@ impl Deps {
             events,
             hooks,
             locks: SessionLocks::new(),
+            subscriptions: Arc::new(SubscriptionRegistry::new()),
         }
     }
 

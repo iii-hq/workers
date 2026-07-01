@@ -475,10 +475,18 @@ pub async fn run_step(
             let scoped_args =
                 crate::workspace_inject::inject(&call.function_id, eff_args, working_dir);
 
-            // Invoke the target, then run the post_trigger chain over the
-            // result before it is appended (redaction / truncation).
-            let raw =
-                trigger::invoke_target(&engine, &policy, &call.function_id, &scoped_args).await;
+            // Single invocation chokepoint: subscription control calls are
+            // intercepted (trusted session injected); everything else invokes the
+            // target. Then the post_trigger chain runs over the result.
+            let raw = crate::functions::subscribe::invoke(
+                deps,
+                &engine,
+                &policy,
+                &call.function_id,
+                &scoped_args,
+                &record.session_id,
+            )
+            .await;
             let (data, post_ann) = deps
                 .hooks
                 .run_post_trigger(&record, payload.step, &call.id, &call.function_id, raw)

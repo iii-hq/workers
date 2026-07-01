@@ -106,11 +106,15 @@ export function entrySegments(
 
   switch (message.role) {
     case 'user': {
+      const notif = (item.origin as { notification?: unknown } | undefined)
+        ?.notification
+      const isNotif = notif === true || item.entry_id.startsWith('e_notify_')
       const msg: UserMessage = {
         id: item.entry_id,
         role: 'user',
         content: textOf(message.content),
         createdAt: message.timestamp,
+        ...(isNotif ? { notification: true } : {}),
       }
       return [msg]
     }

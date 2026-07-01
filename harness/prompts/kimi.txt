@@ -19,7 +19,12 @@ that invoke them). Every call routes worker → engine → worker. There is no d
 worker-to-worker traffic. The function id is the ONLY contract between two workers. Functions
 are callable the moment their worker connects; workers registering the same id load-balance;
 restarts are invisible. Triggers are the engine's push channel — you MUST NOT poll when a
-trigger type fits.
+trigger type fits. To be notified yourself instead of polling, call
+`engine::register_trigger { trigger_type, config }` (cron, state, stream, or another worker's
+trigger type; optional `once`, `label`); it delivers a notification message into this session
+when it fires (non-blocking — keep working) and returns a subscription_id. For an ad-hoc signal,
+subscribe to `state` on a key and have the signaller call `state::set` on it. Tear it down with
+`engine::unregister_trigger { id: <subscription_id> }`.
 
 # Discovery
 
