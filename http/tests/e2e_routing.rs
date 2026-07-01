@@ -12,9 +12,7 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn single_path_param_is_extracted() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/users/:id", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/users/:id").await;
@@ -31,9 +29,7 @@ async fn single_path_param_is_extracted() {
 #[tokio::test]
 #[serial]
 async fn multiple_path_params_are_extracted() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/a/:x/b/:y", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/a/:x/b/:y").await;
@@ -51,9 +47,7 @@ async fn multiple_path_params_are_extracted() {
 #[tokio::test]
 #[serial]
 async fn query_params_are_parsed() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-query", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/echo-query").await;
@@ -71,9 +65,7 @@ async fn query_params_are_parsed() {
 #[tokio::test]
 #[serial]
 async fn custom_header_passes_through() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-headers", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/echo-headers").await;
@@ -95,9 +87,7 @@ async fn custom_header_passes_through() {
 #[tokio::test]
 #[serial]
 async fn unregistered_route_returns_404_not_found() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
 
     let url = format!("http://{}/no-such-route-here", boot.local_addr);

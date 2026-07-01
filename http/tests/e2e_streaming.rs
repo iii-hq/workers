@@ -101,9 +101,7 @@ async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http
 #[tokio::test]
 #[serial]
 async fn streamed_response_chunks_and_status() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     register_stream_backend(&iii, "/stream", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/stream").await;
@@ -120,9 +118,7 @@ async fn streamed_response_chunks_and_status() {
 #[tokio::test]
 #[serial]
 async fn streamed_response_when_trigger_returns_first() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     register_late_stream_backend(&iii, "/late-stream", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/late-stream").await;
@@ -141,9 +137,7 @@ async fn streamed_response_when_trigger_returns_first() {
 #[tokio::test]
 #[serial]
 async fn buffered_response_still_works() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/buffered", "POST").await;
     common::wait_for_route(&boot.routes, "POST", "/buffered").await;

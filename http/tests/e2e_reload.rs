@@ -32,9 +32,7 @@ async fn wait_for_middleware(config: &configuration::ConfigCell) {
 #[tokio::test]
 #[serial]
 async fn global_middleware_added_via_config_set_blocks_without_restart() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
 
     // Boot permissive (no middleware), then register the route + a middleware
     // function that short-circuits with 403.

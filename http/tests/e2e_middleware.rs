@@ -12,9 +12,7 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn per_route_middleware_continue_runs_handler() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
 
     backend::register_continue_middleware(&iii, "test.mw.continue");
@@ -40,9 +38,7 @@ async fn per_route_middleware_continue_runs_handler() {
 #[tokio::test]
 #[serial]
 async fn per_route_middleware_respond_short_circuits_before_handler() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
 
     backend::register_respond_middleware(&iii, "test.mw.respond");
@@ -67,9 +63,7 @@ async fn per_route_middleware_respond_short_circuits_before_handler() {
 #[tokio::test]
 #[serial]
 async fn global_middleware_respond_short_circuits_every_route() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
 
     backend::register_respond_middleware(&iii, "test.mw.global_respond");
     let boot =

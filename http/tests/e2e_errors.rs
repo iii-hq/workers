@@ -13,9 +13,7 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn function_error_code_and_message_propagate_on_500() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_erroring_backend(&iii, "/boom", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/boom").await;

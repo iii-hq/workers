@@ -1,9 +1,12 @@
-//! Connect-or-skip wrapper around the iii SDK.
+//! Connect-or-fail wrapper around the iii SDK.
 //!
-//! Ported from `iii-directory/tests/common/engine.rs`. One engine connection
-//! per test binary process via `OnceCell` — the WebSocket handshake dwarfs
-//! per-test overhead. When the engine is unreachable, `get_or_init` returns
-//! `None` so each test can early-return (skip) rather than fail.
+//! These are e2e tests: they only make sense with a running engine, so if the
+//! engine is unreachable `get_or_init` PANICS (the test fails) rather than
+//! silently passing. One engine connection per test binary process via
+//! `OnceCell` — the WebSocket handshake dwarfs per-test overhead.
+//!
+//! Point the tests at an engine with `III_ENGINE_WS_URL` (default
+//! `ws://127.0.0.1:49134`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +19,7 @@ use tokio::sync::OnceCell;
 
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 
-static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
+static ENGINE: OnceCell<Arc<IIIClient>> = OnceCell::const_new();
 
 pub fn ws_url() -> String {
     std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
@@ -43,18 +46,25 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
         }
     }
 
-    eprintln!(
-        "[skip] iii engine not reachable at {url}; \
-         set III_ENGINE_WS_URL or start `iii` to enable engine-bound e2e tests"
-    );
     iii.shutdown_async().await;
     None
 }
 
 /// Get-or-init the shared engine handle for this test binary.
-pub async fn get_or_init() -> Option<Arc<IIIClient>> {
+///
+/// Panics (fails the test) if no engine is reachable — an e2e test without an
+/// engine tests nothing, so it must not pass silently.
+pub async fn get_or_init() -> Arc<IIIClient> {
     ENGINE
-        .get_or_init(|| async { try_connect_raw().await })
+        .get_or_init(|| async {
+            try_connect_raw().await.unwrap_or_else(|| {
+                panic!(
+                    "e2e requires a running iii engine at {} — start `iii` or set \
+                     III_ENGINE_WS_URL to point at one",
+                    ws_url()
+                )
+            })
+        })
         .await
         .clone()
 }

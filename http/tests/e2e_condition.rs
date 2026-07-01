@@ -65,9 +65,7 @@ async fn register_counting_backend_with_condition(
 #[tokio::test]
 #[serial]
 async fn condition_true_runs_handler() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
 
     backend::register_condition_pass(&iii, "test.cond.pass");
@@ -87,9 +85,7 @@ async fn condition_true_runs_handler() {
 #[tokio::test]
 #[serial]
 async fn condition_false_returns_422_and_skips_handler() {
-    let Some(iii) = engine::get_or_init().await else {
-        return;
-    };
+    let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
 
     let hits = Arc::new(AtomicUsize::new(0));
