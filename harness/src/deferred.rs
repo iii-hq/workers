@@ -90,6 +90,16 @@ pub async fn resolve(
             let arguments = find_call_arguments(deps, &record, &req.function_call_id)
                 .await
                 .unwrap_or(Value::Null);
+            // The release path runs OUTSIDE the turn loop, so re-apply the
+            // workspace stamp the loop would have added: without it an
+            // approved shell/coder call runs un-scoped (the session's picked
+            // directory becomes unreachable) and a model-supplied base_dir
+            // recovered from the transcript would survive un-stripped.
+            let arguments = crate::workspace_inject::inject(
+                &function_id,
+                arguments,
+                record.options.working_dir(),
+            );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;
             }

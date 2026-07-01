@@ -370,7 +370,15 @@ pub async fn run_step(
                 continue;
             }
 
-            // pre_trigger chain: deny / hold / rewrite arguments.
+            // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
+            // args ALREADY carrying the workspace stamp so an approver reviews
+            // the base_dir the call will actually run under; the stamp is
+            // re-applied after the chain so a hook rewrite can never widen it.
+            let staged_args = crate::workspace_inject::inject(
+                &call.function_id,
+                call.arguments.clone(),
+                record.options.working_dir(),
+            );
             let (eff_args, pre_ann) = match deps
                 .hooks
                 .run_pre_trigger(
@@ -378,7 +386,7 @@ pub async fn run_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
-                    &call.arguments,
+                    &staged_args,
                 )
                 .await
             {
@@ -466,14 +474,11 @@ pub async fn run_step(
             // this overwrites any model-supplied base_dir so the model cannot
             // widen its own workspace. A None working_dir is a no-op (the args
             // pass through byte-for-byte unchanged).
-            let working_dir = record
-                .options
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("working_dir"))
-                .and_then(Value::as_str);
-            let scoped_args =
-                crate::workspace_inject::inject(&call.function_id, eff_args, working_dir);
+            let scoped_args = crate::workspace_inject::inject(
+                &call.function_id,
+                eff_args,
+                record.options.working_dir(),
+            );
 
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
@@ -1039,13 +1044,7 @@ async fn assemble_context(
 /// (`workspace_inject::inject`); this line just tells the model where it is so
 /// it reasons about relative paths sensibly.
 fn with_working_dir_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let working_dir = record
-        .options
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("working_dir"))
-        .and_then(Value::as_str);
-    let Some(dir) = working_dir else {
+    let Some(dir) = record.options.working_dir() else {
         return system_prompt;
     };
     let line = format!("Your working directory is {dir}.");
