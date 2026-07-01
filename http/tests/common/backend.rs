@@ -1,5 +1,6 @@
 //! Test backend: an echo function bound to an `http` trigger.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -87,13 +88,22 @@ pub async fn register_echo_backend_with_middleware(
 }
 
 /// Register a middleware function that always returns `{"action": "continue"}`.
-pub fn register_continue_middleware(iii: &Arc<IIIClient>, function_id: &str) {
+/// Returns a call counter the middleware increments on every invocation, so a
+/// test can assert it actually ran (`== 1` after one request).
+pub fn register_continue_middleware(iii: &Arc<IIIClient>, function_id: &str) -> Arc<AtomicUsize> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
     iii.register_function(
         function_id.to_string(),
-        RegisterFunction::new_async(|_req: Value| async move {
-            Ok::<Value, Error>(json!({ "action": "continue" }))
+        RegisterFunction::new_async(move |_req: Value| {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<Value, Error>(json!({ "action": "continue" }))
+            }
         }),
     );
+    calls
 }
 
 /// Register a middleware function that always short-circuits with a 403

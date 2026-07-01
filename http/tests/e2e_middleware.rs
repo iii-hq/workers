@@ -15,7 +15,7 @@ async fn per_route_middleware_continue_runs_handler() {
     let iii = engine::get_or_init().await;
     let boot = worker::start_http_worker(iii.clone()).await;
 
-    backend::register_continue_middleware(&iii, "test.mw.continue");
+    let mw_calls = backend::register_continue_middleware(&iii, "test.mw.continue");
     backend::register_echo_backend_with_middleware(
         &iii,
         "/mw-continue",
@@ -31,6 +31,13 @@ async fn per_route_middleware_continue_runs_handler() {
     let v: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(v["method"], "GET");
     assert_eq!(v["query_params"]["q"], "1");
+
+    // Prove the middleware actually ran (exactly once for the one request).
+    assert_eq!(
+        mw_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "continue middleware should have been invoked exactly once"
+    );
 
     boot.shutdown().await;
 }
