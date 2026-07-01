@@ -38,6 +38,7 @@ use iii_sdk::protocol::TriggerRequest;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::condition::check_condition;
 use crate::configuration::ConfigCell;
@@ -61,6 +62,30 @@ const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// Channel buffer size for both request-body and response channels (matches the
 /// engine default in `views.rs`).
 const CHANNEL_BUFFER: usize = 64;
+
+/// Map an HTTP response status code to an OTel span status string.
+///
+/// Only responses with status >= 400 are treated as errors; 1xx/2xx/3xx are
+/// not (a 3xx redirect is a normal outcome, not a failure). Mirrors the
+/// engine's `otel_status_for` (`views.rs`).
+fn otel_status_for(status_code: u16) -> &'static str {
+    if status_code < 400 { "OK" } else { "ERROR" }
+}
+
+/// Record the final response status on the current per-request HTTP span
+/// (`otel.status_code` + `http.response.status_code`) and return the response
+/// unchanged, so it can wrap any `return <response>` expression.
+///
+/// Reading the status from the already-built response records it in exactly
+/// one place per return path -- the engine records the same pair wherever the
+/// status becomes known (`views.rs`).
+fn record_status(response: Response) -> Response {
+    let code = response.status().as_u16();
+    let span = tracing::Span::current();
+    span.record("otel.status_code", otel_status_for(code));
+    span.record("http.response.status_code", code);
+    response
+}
 
 /// Standardized error envelope, identical in shape to the engine's:
 /// `{"error": {"code", "message"}}`.
@@ -117,8 +142,30 @@ pub async fn dynamic_handler(
         let table = state.routes.read().await;
         table.match_route(method.as_str(), &actual_path)
     };
+
+    // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
+    // (`views.rs`) minus trace-context parent propagation and the request
+    // metric (later phases). `route_path` is the matched route pattern (e.g.
+    // `/users/:id`) when a route matches, else the actual request path (404).
+    // The final status is recorded via `record_status` at every return point.
+    let route_path = matched
+        .as_ref()
+        .map(|(route, _)| route.http_path.clone())
+        .unwrap_or_else(|| actual_path.clone());
+    let span = tracing::info_span!(
+        "HTTP",
+        otel.name = %format!("{} {}", method, route_path),
+        otel.kind = "server",
+        otel.status_code = tracing::field::Empty,
+        "http.request.method" = %method,
+        "http.route" = %route_path,
+        "url.path" = %actual_path,
+        "http.response.status_code" = tracing::field::Empty,
+    );
+
+    async move {
     let Some((route, path_params)) = matched else {
-        return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found");
+        return record_status(error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found"));
     };
 
     // Global middleware (config-driven, sorted by priority at config-load
@@ -135,7 +182,7 @@ pub async fn dynamic_handler(
         .await
         {
             Ok(MiddlewareOutcome::Continue) => {}
-            Err(response) => return response,
+            Err(response) => return record_status(response),
         }
     }
 
@@ -145,11 +192,11 @@ pub async fn dynamic_handler(
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return error_response(
+            return record_status(error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "PAYLOAD_TOO_LARGE",
                 "Request body too large",
-            );
+            ));
         }
     };
     let parsed_body: Value = if body_bytes.is_empty() {
@@ -164,21 +211,21 @@ pub async fn dynamic_handler(
     let req_channel = match create_channel(&state.iii, Some(CHANNEL_BUFFER)).await {
         Ok(c) => c,
         Err(e) => {
-            return error_response(
+            return record_status(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 &format!("failed to create request channel: {e}"),
-            );
+            ));
         }
     };
     let res_channel = match create_channel(&state.iii, Some(CHANNEL_BUFFER)).await {
         Ok(c) => c,
         Err(e) => {
-            return error_response(
+            return record_status(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 &format!("failed to create response channel: {e}"),
-            );
+            ));
         }
     };
 
@@ -224,11 +271,11 @@ pub async fn dynamic_handler(
     let payload = match serde_json::to_value(&request) {
         Ok(v) => v,
         Err(e) => {
-            return error_response(
+            return record_status(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 &format!("failed to serialize request: {e}"),
-            );
+            ));
         }
     };
 
@@ -256,7 +303,9 @@ pub async fn dynamic_handler(
                 drop(res_reader);
                 let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
                 body["skipped"] = json!(true);
-                return (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response();
+                return record_status(
+                    (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response(),
+                );
             }
             Err(err) => {
                 let error_id = generate_error_id();
@@ -267,11 +316,13 @@ pub async fn dynamic_handler(
                     "Error invoking condition function"
                 );
                 drop(res_reader);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
-                )
-                    .into_response();
+                return record_status(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
+                    )
+                        .into_response(),
+                );
             }
         }
     }
@@ -291,7 +342,7 @@ pub async fn dynamic_handler(
             Ok(MiddlewareOutcome::Continue) => {}
             Err(response) => {
                 drop(res_reader);
-                return response;
+                return record_status(response);
             }
         }
     }
@@ -391,7 +442,9 @@ pub async fn dynamic_handler(
                         // Buffered response: the function returned a value
                         // without streaming. Abort the (idle) reader task.
                         forward.abort();
-                        return HttpResponse::from_function_return(value).into_axum_response();
+                        return record_status(
+                            HttpResponse::from_function_return(value).into_axum_response(),
+                        );
                     }
                 }
                 Ok(Err(err)) => {
@@ -403,14 +456,16 @@ pub async fn dynamic_handler(
                         error_id = %error_id,
                         "function invocation failed"
                     );
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(middleware::error_body_for_call_error(
-                            &err,
-                            Some(&error_id),
-                        )),
-                    )
-                        .into_response();
+                    return record_status(
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(middleware::error_body_for_call_error(
+                                &err,
+                                Some(&error_id),
+                            )),
+                        )
+                            .into_response(),
+                    );
                 }
                 Err(join_err) => {
                     forward.abort();
@@ -421,11 +476,11 @@ pub async fn dynamic_handler(
                         error_id = %error_id,
                         "function invocation task panicked"
                     );
-                    return error_response(
+                    return record_status(error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "INTERNAL_ERROR",
                         "Internal Server Error",
-                    );
+                    ));
                 }
             }
         }
@@ -502,7 +557,7 @@ pub async fn dynamic_handler(
         }
     }
 
-    match builder.body(Body::from_stream(stream)) {
+    record_status(match builder.body(Body::from_stream(stream)) {
         Ok(resp) => resp.into_response(),
         Err(err) => {
             let error_id = generate_error_id();
@@ -517,5 +572,8 @@ pub async fn dynamic_handler(
                 "Internal Server Error",
             )
         }
+    })
     }
+    .instrument(span)
+    .await
 }
