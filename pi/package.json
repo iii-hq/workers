@@ -1,6 +1,6 @@
 {
   "name": "pi",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Pi coding agent as an iii worker: headless turns over the iii bus, raw events on pi::events, AgentEvent frames on agent::events.",
   "license": "Apache-2.0",
