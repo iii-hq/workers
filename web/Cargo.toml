@@ -35,6 +35,8 @@ tl = { package = "astral-tl", version = "0.7" }
 ipnet = "2"
 base64 = "0.22"
 bytes = "1"
+rust-stemmers = "1"
+url = "2"
 
 [dev-dependencies]
 serde_json = "1"

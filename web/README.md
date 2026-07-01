@@ -79,6 +79,11 @@ default:
 | `body` | — | raw string body; ignored on GET/HEAD |
 | `response_format` | `"text"` | `"text"` \| `"base64"` (binary) \| `"json"` (also parses into `json`) |
 | `format` | — | page-reading mode: `"markdown"` \| `"text"` \| `"html"` (see below) |
+| `content_filter` | — | `{ type: "pruning"\|"bm25", query?, threshold?, threshold_type?, min_word_threshold? }`. Page mode only. When set, `body` holds the **filtered** content (pruning default threshold 0.48; bm25 default 1.0; `query` falls back to page metadata). |
+| `target_elements` | — | CSS selectors (tl subset: tag/`.class`/`#id`); restrict rendered content to these regions |
+| `excluded_tags` | — | tag/selectors to drop before rendering (e.g. `nav`, `footer`) |
+| `include_links` | `false` | adds `links: { internal, external }` (absolute URLs, classified by host) |
+| `include_media` | `false` | adds `media: { images, videos, audios }` (absolute URLs) |
 | `timeout_ms` | `default_timeout_ms` | clamped DOWN to `max_timeout_ms` |
 | `max_bytes` | `max_response_bytes` (`default_response_bytes` in `format` mode) | over-cap body is truncated, not errored |
 | `follow_redirects` | `true` | each hop re-checked against the SSRF blocklist |
@@ -100,7 +105,9 @@ default:
   "bytes_truncated": false,   // true when body hit max_bytes (NOT an error)
   "redirect_chain": ["https://…/a"],  // omitted when no redirects
   "content_type": "text/html",  // page-reading mode only
-  "transformed": "markdown"     // only when an HTML transform actually ran
+  "transformed": "markdown",    // only when an HTML transform actually ran
+  "links": { "internal": [{ "href": "…", "text": "…" }], "external": [ … ] },  // include_links
+  "media": { "images": [{ "src": "…", "alt": "…" }], "videos": [ … ], "audios": [ … ] },  // include_media
 }
 ```
 
@@ -148,6 +155,8 @@ ignored.
 - **`format: "markdown"`** — `text/html` → Markdown (the right default for reading pages; far fewer tokens than raw HTML).
 - **`format: "text"`** — `text/html` → plain text.
 - **`format: "html"`** — raw HTML.
+
+When `content_filter` is set, `body` is the filtered output (there is no separate field) — feed it straight to a model.
 
 In page-reading mode the request goes out with a browser User-Agent +
 format-matched `Accept` header, and retries once with the honest UA on a

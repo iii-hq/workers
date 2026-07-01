@@ -12,6 +12,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::config::WebConfig;
+use crate::content::{self, ContentOpts};
 use crate::convert::{
     accept_header_for, extract_text, html_to_markdown, is_image_mime, is_viewable_image_mime,
     max_tag_depth, ACCEPT_LANGUAGE, BROWSER_USER_AGENT, MAX_NESTING_DEPTH,
@@ -37,6 +38,18 @@ pub fn resolve_max_bytes(p: &FetchPayload, cfg: &WebConfig) -> u64 {
         cfg.max_response_bytes
     };
     p.max_bytes.unwrap_or(fallback).min(cfg.max_response_bytes)
+}
+
+/// Build the content-pipeline options from the payload for a given page format.
+pub fn build_content_opts(p: &FetchPayload, format: PageFormat) -> ContentOpts {
+    ContentOpts {
+        format,
+        content_filter: p.content_filter.clone(),
+        target_elements: p.target_elements.clone().unwrap_or_default(),
+        excluded_tags: p.excluded_tags.clone().unwrap_or_default(),
+        include_links: p.include_links.unwrap_or(false),
+        include_media: p.include_media.unwrap_or(false),
+    }
 }
 
 /// If `json` is set, stringify it into the body and set content-type to
@@ -357,7 +370,17 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
             // 3xx without Location: fall through and return the response.
         }
 
-        return shape_response(resp, page_format, response_format, &redirect_chain, cfg).await;
+        let content_opts = page_format.map(|f| build_content_opts(&payload, f));
+        return shape_response(
+            resp,
+            page_format,
+            response_format,
+            &redirect_chain,
+            cfg,
+            content_opts.as_ref(),
+            &current_url,
+        )
+        .await;
     }
 
     error_envelope(
@@ -372,6 +395,8 @@ async fn shape_response(
     response_format: ResponseFormat,
     redirect_chain: &[String],
     cfg: &WebConfig,
+    content_opts: Option<&ContentOpts>,
+    final_url: &str,
 ) -> Value {
     if let Some(pf) = page_format {
         let content_type = resp
@@ -429,11 +454,55 @@ async fn shape_response(
 
         let raw = String::from_utf8_lossy(&resp.bytes).into_owned();
         let is_html = mime == "text/html" || mime == "application/xhtml+xml";
+        let within_cap = (resp.bytes.len() as u64) <= cfg.max_transform_bytes;
+        let enriched = content_opts.map(|o| o.is_enriched()).unwrap_or(false);
+
         let mut body = raw.clone();
         let mut transformed: Option<&str> = None;
-        let within_cap = (resp.bytes.len() as u64) <= cfg.max_transform_bytes;
+        let mut links_val: Option<Value> = None;
+        let mut media_val: Option<Value> = None;
 
-        if is_html && within_cap && matches!(pf, PageFormat::Markdown | PageFormat::Text) {
+        let format_label = |pf: PageFormat| match pf {
+            PageFormat::Markdown => "markdown",
+            PageFormat::Text => "text",
+            PageFormat::Html => "html",
+        };
+
+        if is_html && enriched {
+            // Enriched path: flat link/media extraction always runs; the recursive
+            // transform + filtering run only within the size cap (`within_cap`).
+            let raw_clone = raw.clone();
+            let base = final_url.to_string();
+            let o = content_opts.expect("enriched implies opts");
+            let opts_owned = ContentOpts {
+                format: pf,
+                content_filter: o.content_filter.clone(),
+                target_elements: o.target_elements.clone(),
+                excluded_tags: o.excluded_tags.clone(),
+                include_links: o.include_links,
+                include_media: o.include_media,
+            };
+            let pc: content::PageContent = tokio::task::spawn_blocking(move || {
+                content::process(&raw_clone, &base, &opts_owned, within_cap)
+            })
+            .await
+            .unwrap_or(content::PageContent {
+                rendered: None,
+                filtered: false,
+                links: None,
+                media: None,
+            });
+            if let Some(r) = pc.rendered {
+                body = r;
+                transformed = Some(format_label(pf));
+                if resp.truncated {
+                    body.push_str("\n\n[Content truncated at max_bytes — the page continues beyond this point]");
+                }
+            }
+            links_val = pc.links.as_ref().map(|l| serde_json::to_value(l).unwrap());
+            media_val = pc.media.as_ref().map(|m| serde_json::to_value(m).unwrap());
+        } else if is_html && within_cap && matches!(pf, PageFormat::Markdown | PageFormat::Text) {
+            // Backward-compatible path: unchanged from before enrichment existed.
             let raw_clone = raw.clone();
             let maybe_text: Option<String> = tokio::task::spawn_blocking(move || {
                 if max_tag_depth(&raw_clone) > MAX_NESTING_DEPTH {
@@ -447,19 +516,13 @@ async fn shape_response(
             })
             .await
             .unwrap_or(None);
-
             if let Some(text) = maybe_text {
                 body = text;
-                transformed = Some(match pf {
-                    PageFormat::Markdown => "markdown",
-                    PageFormat::Text => "text",
-                    PageFormat::Html => "html",
-                });
+                transformed = Some(format_label(pf));
                 if resp.truncated {
                     body.push_str("\n\n[Content truncated at max_bytes — the page continues beyond this point]");
                 }
             }
-            // On transform failure / over-depth / panic: keep raw body, leave transformed unset.
         }
 
         let mut out = json!({
@@ -474,6 +537,12 @@ async fn shape_response(
         });
         if let Some(t) = transformed {
             out["transformed"] = json!(t);
+        }
+        if let Some(l) = links_val {
+            out["links"] = l;
+        }
+        if let Some(m) = media_val {
+            out["media"] = m;
         }
         if !redirect_chain.is_empty() {
             out["redirect_chain"] = json!(redirect_chain);
@@ -517,6 +586,28 @@ mod tests {
 
     fn p(j: serde_json::Value) -> FetchPayload {
         serde_json::from_value(j).unwrap()
+    }
+
+    #[test]
+    fn content_opts_built_from_payload() {
+        let pl = p(serde_json::json!({
+            "url": "https://x.test/",
+            "format": "markdown",
+            "excluded_tags": ["nav"],
+            "include_links": true
+        }));
+        let opts = build_content_opts(&pl, crate::schemas::PageFormat::Markdown);
+        assert!(opts.is_enriched());
+        assert_eq!(opts.excluded_tags, vec!["nav".to_string()]);
+        assert!(opts.include_links);
+        assert!(!opts.include_media);
+    }
+
+    #[test]
+    fn content_opts_empty_is_not_enriched() {
+        let pl = p(serde_json::json!({ "url": "https://x.test/", "format": "markdown" }));
+        let opts = build_content_opts(&pl, crate::schemas::PageFormat::Markdown);
+        assert!(!opts.is_enriched());
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod configuration;
+pub mod content;
 pub mod convert;
 pub mod fetch;
 pub mod functions;
