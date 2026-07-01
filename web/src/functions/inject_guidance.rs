@@ -36,21 +36,29 @@ pub struct GenerateContext {
     pub system_prompt: String,
 }
 
-/// Append the web guidance to the base prompt. Pure, so it's unit-testable. The harness
-/// OVERWRITES `system_prompt` with what we return (it does not merge), so we must return
-/// the FULL prompt (base + guidance), not just the addition.
-fn enrich(base: &str) -> String {
+/// Build the `pre_generate` `mutations` object for a given base prompt. Pure, so it's
+/// unit-testable.
+///
+/// Returns an EMPTY object (no `system_prompt` key) when `base` is empty. A missing or
+/// renamed `generate.system_prompt` field deserializes to `""` (schema drift), and a
+/// fail-open hook must PRESERVE the harness's assembled prompt, never replace it with the
+/// guidance alone. Omitting the key is a safe no-op: the harness overwrites `system_prompt`
+/// only when the mutation carries it (harness `HookRunner::run_pre_generate` —
+/// `if m.system_prompt.is_some()`). For a real, non-empty base we append the guidance and
+/// return the FULL prompt (the harness overwrites, it does not merge).
+fn mutations_for(base: &str) -> Value {
     if base.is_empty() {
-        WEB_GUIDANCE.to_string()
+        json!({})
     } else {
-        format!("{base}\n\n{WEB_GUIDANCE}")
+        json!({ "system_prompt": format!("{base}\n\n{WEB_GUIDANCE}") })
     }
 }
 
 /// `pre_generate` hook entrypoint: return a `system_prompt` mutation that appends the
-/// web guidance. Bound `fail_open`, so an error here never blocks a turn.
+/// web guidance to a non-empty base. Bound `fail_open`, so an error here never blocks a
+/// turn.
 pub async fn handle(event: PreGenerateEvent) -> Result<Value, iii_sdk::errors::Error> {
-    Ok(json!({ "mutations": { "system_prompt": enrich(&event.generate.system_prompt) } }))
+    Ok(json!({ "mutations": mutations_for(&event.generate.system_prompt) }))
 }
 
 #[cfg(test)]
@@ -58,23 +66,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn enrich_appends_guidance_after_base() {
-        let out = enrich("BASE PROMPT");
+    fn appends_guidance_after_a_real_base() {
+        let m = mutations_for("BASE PROMPT");
+        let sp = m["system_prompt"]
+            .as_str()
+            .expect("a non-empty base yields a system_prompt mutation");
         assert!(
-            out.starts_with("BASE PROMPT\n\n"),
+            sp.starts_with("BASE PROMPT\n\n"),
             "the base prompt must be preserved, guidance appended after it"
         );
-        assert!(out.contains("web::fetch"), "guidance content is present");
+        assert!(sp.contains("web::fetch"), "guidance content is present");
         assert!(
-            out.contains("format: \"markdown\""),
+            sp.contains("format: \"markdown\""),
             "page-reading guidance is present"
         );
     }
 
     #[test]
-    fn enrich_handles_empty_base() {
-        // A missing/empty base must not produce a leading blank block.
-        assert_eq!(enrich(""), WEB_GUIDANCE);
+    fn empty_base_emits_no_system_prompt_mutation() {
+        // A missing/malformed hook payload (system_prompt absent → "") must PRESERVE the
+        // harness prompt: emit no system_prompt key so the harness keeps its own, rather
+        // than replacing the whole prompt with the guidance alone.
+        assert_eq!(mutations_for(""), json!({}));
     }
 
     #[test]
