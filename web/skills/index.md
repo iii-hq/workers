@@ -61,6 +61,20 @@ One exception: in page-reading mode (`format` set), an `image/*` response return
 | `max_bytes` | 5 MiB (256 KiB in `format` mode) | raw fetches default to the 5 MiB ceiling; page-reading mode (`format` set) uses a context-safe 256 KiB. Pass an explicit value to override (up to the 5 MiB ceiling). Over-cap body is truncated, not errored |
 | `follow_redirects` | `true` | each hop re-checked against the SSRF blocklist |
 
+# Content pipeline
+
+Four request controls for page-reading mode (`format` set):
+
+| Field | Effect |
+|---|---|
+| `content_filter` | `{ type: "pruning"\|"bm25", query?, threshold?, threshold_type?, min_word_threshold? }` — filters `body` to signal content. Pruning default threshold 0.48; BM25 default 1.0. `query` falls back to page `<title>`/`<meta description>` if omitted. |
+| `target_elements` | Restrict body to matching regions. Selector subset: tag, `.class`, `#id` — other forms are silently ignored. |
+| `excluded_tags` | Drop matching elements before rendering (e.g. `["nav", "footer"]`). |
+| `include_links` | `true` → adds `links: { internal, external }` arrays (absolute URLs, classified by host). |
+| `include_media` | `true` → adds `media: { images, videos, audios }` arrays (absolute URLs). |
+
+When `content_filter` is set, `body` **is** the filtered output — no separate field. Feed it straight to a model.
+
 # Response
 
 **Success** (`ok: true`) — returned for *any* completed response, 2xx through 5xx:
