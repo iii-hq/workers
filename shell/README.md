@@ -51,14 +51,14 @@ it never exits, so supervised deployments recover as soon as the engine is up.
 
 Settings are managed through the central `configuration` worker. On boot, the shell worker registers its schema (id `shell`) and fetches the live value over RPC — that live value is the authoritative config, not a local file. The optional `--config <path>` flag (default `./config.yaml`) provides the `initial_value` sent on first registration only; once registered, subsequent boots pull the stored value from the `configuration` worker. When the config changes, the worker hot-reloads the security policy and fs backend automatically (see [Hot-reload](#hot-reload)).
 
-The worker refuses to start unless `fs.host_root` is set, or `fs.allow_unjailed: true` is explicitly opted in, because an unset root exposes the whole host filesystem behind only the advisory denylist.
+The worker refuses to start unless `fs.host_roots` is set (or the legacy one-entry `fs.host_root`), or `fs.allow_unjailed: true` is explicitly opted in, because an unset root exposes the whole host filesystem behind only the advisory denylist.
 
 By default, `mkdir`/`chmod`/`write` reject modes carrying setuid/setgid/sticky bits (the top octal digit, e.g. `4755`) with `S210`, since they are a privilege-escalation primitive when the worker runs as root inside the jail. Set `fs.allow_special_bits: true` only if your workload genuinely needs them.
 
 ```yaml
 max_timeout_ms: 120000       # foreground exec hard cap; per-call timeout_ms is clamped to this
 max_bg_timeout_ms: 0         # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms)
-default_timeout_ms: 10000    # applied when the caller omits timeout_ms
+default_timeout_ms: 30000    # applied when the caller omits timeout_ms (code default 10000)
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
@@ -67,22 +67,24 @@ env:
 # exec gate. argv[0] is matched by basename or exact path; an empty
 # allowlist means OPEN — the shipped default, so any command runs.
 # denylist_patterns are advisory regex over argv.join(" "), a tripwire for
-# catastrophic mistakes only, NOT a security boundary.
+# catastrophic mistakes only, NOT a security boundary. Command-shaped
+# patterns are anchored to argv[0] so `grep -rn shutdown src/` is not
+# rejected; argument-shaped ones (rm -rf /) stay unanchored.
 allowlist: []
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
-  - "mkfs"
-  - "dd\\s+if="
+  - "^(\\S*/)?mkfs"
+  - "^(\\S*/)?dd\\s+if="
 
 max_concurrent_jobs: 16      # exec_bg past this is rejected
 job_retention_secs: 3600     # finished jobs pruned after this
 
 fs:
-  host_root: /tmp            # jail root for shell::fs::*; required (see above)
-  allow_unjailed: false      # opt-in to running with host_root unset
-  max_read_bytes: 16777216   # 0 = unlimited
+  host_roots: [/tmp]         # jail roots for shell::fs::*; first = primary (legacy alias: host_root)
+  allow_unjailed: false      # opt-in to running with no jail root
+  max_read_bytes: 16777216   # 0 = unlimited (reads stream; cap bounds caller cost)
   max_write_bytes: 16777216  # 0 = unlimited
-  denylist_paths: [/etc/passwd, /etc/shadow]
+  denylist_paths: [/etc/passwd, /etc/shadow]  # defense in depth; unreachable anyway while jailed
   allow_special_bits: false  # permit setuid/setgid/sticky bits in mode (default false)
 
 sandbox:

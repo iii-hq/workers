@@ -223,12 +223,17 @@ pub struct FsConfig {
     /// harnesses, sandbox-only deployments).
     #[serde(default)]
     pub allow_unjailed: bool,
-    /// Cap, in bytes, on a single `shell::fs::read`. `0` (the default) means
-    /// unlimited. The shipped seed sets 16777216 (16 MiB).
+    /// Cap, in bytes, on a single `shell::fs::read` (S218 when exceeded).
+    /// `0` (the default) means unlimited — safe because reads stream over a
+    /// channel in 64 KiB chunks rather than buffering the file in memory; the
+    /// cap exists to bound CALLER cost, not worker memory. The shipped seed
+    /// sets 16777216 (16 MiB).
     #[serde(default = "default_max_read_bytes")]
     pub max_read_bytes: usize,
-    /// Cap, in bytes, on a single `shell::fs::write`. `0` (the default) means
-    /// unlimited. The shipped seed sets 16777216 (16 MiB).
+    /// Cap, in bytes, on a single `shell::fs::write` (S218 mid-stream when
+    /// exceeded). `0` (the default) means unlimited — writes stream like
+    /// reads, so the cap bounds caller cost, not worker memory. The shipped
+    /// seed sets 16777216 (16 MiB).
     #[serde(default = "default_max_write_bytes")]
     pub max_write_bytes: usize,
     /// Absolute path prefixes that are hard-rejected (S215) by every fs
@@ -342,21 +347,31 @@ impl ShellConfig {
     pub fn seed_default() -> Self {
         Self {
             max_timeout_ms: 120_000,
+            // 30s (not the 10s code default): the dev seed raises max_timeout_ms
+            // to 120s so real builds survive — a 10s default for callers that
+            // omit timeout_ms would undercut that on the first `cargo build`.
+            default_timeout_ms: 30_000,
             env: EnvConfig {
                 inherit: true,
                 ..EnvConfig::default()
             },
+            // Command-SHAPED patterns (mkfs/shutdown/reboot/dd) are anchored to
+            // argv[0] — `^(\S*/)?name` fires when the tool IS the command, not
+            // when the word appears in an argument, so `grep -rn shutdown src/`
+            // or `rg "dd if=" docs/` are not rejected. Argument-shaped patterns
+            // (rm -rf /, the fork bomb, /etc/shadow) stay full-line: their
+            // dangerous form lives in the arguments.
             denylist_patterns: vec![
                 r"rm\s+-rf\s+/".into(),
                 r":\(\)\s*\{\s*:\|".into(),
-                "mkfs".into(),
-                r"dd\s+if=".into(),
-                "shutdown".into(),
-                "reboot".into(),
+                r"^(\S*/)?mkfs".into(),
+                r"^(\S*/)?dd\s+if=".into(),
+                r"^(\S*/)?shutdown\b".into(),
+                r"^(\S*/)?reboot\b".into(),
                 "/etc/shadow".into(),
             ],
             fs: FsConfig {
-                host_root: Some(PathBuf::from("/tmp")),
+                host_roots: vec![PathBuf::from("/tmp")],
                 max_read_bytes: 16_777_216,
                 max_write_bytes: 16_777_216,
                 denylist_paths: vec![PathBuf::from("/etc/passwd"), PathBuf::from("/etc/shadow")],
@@ -449,7 +464,12 @@ impl ShellConfig {
         let joined = argv.join(" ");
         for re in &self.compiled_denylist {
             if re.is_match(&joined) {
-                return Err(format!("command matches denylist: {}", re.as_str()));
+                return Err(format!(
+                    "command matches denylist pattern '{}' — an advisory tripwire for \
+                     catastrophic mistakes, not a security boundary; rephrase the command \
+                     to avoid the pattern",
+                    re.as_str()
+                ));
             }
         }
 
@@ -698,6 +718,34 @@ mod tests {
             .is_command_allowed(&["rm".into(), "-rf".into(), "/".into()])
             .expect_err("rm -rf / must still trip the denylist");
         assert!(err.contains("denylist"), "got: {err}");
+
+        // Command-shaped patterns are anchored to argv[0]: they fire when the
+        // tool IS the command (bare or path-qualified)...
+        for argv in [
+            vec!["shutdown".to_string(), "-h".into(), "now".into()],
+            vec!["/sbin/shutdown".to_string(), "-r".into()],
+            vec!["reboot".to_string()],
+            vec!["mkfs.ext4".to_string(), "/dev/sda1".into()],
+            vec!["dd".to_string(), "if=/dev/zero".into(), "of=/dev/sda".into()],
+        ] {
+            assert!(
+                c.is_command_allowed(&argv).is_err(),
+                "{argv:?} must trip the anchored denylist"
+            );
+        }
+        // ...but NOT when the word merely appears in an argument — a coding
+        // agent grepping a codebase for "shutdown" is not a mistake.
+        for argv in [
+            vec!["grep".to_string(), "-rn".into(), "shutdown".into(), "src/".into()],
+            vec!["cargo".to_string(), "test".into(), "reboot".into()],
+            vec!["rg".to_string(), "dd if=".into(), "docs/".into()],
+            vec!["git".to_string(), "log".into(), "--grep".into(), "mkfs".into()],
+        ] {
+            assert!(
+                c.is_command_allowed(&argv).is_ok(),
+                "{argv:?} must NOT trip the denylist (argument, not command)"
+            );
+        }
     }
 
     /// `seed_default()` is the in-code twin of the shipped `config.yaml` — the
@@ -803,16 +851,28 @@ mod tests {
                 "config field `{name}` has no schema description (console UI shows it bare)"
             );
         }
-        let env_props = &schema["definitions"]["EnvConfig"]["properties"];
-        for key in ["inherit", "allow"] {
-            assert!(
-                env_props[key]["description"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty()),
-                "EnvConfig.{key} has no schema description"
-            );
+        // Same rule for every nested definition (EnvConfig, FsConfig,
+        // SandboxConfig, CoderConfig, and anything added later): the console
+        // renders their fields too.
+        let defs = schema["definitions"]
+            .as_object()
+            .expect("nested definitions");
+        for (def_name, def) in defs {
+            let Some(props) = def["properties"].as_object() else {
+                continue; // non-object definitions (enums etc.) have no fields
+            };
+            for (name, prop) in props {
+                assert!(
+                    prop.get("description")
+                        .and_then(|d| d.as_str())
+                        .is_some_and(|s| !s.is_empty()),
+                    "{def_name}.{name} has no schema description (console UI shows it bare)"
+                );
+            }
         }
-        let allow_desc = env_props["allow"]["description"].as_str().unwrap();
+        let allow_desc = schema["definitions"]["EnvConfig"]["properties"]["allow"]["description"]
+            .as_str()
+            .expect("env.allow described");
         assert!(
             allow_desc.contains("Forwarding") && allow_desc.contains("Per-call"),
             "env.allow description must explain both roles: {allow_desc}"

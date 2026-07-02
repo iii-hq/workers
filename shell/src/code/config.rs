@@ -10,6 +10,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Configuration for the folded `coder::*` code surface: protected/noise
+/// globs plus per-call read/search/tree budgets. Roots are NOT taken from
+/// here at runtime — the resolver uses `fs.host_roots` (one jail config).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CoderConfig {
     /// Legacy single-root form. Honored as a one-entry `base_paths` list.
@@ -42,27 +45,45 @@ pub struct CoderConfig {
     #[serde(default = "default_default_exclude_globs")]
     pub default_exclude_globs: Vec<String>,
 
+    /// Per-file IO ceiling, in bytes, for `coder::read-file` in every mode
+    /// (full, windowed, batch). A larger file fails with C213 naming the
+    /// size. Default 10485760 (10 MiB).
     #[serde(default = "default_max_read_bytes")]
     pub max_read_bytes: u64,
 
+    /// Cap, in bytes, on the content of a single `coder::create-file` /
+    /// `coder::update-file` call (C213 when exceeded). Default 10485760
+    /// (10 MiB).
     #[serde(default = "default_max_write_bytes")]
     pub max_write_bytes: u64,
 
+    /// Directory depth `coder::tree` descends when the caller omits `depth`.
+    /// Default 4.
     #[serde(default = "default_tree_default_depth")]
     pub tree_default_depth: u32,
 
+    /// Maximum entries `coder::tree` lists per folder before eliding the
+    /// rest (flagged in the response). Default 50.
     #[serde(default = "default_tree_per_folder_limit")]
     pub tree_per_folder_limit: u32,
 
+    /// Page size `coder::list-folder` uses when the caller omits one.
+    /// Default 100.
     #[serde(default = "default_list_default_page_size")]
     pub list_default_page_size: u32,
 
+    /// Hard cap on a `coder::list-folder` page; a larger requested page size
+    /// is clamped to this. Default 1000.
     #[serde(default = "default_list_max_page_size")]
     pub list_max_page_size: u32,
 
+    /// Maximum matches one `coder::search` call returns when the caller
+    /// omits `max_matches`. Default 1000.
     #[serde(default = "default_search_max_matches")]
     pub search_default_max_matches: u32,
 
+    /// Per-line byte cap for `coder::search` results; longer matched lines
+    /// are truncated for the response. Default 4096.
     #[serde(default = "default_search_max_line_bytes")]
     pub search_default_max_line_bytes: u32,
 
