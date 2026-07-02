@@ -16,7 +16,7 @@ use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{ParentLink, TurnOptions, TurnRecord, TurnStatus};
+use crate::types::turn::{ParentLink, TurnOptions, TurnRecord, TurnStatus, WORKING_DIR_KEY};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -222,7 +222,7 @@ async fn seed_child(
 /// belongs to the parent's turn and must not leak onto the child.
 fn inherit_workspace(parent: Option<&TurnRecord>) -> Option<Value> {
     let dir = parent.and_then(|p| p.options.working_dir())?;
-    Some(json!({ "working_dir": dir }))
+    Some(json!({ WORKING_DIR_KEY: dir }))
 }
 
 fn is_error(code: &str, message: String) -> ResultData {
