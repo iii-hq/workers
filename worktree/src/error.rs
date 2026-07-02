@@ -38,6 +38,8 @@ pub mod codes {
     pub const UNMERGED_WORK: &str = "W221";
     /// The iii state store could not be reached (retryable).
     pub const STATE_UNAVAILABLE: &str = "W300";
+    /// Persisted state deserialized into an unexpected shape (corrupt record/job).
+    pub const STATE_CORRUPT: &str = "W301";
     /// Enqueueing the land job failed.
     pub const ENQUEUE_FAILED: &str = "W400";
     /// A land job is already queued or running for this worktree.
@@ -91,7 +93,7 @@ impl From<WError> for Error {
 
 impl From<serde_json::Error> for WError {
     fn from(e: serde_json::Error) -> Self {
-        WError::new(codes::STATE_UNAVAILABLE, format!("serde: {e}"))
+        WError::new(codes::STATE_CORRUPT, format!("serde: {e}"))
     }
 }
 

@@ -30,7 +30,7 @@ pub struct Request {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Response {
-    /// Stable id, `wt_<8hex>`.
+    /// Stable id, `wt_<12hex>`.
     pub worktree_id: String,
     /// Absolute path of the new worktree; hand this to an agent as its working directory.
     pub path: String,

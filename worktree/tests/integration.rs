@@ -42,12 +42,14 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 async fn boot() -> Option<Harness> {
+    // The only reason to self-skip: no `iii` engine on PATH. Every failure
+    // past this point is a real test-environment fault and must fail loudly.
     let iii_bin = which::which("iii").ok()?;
 
     // Isolate the engine's data dir (configuration store, state) in a
     // tempdir so the seed applies and nothing leaks between runs.
-    let engine_dir = tempfile::tempdir().ok()?;
-    let worker_dir = tempfile::tempdir().ok()?;
+    let engine_dir = tempfile::tempdir().expect("create engine tempdir");
+    let worker_dir = tempfile::tempdir().expect("create worker tempdir");
 
     let iii = Command::new(&iii_bin)
         .arg("--use-default-config")
@@ -55,7 +57,7 @@ async fn boot() -> Option<Harness> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .expect("spawn iii engine");
 
     sleep(Duration::from_millis(1200)).await;
 
@@ -68,7 +70,7 @@ async fn boot() -> Option<Harness> {
             worker_dir.path().join("wts").display()
         ),
     )
-    .ok()?;
+    .expect("write seed config");
 
     let worker_bin = env!("CARGO_BIN_EXE_worktree");
     let worker = Command::new(worker_bin)
@@ -79,7 +81,7 @@ async fn boot() -> Option<Harness> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .expect("spawn worktree worker");
 
     sleep(Duration::from_millis(2000)).await;
 

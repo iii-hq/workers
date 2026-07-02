@@ -360,18 +360,25 @@ impl IiiDeliverer {
 #[async_trait]
 impl EventDeliverer for IiiDeliverer {
     async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
-        let res = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            })
-            .await;
-        if let Err(e) = res {
-            tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
-        }
+        // Dispatch each matching binding on its own task so the mutation that
+        // produced the event (which still holds the per-repo lock) never waits
+        // on a bus round-trip, and a slow binding cannot delay its siblings.
+        let iii = self.iii.clone();
+        let trigger_type = trigger_type.to_string();
+        let function_id = function_id.to_string();
+        tokio::spawn(async move {
+            let res = iii
+                .trigger(TriggerRequest {
+                    function_id: function_id.clone(),
+                    payload,
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                })
+                .await;
+            if let Err(e) = res {
+                tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
+            }
+        });
     }
 }
 

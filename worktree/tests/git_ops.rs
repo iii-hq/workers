@@ -8,6 +8,7 @@ use std::path::Path;
 
 use serde_json::json;
 use support::{commit_file, git, head_sha, init_repo, make_env, test_config, TestEnv};
+use worktree::error::codes;
 use worktree::functions::{claim, create, list, prune, release, remove, status, validate};
 use worktree::state;
 use worktree::types::Lifecycle;
@@ -77,7 +78,7 @@ async fn create_rejects_existing_branch_and_bad_paths() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W120");
+    assert_eq!(err.code, codes::BRANCH_EXISTS);
 
     let err = create::handle(
         &env.deps,
@@ -90,7 +91,7 @@ async fn create_rejects_existing_branch_and_bad_paths() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W111");
+    assert_eq!(err.code, codes::BAD_PATH);
 
     let not_repo = tmp.path().join("not-a-repo");
     std::fs::create_dir_all(&not_repo).unwrap();
@@ -105,7 +106,7 @@ async fn create_rejects_existing_branch_and_bad_paths() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W110");
+    assert_eq!(err.code, codes::NOT_A_REPO);
 }
 
 #[tokio::test]
@@ -189,7 +190,7 @@ async fn claim_and_release_enforce_ownership() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W210");
+    assert_eq!(err.code, codes::ALREADY_CLAIMED);
 
     let taken = claim::handle(
         &env.deps,
@@ -213,7 +214,7 @@ async fn claim_and_release_enforce_ownership() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W211");
+    assert_eq!(err.code, codes::CLAIM_MISMATCH);
 
     let released = release::handle(
         &env.deps,
@@ -256,7 +257,7 @@ async fn remove_guards_dirty_and_unmerged_work() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W220");
+    assert_eq!(err.code, codes::DIRTY);
 
     commit_file(&wt, "wip.txt", "dirty\n", "unmerged work");
     let err = remove::handle(
@@ -269,7 +270,7 @@ async fn remove_guards_dirty_and_unmerged_work() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.code, "W221");
+    assert_eq!(err.code, codes::UNMERGED_WORK);
 
     let removed = remove::handle(
         &env.deps,

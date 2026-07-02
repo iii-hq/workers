@@ -225,7 +225,24 @@ pub async fn list_records(store: &dyn StateStore) -> Result<Vec<WorktreeRecord>,
         .list(SCOPE_RECORD)
         .await?
         .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
+        .filter_map(|v| {
+            let id = v
+                .get("worktree_id")
+                .and_then(|x| x.as_str())
+                .map(str::to_string);
+            match serde_json::from_value::<WorktreeRecord>(v) {
+                Ok(record) => Some(record),
+                Err(e) => {
+                    tracing::warn!(
+                        code = codes::STATE_CORRUPT,
+                        worktree_id = ?id,
+                        error = %e,
+                        "skipping corrupt worktree record"
+                    );
+                    None
+                }
+            }
+        })
         .collect();
     records.sort_by_key(|r| r.created_at);
     Ok(records)
@@ -242,6 +259,10 @@ pub async fn put_job(store: &dyn StateStore, job: &LandJob) -> Result<(), WError
     store
         .set(SCOPE_JOB, &job.job_id, serde_json::to_value(job)?)
         .await
+}
+
+pub async fn delete_job(store: &dyn StateStore, job_id: &str) -> Result<(), WError> {
+    store.delete(SCOPE_JOB, job_id).await
 }
 
 /// Active-land marker: worktree_id -> job_id, enforcing one live job per worktree.

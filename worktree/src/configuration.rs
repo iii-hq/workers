@@ -105,16 +105,18 @@ impl CronSlot {
         }) {
             Ok(trigger) => {
                 tracing::info!(schedule, "prune cron binding registered");
-                Some(trigger)
+                trigger
             }
             Err(e) => {
-                tracing::warn!(error = %e, schedule, "prune cron binding failed");
-                None
+                // Keep the working binding: swapping in a failed registration
+                // would unregister the live cron and leave the sweep unbound.
+                tracing::warn!(error = %e, schedule, "prune cron binding failed; keeping previous binding");
+                return;
             }
         };
         let old = {
             let mut slot = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-            std::mem::replace(&mut *slot, new)
+            slot.replace(new)
         };
         if let Some(old) = old {
             old.unregister();

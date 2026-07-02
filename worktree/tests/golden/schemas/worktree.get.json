@@ -198,7 +198,7 @@
         "type": "integer"
       },
       "worktree_id": {
-        "description": "Stable id, `wt_<8hex>`.",
+        "description": "Stable id, `wt_<12hex>`.",
         "type": "string"
       }
     },

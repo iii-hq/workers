@@ -153,7 +153,20 @@ pub async fn is_ancestor(
         timeout_ms,
     )
     .await?;
-    Ok(out.exit_code == 0)
+    // git reports the ancestry answer as exit 0 (yes) / 1 (no); any other
+    // nonzero exit is a real failure (invalid ref, IO) and must propagate.
+    match out.exit_code {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err(WError::new(
+            codes::GIT_NONZERO,
+            format!(
+                "merge-base --is-ancestor failed in {}: {}",
+                repo.display(),
+                out.stderr.trim()
+            ),
+        )),
+    }
 }
 
 pub async fn status(dir: &Path, timeout_ms: u64) -> Result<StatusV2, WError> {
@@ -227,15 +240,21 @@ pub async fn cas_update_ref(
 ) -> Result<bool, WError> {
     let full = format!("refs/heads/{target_branch}");
     let out = run_git(repo, &["update-ref", &full, new_sha, old_sha], timeout_ms).await?;
-    if out.exit_code != 0 {
-        tracing::debug!(
-            target_branch,
-            stderr = %out.stderr.trim(),
-            "update-ref CAS lost"
-        );
+    if out.exit_code == 0 {
+        return Ok(true);
+    }
+    let stderr = out.stderr.trim();
+    // A lost CAS (the target moved) is the one business outcome; git renders
+    // it as `... is at <x> but expected <y>`. Lock contention, IO, or an
+    // invalid ref are infra failures that must propagate, not silently retry.
+    if stderr.contains("but expected") {
+        tracing::debug!(target_branch, stderr, "update-ref CAS lost");
         return Ok(false);
     }
-    Ok(true)
+    Err(WError::new(
+        codes::GIT_NONZERO,
+        format!("update-ref {full} failed in {}: {stderr}", repo.display()),
+    ))
 }
 
 /// Fast-forward merge inside a live checkout. `Ok(false)` when not

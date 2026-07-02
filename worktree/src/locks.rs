@@ -27,6 +27,10 @@ impl RepoLocks {
             match map.get(repo_key).and_then(Weak::upgrade) {
                 Some(lock) => lock,
                 None => {
+                    // A fresh key is a natural point to sweep tombstones left
+                    // by quiet repos whose mutex has since deallocated, so the
+                    // map does not grow without bound.
+                    map.retain(|_, weak| weak.strong_count() > 0);
                     let lock = Arc::new(tokio::sync::Mutex::new(()));
                     map.insert(repo_key.to_string(), Arc::downgrade(&lock));
                     lock

@@ -32,7 +32,7 @@ pub enum Lifecycle {
 /// The durable record for one managed worktree (state scope `worktree`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeRecord {
-    /// Stable id, `wt_<8hex>`. Doubles as the git admin dir name.
+    /// Stable id, `wt_<12hex>`. Doubles as the git admin dir name.
     pub worktree_id: String,
     /// The repository path the worktree was created from.
     pub repo_path: String,
@@ -86,7 +86,7 @@ pub struct WorktreeStatus {
 /// One worktree as reported by `worktree::list` / `worktree::get`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeInfo {
-    /// Stable id, `wt_<8hex>`.
+    /// Stable id, `wt_<12hex>`.
     pub worktree_id: String,
     /// The repository path the worktree was created from.
     pub repo_path: String,
@@ -160,7 +160,7 @@ impl LandPhase {
 /// The durable land-job record (state scope `worktree_land_job`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LandJob {
-    /// Stable id, `job_<8hex>`.
+    /// Stable id, `job_<12hex>`.
     pub job_id: String,
     /// The worktree being landed.
     pub worktree_id: String,

@@ -5,8 +5,12 @@
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+/// 12 hex chars (48 bits) of a v4 UUID: long enough that minted ids do not
+/// collide in practice, so a state `put` can never silently overwrite an
+/// unrelated record (which an 8-hex, 32-bit id risks at a few tens of
+/// thousands of worktrees).
 fn short_hex() -> String {
-    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+    uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
 }
 
 pub fn mint_worktree_id() -> String {
@@ -54,7 +58,7 @@ mod tests {
     fn worktree_ids_have_prefix_and_length() {
         let id = mint_worktree_id();
         assert!(id.starts_with("wt_"));
-        assert_eq!(id.len(), 11);
+        assert_eq!(id.len(), 15);
         assert_ne!(mint_worktree_id(), mint_worktree_id());
     }
 
