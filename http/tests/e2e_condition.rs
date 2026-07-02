@@ -50,7 +50,7 @@ async fn register_counting_backend_with_condition(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: iii_http::trigger_type(),
         function_id,
         config: json!({
             "api_path": api_path,

@@ -20,8 +20,9 @@ iii worker add http
 
 ## Quickstart
 
-Register a function and bind it to an `http` trigger with `api_path` and
-`http_method`:
+Register a function and bind it to this worker's trigger type (`http-ng` by
+default — see [Custom trigger types](#custom-trigger-types)) with `api_path`
+and `http_method`:
 
 ```rust
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -44,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
+        trigger_type: iii_http::trigger_type(),
         function_id: "orders::get".into(),
         config: json!({ "api_path": "/orders/:id", "http_method": "GET" }),
         metadata: None,
@@ -85,7 +86,7 @@ take effect on the next restart.
 
 ## Custom trigger types
 
-This worker registers the `http` trigger type. Bind a function to it with:
+This worker registers `http-ng` by default. Bind a function to it with:
 
 | Field | Required | Default | Description |
 |---|---|---|---|
@@ -100,6 +101,15 @@ Functions can stream their response: write to `req.response` (a
 Returning a non-null value instead yields a regular buffered response built
 from `{ status_code, headers, body }`.
 
-The `http` trigger type collides with the built-in `iii-http` worker if both
-run against the same engine — whichever registers last wins. Run this worker
-against an engine with the built-in `iii-http` disabled.
+### `http` vs `http-ng`
+
+The built-in `iii-http` worker owns the `http` trigger type. Two owners of
+the same trigger type on one engine collide — whichever registers last wins.
+So by default this worker registers `http-ng` instead, which runs safely
+alongside the built-in `iii-http`.
+
+Set `III_HTTP_TRIGGER_TYPE=http` to cut over once `iii-http` is removed from
+the engine config. On boot, this worker queries the engine for connected
+workers and refuses to start with a clear error if `iii-http` is still
+active — so a stale cutover fails loudly instead of silently racing the
+built-in worker for ownership of `http`.

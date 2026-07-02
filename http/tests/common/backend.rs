@@ -38,7 +38,7 @@ pub async fn register_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_me
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: iii_http::trigger_type(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -68,7 +68,7 @@ pub async fn register_removable_echo_backend(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: iii_http::trigger_type(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -106,7 +106,7 @@ pub async fn register_echo_backend_with_middleware(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: iii_http::trigger_type(),
         function_id,
         config: json!({
             "api_path": api_path,
@@ -193,7 +193,7 @@ pub async fn register_echo_backend_with_condition(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: iii_http::trigger_type(),
         function_id,
         config: json!({
             "api_path": api_path,
@@ -242,7 +242,7 @@ pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, htt
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: iii_http::trigger_type(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
