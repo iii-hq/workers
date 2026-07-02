@@ -37,6 +37,7 @@ async fn setup(env: TestEnv, tmp: &Path) -> Scenario {
             repo_path: repo.to_string_lossy().into_owned(),
             base_ref: None,
             branch: None,
+            pr: None,
             session_id: None,
         },
     )

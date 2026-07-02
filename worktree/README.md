@@ -74,6 +74,7 @@ hot-reload on change (a `prune_schedule` change re-binds the cron live).
 ```yaml
 worktree_root: "~/.iii/worktrees"   # where managed worktrees are created
 branch_prefix: "iii/"               # auto-minted branch names
+branch_naming: "id"                 # or "codename" for <adjective>-<noun>-<4hex> names
 prune_schedule: "0 0 * * * *"       # six-field cron for the reconcile sweep
 prune_expire_hours: 72              # idle hours before a clean, unclaimed worktree is prunable
 land_queue: "worktree-land"         # engine queue name for land jobs
@@ -88,6 +89,20 @@ gates:
   allow_prune: true                 # worktree::prune (including the cron sweep)
   land_targets: ["*"]               # globs; pin to ["main"] to allow only mainline lands
 ```
+
+### Pull request checkouts, dev ports, integration
+
+`worktree::create` also takes `pr: <number>`: it fetches
+`refs/pull/<n>/head` from `origin` (GitHub layout) and branches
+`<prefix>pr-<n>` at it, so reviewing a PR gets its own isolated checkout.
+Every worktree carries an advisory `dev_port` (10000 + hash of the id mod
+10000): deterministic, collision-improbable across parallel worktrees, and
+never reserved anywhere; point dev servers at it to avoid port fights.
+`worktree::status` reports `integrated` with an `integration_reason`
+(`same_commit`, `ancestor`, `no_added_changes`, `trees_match`,
+`merge_adds_nothing`, `patch_id_match`) so squash- or rebase-landed branches
+read as merged, and `worktree::prune` removes integrated-but-ahead worktrees
+instead of holding them forever.
 
 ### Gates
 

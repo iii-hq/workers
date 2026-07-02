@@ -50,6 +50,10 @@ pub struct WorktreeRecord {
     pub lifecycle: Lifecycle,
     /// Owning session, when claimed.
     pub session_id: Option<String>,
+    /// Advisory dev-server port derived from the id (0 on records written
+    /// before ports existed; re-derived on read).
+    #[serde(default)]
+    pub dev_port: u16,
     /// Creation time, ms since epoch.
     pub created_at: i64,
     /// Last mutation time, ms since epoch.
@@ -114,6 +118,9 @@ pub struct WorktreeInfo {
     pub lifecycle: Lifecycle,
     /// Owning session, when claimed.
     pub session_id: Option<String>,
+    /// Advisory dev-server port derived from the worktree id: deterministic,
+    /// collision-improbable, never reserved anywhere.
+    pub dev_port: u16,
     /// Creation time, ms since epoch.
     pub created_at: i64,
     /// Last mutation time, ms since epoch.
@@ -134,10 +141,21 @@ impl WorktreeInfo {
             base_sha: record.base_sha.clone(),
             lifecycle,
             session_id: record.session_id.clone(),
+            dev_port: effective_dev_port(record),
             created_at: record.created_at,
             updated_at: record.updated_at,
             status: None,
         }
+    }
+}
+
+/// The record's stored port, re-derived for records written before ports
+/// existed (the derivation is deterministic, so both agree).
+pub fn effective_dev_port(record: &WorktreeRecord) -> u16 {
+    if record.dev_port != 0 {
+        record.dev_port
+    } else {
+        crate::ids::dev_port(&record.worktree_id)
     }
 }
 

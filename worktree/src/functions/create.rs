@@ -20,9 +20,15 @@ pub struct Request {
     /// Ref to base the worktree on. Defaults to `HEAD`.
     #[serde(default)]
     pub base_ref: Option<String>,
-    /// Branch to create. Defaults to `<branch_prefix><worktree_id>`.
+    /// Branch to create. Defaults to `<branch_prefix><worktree_id>` (or a
+    /// codename when `branch_naming: codename`).
     #[serde(default)]
     pub branch: Option<String>,
+    /// Create the worktree at a GitHub pull request head: fetches
+    /// `refs/pull/<n>/head` from `origin` and branches `<prefix>pr-<n>` at
+    /// it. Mutually exclusive with `base_ref` and `branch`.
+    #[serde(default)]
+    pub pr: Option<u64>,
     /// Session to auto-claim the worktree for.
     #[serde(default)]
     pub session_id: Option<String>,
@@ -42,6 +48,8 @@ pub struct Response {
     pub base_sha: String,
     /// Canonical per-repo key (FIFO group for lands).
     pub repo_key: String,
+    /// Advisory dev-server port derived from the worktree id.
+    pub dev_port: u16,
     /// Creation time, ms since epoch.
     pub created_at: i64,
 }
@@ -60,14 +68,40 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let repo_key = ops::git_common_dir(&repo, t).await?;
     let _guard = deps.locks.guard(&repo_key).await;
 
-    let base_ref = req.base_ref.unwrap_or_else(|| "HEAD".to_string());
-    validate_ref_name("base_ref", &base_ref)?;
-    let base_sha = ops::rev_parse(&repo, &base_ref, t).await?;
+    if req.pr.is_some() && (req.base_ref.is_some() || req.branch.is_some()) {
+        return Err(WError::new(
+            codes::INVALID_REQUEST,
+            "pr is mutually exclusive with base_ref and branch",
+        ));
+    }
 
     let worktree_id = ids::mint_worktree_id();
-    let branch = match req.branch {
-        Some(branch) => branch,
-        None => format!("{}{}", cfg.branch_prefix, worktree_id),
+    let (base_ref, base_sha, branch) = match req.pr {
+        Some(n) => {
+            let sha = ops::fetch_pr_head(&repo, n, t).await?;
+            (
+                format!("refs/pull/{n}/head"),
+                sha,
+                format!("{}pr-{n}", cfg.branch_prefix),
+            )
+        }
+        None => {
+            let base_ref = req.base_ref.unwrap_or_else(|| "HEAD".to_string());
+            validate_ref_name("base_ref", &base_ref)?;
+            let sha = ops::rev_parse(&repo, &base_ref, t).await?;
+            let branch = match req.branch {
+                Some(branch) => branch,
+                None => match cfg.branch_naming {
+                    crate::config::BranchNaming::Id => {
+                        format!("{}{}", cfg.branch_prefix, worktree_id)
+                    }
+                    crate::config::BranchNaming::Codename => {
+                        ids::codename_branch(&cfg.branch_prefix, &worktree_id)
+                    }
+                },
+            };
+            (base_ref, sha, branch)
+        }
     };
     validate_ref_name("branch", &branch)?;
     if ops::branch_exists(&repo, &branch, t).await? {
@@ -109,6 +143,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
             Lifecycle::Active
         },
         session_id: req.session_id.clone(),
+        dev_port: ids::dev_port(&worktree_id),
         created_at: now,
         updated_at: now,
     };
@@ -145,6 +180,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         .await;
 
     Ok(Response {
+        dev_port: record.dev_port,
         worktree_id,
         path: record.path,
         branch,

@@ -86,6 +86,12 @@
         "minimum": 0.0,
         "type": "integer"
       },
+      "dev_port": {
+        "description": "Advisory dev-server port derived from the worktree id.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "diffstat": {
         "description": "`git diff --shortstat` of committed work since `base_sha`.",
         "type": "string"
@@ -153,6 +159,7 @@
       "branch",
       "clean",
       "conflicted",
+      "dev_port",
       "diffstat",
       "head_sha",
       "in_rebase",

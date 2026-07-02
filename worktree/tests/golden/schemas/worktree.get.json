@@ -166,6 +166,12 @@
         "format": "int64",
         "type": "integer"
       },
+      "dev_port": {
+        "description": "Advisory dev-server port derived from the worktree id: deterministic, collision-improbable, never reserved anywhere.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "lifecycle": {
         "allOf": [
           {
@@ -219,6 +225,7 @@
       "base_sha",
       "branch",
       "created_at",
+      "dev_port",
       "lifecycle",
       "path",
       "repo_key",

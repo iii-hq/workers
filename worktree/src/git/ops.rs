@@ -393,6 +393,40 @@ pub async fn diffstat(dir: &Path, base: &str, timeout_ms: u64) -> Result<String,
     Ok(out.stdout_trimmed())
 }
 
+/// Fetch a GitHub pull request head from `origin` into `refs/iii/pr/<n>`
+/// and return the commit it points at. `W112` with a clean message when
+/// origin publishes no such ref (non-GitHub layout, wrong number).
+pub async fn fetch_pr_head(repo: &Path, pr: u64, timeout_ms: u64) -> Result<String, WError> {
+    let refspec = format!("+refs/pull/{pr}/head:refs/iii/pr/{pr}");
+    // The runner's GIT_PROTOCOL_FROM_USER=0 also blocks file:// remotes;
+    // re-allow them here only. The remote URL is operator configuration
+    // (origin), never caller input — the PR number is the only variable.
+    let out = run_git(
+        repo,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "--no-tags",
+            "origin",
+            &refspec,
+        ],
+        timeout_ms,
+    )
+    .await?;
+    if out.exit_code != 0 {
+        return Err(WError::new(
+            codes::REF_NOT_FOUND,
+            format!(
+                "refs/pull/{pr}/head not found on origin (GitHub pull request layout \
+                 required): {}",
+                out.stderr.trim()
+            ),
+        ));
+    }
+    rev_parse(repo, &format!("refs/iii/pr/{pr}"), timeout_ms).await
+}
+
 // ---------------------------------------------------------------------------
 // Integration detection
 // ---------------------------------------------------------------------------

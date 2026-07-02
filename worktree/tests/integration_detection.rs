@@ -29,6 +29,7 @@ async fn setup(tmp: &Path) -> Setup {
             repo_path: repo.to_string_lossy().into_owned(),
             base_ref: Some("main".into()),
             branch: None,
+            pr: None,
             session_id: None,
         },
     )
@@ -172,6 +173,7 @@ async fn prune_removes_integrated_but_ahead_and_keeps_diverged() {
         repo_path: repo.to_string_lossy().into_owned(),
         base_ref: Some("main".into()),
         branch,
+        pr: None,
         session_id: None,
     };
     let landed = create::handle(&env.deps, mk(None)).await.unwrap();

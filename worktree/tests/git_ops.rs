@@ -20,6 +20,7 @@ async fn create_wt(env: &TestEnv, repo: &Path, session: Option<&str>) -> create:
             repo_path: repo.to_string_lossy().into_owned(),
             base_ref: None,
             branch: None,
+            pr: None,
             session_id: session.map(str::to_string),
         },
     )
@@ -73,6 +74,7 @@ async fn create_rejects_existing_branch_and_bad_paths() {
             repo_path: repo.to_string_lossy().into_owned(),
             base_ref: None,
             branch: Some("taken".into()),
+            pr: None,
             session_id: None,
         },
     )
@@ -86,6 +88,7 @@ async fn create_rejects_existing_branch_and_bad_paths() {
             repo_path: "relative/repo".into(),
             base_ref: None,
             branch: None,
+            pr: None,
             session_id: None,
         },
     )
@@ -101,6 +104,7 @@ async fn create_rejects_existing_branch_and_bad_paths() {
             repo_path: not_repo.to_string_lossy().into_owned(),
             base_ref: None,
             branch: None,
+            pr: None,
             session_id: None,
         },
     )

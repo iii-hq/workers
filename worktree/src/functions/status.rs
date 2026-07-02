@@ -26,6 +26,8 @@ pub struct Response {
     pub branch: String,
     /// Current lifecycle.
     pub lifecycle: Lifecycle,
+    /// Advisory dev-server port derived from the worktree id.
+    pub dev_port: u16,
     /// Git status details.
     #[serde(flatten)]
     pub status: WorktreeStatus,
@@ -37,6 +39,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     require_dir(&record)?;
     let status = build_status(&record, cfg.git_timeout_ms).await?;
     Ok(Response {
+        dev_port: crate::types::effective_dev_port(&record),
         worktree_id: record.worktree_id,
         branch: record.branch,
         lifecycle: record.lifecycle,

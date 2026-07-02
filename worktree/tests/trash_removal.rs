@@ -20,6 +20,7 @@ async fn create_wt(env: &TestEnv, repo: &Path) -> create::Response {
             repo_path: repo.to_string_lossy().into_owned(),
             base_ref: None,
             branch: None,
+            pr: None,
             session_id: None,
         },
     )

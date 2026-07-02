@@ -13,9 +13,19 @@
       },
       "branch": {
         "default": null,
-        "description": "Branch to create. Defaults to `<branch_prefix><worktree_id>`.",
+        "description": "Branch to create. Defaults to `<branch_prefix><worktree_id>` (or a codename when `branch_naming: codename`).",
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "pr": {
+        "default": null,
+        "description": "Create the worktree at a GitHub pull request head: fetches `refs/pull/<n>/head` from `origin` and branches `<prefix>pr-<n>` at it. Mutually exclusive with `base_ref` and `branch`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
           "null"
         ]
       },
@@ -58,6 +68,12 @@
         "format": "int64",
         "type": "integer"
       },
+      "dev_port": {
+        "description": "Advisory dev-server port derived from the worktree id.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "path": {
         "description": "Absolute path of the new worktree; hand this to an agent as its working directory.",
         "type": "string"
@@ -76,6 +92,7 @@
       "base_sha",
       "branch",
       "created_at",
+      "dev_port",
       "path",
       "repo_key",
       "worktree_id"

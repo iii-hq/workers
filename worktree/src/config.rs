@@ -21,6 +21,10 @@ pub struct WorkerConfig {
     /// Prefix for auto-minted branches (`<prefix><worktree_id>`).
     #[serde(default = "default_branch_prefix")]
     pub branch_prefix: String,
+    /// Default branch naming: `id` uses the worktree id; `codename` mints a
+    /// deterministic friendly `<adjective>-<noun>-<4hex>` name from it.
+    #[serde(default)]
+    pub branch_naming: BranchNaming,
     /// Six-field cron schedule for the automatic prune sweep.
     #[serde(default = "default_prune_schedule")]
     pub prune_schedule: String,
@@ -43,6 +47,17 @@ pub struct WorkerConfig {
     /// hot-reloads; denials name the exact key to flip.
     #[serde(default)]
     pub gates: GatesConfig,
+}
+
+/// How default branch names are minted at create time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BranchNaming {
+    /// `<branch_prefix><worktree_id>`.
+    #[default]
+    Id,
+    /// `<branch_prefix><adjective>-<noun>-<4hex>`, deterministic per id.
+    Codename,
 }
 
 /// Deny-by-config gates over the mutating surface. Checked FIRST by every
@@ -152,6 +167,7 @@ impl Default for WorkerConfig {
         Self {
             worktree_root: default_worktree_root(),
             branch_prefix: default_branch_prefix(),
+            branch_naming: BranchNaming::default(),
             prune_schedule: default_prune_schedule(),
             prune_expire_hours: default_prune_expire_hours(),
             land_queue: default_land_queue(),
