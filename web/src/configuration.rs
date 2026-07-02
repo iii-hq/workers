@@ -157,7 +157,9 @@ pub async fn setup_harness_hooks(iii: &Arc<IIIClient>) {
             "Internal: on engine::workers-available / engine::functions-available, bind the \
              web inject-guidance pre-generate hook once the harness has registered its \
              trigger type. Not called directly.",
-        ),
+        )
+        .request_format(registry_changed_request_schema())
+        .response_format(registry_changed_response_schema()),
     );
 
     // Arm the event-driven retries BEFORE the initial probe, so a harness that comes up
@@ -172,6 +174,36 @@ pub async fn setup_harness_hooks(iii: &Arc<IIIClient>) {
     // Warm start: the harness may already be connected, in which case no further
     // registry-change event fires for it — attempt the bind now.
     try_bind_harness_hooks(iii, &bound).await;
+}
+
+/// Explicit wire schemas for `web::on-registry-changed`: the handler keeps a lossless
+/// `Value` signature (registry-change event shapes belong to the engine, and the
+/// payload is ignored anyway), so schemars would emit the AnyValue schema — which the
+/// registry publish gate rejects (this blocked the web/v1.2.0 release).
+fn registry_changed_request_schema() -> Value {
+    json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "OnRegistryChangedEvent",
+        "description": "Registry-change event fired by engine::workers-available / \
+                        engine::functions-available. The payload is ignored — any JSON \
+                        is accepted; the handler just retries the guidance-hook bind.",
+        "type": ["null", "boolean", "number", "string", "array", "object"]
+    })
+}
+
+fn registry_changed_response_schema() -> Value {
+    json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "OnRegistryChangedResponse",
+        "type": "object",
+        "properties": {
+            "ok": {
+                "type": "boolean",
+                "description": "Always true; the bind attempt is fire-and-forget."
+            }
+        },
+        "required": ["ok"]
+    })
 }
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&WebConfig>) -> Result<(), String> {
@@ -325,5 +357,26 @@ mod tests {
             &json!({}),
             &HARNESS_TRIGGER_TYPES
         ));
+    }
+
+    /// Mirrors the registry publish gate (`collect_worker_interface.py`): both
+    /// explicit schemas must carry a schema-defining keyword, not the AnyValue
+    /// schema (which blocked the web/v1.2.0 release).
+    #[test]
+    fn registry_changed_schemas_pass_the_publish_typed_gate() {
+        for (field, schema) in [
+            ("request_schema", registry_changed_request_schema()),
+            ("response_schema", registry_changed_response_schema()),
+        ] {
+            let obj = schema
+                .as_object()
+                .unwrap_or_else(|| panic!("{field} must be a JSON object"));
+            assert!(
+                ["type", "properties", "$ref"]
+                    .iter()
+                    .any(|k| obj.contains_key(*k)),
+                "web::on-registry-changed {field} is untyped: {schema}"
+            );
+        }
     }
 }
