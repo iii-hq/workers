@@ -14,7 +14,7 @@ name = "iii_http"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-http"
+name = "http"
 path = "src/main.rs"
 
 [dependencies]

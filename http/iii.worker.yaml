@@ -3,7 +3,7 @@ name: http
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-http
+bin: http
 description: Expose functions as HTTP endpoints — registers the `http` trigger type and serves matched routes.
 config:
   port: 3111

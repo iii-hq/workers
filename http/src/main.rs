@@ -18,7 +18,7 @@ use iii_http::config::RestApiConfig;
 use iii_http::configuration;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-http", about = "HTTP server worker for iii.")]
+#[command(name = "http", about = "HTTP server worker for iii.")]
 struct Cli {
     /// Optional seed config.yaml. This seeds the configuration entry only when
     /// nothing is stored yet; thereafter the configuration worker is the
