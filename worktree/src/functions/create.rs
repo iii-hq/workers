@@ -179,6 +179,18 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         )
         .await;
 
+    if cfg.provision.copy_ignored {
+        // Best-effort background provisioning; the create response never
+        // waits on it and nothing new is emitted.
+        crate::provision::spawn_copy_ignored(
+            repo.clone(),
+            std::path::PathBuf::from(&record.path),
+            cfg.provision.clone(),
+            root,
+            t,
+        );
+    }
+
     Ok(Response {
         dev_port: record.dev_port,
         worktree_id,

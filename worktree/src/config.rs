@@ -47,6 +47,45 @@ pub struct WorkerConfig {
     /// hot-reloads; denials name the exact key to flip.
     #[serde(default)]
     pub gates: GatesConfig,
+    /// Best-effort provisioning of gitignored files into fresh worktrees.
+    #[serde(default)]
+    pub provision: ProvisionConfig,
+}
+
+/// Copy-ignored provisioning: replicate gitignored files (.env, caches)
+/// from the source repository into each new worktree, in the background,
+/// after `worktree::create` returns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionConfig {
+    /// Enable the background copy of gitignored files on create.
+    #[serde(default)]
+    pub copy_ignored: bool,
+    /// Globs selecting which ignored paths to copy (empty = all ignored).
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Globs excluding ignored paths from the copy.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Total copy budget in bytes; entries beyond it are skipped with a
+    /// warning.
+    #[serde(default = "default_max_copy_bytes")]
+    pub max_copy_bytes: u64,
+}
+
+fn default_max_copy_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+
+impl Default for ProvisionConfig {
+    fn default() -> Self {
+        Self {
+            copy_ignored: false,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            max_copy_bytes: default_max_copy_bytes(),
+        }
+    }
 }
 
 /// How default branch names are minted at create time.
@@ -175,6 +214,7 @@ impl Default for WorkerConfig {
             git_timeout_ms: default_git_timeout_ms(),
             test_timeout_ms: default_test_timeout_ms(),
             gates: GatesConfig::default(),
+            provision: ProvisionConfig::default(),
         }
     }
 }

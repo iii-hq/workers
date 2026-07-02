@@ -11,6 +11,7 @@ pub mod ids;
 pub mod land;
 pub mod locks;
 pub mod manifest;
+pub mod provision;
 pub mod state;
 pub mod surface;
 pub mod trash;

@@ -81,6 +81,11 @@ land_queue: "worktree-land"         # engine queue name for land jobs
 max_land_retries: 3                 # rebase retries when the target branch moves mid-land
 git_timeout_ms: 60000               # per-git-subprocess bound
 test_timeout_ms: 600000             # land test gate bound
+provision:
+  copy_ignored: false               # replicate gitignored files into new worktrees
+  include: []                       # globs; empty = every ignored path
+  exclude: []                       # globs subtracted from the copy
+  max_copy_bytes: 2147483648        # total budget; entries beyond it are skipped
 gates:
   allow_remove: true                # worktree::remove
   allow_force: false                # remove force, claim/release force, land force_restart
@@ -89,6 +94,17 @@ gates:
   allow_prune: true                 # worktree::prune (including the cron sweep)
   land_targets: ["*"]               # globs; pin to ["main"] to allow only mainline lands
 ```
+
+### Copy-ignored provisioning
+
+With `provision.copy_ignored: true`, every create spawns a background task
+that replicates the source repo's gitignored files (.env files, caches,
+local settings) into the new worktree: cheapest copy per platform (APFS
+clones via `cp -c` with a plain fallback on macOS, `--reflink=auto` on
+Linux), VCS metadata directories and the managed worktree root always
+excluded, bounded by `max_copy_bytes`. Provisioning is best-effort by
+design: the create response never waits on it, failures only log, and a
+retried copy skips files that already landed.
 
 ### Pull request checkouts, dev ports, integration
 
