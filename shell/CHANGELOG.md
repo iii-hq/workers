@@ -13,6 +13,23 @@ binary itself.
   deliberate fail-closed behavior: serde ignores unknown fields, so accepting
   the old shape would silently boot with `env.inherit false` and stop
   forwarding the worker's environment to children.
+- **`fs.host_root` (the 0.6.x single-root alias) is removed** — use
+  `fs.host_roots` (one-entry list). Like the env keys it is **rejected at
+  parse** with a migration hint (`fs.host_root` -> `fs.host_roots`); serde
+  would otherwise ignore the stale key and the worker would see no jail
+  configured at all.
+- **`code.base_path` and `code.base_paths` are removed from the schema.**
+  They were inert: the code resolver has always taken its roots from
+  `fs.host_roots` (one jail config), so stored values still carrying them are
+  silently **ignored** (no reject — they never had an effect).
+- **The one-shot coder→shell config migration is removed**
+  (`migrate_legacy_coder` and the hidden `migrated_from_coder` marker field).
+  0.7.0 no longer folds a legacy standalone-`coder` configuration entry into
+  the `shell` value at boot, and boot no longer probes `configuration::get`
+  for a `coder` entry — which also removes the boot-time
+  "configuration 'coder' not found" WARN retries. Stored values still
+  carrying the marker parse fine (it is ignored). Stacks that still need the
+  fold should boot 0.6.x once before upgrading.
 
 ### Added
 - `--version` prints the worker version.

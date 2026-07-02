@@ -17,7 +17,7 @@ cargo build --release --bin iii-shell
 mkdir -p ~/.iii/workers
 ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
 
-# 4. Start the engine (it spawns the worker). Pin a host_root or set
+# 4. Start the engine (it spawns the worker). Pin fs.host_roots or set
 #    fs.allow_unjailed: true in config.yaml first — the worker refuses to
 #    start unjailed by default.
 iii -c ./config.yaml
@@ -43,8 +43,8 @@ The shell worker integrates with the central `configuration` worker rather than 
 2. It immediately fetches the live value over RPC and activates the security policy and fs backend from that response.
 3. It then registers the `configuration:updated` trigger and runs a **fail-closed** boot reconcile before exposing any public function. The reconcile re-fetches the authoritative value (closing the race where an update lands between the initial fetch and trigger registration, leaving no listener). If that re-fetch fails the worker aborts startup — it exits rather than serve a possibly stale security policy, and no `shell::*` / `shell::fs::*` function is ever exposed.
 4. It subscribes to `configuration:updated` events. When the config for schema id `shell` changes, the worker hot-reloads the security policy and fs backend atomically.
-5. If the incoming config is invalid or unsafe (e.g. schema validation passes but the worker cannot build it — bad denylist regex, unreachable `host_root`), the worker keeps the last-good runtime and logs an error — it does **not** crash, and it does **not** retry (re-fetching returns the same bad value, so a retry would storm). The rejection is recorded and surfaced by `shell::config-status` (a `rejected` outcome with a non-zero `rejected_reloads` count) so the divergence between the central store and the enforced policy is detectable instead of silent.
-6. A reload that widens the jail (clearing `host_root`) succeeds, but is logged as a privilege change.
+5. If the incoming config is invalid or unsafe (e.g. schema validation passes but the worker cannot build it — bad denylist regex, unreachable jail root), the worker keeps the last-good runtime and logs an error — it does **not** crash, and it does **not** retry (re-fetching returns the same bad value, so a retry would storm). The rejection is recorded and surfaced by `shell::config-status` (a `rejected` outcome with a non-zero `rejected_reloads` count) so the divergence between the central store and the enforced policy is detectable instead of silent.
+6. A reload that widens the jail (clearing `host_roots`) succeeds, but is logged as a privilege change.
 
 ## Full YAML defaults
 
@@ -66,8 +66,8 @@ deliberately more permissive for dev use: `env.inherit true`, jailed to `/tmp`,
 | `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |
 | `job_retention_secs` | `3600` | finished jobs evicted by a background reaper (interval `min(30s, retention/2)`) — the primary prune path; prune-on-`shell::list` remains as a harmless secondary trigger |
-| `fs.host_root` | `null` | jail root; required unless `fs.allow_unjailed: true` |
-| `fs.allow_unjailed` | `false` | explicit opt-in to running with `host_root: null` |
+| `fs.host_roots` | `[]` | jail roots; first = primary; required non-empty unless `fs.allow_unjailed: true` |
+| `fs.allow_unjailed` | `false` | explicit opt-in to running with an empty `host_roots` |
 | `fs.max_read_bytes` | `0` (unlimited) | pre-flight cap via `fs::metadata` (`S218`) |
 | `fs.max_write_bytes` | `0` (unlimited) | mid-stream cap during write (`S218`) |
 | `fs.denylist_paths` | `[]` | absolute-prefix denylist; rejected with `S215` |
@@ -76,7 +76,7 @@ deliberately more permissive for dev use: `env.inherit true`, jailed to `/tmp`,
 
 ## Threat model
 
-The host backend's path-validation gate is check-then-use: there is a TOCTOU window between validation and the `std::fs::*` call. Validation walks to the longest existing ancestor, canonicalizes that (resolving symlinks in the existing portion), and lexically collapses the non-existent tail before the `starts_with(host_root)` check — so a symlink whose target escapes the jail cannot slip through the lexical fallback. The worker is intended for trusted caller pipelines; for untrusted input, use the sandbox backend.
+The host backend's path-validation gate is check-then-use: there is a TOCTOU window between validation and the `std::fs::*` call. Validation walks to the longest existing ancestor, canonicalizes that (resolving symlinks in the existing portion), and lexically collapses the non-existent tail before the jail-root containment check — so a symlink whose target escapes the jail cannot slip through the lexical fallback. The worker is intended for trusted caller pipelines; for untrusted input, use the sandbox backend.
 
 Host-targeted calls run with the shell worker's OS permissions. The denylist is regex over `argv.join(" ")` and only catches honest typos — a caller invoking an allowlisted shell or interpreter (`sh`, `node`, `python`, …) can bypass it by construction. The actual security boundary is `target: { kind: "sandbox", sandbox_id }`.
 
@@ -146,11 +146,11 @@ let bytes = reader.read_all().await?;
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `fs.host_root is unset and fs.allow_unjailed is false — refusing to start unjailed` | Default config no longer permits running unjailed. | Set `fs.host_root` to a directory, OR set `fs.allow_unjailed: true`. |
+| `fs.host_roots is empty and fs.allow_unjailed is false — refusing to start unjailed` | Default config no longer permits running unjailed. | Set `fs.host_roots` to at least one directory, OR set `fs.allow_unjailed: true`. |
 | `command 'xyz' not in allowlist` | `allowlist` is non-empty and doesn't include the binary's basename. | Add it to `allowlist`, or empty the list to allow anything. |
 | Worker never connects to engine | Engine isn't running or isn't bound on the URL the worker is configured for. | Start the engine first; check `--url` matches. The default WS port is 49134. |
 | Engine started but doesn't see the worker | Binary isn't symlinked at `~/.iii/workers/shell`. | `ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell` |
-| `S215 path escapes host_root` on a path inside the jail | A symlink in the path resolves outside the jail. | Resolve the symlink yourself, or move the target inside `host_root`. |
+| `S215 path escapes the fs jail roots` on a path inside the jail | A symlink in the path resolves outside the jail. | Resolve the symlink yourself, or move the target inside a jail root. |
 
 ## Tests
 

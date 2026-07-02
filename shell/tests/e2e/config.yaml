@@ -56,10 +56,10 @@ workers:
       max_concurrent_jobs: 2
       job_retention_secs: 2
       fs:
-        host_root: null
         # Test harness needs to write to OS tmpdirs scattered across the
-        # filesystem, so the jail is intentionally off here. Production
-        # operators should leave this false (default) and pin host_root.
+        # filesystem, so the jail is intentionally off here (no host_roots).
+        # Production operators should leave this false (default) and pin
+        # host_roots.
         allow_unjailed: true
         # Caps deliberately set to 1 MiB so size-cap-boundary tests
         # in cases-fs-protocol-break.ts can trip S218 cheaply. Streaming

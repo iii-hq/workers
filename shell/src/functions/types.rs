@@ -107,8 +107,8 @@ pub struct ExecRequest {
     pub timeout_ms: Option<u64>,
     /// Optional working directory for this call (host target only). Confined to
     /// the fs jail exactly like `shell::fs::*` paths: jail-relative when
-    /// `fs.host_root` is set (else absolute), canonicalized, and must resolve
-    /// inside `host_root` and miss the denylist — a path that escapes returns
+    /// `fs.host_roots` is set (else absolute), canonicalized, and must resolve
+    /// inside a jail root and miss the denylist — a path that escapes returns
     /// S215. Must already exist and be a directory. Omit to use the configured
     /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
     #[serde(default)]
@@ -159,7 +159,7 @@ pub struct ExecBgRequest {
     pub timeout_ms: Option<u64>,
     /// Optional working directory for this job (host target only). Same jail
     /// confinement and rules as [`ExecRequest::cwd`]: canonicalized, must
-    /// resolve inside `host_root` (S215 on escape) and be an existing
+    /// resolve inside a jail root (S215 on escape) and be an existing
     /// directory. Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub cwd: Option<String>,
