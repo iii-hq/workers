@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.7.0
+
+Environment-variable DX overhaul: one consolidated `env` config block, a
+self-documenting config schema, and a discoverable operator surface for the
+binary itself.
+
+### Breaking
+- **`inherit_env` and `allowed_env` are replaced by a nested `env` block**
+  (`env.inherit`, `env.allow`) — no legacy aliases. The old top-level keys are
+  **rejected at parse** with a migration hint naming the new keys. This is
+  deliberate fail-closed behavior: serde ignores unknown fields, so accepting
+  the old shape would silently boot with `env.inherit false` and stop
+  forwarding the worker's environment to children.
+
+### Added
+- `--version` prints the worker version.
+- `--url` is documented in `--help`, including the `III_URL` env var binding.
+- Pre-connect reachability probe: when the engine is unreachable at boot, one
+  ERROR names the URL and the fix (`is the iii engine running? Set --url or
+  III_URL...`) before the SDK's silent 2s-backoff retry loop takes over. The
+  worker still never exits.
+- Every operator-visible config field (including the nested `env`, `fs`, and
+  `sandbox` blocks) now carries a schema description, so the console
+  configuration UI documents each knob inline. Pinned by a unit test.
+- A `## Running` README section documents the binary's full operator surface
+  (`--config`, `--url`/`III_URL`, `--version`, `RUST_LOG`).
+
+### Migration
+```yaml
+# 0.6.x                                # 0.7.0
+inherit_env: true                      env:
+allowed_env: [PATH, HOME, LANG]          inherit: true
+                                         allow: [PATH, HOME, LANG]
+```
+- A stored configuration value (id `shell`) still carrying the old keys makes
+  the worker fail closed at boot with the hint above. Rewrite it via
+  `configuration::set` with the nested shape.
+- **Order matters**: deploy the 0.7.0 binary FIRST, then rewrite the stored
+  value. Writing the new shape while 0.6.x is still running makes the old
+  worker hot-reload it, ignore the unknown `env` block, and silently stop
+  forwarding env until restart.
+
 ## 0.6.0
 
 The standalone `coder` worker is folded into `shell`. There is now ONE worker,

@@ -30,7 +30,10 @@ iii -c ./config.yaml
 | flag | default | purpose |
 |------|---------|---------|
 | `--config <path>` | `./config.yaml` | Optional seed config: the YAML is passed as `initial_value` when registering the schema with the `configuration` worker on first boot. It is **not** the live source of truth — the live value is fetched over RPC after registration. When the file is absent and nothing is stored yet, the worker seeds a built-in zero-config default (`ShellConfig::seed_default()`, jailed to `/tmp`) instead. |
-| `--url <ws-url>` | `ws://127.0.0.1:49134` | iii engine WebSocket |
+| `--url <ws-url>` | `ws://127.0.0.1:49134` | iii engine WebSocket. Also read from the `III_URL` env var (the flag wins). A pre-connect probe logs one ERROR with a fix hint when the engine is unreachable; the SDK then retries forever with a 2s backoff. |
+| `--version` | — | print the worker version |
+
+Logging is controlled by the `RUST_LOG` env var (tracing `EnvFilter` syntax; default `info`).
 
 ## Configuration
 
@@ -45,6 +48,11 @@ The shell worker integrates with the central `configuration` worker rather than 
 
 ## Full YAML defaults
 
+These are the CODE defaults (`ShellConfig::default()` — fail-closed: `env.inherit
+false`, unjailed refused). The shipped seed `config.yaml` / `seed_default()` is
+deliberately more permissive for dev use: `env.inherit true`, jailed to `/tmp`,
+`max_timeout_ms 120000`, catastrophic-only denylist.
+
 | key | default | enforced where |
 |-----|---------|----------------|
 | `max_timeout_ms` | `30000` | foreground `exec` hard cap; per-call `timeout_ms` clamped to this |
@@ -52,8 +60,8 @@ The shell worker integrates with the central `configuration` worker rather than 
 | `default_timeout_ms` | `10000` | applied when caller omits `timeout_ms` |
 | `max_output_bytes` | `1048576` (1 MiB) | stdout/stderr truncated; `*_truncated` flagged |
 | `working_dir` | `null` | pins cwd for spawned commands when set |
-| `inherit_env` | `false` | when `false`, only `allowed_env` keys are forwarded |
-| `allowed_env` | `[PATH, HOME, LANG, LC_ALL, TERM]` | env passthrough allowlist |
+| `env.inherit` | `false` | forward the worker's FULL env to children; when `false`, only `env.allow` keys are forwarded |
+| `env.allow` | `[PATH, HOME, LANG, LC_ALL, TERM]` | dual role: forwarding allowlist when `env.inherit` is false, AND the per-call `env` settable gate (minus the hardcoded dangerous keys, which are never settable) |
 | `allowlist` | `[]` (open) | command basename allowlist; empty = open |
 | `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |

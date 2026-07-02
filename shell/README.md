@@ -30,6 +30,23 @@ npx skills add iii-hq/workers --list
 npx skills add iii-hq/workers --all
 ```
 
+## Running
+
+The binary needs no required environment variables — it boots against a local
+engine with pure defaults. The full operator surface:
+
+| Knob | Default | What it does |
+|---|---|---|
+| `--url <URL>` / `III_URL` env var | `ws://127.0.0.1:49134` | WebSocket URL of the iii engine. The CLI flag wins over the env var. |
+| `--config <path>` | `./config.yaml` | Seed config sent as `initial_value` on FIRST registration only; the stored value wins afterwards (see [Configure](#configure)). |
+| `--version` | — | Print the worker version (also registered with the engine as worker metadata). |
+| `RUST_LOG` env var | `info` | Log filter (tracing `EnvFilter` syntax, e.g. `RUST_LOG=shell=debug,info`). |
+
+If the engine is unreachable at boot, a pre-connect probe logs one ERROR
+("engine unreachable at <url> — is the iii engine running? Set --url or the
+III_URL env var...") and the worker keeps retrying in the background every 2s —
+it never exits, so supervised deployments recover as soon as the engine is up.
+
 ## Configure
 
 Settings are managed through the central `configuration` worker. On boot, the shell worker registers its schema (id `shell`) and fetches the live value over RPC — that live value is the authoritative config, not a local file. The optional `--config <path>` flag (default `./config.yaml`) provides the `initial_value` sent on first registration only; once registered, subsequent boots pull the stored value from the `configuration` worker. When the config changes, the worker hot-reloads the security policy and fs backend automatically (see [Hot-reload](#hot-reload)).
@@ -43,8 +60,9 @@ max_timeout_ms: 120000       # foreground exec hard cap; per-call timeout_ms is 
 max_bg_timeout_ms: 0         # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms)
 default_timeout_ms: 10000    # applied when the caller omits timeout_ms
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
-inherit_env: true            # forward the worker's env to children; per-call dangerous keys still blocked
-allowed_env: [PATH, HOME, LANG, LC_ALL, TERM]  # gates per-call `env` (dangerous keys never settable)
+env:
+  inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
+  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; gates per-call `env` (dangerous keys never settable)
 
 # exec gate. argv[0] is matched by basename or exact path; an empty
 # allowlist means OPEN — the shipped default, so any command runs.
@@ -82,7 +100,7 @@ Host `shell::exec` is not a security boundary: any allowlisted interpreter (`sh`
 `shell::exec` and `shell::exec_bg` each accept optional fields so an agent can scope a single command to a directory, set specific env values, and feed it standard input without wrapping everything in `sh -lc` (which would defeat the argv allowlist):
 
 - **`cwd`** (string): the working directory for this one call. It is confined to the fs jail **exactly** like `shell::fs::*` paths — jail-relative when `fs.host_root` is set (else absolute), canonicalized, and required to resolve inside `host_root` and miss `denylist_paths`. A `cwd` that escapes the jail returns `S215`; one that doesn't exist or isn't a directory returns `S211`/`S210`. Omit it to use the configured `working_dir` (unchanged default).
-- **`env`** (object of string→string): per-call environment values. A key may be set **only** if the operator already listed it in `allowed_env`, and **never** for an exec-hijacking key — `PATH`, `IFS`, `HOME`, every `LD_*`/`DYLD_*` variant, and other loader/lookup-path and interpreter startup-file keys (`GCONV_PATH`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `NODE_OPTIONS`, …) are on a hardcoded denylist that **wins over** `allowed_env`. Note that `HOME` ships in the default `allowed_env` for the worker's own forwarded env but is **not** settable per-call. Supplying a key that is not in `allowed_env`, or any dangerous key, rejects the **whole call** with `S210` (the offending key is named and the permitted keys are listed); the env is never silently dropped. A permitted per-call value overrides the value that would otherwise be forwarded for that key. So an agent can do `NODE_ENV=test` only if the operator put `NODE_ENV` in `allowed_env`, and can never inject `PATH`, `HOME`, or `LD_PRELOAD`.
+- **`env`** (object of string→string): per-call environment values. A key may be set **only** if the operator already listed it in `env.allow`, and **never** for an exec-hijacking key — `PATH`, `IFS`, `HOME`, every `LD_*`/`DYLD_*` variant, and other loader/lookup-path and interpreter startup-file keys (`GCONV_PATH`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `NODE_OPTIONS`, …) are on a hardcoded denylist that **wins over** `env.allow`. Note that `HOME` ships in the default `env.allow` for the worker's own forwarded env but is **not** settable per-call. Supplying a key that is not in `env.allow`, or any dangerous key, rejects the **whole call** with `S210` (the offending key is named and the permitted keys are listed); the env is never silently dropped. A permitted per-call value overrides the value that would otherwise be forwarded for that key. So an agent can do `NODE_ENV=test` only if the operator put `NODE_ENV` in `env.allow`, and can never inject `PATH`, `HOME`, or `LD_PRELOAD`.
 - **`stdin`** (string): written to the program's standard input, which is then closed (EOF). Use it to feed `tee`, `patch`, `cat`, or any stdin filter instead of a shell heredoc. Omit it and stdin is `/dev/null`.
 
 All three fields are **host-only**. The `sandbox::exec` protocol does not forward `cwd`/`env`/`stdin`, so a sandbox-targeted call that supplies any of them is rejected with `S210` rather than silently ignoring it. Omit them and behaviour is identical to prior versions.
@@ -108,7 +126,7 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 
 | Function | Purpose |
 |---|---|
-| `shell::exec` | Run an allowlisted command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (jail-confined), `env` (gated by `allowed_env` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
+| `shell::exec` | Run an allowlisted command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (jail-confined), `env` (gated by `env.allow` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
 | `shell::exec_bg` | Spawn an allowlisted command as a background job; returns `{ job_id, argv }` immediately. Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
 | `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
@@ -165,7 +183,7 @@ Returned error bodies carry a stable `code` field. Allowlist and denylist reject
 | Code | Meaning |
 |---|---|
 | `S200` | In-VM execution failure on a sandbox target. |
-| `S210` | Invalid request: non-absolute path, empty command or pattern, bad octal mode, malformed payload, `sandbox.enabled: false` on a sandbox-targeted call, a `cwd` that is not a directory, an `env` key outside `allowed_env` or in the dangerous-key denylist, `cwd`/`env`/`stdin` supplied on a sandbox target (host-only), an inline string `content` on a sandbox-targeted `shell::fs::write`, or both single `path`/`content` and `files` on `shell::fs::write`. |
+| `S210` | Invalid request: non-absolute path, empty command or pattern, bad octal mode, malformed payload, `sandbox.enabled: false` on a sandbox-targeted call, a `cwd` that is not a directory, an `env` key outside `env.allow` or in the dangerous-key denylist, `cwd`/`env`/`stdin` supplied on a sandbox target (host-only), an inline string `content` on a sandbox-targeted `shell::fs::write`, or both single `path`/`content` and `files` on `shell::fs::write`. |
 | `S211` | Path not found (including a `cwd` that does not exist). |
 | `S212` | Wrong file type for the operation (for example, a file where a directory was expected). |
 | `S213` | Path already exists. |
@@ -177,6 +195,34 @@ Returned error bodies carry a stable `code` field. Allowlist and denylist reject
 | `S300` | Sandbox VM boot failed (needs a virtualization host: Apple Silicon or `/dev/kvm`). |
 
 Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, and `S400`. Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.
+
+## Upgrading to 0.7.0
+
+- **BREAKING: env config keys renamed and nested.** The top-level `inherit_env`
+  and `allowed_env` keys are replaced by one `env` block — no legacy aliases:
+
+  ```yaml
+  # 0.6.x                                # 0.7.0
+  inherit_env: true                      env:
+  allowed_env: [PATH, HOME, LANG]          inherit: true
+                                           allow: [PATH, HOME, LANG]
+  ```
+
+  The old keys are **rejected at parse** with a migration hint ("config keys
+  removed in 0.7.0: `inherit_env` -> `env.inherit` ..."), because serde would
+  otherwise ignore them silently and boot with env forwarding OFF. A stored
+  configuration value still carrying the old keys makes the worker fail closed
+  at boot; rewrite it via `configuration::set` (id `shell`) with the nested
+  shape. **Sequencing matters**: update the binary FIRST, then the stored
+  value — writing the new shape while 0.6.x is still running makes the old
+  worker hot-reload it, ignore the unknown `env` block, and silently stop
+  forwarding env until restart.
+- **`--version` added**, and `--url`/`III_URL` and `RUST_LOG` are now
+  documented (see [Running](#running)).
+- **Unreachable-engine boot is loud**: one ERROR with the URL and the fix
+  hint, instead of only the SDK's silent retry WARNs.
+- **Every config field now carries a schema description**, so the console
+  configuration UI documents each knob inline.
 
 ## Upgrading to 0.4.0
 
@@ -198,6 +244,7 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
 - **`S215 path escapes host_root` on a path inside the jail**: a symlink in the path resolves outside the jail. Resolve it yourself, or move the target inside `host_root`.
 - **`S300` on a sandbox target**: the host cannot boot microVMs. Sandbox execution requires Apple Silicon or `/dev/kvm`.
 - **Worker never connects**: the engine is not running or not bound on the configured `--url`. Start the engine first; the default WebSocket port is 49134.
+- **`config keys removed in 0.7.0: ...` at boot or on reload**: the seed file or the stored configuration value still uses the 0.6.x `inherit_env`/`allowed_env` keys. Nest them under `env:` (`inherit`/`allow`) — see [Upgrading to 0.7.0](#upgrading-to-070).
 
 For the threat model, streaming wire shapes, and contributor build steps, see [ARCHITECTURE.md](ARCHITECTURE.md).
 

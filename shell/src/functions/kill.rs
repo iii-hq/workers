@@ -189,7 +189,10 @@ mod host_kill_tests {
 
     fn open_cfg() -> ShellConfig {
         let mut c = ShellConfig {
-            inherit_env: true,
+            env: crate::config::EnvConfig {
+                inherit: true,
+                ..Default::default()
+            },
             max_output_bytes: 4096,
             ..Default::default()
         };

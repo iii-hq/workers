@@ -45,8 +45,9 @@ workers:
       default_timeout_ms: 1500
       max_output_bytes: 4096
       working_dir: ./data
-      inherit_env: false
-      allowed_env: [PATH, HOME, LANG, HARNESS_TEST_VAR]
+      env:
+        inherit: false
+        allow: [PATH, HOME, LANG, HARNESS_TEST_VAR]
       allowlist: [echo, ls, cat, sleep, pwd, printf, sh, false, "true", env]
       denylist_patterns:
         - "rm\\s+-rf\\s+/"

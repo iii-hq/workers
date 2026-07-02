@@ -131,7 +131,7 @@ if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
 fi
 
 # 5. Set env vars used by the env-scrubbing/passthrough cases. HARNESS_TEST_VAR
-# is in allowed_env — should round-trip. HARNESS_NOT_ALLOWED is not — should be
+# is in env.allow — should round-trip. HARNESS_NOT_ALLOWED is not — should be
 # scrubbed before reaching the spawned `env` command.
 export HARNESS_TEST_VAR="harness-allowed-value"
 export HARNESS_NOT_ALLOWED="harness-blocked-value"
