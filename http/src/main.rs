@@ -113,11 +113,16 @@ async fn main() -> Result<()> {
     tracing::info!(address = %boot.local_addr, "iii-http ready");
 
     // Subscribe to configuration:updated so middleware/default_timeout and the
-    // CORS/timeout/concurrency layers reload live on a same-address change
-    // (host/port remain restart-only — see configuration).
-    configuration::register_config_trigger(&iii, boot.config.clone(), boot.router.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    // CORS/timeout/concurrency layers reload live on a same-address change, and
+    // a host/port change rebinds the listener live (see configuration).
+    configuration::register_config_trigger(
+        &iii,
+        boot.config.clone(),
+        boot.hot_router.clone(),
+        boot.control.clone(),
+    )
+    .map_err(anyhow::Error::msg)
+    .context("binding configuration trigger")?;
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-http shutting down");

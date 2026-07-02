@@ -7,12 +7,11 @@ use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterTriggerType};
-use tokio::sync::{RwLock, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
 use crate::configuration::{self, ConfigCell};
-use crate::server::{self, RouterCell, ServerHandle};
+use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle};
 use crate::trigger::{HttpTriggerHandler, RouteTable};
 use crate::trigger_type;
 use crate::types::{HttpRequest, HttpTriggerConfig};
@@ -24,27 +23,39 @@ const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 /// The worker id/name the built-in HTTP worker registers as.
 const BUILTIN_III_HTTP_WORKER_ID: &str = "iii-http";
 
-/// Handle to a running worker: the bound address, the shared route table, the
-/// live config cell (so the caller can wire the `configuration:updated` trigger
-/// and observe hot-reloads), the swappable router cell (so a same-address
-/// config change can rebuild the CORS/timeout/concurrency layers live), and a
-/// graceful-shutdown trigger.
+/// Handle to a running worker: the shared route table, the live config cell (so
+/// the caller can wire the `configuration:updated` trigger and observe
+/// hot-reloads), the swappable router cell (so a same-address config change can
+/// rebuild the CORS/timeout/concurrency layers live), the shared [`HotRouter`]
+/// and [`ServerControlCell`] (so a host/port change can rebind the listener),
+/// plus the address the server bound at boot.
+///
+/// `local_addr` is the INITIAL bound address; after a host/port rebind
+/// (Phase B) the live address changes — read the current one via
+/// [`BootHandle::current_addr`] or from the config cell.
 pub struct BootHandle {
     pub local_addr: SocketAddr,
     pub routes: Arc<RwLock<RouteTable>>,
     pub config: ConfigCell,
     pub router: RouterCell,
-    shutdown: Option<oneshot::Sender<()>>,
-    join: JoinHandle<()>,
+    pub hot_router: HotRouter,
+    pub control: ServerControlCell,
 }
 
 impl BootHandle {
-    /// Signal the server to stop and wait for the task to finish.
-    pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
+    /// The address the currently-running server is bound to. Differs from
+    /// [`BootHandle::local_addr`] after a host/port rebind. `None` once the
+    /// server has been shut down.
+    pub async fn current_addr(&self) -> Option<SocketAddr> {
+        self.control.lock().await.as_ref().map(|c| c.local_addr)
+    }
+
+    /// Gracefully stop the running server and wait for its task to finish.
+    pub async fn shutdown(self) {
+        if let Some(control) = self.control.lock().await.take() {
+            let _ = control.graceful.send(());
+            let _ = control.join.await;
         }
-        let _ = self.join.await;
     }
 }
 
@@ -79,8 +90,8 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     let ServerHandle {
         local_addr,
         router,
-        join,
-        shutdown,
+        hot_router,
+        control,
     } = server::serve(routes.clone(), iii, cell.clone()).await?;
 
     Ok(BootHandle {
@@ -88,8 +99,8 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
         routes,
         config: cell,
         router,
-        shutdown: Some(shutdown),
-        join,
+        hot_router,
+        control,
     })
 }
 

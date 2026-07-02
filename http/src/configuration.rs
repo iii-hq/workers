@@ -22,10 +22,11 @@
 //! `concurrency_request_limit` also take effect live without dropping the
 //! listener.
 //!
-//! Only `host` / `port` remain **restart-only**: rebinding the TCP listener to a
-//! new address is a separate later phase (Phase B). A host/port change is
-//! applied to the cell (so a later restart picks it up) and logged with a
-//! warning; the running listener stays on the old address.
+//! A `host` / `port` change **rebinds** the listener live (Phase B): the new
+//! address is bound first (a failed bind keeps the old server), the new server
+//! is spawned over the shared router cell + state, and the old server is then
+//! gracefully shut down. See [`on_config_change`] and the shared
+//! [`crate::server::ServerControlCell`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,10 +35,11 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
+use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
-use crate::server::{self, RouterCell};
+use crate::server::{self, HotRouter, ServerControlCell};
 
 /// Shared, swappable config snapshot. The handler reads it per-request so
 /// `middleware`/`default_timeout` changes take effect without a restart.
@@ -110,55 +112,44 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 }
 
 /// Swap the live config snapshot. Returns false when the candidate is rejected
-/// (then the previous config is kept). Restart-only field changes are applied to
-/// the cell but logged: the running listener/router does not pick them up.
+/// (then the previous config is kept). Used on the same-address path; the
+/// address-change (rebind) path swaps the cell itself, after a successful bind.
 pub async fn apply_config(cell: &ConfigCell, cfg: RestApiConfig) -> bool {
     if let Err(reason) = cfg.validate() {
         tracing::warn!(reason = %reason, "config reload rejected; keeping previous config");
         return false;
     }
-    {
-        let current = cell.read().await;
-        warn_restart_only_changes(&current, &cfg);
-    }
     *cell.write().await = Arc::new(cfg);
     true
-}
-
-/// Log a warning when host/port changes, so an operator knows the running
-/// listener has not picked the change up (host/port rebind is Phase B). CORS /
-/// timeout / concurrency changes are NOT warned here: on a same-address change
-/// they hot-reload via [`crate::server::rebuild_layers`].
-fn warn_restart_only_changes(current: &RestApiConfig, next: &RestApiConfig) {
-    if current.host != next.host || current.port != next.port {
-        tracing::warn!(
-            old = %format!("{}:{}", current.host, current.port),
-            new = %format!("{}:{}", next.host, next.port),
-            "http: host/port change requires a worker restart; the listener stays on the old address"
-        );
-    }
 }
 
 /// Register `http::on-config-change` and subscribe it to `configuration:updated`
 /// events for the `http` entry. The handler ignores the trigger payload and
 /// re-fetches the authoritative value (the bus function is discoverable, so a
 /// caller-supplied payload must not be trusted to repoint config).
+///
+/// `hot_router` (its `inner` is the shared router cell) rebuilds layers on a
+/// same-address change and is reused to spawn a rebound server; `control` tracks
+/// the currently-running server so a host/port change can replace it.
 pub fn register_config_trigger(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
-    router: RouterCell,
+    hot_router: HotRouter,
+    control: ServerControlCell,
 ) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
-    let router_for_fn = router.clone();
+    let hot_router_for_fn = hot_router.clone();
+    let control_for_fn = control.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
             let cell = cell_for_fn.clone();
-            let router = router_for_fn.clone();
+            let hot_router = hot_router_for_fn.clone();
+            let control = control_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell, &router).await;
+                on_config_change(&engine, &cell, &hot_router, &control).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -177,34 +168,92 @@ pub fn register_config_trigger(
     Ok(())
 }
 
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, router: &RouterCell) {
-    match fetch_config(iii).await {
-        Ok(cfg) => {
-            // Capture the address BEFORE the swap so we can tell a same-address
-            // change (rebuild layers live) from a host/port change (restart-only).
-            let old_addr = {
-                let current = cell.read().await;
-                format!("{}:{}", current.host, current.port)
-            };
-            let new_addr = format!("{}:{}", cfg.host, cfg.port);
-
-            if apply_config(cell, cfg).await {
-                if old_addr == new_addr {
-                    // Same address: rebuild the CORS/timeout/concurrency layers
-                    // from the now-current snapshot and swap them into the live
-                    // router. The listener keeps running.
-                    let snapshot = cell.read().await.clone();
-                    server::rebuild_layers(router, &snapshot).await;
-                }
-                // A host/port change was already warned in warn_restart_only_changes;
-                // Phase B will rebind the listener.
-                tracing::info!("http configuration reloaded");
-            }
-        }
+async fn on_config_change(
+    iii: &IIIClient,
+    cell: &ConfigCell,
+    hot_router: &HotRouter,
+    control: &ServerControlCell,
+) {
+    let cfg = match fetch_config(iii).await {
+        Ok(cfg) => cfg,
         Err(e) => {
-            tracing::error!(error = %e, "config-change: fetch failed; keeping previous config")
+            tracing::error!(error = %e, "config-change: fetch failed; keeping previous config");
+            return;
         }
+    };
+
+    // Capture the address BEFORE any swap so we can tell a same-address change
+    // (rebuild layers live) from a host/port change (rebind the listener).
+    let old_addr = {
+        let current = cell.read().await;
+        format!("{}:{}", current.host, current.port)
+    };
+    let new_addr = format!("{}:{}", cfg.host, cfg.port);
+
+    if old_addr == new_addr {
+        // Same address: swap the snapshot, then rebuild the
+        // CORS/timeout/concurrency layers into the live router. Listener stays.
+        if apply_config(cell, cfg).await {
+            let snapshot = cell.read().await.clone();
+            server::rebuild_layers(&hot_router.inner, &snapshot).await;
+            tracing::info!("http configuration reloaded (same address)");
+        }
+        return;
     }
+
+    // Address change: rebind the listener (bind-new-before-stop-old).
+    match rebind(cell, hot_router, control, cfg).await {
+        Ok(()) => tracing::info!(
+            old = %old_addr,
+            new = %new_addr,
+            "http server rebound after configuration change; old address shutting down"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            old = %old_addr,
+            new = %new_addr,
+            "http rebind failed; keeping previous config and server"
+        ),
+    }
+}
+
+/// Rebind the listener to `cfg`'s new host/port. Resolves every fallible
+/// prerequisite BEFORE mutating live state: the config is validated and the NEW
+/// address is bound first, so a rejected config or a failed bind leaves the old
+/// config AND old server untouched. Once the new bind succeeds: swap the config
+/// cell, rebuild the router layers on the SHARED cell (the new server serves via
+/// it), spawn the new server, then gracefully shut the old one down (with a hard
+/// abort as a safety net). Mirrors the engine's `apply_config` address branch.
+async fn rebind(
+    cell: &ConfigCell,
+    hot_router: &HotRouter,
+    control: &ServerControlCell,
+    cfg: RestApiConfig,
+) -> anyhow::Result<()> {
+    if let Err(reason) = cfg.validate() {
+        anyhow::bail!("rejected new config: {reason}");
+    }
+
+    let new_addr = format!("{}:{}", cfg.host, cfg.port);
+    let listener = TcpListener::bind(&new_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to bind {new_addr}: {e}"))?;
+
+    // New bind succeeded — now safe to mutate live state. Swap the config and
+    // rebuild the router layers on the shared cell BEFORE spawning, so the new
+    // server serves the current routes/layers from the first request.
+    *cell.write().await = Arc::new(cfg);
+    let snapshot = cell.read().await.clone();
+    server::rebuild_layers(&hot_router.inner, &snapshot).await;
+
+    let new_control = server::spawn_server(listener, hot_router.clone());
+
+    // Install the new server as current; gracefully drain the old one.
+    let old = control.lock().await.replace(new_control);
+    if let Some(old) = old {
+        server::stop_old_server(old);
+    }
+    Ok(())
 }
 
 async fn trigger_with_retry(

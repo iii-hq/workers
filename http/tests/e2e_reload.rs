@@ -58,8 +58,13 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
     configuration::register_config(&iii, None)
         .await
         .expect("register http configuration schema");
-    configuration::register_config_trigger(&iii, boot.config.clone(), boot.router.clone())
-        .expect("bind configuration trigger");
+    configuration::register_config_trigger(
+        &iii,
+        boot.config.clone(),
+        boot.hot_router.clone(),
+        boot.control.clone(),
+    )
+    .expect("bind configuration trigger");
 
     let url = format!("http://{}/reload", boot.local_addr);
     let client = reqwest::Client::new();
@@ -120,8 +125,13 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
     configuration::register_config(&iii, None)
         .await
         .expect("register http configuration schema");
-    configuration::register_config_trigger(&iii, boot.config.clone(), boot.router.clone())
-        .expect("bind configuration trigger");
+    configuration::register_config_trigger(
+        &iii,
+        boot.config.clone(),
+        boot.hot_router.clone(),
+        boot.control.clone(),
+    )
+    .expect("bind configuration trigger");
 
     let url = format!("http://{}/cors-reload", boot.local_addr);
     let client = reqwest::Client::new();
@@ -192,6 +202,140 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
             .and_then(|v| v.to_str().ok()),
         Some("*"),
         "disallowed origin must not receive permissive `*` after the reload",
+    );
+
+    boot.shutdown().await;
+    iii.shutdown_async().await;
+}
+
+/// Grab two distinct free loopback TCP ports by binding `127.0.0.1:0` twice and
+/// reading the OS-assigned ports, then dropping the listeners so the ports are
+/// free for the worker to (re)bind. A tiny TOCTOU race exists (another process
+/// could grab a port before the worker does), but it is negligible in the test
+/// environment and the alternative — ephemeral ports — cannot prove a *specific*
+/// address moved.
+fn two_free_ports() -> (u16, u16) {
+    use std::net::TcpListener as StdListener;
+    let l1 = StdListener::bind("127.0.0.1:0").unwrap();
+    let l2 = StdListener::bind("127.0.0.1:0").unwrap();
+    let p1 = l1.local_addr().unwrap().port();
+    let p2 = l2.local_addr().unwrap().port();
+    assert_ne!(p1, p2, "expected two distinct free ports");
+    drop(l1);
+    drop(l2);
+    (p1, p2)
+}
+
+/// Poll until a GET to `url` returns 200, using a FRESH client each attempt so
+/// no pooled keep-alive connection masks a moved listener. Returns true on
+/// success within the deadline.
+async fn wait_until_serves(url: &str) -> bool {
+    for _ in 0..100 {
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status() == 200 {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// Poll until a NEW connection to `url` is refused/errors (the old listener is
+/// fully closed). A fresh client per attempt avoids reusing a draining pooled
+/// connection. Returns true if the address stops serving within the deadline.
+async fn wait_until_refused(url: &str) -> bool {
+    for _ in 0..50 {
+        let client = reqwest::Client::new();
+        if client.get(url).send().await.is_err() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// Poll the live config cell until its bound port equals `port` (the observable
+/// effect of the rebind's config swap), or panic.
+async fn wait_for_port(config: &configuration::ConfigCell, port: u16) {
+    for _ in 0..100 {
+        if config.read().await.port == port {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("config reload (port change) never propagated to the cell");
+}
+
+/// Host/port rebind (Phase B): boot on port P1, register a route, then flip the
+/// config `port` to P2 via `configuration::set`. Prove the listener MOVED — P2
+/// now serves the route and P1 stops accepting new connections — without a
+/// restart (same `BootHandle`).
+#[tokio::test]
+#[serial]
+async fn host_port_change_rebinds_listener_without_restart() {
+    // Dedicated client: this test registers `http::on-config-change`, the same
+    // id the other reload tests register (one id per client only).
+    let iii = engine::connect_fresh().await;
+
+    let (p1, p2) = two_free_ports();
+
+    // Boot on the first fixed port and register a route.
+    let boot = worker::start_http_worker_on(iii.clone(), "127.0.0.1", p1).await;
+    backend::register_echo_backend(&iii, "/rebind", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/rebind").await;
+
+    configuration::register_config(&iii, None)
+        .await
+        .expect("register http configuration schema");
+    configuration::register_config_trigger(
+        &iii,
+        boot.config.clone(),
+        boot.hot_router.clone(),
+        boot.control.clone(),
+    )
+    .expect("bind configuration trigger");
+
+    let url_p1 = format!("http://127.0.0.1:{p1}/rebind");
+    let url_p2 = format!("http://127.0.0.1:{p2}/rebind");
+
+    // Before the rebind: P1 serves the route.
+    assert!(
+        wait_until_serves(&url_p1).await,
+        "expected P1 ({p1}) to serve before the rebind"
+    );
+
+    // Flip the port to P2 (same host) → triggers a live rebind.
+    let new_value = json!({ "host": "127.0.0.1", "port": p2 });
+    iii.trigger(TriggerRequest {
+        function_id: "configuration::set".to_string(),
+        payload: json!({ "id": configuration::CONFIG_ID, "value": new_value }),
+        action: None,
+        timeout_ms: Some(10_000),
+    })
+    .await
+    .expect("configuration::set");
+
+    // Wait for the config swap to propagate, then for the new listener to serve.
+    wait_for_port(&boot.config, p2).await;
+    assert!(
+        wait_until_serves(&url_p2).await,
+        "expected P2 ({p2}) to serve the route after the rebind"
+    );
+
+    // The current address reported by the control cell must be the new port.
+    assert_eq!(
+        boot.current_addr().await.map(|a| a.port()),
+        Some(p2),
+        "control cell should report the rebound address"
+    );
+
+    // The old address must stop accepting new connections (graceful drain +
+    // hard-abort safety net free the old port).
+    assert!(
+        wait_until_refused(&url_p1).await,
+        "expected P1 ({p1}) to stop serving after the rebind"
     );
 
     boot.shutdown().await;

@@ -31,6 +31,23 @@ pub async fn start_http_worker(iii: Arc<IIIClient>) -> BootHandle {
     .expect("http worker should boot")
 }
 
+/// Same as [`start_http_worker`], but boots bound to an explicit `host`/`port`
+/// (instead of the ephemeral `port: 0`). Used by the rebind test, which needs
+/// deterministic ports to prove the listener moved from one to another.
+#[allow(dead_code)]
+pub async fn start_http_worker_on(iii: Arc<IIIClient>, host: &str, port: u16) -> BootHandle {
+    boot::start(
+        iii,
+        RestApiConfig {
+            port,
+            host: host.to_string(),
+            ..RestApiConfig::default()
+        },
+    )
+    .await
+    .expect("http worker should boot")
+}
+
 /// Same as [`start_http_worker`], but boots with `config.middleware` set to
 /// `middleware_function_ids` (each entry defaulted to `preHandler`/priority
 /// 0), so global middleware tests can exercise the config-driven path.

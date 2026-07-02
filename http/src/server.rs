@@ -21,8 +21,16 @@
 //! This mirrors the engine's `HotRouter` (`hot_router.rs`), with the engine's
 //! injected `engine` extension replaced by our `AppState`.
 //!
-//! Address (host/port) rebind is deliberately NOT handled here — that is a
-//! separate later phase; host/port changes remain restart-only.
+//! ## Address rebind (Phase B)
+//!
+//! A host/port change rebinds the TCP listener without dropping requests: the
+//! NEW address is bound first (a failed bind keeps the old server untouched),
+//! the new server is spawned over the SAME [`RouterCell`] + [`AppState`] (so it
+//! serves identical routes/layers), and only THEN is the OLD server gracefully
+//! shut down (its listener + idle keep-alive connections closed) with a hard
+//! abort as a safety net. The currently-running server is tracked in a shared
+//! [`ServerControlCell`] so a config-change task can replace it. This mirrors
+//! the engine's `spawn_server` / `apply_config` address-change branch.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -40,8 +48,8 @@ use axum::{
 use futures::Future;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::task::{AbortHandle, JoinHandle};
 use tower::Service;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
@@ -57,19 +65,44 @@ use crate::trigger::RouteTable;
 /// Sentinel meaning "any origin" in CORS config.
 const ALLOW_ORIGIN_ANY: &str = "*";
 
+/// Grace period after a rebind before the old server task is hard-aborted, as a
+/// safety net for a connection that refuses to drain. Graceful shutdown (closing
+/// the old listener + idle keep-alive connections) is the primary mechanism;
+/// this only bounds how long a stuck connection can pin the old address.
+/// Mirrors the engine's `OLD_SERVER_HARD_STOP_GRACE`.
+const OLD_SERVER_HARD_STOP_GRACE: Duration = Duration::from_secs(2);
+
 /// Shared, swappable axum `Router`. Held behind an `RwLock` so a config change
 /// can rebuild the layered router (see [`rebuild_layers`]) while the listener
 /// keeps running; the [`HotRouter`] reads it per request.
 pub type RouterCell = Arc<RwLock<Router>>;
 
-/// A running server: its bound address, the task handle, the swappable router
-/// cell (so a same-address config change can rebuild its layers), and a
-/// shutdown trigger.
+/// Control handle for the CURRENTLY-running server task: its graceful-shutdown
+/// sender, its abort handle (safety-net hard stop), the bound address, and the
+/// task join handle. A host/port rebind (see
+/// [`crate::configuration::on_config_change`]) spawns a new server, swaps this
+/// into the shared [`ServerControlCell`], and gracefully stops the old one.
+pub struct ServerControl {
+    pub graceful: oneshot::Sender<()>,
+    pub abort: AbortHandle,
+    pub local_addr: SocketAddr,
+    pub join: JoinHandle<()>,
+}
+
+/// Shared, replaceable handle to the current [`ServerControl`]. `None` once the
+/// server has been shut down (the control is `take`n). Behind an async `Mutex`
+/// so the config-change task can atomically swap in a rebound server.
+pub type ServerControlCell = Arc<Mutex<Option<ServerControl>>>;
+
+/// A running server: its (initial) bound address, the swappable router cell (so
+/// a same-address config change can rebuild its layers), the shared
+/// [`HotRouter`] (reused to spawn a rebound server on the same routes/state),
+/// and the replaceable [`ServerControlCell`].
 pub struct ServerHandle {
     pub local_addr: SocketAddr,
     pub router: RouterCell,
-    pub join: JoinHandle<()>,
-    pub shutdown: oneshot::Sender<()>,
+    pub hot_router: HotRouter,
+    pub control: ServerControlCell,
 }
 
 /// Build the CORS layer from config. No config → permissive (any
@@ -236,22 +269,70 @@ pub async fn serve(
         state,
     };
 
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let control = spawn_server(listener, hot_router.clone());
+
+    Ok(ServerHandle {
+        local_addr,
+        router,
+        hot_router,
+        control: Arc::new(Mutex::new(Some(control))),
+    })
+}
+
+/// Spawn the axum serving task over an already-bound `listener`, serving via a
+/// clone of the shared [`HotRouter`] (same [`RouterCell`] + [`AppState`], so it
+/// behaves identically to the original server). Returns a [`ServerControl`]: a
+/// graceful-shutdown sender (gates `with_graceful_shutdown`), the task abort
+/// handle, the bound address, and the join handle.
+///
+/// Shared by the initial [`serve`] and by host/port rebinds
+/// (see [`crate::configuration::on_config_change`]). Graceful shutdown closes
+/// the listener AND its open connections (idle keep-alive included), which is
+/// what actually frees the address; a bare `abort()` would only drop the
+/// listener. Mirrors the engine's `spawn_server`.
+pub fn spawn_server(listener: TcpListener, hot_router: HotRouter) -> ServerControl {
+    let local_addr = hot_router_local_addr(&listener);
+    let (graceful_tx, graceful_rx) = oneshot::channel::<()>();
+
     let join = tokio::spawn(async move {
         tracing::info!(address = %local_addr, "iii-http listening");
         let server = axum::serve(listener, MakeHotRouterService { router: hot_router })
             .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
+                // A dropped sender resolves the receiver too — both mean "stop".
+                let _ = graceful_rx.await;
             });
         if let Err(e) = server.await {
             tracing::error!(error = %e, "iii-http server exited with error");
         }
     });
 
-    Ok(ServerHandle {
+    let abort = join.abort_handle();
+    ServerControl {
+        graceful: graceful_tx,
+        abort,
         local_addr,
-        router,
         join,
-        shutdown: shutdown_tx,
-    })
+    }
+}
+
+/// Resolve a listener's bound address, falling back to an unspecified addr if
+/// the OS query fails (only used for logging / the reported `local_addr`).
+fn hot_router_local_addr(listener: &TcpListener) -> SocketAddr {
+    listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+}
+
+/// Gracefully stop a superseded server after a rebind: signal its graceful
+/// shutdown (closes the old listener + open connections so the old address is
+/// fully freed), then hard-abort it after [`OLD_SERVER_HARD_STOP_GRACE`] as a
+/// safety net. The join handle is detached — draining happens in the background.
+/// Mirrors the engine's post-rebind old-server teardown.
+pub fn stop_old_server(old: ServerControl) {
+    let _ = old.graceful.send(());
+    let abort = old.abort;
+    tokio::spawn(async move {
+        tokio::time::sleep(OLD_SERVER_HARD_STOP_GRACE).await;
+        abort.abort();
+    });
 }
