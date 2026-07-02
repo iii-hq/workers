@@ -9,6 +9,7 @@ import { useConfigurationValue, useSetConfiguration } from './hooks'
 import { SaveBar, type SaveStatus } from './SaveBar'
 import { isObjectSchema } from './schema-form/guard'
 import { SchemaForm } from './schema-form/SchemaForm'
+import { validateConfig } from './schema-form/validate'
 import { wt } from './typography'
 
 interface WorkerEditorProps {
@@ -59,6 +60,30 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
     [valueQuery.data, draft],
   )
 
+  // Client-side schema validation that mirrors the engine: env templates are
+  // resolved/coerced before type-checking (so `${PORT:3111}` validates as an
+  // integer), while a defaultless `${VAR}` is left for the runtime to resolve.
+  // Derived from the live draft, so it can never go stale — unlike the server
+  // `errors` below, which are cleared on edit.
+  const clientErrors = useMemo(
+    () =>
+      draft === undefined || !isObjectSchema(entry.schema)
+        ? new Map<string, string>()
+        : validateConfig(draft, entry.schema),
+    [draft, entry.schema],
+  )
+
+  // Client errors layer on top of any server error (client is always fresh).
+  const displayErrors = useMemo(() => {
+    const merged = new Map(errors)
+    for (const [pointer, message] of clientErrors) merged.set(pointer, message)
+    return merged
+  }, [errors, clientErrors])
+
+  // A root-level ('') validation error can't attach to any field; surface it
+  // near the save bar so a disabled Save button always has a visible reason.
+  const rootError = displayErrors.get('')
+
   // Bubble dirty changes up so the page shell can gate navigation.
   useEffect(() => {
     onDirtyChange(dirty)
@@ -91,6 +116,16 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
 
   const handleSave = useCallback(() => {
     if (draft === undefined) return
+    // Defensive: the Save button is disabled while client errors exist, but
+    // guard here too in case a draft change races the click.
+    if (clientErrors.size > 0) {
+      setStatus({
+        kind: 'error',
+        message:
+          clientErrors.get('') ?? 'fix the validation errors before saving',
+      })
+      return
+    }
     setStatus({ kind: 'saving' })
     setErrors(new Map())
     setMutation.mutate(
@@ -111,7 +146,7 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
         },
       },
     )
-  }, [draft, entry.id, setMutation])
+  }, [draft, entry.id, setMutation, clientErrors])
 
   return (
     <section
@@ -136,14 +171,20 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
                   schema={entry.schema}
                   value={draft}
                   onChange={handleDraftChange}
-                  errors={errors}
+                  errors={displayErrors}
                 />
+                {rootError ? (
+                  <p className={cn(wt.bodySm, 'text-alert mt-4')} role="alert">
+                    {rootError}
+                  </p>
+                ) : null}
               </div>
               <SaveBar
                 dirty={dirty}
                 status={status}
                 onSave={handleSave}
                 onReset={handleReset}
+                saveDisabled={clientErrors.size > 0}
               />
             </>
           ) : (

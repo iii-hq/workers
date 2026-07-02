@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 import { wt } from '../typography'
 import type { FieldProps } from './FieldDispatch'
-import { errorForField, FieldShell } from './FieldShell'
+import { TemplatableField } from './TemplatableField'
 
 /**
  * Numeric field for `type: integer` and `type: number`. Stores `null`
@@ -13,11 +13,13 @@ import { errorForField, FieldShell } from './FieldShell'
  * `min` / `max` are surfaced as HTML attributes for browser-level UX
  * affordances; full validation runs on the server. `step` defaults to
  * 1 for integers and `any` for numbers so spinner arrows feel right.
+ *
+ * A `${VAR}` env template can also live in a numeric field; `TemplatableField`
+ * swaps in the pill editor when the value is a string and offers a toggle
+ * between a literal value and an env template.
  */
 export function NumberField(props: FieldProps) {
-  const { label, schema, value, onChange, required, hideLabel } = props
-  const description =
-    typeof schema.description === 'string' ? schema.description : undefined
+  const { label, schema, value, onChange } = props
   const isInteger = schema.type === 'integer'
 
   const current =
@@ -42,14 +44,10 @@ export function NumberField(props: FieldProps) {
   }
 
   return (
-    <FieldShell
-      label={label}
-      description={description}
-      required={required}
-      errorMessage={errorForField(props)}
-      hideLabel={hideLabel}
-    >
-      {(controlId) => (
+    <TemplatableField
+      props={props}
+      scalarDefault={null}
+      renderScalar={(controlId) => (
         <input
           id={controlId}
           name={label}
@@ -74,6 +72,6 @@ export function NumberField(props: FieldProps) {
           )}
         />
       )}
-    </FieldShell>
+    />
   )
 }

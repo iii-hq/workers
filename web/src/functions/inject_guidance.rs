@@ -6,8 +6,7 @@
 //! the static harness prompt variants.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 
 pub const GUIDANCE_HOOK_ID: &str = "web::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
@@ -36,29 +35,51 @@ pub struct GenerateContext {
     pub system_prompt: String,
 }
 
-/// Build the `pre_generate` `mutations` object for a given base prompt. Pure, so it's
+/// Hook envelope returned to the harness: the mutations to apply to the generation.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PreGenerateResponse {
+    pub mutations: PreGenerateMutations,
+}
+
+/// The harness applies `system_prompt` only when the key is present
+/// (`HookRunner::run_pre_generate` — `if m.system_prompt.is_some()`), so `None`
+/// serializes to an empty object: the safe no-op that preserves the harness's
+/// assembled prompt.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct PreGenerateMutations {
+    /// Full replacement system prompt (base + appended guidance). The harness
+    /// overwrites, it does not merge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+}
+
+/// Build the `pre_generate` mutations for a given base prompt. Pure, so it's
 /// unit-testable.
 ///
-/// Returns an EMPTY object (no `system_prompt` key) when `base` is empty. A missing or
-/// renamed `generate.system_prompt` field deserializes to `""` (schema drift), and a
-/// fail-open hook must PRESERVE the harness's assembled prompt, never replace it with the
-/// guidance alone. Omitting the key is a safe no-op: the harness overwrites `system_prompt`
-/// only when the mutation carries it (harness `HookRunner::run_pre_generate` —
-/// `if m.system_prompt.is_some()`). For a real, non-empty base we append the guidance and
-/// return the FULL prompt (the harness overwrites, it does not merge).
-fn mutations_for(base: &str) -> Value {
+/// Returns NO `system_prompt` when `base` is empty. A missing or renamed
+/// `generate.system_prompt` field deserializes to `""` (schema drift), and a
+/// fail-open hook must PRESERVE the harness's assembled prompt, never replace it with
+/// the guidance alone. For a real, non-empty base we append the guidance and return
+/// the FULL prompt.
+fn mutations_for(base: &str) -> PreGenerateMutations {
     if base.is_empty() {
-        json!({})
+        PreGenerateMutations::default()
     } else {
-        json!({ "system_prompt": format!("{base}\n\n{WEB_GUIDANCE}") })
+        PreGenerateMutations {
+            system_prompt: Some(format!("{base}\n\n{WEB_GUIDANCE}")),
+        }
     }
 }
 
 /// `pre_generate` hook entrypoint: return a `system_prompt` mutation that appends the
 /// web guidance to a non-empty base. Bound `fail_open`, so an error here never blocks a
 /// turn.
-pub async fn handle(event: PreGenerateEvent) -> Result<Value, iii_sdk::errors::Error> {
-    Ok(json!({ "mutations": mutations_for(&event.generate.system_prompt) }))
+pub async fn handle(
+    event: PreGenerateEvent,
+) -> Result<PreGenerateResponse, iii_sdk::errors::Error> {
+    Ok(PreGenerateResponse {
+        mutations: mutations_for(&event.generate.system_prompt),
+    })
 }
 
 #[cfg(test)]
@@ -68,8 +89,8 @@ mod tests {
     #[test]
     fn appends_guidance_after_a_real_base() {
         let m = mutations_for("BASE PROMPT");
-        let sp = m["system_prompt"]
-            .as_str()
+        let sp = m
+            .system_prompt
             .expect("a non-empty base yields a system_prompt mutation");
         assert!(
             sp.starts_with("BASE PROMPT\n\n"),
@@ -86,8 +107,32 @@ mod tests {
     fn empty_base_emits_no_system_prompt_mutation() {
         // A missing/malformed hook payload (system_prompt absent → "") must PRESERVE the
         // harness prompt: emit no system_prompt key so the harness keeps its own, rather
-        // than replacing the whole prompt with the guidance alone.
-        assert_eq!(mutations_for(""), json!({}));
+        // than replacing the whole prompt with the guidance alone. The wire shape must
+        // stay `{"mutations": {}}` — the harness applies system_prompt only when the
+        // key is present.
+        let wire = serde_json::to_value(PreGenerateResponse {
+            mutations: mutations_for(""),
+        })
+        .expect("response serializes");
+        assert_eq!(wire, serde_json::json!({ "mutations": {} }));
+    }
+
+    /// Mirrors the registry publish gate (`collect_worker_interface.py`): the derived
+    /// response schema must carry a schema-defining keyword, not the AnyValue schema
+    /// (which blocked the web/v1.2.0 release).
+    #[test]
+    fn response_schema_passes_the_publish_typed_gate() {
+        let schema = schemars::r#gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<PreGenerateResponse>();
+        let value = serde_json::to_value(schema).expect("schema serializes");
+        let obj = value.as_object().expect("schema is an object");
+        assert!(
+            ["type", "properties", "$ref"]
+                .iter()
+                .any(|k| obj.contains_key(*k)),
+            "PreGenerateResponse schema is untyped: {value}"
+        );
     }
 
     #[test]

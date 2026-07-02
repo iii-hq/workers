@@ -83,7 +83,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "approval-gate"
-version = "1.0.1"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "approval-gate",
@@ -92,7 +92,7 @@ dependencies = [
  "clap",
  "futures",
  "harness",
- "iii-sdk 0.20.0",
+ "iii-sdk",
  "regex",
  "schemars",
  "serde",
@@ -545,14 +545,14 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.0.3"
+version = "1.0.6"
 dependencies = [
  "anyhow",
  "async-trait",
  "clap",
  "globset",
- "iii-observability",
- "iii-sdk 0.19.2",
+ "iii-helpers",
+ "iii-sdk",
  "jsonschema",
  "schemars",
  "serde",
@@ -806,9 +806,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.20.0"
+version = "0.20.0-alpha.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09daa7c14a9e4c1f7077c4a181918d207e3f05cdfea8b2d7781bbeb80caf4c5d"
+checksum = "6063cce635b273b4623598b95329d3feeb7f41b9ab5e4ed6168df62f819c6724"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -826,50 +826,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-observability"
-version = "0.19.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e11586fcd304a563c143837f67b2e5f3cb73d23f6c8452c9734ff18e4a1402bf"
-dependencies = [
- "futures-util",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry_sdk",
- "reqwest",
- "serde_json",
- "sysinfo",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "iii-sdk"
-version = "0.19.2"
+version = "0.20.0-alpha.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8490f2ad470d54cf7e0bc2f4105aca71bdb4c24752fcb406183f24b8dd328f80"
-dependencies = [
- "async-trait",
- "futures-util",
- "hostname",
- "iii-observability",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "iii-sdk"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5957568413b9a5178c11bf91b20909e93e568b187e259e941ba6009a7ec3f5c1"
+checksum = "0afbb588ec77a3f99e2ea534453c3e564d509500f82c9ed46d733dd69871abfa"
 dependencies = [
  "async-trait",
  "futures-util",

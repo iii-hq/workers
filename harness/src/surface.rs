@@ -45,6 +45,13 @@ where
     }
 }
 
+/// Draft-07 schema as a wire `Value`, for explicit `.request_format` /
+/// `.response_format` overrides on registrations whose handler signature
+/// cannot drive schemars auto-extraction (e.g. lossless `Value` payloads).
+pub fn schema_value<T: schemars::JsonSchema>() -> serde_json::Value {
+    serde_json::to_value(schema_of::<T>()).expect("schema serializes to JSON")
+}
+
 /// The full agent-facing wire-surface catalog, in registration order.
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
