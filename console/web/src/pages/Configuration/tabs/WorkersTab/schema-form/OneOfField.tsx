@@ -128,9 +128,7 @@ export function OneOfField(props: FieldProps) {
               value={currentDisc}
               // Reset to a fresh branch carrying only the discriminator; the
               // previous branch's config does not apply to the new one.
-              onChange={(next) =>
-                onChange({ [disc.key]: next } as JsonValue)
-              }
+              onChange={(next) => onChange({ [disc.key]: next } as JsonValue)}
               options={options}
               aria-label={label}
               placeholder="select…"

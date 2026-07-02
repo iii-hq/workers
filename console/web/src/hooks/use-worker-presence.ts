@@ -96,7 +96,11 @@ export function useWorkerPresence({
   const handleEvent = useCallback(
     (payload: unknown) => {
       const evt = parseWorkerEvent(payload)
-      if (!evt || !eventMatchesWorker(evt, workerName) || evt.stage !== 'done') {
+      if (
+        !evt ||
+        !eventMatchesWorker(evt, workerName) ||
+        evt.stage !== 'done'
+      ) {
         return
       }
       if (evt.operation === 'add') setPresent(true)

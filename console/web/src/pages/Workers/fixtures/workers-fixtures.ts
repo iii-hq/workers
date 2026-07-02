@@ -12,7 +12,8 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     managementKind: 'config',
     status: 'connected',
     stopEnabled: false,
-    stopDisabledReason: 'workers declared in config.yaml are managed by the engine',
+    stopDisabledReason:
+      'workers declared in config.yaml are managed by the engine',
   },
   {
     id: '00000000-0000-0000-0000-000000000aaa',
@@ -52,7 +53,8 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     managementKind: 'internal',
     status: 'connected',
     stopEnabled: false,
-    stopDisabledReason: 'internal engine workers cannot be stopped from the console',
+    stopDisabledReason:
+      'internal engine workers cannot be stopped from the console',
   },
   {
     id: '33333333-4444-5555-6666-777777777777',

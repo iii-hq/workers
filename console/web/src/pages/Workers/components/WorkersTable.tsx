@@ -72,7 +72,12 @@ export function WorkersTable({
   }
 
   return (
-    <div className={cn('-mx-4 -my-2 overflow-x-auto whitespace-nowrap sm:-mx-6 lg:-mx-8', className)}>
+    <div
+      className={cn(
+        '-mx-4 -my-2 overflow-x-auto whitespace-nowrap sm:-mx-6 lg:-mx-8',
+        className,
+      )}
+    >
       <div className="inline-block min-w-full px-4 py-2 align-middle sm:px-6 lg:px-8">
         <table className="w-full">
           <thead>
