@@ -1,3 +1,4 @@
+import type { WorktreeInfo, WorktreeStatusInfo } from '@/lib/worktrees'
 import type { FunctionCallMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
@@ -150,3 +151,72 @@ export const worktreeFixtures = [
   worktreeLandConflicted,
   worktreeRemovePending,
 ] as const
+
+// ---------------------------------------------------------------------------
+// Registry fixtures for the worktrees graph page: two repos, every lifecycle
+// (active / claimed / landing / land-blocked / orphaned) so each tint renders.
+// ---------------------------------------------------------------------------
+
+const cleanStatus: WorktreeStatusInfo = {
+  clean: true,
+  ahead: 0,
+  behind: 0,
+  staged: 0,
+  unstaged: 0,
+  untracked: 0,
+  conflicted: 0,
+  unpushed: 0,
+  in_rebase: false,
+}
+
+function graphWt(
+  id: string,
+  repo: string,
+  lifecycle: WorktreeInfo['lifecycle'],
+  createdAt: number,
+  extra?: Partial<WorktreeInfo>,
+): WorktreeInfo {
+  const repoName = repo.split('/').filter(Boolean).pop() ?? 'repo'
+  return {
+    worktree_id: id,
+    repo_path: repo,
+    repo_key: `${repo}/.git`,
+    path: `/home/dev/.iii/worktrees/${repoName}-1f2e3d/${id}`,
+    branch: `iii/${id}`,
+    base_ref: 'HEAD',
+    base_sha: '8fbe7a1c9d0e2f3a4b5c6d7e8f9a0b1c2d3e4f5a',
+    lifecycle,
+    session_id: null,
+    created_at: createdAt,
+    updated_at: createdAt + 30_000,
+    status: cleanStatus,
+    ...extra,
+  }
+}
+
+export const worktreeGraphFixtures: WorktreeInfo[] = [
+  graphWt('wt_11aa22bb', '/home/dev/app', 'active', now - 500_000),
+  graphWt('wt_9f8e7d6c', '/home/dev/app', 'claimed', now - 400_000, {
+    session_id: 'console-1a2b3c4d',
+    status: {
+      ...cleanStatus,
+      clean: false,
+      unstaged: 2,
+      ahead: 2,
+      unpushed: 2,
+      diffstat: '3 files changed, 42 insertions(+), 7 deletions(-)',
+    },
+  }),
+  graphWt('wt_33cc44dd', '/home/dev/app', 'landing', now - 300_000, {
+    session_id: 'console-5e6f7a8b',
+    status: { ...cleanStatus, ahead: 1, unpushed: 1 },
+  }),
+  graphWt('wt_55ee66ff', '/home/dev/api', 'land-blocked', now - 200_000, {
+    base_ref: 'release/1.2',
+    session_id: 'console-9c0d1e2f',
+    status: { ...cleanStatus, conflicted: 2, in_rebase: true, ahead: 3 },
+  }),
+  graphWt('wt_7700aa11', '/home/dev/api', 'orphaned', now - 100_000, {
+    status: null,
+  }),
+]

@@ -17,8 +17,22 @@ export const WORKTREE_VALIDATE_FUNCTION_ID = 'worktree::validate'
 export const WORKTREE_CLAIM_FUNCTION_ID = 'worktree::claim'
 export const WORKTREE_RELEASE_FUNCTION_ID = 'worktree::release'
 
+export const WORKTREE_CREATED_TRIGGER = 'worktree::created'
+export const WORKTREE_CLAIMED_TRIGGER = 'worktree::claimed'
+export const WORKTREE_RELEASED_TRIGGER = 'worktree::released'
+export const WORKTREE_REMOVED_TRIGGER = 'worktree::removed'
 export const WORKTREE_LANDED_TRIGGER = 'worktree::landed'
 export const WORKTREE_LAND_BLOCKED_TRIGGER = 'worktree::land-blocked'
+
+/** Every lifecycle trigger type the worker emits, in emission order. */
+export const WORKTREE_LIFECYCLE_TRIGGERS = [
+  WORKTREE_CREATED_TRIGGER,
+  WORKTREE_CLAIMED_TRIGGER,
+  WORKTREE_RELEASED_TRIGGER,
+  WORKTREE_REMOVED_TRIGGER,
+  WORKTREE_LANDED_TRIGGER,
+  WORKTREE_LAND_BLOCKED_TRIGGER,
+] as const
 
 export const WORKTREE_LIFECYCLES = [
   'active',
@@ -41,16 +55,23 @@ const worktreeStatusSchema = z.object({
   conflicted: z.number(),
   unpushed: z.number(),
   in_rebase: z.boolean(),
+  diffstat: z.string().optional(),
+  head_sha: z.string().optional(),
 })
 export type WorktreeStatusInfo = z.infer<typeof worktreeStatusSchema>
 
 const worktreeInfoSchema = z.object({
   worktree_id: z.string(),
   repo_path: z.string(),
+  repo_key: z.string().optional(),
   path: z.string(),
   branch: z.string(),
+  base_ref: z.string().optional(),
+  base_sha: z.string().optional(),
   lifecycle: lifecycleSchema,
   session_id: z.string().nullable().optional(),
+  created_at: z.number().optional(),
+  updated_at: z.number().optional(),
   status: worktreeStatusSchema.nullable().optional(),
 })
 export type WorktreeInfo = z.infer<typeof worktreeInfoSchema>

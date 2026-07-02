@@ -11,6 +11,8 @@ import {
   WORKTREE_GET_FUNCTION_ID,
   WORKTREE_LAND_BLOCKED_TRIGGER,
   WORKTREE_LANDED_TRIGGER,
+  WORKTREE_LIFECYCLE_TRIGGERS,
+  WORKTREE_LIFECYCLES,
   WORKTREE_LIST_FUNCTION_ID,
   WORKTREE_RELEASE_FUNCTION_ID,
   WORKTREE_VALIDATE_FUNCTION_ID,
@@ -29,6 +31,35 @@ describe('worktree control-plane wiring', () => {
   it('binds the worktree trigger types', () => {
     expect(WORKTREE_LANDED_TRIGGER).toBe('worktree::landed')
     expect(WORKTREE_LAND_BLOCKED_TRIGGER).toBe('worktree::land-blocked')
+  })
+
+  it('the lifecycle feed covers all six trigger types the worker emits', () => {
+    // The graph page refreshes on ANY of these; a missing one means a stale
+    // graph for that mutation.
+    expect([...WORKTREE_LIFECYCLE_TRIGGERS]).toEqual([
+      'worktree::created',
+      'worktree::claimed',
+      'worktree::released',
+      'worktree::removed',
+      'worktree::landed',
+      'worktree::land-blocked',
+    ])
+  })
+
+  it('every lifecycle variant maps to a tone', () => {
+    for (const lifecycle of WORKTREE_LIFECYCLES) {
+      expect(['ink', 'accent', 'warn', 'alert']).toContain(
+        lifecycleTone(lifecycle),
+      )
+    }
+    // The non-neutral states must be visually distinct from each other.
+    expect(
+      new Set([
+        lifecycleTone('landing'),
+        lifecycleTone('land-blocked'),
+        lifecycleTone('orphaned'),
+      ]).size,
+    ).toBe(3)
   })
 })
 
