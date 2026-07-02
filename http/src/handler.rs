@@ -26,25 +26,25 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use axum::{
-    Extension,
     body::Body,
     extract::Query,
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
+    Extension,
 };
-use iii_helpers::observability::opentelemetry::KeyValue;
 use iii_helpers::observability::opentelemetry::metrics::Counter;
-use iii_sdk::IIIClient;
+use iii_helpers::observability::opentelemetry::KeyValue;
 use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::TriggerRequest;
-use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use iii_sdk::IIIClient;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 use tracing::Instrument;
 
 use crate::condition::check_condition;
 use crate::configuration::ConfigCell;
-use crate::middleware::{self, MiddlewareOutcome, error_body, generate_error_id};
+use crate::middleware::{self, error_body, generate_error_id, MiddlewareOutcome};
 use crate::trigger::RouteTable;
 use crate::types::{ControlMessage, HttpRequest, HttpResponse, TriggerMetadata};
 
@@ -71,7 +71,11 @@ const CHANNEL_BUFFER: usize = 64;
 /// not (a 3xx redirect is a normal outcome, not a failure). Mirrors the
 /// engine's `otel_status_for` (`views.rs`).
 fn otel_status_for(status_code: u16) -> &'static str {
-    if status_code < 400 { "OK" } else { "ERROR" }
+    if status_code < 400 {
+        "OK"
+    } else {
+        "ERROR"
+    }
 }
 
 /// Per-request OTEL request counter (`iii.http.requests`), created once from the
@@ -109,7 +113,11 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
 /// function -- [`ControlMessage::parse`] rejects them and the caller logs+skips,
 /// carrying the current status/headers forward (engine `apply_control_message`
 /// tolerance).
-fn apply_control(msg: ControlMessage, status_code: &mut u16, headers: &mut HashMap<String, String>) {
+fn apply_control(
+    msg: ControlMessage,
+    status_code: &mut u16,
+    headers: &mut HashMap<String, String>,
+) {
     match msg {
         ControlMessage::SetStatus { status_code: sc } => *status_code = sc,
         ControlMessage::SetHeaders { headers: h } => {
@@ -163,7 +171,12 @@ pub async fn dynamic_handler(
     // span is built. `tracestate` is read for completeness but NOT propagated --
     // the SDK's `extract_context` takes only `traceparent` + `baggage` (unlike
     // the engine's with-state variant). See `set_parent` below.
-    let header_str = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let header_str = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
     let traceparent = header_str("traceparent");
     let _tracestate = header_str("tracestate");
     let baggage = header_str("baggage");
@@ -186,8 +199,8 @@ pub async fn dynamic_handler(
     // emit a `traceparent.propagated` event carrying the parent trace id, so the
     // link is visible in the OTel export (field names identical to the engine).
     if traceparent.is_some() || baggage.is_some() {
-        use iii_helpers::observability::opentelemetry::KeyValue;
         use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+        use iii_helpers::observability::opentelemetry::KeyValue;
         use tracing_opentelemetry::OpenTelemetrySpanExt;
 
         let parent_cx =
@@ -199,10 +212,7 @@ pub async fn dynamic_handler(
                     "traceparent.propagated",
                     vec![
                         KeyValue::new("parent.trace_id", format!("{parent_trace_id}")),
-                        KeyValue::new(
-                            "traceparent",
-                            traceparent.clone().unwrap_or_default(),
-                        ),
+                        KeyValue::new("traceparent", traceparent.clone().unwrap_or_default()),
                     ],
                 );
             }

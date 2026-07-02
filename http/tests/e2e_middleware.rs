@@ -12,7 +12,9 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn per_route_middleware_continue_runs_handler() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
 
     let mw_calls = backend::register_continue_middleware(&iii, "test.mw.continue");
@@ -45,7 +47,9 @@ async fn per_route_middleware_continue_runs_handler() {
 #[tokio::test]
 #[serial]
 async fn per_route_middleware_respond_short_circuits_before_handler() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
 
     backend::register_respond_middleware(&iii, "test.mw.respond");
@@ -70,7 +74,9 @@ async fn per_route_middleware_respond_short_circuits_before_handler() {
 #[tokio::test]
 #[serial]
 async fn global_middleware_respond_short_circuits_every_route() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
 
     let mw_calls = backend::register_respond_middleware(&iii, "test.mw.global_respond");
     let boot =
@@ -87,7 +93,11 @@ async fn global_middleware_respond_short_circuits_every_route() {
     for path in ["/mw-global-a", "/mw-global-b"] {
         let url = format!("http://{}{path}", boot.local_addr);
         let resp = client.get(&url).send().await.unwrap();
-        assert_eq!(resp.status(), 403, "global middleware should short-circuit {path}");
+        assert_eq!(
+            resp.status(),
+            403,
+            "global middleware should short-circuit {path}"
+        );
         let v: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(v, serde_json::json!({ "denied": true }));
     }

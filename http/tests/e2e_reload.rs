@@ -44,7 +44,9 @@ async fn wait_for_cors(config: &configuration::ConfigCell) {
 #[tokio::test]
 #[serial]
 async fn global_middleware_added_via_config_set_blocks_without_restart() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
 
     // Boot permissive (no middleware), then register the route + a middleware
     // function that short-circuits with 403.
@@ -116,7 +118,9 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
     // A dedicated client: this test registers `http::on-config-change`, the same
     // id the middleware test registers, and one client cannot register an id
     // twice. Own connection → own registration namespace.
-    let iii = engine::connect_fresh().await;
+    let Some(iii) = engine::connect_fresh().await else {
+        return;
+    };
 
     // Boot with the default (permissive) CORS: any origin allowed.
     let boot = worker::start_http_worker(iii.clone()).await;
@@ -279,7 +283,9 @@ async fn wait_for_port(config: &configuration::ConfigCell, port: u16) {
 async fn host_port_change_rebinds_listener_without_restart() {
     // Dedicated client: this test registers `http::on-config-change`, the same
     // id the other reload tests register (one id per client only).
-    let iii = engine::connect_fresh().await;
+    let Some(iii) = engine::connect_fresh().await else {
+        return;
+    };
 
     let (p1, p2) = two_free_ports();
 

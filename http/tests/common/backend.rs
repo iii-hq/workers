@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Test backend: an echo function bound to an `http` trigger.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,7 +8,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::trigger::Trigger;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use iii_http::types::HttpRequest;
 
@@ -38,7 +39,7 @@ pub async fn register_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_me
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -68,7 +69,7 @@ pub async fn register_removable_echo_backend(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -106,7 +107,7 @@ pub async fn register_echo_backend_with_middleware(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({
             "api_path": api_path,
@@ -193,7 +194,7 @@ pub async fn register_echo_backend_with_condition(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({
             "api_path": api_path,
@@ -248,7 +249,7 @@ pub async fn register_slow_backend(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -280,7 +281,7 @@ pub async fn register_sleep_backend(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -307,7 +308,7 @@ pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, htt
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,

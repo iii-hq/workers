@@ -32,7 +32,9 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn function_timeout_returns_504_not_500() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let timeout_ms = 500;
     let boot = worker::start_http_worker_with_timeout(iii.clone(), timeout_ms).await;
     // Sleep comfortably longer than the request timeout so the race isn't
@@ -60,7 +62,9 @@ async fn function_timeout_returns_504_not_500() {
 #[tokio::test]
 #[serial]
 async fn fast_function_is_unaffected_by_timeout_layer() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let timeout_ms = 500;
     let boot = worker::start_http_worker_with_timeout(iii.clone(), timeout_ms).await;
     backend::register_slow_backend(&iii, "/fast", "GET", 10).await;
@@ -84,7 +88,9 @@ async fn fast_function_is_unaffected_by_timeout_layer() {
 #[tokio::test]
 #[serial]
 async fn concurrency_limit_queues_excess_requests_but_all_succeed() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker_with_concurrency_limit(iii.clone(), 2).await;
     backend::register_sleep_backend(&iii, "/limited", "GET", 200).await;
     common::wait_for_route(&boot.routes, "GET", "/limited").await;
@@ -105,8 +111,14 @@ async fn concurrency_limit_queues_excess_requests_but_all_succeed() {
         .expect("all 6 requests should complete within the deadline");
 
     for result in results {
-        let resp = result.expect("request task should not panic").expect("request should not error");
-        assert_eq!(resp.status(), 200, "every request must succeed with the concurrency limit configured");
+        let resp = result
+            .expect("request task should not panic")
+            .expect("request should not error");
+        assert_eq!(
+            resp.status(),
+            200,
+            "every request must succeed with the concurrency limit configured"
+        );
     }
 
     // NOTE: this is a wired-and-doesn't-break-throughput smoke, NOT a proof of

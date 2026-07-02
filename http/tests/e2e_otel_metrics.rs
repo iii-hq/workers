@@ -32,7 +32,9 @@ async fn http_request_counter_increments_per_request() {
         .with_periodic_exporter(exporter.clone())
         .build();
 
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     // Override any provider the SDK's `init_otel` installed on connect. Safe to
     // do after `get_or_init` returns: `init_otel` runs (and sets its provider)
     // before the connection is ready, so there is no late race that could clobber
@@ -86,7 +88,10 @@ async fn http_request_counter_increments_per_request() {
         }
     }
 
-    assert_eq!(total, N, "counter should increment exactly once per request");
+    assert_eq!(
+        total, N,
+        "counter should increment exactly once per request"
+    );
     assert!(
         saw_attrs,
         "counter datapoint should carry method/route/status attributes mirroring the span"

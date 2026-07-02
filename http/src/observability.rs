@@ -23,9 +23,9 @@
 //! invocation spans (`global::tracer("iii-rust-sdk")` per call), and it lets the
 //! subscriber install early -- preserving startup log output.
 
-use iii_helpers::observability::opentelemetry::Context;
 use iii_helpers::observability::opentelemetry::global::{self, BoxedSpan};
 use iii_helpers::observability::opentelemetry::trace::{SpanBuilder, Tracer};
+use iii_helpers::observability::opentelemetry::Context;
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::registry::LookupSpan;

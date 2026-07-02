@@ -16,7 +16,9 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn get_echoes_method_and_query() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-get", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/echo-get").await;
@@ -34,7 +36,9 @@ async fn get_echoes_method_and_query() {
 #[tokio::test]
 #[serial]
 async fn post_echoes_body() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-post", "POST").await;
     common::wait_for_route(&boot.routes, "POST", "/echo-post").await;
@@ -57,7 +61,9 @@ async fn post_echoes_body() {
 #[tokio::test]
 #[serial]
 async fn put_echoes_body() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-put", "PUT").await;
     common::wait_for_route(&boot.routes, "PUT", "/echo-put").await;
@@ -80,7 +86,9 @@ async fn put_echoes_body() {
 #[tokio::test]
 #[serial]
 async fn patch_echoes_body() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-patch", "PATCH").await;
     common::wait_for_route(&boot.routes, "PATCH", "/echo-patch").await;
@@ -103,7 +111,9 @@ async fn patch_echoes_body() {
 #[tokio::test]
 #[serial]
 async fn delete_echoes_method() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/echo-delete", "DELETE").await;
     common::wait_for_route(&boot.routes, "DELETE", "/echo-delete").await;
@@ -120,7 +130,9 @@ async fn delete_echoes_method() {
 #[tokio::test]
 #[serial]
 async fn unmatched_route_returns_404_envelope() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
 
     let url = format!("http://{}/no-such-route", boot.local_addr);

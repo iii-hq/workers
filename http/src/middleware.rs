@@ -11,14 +11,14 @@
 use std::collections::HashMap;
 
 use axum::{
-    Json,
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
-use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
-use serde_json::{Value, json};
+use iii_sdk::IIIClient;
+use serde_json::{json, Value};
 
 /// Outcome of a middleware invocation that did not short-circuit the request.
 pub enum MiddlewareOutcome {
@@ -238,9 +238,7 @@ mod tests {
             "headers": { "X-Custom": "value", "": "skip-empty-name" },
         }));
         assert_eq!(
-            resp.headers()
-                .get("x-custom")
-                .and_then(|v| v.to_str().ok()),
+            resp.headers().get("x-custom").and_then(|v| v.to_str().ok()),
             Some("value")
         );
     }

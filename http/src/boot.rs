@@ -13,8 +13,8 @@ use crate::config::RestApiConfig;
 use crate::configuration::{self, ApplyLock, ConfigCell};
 use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle};
 use crate::trigger::{HttpTriggerHandler, RouteTable};
-use crate::trigger_type;
 use crate::types::{HttpRequest, HttpTriggerConfig};
+use crate::TRIGGER_TYPE;
 
 /// Function id for `engine::workers::list`, used by [`guard_against_builtin_http`]
 /// to detect whether the built-in `iii-http` worker is connected.
@@ -64,20 +64,17 @@ impl BootHandle {
     }
 }
 
-/// Register this worker's configured trigger type (see [`crate::trigger_type`])
-/// and start the server. Returns once the listener is bound (its address
-/// available in [`BootHandle::local_addr`]).
+/// Register this worker's trigger type ([`crate::TRIGGER_TYPE`]) and start
+/// the server. Returns once the listener is bound (its address available in
+/// [`BootHandle::local_addr`]).
 ///
-/// When the configured trigger type is `http`, refuses to start if the
-/// built-in `iii-http` worker already owns it on the connected engine (see
+/// Always refuses to start if the built-in `iii-http` worker already owns
+/// the `http` trigger type on the connected engine (see
 /// [`guard_against_builtin_http`]) -- two owners of the same trigger type
 /// collide (last-write-wins), so this turns the silent collision into a
 /// fail-fast error.
 pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result<BootHandle> {
-    let trigger_type = trigger_type();
-    if trigger_type == "http" {
-        guard_against_builtin_http(&iii).await?;
-    }
+    guard_against_builtin_http(&iii).await?;
 
     let cell = configuration::new_cell(config.normalized());
     let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
@@ -88,7 +85,7 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     // Registering the trigger type makes the engine deliver every trigger
     // binding of this type through `handler`, which populates `routes`.
     let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(trigger_type.as_str(), "HTTP API trigger", handler)
+        RegisterTriggerType::new(TRIGGER_TYPE, "HTTP API trigger", handler)
             .call_request_format::<HttpRequest>()
             .trigger_request_format::<HttpTriggerConfig>(),
     );
@@ -127,9 +124,9 @@ async fn guard_against_builtin_http(iii: &Arc<IIIClient>) -> anyhow::Result<()> 
 
     if builtin_iii_http_active(&workers_list) {
         anyhow::bail!(
-            "cannot register trigger type 'http': the built-in iii-http worker is active and \
-             already owns it. Remove iii-http from the engine config, or run this worker with \
-             III_HTTP_TRIGGER_TYPE=http-ng to coexist."
+            "cannot start the http worker: the built-in iii-http worker is active and owns the \
+             'http' trigger type. Remove iii-http from the engine config (a config.yaml that \
+             doesn't list it won't run it), then start this worker."
         );
     }
 
@@ -199,15 +196,5 @@ mod tests {
     fn no_match_when_workers_missing() {
         let workers_list = json!({});
         assert!(!builtin_iii_http_active(&workers_list));
-    }
-
-    #[test]
-    fn trigger_type_defaults_to_http_ng() {
-        // No test in this crate sets III_HTTP_TRIGGER_TYPE, so this only
-        // asserts the default when the var is (as expected) unset -- avoids
-        // mutating shared process env from a lib unit test.
-        if std::env::var("III_HTTP_TRIGGER_TYPE").is_err() {
-            assert_eq!(crate::trigger_type(), crate::DEFAULT_TRIGGER_TYPE);
-        }
     }
 }

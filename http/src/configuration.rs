@@ -40,7 +40,7 @@ use std::time::Duration;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
@@ -87,7 +87,13 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&RestApiConfig>) -> R
         let seed = seed.cloned().unwrap_or_default().normalized();
         payload["initial_value"] = seed.to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload, CONFIG_BUS_TIMEOUT_MS).await?;
+    trigger_with_retry(
+        iii,
+        "configuration::register",
+        payload,
+        CONFIG_BUS_TIMEOUT_MS,
+    )
+    .await?;
     Ok(())
 }
 

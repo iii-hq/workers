@@ -11,7 +11,7 @@ use axum::{
 use iii_sdk::channel::StreamChannelRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Metadata describing the trigger that produced an `HttpRequest`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -339,8 +339,7 @@ mod tests {
 
     #[test]
     fn control_message_parses_set_headers() {
-        let msg = ControlMessage::parse(r#"{"type":"set_headers","headers":{"X-A":"1"}}"#)
-            .unwrap();
+        let msg = ControlMessage::parse(r#"{"type":"set_headers","headers":{"X-A":"1"}}"#).unwrap();
         match msg {
             ControlMessage::SetHeaders { headers } => {
                 assert_eq!(headers, json!({"X-A": "1"}));

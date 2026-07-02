@@ -25,7 +25,7 @@ use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use serial_test::serial;
 
 use iii_http::types::HttpRequest;
@@ -40,7 +40,11 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// `request_body` channel (rather than the buffered `body` field) and echoes
 /// it back so the test can assert the streamed bytes match exactly what was
 /// sent. Bound to an `http` trigger for `api_path` + `http_method`.
-async fn register_request_body_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
+async fn register_request_body_echo_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+) {
     let function_id = format!("test.request_body_echo {http_method} {api_path}");
     let ws_url = engine::ws_url();
 
@@ -72,7 +76,7 @@ async fn register_request_body_echo_backend(iii: &Arc<IIIClient>, api_path: &str
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
@@ -83,7 +87,9 @@ async fn register_request_body_echo_backend(iii: &Arc<IIIClient>, api_path: &str
 #[tokio::test]
 #[serial]
 async fn request_body_streams_to_function_for_non_json_content_type() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     register_request_body_echo_backend(&iii, "/upload", "POST").await;
     common::wait_for_route(&boot.routes, "POST", "/upload").await;
@@ -108,7 +114,9 @@ async fn request_body_streams_to_function_for_non_json_content_type() {
 #[tokio::test]
 #[serial]
 async fn request_body_streams_to_function_for_json_content_type() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     register_request_body_echo_backend(&iii, "/upload-json", "POST").await;
     common::wait_for_route(&boot.routes, "POST", "/upload-json").await;

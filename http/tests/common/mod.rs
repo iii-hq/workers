@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared e2e harness: connect-or-skip engine handle, worker boot, and the
 //! echo backend.
 

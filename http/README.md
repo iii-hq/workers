@@ -20,9 +20,8 @@ iii worker add http
 
 ## Quickstart
 
-Register a function and bind it to this worker's trigger type (`http-ng` by
-default — see [Custom trigger types](#custom-trigger-types)) with `api_path`
-and `http_method`:
+Register a function and bind it to this worker's trigger type (`http` — see
+[Trigger type](#trigger-type)) with `api_path` and `http_method`:
 
 ```rust
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -45,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id: "orders::get".into(),
         config: json!({ "api_path": "/orders/:id", "http_method": "GET" }),
         metadata: None,
@@ -84,9 +83,10 @@ console (**Configuration → Workers → http**) or seed it once via
 hot-reload without a restart; `port`/`host`/`cors`/`concurrency_request_limit`
 take effect on the next restart.
 
-## Custom trigger types
+## Trigger type
 
-This worker registers `http-ng` by default. Bind a function to it with:
+This worker always registers the `http` trigger type. Bind a function to it
+with:
 
 | Field | Required | Default | Description |
 |---|---|---|---|
@@ -101,15 +101,14 @@ Functions can stream their response: write to `req.response` (a
 Returning a non-null value instead yields a regular buffered response built
 from `{ status_code, headers, body }`.
 
-### `http` vs `http-ng`
+### Requires removing the built-in `iii-http` worker
 
-The built-in `iii-http` worker owns the `http` trigger type. Two owners of
-the same trigger type on one engine collide — whichever registers last wins.
-So by default this worker registers `http-ng` instead, which runs safely
-alongside the built-in `iii-http`.
+The built-in `iii-http` worker also owns the `http` trigger type. Two owners
+of the same trigger type on one engine collide — whichever registers last
+wins — so this worker requires `iii-http` to be absent: omit it from the
+engine's `config.yaml` (a config that doesn't list a worker won't run it).
 
-Set `III_HTTP_TRIGGER_TYPE=http` to cut over once `iii-http` is removed from
-the engine config. On boot, this worker queries the engine for connected
-workers and refuses to start with a clear error if `iii-http` is still
-active — so a stale cutover fails loudly instead of silently racing the
-built-in worker for ownership of `http`.
+On boot, this worker queries the engine for connected workers and refuses to
+start with a clear error if `iii-http` is still active, so a stale config
+fails loudly instead of silently racing the built-in worker for ownership of
+`http`.

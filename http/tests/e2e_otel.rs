@@ -86,7 +86,8 @@ struct FieldVisitor(SpanFields);
 
 impl Visit for FieldVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(field.name().to_string(), format!("{value:?}"));
+        self.0
+            .insert(field.name().to_string(), format!("{value:?}"));
     }
     fn record_str(&mut self, field: &Field, value: &str) {
         self.0.insert(field.name().to_string(), value.to_string());
@@ -165,7 +166,9 @@ async fn wait_for_span(url_path: &str) -> SpanFields {
 #[serial]
 async fn otel_span_tags_for_200() {
     install_capture();
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/otel/ping/:id", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/otel/ping/:id").await;
@@ -176,13 +179,28 @@ async fn otel_span_tags_for_200() {
     let _ = resp.bytes().await.unwrap();
 
     let span = wait_for_span("/otel/ping/42").await;
-    assert_eq!(span.get("otel.name").map(String::as_str), Some("GET /otel/ping/:id"));
+    assert_eq!(
+        span.get("otel.name").map(String::as_str),
+        Some("GET /otel/ping/:id")
+    );
     assert_eq!(span.get("otel.kind").map(String::as_str), Some("server"));
-    assert_eq!(span.get("http.request.method").map(String::as_str), Some("GET"));
-    assert_eq!(span.get("http.route").map(String::as_str), Some("/otel/ping/:id"));
-    assert_eq!(span.get("url.path").map(String::as_str), Some("/otel/ping/42"));
+    assert_eq!(
+        span.get("http.request.method").map(String::as_str),
+        Some("GET")
+    );
+    assert_eq!(
+        span.get("http.route").map(String::as_str),
+        Some("/otel/ping/:id")
+    );
+    assert_eq!(
+        span.get("url.path").map(String::as_str),
+        Some("/otel/ping/42")
+    );
     assert_eq!(span.get("otel.status_code").map(String::as_str), Some("OK"));
-    assert_eq!(span.get("http.response.status_code").map(String::as_str), Some("200"));
+    assert_eq!(
+        span.get("http.response.status_code").map(String::as_str),
+        Some("200")
+    );
 
     boot.shutdown().await;
 }
@@ -191,7 +209,9 @@ async fn otel_span_tags_for_200() {
 #[serial]
 async fn otel_span_tags_for_404() {
     install_capture();
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
 
     // No route registered for this path -> 404. `http.route`/`otel.name` fall
@@ -202,12 +222,27 @@ async fn otel_span_tags_for_404() {
     let _ = resp.bytes().await.unwrap();
 
     let span = wait_for_span("/otel/missing").await;
-    assert_eq!(span.get("otel.name").map(String::as_str), Some("GET /otel/missing"));
+    assert_eq!(
+        span.get("otel.name").map(String::as_str),
+        Some("GET /otel/missing")
+    );
     assert_eq!(span.get("otel.kind").map(String::as_str), Some("server"));
-    assert_eq!(span.get("http.request.method").map(String::as_str), Some("GET"));
-    assert_eq!(span.get("http.route").map(String::as_str), Some("/otel/missing"));
-    assert_eq!(span.get("otel.status_code").map(String::as_str), Some("ERROR"));
-    assert_eq!(span.get("http.response.status_code").map(String::as_str), Some("404"));
+    assert_eq!(
+        span.get("http.request.method").map(String::as_str),
+        Some("GET")
+    );
+    assert_eq!(
+        span.get("http.route").map(String::as_str),
+        Some("/otel/missing")
+    );
+    assert_eq!(
+        span.get("otel.status_code").map(String::as_str),
+        Some("ERROR")
+    );
+    assert_eq!(
+        span.get("http.response.status_code").map(String::as_str),
+        Some("404")
+    );
 
     boot.shutdown().await;
 }
@@ -246,7 +281,9 @@ async fn wait_for_exported_span(url_path: &str) -> opentelemetry_sdk::trace::Spa
 #[serial]
 async fn otel_span_propagates_inbound_traceparent() {
     install_capture();
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/otel/trace/:id", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/otel/trace/:id").await;

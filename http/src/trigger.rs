@@ -206,7 +206,11 @@ impl TriggerHandler for HttpTriggerHandler {
             condition_function_id: tc.condition_function_id,
             middleware_function_ids: tc.middleware_function_ids,
         };
-        self.routes.write().await.insert(route).map_err(Error::Handler)
+        self.routes
+            .write()
+            .await
+            .insert(route)
+            .map_err(Error::Handler)
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {

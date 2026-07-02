@@ -7,14 +7,14 @@
 
 mod common;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use common::{backend, engine, worker};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use serial_test::serial;
 
 use iii_http::types::HttpRequest;
@@ -50,7 +50,7 @@ async fn register_counting_backend_with_condition(
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::trigger_type(),
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
         function_id,
         config: json!({
             "api_path": api_path,
@@ -65,7 +65,9 @@ async fn register_counting_backend_with_condition(
 #[tokio::test]
 #[serial]
 async fn condition_true_runs_handler() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
 
     backend::register_condition_pass(&iii, "test.cond.pass");
@@ -85,7 +87,9 @@ async fn condition_true_runs_handler() {
 #[tokio::test]
 #[serial]
 async fn condition_false_returns_422_and_skips_handler() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
 
     let hits = Arc::new(AtomicUsize::new(0));
@@ -106,7 +110,11 @@ async fn condition_false_returns_422_and_skips_handler() {
     let v: Value = resp.json().await.unwrap();
     assert_eq!(v["error"]["code"], "CONDITION_NOT_MET");
     assert_eq!(v["skipped"], true);
-    assert_eq!(hits.load(Ordering::SeqCst), 0, "handler must not run when condition is false");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "handler must not run when condition is false"
+    );
 
     boot.shutdown().await;
 }

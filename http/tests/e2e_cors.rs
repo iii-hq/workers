@@ -17,7 +17,9 @@ use iii_http::config::CorsConfig;
 #[tokio::test]
 #[serial]
 async fn no_cors_config_is_permissive() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker(iii.clone()).await;
     backend::register_echo_backend(&iii, "/cors-permissive", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/cors-permissive").await;
@@ -46,7 +48,9 @@ async fn no_cors_config_is_permissive() {
 #[tokio::test]
 #[serial]
 async fn configured_origin_and_method_are_allowed_on_preflight() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker_with_cors(
         iii.clone(),
         CorsConfig {
@@ -97,7 +101,9 @@ async fn configured_origin_and_method_are_allowed_on_preflight() {
 #[tokio::test]
 #[serial]
 async fn disallowed_origin_is_not_reflected_on_preflight() {
-    let iii = engine::get_or_init().await;
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
     let boot = worker::start_http_worker_with_cors(
         iii.clone(),
         CorsConfig {

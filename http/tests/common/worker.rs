@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Boots the `iii-http` worker against the shared engine for e2e tests.
 //!
 //! One worker is booted per test: each `#[tokio::test]` runs on its own
@@ -11,9 +12,9 @@
 
 use std::sync::Arc;
 
-use iii_sdk::IIIClient;
 use iii_http::boot::{self, BootHandle};
 use iii_http::config::{CorsConfig, MiddlewareConfig, RestApiConfig};
+use iii_sdk::IIIClient;
 
 /// Start the HTTP worker on an ephemeral loopback port. Returns the
 /// [`BootHandle`] whose `local_addr` the test issues requests against and
