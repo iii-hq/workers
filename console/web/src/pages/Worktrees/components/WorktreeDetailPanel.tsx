@@ -4,6 +4,7 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
   lifecycleTone,
+  lifecycleToneClass,
   shortWorktreeId,
   type WorktreeInfo,
   worktreeIndicators,
@@ -18,14 +19,6 @@ import {
 interface WorktreeDetailPanelProps {
   worktree: WorktreeInfo
   onClose: () => void
-}
-
-// Tailwind needs static class names; never build `text-${tone}` at runtime.
-const toneText: Record<ReturnType<typeof lifecycleTone>, string> = {
-  ink: 'text-ink-faint',
-  accent: 'text-accent',
-  warn: 'text-warn',
-  alert: 'text-alert',
 }
 
 function Row({
@@ -59,10 +52,16 @@ export function WorktreeDetailPanel({
   const [copied, setCopied] = useState(false)
   const copyPath = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    void navigator.clipboard.writeText(worktree.path).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
+    navigator.clipboard.writeText(worktree.path).then(
+      () => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      },
+      () => {
+        // Clipboard write can reject (permissions, insecure context); the
+        // copy affordance simply no-ops rather than surfacing an error.
+      },
+    )
   }, [worktree.path])
 
   const tone = lifecycleTone(worktree.lifecycle)
@@ -96,7 +95,7 @@ export function WorktreeDetailPanel({
           <span
             className={cn(
               'ml-2 inline-flex items-center gap-1 text-[11px] lowercase',
-              toneText[tone],
+              lifecycleToneClass[tone],
             )}
           >
             <StatusDot tone={tone} pulse={worktree.lifecycle === 'landing'} />

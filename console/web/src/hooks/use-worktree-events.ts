@@ -48,7 +48,14 @@ export function useWorktreeEvents(opts: UseWorktreeEventsOptions): void {
     const offs: Array<() => void> = []
 
     void (async () => {
-      const client = await getIiiClient()
+      let client: Awaited<ReturnType<typeof getIiiClient>>
+      try {
+        client = await getIiiClient()
+      } catch {
+        // Client startup failed; leave the bindings unregistered (callers
+        // already gate `enabled` on worktree presence).
+        return
+      }
       if (cancelled) return
       const bind = (
         baseFnId: string,
@@ -129,7 +136,13 @@ export function useWorktreeLifecycleEvents(
     const offs: Array<() => void> = []
 
     void (async () => {
-      const client = await getIiiClient()
+      let client: Awaited<ReturnType<typeof getIiiClient>>
+      try {
+        client = await getIiiClient()
+      } catch {
+        // Client startup failed; stay unbound so callers fall back to polling.
+        return
+      }
       if (cancelled) return
       let registered = 0
       for (const triggerType of WORKTREE_LIFECYCLE_TRIGGERS) {

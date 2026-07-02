@@ -3,6 +3,7 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
   lifecycleTone,
+  lifecycleToneClass,
   shortWorktreeId,
   type WorktreeInfo,
   worktreeIndicators,
@@ -19,13 +20,6 @@ import {
 interface WorktreeBadgeProps {
   worktree: WorktreeInfo
   className?: string
-}
-
-const toneText: Record<ReturnType<typeof lifecycleTone>, string> = {
-  ink: 'text-ink-faint',
-  accent: 'text-accent',
-  warn: 'text-warn',
-  alert: 'text-alert',
 }
 
 export function WorktreeBadge({ worktree, className }: WorktreeBadgeProps) {
@@ -59,7 +53,7 @@ export function WorktreeBadge({ worktree, className }: WorktreeBadgeProps) {
         <span
           className={cn(
             'flex shrink-0 items-center gap-1 lowercase',
-            toneText[tone],
+            lifecycleToneClass[tone],
           )}
         >
           <StatusDot tone={tone} pulse={worktree.lifecycle === 'landing'} />

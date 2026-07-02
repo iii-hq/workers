@@ -40,6 +40,10 @@ export function useWorktreesLive(enabled: boolean): WorktreesLive {
       setLoading(false)
       return
     }
+    // Reset loading on every fetch — the initial load, a re-enable, and each
+    // token-driven refetch (poll / event / manual refresh) all go through
+    // here, so the indicator reflects an in-flight refresh consistently.
+    setLoading(true)
     let cancelled = false
     void (async () => {
       try {

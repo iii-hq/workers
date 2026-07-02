@@ -18,6 +18,7 @@ import { loadRecentProjects, removeRecentProject } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
   lifecycleTone,
+  lifecycleToneClass,
   listWorktrees,
   shortWorktreeId,
   type WorktreeInfo,
@@ -526,16 +527,19 @@ export function DirectoryPicker({
                   const tone = lifecycleTone(wt.lifecycle)
                   const { dirty, ahead } = worktreeIndicators(wt.status)
                   const orphaned = wt.lifecycle === 'orphaned'
+                  const landing = wt.lifecycle === 'landing'
                   return (
                     <button
                       key={wt.worktree_id}
                       type="button"
-                      disabled={orphaned}
+                      disabled={orphaned || landing}
                       onClick={() => pickWorktree(wt)}
                       title={
                         orphaned
                           ? `${wt.path} — directory is missing`
-                          : `${wt.path} — claim and use this worktree`
+                          : landing
+                            ? `${wt.path} — land in progress; not retargetable`
+                            : `${wt.path} — claim and use this worktree`
                       }
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-panel disabled:opacity-50"
                     >
@@ -584,13 +588,7 @@ export function DirectoryPicker({
                           <span
                             className={cn(
                               'flex items-center gap-1',
-                              tone === 'accent'
-                                ? 'text-accent'
-                                : tone === 'alert'
-                                  ? 'text-alert'
-                                  : tone === 'warn'
-                                    ? 'text-warn'
-                                    : 'text-ink-faint',
+                              lifecycleToneClass[tone],
                             )}
                           >
                             <StatusDot

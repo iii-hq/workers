@@ -151,6 +151,21 @@ export function lifecycleTone(
   }
 }
 
+/**
+ * Static tone -> text-color class map. Tailwind needs literal class names, so
+ * every surface that tints by lifecycle tone shares this table instead of
+ * rebuilding `text-${tone}` (which Tailwind cannot see) or a local copy.
+ */
+export const lifecycleToneClass: Record<
+  ReturnType<typeof lifecycleTone>,
+  string
+> = {
+  ink: 'text-ink-faint',
+  accent: 'text-accent',
+  warn: 'text-warn',
+  alert: 'text-alert',
+}
+
 export interface WorktreeIndicators {
   dirty: boolean
   ahead: number

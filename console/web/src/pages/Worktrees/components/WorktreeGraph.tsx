@@ -4,6 +4,7 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
   lifecycleTone,
+  lifecycleToneClass,
   shortWorktreeId,
   type WorktreeInfo,
   worktreeIndicators,
@@ -21,13 +22,6 @@ interface WorktreeGraphProps {
   worktrees: WorktreeInfo[]
   selectedId: string | null
   onSelect: (worktreeId: string) => void
-}
-
-const toneText: Record<ReturnType<typeof lifecycleTone>, string> = {
-  ink: 'text-ink-faint',
-  accent: 'text-accent',
-  warn: 'text-warn',
-  alert: 'text-alert',
 }
 
 export function WorktreeGraph({
@@ -108,7 +102,11 @@ export function WorktreeGraph({
             type="button"
             onClick={() => onSelect(wt.worktree_id)}
             aria-pressed={selected}
-            title={wt.path}
+            title={
+              wt.base_ref && wt.base_ref !== 'HEAD'
+                ? `${wt.path} — based on ${wt.base_ref}`
+                : wt.path
+            }
             className={cn(
               'absolute flex flex-col justify-center gap-1 border px-3 text-left transition-colors',
               selected
@@ -145,7 +143,12 @@ export function WorktreeGraph({
               ) : null}
             </span>
             <span className="flex min-w-0 items-center gap-2 font-mono text-[10px] lowercase">
-              <span className={cn('flex items-center gap-1', toneText[tone])}>
+              <span
+                className={cn(
+                  'flex items-center gap-1',
+                  lifecycleToneClass[tone],
+                )}
+              >
                 <StatusDot tone={tone} pulse={wt.lifecycle === 'landing'} />
                 {wt.lifecycle}
               </span>

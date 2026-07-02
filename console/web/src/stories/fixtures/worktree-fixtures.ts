@@ -129,9 +129,9 @@ export const worktreeLandConflicted = base(
   wrapHarness({
     code: 'W402',
     message:
-      'worktree wt_9f8e7d6c has a rebase in progress from a previous land; \
-resolve it in place (then rerun worktree::land) or pass force_restart to \
-abort and start over',
+      'worktree wt_9f8e7d6c has a rebase in progress from a previous land; ' +
+      'resolve it in place (then rerun worktree::land) or pass force_restart ' +
+      'to abort and start over',
   }),
 )
 
