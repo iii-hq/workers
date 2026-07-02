@@ -125,7 +125,7 @@ export function RegisterTriggerView({
           <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 flex flex-wrap items-center gap-1.5">
             <FilterChip label="model" value={react.model} />
             {allow?.length
-              ? allow.map((fn) => (
+              ? Array.from(new Set(allow)).map((fn) => (
                   <Chip key={fn}>
                     <span className="text-ink">{fn}</span>
                   </Chip>

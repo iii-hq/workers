@@ -29,9 +29,23 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   const rawOutput = message.output
 
   // Reuse the shared error parser for gate/transport-level errors — the
-  // `function_error` envelope is shared infra, not sandbox-specific.
+  // `function_error` envelope is shared infra, not sandbox-specific. But state
+  // values are arbitrary JSON, and a *successful* result whose stored value
+  // looks like a denial (e.g. `{ status: 'denied' }`, `{ denied_by: … }`) would
+  // otherwise be misread as an error. A real error is `{ error: { kind:
+  // 'function_error', … } }`; a success is a `{ content, details }` harness
+  // envelope. Skip the parser for success envelopes so only genuine errors —
+  // which are never `{ content, details }` shaped — reach it.
+  const isSuccessEnvelope =
+    !!rawOutput &&
+    typeof rawOutput === 'object' &&
+    !Array.isArray(rawOutput) &&
+    Array.isArray((rawOutput as Record<string, unknown>).content) &&
+    'details' in (rawOutput as Record<string, unknown>)
   const errorDisplay =
-    !running && rawOutput != null ? parseSandboxErrorDisplay(rawOutput) : null
+    !running && rawOutput != null && !isSuccessEnvelope
+      ? parseSandboxErrorDisplay(rawOutput)
+      : null
   if (errorDisplay) {
     return <SandboxErrorView display={errorDisplay} />
   }
