@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
+        boot.apply_lock.clone(),
     )
     .map_err(anyhow::Error::msg)
     .context("binding configuration trigger")?;

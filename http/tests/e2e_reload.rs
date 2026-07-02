@@ -63,6 +63,7 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
+        boot.apply_lock.clone(),
     )
     .expect("bind configuration trigger");
 
@@ -130,6 +131,7 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
+        boot.apply_lock.clone(),
     )
     .expect("bind configuration trigger");
 
@@ -294,6 +296,7 @@ async fn host_port_change_rebinds_listener_without_restart() {
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
+        boot.apply_lock.clone(),
     )
     .expect("bind configuration trigger");
 

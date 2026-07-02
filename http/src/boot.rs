@@ -10,7 +10,7 @@ use iii_sdk::{IIIClient, RegisterTriggerType};
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
-use crate::configuration::{self, ConfigCell};
+use crate::configuration::{self, ApplyLock, ConfigCell};
 use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle};
 use crate::trigger::{HttpTriggerHandler, RouteTable};
 use crate::trigger_type;
@@ -33,6 +33,10 @@ const BUILTIN_III_HTTP_WORKER_ID: &str = "iii-http";
 /// `local_addr` is the INITIAL bound address; after a host/port rebind
 /// (Phase B) the live address changes — read the current one via
 /// [`BootHandle::current_addr`] or from the config cell.
+///
+/// `apply_lock` is shared with the caller so it can be threaded into
+/// [`configuration::register_config_trigger`], which serializes overlapping
+/// `http::on-config-change` runs onto it (see [`ApplyLock`]).
 pub struct BootHandle {
     pub local_addr: SocketAddr,
     pub routes: Arc<RwLock<RouteTable>>,
@@ -40,6 +44,7 @@ pub struct BootHandle {
     pub router: RouterCell,
     pub hot_router: HotRouter,
     pub control: ServerControlCell,
+    pub apply_lock: ApplyLock,
 }
 
 impl BootHandle {
@@ -75,6 +80,7 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     }
 
     let cell = configuration::new_cell(config.normalized());
+    let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
 
     let handler = HttpTriggerHandler::new();
     let routes = handler.routes.clone();
@@ -101,6 +107,7 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
         router,
         hot_router,
         control,
+        apply_lock,
     })
 }
 

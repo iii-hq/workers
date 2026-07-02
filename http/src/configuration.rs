@@ -27,6 +27,12 @@
 //! is spawned over the shared router cell + state, and the old server is then
 //! gracefully shut down. See [`on_config_change`] and the shared
 //! [`crate::server::ServerControlCell`].
+//!
+//! [`on_config_change`] is serialized end-to-end by an [`ApplyLock`]: the SDK
+//! dispatches each function invocation via `tokio::spawn`, so overlapping
+//! `configuration:updated` events could otherwise interleave their
+//! [`ConfigCell`] / [`crate::server::ServerControlCell`] mutations. Mirrors
+//! the engine's `apply_lock` (`api_core.rs`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,6 +50,15 @@ use crate::server::{self, HotRouter, ServerControlCell};
 /// Shared, swappable config snapshot. The handler reads it per-request so
 /// `middleware`/`default_timeout` changes take effect without a restart.
 pub type ConfigCell = Arc<RwLock<Arc<RestApiConfig>>>;
+
+/// Serializes concurrent `on_config_change` runs. The SDK dispatches each
+/// function invocation via `tokio::spawn`, so two `http::on-config-change`
+/// invocations (rapid configuration edits) can run concurrently; without this
+/// lock they could re-fetch, validate, and swap the [`ConfigCell`] /
+/// [`ServerControlCell`] out of order, leaving the config cell disagreeing
+/// with the actually-bound listener. Mirrors the engine's `apply_lock`
+/// (`engine/src/workers/rest_api/api_core.rs`).
+pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
 
 pub const CONFIG_ID: &str = "http";
 const CONFIG_FN_ID: &str = "http::on-config-change";
@@ -131,15 +146,19 @@ pub async fn apply_config(cell: &ConfigCell, cfg: RestApiConfig) -> bool {
 /// `hot_router` (its `inner` is the shared router cell) rebuilds layers on a
 /// same-address change and is reused to spawn a rebound server; `control` tracks
 /// the currently-running server so a host/port change can replace it.
+/// `apply_lock` serializes overlapping invocations of the handler (see
+/// [`ApplyLock`]).
 pub fn register_config_trigger(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
     hot_router: HotRouter,
     control: ServerControlCell,
+    apply_lock: ApplyLock,
 ) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let hot_router_for_fn = hot_router.clone();
     let control_for_fn = control.clone();
+    let apply_lock_for_fn = apply_lock.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
@@ -147,9 +166,10 @@ pub fn register_config_trigger(
             let cell = cell_for_fn.clone();
             let hot_router = hot_router_for_fn.clone();
             let control = control_for_fn.clone();
+            let apply_lock = apply_lock_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell, &hot_router, &control).await;
+                on_config_change(&engine, &cell, &hot_router, &control, &apply_lock).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -173,7 +193,17 @@ async fn on_config_change(
     cell: &ConfigCell,
     hot_router: &HotRouter,
     control: &ServerControlCell,
+    apply_lock: &ApplyLock,
 ) {
+    // Serialize the whole re-fetch -> validate -> swap-cell -> (rebuild_layers
+    // | rebind) sequence: the SDK dispatches each invocation via `tokio::spawn`,
+    // so two `configuration:updated` events can run this function concurrently.
+    // Without this, two overlapping edits could interleave their cell/server
+    // mutations, leaving the config cell disagreeing with the actually-bound
+    // listener. Held for the whole function body; `on_config_change` is the
+    // only acquirer, so this never nests.
+    let _guard = apply_lock.lock().await;
+
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
