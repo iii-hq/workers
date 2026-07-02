@@ -111,3 +111,29 @@ async fn route_serves_then_404s_after_unregister() {
 
     boot.shutdown().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn wrong_method_on_existing_path_returns_405() {
+    let iii = engine::get_or_init().await;
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/only-post", "POST").await;
+    common::wait_for_route(&boot.routes, "POST", "/only-post").await;
+
+    let url = format!("http://{}/only-post", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 405);
+    let allow = resp
+        .headers()
+        .get("allow")
+        .expect("405 response must carry an Allow header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(allow.contains("POST"), "Allow header should list POST, got: {allow}");
+
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "METHOD_NOT_ALLOWED");
+
+    boot.shutdown().await;
+}

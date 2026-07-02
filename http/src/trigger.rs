@@ -151,6 +151,22 @@ impl RouteTable {
             .min_by_key(|(score, _, _)| *score)
             .map(|(_, route, params)| (route, params))
     }
+
+    /// Methods registered for any route whose path pattern matches
+    /// `actual_path` (ignoring HTTP method). Used to distinguish 404 (no such
+    /// path) from 405 (path exists, method not allowed). Returns uppercased
+    /// methods, deduped, in sorted order.
+    pub fn allowed_methods(&self, actual_path: &str) -> Vec<String> {
+        let mut methods: Vec<String> = self
+            .by_id
+            .values()
+            .filter(|route| extract_path_params(&route.http_path, actual_path).is_some())
+            .map(|route| route.http_method.to_uppercase())
+            .collect();
+        methods.sort();
+        methods.dedup();
+        methods
+    }
 }
 
 /// Bridges the SDK's `TriggerHandler` callbacks to the [`RouteTable`]: turns
@@ -334,6 +350,23 @@ mod tests {
 
         let (matched, _) = table.match_route("GET", "/a/1/2").unwrap();
         assert_eq!(matched.trigger_id, "t1");
+    }
+
+    #[test]
+    fn allowed_methods_lists_all_methods_for_matching_path() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+        table.insert(route("t2", "POST", "/users/:id")).unwrap();
+
+        assert_eq!(table.allowed_methods("/users/42"), vec!["GET", "POST"]);
+    }
+
+    #[test]
+    fn allowed_methods_empty_for_nonmatching_path() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+
+        assert!(table.allowed_methods("/orders/42").is_empty());
     }
 
     #[test]

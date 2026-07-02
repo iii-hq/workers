@@ -249,7 +249,23 @@ pub async fn dynamic_handler(
 
     async move {
     let Some((route, path_params)) = matched else {
-        return record_status(error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found"));
+        // Path matches a registered route but the method doesn't -> 405 (with
+        // an `Allow` header listing the methods that would have matched),
+        // mirroring axum's per-method routing in the engine's iii-http. A
+        // path that matches no route at all stays a 404.
+        let allowed = state.routes.read().await.allowed_methods(&actual_path);
+        if allowed.is_empty() {
+            return record_status(error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found"));
+        }
+        let mut response = error_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "METHOD_NOT_ALLOWED",
+            "Method Not Allowed",
+        );
+        if let Ok(value) = axum::http::HeaderValue::from_str(&allowed.join(", ")) {
+            response.headers_mut().insert(axum::http::header::ALLOW, value);
+        }
+        return record_status(response);
     };
 
     // Global middleware (config-driven, sorted by priority at config-load
