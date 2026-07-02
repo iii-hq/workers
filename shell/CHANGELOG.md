@@ -27,6 +27,28 @@ binary itself.
 - A `## Running` README section documents the binary's full operator surface
   (`--config`, `--url`/`III_URL`, `--version`, `RUST_LOG`).
 
+### Changed (shipped seed / defaults review)
+- **Command-shaped denylist patterns are anchored to argv[0]**
+  (`^(\S*/)?mkfs|dd|shutdown|reboot`): they fire when the tool IS the command,
+  not when the word appears in an argument — `grep -rn shutdown src/` and
+  `rg "dd if=" docs/` are no longer rejected. Argument-shaped patterns
+  (`rm -rf /`, the fork bomb, `/etc/shadow`) stay unanchored. Stacks that
+  rewrite their stored value by hand should adopt the anchored forms too.
+- The denylist rejection message now says it is an advisory tripwire and to
+  rephrase the command, so agents stop retrying verbatim.
+- The seed uses the preferred multi-root jail form (`fs.host_roots: [/tmp]`)
+  instead of the legacy `fs.host_root`.
+- Seed `default_timeout_ms` raised 10s → 30s: the seed raises
+  `max_timeout_ms` to 120s so real builds survive; callers omitting
+  `timeout_ms` shouldn't be reaped at 10s on the same workload. The CODE
+  default is unchanged (10s).
+- `fs.max_read_bytes`/`fs.max_write_bytes` descriptions now explain why the
+  code default is unlimited (reads/writes stream in chunks; the cap bounds
+  caller cost, not worker memory), and the seed comments say
+  `fs.denylist_paths` is defense in depth (unreachable anyway while jailed).
+- Every `code.*` (CoderConfig) budget field now carries a schema description;
+  the schema test covers all nested definitions, not just the top level.
+
 ### Migration
 ```yaml
 # 0.6.x                                # 0.7.0

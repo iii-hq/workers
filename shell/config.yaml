@@ -3,7 +3,10 @@
 # still go through shell::exec_bg (unbounded by default).
 max_timeout_ms: 120000
 max_bg_timeout_ms: 0  # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms)
-default_timeout_ms: 10000
+# 30s (not the 10s code default): callers that omit timeout_ms shouldn't have
+# their first `cargo build` reaped while max_timeout_ms was raised for exactly
+# that workload.
+default_timeout_ms: 30000
 max_output_bytes: 1048576
 working_dir: null
 # Environment policy for spawned commands.
@@ -37,30 +40,44 @@ allowlist: []
 # sub-execution escapes (find -exec, sed -i, node/python -c, npm run, env <cmd>)
 # are pure dev friction with no security value, so they were dropped; only
 # catastrophic, host-wrecking patterns are kept to catch honest mistakes.
+#
+# Command-SHAPED patterns (mkfs/dd/shutdown/reboot) are anchored to argv[0]
+# (`^(\S*/)?name`) so they fire only when the tool IS the command — a coding
+# agent running `grep -rn shutdown src/` or `rg "dd if=" docs/` is not
+# rejected. Argument-shaped patterns (rm -rf /, the fork bomb, /etc/shadow)
+# stay unanchored: their dangerous form lives in the arguments.
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
   - ":\\(\\)\\s*\\{\\s*:\\|"   # fork bomb
-  - "mkfs"
-  - "dd\\s+if="
-  - "shutdown"
-  - "reboot"
+  - "^(\\S*/)?mkfs"
+  - "^(\\S*/)?dd\\s+if="
+  - "^(\\S*/)?shutdown\\b"
+  - "^(\\S*/)?reboot\\b"
   - "/etc/shadow"
 max_concurrent_jobs: 16
 job_retention_secs: 3600
 
 fs:
-  # SET host_root to a directory you intend to expose to shell::fs::*.
-  # When unset, the worker refuses to start unless allow_unjailed is true
+  # SET host_roots to the directories you intend to expose to shell::fs::*.
+  # The FIRST entry is the primary root (relative paths resolve against it).
+  # When empty, the worker refuses to start unless allow_unjailed is true
   # (because the alternative is "the entire filesystem is reachable
   # behind only the advisory denylist", which is rarely intended).
+  # `host_root` (singular) is a legacy one-entry alias; prefer this list.
   #
   # Default is /tmp: exists on every Unix host, is writable, and contains
-  # only ephemeral data. Operators should point this at the workspace
+  # only ephemeral data. Operators should point this at the workspace(s)
   # they intend the shell worker to manage.
-  host_root: /tmp
+  host_roots: [/tmp]
   allow_unjailed: false
   max_read_bytes: 16777216
   max_write_bytes: 16777216
+  # Defense in depth: while the jail is /tmp these paths are unreachable
+  # through shell::fs::* anyway (the jail rejects them first, S215); they
+  # exist so widening the jail — or going unjailed — never exposes them.
+  # The exec side can't be fs-jailed (children read the host freely), which
+  # is why /etc/shadow ALSO appears in denylist_patterns above; /etc/passwd
+  # is world-readable by design and gets no exec tripwire.
   denylist_paths:
     - /etc/passwd
     - /etc/shadow
