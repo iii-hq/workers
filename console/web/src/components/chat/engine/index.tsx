@@ -5,6 +5,7 @@ import { FunctionInfoView } from './FunctionInfoView'
 import { FunctionsListView } from './FunctionsListView'
 import { isEngineListFunction, unwrapEnvelope } from './parsers'
 import { RegisteredTriggersListView } from './RegisteredTriggersListView'
+import { RegisterTriggerView } from './RegisterTriggerView'
 import { TriggersListView } from './TriggersListView'
 import { WorkerInfoView } from './WorkerInfoView'
 import { WorkersListView } from './WorkersListView'
@@ -72,6 +73,10 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
     case 'engine::workers::register':
       return (
         <WorkersRegisterView input={input} output={output} running={running} />
+      )
+    case 'engine::register_trigger':
+      return (
+        <RegisterTriggerView input={input} output={output} running={running} />
       )
     default:
       return null

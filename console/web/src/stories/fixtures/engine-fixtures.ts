@@ -559,6 +559,70 @@ export const engineWorkerRegisterRunning = base(
   { running: true },
 )
 
+/* ---------------- engine::register_trigger ---------------- */
+
+export const engineRegisterTriggerReact = base(
+  'engine-register-trigger-react',
+  'engine::register_trigger',
+  {
+    trigger_type: 'state',
+    function_id: 'harness::react',
+    config: { key: 'build', scope: 'ops' },
+    metadata: {
+      model: 'claude-sonnet-5',
+      session_id: 'console-f0aac029-62a3-43f8-953b-45d0d903a866',
+      task: 'You are the GATE REVIEWER for a deploy pipeline. Both state records ops/build and ops/tests must be green before you approve.',
+      options: { functions: { allow: ['state::get'] } },
+      join: {
+        id: 'gate-decision-join',
+        key: 'build',
+        expect: ['build', 'tests'],
+        rearm: true,
+      },
+    },
+  },
+  wrapHarness({ id: 'trg-abc123def456' }),
+)
+
+export const engineRegisterTriggerCron = base(
+  'engine-register-trigger-cron',
+  'engine::register_trigger',
+  {
+    trigger_type: 'cron',
+    function_id: 'ops::nightly-sweep',
+    config: { expression: '0 0 3 * * *' },
+  },
+  wrapHarness({ id: 'trg-cron-01' }),
+)
+
+export const engineRegisterTriggerSubscribe = base(
+  'engine-register-trigger-subscribe',
+  'engine::register_trigger',
+  {
+    trigger_type: 'state',
+    config: { key: 'progress', scope: 'research' },
+    label: 'research-progress-watch',
+    once: false,
+  },
+  wrapHarness({
+    once: false,
+    subscription_id: 'sub_6c9c9f043f5f449dab6569d2f27a8c05',
+  }),
+)
+
+export const engineRegisterTriggerRunning = base(
+  'engine-register-trigger-running',
+  'engine::register_trigger',
+  {
+    trigger_type: 'state',
+    function_id: 'harness::react',
+    config: { scope: 'ops' },
+    metadata: { model: 'claude-sonnet-5', task: 'watch for changes' },
+  },
+  undefined,
+  { running: true },
+)
+
 export const engineFixtures = [
   engineFunctionsListDone,
   engineFunctionsListRaw,
@@ -578,6 +642,10 @@ export const engineFixtures = [
   engineWorkerInfoNotFound,
   engineWorkerRegisterDone,
   engineWorkerRegisterRunning,
+  engineRegisterTriggerReact,
+  engineRegisterTriggerCron,
+  engineRegisterTriggerSubscribe,
+  engineRegisterTriggerRunning,
   engineRunning,
   engineFunctionsListGateError,
 ] as const

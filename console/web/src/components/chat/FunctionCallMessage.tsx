@@ -15,6 +15,7 @@ import {
   SandboxToolView,
 } from '@/components/chat/sandbox'
 import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
+import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
 import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
 import {
@@ -140,6 +141,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (HarnessToolView.isHarnessFunction(functionId)) {
     return <HarnessFunctionIdLabel functionId={functionId} />
   }
+  if (StateToolView.isStateFunction(functionId)) {
+    return <StateFunctionIdLabel functionId={functionId} />
+  }
   return <span className="text-ink">{functionId}</span>
 }
 
@@ -170,7 +174,8 @@ export function FunctionCallMessage({
     ShellToolView.tryRenderPreview(message) ??
     WorkflowToolView.tryRenderPreview(message) ??
     RouterToolView.tryRenderPreview(message) ??
-    HarnessToolView.tryRenderPreview(message)
+    HarnessToolView.tryRenderPreview(message) ??
+    StateToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
@@ -181,13 +186,14 @@ export function FunctionCallMessage({
       ShellToolView.tryRender(message) ??
       WorkflowToolView.tryRender(message) ??
       RouterToolView.tryRender(message) ??
-      HarnessToolView.tryRender(message))
+      HarnessToolView.tryRender(message) ??
+      StateToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =
     !(pending && customPreview) &&
     !(running && hasCustomTerminal) &&
-    !(!pending && !running && hasCustomTerminal)
+    !(!pending && !running)
 
   const runResolve = async (kind: 'approve' | 'deny' | 'always_allow') => {
     const handler =

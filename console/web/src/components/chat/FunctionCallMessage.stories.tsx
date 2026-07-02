@@ -6,6 +6,7 @@ import { harnessFixtures } from '@/stories/fixtures/harness-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
+import { stateFixtures } from '@/stories/fixtures/state-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
 import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
 import { workflowFixtures } from '@/stories/fixtures/workflow-fixtures'
@@ -172,4 +173,9 @@ export const RouterFamily: Story = {
 export const HarnessFamily: Story = {
   name: 'harness family',
   render: () => <FamilyGallery fixtures={harnessFixtures} />,
+}
+
+export const StateFamily: Story = {
+  name: 'state family',
+  render: () => <FamilyGallery fixtures={stateFixtures} />,
 }
