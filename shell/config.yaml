@@ -6,19 +6,24 @@ max_bg_timeout_ms: 0  # host bg job hard cap in ms; 0 = unbounded (foreground us
 default_timeout_ms: 10000
 max_output_bytes: 1048576
 working_dir: null
-# Forward the worker's full environment to children so toolchains (cargo,
-# rustup, git, node) find their PATH/HOME/CARGO_HOME/etc. Per-call `env`
-# overrides are still gated: PATH/HOME/LD_*/DYLD_* and interpreter startup
-# keys can never be set per call (see exec/policy.rs DANGEROUS_ENV_KEYS).
-# NOTE: this also forwards any secrets in the worker's env to every command;
-# run the worker with a clean environment if that matters to you.
-inherit_env: true
-allowed_env:
-  - PATH
-  - HOME
-  - LANG
-  - LC_ALL
-  - TERM
+# Environment policy for spawned commands.
+env:
+  # Forward the worker's full environment to children so toolchains (cargo,
+  # rustup, git, node) find their PATH/HOME/CARGO_HOME/etc. Per-call `env`
+  # overrides are still gated: PATH/HOME/LD_*/DYLD_* and interpreter startup
+  # keys can never be set per call (see exec/policy.rs DANGEROUS_ENV_KEYS).
+  # NOTE: this also forwards any secrets in the worker's env to every command;
+  # run the worker with a clean environment if that matters to you.
+  inherit: true
+  # Dual role: (1) when `inherit` is false, ONLY these keys are forwarded to
+  # children; (2) per-call `env` may set a key only if it is listed here —
+  # minus the hardcoded dangerous keys above, which are never settable.
+  allow:
+    - PATH
+    - HOME
+    - LANG
+    - LC_ALL
+    - TERM
 # PERMISSIVE DEFAULT: an EMPTY allowlist means every command is allowed
 # (cargo, git, bash, make, node, python3, …). This is deliberate — a coding
 # agent needs arbitrary build/test/VCS tooling, and a half-open list is

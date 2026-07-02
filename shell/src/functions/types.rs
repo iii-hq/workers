@@ -118,10 +118,10 @@ pub struct ExecRequest {
     #[schemars(skip)]
     pub base_dir: Option<String>,
     /// Optional per-call environment values (host target only). A key may be
-    /// set ONLY if the operator listed it in `allowed_env`, and NEVER for an
+    /// set ONLY if the operator listed it in `env.allow`, and NEVER for an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
     /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS) — those are
-    /// rejected even if allowlisted. Supplying a key that is not in `allowed_env`,
+    /// rejected even if allowlisted. Supplying a key that is not in `env.allow`,
     /// or any dangerous key, rejects the WHOLE call (S210) naming the offending
     /// key; the env is never silently dropped. Permitted values override what
     /// would otherwise be forwarded for that key. Rejected (S210) on a sandbox target.
@@ -168,7 +168,7 @@ pub struct ExecBgRequest {
     #[schemars(skip)]
     pub base_dir: Option<String>,
     /// Optional per-call environment values (host target only). Same gating as
-    /// [`ExecRequest::env`]: a key must be in `allowed_env` and must not be an
+    /// [`ExecRequest::env`]: a key must be in `env.allow` and must not be an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
     /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS); any violation
     /// rejects the whole call (S210). Rejected (S210) on a sandbox target.

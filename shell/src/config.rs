@@ -4,8 +4,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Root configuration for the shell worker: exec policy (timeouts, output
+/// caps, allow/denylist, env forwarding), the fs jail, the sandbox toggle,
+/// and the folded `coder::*` code surface. Stored in the `configuration`
+/// worker under id `shell` and hot-reloaded on change.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ShellConfig {
+    /// Hard cap, in milliseconds, on a foreground `shell::exec` call. A
+    /// per-call `timeout_ms` above this is clamped down to it. Default 30000
+    /// (30s); the shipped dev seed raises it to 120000 so real builds/tests
+    /// are not reaped.
     #[serde(default = "default_max_timeout_ms")]
     pub max_timeout_ms: u64,
 
@@ -19,21 +27,35 @@ pub struct ShellConfig {
     #[serde(default = "default_max_bg_timeout_ms")]
     pub max_bg_timeout_ms: u64,
 
+    /// Timeout, in milliseconds, applied to a foreground `shell::exec` call
+    /// when the caller omits `timeout_ms`. Always clamped to `max_timeout_ms`.
+    /// Default 10000 (10s).
     #[serde(default = "default_default_timeout_ms")]
     pub default_timeout_ms: u64,
 
+    /// Per-stream cap, in bytes, on captured stdout and stderr. Output beyond
+    /// the cap is dropped and the response flags `stdout_truncated` /
+    /// `stderr_truncated`. Default 1048576 (1 MiB).
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: usize,
 
+    /// Default working directory for spawned commands. `null` (the default)
+    /// runs children in the worker's own cwd. A per-call `cwd` or a
+    /// harness-stamped session `base_dir` overrides it for that one call.
     #[serde(default)]
     pub working_dir: Option<PathBuf>,
 
+    /// Environment policy for spawned commands (host target): whether the
+    /// worker's env is forwarded to children, and which keys are
+    /// forwardable/settable. See the field docs on `EnvConfig`.
     #[serde(default)]
-    pub inherit_env: bool,
+    pub env: EnvConfig,
 
-    #[serde(default = "default_allowed_env")]
-    pub allowed_env: Vec<String>,
-
+    /// Command allowlist by argv[0] basename. EMPTY (the default) means every
+    /// command is allowed — deliberate for coding agents that need arbitrary
+    /// build/test/VCS tooling; the security boundary is the fs jail and the
+    /// sandbox backend, not this list. A non-empty list flips exec to
+    /// deny-by-default: only the listed basenames run.
     #[serde(default)]
     pub allowlist: Vec<String>,
 
@@ -45,15 +67,23 @@ pub struct ShellConfig {
     #[serde(default)]
     pub denylist_patterns: Vec<String>,
 
+    /// Maximum number of live background jobs (`shell::exec_bg`). A spawn past
+    /// the cap is rejected until a job finishes or is killed. Default 16.
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: usize,
 
+    /// How long, in seconds, a FINISHED job record (status, exit code,
+    /// captured output) stays queryable via `shell::status` before a
+    /// background reaper evicts it. Default 3600 (1h).
     #[serde(default = "default_job_retention_secs")]
     pub job_retention_secs: u64,
 
+    /// The filesystem jail shared by `shell::fs::*`, `coder::*`, and per-call
+    /// exec `cwd` confinement. See the field docs on `FsConfig`.
     #[serde(default)]
     pub fs: FsConfig,
 
+    /// The `iii-sandbox` microVM backend toggle for sandbox-targeted calls.
     #[serde(default)]
     pub sandbox: SandboxConfig,
 
@@ -94,12 +124,6 @@ fn default_default_timeout_ms() -> u64 {
 fn default_max_output_bytes() -> usize {
     1_048_576
 }
-fn default_allowed_env() -> Vec<String> {
-    vec!["PATH", "HOME", "LANG", "LC_ALL", "TERM"]
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
 fn default_max_concurrent_jobs() -> usize {
     16
 }
@@ -107,6 +131,76 @@ fn default_job_retention_secs() -> u64 {
     3600
 }
 
+/// Top-level keys removed in 0.7.0 and where they moved. serde ignores
+/// unknown fields, so a 0.6.x config carrying `inherit_env: true` would
+/// otherwise parse into `env.inherit = false` — silently disabling env
+/// forwarding. Fail closed with a migration hint instead.
+const REMOVED_TOP_LEVEL_KEYS: &[(&str, &str)] =
+    &[("inherit_env", "env.inherit"), ("allowed_env", "env.allow")];
+
+fn check_removed_keys<'a>(keys: impl Iterator<Item = &'a str>) -> Result<(), String> {
+    let hits: Vec<String> = keys
+        .filter_map(|k| {
+            REMOVED_TOP_LEVEL_KEYS
+                .iter()
+                .find(|(old, _)| *old == k)
+                .map(|(old, new)| format!("`{old}` -> `{new}`"))
+        })
+        .collect();
+    if hits.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "config keys removed in 0.7.0: {}. Nest them under `env:` (e.g. env: {{ inherit: true, \
+         allow: [PATH, HOME] }}). If this is the stored value, rewrite it via \
+         configuration::set (id: shell).",
+        hits.join(", ")
+    ))
+}
+
+/// Environment policy for spawned commands (host target). Replaces the
+/// 0.6.x top-level `inherit_env` / `allowed_env` keys (renamed in 0.7.0;
+/// the old keys are rejected at parse with a migration hint).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EnvConfig {
+    /// Forward the worker's ENTIRE environment to child processes. Toolchains
+    /// (cargo, rustup, git, node) need this to find PATH/HOME/CARGO_HOME.
+    /// WARNING: it also forwards any secrets in the worker's env to every
+    /// command — run the worker with a clean environment if that matters.
+    /// When false (the default), children start from a clean env containing
+    /// only the keys listed in `allow`.
+    #[serde(default)]
+    pub inherit: bool,
+    /// Env keys with a dual role. (1) Forwarding allowlist: when `inherit` is
+    /// false, ONLY these keys are copied from the worker's env into the child.
+    /// (2) Per-call gate: a `shell::exec`/`shell::exec_bg` request may set an
+    /// `env` value only for a key listed here — MINUS the hardcoded dangerous
+    /// keys (PATH, IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV,
+    /// PYTHONSTARTUP, NODE_OPTIONS, ...), which are never settable per call
+    /// even if listed. Default: [PATH, HOME, LANG, LC_ALL, TERM].
+    #[serde(default = "default_env_allow")]
+    pub allow: Vec<String>,
+}
+
+fn default_env_allow() -> Vec<String> {
+    vec!["PATH", "HOME", "LANG", "LC_ALL", "TERM"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+impl Default for EnvConfig {
+    fn default() -> Self {
+        Self {
+            inherit: false,
+            allow: default_env_allow(),
+        }
+    }
+}
+
+/// The filesystem jail: which host roots are reachable through
+/// `shell::fs::*`, `coder::*`, and per-call exec `cwd`, plus read/write
+/// budgets and hard-denied paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FsConfig {
     /// Legacy single jail root. Honored as a one-entry `host_roots` list.
@@ -129,10 +223,17 @@ pub struct FsConfig {
     /// harnesses, sandbox-only deployments).
     #[serde(default)]
     pub allow_unjailed: bool,
+    /// Cap, in bytes, on a single `shell::fs::read`. `0` (the default) means
+    /// unlimited. The shipped seed sets 16777216 (16 MiB).
     #[serde(default = "default_max_read_bytes")]
     pub max_read_bytes: usize,
+    /// Cap, in bytes, on a single `shell::fs::write`. `0` (the default) means
+    /// unlimited. The shipped seed sets 16777216 (16 MiB).
     #[serde(default = "default_max_write_bytes")]
     pub max_write_bytes: usize,
+    /// Absolute path prefixes that are hard-rejected (S215) by every fs
+    /// operation and per-call exec `cwd`, even inside a jail root. A separate
+    /// layer from `code.non_accessible_globs` (glob-based, show-but-lock).
     #[serde(default)]
     pub denylist_paths: Vec<PathBuf>,
     /// Permit setuid/setgid/sticky bits (the top octal digit, `mode & 0o7000`)
@@ -144,8 +245,12 @@ pub struct FsConfig {
     pub allow_special_bits: bool,
 }
 
+/// Toggle for the `iii-sandbox` microVM exec backend.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxConfig {
+    /// Accept `target: { kind: "sandbox", sandbox_id }` calls and forward
+    /// them to the `iii-sandbox` worker. When false, sandbox-targeted calls
+    /// are rejected with S210. Default true.
     #[serde(default = "default_sandbox_enabled")]
     pub enabled: bool,
 }
@@ -211,8 +316,7 @@ impl Default for ShellConfig {
             default_timeout_ms: default_default_timeout_ms(),
             max_output_bytes: default_max_output_bytes(),
             working_dir: None,
-            inherit_env: false,
-            allowed_env: default_allowed_env(),
+            env: EnvConfig::default(),
             allowlist: Vec::new(),
             denylist_patterns: Vec::new(),
             max_concurrent_jobs: default_max_concurrent_jobs(),
@@ -238,7 +342,10 @@ impl ShellConfig {
     pub fn seed_default() -> Self {
         Self {
             max_timeout_ms: 120_000,
-            inherit_env: true,
+            env: EnvConfig {
+                inherit: true,
+                ..EnvConfig::default()
+            },
             denylist_patterns: vec![
                 r"rm\s+-rf\s+/".into(),
                 r":\(\)\s*\{\s*:\|".into(),
@@ -407,7 +514,18 @@ impl ShellConfig {
 
     /// Parse a YAML seed (no denylist compile, no jail validation — those run
     /// in `configuration::build_runtime`).
+    ///
+    /// The removed-key check parses to a `Value` first, but the config itself
+    /// deserializes from the TEXT again: `serde_yaml::from_value` self-tags
+    /// plain scalars (an unquoted `false` in `allowlist` becomes `Bool` and can
+    /// no longer deserialize into `String`), while `from_str` drives parsing by
+    /// the target type. Double-parsing a config-sized string is free.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
+        let raw: serde_yaml::Value =
+            serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
+        if let Some(map) = raw.as_mapping() {
+            check_removed_keys(map.keys().filter_map(|k| k.as_str()))?;
+        }
         serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
     }
 
@@ -419,6 +537,9 @@ impl ShellConfig {
 
     /// Deserialize the live value fetched from the configuration worker.
     pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        if let Some(obj) = value.as_object() {
+            check_removed_keys(obj.keys().map(String::as_str))?;
+        }
         serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))
     }
 
@@ -454,7 +575,8 @@ mod tests {
         let c = ShellConfig::default();
         assert_eq!(c.max_timeout_ms, 30_000);
         assert_eq!(c.default_timeout_ms, 10_000);
-        assert!(!c.inherit_env);
+        assert!(!c.env.inherit);
+        assert_eq!(c.env.allow, default_env_allow());
         assert_eq!(c.max_concurrent_jobs, 16);
     }
 
@@ -581,15 +703,119 @@ mod tests {
     /// `seed_default()` is the in-code twin of the shipped `config.yaml` — the
     /// file the registry publishes and that `cargo run` loads. If they drift, a
     /// zero-config boot and a `config.yaml` boot would diverge silently.
+    /// Routed through `from_yaml` so the shipped seed also passes the
+    /// removed-key check production uses.
     #[test]
     fn seed_default_matches_shipped_config_yaml() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
         let content = std::fs::read_to_string(path).expect("read config.yaml");
-        let from_file: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
+        let from_file = ShellConfig::from_yaml(&content).expect("config.yaml parses");
         assert_eq!(
             from_file.to_json(),
             ShellConfig::seed_default().to_json(),
             "config.yaml and ShellConfig::seed_default() must stay in sync"
+        );
+    }
+
+    /// A 0.6.x seed carrying the removed top-level `inherit_env` must be
+    /// rejected with a hint naming the new key — serde would otherwise ignore
+    /// it and silently boot with env forwarding OFF.
+    #[test]
+    fn from_yaml_rejects_removed_inherit_env_with_hint() {
+        let err = ShellConfig::from_yaml("inherit_env: true\n").expect_err("removed key rejects");
+        assert!(err.contains("removed in 0.7.0"), "{err}");
+        assert!(err.contains("`inherit_env` -> `env.inherit`"), "{err}");
+    }
+
+    /// Same for `allowed_env` through the live-value (JSON) funnel, which is
+    /// what an un-migrated stored configuration hits at boot and hot-reload.
+    #[test]
+    fn from_json_rejects_removed_allowed_env_with_hint() {
+        let v = serde_json::json!({"allowed_env": ["PATH"], "fs": {"allow_unjailed": true}});
+        let err = ShellConfig::from_json(&v).expect_err("removed key rejects");
+        assert!(err.contains("`allowed_env` -> `env.allow`"), "{err}");
+        assert!(err.contains("configuration::set"), "{err}");
+    }
+
+    /// Both removed keys present → both mappings named, so an operator fixes
+    /// the config in one pass instead of playing whack-a-mole.
+    #[test]
+    fn removed_keys_error_names_both_mappings() {
+        let err = ShellConfig::from_yaml("inherit_env: true\nallowed_env: [PATH]\n")
+            .expect_err("removed keys reject");
+        assert!(err.contains("`inherit_env` -> `env.inherit`"), "{err}");
+        assert!(err.contains("`allowed_env` -> `env.allow`"), "{err}");
+    }
+
+    /// Round-trip realism: exactly what a live 0.6.x STORED value looks like —
+    /// the old seed serialized with top-level `inherit_env`/`allowed_env` and
+    /// no `env` block — must fail closed through `from_json`.
+    #[test]
+    fn stored_060_shape_fails_closed_with_hint() {
+        let mut v = ShellConfig::seed_default().to_json();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("env");
+        obj.insert("inherit_env".into(), serde_json::Value::Bool(true));
+        obj.insert("allowed_env".into(), serde_json::json!(["PATH", "HOME"]));
+        let err = ShellConfig::from_json(&v).expect_err("0.6.x shape fails closed");
+        assert!(err.contains("removed in 0.7.0"), "{err}");
+    }
+
+    /// Regression: the removed-key pre-parse must NOT change how scalars
+    /// deserialize. An unquoted `false` in a string list (the e2e fixture
+    /// allowlists the `false` binary) self-tags as Bool through
+    /// `serde_yaml::from_value`, so `from_yaml` must re-deserialize from the
+    /// text, where the target type drives parsing.
+    #[test]
+    fn from_yaml_keeps_unquoted_boolean_like_strings() {
+        let c = ShellConfig::from_yaml("allowlist: [echo, false, \"true\"]\n")
+            .expect("boolean-looking allowlist entries parse as strings");
+        assert_eq!(c.allowlist, vec!["echo", "false", "true"]);
+    }
+
+    /// The nested block parses, and every omitted field takes the EnvConfig
+    /// default (inherit false, standard allow list).
+    #[test]
+    fn env_block_parses_and_defaults() {
+        let c = ShellConfig::from_yaml("env:\n  inherit: true\n").expect("nested env parses");
+        assert!(c.env.inherit);
+        assert_eq!(c.env.allow, default_env_allow());
+
+        let d = ShellConfig::from_yaml("{}").expect("empty config parses");
+        assert!(!d.env.inherit);
+        assert_eq!(d.env.allow, default_env_allow());
+    }
+
+    /// Every operator-visible config field must carry a schema description —
+    /// the console configuration UI renders them, and a bare field name is
+    /// exactly the DX gap this schema exists to close. Also pins that the
+    /// nested `EnvConfig` definition documents the dual role of `allow`.
+    #[test]
+    fn json_schema_every_field_has_description() {
+        let schema = ShellConfig::json_schema();
+        let props = schema["properties"].as_object().expect("top-level properties");
+        assert!(!props.is_empty());
+        for (name, prop) in props {
+            assert!(
+                prop.get("description")
+                    .and_then(|d| d.as_str())
+                    .is_some_and(|s| !s.is_empty()),
+                "config field `{name}` has no schema description (console UI shows it bare)"
+            );
+        }
+        let env_props = &schema["definitions"]["EnvConfig"]["properties"];
+        for key in ["inherit", "allow"] {
+            assert!(
+                env_props[key]["description"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "EnvConfig.{key} has no schema description"
+            );
+        }
+        let allow_desc = env_props["allow"]["description"].as_str().unwrap();
+        assert!(
+            allow_desc.contains("Forwarding") && allow_desc.contains("Per-call"),
+            "env.allow description must explain both roles: {allow_desc}"
         );
     }
 

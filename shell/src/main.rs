@@ -24,7 +24,11 @@ use configuration::AppState;
 use functions::types::{KillRequest, StatusRequest};
 
 #[derive(Parser, Debug)]
-#[command(name = "shell", about = "Unix shell execution worker for iii agents")]
+#[command(
+    name = "shell",
+    version,
+    about = "Unix shell execution worker for iii agents"
+)]
 struct Cli {
     /// Seed config registered as `initial_value` with the `configuration` worker
     /// on first registration. Defaults to ./config.yaml. The live value from the
@@ -32,8 +36,56 @@ struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
 
+    /// WebSocket URL of the iii engine. Also read from the III_URL env var.
+    /// The worker retries the connection forever (2s backoff); when the engine
+    /// is unreachable at boot, a single loud error from the pre-connect probe
+    /// says so.
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
+}
+
+/// Host/port of a ws(s):// engine URL, for the pre-connect probe. `None` when
+/// the URL does not parse or has no host; `port_or_known_default` maps
+/// ws→80 / wss→443 when no explicit port is given.
+fn ws_host_port(url_str: &str) -> Option<(String, u16)> {
+    let u = url::Url::parse(url_str).ok()?;
+    // host_str keeps IPv6 brackets ("[::1]"), which ToSocketAddrs rejects.
+    let host = u.host_str()?.trim_matches(['[', ']']).to_string();
+    let port = u.port_or_known_default()?;
+    Some((host, port))
+}
+
+/// One loud, actionable ERROR when the engine is unreachable, BEFORE handing
+/// off to the SDK's silent infinite 2s-backoff reconnect loop (which only
+/// WARNs). Never fails fast — supervised deployments rely on the SDK retry —
+/// and never blocks boot for more than ~4s (2s connect timeout, at most two
+/// resolved addresses tried). Parse/resolve failures just skip the probe: the
+/// SDK is the authority on what URLs it accepts.
+fn probe_engine_reachable(url_str: &str) {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let Some((host, port)) = ws_host_port(url_str) else {
+        tracing::warn!(url = %url_str, "could not parse engine URL; skipping reachability probe");
+        return;
+    };
+    let addrs = match (host.as_str(), port).to_socket_addrs() {
+        Ok(a) => a.collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::warn!(url = %url_str, error = %e, "engine host did not resolve");
+            return;
+        }
+    };
+    let reachable = addrs
+        .iter()
+        .take(2)
+        .any(|a| TcpStream::connect_timeout(a, std::time::Duration::from_secs(2)).is_ok());
+    if !reachable {
+        tracing::error!(
+            url = %url_str,
+            "engine unreachable at {url_str} — is the iii engine running? Set --url or the \
+             III_URL env var if it listens elsewhere. Continuing to retry in the background \
+             every 2s."
+        );
+    }
 }
 
 /// Identify this worker to the engine as `shell` (name, runtime, version, pid)
@@ -71,6 +123,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     tracing::info!(url = %cli.url, seed_config = %cli.config, "connecting to IIIClient engine");
+    probe_engine_reachable(&cli.url);
 
     let iii = register_worker(
         &cli.url,
@@ -210,7 +263,7 @@ async fn main() -> Result<()> {
                  defaults to the host; pass { kind: \"sandbox\", sandbox_id } to run in a microVM. \
                  Optional host-only `cwd` scopes this call to a directory (jail-confined exactly \
                  like shell::fs::* paths; escaping it is S215), optional `env` (object) sets \
-                 per-call values — but only for keys already in allowed_env and never for \
+                 per-call values — but only for keys already in the operator's env.allow list and never for \
                  PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup and interpreter-startup keys \
                  (those reject S210) — and optional host-only `stdin` (string) is written to the \
                  program's standard input (use it for `tee`, `patch`, or any stdin filter instead \
@@ -238,7 +291,7 @@ async fn main() -> Result<()> {
                 "Spawn an allowlisted command as a background job; returns { job_id, argv } \
                  immediately. Same payload as shell::exec (command + args, do NOT pass argv as an \
                  array), including the optional host-only `cwd` (jail-confined; escape is S215), \
-                 `env` (only allowed_env keys, never PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup \
+                 `env` (only keys in the operator's env.allow list, never PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup \
                  and interpreter-startup keys), and `stdin` (string written to the job's stdin); \
                  violations and cwd/env/stdin on a sandbox target reject with an S210 message. Poll \
                  with shell::status, terminate with shell::kill, list with shell::list. \
@@ -574,12 +627,72 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{ws_host_port, Cli};
     use clap::Parser;
 
     #[test]
     fn config_defaults_to_local_config_yaml() {
         let cli = Cli::parse_from(["shell"]);
         assert_eq!(cli.config, "./config.yaml");
+    }
+
+    /// `--version` must exist and report the crate version — operators use it
+    /// to check what a deployed binary actually is.
+    #[test]
+    fn version_flag_reports_crate_version() {
+        let err = Cli::try_parse_from(["shell", "--version"])
+            .expect_err("--version short-circuits parsing");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(
+            err.to_string().contains(env!("CARGO_PKG_VERSION")),
+            "renders the crate version: {err}"
+        );
+    }
+
+    /// The long help must surface the III_URL env var and the default engine
+    /// URL — this is the only self-documenting place for the binary's env vars.
+    #[test]
+    fn help_documents_url_env_and_default() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("III_URL"), "help names III_URL: {help}");
+        assert!(
+            help.contains("ws://127.0.0.1:49134"),
+            "help shows the default URL: {help}"
+        );
+        assert!(
+            help.contains("iii engine"),
+            "help describes what the URL points at: {help}"
+        );
+    }
+
+    #[test]
+    fn ws_host_port_parses_explicit_port() {
+        assert_eq!(
+            ws_host_port("ws://127.0.0.1:49134"),
+            Some(("127.0.0.1".to_string(), 49134))
+        );
+    }
+
+    #[test]
+    fn ws_host_port_parses_ipv6_without_brackets() {
+        assert_eq!(
+            ws_host_port("ws://[::1]:1234"),
+            Some(("::1".to_string(), 1234))
+        );
+    }
+
+    #[test]
+    fn ws_host_port_uses_known_default_ports() {
+        assert_eq!(ws_host_port("ws://localhost"), Some(("localhost".to_string(), 80)));
+        assert_eq!(
+            ws_host_port("wss://engine.example"),
+            Some(("engine.example".to_string(), 443))
+        );
+    }
+
+    #[test]
+    fn ws_host_port_rejects_garbage() {
+        assert_eq!(ws_host_port("not a url"), None);
     }
 }

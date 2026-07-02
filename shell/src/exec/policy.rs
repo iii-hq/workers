@@ -14,9 +14,9 @@
 //!   `allow_unjailed`), the same code path runs with no root to confine to,
 //!   matching the fs backend's unjailed behaviour.
 //! - `env` may set a VALUE only for a key the operator already put in
-//!   `cfg.allowed_env`, and NEVER for an exec-hijacking key (see
+//!   `cfg.env.allow`, and NEVER for an exec-hijacking key (see
 //!   [`DANGEROUS_ENV_KEYS`]) — those are rejected even if an operator
-//!   mistakenly lists them in `allowed_env`. Any offending key rejects the
+//!   mistakenly lists them in `env.allow`. Any offending key rejects the
 //!   WHOLE call `S210` (we never silently drop a key — the agent must learn its
 //!   env was not applied), naming the offending key and listing the permitted
 //!   ones so the agent can self-correct.
@@ -29,10 +29,10 @@ use crate::exec::error::ExecError;
 use crate::target::Target;
 
 /// Environment keys that an agent may NEVER set per-call, regardless of
-/// `allowed_env`. Setting any of these can hijack which binary the child
+/// `env.allow`. Setting any of these can hijack which binary the child
 /// actually executes or which shared libraries it loads — turning a benign
 /// allowlisted `command` into arbitrary code execution. The denylist is a
-/// HARD boundary: it wins over `allowed_env` so an operator's typo can't open
+/// HARD boundary: it wins over `env.allow` so an operator's typo can't open
 /// a privesc hole.
 ///
 /// - `PATH` / `IFS`: change which binary an allowlisted name resolves to / how
@@ -86,7 +86,7 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
 /// the dynamic-loader variables (`LD_*` on glibc, `DYLD_*` on macOS) — the set
 /// of these is open-ended across libc/OS versions, so an exact-name list would
 /// silently let a future `LD_SOMETHING` through if an operator widened
-/// `allowed_env`; (2) the explicit [`DANGEROUS_ENV_KEYS`] denylist for the
+/// `env.allow`; (2) the explicit [`DANGEROUS_ENV_KEYS`] denylist for the
 /// non-family names (PATH/IFS/HOME, glibc lookup paths, interpreter startup
 /// keys). Case-sensitive: env var names are case-sensitive on Unix and the
 /// dangerous names are upper-case.
@@ -102,7 +102,7 @@ pub struct ExecOverrides {
     /// Canonical, jail-confined working directory. `None` falls back to
     /// `cfg.working_dir` in `build_command`.
     pub cwd: Option<PathBuf>,
-    /// Per-call env values, already gated against `allowed_env` +
+    /// Per-call env values, already gated against `env.allow` +
     /// [`DANGEROUS_ENV_KEYS`]. Applied on top of the config-forwarded env.
     pub env: Option<BTreeMap<String, String>>,
     /// Bytes fed to the child's stdin (then EOF). `None` leaves stdin closed
@@ -249,7 +249,7 @@ fn static_code(code: &str) -> &'static str {
 }
 
 /// Validate a per-call `env` map: every key must be present in
-/// `cfg.allowed_env` AND absent from [`DANGEROUS_ENV_KEYS`]. The dangerous
+/// `cfg.env.allow` AND absent from [`DANGEROUS_ENV_KEYS`]. The dangerous
 /// check runs FIRST so a key that is both dangerous and (mistakenly)
 /// allowlisted is still rejected. On any violation the WHOLE call fails S210 —
 /// we never partially apply env, so the agent always knows whether its env took
@@ -258,12 +258,13 @@ fn validate_env(
     env: &BTreeMap<String, String>,
     cfg: &ShellConfig,
 ) -> Result<BTreeMap<String, String>, ExecError> {
-    // The keys an agent can actually set per call: in allowed_env AND not in the
-    // dangerous denylist. Listing the raw allowed_env would name HOME/PATH (both
+    // The keys an agent can actually set per call: in env.allow AND not in the
+    // dangerous denylist. Listing the raw env.allow would name HOME/PATH (both
     // default-allowed but always-rejected) as "settable", contradicting the very
     // error that rejected them and sending the agent into a retry loop.
     let settable = cfg
-        .allowed_env
+        .env
+        .allow
         .iter()
         .filter(|k| !is_dangerous_env_key(k))
         .cloned()
@@ -275,16 +276,16 @@ fn validate_env(
                 "S210",
                 format!(
                     "env key '{key}' is never settable per-call (exec-hijacking key); \
-                     remove it. Settable keys (in allowed_env, minus exec-hijacking keys): [{settable}]"
+                     remove it. Settable keys (env.allow minus exec-hijacking keys): [{settable}]"
                 ),
             ));
         }
-        if !cfg.allowed_env.iter().any(|a| a == key) {
+        if !cfg.env.allow.iter().any(|a| a == key) {
             return Err(ExecError::new(
                 "S210",
                 format!(
-                    "env key '{key}' is not in allowed_env; the operator must permit it. \
-                     Settable keys: [{settable}]"
+                    "env key '{key}' is not in the operator's env.allow list; the operator must \
+                     permit it. Settable keys: [{settable}]"
                 ),
             ));
         }
@@ -367,7 +368,10 @@ mod tests {
 
     fn cfg_jailed(root: &std::path::Path) -> ShellConfig {
         let mut c = ShellConfig {
-            allowed_env: vec!["NODE_ENV".into(), "MY_VAR".into()],
+            env: crate::config::EnvConfig {
+                allow: vec!["NODE_ENV".into(), "MY_VAR".into()],
+                ..Default::default()
+            },
             ..Default::default()
         };
         c.fs.host_root = Some(root.to_path_buf());
@@ -422,7 +426,10 @@ mod tests {
     #[test]
     fn env_in_allowed_is_accepted() {
         let c = ShellConfig {
-            allowed_env: vec!["NODE_ENV".into()],
+            env: crate::config::EnvConfig {
+                allow: vec!["NODE_ENV".into()],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut env = BTreeMap::new();
@@ -434,7 +441,10 @@ mod tests {
     #[test]
     fn env_not_in_allowed_is_rejected_naming_key_and_listing_permitted() {
         let c = ShellConfig {
-            allowed_env: vec!["NODE_ENV".into(), "MY_VAR".into()],
+            env: crate::config::EnvConfig {
+                allow: vec!["NODE_ENV".into(), "MY_VAR".into()],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut env = BTreeMap::new();
@@ -460,10 +470,13 @@ mod tests {
 
     #[test]
     fn dangerous_key_rejected_even_when_allowlisted() {
-        // The denylist must WIN over allowed_env: an operator typo listing
+        // The denylist must WIN over env.allow: an operator typo listing
         // LD_PRELOAD must not open a code-injection hole.
         let c = ShellConfig {
-            allowed_env: vec!["LD_PRELOAD".into()],
+            env: crate::config::EnvConfig {
+                allow: vec!["LD_PRELOAD".into()],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut env = BTreeMap::new();
