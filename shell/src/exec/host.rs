@@ -252,10 +252,7 @@ mod tests {
 
     fn test_cfg() -> ShellConfig {
         let mut c = ShellConfig {
-            env: crate::config::EnvConfig {
-                inherit: true,
-                ..Default::default()
-            },
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             ..Default::default()
         };
@@ -404,18 +401,59 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Removes the named process env vars on drop, even if the test body
+    /// panics between `set_var` and where a plain cleanup call would have
+    /// run — an assertion failure without this leaks the var into every
+    /// later test in the binary. Unique per-test var names (see the caller)
+    /// keep the residual risk to a logical leak, not a data race: full
+    /// concurrent-mutation safety would need a process-wide env mutex shared
+    /// with `code/config.rs`'s `CODER_TEST_ROOT` test, a larger change than
+    /// this test warrants on its own.
+    /// Holds [`crate::config::ENV_TEST_MUTEX`] for its whole lifetime AND
+    /// removes the named process env vars on drop, even if the test body
+    /// panics between `set_var` and where a plain cleanup call would have
+    /// run. The mutex serializes against every other test in the crate that
+    /// touches process env (see that constant's doc comment for why); the
+    /// Drop cleanup handles the panic case the mutex alone doesn't cover.
+    /// Held across `.await` below — fine under the default `#[tokio::test]`
+    /// current-thread flavor, where the outer test future need not be
+    /// `Send`.
+    struct EnvVarGuard {
+        keys: &'static [&'static str],
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvVarGuard {
+        fn new(keys: &'static [&'static str]) -> Self {
+            let lock = crate::config::ENV_TEST_MUTEX
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self { keys, _lock: lock }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for k in self.keys {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
     /// With `env.inherit: false`, the child env is scrubbed to exactly the
     /// `env.allow` keys: an allowed worker var round-trips, a non-allowed one
     /// never reaches the child. (Unit twin of the e2e scrub/passthrough cases.)
     #[tokio::test]
     async fn inherit_false_forwards_only_allow_keys() {
-        // Unique names so parallel tests can't collide on process env state.
-        std::env::set_var("SHELL_DX_ALLOWED_9F3A", "allowed-value");
-        std::env::set_var("SHELL_DX_BLOCKED_9F3A", "blocked-value");
+        const ALLOWED: &str = "SHELL_DX_ALLOWED_9F3A";
+        const BLOCKED: &str = "SHELL_DX_BLOCKED_9F3A";
+        // Guard acquired BEFORE set_var: it holds the cross-test env mutex,
+        // so the sets below can't race with another test's env mutation.
+        let _guard = EnvVarGuard::new(&[ALLOWED, BLOCKED]);
+        std::env::set_var(ALLOWED, "allowed-value");
+        std::env::set_var(BLOCKED, "blocked-value");
 
         let mut cfg = test_cfg();
         cfg.env.inherit = false;
-        cfg.env.allow = vec!["PATH".into(), "SHELL_DX_ALLOWED_9F3A".into()];
+        cfg.env.allow = vec!["PATH".into(), ALLOWED.into()];
 
         let out = run_to_completion(
             &["env".into()],
@@ -435,9 +473,6 @@ mod tests {
             "non-allowed key scrubbed: {}",
             out.stdout
         );
-
-        std::env::remove_var("SHELL_DX_ALLOWED_9F3A");
-        std::env::remove_var("SHELL_DX_BLOCKED_9F3A");
     }
 
     /// A permitted `env` key is visible to the child process. We forward

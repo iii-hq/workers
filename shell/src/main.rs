@@ -55,37 +55,42 @@ fn ws_host_port(url_str: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
-/// One loud, actionable ERROR when the engine is unreachable, BEFORE handing
-/// off to the SDK's silent infinite 2s-backoff reconnect loop (which only
-/// WARNs). Never fails fast — supervised deployments rely on the SDK retry —
-/// and never blocks boot for more than ~4s (2s connect timeout, at most two
-/// resolved addresses tried). Parse/resolve failures just skip the probe: the
-/// SDK is the authority on what URLs it accepts.
+/// One loud, actionable ERROR when the engine is unreachable, BEFORE the SDK's
+/// silent infinite 2s-backoff reconnect loop makes the failure look quiet.
+/// Runs DETACHED (spawned thread): it only logs, never gates boot, so neither
+/// the synchronous DNS lookup (unbounded — system resolver) nor the 2s TCP
+/// connect attempts can delay startup. Never fails fast — supervised
+/// deployments rely on the SDK retry. Parse/resolve failures just skip the
+/// probe: the SDK is the authority on what URLs it accepts. Log lines carry
+/// host:port, not the raw URL — a wss:// URL can embed credentials.
 fn probe_engine_reachable(url_str: &str) {
-    use std::net::{TcpStream, ToSocketAddrs};
     let Some((host, port)) = ws_host_port(url_str) else {
-        tracing::warn!(url = %url_str, "could not parse engine URL; skipping reachability probe");
+        tracing::warn!("could not parse engine URL; skipping reachability probe");
         return;
     };
-    let addrs = match (host.as_str(), port).to_socket_addrs() {
-        Ok(a) => a.collect::<Vec<_>>(),
-        Err(e) => {
-            tracing::warn!(url = %url_str, error = %e, "engine host did not resolve");
-            return;
+    std::thread::spawn(move || {
+        use std::net::{TcpStream, ToSocketAddrs};
+        let addrs = match (host.as_str(), port).to_socket_addrs() {
+            Ok(a) => a.collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::warn!(host = %host, port, error = %e, "engine host did not resolve");
+                return;
+            }
+        };
+        let reachable = addrs
+            .iter()
+            .take(2)
+            .any(|a| TcpStream::connect_timeout(a, std::time::Duration::from_secs(2)).is_ok());
+        if !reachable {
+            tracing::error!(
+                host = %host,
+                port,
+                "engine unreachable at {host}:{port} — is the iii engine running? Set --url \
+                 or the III_URL env var if it listens elsewhere. Continuing to retry in the \
+                 background every 2s."
+            );
         }
-    };
-    let reachable = addrs
-        .iter()
-        .take(2)
-        .any(|a| TcpStream::connect_timeout(a, std::time::Duration::from_secs(2)).is_ok());
-    if !reachable {
-        tracing::error!(
-            url = %url_str,
-            "engine unreachable at {url_str} — is the iii engine running? Set --url or the \
-             III_URL env var if it listens elsewhere. Continuing to retry in the background \
-             every 2s."
-        );
-    }
+    });
 }
 
 /// Identify this worker to the engine as `shell` (name, runtime, version, pid)
@@ -139,14 +144,30 @@ async fn main() -> Result<()> {
     // installed. Idempotent and a silent no-op when no collector is attached.
     telemetry::init();
 
+    // Seed policy: a MISSING file is the zero-config path (warn + fall through
+    // to the stored value or built-in seed). A file that EXISTS but fails to
+    // parse aborts boot: on first registration the fallback would silently
+    // replace the operator's intended policy with the permissive dev seed —
+    // fail-open — and with 0.7.0's removed-key rejection every un-migrated
+    // 0.6.x config file hits exactly this path. Mirrors the stored-value
+    // story: reject loudly, never degrade to a wider policy.
     let seed = match config::ShellConfig::from_file(&cli.config) {
         Ok(cfg) => {
             tracing::info!(path = %cli.config, "loaded seed config for initial registration");
             Some(cfg)
         }
-        Err(e) => {
-            tracing::warn!(path = %cli.config, error = %e, "could not load --config seed; using the stored configuration value if present, else the built-in zero-config default");
+        Err(e) if !std::path::Path::new(&cli.config).exists() => {
+            tracing::warn!(path = %cli.config, error = %e, "no --config seed file; using the stored configuration value if present, else the built-in zero-config default");
             None
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "--config seed {} exists but failed to parse: {e}. Refusing to boot: falling \
+                 back would seed the permissive built-in default in place of the intended \
+                 policy. Fix the file (see the migration hint above) or remove it to opt \
+                 into the zero-config default.",
+                cli.config
+            );
         }
     };
 
@@ -680,7 +701,10 @@ mod tests {
 
     #[test]
     fn ws_host_port_uses_known_default_ports() {
-        assert_eq!(ws_host_port("ws://localhost"), Some(("localhost".to_string(), 80)));
+        assert_eq!(
+            ws_host_port("ws://localhost"),
+            Some(("localhost".to_string(), 80))
+        );
         assert_eq!(
             ws_host_port("wss://engine.example"),
             Some(("engine.example".to_string(), 443))

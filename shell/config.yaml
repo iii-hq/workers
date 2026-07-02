@@ -41,18 +41,24 @@ allowlist: []
 # are pure dev friction with no security value, so they were dropped; only
 # catastrophic, host-wrecking patterns are kept to catch honest mistakes.
 #
-# Command-SHAPED patterns (mkfs/dd/shutdown/reboot) are anchored to argv[0]
-# (`^(\S*/)?name`) so they fire only when the tool IS the command — a coding
-# agent running `grep -rn shutdown src/` or `rg "dd if=" docs/` is not
-# rejected. Argument-shaped patterns (rm -rf /, the fork bomb, /etc/shadow)
-# stay unanchored: their dangerous form lives in the arguments.
+# Command-SHAPED patterns (mkfs/dd/shutdown/reboot) are anchored to argv[0],
+# case-insensitive, tolerating an optional sudo/doas/nohup/timeout wrapper (or
+# `env`, with its idiomatic `KEY=VALUE...` assignments) — mkfs/dd-to-device/
+# shutdown/reboot normally require root, so `sudo shutdown -h now` is
+# arguably the MOST likely accidental invocation. They fire only when the
+# tool IS the command (wrapped or not) — a coding agent running
+# `grep -rn shutdown src/` or `rg "dd if=" docs/` is not rejected.
+# Argument-shaped patterns (rm -rf /, the fork bomb, /etc/shadow) stay
+# unanchored: their dangerous form lives in the arguments. Still advisory
+# only: a wrapper not named here, flags BEFORE the wrapped command
+# (`sudo -u root shutdown`), or spawning via `sh -c`, still evade it.
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
   - ":\\(\\)\\s*\\{\\s*:\\|"   # fork bomb
-  - "^(\\S*/)?mkfs"
-  - "^(\\S*/)?dd\\s+if="
-  - "^(\\S*/)?shutdown\\b"
-  - "^(\\S*/)?reboot\\b"
+  - "(?i)^(?:(?:\\S*/)?env(?:\\s+\\S+=\\S*)*\\s+|(?:\\S*/)?(?:sudo|doas|nohup)\\s+|(?:\\S*/)?timeout(?:\\s+\\S+)?\\s+)*(\\S*/)?mkfs"
+  - "(?i)^(?:(?:\\S*/)?env(?:\\s+\\S+=\\S*)*\\s+|(?:\\S*/)?(?:sudo|doas|nohup)\\s+|(?:\\S*/)?timeout(?:\\s+\\S+)?\\s+)*(\\S*/)?dd\\s+if="
+  - "(?i)^(?:(?:\\S*/)?env(?:\\s+\\S+=\\S*)*\\s+|(?:\\S*/)?(?:sudo|doas|nohup)\\s+|(?:\\S*/)?timeout(?:\\s+\\S+)?\\s+)*(\\S*/)?shutdown\\b"
+  - "(?i)^(?:(?:\\S*/)?env(?:\\s+\\S+=\\S*)*\\s+|(?:\\S*/)?(?:sudo|doas|nohup)\\s+|(?:\\S*/)?timeout(?:\\s+\\S+)?\\s+)*(\\S*/)?reboot\\b"
   - "/etc/shadow"
 max_concurrent_jobs: 16
 job_retention_secs: 3600
