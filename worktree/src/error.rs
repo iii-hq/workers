@@ -36,6 +36,8 @@ pub mod codes {
     pub const DIRTY: &str = "W220";
     /// The worktree has commits not merged anywhere.
     pub const UNMERGED_WORK: &str = "W221";
+    /// Running processes hold files open under the worktree.
+    pub const WORKTREE_BUSY: &str = "W222";
     /// The iii state store could not be reached (retryable).
     pub const STATE_UNAVAILABLE: &str = "W300";
     /// Persisted state deserialized into an unexpected shape (corrupt record/job).

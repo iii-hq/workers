@@ -193,6 +193,14 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         ops::worktree_prune(Path::new(&repo_path), t).await;
     }
 
+    // Backstop for detached trash deletes interrupted by a crash/restart.
+    if !req.dry_run {
+        let cleared = crate::trash::sweep(&cfg.expanded_worktree_root(), now).await;
+        if cleared > 0 {
+            tracing::info!(cleared, "trash sweep cleared stale entries");
+        }
+    }
+
     Ok(Response { pruned, skipped })
 }
 

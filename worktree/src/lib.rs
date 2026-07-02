@@ -13,4 +13,5 @@ pub mod locks;
 pub mod manifest;
 pub mod state;
 pub mod surface;
+pub mod trash;
 pub mod types;

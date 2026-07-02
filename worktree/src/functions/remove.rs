@@ -104,9 +104,31 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                     ),
                 ));
             }
+            if crate::trash::dir_in_use(wt).await == Some(true) {
+                return Err(WError::new(
+                    codes::WORKTREE_BUSY,
+                    format!(
+                        "worktree {} has files open by running processes; stop them \
+                         or pass force to remove anyway",
+                        record.worktree_id
+                    ),
+                ));
+            }
         }
         ops::worktree_unlock(repo, wt, t).await;
-        ops::worktree_remove(repo, wt, true, t).await?;
+        // Rename into the trash (instant) and delete in the background; a
+        // failed rename falls back to the synchronous git removal.
+        let root = cfg.expanded_worktree_root();
+        match crate::trash::stage(wt, &root, &record.worktree_id) {
+            Ok(staged) => {
+                ops::worktree_prune(repo, t).await;
+                crate::trash::spawn_delete(staged);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "trash staging failed; removing synchronously");
+                ops::worktree_remove(repo, wt, true, t).await?;
+            }
+        }
     } else if repo_available {
         // Directory already gone: clean up stale admin metadata.
         ops::worktree_prune(repo, t).await;
