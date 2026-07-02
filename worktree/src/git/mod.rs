@@ -192,10 +192,12 @@ mod tests {
         assert!(validate_ref_name("branch", "x.lock").is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn run_git_times_out() {
-        // `git --version` is fast; a 0ms deadline must trip the timeout path.
-        let err = run_git(&std::env::temp_dir(), &["--version"], 0)
+        // Paused clock: the timer auto-advances past the deadline as soon as
+        // the runtime parks waiting on the child, so the timeout path trips
+        // deterministically instead of racing a real subprocess.
+        let err = run_git(&std::env::temp_dir(), &["--version"], 1)
             .await
             .unwrap_err();
         assert_eq!(err.code, crate::error::codes::GIT_TIMEOUT);

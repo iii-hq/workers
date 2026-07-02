@@ -37,4 +37,4 @@ dirs = "5"
 serde_json = "1"
 tempfile = "3"
 which = "8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "test-util"] }
