@@ -485,3 +485,29 @@ fn prune_request_accepts_empty_cron_payload() {
     assert!(req.repo_path.is_none());
     assert!(!req.dry_run);
 }
+
+#[tokio::test]
+async fn cas_branch_delete_refuses_when_the_branch_moved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_repo(&repo);
+    let first = head_sha(&repo);
+    git(&repo, &["branch", "victim"]);
+    // The branch moves past the sha the caller expects.
+    let moved = commit_file(&repo, "move.txt", "m\n", "moves victim");
+    git(&repo, &["update-ref", "refs/heads/victim", &moved]);
+
+    let refused = worktree::git::ops::cas_branch_delete(&repo, "victim", &first, 30_000)
+        .await
+        .unwrap();
+    assert!(!refused, "delete must refuse when the branch moved");
+    let branches = git(&repo, &["branch", "--list", "victim"]);
+    assert!(branches.contains("victim"), "branch retained");
+
+    let deleted = worktree::git::ops::cas_branch_delete(&repo, "victim", &moved, 30_000)
+        .await
+        .unwrap();
+    assert!(deleted);
+    let branches = git(&repo, &["branch", "--list", "victim"]);
+    assert!(!branches.contains("victim"));
+}

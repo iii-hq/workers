@@ -469,6 +469,50 @@ async fn redelivery_at_every_phase_boundary_converges() {
 }
 
 #[tokio::test]
+async fn backup_ref_survives_a_blocked_land_and_clears_on_success() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = setup(make_env(tmp.path(), test_config(tmp.path())), tmp.path()).await;
+    // Conflicting edits so the first land blocks in the rebase phase.
+    commit_file(&s.wt_path, "README.md", "worktree version\n", "wt edit");
+    commit_file(&s.repo, "README.md", "main version\n", "main edit");
+    let blocked_head = head_sha(&s.wt_path);
+
+    let job_id = enqueue_land(&s, "main", LandOverrides::default()).await;
+    let deps = land_deps(&s.env).await;
+    run_step(&deps, &job_id).await.unwrap();
+
+    let backup = format!("refs/iii/wt-backup/{}", s.worktree_id);
+    let pinned = git(&s.repo, &["rev-parse", &backup]);
+    assert_eq!(pinned, blocked_head, "blocked land keeps the backup ref");
+
+    // Resolve by force-restarting against trunk (no conflict there); the
+    // successful finalize releases the anchor.
+    let retry = land::handle(
+        &s.env.deps,
+        land::Request {
+            worktree_id: s.worktree_id.clone(),
+            target_branch: "trunk".into(),
+            test_cmd: None,
+            force_restart: true,
+            keep: false,
+        },
+    )
+    .await
+    .unwrap();
+    run_step(&deps, &retry.job_id).await.unwrap();
+
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &backup])
+        .current_dir(&s.repo)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "successful finalize deletes the backup ref"
+    );
+}
+
+#[tokio::test]
 async fn second_land_while_job_live_is_w401_and_unknown_job_is_noop() {
     let tmp = tempfile::tempdir().unwrap();
     let s = setup(make_env(tmp.path(), test_config(tmp.path())), tmp.path()).await;

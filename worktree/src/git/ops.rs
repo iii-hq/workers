@@ -12,7 +12,13 @@ pub async fn rev_parse(dir: &Path, reference: &str, timeout_ms: u64) -> Result<S
     let spec = format!("{reference}^{{commit}}");
     let out = run_git(
         dir,
-        &["rev-parse", "--verify", "--quiet", &spec],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &spec,
+        ],
         timeout_ms,
     )
     .await?;
@@ -117,7 +123,7 @@ pub async fn branch_exists(repo: &Path, branch: &str, timeout_ms: u64) -> Result
     let full = format!("refs/heads/{branch}");
     let out = run_git(
         repo,
-        &["show-ref", "--verify", "--quiet", &full],
+        &["show-ref", "--verify", "--quiet", "--end-of-options", &full],
         timeout_ms,
     )
     .await?;
@@ -127,7 +133,13 @@ pub async fn branch_exists(repo: &Path, branch: &str, timeout_ms: u64) -> Result
 /// Best-effort branch delete; `-d` unless `force`. A missing branch is a no-op.
 pub async fn branch_delete(repo: &Path, branch: &str, force: bool, timeout_ms: u64) -> bool {
     let flag = if force { "-D" } else { "-d" };
-    match run_git(repo, &["branch", flag, branch], timeout_ms).await {
+    match run_git(
+        repo,
+        &["branch", flag, "--end-of-options", branch],
+        timeout_ms,
+    )
+    .await
+    {
         Ok(out) if out.exit_code == 0 => true,
         Ok(out) => {
             tracing::debug!(branch, stderr = %out.stderr.trim(), "branch delete skipped");
@@ -149,7 +161,13 @@ pub async fn is_ancestor(
 ) -> Result<bool, WError> {
     let out = run_git(
         repo,
-        &["merge-base", "--is-ancestor", ancestor, descendant],
+        &[
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            ancestor,
+            descendant,
+        ],
         timeout_ms,
     )
     .await?;
@@ -239,7 +257,12 @@ pub async fn cas_update_ref(
     timeout_ms: u64,
 ) -> Result<bool, WError> {
     let full = format!("refs/heads/{target_branch}");
-    let out = run_git(repo, &["update-ref", &full, new_sha, old_sha], timeout_ms).await?;
+    let out = run_git(
+        repo,
+        &["update-ref", "--end-of-options", &full, new_sha, old_sha],
+        timeout_ms,
+    )
+    .await?;
     if out.exit_code == 0 {
         return Ok(true);
     }
@@ -255,6 +278,69 @@ pub async fn cas_update_ref(
         codes::GIT_NONZERO,
         format!("update-ref {full} failed in {}: {stderr}", repo.display()),
     ))
+}
+
+/// CAS branch delete: remove `refs/heads/<branch>` only while it still
+/// points at `expected_sha`. `Ok(false)` when the branch moved (or is
+/// already gone) — the branch is retained rather than dropped blind.
+pub async fn cas_branch_delete(
+    repo: &Path,
+    branch: &str,
+    expected_sha: &str,
+    timeout_ms: u64,
+) -> Result<bool, WError> {
+    let full = format!("refs/heads/{branch}");
+    let out = run_git(
+        repo,
+        &["update-ref", "-d", "--end-of-options", &full, expected_sha],
+        timeout_ms,
+    )
+    .await?;
+    if out.exit_code != 0 {
+        tracing::debug!(branch, stderr = %out.stderr.trim(), "CAS branch delete refused");
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Data-safety anchor for a land in flight: `refs/iii/wt-backup/<id>`
+/// pins the branch head from before the rebase until finalize succeeds.
+pub fn backup_ref(worktree_id: &str) -> String {
+    format!("refs/iii/wt-backup/{worktree_id}")
+}
+
+pub async fn set_backup_ref(
+    repo: &Path,
+    worktree_id: &str,
+    sha: &str,
+    timeout_ms: u64,
+) -> Result<(), WError> {
+    let full = backup_ref(worktree_id);
+    run_git_ok(
+        repo,
+        &["update-ref", "--end-of-options", &full, sha],
+        timeout_ms,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Best-effort backup-ref cleanup after a successful land.
+pub async fn delete_backup_ref(repo: &Path, worktree_id: &str, timeout_ms: u64) {
+    let full = backup_ref(worktree_id);
+    match run_git(
+        repo,
+        &["update-ref", "-d", "--end-of-options", &full],
+        timeout_ms,
+    )
+    .await
+    {
+        Ok(out) if out.exit_code != 0 => {
+            tracing::debug!(stderr = %out.stderr.trim(), "backup ref delete skipped");
+        }
+        Err(e) => tracing::debug!(error = %e, "backup ref delete failed"),
+        _ => {}
+    }
 }
 
 /// Fast-forward merge inside a live checkout. `Ok(false)` when not
@@ -283,7 +369,13 @@ pub async fn ahead_behind(dir: &Path, base: &str, timeout_ms: u64) -> Result<(u6
     let spec = format!("{base}...HEAD");
     let out = run_git_ok(
         dir,
-        &["rev-list", "--left-right", "--count", &spec],
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            "--end-of-options",
+            &spec,
+        ],
         timeout_ms,
     )
     .await?;
