@@ -31,7 +31,7 @@ env:
 # (cargo, git, bash, make, node, python3, …). This is deliberate — a coding
 # agent needs arbitrary build/test/VCS tooling, and a half-open list is
 # defeated the moment any shell/interpreter is on it. This worker is NOT a
-# sandbox: the security boundary is the fs jail (fs.host_root) plus the
+# sandbox: the security boundary is the fs jail (fs.host_roots) plus the
 # optional sandbox backend, NOT this list. To re-scope exec to deny-by-default,
 # list the permitted argv[0] basenames here (a non-empty list flips the gate).
 allowlist: []
@@ -63,7 +63,7 @@ fs:
   # When empty, the worker refuses to start unless allow_unjailed is true
   # (because the alternative is "the entire filesystem is reachable
   # behind only the advisory denylist", which is rarely intended).
-  # `host_root` (singular) is a legacy one-entry alias; prefer this list.
+  # (the 0.6.x `host_root` single-root form was removed in 0.7.0)
   #
   # Default is /tmp: exists on every Unix host, is writable, and contains
   # only ephemeral data. Operators should point this at the workspace(s)

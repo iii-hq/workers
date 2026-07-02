@@ -48,7 +48,7 @@ agents, pair with the `skills` worker.
 - Host `shell::exec` is not a security sandbox: the denylist is bypassable by
   any allowlisted interpreter. Run untrusted commands with `target: sandbox`
   (needs `iii-sandbox`).
-- `shell::fs::*` is jailed to `cfg.fs.host_root` and refuses denylisted paths;
+- `shell::fs::*` is jailed to `cfg.fs.host_roots` and refuses denylisted paths;
   paths must be absolute and symlinks are never followed.
 - Sandbox-backed background jobs cannot be hard-killed: `shell::kill` flips the
   record but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`).

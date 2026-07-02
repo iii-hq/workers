@@ -368,7 +368,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("workdir")).unwrap();
         let mut cfg = test_cfg();
-        cfg.fs.host_root = Some(root.clone());
+        cfg.fs.host_roots = vec![root.clone()];
 
         let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, None, &cfg)
             .expect("workdir is inside the jail");
@@ -390,7 +390,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("session")).unwrap();
         let mut cfg = test_cfg();
-        cfg.fs.host_root = Some(root.clone());
+        cfg.fs.host_roots = vec![root.clone()];
         let base = root.join("session").to_string_lossy().into_owned();
 
         let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), &cfg)
@@ -503,7 +503,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mut cfg = test_cfg();
-        cfg.fs.host_root = Some(root.clone());
+        cfg.fs.host_roots = vec![root.clone()];
         let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, &cfg)
             .expect_err("escape must reject");
         assert_eq!(err.code, "S215");

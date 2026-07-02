@@ -224,7 +224,7 @@ pub struct LsRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
@@ -248,7 +248,7 @@ pub struct StatRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]
@@ -272,7 +272,7 @@ pub struct MkdirRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Octal permission string, e.g. "0755".
     #[serde(default = "default_mkdir_mode")]
@@ -304,7 +304,7 @@ pub struct RmRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Required to delete a non-empty directory.
     #[serde(default)]
@@ -332,7 +332,7 @@ pub struct ChmodRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Octal permission string, e.g. "0755".
     pub mode: String,
@@ -371,9 +371,9 @@ pub struct MvRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Source path; jail-relative when fs.host_root is set, else absolute.
+    /// Source path; jail-relative when fs.host_roots is set, else absolute.
     pub src: String,
-    /// Destination path; jail-relative when fs.host_root is set, else absolute.
+    /// Destination path; jail-relative when fs.host_roots is set, else absolute.
     pub dst: String,
     /// Replace an existing destination instead of returning an error.
     #[serde(default)]
@@ -402,7 +402,7 @@ pub struct GrepRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Rust regex (RE2-like) matched against each line.
     pub pattern: String,
@@ -532,7 +532,7 @@ impl From<WriteContentWire> for WriteContent {
 /// One file in a batch `shell::fs::write` (`files: [...]`).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFileSpec {
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Inline string (recommended) or a streaming ContentRef.
     pub content: WriteContentWire,
@@ -549,7 +549,7 @@ pub struct WriteRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Single-file form: the path to write. Jail-relative when fs.host_root is
+    /// Single-file form: the path to write. Jail-relative when fs.host_roots is
     /// set, else absolute. Omit when using `files`.
     #[serde(default)]
     pub path: Option<String>,
@@ -650,7 +650,7 @@ pub struct ReadRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_root is set, else absolute.
+    /// Jail-relative when fs.host_roots is set, else absolute.
     pub path: String,
     /// Internal harness-scoped working directory; omitted from published schema.
     #[serde(default)]

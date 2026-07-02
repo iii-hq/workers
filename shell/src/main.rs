@@ -155,11 +155,6 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("registering shell configuration schema")?;
 
-    // One-shot, best-effort fold of a legacy `coder` config entry into the
-    // `shell` value (never-widen; idempotent). Runs after schema registration
-    // and before the fetch below so the merged value is what we boot from.
-    configuration::migrate_legacy_coder(&iii).await;
-
     let cfg = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)
@@ -225,7 +220,7 @@ async fn main() -> Result<()> {
         tracing::info!("code surface (coder::*) registered over the unified fs jail");
     } else {
         tracing::warn!(
-            "fs is unjailed (no fs.host_root/fs.host_roots) — code surface (coder::*) NOT \
+            "fs is unjailed (fs.host_roots is empty) — code surface (coder::*) NOT \
              registered; coder file functions require a jail root"
         );
     }
@@ -538,12 +533,13 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
     }
 
     fs_fn!("shell::fs::ls", fs_ls, fs::LsRequest, fs::LsResponse,
-        "List directory contents. `path` is relative to the configured fs jail root (fs.host_root) \
-         when set, otherwise absolute. `target` defaults to host; pass { kind: \"sandbox\", sandbox_id } \
+        "List directory contents. `path` is relative to the primary fs jail root (the first \
+         fs.host_roots entry) when set, otherwise absolute. `target` defaults to host; pass \
+         { kind: \"sandbox\", sandbox_id } \
          to run in a microVM. Errors return { code, message }; common: S210 bad path, S211 not found, \
          S212 not a directory, S215 jail/denylist.");
     fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
-        "Stat a single path (jail-relative when fs.host_root is set). Returns the entry's type, size, \
+        "Stat a single path (jail-relative when fs.host_roots is set). Returns the entry's type, size, \
          mode, and mtime. Errors return { code, message }; common: S211 not found, S215 jail/denylist.");
     fs_fn!("shell::fs::mkdir", fs_mkdir, fs::MkdirRequest, fs::MkdirResponse,
         "Create a directory. `mode` is an octal string like \"0755\". `parents: true` creates missing \

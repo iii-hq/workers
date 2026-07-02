@@ -20,13 +20,13 @@ use std::path::{Component, Path, PathBuf};
 /// ancestor, even when `p` itself doesn't yet exist. The naive fallback —
 /// "canonicalize, on ENOENT use the lexical path" — is a jail-escape vector
 /// when the path traverses a symlink whose target is outside the jail: the
-/// lexical form still `starts_with(host_root)`, but the kernel will follow
+/// lexical form still `starts_with(<jail root>)`, but the kernel will follow
 /// the link on the subsequent syscall. Walking up to the longest existing
 /// ancestor and canonicalizing *that* forces every symlink in the existing
 /// portion to be resolved; the non-existent tail can't itself contain
 /// symlinks (it doesn't exist) but can still contain `..`/`.`, which we
 /// then collapse lexically against the canonical prefix so the
-/// `starts_with(host_root)` check is sound.
+/// jail-root containment check is sound.
 pub(crate) fn canonicalize_with_fallback(p: &Path) -> std::io::Result<PathBuf> {
     if let Ok(c) = std::fs::canonicalize(p) {
         return Ok(c);
@@ -37,7 +37,7 @@ pub(crate) fn canonicalize_with_fallback(p: &Path) -> std::io::Result<PathBuf> {
     // forward through each tail component and reject if any of them is a
     // *dangling* symlink: canonicalize fails on dangling symlinks (target
     // doesn't exist), so they'd otherwise survive into the lexical tail
-    // and let `starts_with(host_root)` succeed against a path the kernel
+    // and let the jail-root containment check succeed against a path the kernel
     // would resolve outside the jail. Existing-but-resolvable symlinks
     // are caught by the top-of-function canonicalize.
     for anc in p.ancestors().skip(1) {

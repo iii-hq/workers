@@ -51,7 +51,7 @@ it never exits, so supervised deployments recover as soon as the engine is up.
 
 Settings are managed through the central `configuration` worker. On boot, the shell worker registers its schema (id `shell`) and fetches the live value over RPC — that live value is the authoritative config, not a local file. The optional `--config <path>` flag (default `./config.yaml`) provides the `initial_value` sent on first registration only; once registered, subsequent boots pull the stored value from the `configuration` worker. When the config changes, the worker hot-reloads the security policy and fs backend automatically (see [Hot-reload](#hot-reload)).
 
-The worker refuses to start unless `fs.host_roots` is set (or the legacy one-entry `fs.host_root`), or `fs.allow_unjailed: true` is explicitly opted in, because an unset root exposes the whole host filesystem behind only the advisory denylist.
+The worker refuses to start unless `fs.host_roots` is set, or `fs.allow_unjailed: true` is explicitly opted in, because an unset root exposes the whole host filesystem behind only the advisory denylist.
 
 By default, `mkdir`/`chmod`/`write` reject modes carrying setuid/setgid/sticky bits (the top octal digit, e.g. `4755`) with `S210`, since they are a privilege-escalation primitive when the worker runs as root inside the jail. Set `fs.allow_special_bits: true` only if your workload genuinely needs them.
 
@@ -80,7 +80,7 @@ max_concurrent_jobs: 16      # exec_bg past this is rejected
 job_retention_secs: 3600     # finished jobs pruned after this
 
 fs:
-  host_roots: [/tmp]         # jail roots for shell::fs::*; first = primary (legacy alias: host_root)
+  host_roots: [/tmp]         # jail roots for shell::fs::*; first = primary
   allow_unjailed: false      # opt-in to running with no jail root
   max_read_bytes: 16777216   # 0 = unlimited (reads stream; cap bounds caller cost)
   max_write_bytes: 16777216  # 0 = unlimited
@@ -93,7 +93,7 @@ sandbox:
 
 ### Zero-config default
 
-With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): jailed to `/tmp`, env forwarded, open exec with a catastrophic-only denylist (kept in sync by a unit test). If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_root` unset (without `fs.allow_unjailed: true`) also fails closed.
+With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): jailed to `/tmp`, env forwarded, open exec with a catastrophic-only denylist (kept in sync by a unit test). If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed.
 
 Host `shell::exec` is not a security boundary: any allowlisted interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The allowlist and denylist still apply on top of either backend.
 
@@ -101,7 +101,7 @@ Host `shell::exec` is not a security boundary: any allowlisted interpreter (`sh`
 
 `shell::exec` and `shell::exec_bg` each accept optional fields so an agent can scope a single command to a directory, set specific env values, and feed it standard input without wrapping everything in `sh -lc` (which would defeat the argv allowlist):
 
-- **`cwd`** (string): the working directory for this one call. It is confined to the fs jail **exactly** like `shell::fs::*` paths — jail-relative when `fs.host_root` is set (else absolute), canonicalized, and required to resolve inside `host_root` and miss `denylist_paths`. A `cwd` that escapes the jail returns `S215`; one that doesn't exist or isn't a directory returns `S211`/`S210`. Omit it to use the configured `working_dir` (unchanged default).
+- **`cwd`** (string): the working directory for this one call. It is confined to the fs jail **exactly** like `shell::fs::*` paths — jail-relative when `fs.host_roots` is set (else absolute), canonicalized, and required to resolve inside a jail root and miss `denylist_paths`. A `cwd` that escapes the jail returns `S215`; one that doesn't exist or isn't a directory returns `S211`/`S210`. Omit it to use the configured `working_dir` (unchanged default).
 - **`env`** (object of string→string): per-call environment values. A key may be set **only** if the operator already listed it in `env.allow`, and **never** for an exec-hijacking key — `PATH`, `IFS`, `HOME`, every `LD_*`/`DYLD_*` variant, and other loader/lookup-path and interpreter startup-file keys (`GCONV_PATH`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `NODE_OPTIONS`, …) are on a hardcoded denylist that **wins over** `env.allow`. Note that `HOME` ships in the default `env.allow` for the worker's own forwarded env but is **not** settable per-call. Supplying a key that is not in `env.allow`, or any dangerous key, rejects the **whole call** with `S210` (the offending key is named and the permitted keys are listed); the env is never silently dropped. A permitted per-call value overrides the value that would otherwise be forwarded for that key. So an agent can do `NODE_ENV=test` only if the operator put `NODE_ENV` in `env.allow`, and can never inject `PATH`, `HOME`, or `LD_PRELOAD`.
 - **`stdin`** (string): written to the program's standard input, which is then closed (EOF). Use it to feed `tee`, `patch`, `cat`, or any stdin filter instead of a shell heredoc. Omit it and stdin is `/dev/null`.
 
@@ -174,7 +174,7 @@ When the `configuration` worker pushes an updated config, the shell worker swaps
 
 - Each call executes against one consistent runtime snapshot; there is no mid-call config change.
 - Already-running background jobs are **not** retroactively re-checked when the policy tightens — they continue under the policy that was active when they were spawned.
-- A reload that widens the jail (for example, clearing `host_root`) succeeds but is logged as a privilege change.
+- A reload that widens the jail (for example, clearing `host_roots`) succeeds but is logged as a privilege change.
 - If the incoming config is invalid or unsafe, the worker keeps the last-good runtime and logs an error. The rejection is also surfaced through `shell::config-status` (a `rejected` outcome with a non-zero `rejected_reloads` count), so the divergence between the central store and the policy shell is actually enforcing is detectable instead of silent. Rejections are kept last-good and not retried (re-fetching returns the same bad value), so they will not retry-storm.
 - At boot the reconcile against the configuration worker is **fail-closed**: the worker refuses to start (and exposes no functions) if it cannot confirm the authoritative config, so it never serves a possibly stale security policy.
 
@@ -190,7 +190,7 @@ Returned error bodies carry a stable `code` field. Allowlist and denylist reject
 | `S212` | Wrong file type for the operation (for example, a file where a directory was expected). |
 | `S213` | Path already exists. |
 | `S214` | Directory not empty (non-recursive `rm`). |
-| `S215` | Path (or a per-call `cwd`) escapes `host_root`, hits `fs.denylist_paths`, or permission denied. |
+| `S215` | Path (or a per-call `cwd`) escapes the `fs.host_roots` jail, hits `fs.denylist_paths`, or permission denied. |
 | `S216` | Generic shell-internal failure: host spawn error, channel error, or a bad engine response. |
 | `S217` | Invalid regex passed to `grep`/`sed`. |
 | `S218` | `fs.max_read_bytes` / `fs.max_write_bytes` cap exceeded. |
@@ -219,6 +219,32 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
   value — writing the new shape while 0.6.x is still running makes the old
   worker hot-reload it, ignore the unknown `env` block, and silently stop
   forwarding env until restart.
+- **BREAKING: `fs.host_root` (single-root alias) removed.** The 0.6.x
+  one-entry alias for the jail root is **rejected at parse** with a migration
+  hint ("config key removed in 0.7.0: `fs.host_root` -> `fs.host_roots`
+  (one-entry list)"). Replace it with the list form:
+
+  ```yaml
+  # 0.6.x                                # 0.7.0
+  fs:                                    fs:
+    host_root: /srv/app                    host_roots: [/srv/app]
+  ```
+
+  Same fail-closed rationale as the env keys: serde would otherwise ignore
+  the stale key and the worker would see no jail configured at all.
+- **BREAKING: `code.base_path`/`code.base_paths` removed from the schema.**
+  They were inert — the code resolver has taken its roots from
+  `fs.host_roots` since the coder merge — so stored values still carrying
+  them are silently **ignored** (no reject; they never had an effect). Set
+  the jail once via `fs.host_roots`.
+- **The one-shot coder→shell config migration is removed.** 0.7.0 no longer
+  folds a legacy standalone-`coder` configuration entry into the `shell`
+  value at boot (the `migrated_from_coder` marker field is gone too; stored
+  values still carrying it parse fine and the marker is ignored). Boot also
+  no longer probes `configuration::get` for the `coder` entry, so the
+  "configuration 'coder' not found" WARN retries at startup are gone. If you
+  are upgrading a pre-0.6 stack that still relies on the fold, boot 0.6.x
+  once first (it performs the migration), then upgrade to 0.7.0.
 - **`--version` added**, and `--url`/`III_URL` and `RUST_LOG` are now
   documented (see [Running](#running)).
 - **Unreachable-engine boot is loud**: one ERROR with the URL and the fix
@@ -241,12 +267,12 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
 
 ## Troubleshooting
 
-- **`fs.host_root is unset ... refusing to start unjailed`**: set `fs.host_root` to a directory, or set `fs.allow_unjailed: true`.
+- **`fs.host_roots is empty ... refusing to start unjailed`**: set `fs.host_roots` to at least one directory, or set `fs.allow_unjailed: true`.
 - **`command '<x>' not in allowlist`**: the basename of `argv[0]` is not in a non-empty `allowlist`. Add it, or empty the list to allow anything.
-- **`S215 path escapes host_root` on a path inside the jail**: a symlink in the path resolves outside the jail. Resolve it yourself, or move the target inside `host_root`.
+- **`S215 path escapes the fs jail roots` on a path inside the jail**: a symlink in the path resolves outside the jail. Resolve it yourself, or move the target inside a jail root.
 - **`S300` on a sandbox target**: the host cannot boot microVMs. Sandbox execution requires Apple Silicon or `/dev/kvm`.
 - **Worker never connects**: the engine is not running or not bound on the configured `--url`. Start the engine first; the default WebSocket port is 49134.
-- **`config keys removed in 0.7.0: ...` at boot or on reload**: the seed file or the stored configuration value still uses the 0.6.x `inherit_env`/`allowed_env` keys. Nest them under `env:` (`inherit`/`allow`) — see [Upgrading to 0.7.0](#upgrading-to-070).
+- **`config keys removed in 0.7.0: ...` at boot or on reload**: the seed file or the stored configuration value still uses the 0.6.x `inherit_env`/`allowed_env` keys (nest them under `env:` as `inherit`/`allow`) or the single-root `fs.host_root` alias (use `fs.host_roots: [<path>]`) — see [Upgrading to 0.7.0](#upgrading-to-070).
 
 For the threat model, streaming wire shapes, and contributor build steps, see [ARCHITECTURE.md](ARCHITECTURE.md).
 

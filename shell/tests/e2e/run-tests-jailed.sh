@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Variant of run-tests.sh that boots the engine against
-# `config-jailed.yaml` (with `fs.host_root` set) and runs the
+# `config-jailed.yaml` (with `fs.host_roots` set) and runs the
 # jailed-only vuln-repro suite (S-C1). Reuses the same engine startup
 # logic; the differences are: (1) a different config, (2) HARNESS_SUITE=jailed
 # so runner.ts picks the matching case set, (3) a separate report path
@@ -94,7 +94,7 @@ fi
 
 export HARNESS_TEST_VAR="harness-allowed-value"
 
-echo "[run-tests-jailed] starting iii engine (jailed config: host_root=$JAIL_ROOT)"
+echo "[run-tests-jailed] starting iii engine (jailed config: host_roots=[$JAIL_ROOT])"
 : > "$ENGINE_LOG"
 : > "$HARNESS_LOG"
 

@@ -1,7 +1,7 @@
 # Variant of config.yaml used by run-tests-jailed.sh to reproduce
 # S-C1 (symlink-parent jail escape) — see
 # `cases-vuln-repro-jailed.ts`. Only difference from the default
-# config is `fs.host_root` being set to a fixed absolute path; the
+# config is `fs.host_roots` being set to a fixed absolute path; the
 # jailed suite creates the directory and a symlink inside it that
 # points at /private/tmp/<uuid>. The vuln is that
 # `validate_path` falls back to lexical normalization on ENOENT
@@ -40,7 +40,7 @@ workers:
       max_concurrent_jobs: 2
       job_retention_secs: 2
       fs:
-        host_root: /private/tmp/iii-shell-jailed-root
+        host_roots: [/private/tmp/iii-shell-jailed-root]
         max_read_bytes: 1048576
         max_write_bytes: 1048576
         denylist_paths:

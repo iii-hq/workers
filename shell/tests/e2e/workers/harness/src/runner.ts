@@ -127,7 +127,7 @@ export class Runner {
     // set) is the full unjailed suite + the unjailed vuln repros.
     // `jailed` runs ONLY the symlink-jail-escape repro against an
     // engine started with config-jailed.yaml — the rest of the suite
-    // assumes host_root: null and would mis-fail there.
+    // assumes no host_roots and would mis-fail there.
     const suite = process.env.HARNESS_SUITE ?? 'default';
     const allCases: TestCase[] =
       suite === 'jailed'
