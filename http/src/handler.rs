@@ -207,15 +207,24 @@ pub async fn dynamic_handler(
                 );
             }
             Err(err) => {
-                // Expected on every request until the OTel tracing bridge layer
-                // is wired into the worker's subscriber (no layer ->
-                // SetParentError::LayerNotFound). Keep at debug to avoid
-                // per-request WARN spam; promote to warn! once the bridge lands.
-                tracing::debug!(
-                    error = %err,
-                    parent_trace_id = %parent_trace_id,
-                    "failed to set parent trace context on HTTP span"
-                );
+                use tracing_opentelemetry::SetParentError;
+                match err {
+                    // The "HTTP" info_span is filtered out by the active log
+                    // level (e.g. RUST_LOG=warn). Ordinary operator config, not a
+                    // misconfiguration -- keep it at debug to avoid per-request
+                    // WARN spam when info spans are disabled.
+                    SetParentError::SpanDisabled => tracing::debug!(
+                        parent_trace_id = %parent_trace_id,
+                        "HTTP span disabled by log filter; skipping trace-context parent"
+                    ),
+                    // LayerNotFound (OTel bridge missing) / AlreadyStarted (span
+                    // entered before set_parent) are real wiring bugs -- surface them.
+                    other => tracing::warn!(
+                        error = %other,
+                        parent_trace_id = %parent_trace_id,
+                        "failed to set parent trace context on HTTP span"
+                    ),
+                }
             }
         }
     }

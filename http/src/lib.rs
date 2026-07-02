@@ -16,6 +16,7 @@ pub mod configuration;
 pub mod handler;
 pub mod manifest;
 pub mod middleware;
+pub mod observability;
 pub mod server;
 pub mod trigger;
 pub mod types;

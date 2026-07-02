@@ -45,11 +45,20 @@ fn worker_metadata() -> WorkerMetadata {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+    // Subscriber = fmt (human logs) + the tracing->OTel bridge, so the
+    // per-request `HTTP` spans emitted in `handler.rs` reach the global OTel SDK
+    // and `Span::set_parent` resolves (no `SetParentError::LayerNotFound`). The
+    // bridge tracer re-reads the global provider per span (see
+    // `iii_http::observability`), so installing it here -- before the SDK's async
+    // `init_otel` sets the provider -- is safe: requests (and thus spans) only
+    // happen after `boot::start` below, by which point the provider is live.
+    use tracing_subscriber::prelude::*;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(iii_http::observability::otel_layer())
         .init();
 
     let cli = Cli::parse();
