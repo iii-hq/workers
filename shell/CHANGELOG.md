@@ -28,8 +28,10 @@ binary itself.
   the `shell` value at boot, and boot no longer probes `configuration::get`
   for a `coder` entry — which also removes the boot-time
   "configuration 'coder' not found" WARN retries. Stored values still
-  carrying the marker parse fine (it is ignored). Stacks that still need the
-  fold should boot 0.6.x once before upgrading.
+  carrying the marker parse fine (it is ignored). **Skipping this on a
+  standalone-`coder`-only install silently seeds the generic permissive
+  `/tmp` dev default for `shell` instead of the old coder roots/globs** —
+  stacks that still need the fold should boot 0.6.x once before upgrading.
 
 ### Added
 - `--version` prints the worker version.
@@ -53,8 +55,8 @@ binary itself.
   rewrite their stored value by hand should adopt the anchored forms too.
 - The denylist rejection message now says it is an advisory tripwire and to
   rephrase the command, so agents stop retrying verbatim.
-- The seed uses the preferred multi-root jail form (`fs.host_roots: [/tmp]`)
-  instead of the legacy `fs.host_root`.
+- The seed uses the multi-root jail form (`fs.host_roots: [/tmp]`) — the
+  singular `fs.host_root` was then removed outright (see Breaking).
 - Seed `default_timeout_ms` raised 10s → 30s: the seed raises
   `max_timeout_ms` to 120s so real builds survive; callers omitting
   `timeout_ms` shouldn't be reaped at 10s on the same workload. The CODE
@@ -65,6 +67,55 @@ binary itself.
   `fs.denylist_paths` is defense in depth (unreachable anyway while jailed).
 - Every `code.*` (CoderConfig) budget field now carries a schema description;
   the schema test covers all nested definitions, not just the top level.
+
+### Fixed (pre-landing review)
+- **Seed-file parse failures now fail closed.** A `--config` file that EXISTS
+  but fails to parse (e.g. still carries the removed 0.6.x keys) aborts boot
+  instead of warning and silently seeding the permissive built-in default in
+  its place — that fallback would have handed a fresh registration an open
+  allowlist and full env forwarding instead of the operator's intended
+  policy. A genuinely MISSING file still falls through gracefully.
+- **Hot-reload no longer retry-storms on an unparseable stored value.**
+  Previously, a stored config carrying removed keys failed inside the fetch
+  step and was misclassified as a *transient* error (dispatcher retries
+  forever against bytes that can never parse). It is now classified as
+  `Rejected` — the same treatment as an unbuildable-but-parseable config:
+  keep last-good, ack (no storm), and record the rejection for
+  `shell::config-status`.
+- **`env.allow` half-migration is rejected.** `EnvConfig` now denies unknown
+  fields, so nesting the OLD key names under the new block (e.g.
+  `env: { inherit_env: true }`) fails closed instead of silently falling back
+  to the wider default `allow` list.
+- **Command-shaped denylist patterns tolerate a wrapper prefix**
+  (`sudo`, `doas`, `nohup`, `env`, `timeout [duration]`, optionally
+  path-qualified): `sudo shutdown -h now` trips the tripwire again — the
+  argv[0]-anchoring in the first pass of this release had dropped that case,
+  arguably the most likely accidental invocation for commands that normally
+  require root.
+- **The removed-key check found and fixed its own bug during consolidation**:
+  merging the top-level and nested-`fs` checks into one function surfaced
+  that the original used `.any()`, which short-circuits — a config carrying
+  BOTH `inherit_env` and `allowed_env` only ever named the first in its error.
+  Every removed key present is now named in one pass.
+- **The boot-time reachability probe runs detached** so its DNS resolution
+  (unbounded — system resolver) and 2s-per-address TCP connect attempts can
+  never delay startup, and it logs host:port rather than the raw URL (a
+  `wss://user:pass@host` URL could otherwise leak credentials to the log).
+- **A half-migrated `env` block now gets the same migration hint as every
+  other removed key.** Nesting the OLD field names under the NEW `env:`
+  block (e.g. `env: { inherit_env: true }`) previously hit `EnvConfig`'s
+  generic `deny_unknown_fields` serde error with no guidance; it now names
+  the key and points at `env.inherit`/`env.allow` like the other rejections.
+- **The anchored denylist wrapper tolerance is now case-insensitive and
+  handles `env`'s idiomatic `KEY=VALUE...` form.** `SUDO shutdown -h now`
+  and `env FOO=bar shutdown -h now` (env's actual common usage — bare
+  `env cmd` was covered, `env KEY=VAL cmd` was not) now trip the tripwire;
+  previously both silently bypassed it, undermining the wrapper-tolerance
+  feature's own stated purpose for its most-used wrapper.
+- **Fixed a flaky test**: two tests that mutate process-wide environment
+  state (`std::env::set_var`) could race on separate `cargo test` threads
+  within the same binary, producing an intermittent, environment-dependent
+  failure. Both now serialize on a shared test-only mutex.
 
 ### Migration
 ```yaml
