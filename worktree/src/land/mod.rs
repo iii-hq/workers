@@ -348,9 +348,11 @@ pub async fn run_step(deps: &LandDeps, job_id: &str) -> Result<StepResult, WErro
                 } else {
                     if wt.exists() {
                         ops::worktree_unlock(repo, wt, git_t).await;
-                        if let Err(e) = ops::worktree_remove(repo, wt, true, git_t).await {
-                            tracing::warn!(error = %e, "finalize: worktree remove failed");
-                        }
+                        // Propagate a cleanup failure so the phase redelivers
+                        // and retries, rather than deleting the record and
+                        // orphaning the directory. Re-entry skips this branch
+                        // once the directory is gone.
+                        ops::worktree_remove(repo, wt, true, git_t).await?;
                     }
                     // `git branch -d` checks mergedness against HEAD, not the
                     // land target, so verify the ancestry explicitly and then
@@ -433,11 +435,11 @@ async fn block(
     exit_code: Option<i32>,
 ) -> Result<StepResult, WError> {
     let phase = job.phase;
-    job.blocked_code = Some(code.to_string());
-    job.done = true;
-    job.updated_at = now_ms();
-    state::put_job(deps.state.as_ref(), job).await?;
 
+    // Persist the record's blocked lifecycle and clear the active marker
+    // BEFORE sealing the job as done. A crash between these leaves the job
+    // re-runnable, and re-entry re-detects the same block and converges; the
+    // reverse order would strand the record in `landing` behind a done job.
     let mut session_id = None;
     if let Some(mut record) = state::get_record(deps.state.as_ref(), &job.worktree_id).await? {
         session_id = record.session_id.clone();
@@ -475,6 +477,11 @@ async fn block(
             },
         )
         .await;
+
+    job.blocked_code = Some(code.to_string());
+    job.done = true;
+    job.updated_at = now_ms();
+    state::put_job(deps.state.as_ref(), job).await?;
 
     Ok(StepResult {
         phase_completed: phase,

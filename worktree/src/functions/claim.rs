@@ -60,7 +60,11 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     let previous_session_id = previous.filter(|p| p != &req.session_id);
     record.session_id = Some(req.session_id.clone());
-    record.lifecycle = Lifecycle::Claimed;
+    // Ownership changes, but a land in flight (or a prior block) owns the
+    // lifecycle: only a plain unclaimed/claimed worktree flips to `claimed`.
+    if matches!(record.lifecycle, Lifecycle::Active | Lifecycle::Claimed) {
+        record.lifecycle = Lifecycle::Claimed;
+    }
     record.updated_at = now_ms();
     state::put_record(deps.state.as_ref(), &record).await?;
 

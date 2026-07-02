@@ -30,6 +30,12 @@ pub struct Response {
 }
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
+    if req.session_id.trim().is_empty() {
+        return Err(WError::new(
+            codes::INVALID_REQUEST,
+            "session_id must be non-empty",
+        ));
+    }
     let mut record = require_record(deps, &req.worktree_id).await?;
     let _guard = deps.locks.guard(&record.repo_key).await;
     record = require_record(deps, &req.worktree_id).await?;

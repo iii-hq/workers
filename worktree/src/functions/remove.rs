@@ -41,6 +41,27 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let _guard = deps.locks.guard(&record.repo_key).await;
     let record = require_record(deps, &req.worktree_id).await?;
 
+    // Refuse while a land job is live: removing the worktree out from under a
+    // rebase/test/merge in flight would corrupt the land. Checked under the
+    // lock so it cannot race a land that is being enqueued.
+    if let Some(active) = state::get_active_job_id(deps.state.as_ref(), &record.worktree_id).await?
+    {
+        let live = match state::get_job(deps.state.as_ref(), &active).await? {
+            Some(job) => !job.done,
+            None => false,
+        };
+        if live {
+            return Err(WError::new(
+                codes::LAND_IN_PROGRESS,
+                format!(
+                    "worktree {} has an active land job {active:?}; wait for it to finish \
+                     or resolve it before removing",
+                    record.worktree_id
+                ),
+            ));
+        }
+    }
+
     let repo = Path::new(&record.repo_path);
     let wt = Path::new(&record.path);
     let repo_available = repo.is_dir();

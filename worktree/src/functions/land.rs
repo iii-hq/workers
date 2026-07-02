@@ -118,7 +118,10 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         )
         .await;
     if let Err(e) = enqueue {
+        // The job never reached the queue: delete it so a stray/duplicate
+        // delivery cannot pick up a not-done job and run an unqueued land.
         state::clear_active_job_id(deps.state.as_ref(), &record.worktree_id).await?;
+        state::delete_job(deps.state.as_ref(), &job_id).await?;
         record.lifecycle = previous_lifecycle;
         record.updated_at = now_ms();
         state::put_record(deps.state.as_ref(), &record).await?;

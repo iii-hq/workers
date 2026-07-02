@@ -135,7 +135,17 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
             });
             continue;
         }
-        let (_, ahead) = ops::ahead_behind(wt, &record.base_sha, t).await?;
+        let ahead = match ops::ahead_behind(wt, &record.base_sha, t).await {
+            Ok((_, ahead)) => ahead,
+            Err(e) => {
+                // One worktree's git failure must not abort the whole sweep.
+                skipped.push(PruneSkip {
+                    id: record.worktree_id,
+                    reason: format!("ahead/behind failed: {e}"),
+                });
+                continue;
+            }
+        };
         if ahead > 0 {
             skipped.push(PruneSkip {
                 id: record.worktree_id,
