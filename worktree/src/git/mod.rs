@@ -61,6 +61,59 @@ pub async fn run_git(dir: &Path, args: &[&str], timeout_ms: u64) -> Result<GitOu
     })
 }
 
+/// Like [`run_git`], but feeds `stdin_data` to the child (used for the
+/// `diff-tree --stdin` / `patch-id` plumbing pipelines).
+pub async fn run_git_with_stdin(
+    dir: &Path,
+    args: &[&str],
+    stdin_data: &[u8],
+    timeout_ms: u64,
+) -> Result<GitOutput, WError> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-c")
+        .arg("protocol.ext.allow=never")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let run = async {
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| WError::new(codes::GIT_SPAWN, format!("spawn git: {e}")))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(stdin_data)
+                .await
+                .map_err(|e| WError::new(codes::GIT_SPAWN, format!("write git stdin: {e}")))?;
+            drop(stdin);
+        }
+        child
+            .wait_with_output()
+            .await
+            .map_err(|e| WError::new(codes::GIT_SPAWN, format!("await git: {e}")))
+    };
+    let output = timeout(Duration::from_millis(timeout_ms), run)
+        .await
+        .map_err(|_| {
+            WError::new(
+                codes::GIT_TIMEOUT,
+                format!("git {} timed out after {timeout_ms} ms", args.join(" ")),
+            )
+        })??;
+
+    Ok(GitOutput {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 /// Like [`run_git`], but a nonzero exit is a `W102` error carrying the
 /// trimmed stderr.
 pub async fn run_git_ok(dir: &Path, args: &[&str], timeout_ms: u64) -> Result<GitOutput, WError> {

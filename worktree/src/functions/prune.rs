@@ -153,11 +153,24 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
             }
         };
         if ahead > 0 {
-            skipped.push(PruneSkip {
-                id: record.worktree_id,
-                reason: "unmerged work".into(),
-            });
-            continue;
+            // Ahead of base is not unmerged work when the target already
+            // absorbed it (squash merge, rebase): integrated worktrees are
+            // prunable.
+            let integrated = match ops::rev_parse(wt, "HEAD", t).await {
+                Ok(head_sha) => {
+                    crate::functions::status::integration_of(&record, &head_sha, t)
+                        .await
+                        .integrated
+                }
+                Err(_) => false,
+            };
+            if !integrated {
+                skipped.push(PruneSkip {
+                    id: record.worktree_id,
+                    reason: "unmerged work".into(),
+                });
+                continue;
+            }
         }
 
         if !req.dry_run {

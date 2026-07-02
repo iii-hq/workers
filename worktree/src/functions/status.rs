@@ -62,6 +62,7 @@ pub async fn build_status(
         (ahead_base, behind_base, ahead_base)
     };
     let diffstat = ops::diffstat(wt, &record.base_sha, t).await?;
+    let integration = integration_of(record, &head_sha, t).await;
     Ok(WorktreeStatus {
         clean: st.clean(),
         ahead,
@@ -74,5 +75,44 @@ pub async fn build_status(
         unpushed,
         in_rebase,
         head_sha,
+        integrated: integration.integrated,
+        integration_reason: integration.reason.map(str::to_string),
     })
+}
+
+/// Best-effort integration probe; a failed check degrades to not-integrated
+/// rather than failing the whole status read.
+pub async fn integration_of(
+    record: &WorktreeRecord,
+    head_sha: &str,
+    git_timeout_ms: u64,
+) -> ops::Integration {
+    let wt = Path::new(&record.path);
+    let repo = Path::new(&record.repo_path);
+    let target = match ops::integration_target(repo, &record.base_ref, git_timeout_ms).await {
+        Ok(Some(target)) if target != record.branch => target,
+        Ok(_) => {
+            return ops::Integration {
+                integrated: false,
+                reason: None,
+            }
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "integration target resolution failed");
+            return ops::Integration {
+                integrated: false,
+                reason: None,
+            };
+        }
+    };
+    match ops::check_integration(wt, head_sha, &target, git_timeout_ms).await {
+        Ok(integration) => integration,
+        Err(e) => {
+            tracing::debug!(error = %e, "integration check failed");
+            ops::Integration {
+                integrated: false,
+                reason: None,
+            }
+        }
+    }
 }

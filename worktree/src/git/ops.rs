@@ -300,3 +300,254 @@ pub async fn diffstat(dir: &Path, base: &str, timeout_ms: u64) -> Result<String,
     let out = run_git_ok(dir, &["diff", "--shortstat", &spec], timeout_ms).await?;
     Ok(out.stdout_trimmed())
 }
+
+// ---------------------------------------------------------------------------
+// Integration detection
+// ---------------------------------------------------------------------------
+
+/// Cap on the target-branch commit walk during the patch-id fallback. A
+/// squash merge lands as one target commit, so scanning the most recent
+/// window is enough; beyond it the check conservatively reports
+/// not-integrated instead of walking unbounded history.
+pub const PATCH_ID_WALK_CAP: u64 = 500;
+
+/// Outcome of the integration check chain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Integration {
+    pub integrated: bool,
+    /// Which check matched: `same_commit`, `ancestor`, `no_added_changes`,
+    /// `trees_match`, `merge_adds_nothing`, or `patch_id_match`.
+    pub reason: Option<&'static str>,
+}
+
+impl Integration {
+    fn no() -> Self {
+        Self {
+            integrated: false,
+            reason: None,
+        }
+    }
+
+    fn yes(reason: &'static str) -> Self {
+        Self {
+            integrated: true,
+            reason: Some(reason),
+        }
+    }
+}
+
+/// The branch a worktree's work is expected to merge into: its recorded
+/// base ref when that is a real ref, else the primary checkout's current
+/// branch. `None` when neither resolves (detached primary, deleted base).
+pub async fn integration_target(
+    repo: &Path,
+    base_ref: &str,
+    timeout_ms: u64,
+) -> Result<Option<String>, WError> {
+    if base_ref != "HEAD" {
+        let out = run_git(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                base_ref,
+            ],
+            timeout_ms,
+        )
+        .await?;
+        if out.exit_code == 0 {
+            return Ok(Some(base_ref.to_string()));
+        }
+        return Ok(None);
+    }
+    let out = run_git(repo, &["symbolic-ref", "--short", "HEAD"], timeout_ms).await?;
+    if out.exit_code == 0 {
+        let name = out.stdout_trimmed();
+        if !name.is_empty() {
+            return Ok(Some(name));
+        }
+    }
+    Ok(None)
+}
+
+async fn tree_of(dir: &Path, commitish: &str, timeout_ms: u64) -> Result<String, WError> {
+    let spec = format!("{commitish}^{{tree}}");
+    let out = run_git_ok(
+        dir,
+        &["rev-parse", "--verify", "--quiet", &spec],
+        timeout_ms,
+    )
+    .await?;
+    Ok(out.stdout_trimmed())
+}
+
+/// Cheapest-first integration chain: is every change on `branch_sha` already
+/// contained in `target`? Catches fast-forwards and true merges (ancestor),
+/// rebases (matching trees), squash merges (merge adds nothing, or the
+/// patch-id fallback when the squashed files were touched again), and
+/// no-op branches. A diverged branch with real unmerged work reports
+/// not-integrated. Runs inside the worktree; objects are shared repo-wide.
+pub async fn check_integration(
+    dir: &Path,
+    branch_sha: &str,
+    target: &str,
+    timeout_ms: u64,
+) -> Result<Integration, WError> {
+    let spec = format!("{target}^{{commit}}");
+    let resolved = run_git(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &spec,
+        ],
+        timeout_ms,
+    )
+    .await?;
+    if resolved.exit_code != 0 {
+        return Ok(Integration::no());
+    }
+    let target_sha = resolved.stdout_trimmed();
+
+    if branch_sha == target_sha {
+        return Ok(Integration::yes("same_commit"));
+    }
+
+    if is_ancestor(dir, branch_sha, &target_sha, timeout_ms).await? {
+        return Ok(Integration::yes("ancestor"));
+    }
+
+    // Everything past here needs a merge base; unrelated histories are
+    // never integrated.
+    let based = run_git(dir, &["merge-base", branch_sha, &target_sha], timeout_ms).await?;
+    if based.exit_code != 0 {
+        return Ok(Integration::no());
+    }
+    let merge_base = based.stdout_trimmed();
+
+    let added = run_git_ok(
+        dir,
+        &[
+            "diff",
+            "--name-only",
+            &format!("{merge_base}..{branch_sha}"),
+        ],
+        timeout_ms,
+    )
+    .await?;
+    if added.stdout.trim().is_empty() {
+        return Ok(Integration::yes("no_added_changes"));
+    }
+
+    let branch_tree = tree_of(dir, branch_sha, timeout_ms).await?;
+    let target_tree = tree_of(dir, &target_sha, timeout_ms).await?;
+    if branch_tree == target_tree {
+        return Ok(Integration::yes("trees_match"));
+    }
+
+    // In-memory merge: exit 0 = clean (first line is the resulting tree);
+    // exit 1 = conflict (fall through to patch-ids); anything else (e.g.
+    // git without the merge-tree write-tree plumbing) also falls through.
+    let merged = run_git(
+        dir,
+        &["merge-tree", "--write-tree", &target_sha, branch_sha],
+        timeout_ms,
+    )
+    .await?;
+    if merged.exit_code == 0 {
+        let merged_tree = merged.stdout.lines().next().unwrap_or("").trim();
+        if merged_tree == target_tree {
+            return Ok(Integration::yes("merge_adds_nothing"));
+        }
+        return Ok(Integration::no());
+    }
+
+    patch_id_match(dir, branch_sha, &target_sha, &merge_base, timeout_ms).await
+}
+
+/// Squash-merge fallback: the branch's combined diff (merge base to head)
+/// carries the same patch-id as some commit already on the target. Uses
+/// diff-tree plumbing so user diff config never skews the ids, and caps the
+/// target walk at [`PATCH_ID_WALK_CAP`].
+async fn patch_id_match(
+    dir: &Path,
+    branch_sha: &str,
+    target_sha: &str,
+    merge_base: &str,
+    timeout_ms: u64,
+) -> Result<Integration, WError> {
+    let count = run_git_ok(
+        dir,
+        &[
+            "rev-list",
+            "--count",
+            "--end-of-options",
+            &format!("{merge_base}..{target_sha}"),
+        ],
+        timeout_ms,
+    )
+    .await?
+    .stdout_trimmed()
+    .parse::<u64>()
+    .unwrap_or(u64::MAX);
+    if count == 0 || count > PATCH_ID_WALK_CAP {
+        return Ok(Integration::no());
+    }
+
+    let branch_diff = run_git_ok(
+        dir,
+        &["diff-tree", "-p", merge_base, branch_sha],
+        timeout_ms,
+    )
+    .await?;
+    let branch_patch = crate::git::run_git_with_stdin(
+        dir,
+        &["patch-id", "--verbatim"],
+        branch_diff.stdout.as_bytes(),
+        timeout_ms,
+    )
+    .await?;
+    let Some(branch_id) = branch_patch.stdout.split_whitespace().next() else {
+        return Ok(Integration::no());
+    };
+    let branch_id = branch_id.to_string();
+
+    let target_commits = run_git_ok(
+        dir,
+        &[
+            "rev-list",
+            "--end-of-options",
+            &format!("{merge_base}..{target_sha}"),
+        ],
+        timeout_ms,
+    )
+    .await?;
+    let target_diffs = crate::git::run_git_with_stdin(
+        dir,
+        &["diff-tree", "--stdin", "-p"],
+        target_commits.stdout.as_bytes(),
+        timeout_ms,
+    )
+    .await?;
+    let target_ids = crate::git::run_git_with_stdin(
+        dir,
+        &["patch-id", "--verbatim"],
+        target_diffs.stdout.as_bytes(),
+        timeout_ms,
+    )
+    .await?;
+    let matched = target_ids
+        .stdout
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .any(|id| id == branch_id);
+    Ok(if matched {
+        Integration::yes("patch_id_match")
+    } else {
+        Integration::no()
+    })
+}

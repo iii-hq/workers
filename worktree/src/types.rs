@@ -81,6 +81,16 @@ pub struct WorktreeStatus {
     pub in_rebase: bool,
     /// Current HEAD commit.
     pub head_sha: String,
+    /// True when the branch's work is already contained in its integration
+    /// target (fast-forward, merge, rebase, or squash merge). Integrated
+    /// worktrees are prunable even when ahead of their base.
+    #[serde(default)]
+    pub integrated: bool,
+    /// Which check detected the integration: `same_commit`, `ancestor`,
+    /// `no_added_changes`, `trees_match`, `merge_adds_nothing`, or
+    /// `patch_id_match`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_reason: Option<String>,
 }
 
 /// One worktree as reported by `worktree::list` / `worktree::get`.
