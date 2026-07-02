@@ -6,8 +6,11 @@ import {
   functionsListRequestSchema,
   functionsListResponseSchema,
   isEngineListFunction,
+  reactSpecSchema,
   registeredTriggersListRequestSchema,
   registeredTriggersListResponseSchema,
+  registerTriggerRequestSchema,
+  registerTriggerResponseSchema,
   safeParseRequest,
   safeParseResponse,
   triggersListRequestSchema,
@@ -358,6 +361,82 @@ describe('engine::workers::register', () => {
     expect(
       safeParseResponse(workersRegisterResponseSchema, wrap({ success: true })),
     ).toEqual({ success: true })
+  })
+})
+
+describe('engine::register_trigger', () => {
+  it('is included in the engine function id set', () => {
+    expect(ENGINE_FUNCTION_IDS).toContain('engine::register_trigger')
+    expect(isEngineListFunction('engine::register_trigger')).toBe(true)
+  })
+
+  it('parses a state-trigger → harness::react registration', () => {
+    const req = safeParseRequest(registerTriggerRequestSchema, {
+      trigger_type: 'state',
+      function_id: 'harness::react',
+      config: { key: 'build', scope: 'ops' },
+      metadata: {
+        model: 'claude-sonnet-5',
+        task: 'You are the GATE REVIEWER',
+        options: { functions: { allow: ['state::get'] } },
+        join: {
+          id: 'gate-decision-join',
+          key: 'build',
+          expect: ['build', 'tests'],
+          rearm: true,
+        },
+      },
+    })
+    expect(req?.trigger_type).toBe('state')
+    expect(req?.function_id).toBe('harness::react')
+    const react = safeParseRequest(reactSpecSchema, req?.metadata)
+    expect(react?.model).toBe('claude-sonnet-5')
+    expect(react?.join?.expect).toEqual(['build', 'tests'])
+    expect(react?.join?.rearm).toBe(true)
+  })
+
+  it('rejects a react spec whose join.expect is a count, not an array', () => {
+    expect(
+      safeParseRequest(reactSpecSchema, {
+        model: 'm',
+        task: 't',
+        join: { id: 'j', key: 'build', expect: 2 },
+      }),
+    ).toBeNull()
+  })
+
+  it('parses the harness subscribe variant (no function_id, has label/once)', () => {
+    const req = safeParseRequest(registerTriggerRequestSchema, {
+      trigger_type: 'state',
+      config: { key: 'progress', scope: 'research' },
+      label: 'research-progress-watch',
+      once: false,
+    })
+    expect(req?.trigger_type).toBe('state')
+    expect(req?.function_id).toBeUndefined()
+    expect(req?.label).toBe('research-progress-watch')
+    expect(req?.once).toBe(false)
+  })
+
+  it('rejects a request missing the required trigger_type', () => {
+    expect(
+      safeParseRequest(registerTriggerRequestSchema, { config: {} }),
+    ).toBeNull()
+  })
+
+  it('parses the engine response { id }', () => {
+    expect(
+      safeParseResponse(registerTriggerResponseSchema, wrap({ id: 'trg-1' })),
+    ).toEqual({ id: 'trg-1' })
+  })
+
+  it('parses the harness-intercepted response { subscription_id, once }', () => {
+    expect(
+      safeParseResponse(registerTriggerResponseSchema, {
+        subscription_id: 'sub-1',
+        once: false,
+      }),
+    ).toEqual({ subscription_id: 'sub-1', once: false })
   })
 })
 
