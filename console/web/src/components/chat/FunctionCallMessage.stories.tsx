@@ -10,6 +10,7 @@ import { stateFixtures } from '@/stories/fixtures/state-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
 import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
 import { workflowFixtures } from '@/stories/fixtures/workflow-fixtures'
+import { worktreeFixtures } from '@/stories/fixtures/worktree-fixtures'
 import type { FunctionCallMessage as FCallType } from '@/types/chat'
 import { FunctionCallMessage } from './FunctionCallMessage'
 
@@ -163,6 +164,11 @@ export const CoderFamily: Story = {
 export const WorkflowFamily: Story = {
   name: 'workflow family',
   render: () => <FamilyGallery fixtures={workflowFixtures} />,
+}
+
+export const WorktreeFamily: Story = {
+  name: 'worktree family',
+  render: () => <FamilyGallery fixtures={worktreeFixtures} />,
 }
 
 export const RouterFamily: Story = {

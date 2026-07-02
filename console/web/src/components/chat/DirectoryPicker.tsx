@@ -7,13 +7,22 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  GitBranch,
   Search,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { StatusDot } from '@/components/ui/StatusDot'
 import { getIiiClient } from '@/lib/iii-client'
 import { loadRecentProjects, removeRecentProject } from '@/lib/storage'
 import { cn } from '@/lib/utils'
+import {
+  lifecycleTone,
+  listWorktrees,
+  shortWorktreeId,
+  type WorktreeInfo,
+  worktreeIndicators,
+} from '@/lib/worktrees'
 
 /**
  * Per-session working-directory picker, project-switcher style.
@@ -29,11 +38,23 @@ import { cn } from '@/lib/utils'
  * (a change drops a visible transcript marker).
  */
 
+/** Optional worktree section, gated on the worktree worker's presence. */
+export interface WorktreePickerOptions {
+  enabled: boolean
+  /**
+   * Picking a worktree row. The caller sets the conversation's workingDir to
+   * the worktree's path AND claims it for the session.
+   */
+  onPick: (worktree: WorktreeInfo) => void
+}
+
 interface DirectoryPickerProps {
   value: string | null
   onChange: (dir: string) => void
   locked?: boolean
   disabled?: boolean
+  /** Show the worktrees tab next to directory browsing. */
+  worktrees?: WorktreePickerOptions
   className?: string
 }
 
@@ -102,10 +123,13 @@ export function DirectoryPicker({
   onChange,
   locked,
   disabled,
+  worktrees,
   className,
 }: DirectoryPickerProps) {
   const [open, setOpen] = useState(false)
-  const [view, setView] = useState<'projects' | 'browse'>('projects')
+  const [view, setView] = useState<'projects' | 'browse' | 'worktrees'>(
+    'projects',
+  )
   const [projects, setProjects] = useState<string[]>([])
   const [query, setQuery] = useState('')
   // browse state
@@ -116,6 +140,10 @@ export function DirectoryPicker({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [validating, setValidating] = useState<string | null>(null)
+  // worktrees state
+  const [wtRows, setWtRows] = useState<WorktreeInfo[]>([])
+  const [wtLoading, setWtLoading] = useState(false)
+  const [wtError, setWtError] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Close on outside click / Escape.
@@ -304,6 +332,29 @@ export function DirectoryPicker({
     setProjects(loadRecentProjects())
   }, [])
 
+  const enterWorktrees = useCallback(async () => {
+    setView('worktrees')
+    setQuery('')
+    setWtError(null)
+    setWtLoading(true)
+    try {
+      setWtRows(await listWorktrees())
+    } catch (err) {
+      setWtError(errMsg(err))
+      setWtRows([])
+    } finally {
+      setWtLoading(false)
+    }
+  }, [])
+
+  const pickWorktree = useCallback(
+    (wt: WorktreeInfo) => {
+      worktrees?.onPick(wt)
+      setOpen(false)
+    },
+    [worktrees],
+  )
+
   const q = query.trim().toLowerCase()
   const filteredProjects = useMemo(
     () => projects.filter((p) => p.toLowerCase().includes(q)),
@@ -320,12 +371,24 @@ export function DirectoryPicker({
         : dirs,
     [dirs, q],
   )
+  const filteredWorktrees = useMemo(
+    () =>
+      q
+        ? wtRows.filter(
+            (w) =>
+              w.branch.toLowerCase().includes(q) ||
+              w.path.toLowerCase().includes(q) ||
+              w.repo_path.toLowerCase().includes(q),
+          )
+        : wtRows,
+    [wtRows, q],
+  )
 
   const onSearchKey = (e: React.KeyboardEvent) => {
     if (e.key !== 'Enter' || !isAbsPath(query)) return
     e.preventDefault()
     if (view === 'projects') void validateAndSelect(query)
-    else void jumpTo(query)
+    else if (view === 'browse') void jumpTo(query)
   }
 
   const label = value ? basename(value) : 'choose directory'
@@ -371,6 +434,48 @@ export function DirectoryPicker({
           aria-label="select working directory"
           className="absolute bottom-full left-0 z-30 mb-1 w-[360px] border border-rule bg-bg shadow-lg"
         >
+          {/* section tabs (only with the worktree worker present) */}
+          {worktrees?.enabled ? (
+            <div
+              role="tablist"
+              className="flex border-b border-rule-2 text-[11px] lowercase"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view !== 'worktrees'}
+                onClick={() => {
+                  setView('projects')
+                  setProjects(loadRecentProjects())
+                  setQuery('')
+                  setError(null)
+                }}
+                className={cn(
+                  'flex-1 px-3 py-1.5 transition-colors',
+                  view !== 'worktrees'
+                    ? 'bg-panel text-ink'
+                    : 'text-ink-faint hover:text-ink',
+                )}
+              >
+                directories
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'worktrees'}
+                onClick={() => void enterWorktrees()}
+                className={cn(
+                  'flex-1 border-l border-rule-2 px-3 py-1.5 transition-colors',
+                  view === 'worktrees'
+                    ? 'bg-panel text-ink'
+                    : 'text-ink-faint hover:text-ink',
+                )}
+              >
+                worktrees
+              </button>
+            </div>
+          ) : null}
+
           {/* search */}
           <div className="flex items-center gap-2 border-b border-rule-2 px-2.5 py-1.5">
             <Search size={13} className="shrink-0 text-ink-ghost" aria-hidden />
@@ -383,7 +488,9 @@ export function DirectoryPicker({
               placeholder={
                 view === 'projects'
                   ? 'search projects, or paste a path…'
-                  : 'filter this folder, or paste a path…'
+                  : view === 'worktrees'
+                    ? 'filter worktrees…'
+                    : 'filter this folder, or paste a path…'
               }
               aria-label="search directories"
               className="min-w-0 flex-1 bg-transparent text-[12px] text-ink placeholder:text-ink-ghost focus:outline-none"
@@ -399,7 +506,113 @@ export function DirectoryPicker({
           ) : null}
 
           {/* body */}
-          {view === 'projects' ? (
+          {view === 'worktrees' ? (
+            <div className="max-h-[280px] overflow-y-auto py-1">
+              {wtLoading ? (
+                <div className="px-3 py-2 text-[11px] lowercase text-ink-ghost">
+                  loading…
+                </div>
+              ) : wtError ? (
+                <div className="flex items-start gap-1.5 px-3 py-2 text-[11px] text-ink-faint">
+                  <AlertCircle
+                    size={12}
+                    className="mt-0.5 shrink-0"
+                    aria-hidden
+                  />
+                  <span>{wtError}</span>
+                </div>
+              ) : filteredWorktrees.length > 0 ? (
+                filteredWorktrees.map((wt) => {
+                  const tone = lifecycleTone(wt.lifecycle)
+                  const { dirty, ahead } = worktreeIndicators(wt.status)
+                  const orphaned = wt.lifecycle === 'orphaned'
+                  return (
+                    <button
+                      key={wt.worktree_id}
+                      type="button"
+                      disabled={orphaned}
+                      onClick={() => pickWorktree(wt)}
+                      title={
+                        orphaned
+                          ? `${wt.path} — directory is missing`
+                          : `${wt.path} — claim and use this worktree`
+                      }
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-panel disabled:opacity-50"
+                    >
+                      <GitBranch
+                        size={13}
+                        className="shrink-0 text-ink-faint"
+                        aria-hidden
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="flex min-w-0 items-center gap-1.5 text-[12px]">
+                          <span className="truncate text-ink">{wt.branch}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-ink-ghost tabular-nums">
+                            {shortWorktreeId(wt.worktree_id)}
+                          </span>
+                          {dirty ? (
+                            <span
+                              className="shrink-0 text-warn"
+                              title="uncommitted changes"
+                            >
+                              *
+                            </span>
+                          ) : null}
+                          {ahead > 0 ? (
+                            <span
+                              className="shrink-0 text-[10px] text-ink-faint tabular-nums"
+                              title={`${ahead} commit(s) ahead of base`}
+                            >
+                              +{ahead}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="truncate font-mono text-[10px] text-ink-ghost">
+                          {wt.repo_path}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1.5 text-[10px] lowercase">
+                        {wt.session_id ? (
+                          <span
+                            className="max-w-[80px] truncate text-ink-ghost"
+                            title={`claimed by ${wt.session_id}`}
+                          >
+                            {wt.session_id}
+                          </span>
+                        ) : null}
+                        {wt.lifecycle !== 'active' ? (
+                          <span
+                            className={cn(
+                              'flex items-center gap-1',
+                              tone === 'accent'
+                                ? 'text-accent'
+                                : tone === 'alert'
+                                  ? 'text-alert'
+                                  : tone === 'warn'
+                                    ? 'text-warn'
+                                    : 'text-ink-faint',
+                            )}
+                          >
+                            <StatusDot
+                              tone={tone}
+                              pulse={wt.lifecycle === 'landing'}
+                            />
+                            {wt.lifecycle}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  )
+                })
+              ) : (
+                <div className="px-3 py-3 text-[11px] leading-relaxed text-ink-faint">
+                  {q
+                    ? 'no matching worktrees.'
+                    : 'no managed worktrees yet — create one with worktree::create.'}
+                </div>
+              )}
+            </div>
+          ) : view === 'projects' ? (
             <div className="max-h-[280px] overflow-y-auto py-1">
               {isAbsPath(query) ? (
                 <button

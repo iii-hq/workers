@@ -1,0 +1,229 @@
+import { z } from 'zod'
+import { getIiiClient } from '@/lib/iii-client'
+
+/**
+ * Control plane for the optional `worktree` worker: typed wrappers over its
+ * registry surface (list / claim / release / validate / get) plus parsers
+ * and formatting helpers for the badge, the picker section, and the live
+ * `worktree::landed` / `worktree::land-blocked` events. Everything here is
+ * gated by the caller on worktree presence (`use-worktree-status`).
+ */
+
+export const WORKTREE_WORKER_NAME = 'worktree'
+
+export const WORKTREE_LIST_FUNCTION_ID = 'worktree::list'
+export const WORKTREE_GET_FUNCTION_ID = 'worktree::get'
+export const WORKTREE_VALIDATE_FUNCTION_ID = 'worktree::validate'
+export const WORKTREE_CLAIM_FUNCTION_ID = 'worktree::claim'
+export const WORKTREE_RELEASE_FUNCTION_ID = 'worktree::release'
+
+export const WORKTREE_LANDED_TRIGGER = 'worktree::landed'
+export const WORKTREE_LAND_BLOCKED_TRIGGER = 'worktree::land-blocked'
+
+export const WORKTREE_LIFECYCLES = [
+  'active',
+  'claimed',
+  'landing',
+  'land-blocked',
+  'orphaned',
+] as const
+export type WorktreeLifecycle = (typeof WORKTREE_LIFECYCLES)[number]
+
+const lifecycleSchema = z.enum(WORKTREE_LIFECYCLES)
+
+const worktreeStatusSchema = z.object({
+  clean: z.boolean(),
+  ahead: z.number(),
+  behind: z.number(),
+  staged: z.number(),
+  unstaged: z.number(),
+  untracked: z.number(),
+  conflicted: z.number(),
+  unpushed: z.number(),
+  in_rebase: z.boolean(),
+})
+export type WorktreeStatusInfo = z.infer<typeof worktreeStatusSchema>
+
+const worktreeInfoSchema = z.object({
+  worktree_id: z.string(),
+  repo_path: z.string(),
+  path: z.string(),
+  branch: z.string(),
+  lifecycle: lifecycleSchema,
+  session_id: z.string().nullable().optional(),
+  status: worktreeStatusSchema.nullable().optional(),
+})
+export type WorktreeInfo = z.infer<typeof worktreeInfoSchema>
+
+const listResultSchema = z.object({
+  worktrees: z.array(z.unknown()).optional(),
+})
+
+const validateResultSchema = z.object({
+  valid: z.boolean(),
+  managed: z.boolean(),
+  worktree_id: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+})
+export type WorktreeValidateResult = z.infer<typeof validateResultSchema>
+
+const landedEventSchema = z.object({
+  worktree_id: z.string(),
+  repo_path: z.string(),
+  branch: z.string(),
+  target_branch: z.string(),
+  merged_sha: z.string(),
+  session_id: z.string().nullable().optional(),
+})
+export type WorktreeLandedEvent = z.infer<typeof landedEventSchema>
+
+const landBlockedEventSchema = z.object({
+  worktree_id: z.string(),
+  repo_path: z.string(),
+  target_branch: z.string(),
+  reason: z.string(),
+  code: z.string(),
+  conflict_files: z.array(z.string()).nullable().optional(),
+  exit_code: z.number().nullable().optional(),
+  session_id: z.string().nullable().optional(),
+})
+export type WorktreeLandBlockedEvent = z.infer<typeof landBlockedEventSchema>
+
+export function parseWorktreeInfo(payload: unknown): WorktreeInfo | null {
+  const parsed = worktreeInfoSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+export function parseLandedEvent(payload: unknown): WorktreeLandedEvent | null {
+  const parsed = landedEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+export function parseLandBlockedEvent(
+  payload: unknown,
+): WorktreeLandBlockedEvent | null {
+  const parsed = landBlockedEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+/** `wt_1f2e3d4c` -> `1f2e3d4c` (the id already reads as a short hash). */
+export function shortWorktreeId(worktreeId: string): string {
+  return worktreeId.startsWith('wt_') ? worktreeId.slice(3) : worktreeId
+}
+
+/**
+ * Badge/status tone per DESIGN.md status semantics: accent = live/running,
+ * warn = warning, alert = error; everything else stays ink.
+ */
+export function lifecycleTone(
+  lifecycle: WorktreeLifecycle,
+): 'ink' | 'accent' | 'warn' | 'alert' {
+  switch (lifecycle) {
+    case 'landing':
+      return 'accent'
+    case 'land-blocked':
+      return 'alert'
+    case 'orphaned':
+      return 'warn'
+    default:
+      return 'ink'
+  }
+}
+
+export interface WorktreeIndicators {
+  dirty: boolean
+  ahead: number
+}
+
+export function worktreeIndicators(
+  status: WorktreeStatusInfo | null | undefined,
+): WorktreeIndicators {
+  if (!status) return { dirty: false, ahead: 0 }
+  return { dirty: !status.clean, ahead: status.ahead }
+}
+
+/** Transcript/announcer copy for a land-blocked event. */
+export function formatLandBlockedNotice(evt: WorktreeLandBlockedEvent): string {
+  const base = `land of worktree ${shortWorktreeId(evt.worktree_id)} onto ${evt.target_branch} blocked`
+  switch (evt.reason) {
+    case 'rebase_conflict': {
+      const files = evt.conflict_files ?? []
+      const preview = files.slice(0, 3).join(', ')
+      const suffix = files.length > 3 ? ` and ${files.length - 3} more` : ''
+      return files.length > 0
+        ? `${base} — rebase conflicts in ${preview}${suffix}; resolve in the worktree, then land again`
+        : `${base} — rebase conflicts; resolve in the worktree, then land again`
+    }
+    case 'test_failed':
+      return `${base} — tests failed${
+        evt.exit_code != null ? ` (exit ${evt.exit_code})` : ''
+      }`
+    case 'dirty':
+      return `${base} — the worktree has uncommitted changes`
+    case 'target_moved_exhausted':
+      return `${base} — ${evt.target_branch} kept moving; retry the land`
+    case 'target_checked_out_dirty':
+      return `${base} — ${evt.target_branch} is checked out with local changes`
+    default:
+      return `${base} — ${evt.reason} (${evt.code})`
+  }
+}
+
+export function formatLandedNotice(evt: WorktreeLandedEvent): string {
+  return `worktree ${evt.branch} landed onto ${evt.target_branch} (${evt.merged_sha.slice(0, 8)})`
+}
+
+export async function listWorktrees(): Promise<WorktreeInfo[]> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>(WORKTREE_LIST_FUNCTION_ID, {
+    include_status: true,
+  })
+  const parsed = listResultSchema.safeParse(res)
+  if (!parsed.success) return []
+  return (parsed.data.worktrees ?? [])
+    .map(parseWorktreeInfo)
+    .filter((w): w is WorktreeInfo => w !== null)
+}
+
+export async function getWorktree(
+  worktreeId: string,
+): Promise<WorktreeInfo | null> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>(WORKTREE_GET_FUNCTION_ID, {
+    worktree_id: worktreeId,
+  })
+  return parseWorktreeInfo(res)
+}
+
+export async function validateWorktreePath(
+  path: string,
+): Promise<WorktreeValidateResult | null> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>(WORKTREE_VALIDATE_FUNCTION_ID, {
+    path,
+  })
+  const parsed = validateResultSchema.safeParse(res)
+  return parsed.success ? parsed.data : null
+}
+
+export async function claimWorktree(
+  worktreeId: string,
+  sessionId: string,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(WORKTREE_CLAIM_FUNCTION_ID, {
+    worktree_id: worktreeId,
+    session_id: sessionId,
+  })
+}
+
+export async function releaseWorktree(
+  worktreeId: string,
+  sessionId: string,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(WORKTREE_RELEASE_FUNCTION_ID, {
+    worktree_id: worktreeId,
+    session_id: sessionId,
+  })
+}
