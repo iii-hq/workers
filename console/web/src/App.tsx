@@ -18,18 +18,12 @@ import {
   ConversationsProvider,
   useConversationsCtx,
 } from '@/lib/conversations-context'
+import { buildViewOptions } from '@/lib/nav-options'
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { Traces } from '@/pages/Traces'
 import { Workers } from '@/pages/Workers'
-
-/* The component spec sheet and the streaming-scenario playground now live in
-   Storybook (`pnpm storybook`), not as in-app routes. The header keeps a
-   single `traces` entry alongside the configuration gear. */
-const VIEW_OPTIONS: { value: View; label: string }[] = [
-  { value: 'traces', label: 'traces' },
-  { value: 'workers', label: 'workers' },
-]
+import { Worktrees } from '@/pages/Worktrees'
 
 export function App() {
   const [theme, setTheme] = useTheme()
@@ -98,6 +92,8 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
+            ) : view === 'worktrees' ? (
+              <Worktrees />
             ) : (
               <Traces />
             )}
@@ -124,6 +120,10 @@ function Header({
   onToggleDock,
   onOpenShortcuts,
 }: HeaderProps) {
+  // The worktrees entry appears only while the optional worker is present;
+  // a direct #/worktrees hit still lands on that page's install notice.
+  const { worktreeAvailable } = useConversationsCtx()
+  const viewOptions = buildViewOptions(worktreeAvailable)
   const onConfiguration = view === 'configuration'
   return (
     <header className="flex items-center justify-between pl-3 pr-6 h-12 border-b border-rule shrink-0">
@@ -138,7 +138,7 @@ function Header({
         <ModeToggle<View>
           value={view}
           onChange={onViewChange}
-          options={VIEW_OPTIONS}
+          options={viewOptions}
         />
         <button
           type="button"
