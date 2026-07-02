@@ -93,6 +93,28 @@ describe('parseWorktreeInfo', () => {
     expect(info?.branch).toBe('iii/wt_1f2e3d4c')
     expect(info?.lifecycle).toBe('claimed')
     expect(info?.status?.ahead).toBe(2)
+    // v0.1 workers do not send the v0.2 fields; they stay undefined.
+    expect(info?.dev_port).toBeUndefined()
+    expect(info?.status?.integrated).toBeUndefined()
+  })
+
+  it('parses the v0.2 fields when a newer worker sends them', () => {
+    const info = parseWorktreeInfo({
+      worktree_id: 'wt_1f2e3d4c',
+      repo_path: '/home/dev/app',
+      path: '/home/dev/.iii/worktrees/app/wt_1f2e3d4c',
+      branch: 'iii/wt_1f2e3d4c',
+      lifecycle: 'active',
+      dev_port: 14_231,
+      status: {
+        ...status,
+        integrated: true,
+        integration_reason: 'patch_id_match',
+      },
+    })
+    expect(info?.dev_port).toBe(14_231)
+    expect(info?.status?.integrated).toBe(true)
+    expect(info?.status?.integration_reason).toBe('patch_id_match')
   })
 
   it('rejects unknown lifecycles and missing fields', () => {

@@ -57,6 +57,9 @@ const worktreeStatusSchema = z.object({
   in_rebase: z.boolean(),
   diffstat: z.string().optional(),
   head_sha: z.string().optional(),
+  // v0.2 workers; optional so older workers keep parsing.
+  integrated: z.boolean().optional(),
+  integration_reason: z.string().nullable().optional(),
 })
 export type WorktreeStatusInfo = z.infer<typeof worktreeStatusSchema>
 
@@ -70,6 +73,8 @@ const worktreeInfoSchema = z.object({
   base_sha: z.string().optional(),
   lifecycle: lifecycleSchema,
   session_id: z.string().nullable().optional(),
+  // v0.2 workers; optional so older workers keep parsing.
+  dev_port: z.number().optional(),
   created_at: z.number().optional(),
   updated_at: z.number().optional(),
   status: worktreeStatusSchema.nullable().optional(),

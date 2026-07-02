@@ -187,6 +187,7 @@ function graphWt(
     base_sha: '8fbe7a1c9d0e2f3a4b5c6d7e8f9a0b1c2d3e4f5a',
     lifecycle,
     session_id: null,
+    dev_port: 10_000 + (Number.parseInt(id.slice(3, 7), 16) % 10_000),
     created_at: createdAt,
     updated_at: createdAt + 30_000,
     status: cleanStatus,
@@ -209,7 +210,13 @@ export const worktreeGraphFixtures: WorktreeInfo[] = [
   }),
   graphWt('wt_33cc44dd', '/home/dev/app', 'landing', now - 300_000, {
     session_id: 'console-5e6f7a8b',
-    status: { ...cleanStatus, ahead: 1, unpushed: 1 },
+    status: {
+      ...cleanStatus,
+      ahead: 1,
+      unpushed: 1,
+      integrated: true,
+      integration_reason: 'merge_adds_nothing',
+    },
   }),
   graphWt('wt_55ee66ff', '/home/dev/api', 'land-blocked', now - 200_000, {
     base_ref: 'release/1.2',
