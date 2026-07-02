@@ -1,0 +1,277 @@
+{
+  "function_id": "worktree::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "include_status": {
+        "default": false,
+        "description": "Compute git status for each worktree (slower).",
+        "type": "boolean"
+      },
+      "repo_path": {
+        "default": null,
+        "description": "Only worktrees of this repository.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "default": null,
+        "description": "Only worktrees claimed by this session.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Lifecycle": {
+        "description": "Lifecycle of a managed worktree.",
+        "oneOf": [
+          {
+            "description": "Exists and is unclaimed.",
+            "enum": [
+              "active"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claimed by a session.",
+            "enum": [
+              "claimed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A land job is queued or running.",
+            "enum": [
+              "landing"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The last land attempt was blocked (conflict, failed tests, ...).",
+            "enum": [
+              "land-blocked"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The record exists but the directory is gone.",
+            "enum": [
+              "orphaned"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "UnmanagedWorktree": {
+        "description": "A worktree of the repo that this worker does not manage.",
+        "properties": {
+          "branch": {
+            "description": "Checked-out branch ref, when not detached.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Absolute path of the worktree.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "WorktreeInfo": {
+        "description": "One worktree as reported by `worktree::list` / `worktree::get`.",
+        "properties": {
+          "base_ref": {
+            "description": "The ref the worktree was created from.",
+            "type": "string"
+          },
+          "base_sha": {
+            "description": "The commit `base_ref` resolved to at creation time.",
+            "type": "string"
+          },
+          "branch": {
+            "description": "The branch checked out in the worktree.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Creation time, ms since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "lifecycle": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Lifecycle"
+              }
+            ],
+            "description": "Current lifecycle (reported `orphaned` when the directory is gone)."
+          },
+          "path": {
+            "description": "Absolute path of the worktree directory.",
+            "type": "string"
+          },
+          "repo_key": {
+            "description": "Canonicalized per-repo key.",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "The repository path the worktree was created from.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Owning session, when claimed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WorktreeStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Git status, when requested and computable."
+          },
+          "updated_at": {
+            "description": "Last mutation time, ms since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "worktree_id": {
+            "description": "Stable id, `wt_<8hex>`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_ref",
+          "base_sha",
+          "branch",
+          "created_at",
+          "lifecycle",
+          "path",
+          "repo_key",
+          "repo_path",
+          "updated_at",
+          "worktree_id"
+        ],
+        "type": "object"
+      },
+      "WorktreeStatus": {
+        "description": "Git status summary for one worktree.",
+        "properties": {
+          "ahead": {
+            "description": "Commits ahead of the comparison base (upstream when set, else `base_sha`).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "behind": {
+            "description": "Commits behind the comparison base.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "clean": {
+            "description": "True when there are no staged, unstaged, untracked, or conflicted entries.",
+            "type": "boolean"
+          },
+          "conflicted": {
+            "description": "Unmerged (conflicted) entry count.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "diffstat": {
+            "description": "`git diff --shortstat` of committed work since `base_sha`.",
+            "type": "string"
+          },
+          "head_sha": {
+            "description": "Current HEAD commit.",
+            "type": "string"
+          },
+          "in_rebase": {
+            "description": "True while a rebase is in progress in this worktree.",
+            "type": "boolean"
+          },
+          "staged": {
+            "description": "Staged entry count.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "unpushed": {
+            "description": "Commits not merged upstream (upstream ahead count, else commits past `base_sha`).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "unstaged": {
+            "description": "Unstaged entry count.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "untracked": {
+            "description": "Untracked entry count.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ahead",
+          "behind",
+          "clean",
+          "conflicted",
+          "diffstat",
+          "head_sha",
+          "in_rebase",
+          "staged",
+          "unpushed",
+          "unstaged",
+          "untracked"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "unmanaged": {
+        "description": "Non-primary worktrees of the repo without a record (only populated when repo_path is given). Never auto-adopted.",
+        "items": {
+          "$ref": "#/definitions/UnmanagedWorktree"
+        },
+        "type": "array"
+      },
+      "worktrees": {
+        "description": "Managed worktrees, oldest first.",
+        "items": {
+          "$ref": "#/definitions/WorktreeInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "unmanaged",
+      "worktrees"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

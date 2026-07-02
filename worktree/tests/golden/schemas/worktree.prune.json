@@ -1,0 +1,68 @@
+{
+  "function_id": "worktree::prune",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "dry_run": {
+        "default": false,
+        "description": "Report what would be pruned without acting.",
+        "type": "boolean"
+      },
+      "repo_path": {
+        "default": null,
+        "description": "Only sweep worktrees of this repository.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PruneSkip": {
+        "description": "One record the sweep left alone, and why.",
+        "properties": {
+          "id": {
+            "description": "The skipped worktree.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it was skipped.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "pruned": {
+        "description": "Worktree ids pruned (or prunable, with dry_run).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "skipped": {
+        "description": "Records left alone, with reasons.",
+        "items": {
+          "$ref": "#/definitions/PruneSkip"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "pruned",
+      "skipped"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

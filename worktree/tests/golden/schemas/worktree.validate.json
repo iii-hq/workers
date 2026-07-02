@@ -1,0 +1,50 @@
+{
+  "function_id": "worktree::validate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "path": {
+        "description": "Absolute path to validate.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "managed": {
+        "description": "True when a record manages this path.",
+        "type": "boolean"
+      },
+      "reason": {
+        "description": "Why the path is not valid.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "valid": {
+        "description": "True when the path is a live, managed worktree.",
+        "type": "boolean"
+      },
+      "worktree_id": {
+        "description": "The managing record's id, when one exists.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "managed",
+      "valid"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}
