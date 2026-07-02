@@ -366,12 +366,16 @@ pub struct TestEnv {
 }
 
 pub fn test_config(root: &Path) -> WorkerConfig {
-    WorkerConfig {
+    let mut cfg = WorkerConfig {
         worktree_root: root.join("wts").to_string_lossy().into_owned(),
         git_timeout_ms: 30_000,
         test_timeout_ms: 30_000,
         ..WorkerConfig::default()
-    }
+    };
+    // Behavioral tests exercise the force paths; the gates suite covers the
+    // restrictive defaults explicitly.
+    cfg.gates.allow_force = true;
+    cfg
 }
 
 /// In-process environment against a tempdir: in-memory store, recording

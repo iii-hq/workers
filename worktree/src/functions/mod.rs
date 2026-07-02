@@ -54,8 +54,25 @@ impl Deps {
             git_timeout_ms: cfg.git_timeout_ms,
             test_timeout_ms: cfg.test_timeout_ms,
             max_land_retries: cfg.max_land_retries,
+            allow_branch_delete: cfg.gates.allow_branch_delete,
         }
     }
+}
+
+/// `W500` denial naming the exact config key to flip.
+pub(crate) fn gate_denied(op: &str, key: &str) -> crate::error::WError {
+    crate::error::WError::new(
+        crate::error::codes::OP_DISABLED,
+        format!("{op} is disabled by configuration; set {key}: true to enable"),
+    )
+}
+
+/// `W501` denial for the force paths, all behind one key.
+pub(crate) fn force_denied(op: &str) -> crate::error::WError {
+    crate::error::WError::new(
+        crate::error::codes::FORCE_DISABLED,
+        format!("{op} is disabled by configuration; set gates.allow_force: true to enable"),
+    )
 }
 
 macro_rules! register {

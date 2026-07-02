@@ -39,6 +39,80 @@ pub struct WorkerConfig {
     /// Land test gate timeout, milliseconds.
     #[serde(default = "default_test_timeout_ms")]
     pub test_timeout_ms: u64,
+    /// Operation gates: deny-by-config for destructive surfaces. Every gate
+    /// hot-reloads; denials name the exact key to flip.
+    #[serde(default)]
+    pub gates: GatesConfig,
+}
+
+/// Deny-by-config gates over the mutating surface. Checked FIRST by every
+/// mutating handler; a denial returns a `W5xx` error naming the key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GatesConfig {
+    /// Allow `worktree::remove`.
+    #[serde(default = "default_true")]
+    pub allow_remove: bool,
+    /// Allow the force paths: remove force, claim force takeover, release
+    /// force, and land force_restart. Disabled out of the box.
+    #[serde(default)]
+    pub allow_force: bool,
+    /// Allow branch deletion (remove delete_branch and the land finalize
+    /// branch cleanup).
+    #[serde(default = "default_true")]
+    pub allow_branch_delete: bool,
+    /// Allow `worktree::land`.
+    #[serde(default = "default_true")]
+    pub allow_land: bool,
+    /// Allow `worktree::prune` (including the cron sweep).
+    #[serde(default = "default_true")]
+    pub allow_prune: bool,
+    /// Branches `worktree::land` may target. Glob list (`*` matches any
+    /// characters); pin to `["main"]` to allow only mainline lands.
+    #[serde(default = "default_land_targets")]
+    pub land_targets: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_land_targets() -> Vec<String> {
+    vec!["*".to_string()]
+}
+
+impl Default for GatesConfig {
+    fn default() -> Self {
+        Self {
+            allow_remove: true,
+            allow_force: false,
+            allow_branch_delete: true,
+            allow_land: true,
+            allow_prune: true,
+            land_targets: default_land_targets(),
+        }
+    }
+}
+
+impl GatesConfig {
+    /// True when `target` matches any of the `land_targets` globs.
+    pub fn land_target_allowed(&self, target: &str) -> bool {
+        self.land_targets.iter().any(|g| glob_match(g, target))
+    }
+}
+
+/// Minimal glob: `*` matches any run of characters (including `/`); every
+/// other character matches literally.
+pub fn glob_match(pattern: &str, value: &str) -> bool {
+    fn inner(p: &[u8], v: &[u8]) -> bool {
+        match (p.first(), v.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => inner(&p[1..], v) || (!v.is_empty() && inner(p, &v[1..])),
+            (Some(pc), Some(vc)) if pc == vc => inner(&p[1..], &v[1..]),
+            _ => false,
+        }
+    }
+    inner(pattern.as_bytes(), value.as_bytes())
 }
 
 fn default_worktree_root() -> String {
@@ -84,6 +158,7 @@ impl Default for WorkerConfig {
             max_land_retries: default_max_land_retries(),
             git_timeout_ms: default_git_timeout_ms(),
             test_timeout_ms: default_test_timeout_ms(),
+            gates: GatesConfig::default(),
         }
     }
 }
@@ -189,6 +264,50 @@ mod tests {
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.land_queue, "worktree-land");
         assert_eq!(cfg.prune_expire_hours, 72);
+    }
+
+    #[test]
+    fn gates_default_open_except_force() {
+        let gates = WorkerConfig::default().gates;
+        assert!(gates.allow_remove);
+        assert!(
+            !gates.allow_force,
+            "force paths are disabled out of the box"
+        );
+        assert!(gates.allow_branch_delete);
+        assert!(gates.allow_land);
+        assert!(gates.allow_prune);
+        assert_eq!(gates.land_targets, vec!["*".to_string()]);
+        assert!(gates.land_target_allowed("anything"));
+    }
+
+    #[test]
+    fn gates_yaml_overrides() {
+        let cfg = WorkerConfig::from_yaml(
+            "gates:\n\
+             \x20 allow_remove: false\n\
+             \x20 allow_force: true\n\
+             \x20 land_targets: [\"main\", \"release/*\"]\n",
+        )
+        .unwrap();
+        assert!(!cfg.gates.allow_remove);
+        assert!(cfg.gates.allow_force);
+        assert!(cfg.gates.allow_land, "unset keys keep their defaults");
+        assert!(cfg.gates.land_target_allowed("main"));
+        assert!(cfg.gates.land_target_allowed("release/1.2"));
+        assert!(!cfg.gates.land_target_allowed("trunk"));
+    }
+
+    #[test]
+    fn glob_match_star_and_literals() {
+        assert!(glob_match("*", "anything/at/all"));
+        assert!(glob_match("main", "main"));
+        assert!(!glob_match("main", "main2"));
+        assert!(glob_match("release/*", "release/1.2"));
+        assert!(!glob_match("release/*", "release"));
+        assert!(glob_match("*-wip", "feature-wip"));
+        assert!(!glob_match("", "x"));
+        assert!(glob_match("", ""));
     }
 
     #[test]

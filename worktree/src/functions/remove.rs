@@ -36,6 +36,21 @@ pub struct Response {
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let cfg = deps.cfg().await;
+    if !cfg.gates.allow_remove {
+        return Err(crate::functions::gate_denied(
+            "worktree::remove",
+            "gates.allow_remove",
+        ));
+    }
+    if req.force && !cfg.gates.allow_force {
+        return Err(crate::functions::force_denied("worktree::remove force"));
+    }
+    if req.delete_branch && !cfg.gates.allow_branch_delete {
+        return Err(crate::functions::gate_denied(
+            "branch deletion",
+            "gates.allow_branch_delete",
+        ));
+    }
     let t = cfg.git_timeout_ms;
     let record = require_record(deps, &req.worktree_id).await?;
     let _guard = deps.locks.guard(&record.repo_key).await;

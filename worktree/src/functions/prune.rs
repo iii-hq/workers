@@ -43,6 +43,12 @@ pub struct Response {
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let cfg = deps.cfg().await;
+    if !cfg.gates.allow_prune {
+        return Err(crate::functions::gate_denied(
+            "worktree::prune",
+            "gates.allow_prune",
+        ));
+    }
     let t = cfg.git_timeout_ms;
     let expire_ms = (cfg.prune_expire_hours as i64).saturating_mul(3_600_000);
 

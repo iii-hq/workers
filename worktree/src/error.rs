@@ -54,6 +54,12 @@ pub mod codes {
     pub const TARGET_MOVED_EXHAUSTED: &str = "W412";
     /// The target branch is checked out in a dirty checkout.
     pub const TARGET_CHECKED_OUT_DIRTY: &str = "W413";
+    /// The operation is disabled by configuration (gates).
+    pub const OP_DISABLED: &str = "W500";
+    /// Force paths are disabled by configuration (gates.allow_force).
+    pub const FORCE_DISABLED: &str = "W501";
+    /// The land target branch is not allowed by gates.land_targets.
+    pub const LAND_TARGET_NOT_ALLOWED: &str = "W502";
 }
 
 /// One structured worker error: stable code + human-readable message.

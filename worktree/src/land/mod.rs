@@ -79,6 +79,9 @@ pub struct LandDeps {
     pub git_timeout_ms: u64,
     pub test_timeout_ms: u64,
     pub max_land_retries: u32,
+    /// gates.allow_branch_delete snapshot: when false, finalize keeps the
+    /// landed branch instead of deleting it.
+    pub allow_branch_delete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -354,23 +357,30 @@ pub async fn run_step(deps: &LandDeps, job_id: &str) -> Result<StepResult, WErro
                         // once the directory is gone.
                         ops::worktree_remove(repo, wt, true, git_t).await?;
                     }
-                    // `git branch -d` checks mergedness against HEAD, not the
-                    // land target, so verify the ancestry explicitly and then
-                    // force-delete: the target already contains every commit
-                    // of the landed branch.
-                    let target_ref = format!("refs/heads/{}", job.target_branch);
-                    let branch_ref = format!("refs/heads/{}", job.branch);
-                    match ops::is_ancestor(repo, &branch_ref, &target_ref, git_t).await {
-                        Ok(true) => {
-                            ops::branch_delete(repo, &job.branch, true, git_t).await;
+                    if deps.allow_branch_delete {
+                        // `git branch -d` checks mergedness against HEAD, not
+                        // the land target, so verify the ancestry explicitly
+                        // and then force-delete: the target already contains
+                        // every commit of the landed branch.
+                        let target_ref = format!("refs/heads/{}", job.target_branch);
+                        let branch_ref = format!("refs/heads/{}", job.branch);
+                        match ops::is_ancestor(repo, &branch_ref, &target_ref, git_t).await {
+                            Ok(true) => {
+                                ops::branch_delete(repo, &job.branch, true, git_t).await;
+                            }
+                            Ok(false) => tracing::warn!(
+                                branch = %job.branch,
+                                "finalize: branch is not contained in the target; keeping it"
+                            ),
+                            Err(e) => {
+                                tracing::debug!(error = %e, "finalize: ancestry check failed")
+                            }
                         }
-                        Ok(false) => tracing::warn!(
+                    } else {
+                        tracing::info!(
                             branch = %job.branch,
-                            "finalize: branch is not contained in the target; keeping it"
-                        ),
-                        Err(e) => {
-                            tracing::debug!(error = %e, "finalize: ancestry check failed")
-                        }
+                            "finalize: branch deletion disabled by gates.allow_branch_delete"
+                        );
                     }
                     state::delete_record(deps.state.as_ref(), &job.worktree_id).await?;
                 }

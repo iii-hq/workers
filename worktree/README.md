@@ -80,7 +80,29 @@ land_queue: "worktree-land"         # engine queue name for land jobs
 max_land_retries: 3                 # rebase retries when the target branch moves mid-land
 git_timeout_ms: 60000               # per-git-subprocess bound
 test_timeout_ms: 600000             # land test gate bound
+gates:
+  allow_remove: true                # worktree::remove
+  allow_force: false                # remove force, claim/release force, land force_restart
+  allow_branch_delete: true         # remove delete_branch and the land finalize cleanup
+  allow_land: true                  # worktree::land
+  allow_prune: true                 # worktree::prune (including the cron sweep)
+  land_targets: ["*"]               # globs; pin to ["main"] to allow only mainline lands
 ```
+
+### Gates
+
+Every mutating handler checks its gate before anything else, so an operator
+can turn off whole classes of destruction with one config flip and the
+change hot-reloads. Denials are structured: `W500` (operation disabled),
+`W501` (force paths disabled), `W502` (land target not allowed), and every
+message names the exact key to flip, e.g. `worktree::remove is disabled by
+configuration; set gates.allow_remove: true to enable`. Force is the one
+gate that ships closed: takeovers, forced removals, and land restarts are
+opt-in.
+
+Gates constrain this worker's own surface only. Restricting what an agent
+can run in a shell (`rm`, `git branch -D`, ...) is the shell worker's
+allowlist/denylist job; pair both for defense in depth.
 
 ### Filesystem scope interplay
 
