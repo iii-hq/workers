@@ -223,6 +223,71 @@ pub fn register_condition_fail(iii: &Arc<IIIClient>, function_id: &str) {
     );
 }
 
+/// Register `test.slow` bound to an `http` trigger; the function sleeps for
+/// `sleep_ms` before returning 200. Used by timeout-parity tests to force the
+/// request past `default_timeout` and observe whether the tower
+/// `TimeoutLayer` (504) or the handler's own invocation-timeout mapping (500)
+/// wins the race.
+pub async fn register_slow_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+    sleep_ms: u64,
+) {
+    let function_id = format!("test.slow {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |_req: HttpRequest| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+            Ok::<Value, Error>(json!({
+                "status_code": 200,
+                "body": { "slept_ms": sleep_ms },
+            }))
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::trigger_type(),
+        function_id,
+        config: json!({ "api_path": api_path, "http_method": http_method }),
+        metadata: None,
+    })
+    .expect("register http trigger");
+}
+
+/// Register `test.sleep` bound to an `http` trigger; the function sleeps for
+/// `sleep_ms` then returns 200. Used by the concurrency-limit test: several
+/// concurrent requests each sleep briefly so the `ConcurrencyLimitLayer` has a
+/// chance to queue excess requests behind the configured permit count.
+pub async fn register_sleep_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+    sleep_ms: u64,
+) {
+    let function_id = format!("test.sleep {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |_req: HttpRequest| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+            Ok::<Value, Error>(json!({
+                "status_code": 200,
+                "body": { "slept_ms": sleep_ms },
+            }))
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::trigger_type(),
+        function_id,
+        config: json!({ "api_path": api_path, "http_method": http_method }),
+        metadata: None,
+    })
+    .expect("register http trigger");
+}
+
 /// Register `test.error` bound to an `http` trigger; the function always
 /// fails with a structured `Error::Remote { code: "CUSTOM_BOOM", .. }`. Used
 /// to assert the worker's 500 envelope propagates the function's own

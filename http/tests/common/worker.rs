@@ -78,3 +78,44 @@ pub async fn start_http_worker_with_cors(iii: Arc<IIIClient>, cors: CorsConfig) 
     .await
     .expect("http worker should boot")
 }
+
+/// Same as [`start_http_worker`], but boots with `config.default_timeout` set
+/// to `timeout_ms`, so timeout-parity tests can exercise the tower
+/// `TimeoutLayer` (504) / invocation-timeout race with a small, test-scale
+/// deadline instead of the 30s default.
+#[allow(dead_code)]
+pub async fn start_http_worker_with_timeout(iii: Arc<IIIClient>, timeout_ms: u64) -> BootHandle {
+    boot::start(
+        iii,
+        RestApiConfig {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            default_timeout: timeout_ms,
+            ..RestApiConfig::default()
+        },
+    )
+    .await
+    .expect("http worker should boot")
+}
+
+/// Same as [`start_http_worker`], but boots with `config.concurrency_request_limit`
+/// set to `limit`, so concurrency-limit tests can exercise the tower
+/// `ConcurrencyLimitLayer` with a small, test-scale limit instead of the 1024
+/// default.
+#[allow(dead_code)]
+pub async fn start_http_worker_with_concurrency_limit(
+    iii: Arc<IIIClient>,
+    limit: usize,
+) -> BootHandle {
+    boot::start(
+        iii,
+        RestApiConfig {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            concurrency_request_limit: limit,
+            ..RestApiConfig::default()
+        },
+    )
+    .await
+    .expect("http worker should boot")
+}
