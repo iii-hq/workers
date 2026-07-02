@@ -11,11 +11,13 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::subscriptions::{NOTIFY_AGENT_DESC, NOTIFY_AGENT_ID};
+use crate::surface::schema_value;
 use crate::types::message::AgentMessage;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -28,6 +30,58 @@ struct NotifyMetadata {
     once: bool,
 }
 
+/// Fired-event payload of a subscription: arbitrary JSON produced by the
+/// originating trigger (a state change, cron fire, log line, …), summarized
+/// verbatim into the notification injected into the owning session.
+///
+/// The handler keeps a lossless `serde_json::Value` signature — a typed
+/// struct would reject legitimate non-object payloads — so this newtype
+/// exists only to document the wire schema (`schemars` would otherwise emit
+/// the AnyValue schema, which the registry publish gate rejects).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct NotifyAgentEvent(pub Value);
+
+impl JsonSchema for NotifyAgentEvent {
+    fn schema_name() -> String {
+        "NotifyAgentEvent".to_string()
+    }
+
+    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(
+                vec![
+                    InstanceType::Null,
+                    InstanceType::Boolean,
+                    InstanceType::Number,
+                    InstanceType::String,
+                    InstanceType::Array,
+                    InstanceType::Object,
+                ]
+                .into(),
+            ),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Arbitrary fired-event payload from the subscribed trigger; delivered \
+                     verbatim to the owning agent as a notification."
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
+/// Ack returned by `harness::notify_agent`. Fires are ack'd even when dropped
+/// (stale, foreign, or malformed subscriptions log and return ok).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NotifyAgentResponse {
+    pub ok: bool,
+}
+
 pub fn register(deps: Arc<Deps>) {
     let iii = deps.iii.clone();
     iii.register_function(
@@ -36,10 +90,12 @@ pub fn register(deps: Arc<Deps>) {
             let deps = deps.clone();
             async move {
                 on_fire(&deps, event, metadata).await;
-                Ok::<Value, Error>(json!({ "ok": true }))
+                Ok::<Value, Error>(json!(NotifyAgentResponse { ok: true }))
             }
         })
-        .description(NOTIFY_AGENT_DESC),
+        .description(NOTIFY_AGENT_DESC)
+        .request_format(schema_value::<NotifyAgentEvent>())
+        .response_format(schema_value::<NotifyAgentResponse>()),
     );
 }
 
@@ -136,6 +192,37 @@ mod tests {
             panic!("expected user message");
         };
         ContentBlock::join_text(&user.content)
+    }
+
+    /// Mirrors the registry publish gate (`collect_worker_interface.py`):
+    /// a schema is "typed" only if it carries a schema-defining keyword.
+    /// `harness::notify_agent` is not in `surface::catalog()` (it is
+    /// subscription plumbing, not agent-facing), so guard it here.
+    #[test]
+    fn wire_schemas_pass_the_publish_typed_gate() {
+        const SCHEMA_DEFINING_KEYS: &[&str] = &[
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+            "items",
+            "const",
+        ];
+        for (field, schema) in [
+            ("request_schema", schema_value::<NotifyAgentEvent>()),
+            ("response_schema", schema_value::<NotifyAgentResponse>()),
+        ] {
+            let obj = schema
+                .as_object()
+                .unwrap_or_else(|| panic!("harness::notify_agent {field} must be a JSON object"));
+            assert!(
+                SCHEMA_DEFINING_KEYS.iter().any(|k| obj.contains_key(*k)),
+                "harness::notify_agent {field} is untyped (AnyValue/empty): {schema}"
+            );
+        }
     }
 
     #[test]
