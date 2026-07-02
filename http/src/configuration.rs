@@ -13,14 +13,19 @@
 //! - `default_timeout` — the per-request invocation, condition, middleware, and
 //!   streaming-drain timeouts read inside the handler.
 //!
-//! The remaining fields are baked into the axum router / TCP listener at serve
-//! time and are **restart-only** here: `host`, `port`, `cors`,
-//! `concurrency_request_limit`, and the outer tower `TimeoutLayer` (the 504
-//! wrapper, distinct from the handler's `default_timeout` reads). The in-engine
-//! `iii-http` rebinds the listener and rebuilds layers via its HotRouter
-//! machinery (`api_core.rs` `apply_config`); this standalone worker deliberately
-//! does not replicate that — a change to a restart-only field is applied to the
-//! cell (so a later restart picks it up) and logged with a warning.
+//! The CORS layer, the outer tower `TimeoutLayer` (the 504 wrapper, built from
+//! `default_timeout`), and the `ConcurrencyLimitLayer` are baked into the axum
+//! `Router` at build time, but the server holds it behind a swappable
+//! [`crate::server::HotRouter`] (Phase A). On a **same-address** config change,
+//! [`on_config_change`] rebuilds those layers via
+//! [`crate::server::rebuild_layers`], so `cors` / `default_timeout` /
+//! `concurrency_request_limit` also take effect live without dropping the
+//! listener.
+//!
+//! Only `host` / `port` remain **restart-only**: rebinding the TCP listener to a
+//! new address is a separate later phase (Phase B). A host/port change is
+//! applied to the cell (so a later restart picks it up) and logged with a
+//! warning; the running listener stays on the old address.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +37,7 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
+use crate::server::{self, RouterCell};
 
 /// Shared, swappable config snapshot. The handler reads it per-request so
 /// `middleware`/`default_timeout` changes take effect without a restart.
@@ -119,8 +125,10 @@ pub async fn apply_config(cell: &ConfigCell, cfg: RestApiConfig) -> bool {
     true
 }
 
-/// Log a warning for each restart-only field that differs, so an operator knows
-/// the running server has not picked the change up.
+/// Log a warning when host/port changes, so an operator knows the running
+/// listener has not picked the change up (host/port rebind is Phase B). CORS /
+/// timeout / concurrency changes are NOT warned here: on a same-address change
+/// they hot-reload via [`crate::server::rebuild_layers`].
 fn warn_restart_only_changes(current: &RestApiConfig, next: &RestApiConfig) {
     if current.host != next.host || current.port != next.port {
         tracing::warn!(
@@ -129,28 +137,28 @@ fn warn_restart_only_changes(current: &RestApiConfig, next: &RestApiConfig) {
             "http: host/port change requires a worker restart; the listener stays on the old address"
         );
     }
-    if current.concurrency_request_limit != next.concurrency_request_limit {
-        tracing::warn!("http: concurrency_request_limit change requires a worker restart");
-    }
-    if serde_json::to_value(&current.cors).ok() != serde_json::to_value(&next.cors).ok() {
-        tracing::warn!("http: CORS change requires a worker restart; the CORS layer is fixed at boot");
-    }
 }
 
 /// Register `http::on-config-change` and subscribe it to `configuration:updated`
 /// events for the `http` entry. The handler ignores the trigger payload and
 /// re-fetches the authoritative value (the bus function is discoverable, so a
 /// caller-supplied payload must not be trusted to repoint config).
-pub fn register_config_trigger(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result<(), Error> {
+pub fn register_config_trigger(
+    iii: &Arc<IIIClient>,
+    cell: ConfigCell,
+    router: RouterCell,
+) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
+    let router_for_fn = router.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
             let cell = cell_for_fn.clone();
+            let router = router_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell).await;
+                on_config_change(&engine, &cell, &router).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -169,10 +177,27 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result
     Ok(())
 }
 
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, router: &RouterCell) {
     match fetch_config(iii).await {
         Ok(cfg) => {
+            // Capture the address BEFORE the swap so we can tell a same-address
+            // change (rebuild layers live) from a host/port change (restart-only).
+            let old_addr = {
+                let current = cell.read().await;
+                format!("{}:{}", current.host, current.port)
+            };
+            let new_addr = format!("{}:{}", cfg.host, cfg.port);
+
             if apply_config(cell, cfg).await {
+                if old_addr == new_addr {
+                    // Same address: rebuild the CORS/timeout/concurrency layers
+                    // from the now-current snapshot and swap them into the live
+                    // router. The listener keeps running.
+                    let snapshot = cell.read().await.clone();
+                    server::rebuild_layers(router, &snapshot).await;
+                }
+                // A host/port change was already warned in warn_restart_only_changes;
+                // Phase B will rebind the listener.
                 tracing::info!("http configuration reloaded");
             }
         }

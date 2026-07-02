@@ -112,9 +112,10 @@ async fn main() -> Result<()> {
     let boot = iii_http::boot::start(iii.clone(), config).await?;
     tracing::info!(address = %boot.local_addr, "iii-http ready");
 
-    // Subscribe to configuration:updated so middleware/default_timeout reload
-    // live (host/port/cors/concurrency remain restart-only — see configuration).
-    configuration::register_config_trigger(&iii, boot.config.clone())
+    // Subscribe to configuration:updated so middleware/default_timeout and the
+    // CORS/timeout/concurrency layers reload live on a same-address change
+    // (host/port remain restart-only — see configuration).
+    configuration::register_config_trigger(&iii, boot.config.clone(), boot.router.clone())
         .map_err(anyhow::Error::msg)
         .context("binding configuration trigger")?;
 

@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::RestApiConfig;
 use crate::configuration::{self, ConfigCell};
-use crate::server::{self, ServerHandle};
+use crate::server::{self, RouterCell, ServerHandle};
 use crate::trigger::{HttpTriggerHandler, RouteTable};
 use crate::trigger_type;
 use crate::types::{HttpRequest, HttpTriggerConfig};
@@ -26,11 +26,14 @@ const BUILTIN_III_HTTP_WORKER_ID: &str = "iii-http";
 
 /// Handle to a running worker: the bound address, the shared route table, the
 /// live config cell (so the caller can wire the `configuration:updated` trigger
-/// and observe hot-reloads), and a graceful-shutdown trigger.
+/// and observe hot-reloads), the swappable router cell (so a same-address
+/// config change can rebuild the CORS/timeout/concurrency layers live), and a
+/// graceful-shutdown trigger.
 pub struct BootHandle {
     pub local_addr: SocketAddr,
     pub routes: Arc<RwLock<RouteTable>>,
     pub config: ConfigCell,
+    pub router: RouterCell,
     shutdown: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
 }
@@ -75,6 +78,7 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
 
     let ServerHandle {
         local_addr,
+        router,
         join,
         shutdown,
     } = server::serve(routes.clone(), iii, cell.clone()).await?;
@@ -83,6 +87,7 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
         local_addr,
         routes,
         config: cell,
+        router,
         shutdown: Some(shutdown),
         join,
     })

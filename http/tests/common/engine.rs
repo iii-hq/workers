@@ -50,6 +50,24 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     None
 }
 
+/// Open a fresh, dedicated engine connection (NOT the shared `OnceCell` one).
+///
+/// Needed when a test registers a function id that another test in the same
+/// binary also registers (e.g. the `http::on-config-change` reload function):
+/// registering the same id twice on one client panics, so such a test needs its
+/// own client. Panics (fails the test) if no engine is reachable. The caller
+/// should `shutdown_async()` the returned client when done.
+#[allow(dead_code)]
+pub async fn connect_fresh() -> Arc<IIIClient> {
+    try_connect_raw().await.unwrap_or_else(|| {
+        panic!(
+            "e2e requires a running iii engine at {} — start `iii` or set \
+             III_ENGINE_WS_URL to point at one",
+            ws_url()
+        )
+    })
+}
+
 /// Get-or-init the shared engine handle for this test binary.
 ///
 /// Panics (fails the test) if no engine is reachable — an e2e test without an
