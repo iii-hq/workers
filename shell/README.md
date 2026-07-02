@@ -248,24 +248,31 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
 
   Same fail-closed rationale as the env keys: serde would otherwise ignore
   the stale key and the worker would see no jail configured at all.
-- **BREAKING: `code.base_path`/`code.base_paths` removed from the schema.**
-  They were inert — the code resolver has taken its roots from
-  `fs.host_roots` since the coder merge — so stored values still carrying
-  them are silently **ignored** (no reject; they never had an effect). Set
-  the jail once via `fs.host_roots`.
+- **BREAKING: `code.base_path`/`code.base_paths` removed from the schema and
+  REJECTED at parse.** They were inert even before removal — the code
+  resolver has taken its roots from `fs.host_roots` since the coder merge —
+  but this is a hard migration: "never had an effect" is not an exception. A
+  stored value still carrying either fails closed with a hint naming both
+  keys, same as every other removed key. Set the jail once via
+  `fs.host_roots`.
 - **The one-shot coder→shell config migration is removed.** 0.7.0 no longer
   folds a legacy standalone-`coder` configuration entry into the `shell`
-  value at boot (the `migrated_from_coder` marker field is gone too; stored
-  values still carrying it parse fine and the marker is ignored). Boot also
-  no longer probes `configuration::get` for the `coder` entry, so the
+  value at boot, and the hidden `migrated_from_coder` marker field is
+  REJECTED at parse rather than silently tolerated. Boot also no longer
+  probes `configuration::get` for the `coder` entry, so the
   "configuration 'coder' not found" WARN retries at startup are gone.
-  **Consequence if you skip the escape hatch below**: an install with only a
-  standalone `coder` entry and no `shell` entry boots 0.7.0 with the generic
-  permissive `/tmp` dev seed for `shell` — the old `coder` roots and
-  protected globs are NOT carried over, silently. If you are upgrading a
-  pre-0.6 stack that still relies on the fold, boot 0.6.x once first (it
-  performs the migration and writes the `shell` entry), THEN upgrade to
-  0.7.0.
+  **Two distinct upgrade scenarios**:
+  - An install that ALREADY has a `shell` entry (it went through the fold
+    under 0.6.x, so the entry carries `migrated_from_coder: true`) now fails
+    closed at 0.7.0 boot with a migration hint, instead of silently parsing
+    past the marker.
+  - An install with ONLY a standalone `coder` entry and NO `shell` entry at
+    all has nothing to reject — it still boots 0.7.0 with the generic
+    permissive `/tmp` dev seed for `shell`, silently, because there is no
+    stored `shell` value to fail closed on. The old `coder` roots and
+    protected globs are NOT carried over. Boot 0.6.x once first (it performs
+    the migration and writes the `shell` entry) before upgrading to 0.7.0 to
+    avoid this.
 - **`--version` added**, and `--url`/`III_URL` and `RUST_LOG` are now
   documented (see [Running](#running)).
 - **Unreachable-engine boot is loud**: one ERROR naming the host/port and the

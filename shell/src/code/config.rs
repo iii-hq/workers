@@ -24,8 +24,10 @@ pub struct CoderConfig {
     /// canonicalize inside ANY listed root. When empty, the effective
     /// default is `["./", "/tmp"]` (resolved at `PathResolver`
     /// construction). The 0.6.x `code.base_path`/`base_paths` config keys
-    /// were removed from the schema in 0.7.0; stored values still carrying
-    /// them are silently ignored — deliberate, they never had an effect.
+    /// were removed from the schema in 0.7.0; a stored value still carrying
+    /// either is REJECTED at parse (`config::check_removed_keys`) — hard
+    /// migration, no silent tolerance even though they were already inert
+    /// before removal.
     #[serde(skip)]
     #[schemars(skip)]
     pub base_paths: Vec<PathBuf>,

@@ -18,20 +18,29 @@ binary itself.
   parse** with a migration hint (`fs.host_root` -> `fs.host_roots`); serde
   would otherwise ignore the stale key and the worker would see no jail
   configured at all.
-- **`code.base_path` and `code.base_paths` are removed from the schema.**
-  They were inert: the code resolver has always taken its roots from
-  `fs.host_roots` (one jail config), so stored values still carrying them are
-  silently **ignored** (no reject — they never had an effect).
+- **`code.base_path` and `code.base_paths` are removed from the schema and
+  REJECTED at parse.** They were inert even before removal — the code
+  resolver has always taken its roots from `fs.host_roots` (one jail
+  config) — but this is a hard migration: "never had an effect" is not an
+  exception. A stored value still carrying either fails closed with a hint
+  naming both keys, same as every other removed key.
 - **The one-shot coder→shell config migration is removed**
-  (`migrate_legacy_coder` and the hidden `migrated_from_coder` marker field).
-  0.7.0 no longer folds a legacy standalone-`coder` configuration entry into
-  the `shell` value at boot, and boot no longer probes `configuration::get`
-  for a `coder` entry — which also removes the boot-time
-  "configuration 'coder' not found" WARN retries. Stored values still
-  carrying the marker parse fine (it is ignored). **Skipping this on a
-  standalone-`coder`-only install silently seeds the generic permissive
-  `/tmp` dev default for `shell` instead of the old coder roots/globs** —
-  stacks that still need the fold should boot 0.6.x once before upgrading.
+  (`migrate_legacy_coder`), and the hidden `migrated_from_coder` marker
+  field is REJECTED at parse, not silently tolerated. 0.7.0 no longer folds
+  a legacy standalone-`coder` configuration entry into the `shell` value at
+  boot, and boot no longer probes `configuration::get` for a `coder` entry
+  — which also removes the boot-time "configuration 'coder' not found" WARN
+  retries. Two distinct upgrade scenarios:
+  - An install that ALREADY has a `shell` entry (it went through the fold
+    under 0.6.x, so that entry carries `migrated_from_coder: true`) now
+    fails closed at 0.7.0 boot with a migration hint, instead of silently
+    parsing past the marker.
+  - An install with ONLY a standalone `coder` entry and NO `shell` entry at
+    all has nothing to reject — `register_config` still seeds the generic
+    permissive `/tmp` dev default for `shell`, silently, because there is no
+    stored `shell` value to fail closed on. Boot 0.6.x once first (it
+    performs the fold and writes the `shell` entry) before upgrading to
+    0.7.0 to avoid this.
 
 ### Added
 - `--version` prints the worker version.

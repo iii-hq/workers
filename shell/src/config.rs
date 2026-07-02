@@ -137,12 +137,37 @@ fn default_job_retention_secs() -> u64 {
     3600
 }
 
-/// Top-level keys removed in 0.7.0 and where they moved.
-const REMOVED_TOP_LEVEL_KEYS: &[(&str, &str)] =
-    &[("inherit_env", "env.inherit"), ("allowed_env", "env.allow")];
+/// A removed config key: `old` is gone; `new` is where it moved (`Some`), or
+/// `None` if it has NO replacement (a pure removal — nothing to migrate to,
+/// the value should simply be deleted). This crate does a HARD migration:
+/// every 0.6.x key that no longer exists is rejected at parse, never
+/// silently ignored or tolerated — there is no soft/gradual transition path.
+struct RemovedKey {
+    old: &'static str,
+    new: Option<&'static str>,
+}
+const fn renamed(old: &'static str, new: &'static str) -> RemovedKey {
+    RemovedKey {
+        old,
+        new: Some(new),
+    }
+}
+const fn deleted(old: &'static str) -> RemovedKey {
+    RemovedKey { old, new: None }
+}
 
-/// Keys removed from the nested `fs` block in 0.7.0 and where they moved.
-const REMOVED_FS_KEYS: &[(&str, &str)] = &[("host_root", "fs.host_roots")];
+/// Top-level keys removed in 0.7.0.
+const REMOVED_TOP_LEVEL_KEYS: &[RemovedKey] = &[
+    renamed("inherit_env", "env.inherit"),
+    renamed("allowed_env", "env.allow"),
+    // The one-shot coder->shell migration marker: pure internal bookkeeping
+    // an operator never set, but still no exception — a hard migration means
+    // EVERY 0.6.x artifact is rejected, not just the operator-facing ones.
+    deleted("migrated_from_coder"),
+];
+
+/// Keys removed from the nested `fs` block in 0.7.0.
+const REMOVED_FS_KEYS: &[RemovedKey] = &[renamed("host_root", "fs.host_roots")];
 
 /// Keys removed from the nested `env` block in 0.7.0: an operator
 /// half-migrating by nesting the OLD field names under the new block (e.g.
@@ -150,75 +175,81 @@ const REMOVED_FS_KEYS: &[(&str, &str)] = &[("host_root", "fs.host_roots")];
 /// `deny_unknown_fields` with a generic serde "unknown field" error and no
 /// migration guidance. Give it the same friendly hint as every other
 /// removed-key case.
-const REMOVED_ENV_KEYS: &[(&str, &str)] =
-    &[("inherit_env", "env.inherit"), ("allowed_env", "env.allow")];
+const REMOVED_ENV_KEYS: &[RemovedKey] = &[
+    renamed("inherit_env", "env.inherit"),
+    renamed("allowed_env", "env.allow"),
+];
+
+/// Keys removed from the nested `code` block in 0.7.0. Both were already
+/// inert before removal — the code resolver has always taken its roots from
+/// `fs.host_roots` — but "never had an effect" is not an exception to a hard
+/// migration: a 0.6.x stored value carrying them must still be cleaned up,
+/// not silently tolerated forever.
+const REMOVED_CODE_KEYS: &[RemovedKey] = &[deleted("base_path"), deleted("base_paths")];
 
 const CONFIGURATION_SET_HINT: &str =
     "If this is the stored value, rewrite it via configuration::set (id: shell).";
 
+/// Check one nested object (or the top-level document, via `prefix == ""`)
+/// against a table of removed keys, pushing a hint for every hit into `hits`.
+/// Returns whether anything in `table` matched, so the caller can decide
+/// which remedy sentence(s) to attach. Iterates the WHOLE table — never
+/// short-circuits — so a value carrying multiple removed keys under the same
+/// object gets every one named, not just the first.
+fn scan_removed(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    prefix: &str,
+    table: &[RemovedKey],
+    hits: &mut Vec<String>,
+) -> bool {
+    let mut hit = false;
+    for key in table {
+        if obj.contains_key(key.old) {
+            hit = true;
+            match key.new {
+                Some(new) => hits.push(format!("`{prefix}{}` -> `{new}`", key.old)),
+                None => hits.push(format!("`{prefix}{}` (removed, no replacement)", key.old)),
+            }
+        }
+    }
+    hit
+}
+
 /// Fail closed on any 0.7.0-removed key, wherever serde would otherwise
-/// silently ignore it and boot with a narrower (env forwarding) or absent
-/// (fs jail) policy than the operator intended. One traversal over the
-/// top-level document and the nested `fs`/`env` objects, shared by
-/// `from_yaml` (via a text->Value bridge, see its doc comment) and
-/// `from_json` — a future removed key is wired into ONE place, not
-/// duplicated per funnel. Reports every hit in a single error so an operator
-/// who left MULTIPLE removed keys unmigrated fixes everything in one pass.
+/// silently ignore it and boot with a narrower (env forwarding), absent (fs
+/// jail), or merely STALE (coder migration marker, inert code roots) state
+/// than the operator intended. One traversal over the top-level document and
+/// the nested `fs`/`env`/`code` objects, shared by `from_yaml` (via a
+/// text->Value bridge, see its doc comment) and `from_json` — a future
+/// removed key is wired into ONE place, not duplicated per funnel. Reports
+/// every hit in a single error so an operator who left MULTIPLE removed keys
+/// unmigrated fixes everything in one pass. This is a HARD migration: there
+/// is no silent-ignore path for ANY removed key, including ones (like
+/// `code.base_path`/`migrated_from_coder`) that were already inert before
+/// removal — "harmless to keep" is not the same as "supported."
 fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
     let Some(obj) = value.as_object() else {
         return Ok(());
     };
 
-    // NOTE: `.filter()` + `.count()`, NOT `.any()` — `.any()` short-circuits
-    // on the first match, so a config carrying BOTH removed env keys would
-    // only ever name the first in its error.
     let mut hits = Vec::new();
-    let env_hit = REMOVED_TOP_LEVEL_KEYS
-        .iter()
-        .filter(|(old, new)| {
-            let present = obj.contains_key(*old);
-            if present {
-                hits.push(format!("`{old}` -> `{new}`"));
-            }
-            present
-        })
-        .count()
-        > 0;
+    let env_hit = scan_removed(obj, "", REMOVED_TOP_LEVEL_KEYS, &mut hits);
 
     let fs_hit = obj
         .get("fs")
         .and_then(serde_json::Value::as_object)
-        .is_some_and(|fs| {
-            REMOVED_FS_KEYS
-                .iter()
-                .filter(|(old, new)| {
-                    let present = fs.contains_key(*old);
-                    if present {
-                        hits.push(format!("`fs.{old}` -> `{new}` (one-entry list)"));
-                    }
-                    present
-                })
-                .count()
-                > 0
-        });
+        .is_some_and(|fs| scan_removed(fs, "fs.", REMOVED_FS_KEYS, &mut hits));
 
     // Half-migration: the OLD key names nested under the NEW `env:` block.
     let env_nested_hit = obj
         .get("env")
         .and_then(serde_json::Value::as_object)
-        .is_some_and(|env| {
-            REMOVED_ENV_KEYS
-                .iter()
-                .filter(|(old, new)| {
-                    let present = env.contains_key(*old);
-                    if present {
-                        hits.push(format!("`env.{old}` -> `{new}`"));
-                    }
-                    present
-                })
-                .count()
-                > 0
-        });
+        .is_some_and(|env| scan_removed(env, "env.", REMOVED_ENV_KEYS, &mut hits));
+
+    let code_hit = obj
+        .get("code")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|code| scan_removed(code, "code.", REMOVED_CODE_KEYS, &mut hits));
 
     if hits.is_empty() {
         return Ok(());
@@ -231,6 +262,9 @@ fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
     }
     if fs_hit {
         remedies.push("Set the fs jail under `fs: { host_roots: [<path>] }`.");
+    }
+    if code_hit {
+        remedies.push("Delete `code.base_path`/`code.base_paths` — the code resolver's roots always come from `fs.host_roots`.");
     }
 
     Err(format!(
@@ -986,13 +1020,65 @@ mod tests {
     /// no `env` block — must fail closed through `from_json`.
     #[test]
     fn stored_060_shape_fails_closed_with_hint() {
+        // Realistic: a real 0.6.x stored value that went through the
+        // coder->shell fold also carries `migrated_from_coder: true` — the
+        // hard-migration check must reject this shape wholesale, not just
+        // the env keys.
         let mut v = ShellConfig::seed_default().to_json();
         let obj = v.as_object_mut().unwrap();
         obj.remove("env");
         obj.insert("inherit_env".into(), serde_json::Value::Bool(true));
         obj.insert("allowed_env".into(), serde_json::json!(["PATH", "HOME"]));
+        obj.insert("migrated_from_coder".into(), serde_json::Value::Bool(true));
         let err = ShellConfig::from_json(&v).expect_err("0.6.x shape fails closed");
         assert!(err.contains("removed in 0.7.0"), "{err}");
+        assert!(err.contains("`inherit_env` -> `env.inherit`"), "{err}");
+        assert!(
+            err.contains("`migrated_from_coder` (removed, no replacement)"),
+            "{err}"
+        );
+    }
+
+    /// Hard migration: `migrated_from_coder` is pure internal bookkeeping an
+    /// operator never set, but a hard migration has NO exception for
+    /// "harmless" removed keys — every 0.6.x artifact is rejected, not just
+    /// the operator-facing ones.
+    #[test]
+    fn from_json_rejects_migrated_from_coder_marker() {
+        let v = serde_json::json!({
+            "migrated_from_coder": true,
+            "fs": {"allow_unjailed": true},
+        });
+        let err = ShellConfig::from_json(&v).expect_err("removed marker rejects");
+        assert!(err.contains("removed in 0.7.0"), "{err}");
+        assert!(
+            err.contains("`migrated_from_coder` (removed, no replacement)"),
+            "{err}"
+        );
+        assert!(err.contains("configuration::set"), "{err}");
+    }
+
+    /// Hard migration: `code.base_path`/`code.base_paths` were already
+    /// inert before removal (the resolver always used `fs.host_roots`), but
+    /// "never had an effect" is not an exception — a stored value still
+    /// carrying either is rejected, not silently tolerated.
+    #[test]
+    fn from_json_rejects_removed_code_base_path_keys() {
+        let v = serde_json::json!({
+            "code": {"base_path": "/tmp", "base_paths": ["/tmp/a"]},
+            "fs": {"allow_unjailed": true},
+        });
+        let err = ShellConfig::from_json(&v).expect_err("removed code keys reject");
+        assert!(err.contains("removed in 0.7.0"), "{err}");
+        assert!(
+            err.contains("`code.base_path` (removed, no replacement)"),
+            "{err}"
+        );
+        assert!(
+            err.contains("`code.base_paths` (removed, no replacement)"),
+            "{err}"
+        );
+        assert!(err.contains("configuration::set"), "{err}");
     }
 
     /// Regression: the removed-key pre-parse must NOT change how scalars
