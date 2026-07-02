@@ -1092,6 +1092,32 @@ sandbox:
         assert!(!props.contains_key("compiled_denylist"));
     }
 
+    /// The resolver-roots wiring hop: `code_resolver_config` must copy
+    /// `fs.roots()` into `code.base_paths` while preserving the rest of the
+    /// `code` block. Since 0.7.0 `code.base_paths` is serde-skipped, this
+    /// copy is the ONLY source of coder roots — a regression dropping it
+    /// would hand `PathResolver` an empty root set, which falls back to the
+    /// default `["./", "/tmp"]` jail: coder::* silently jailed WIDER than
+    /// the operator's fs jail. (Same wiring class as the D4 glob test in
+    /// tests/code_unified_protection.rs.)
+    #[test]
+    fn code_resolver_config_fills_roots_from_fs_jail() {
+        let mut c = ShellConfig::default();
+        c.fs.host_roots = vec!["/tmp/a".into(), "/tmp/b".into()];
+        c.code.non_accessible_globs = vec!["**/.env".into()];
+        let resolved = c.code_resolver_config();
+        assert_eq!(
+            resolved.base_paths,
+            c.fs.roots(),
+            "coder roots must come from the unified fs jail"
+        );
+        assert_eq!(
+            resolved.non_accessible_globs,
+            vec!["**/.env".to_string()],
+            "the rest of the code block is preserved"
+        );
+    }
+
     #[test]
     fn to_json_from_json_round_trips() {
         let mut c = ShellConfig::default();
