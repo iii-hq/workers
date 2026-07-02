@@ -105,8 +105,7 @@ pub struct ShellConfig {
     /// per-file/response budgets. The code resolver's ROOTS are NOT taken from
     /// here — it uses `fs.host_roots` so there is a single jail config
     /// (`code.base_path`/`base_paths` were removed from the schema in 0.7.0;
-    /// stored values still carrying them are ignored — they never had an
-    /// effect).
+    /// stored values still carrying them are rejected at parse).
     #[serde(default)]
     pub code: crate::code::config::CoderConfig,
 

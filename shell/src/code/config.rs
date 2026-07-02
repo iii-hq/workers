@@ -347,17 +347,6 @@ mod tests {
     }
 
     #[test]
-    fn stored_base_path_and_base_paths_are_ignored() {
-        // Removed in 0.7.0 WITHOUT a reject: these keys never had a runtime
-        // effect (code_resolver_config always overwrote the roots from
-        // fs.host_roots), so an old stored value carrying them parses fine
-        // and the roots stay runtime-filled (empty here).
-        let cfg: CoderConfig =
-            serde_yaml::from_str("base_path: /tmp/legacy\nbase_paths: [/tmp/x]\n").unwrap();
-        assert!(cfg.base_paths.is_empty());
-    }
-
-    #[test]
     fn custom_yaml_overrides_each_field() {
         let yaml = r#"
 non_accessible_globs:
