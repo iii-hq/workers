@@ -502,10 +502,7 @@ mod host_path_tests {
     // (0 → unbounded bg job.)
     fn cfg(bg_cap_ms: u64, max_concurrent_jobs: usize) -> Arc<ShellConfig> {
         let mut c = ShellConfig {
-            env: crate::config::EnvConfig {
-                inherit: true,
-                ..Default::default()
-            },
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             max_timeout_ms: bg_cap_ms,
             max_bg_timeout_ms: bg_cap_ms,
@@ -793,10 +790,7 @@ mod sandbox_path_tests {
 
     fn cfg_open() -> Arc<ShellConfig> {
         let mut c = ShellConfig {
-            env: crate::config::EnvConfig {
-                inherit: true,
-                ..Default::default()
-            },
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             ..Default::default()
         };

@@ -186,6 +186,16 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 /// Read the live `shell` configuration (env-expanded by the configuration worker).
 pub async fn fetch_config(iii: &IIIClient) -> Result<ShellConfig, String> {
     let value = get_config_value(iii).await?;
+    parse_fetched_value(value)
+}
+
+/// Parse a successfully fetched raw configuration value. Split from
+/// [`fetch_config`] so `reload_serialized` can classify a PARSE failure of a
+/// fetched value as `Rejected` (permanent — re-fetching returns the same
+/// value) rather than a transient fetch error (retryable). Conflating the two
+/// turns every un-migrated stored value into a retry storm and hides the
+/// divergence from `shell::config-status`.
+fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
     if value.is_null() {
         // Null means register_config did not seed (its seed_default failed
         // validation) or the stored value was nulled at runtime. Fall back to
@@ -296,14 +306,21 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
 /// awaited INSIDE the lock, so overlapping `configuration:updated` events are
 /// applied one at a time and each observes the latest authoritative value — a
 /// slow build from an older event can never overwrite a newer applied config.
+///
+/// Three-way classification: a TRANSPORT failure (fetch Err) is transient —
+/// surface Err so the dispatcher retries. A PARSE failure of the fetched value
+/// (removed 0.7.0 keys, malformed JSON shape) is permanent — re-fetching
+/// returns the same bytes — so it is `Rejected`: keep last-good, record for
+/// `shell::config-status`, ack (no retry storm). An unbuildable parsed config
+/// is likewise `Rejected` via `apply_config`.
 async fn reload_serialized<F, Fut>(state: &AppState, fetch: F) -> Result<ReloadOutcome, String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<ShellConfig, String>>,
+    Fut: std::future::Future<Output = Result<Value, String>>,
 {
     let _reload = state.reload_lock.lock().await;
-    let cfg = match fetch().await {
-        Ok(cfg) => cfg,
+    let raw = match fetch().await {
+        Ok(raw) => raw,
         Err(e) => {
             // Transient fetch failure (e.g. configuration::get timed out): the
             // authoritative value is unknown. Keep the previous runtime AND
@@ -313,6 +330,20 @@ where
                 "failed to fetch configuration on change; keeping previous runtime, signaling retry"
             );
             return Err(e);
+        }
+    };
+    let cfg = match parse_fetched_value(raw) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // The value WAS fetched; it just doesn't parse (e.g. an
+            // un-migrated 0.6.x shape carrying removed keys). Same class as
+            // unbuildable below: permanent until the store changes.
+            tracing::error!(
+                error = %e,
+                "rejected configuration change; keeping previous runtime (not retrying — value does not parse)"
+            );
+            state.reload_status.write().await.record_rejected(e);
+            return Ok(ReloadOutcome::Rejected);
         }
     };
     match apply_config(state, cfg).await {
@@ -353,7 +384,7 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
     // and a slow build from an older event cannot roll back a newer policy.
     // Steady-state: an invalid config keeps last-good (Rejected is not an error
     // here), only a transient fetch failure propagates Err for the dispatcher.
-    reload_serialized(state, || fetch_config(&state.iii))
+    reload_serialized(state, || get_config_value(&state.iii))
         .await
         .map(|_| ())
 }
@@ -366,7 +397,7 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
 /// (unbuildable) authoritative config aborts startup rather than serving the
 /// stale last-good runtime, and a transient fetch failure also aborts.
 pub async fn reconcile(state: &AppState) -> Result<(), String> {
-    reconcile_with(state, || fetch_config(&state.iii)).await
+    reconcile_with(state, || get_config_value(&state.iii)).await
 }
 
 /// Boot reconcile core, split from `fetch_config` so the fail-closed mapping is
@@ -374,7 +405,7 @@ pub async fn reconcile(state: &AppState) -> Result<(), String> {
 async fn reconcile_with<F, Fut>(state: &AppState, fetch: F) -> Result<(), String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<ShellConfig, String>>,
+    Fut: std::future::Future<Output = Result<Value, String>>,
 {
     match reload_serialized(state, fetch).await? {
         ReloadOutcome::Applied => Ok(()),
@@ -528,7 +559,7 @@ mod tests {
         let h1 = tokio::spawn(async move {
             let _ = reload_serialized(&s1, || async move {
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                Ok::<_, String>(old)
+                Ok::<_, String>(old.to_json())
             })
             .await;
         });
@@ -541,7 +572,7 @@ mod tests {
         let s2 = state.clone();
         let new = cfg_new.clone();
         let h2 = tokio::spawn(async move {
-            let _ = reload_serialized(&s2, || async move { Ok::<_, String>(new) }).await;
+            let _ = reload_serialized(&s2, || async move { Ok::<_, String>(new.to_json()) }).await;
         });
 
         h1.await.unwrap();
@@ -571,7 +602,7 @@ mod tests {
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
         };
         let res = reload_serialized(&state, || async {
-            Err::<ShellConfig, String>("get timed out".into())
+            Err::<Value, String>("get timed out".into())
         })
         .await;
         assert!(
@@ -608,8 +639,10 @@ mod tests {
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
         };
         // ShellConfig::default() is unjailed (empty host_roots, allow_unjailed false) → rejected by prepare_config.
-        let res =
-            reload_serialized(&state, || async { Ok::<_, String>(ShellConfig::default()) }).await;
+        let res = reload_serialized(&state, || async {
+            Ok::<_, String>(ShellConfig::default().to_json())
+        })
+        .await;
         assert!(
             matches!(res, Ok(ReloadOutcome::Rejected)),
             "invalid config must be acked as Rejected (no retry storm), not Err"
@@ -619,6 +652,55 @@ mod tests {
             vec![dir],
             "runtime keeps last-good on invalid config"
         );
+    }
+
+    /// A stored value that FAILS TO PARSE (e.g. a 0.6.x shape carrying the
+    /// removed `inherit_env`/`allowed_env` keys) must classify the same as an
+    /// unbuildable-but-parseable config: `Rejected`, keep last-good, ack (no
+    /// retry storm), and record the rejection for `shell::config-status`.
+    /// Before the fix this hit the transient-fetch-failure branch instead —
+    /// re-fetching returns the identical bytes, so the dispatcher would retry
+    /// forever against a value that can never parse.
+    #[tokio::test]
+    async fn reload_rejects_and_records_unparseable_stored_value() {
+        let dir = std::env::temp_dir().join("shell-reload-unparseable-9b3c");
+        std::fs::create_dir_all(&dir).unwrap();
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:59593", iii_sdk::InitOptions::default());
+        let mut good = ShellConfig::default();
+        good.fs.host_roots = vec![dir.clone()];
+        let state = AppState {
+            runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
+            iii: iii.clone(),
+            reload_lock: Arc::new(Mutex::new(())),
+            reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
+        };
+        // A literal 0.6.x stored shape: top-level inherit_env/allowed_env,
+        // no `env` block — fails check_removed_keys inside parse_fetched_value.
+        let stale_060_shape = serde_json::json!({
+            "inherit_env": true,
+            "allowed_env": ["PATH", "HOME"],
+        });
+        let res =
+            reload_serialized(&state, || async move { Ok::<_, String>(stale_060_shape) }).await;
+        assert!(
+            matches!(res, Ok(ReloadOutcome::Rejected)),
+            "unparseable stored value must be Rejected (permanent), not Err (transient): {res:?}"
+        );
+        assert_eq!(
+            state.runtime.read().await.config.fs.host_roots,
+            vec![dir],
+            "runtime keeps last-good on an unparseable stored value"
+        );
+        let s = state.reload_status.read().await;
+        assert_eq!(s.last_outcome, ReloadOutcome::Rejected);
+        assert!(
+            s.last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("removed in 0.7.0")),
+            "config-status must surface the migration hint: {:?}",
+            s.last_error
+        );
+        assert_eq!(s.rejected_reloads, 1);
     }
 
     #[tokio::test]
@@ -641,7 +723,7 @@ mod tests {
         };
         let res = reload_serialized(&state, {
             let b = b.clone();
-            move || async move { Ok::<_, String>(b) }
+            move || async move { Ok::<_, String>(b.to_json()) }
         })
         .await;
         assert!(matches!(res, Ok(ReloadOutcome::Applied)));
@@ -677,8 +759,10 @@ mod tests {
         }
 
         // A rejected (invalid: unjailed default) reload keeps last-good AND records it.
-        let res =
-            reload_serialized(&state, || async { Ok::<_, String>(ShellConfig::default()) }).await;
+        let res = reload_serialized(&state, || async {
+            Ok::<_, String>(ShellConfig::default().to_json())
+        })
+        .await;
         assert!(res.is_ok(), "invalid config is acked (no storm)");
         {
             let s = state.reload_status.read().await;
@@ -697,7 +781,7 @@ mod tests {
         good2.fs.host_roots = vec![dir.clone()];
         let res = reload_serialized(&state, {
             let g = good2.clone();
-            move || async move { Ok::<_, String>(g) }
+            move || async move { Ok::<_, String>(g.to_json()) }
         })
         .await;
         assert!(res.is_ok());
@@ -748,8 +832,10 @@ mod tests {
         };
 
         // Invalid (unjailed default) authoritative config → fail closed.
-        let res =
-            reconcile_with(&state, || async { Ok::<_, String>(ShellConfig::default()) }).await;
+        let res = reconcile_with(&state, || async {
+            Ok::<_, String>(ShellConfig::default().to_json())
+        })
+        .await;
         assert!(
             res.is_err(),
             "boot reconcile must fail closed on an invalid stored config"
@@ -757,7 +843,7 @@ mod tests {
 
         // Transient fetch failure → fail closed too.
         let res = reconcile_with(&state, || async {
-            Err::<ShellConfig, String>("get timed out".into())
+            Err::<Value, String>("get timed out".into())
         })
         .await;
         assert!(
@@ -770,7 +856,7 @@ mod tests {
         good2.fs.host_roots = vec![dir.clone()];
         let res = reconcile_with(&state, {
             let g = good2.clone();
-            move || async move { Ok::<_, String>(g) }
+            move || async move { Ok::<_, String>(g.to_json()) }
         })
         .await;
         assert!(res.is_ok(), "boot reconcile applies a valid config");

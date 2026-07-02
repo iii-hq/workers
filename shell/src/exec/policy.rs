@@ -569,7 +569,7 @@ mod tests {
             "omitted cwd defaults to base_dir"
         );
 
-// relative cwd anchors at base_dir, not the jail root.
+        // relative cwd anchors at base_dir, not the jail root.
         let ov =
             build_overrides(Some("inner"), None, Some(&base), &c).expect("inner is under base_dir");
         assert_eq!(
@@ -663,7 +663,7 @@ mod tests {
             "no base_dir, no cwd ⇒ None (prior behaviour)"
         );
 
-// Relative cwd still anchors at the primary jail root when base_dir is absent.
+        // Relative cwd still anchors at the primary jail root when base_dir is absent.
         let ov = build_overrides(Some("sub"), None, None, &c).expect("ok");
         assert_eq!(
             ov.cwd.as_deref(),

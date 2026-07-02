@@ -4,6 +4,19 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Serializes every test in the crate that mutates PROCESS-WIDE environment
+/// state (`std::env::set_var`/`remove_var`). `cargo test` runs tests within
+/// one binary on multiple threads by default; `set_var`/`var` on different
+/// threads race at the libc level regardless of Rust-side `Mutex` discipline
+/// around any ONE test's own state, so every such test — here and in
+/// `code/config.rs`'s `from_yaml_expands_env_var` — must hold this lock for
+/// its full set→use→unset span. `.unwrap_or_else(...)` recovers from
+/// poisoning: an earlier test panicking mid-mutation still leaves the
+/// environment consistent (its own RAII guard/explicit cleanup already ran),
+/// so a poisoned lock is not a reason to fail later tests too.
+#[cfg(test)]
+pub(crate) static ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Root configuration for the shell worker: exec policy (timeouts, output
 /// caps, allow/denylist, env forwarding), the fs jail, the sandbox toggle,
 /// and the folded `coder::*` code surface. Stored in the `configuration`
@@ -124,54 +137,121 @@ fn default_job_retention_secs() -> u64 {
     3600
 }
 
-/// Top-level keys removed in 0.7.0 and where they moved. serde ignores
-/// unknown fields, so a 0.6.x config carrying `inherit_env: true` would
-/// otherwise parse into `env.inherit = false` — silently disabling env
-/// forwarding. Fail closed with a migration hint instead.
+/// Top-level keys removed in 0.7.0 and where they moved.
 const REMOVED_TOP_LEVEL_KEYS: &[(&str, &str)] =
     &[("inherit_env", "env.inherit"), ("allowed_env", "env.allow")];
 
-fn check_removed_keys<'a>(keys: impl Iterator<Item = &'a str>) -> Result<(), String> {
-    let hits: Vec<String> = keys
-        .filter_map(|k| {
-            REMOVED_TOP_LEVEL_KEYS
-                .iter()
-                .find(|(old, _)| *old == k)
-                .map(|(old, new)| format!("`{old}` -> `{new}`"))
+/// Keys removed from the nested `fs` block in 0.7.0 and where they moved.
+const REMOVED_FS_KEYS: &[(&str, &str)] = &[("host_root", "fs.host_roots")];
+
+/// Keys removed from the nested `env` block in 0.7.0: an operator
+/// half-migrating by nesting the OLD field names under the new block (e.g.
+/// `env: { inherit_env: true }`) would otherwise hit `EnvConfig`'s
+/// `deny_unknown_fields` with a generic serde "unknown field" error and no
+/// migration guidance. Give it the same friendly hint as every other
+/// removed-key case.
+const REMOVED_ENV_KEYS: &[(&str, &str)] =
+    &[("inherit_env", "env.inherit"), ("allowed_env", "env.allow")];
+
+const CONFIGURATION_SET_HINT: &str =
+    "If this is the stored value, rewrite it via configuration::set (id: shell).";
+
+/// Fail closed on any 0.7.0-removed key, wherever serde would otherwise
+/// silently ignore it and boot with a narrower (env forwarding) or absent
+/// (fs jail) policy than the operator intended. One traversal over the
+/// top-level document and the nested `fs`/`env` objects, shared by
+/// `from_yaml` (via a text->Value bridge, see its doc comment) and
+/// `from_json` — a future removed key is wired into ONE place, not
+/// duplicated per funnel. Reports every hit in a single error so an operator
+/// who left MULTIPLE removed keys unmigrated fixes everything in one pass.
+fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+
+    // NOTE: `.filter()` + `.count()`, NOT `.any()` — `.any()` short-circuits
+    // on the first match, so a config carrying BOTH removed env keys would
+    // only ever name the first in its error.
+    let mut hits = Vec::new();
+    let env_hit = REMOVED_TOP_LEVEL_KEYS
+        .iter()
+        .filter(|(old, new)| {
+            let present = obj.contains_key(*old);
+            if present {
+                hits.push(format!("`{old}` -> `{new}`"));
+            }
+            present
         })
-        .collect();
+        .count()
+        > 0;
+
+    let fs_hit = obj
+        .get("fs")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|fs| {
+            REMOVED_FS_KEYS
+                .iter()
+                .filter(|(old, new)| {
+                    let present = fs.contains_key(*old);
+                    if present {
+                        hits.push(format!("`fs.{old}` -> `{new}` (one-entry list)"));
+                    }
+                    present
+                })
+                .count()
+                > 0
+        });
+
+    // Half-migration: the OLD key names nested under the NEW `env:` block.
+    let env_nested_hit = obj
+        .get("env")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|env| {
+            REMOVED_ENV_KEYS
+                .iter()
+                .filter(|(old, new)| {
+                    let present = env.contains_key(*old);
+                    if present {
+                        hits.push(format!("`env.{old}` -> `{new}`"));
+                    }
+                    present
+                })
+                .count()
+                > 0
+        });
+
     if hits.is_empty() {
         return Ok(());
     }
-    Err(format!(
-        "config keys removed in 0.7.0: {}. Nest them under `env:` (e.g. env: {{ inherit: true, \
-         allow: [PATH, HOME] }}). If this is the stored value, rewrite it via \
-         configuration::set (id: shell).",
-        hits.join(", ")
-    ))
-}
 
-/// Nested `fs` key removed in 0.7.0: `host_root`, the 0.6.x single-root
-/// alias. serde ignores unknown fields, so a config still carrying it would
-/// otherwise parse with NO jail configured — and either fail the jail check
-/// with a message that never names the stale key, or (with `allow_unjailed`)
-/// silently boot unjailed. Same fail-closed treatment as the top-level keys.
-fn check_removed_fs_keys<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<(), String> {
-    if keys.any(|k| k == "host_root") {
-        return Err(
-            "config key removed in 0.7.0: `fs.host_root` -> `fs.host_roots` (one-entry list). \
-             Set fs: { host_roots: [<path>] }. If this is the stored value, rewrite it via \
-             configuration::set (id: shell)."
-                .to_string(),
-        );
+    let mut remedies = Vec::new();
+    if env_hit || env_nested_hit {
+        remedies
+            .push("Nest env keys under `env:` (e.g. env: { inherit: true, allow: [PATH, HOME] }).");
     }
-    Ok(())
+    if fs_hit {
+        remedies.push("Set the fs jail under `fs: { host_roots: [<path>] }`.");
+    }
+
+    Err(format!(
+        "config keys removed in 0.7.0: {}. {} {CONFIGURATION_SET_HINT}",
+        hits.join(", "),
+        remedies.join(" "),
+    ))
 }
 
 /// Environment policy for spawned commands (host target). Replaces the
 /// 0.6.x top-level `inherit_env` / `allowed_env` keys (renamed in 0.7.0;
 /// the old keys are rejected at parse with a migration hint).
+///
+/// `deny_unknown_fields`: unlike the request types (which deliberately
+/// tolerate unknown fields the engine may inject), this struct has no such
+/// fields and no forward-compat need to ignore extras. `check_removed_keys`
+/// catches the anticipated half-migration (old names nested under `env:`)
+/// with a friendly hint BEFORE deserialization; this attribute is the
+/// backstop for anything that check doesn't know about (e.g. a typo).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EnvConfig {
     /// Forward the worker's ENTIRE environment to child processes. Toolchains
     /// (cargo, rustup, git, node) need this to find PATH/HOME/CARGO_HOME.
@@ -204,6 +284,19 @@ impl Default for EnvConfig {
         Self {
             inherit: false,
             allow: default_env_allow(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl EnvConfig {
+    /// Test fixture: forward the worker's full env, like the shipped dev
+    /// seed. Several unrelated test modules need an open exec env and would
+    /// otherwise repeat `EnvConfig { inherit: true, ..Default::default() }`.
+    pub fn inherit_all() -> Self {
+        Self {
+            inherit: true,
+            ..Default::default()
         }
     }
 }
@@ -332,6 +425,33 @@ impl Default for ShellConfig {
     }
 }
 
+/// Optional wrapper-invocation chain (`sudo`, `doas`, `nohup`, `env`
+/// — optionally with `KEY=VALUE` assignments, its idiomatic form — or
+/// `timeout [duration]`, each optionally path-qualified) a command-shaped
+/// denylist pattern tolerates before the real command name. mkfs/dd-to-device/
+/// shutdown/reboot normally require root, so `sudo shutdown -h now` is
+/// arguably the MOST likely accidental invocation — anchoring bare argv[0]
+/// without this silently drops the exact case the tripwire exists to catch.
+///
+/// Still advisory-only, deliberately so (see the crate-level threat model:
+/// the fs jail and sandbox backend are the actual security boundary, not
+/// this list). Known gaps this tolerance does NOT close: a wrapper not named
+/// here; flags interposed before the wrapped command (`sudo -u root
+/// shutdown`); or the command spawned indirectly via `sh -c`. Closing those
+/// would need per-argv-token wrapper-skipping instead of a joined-string
+/// regex — a bigger design change than a tripwire warrants.
+const DENYLIST_WRAPPER_PREFIX: &str = r"(?:(?:\S*/)?env(?:\s+\S+=\S*)*\s+|(?:\S*/)?(?:sudo|doas|nohup)\s+|(?:\S*/)?timeout(?:\s+\S+)?\s+)*";
+
+/// Build a command-shaped denylist pattern: anchored to the start of the
+/// joined argv line, tolerant of [`DENYLIST_WRAPPER_PREFIX`], tolerant of a
+/// path-qualified command name, then `cmd_pattern` verbatim. Case-insensitive
+/// (`(?i)`): the wrapper names and dangerous commands are conventionally
+/// lowercase, but the tripwire should still fire on `SUDO shutdown` — this
+/// pattern exists to catch mistakes, not to reward exact casing.
+fn command_shaped_denylist_pattern(cmd_pattern: &str) -> String {
+    format!("(?i)^{DENYLIST_WRAPPER_PREFIX}(\\S*/)?{cmd_pattern}")
+}
+
 impl ShellConfig {
     /// The bootable, zero-config default: seeded as `initial_value` on first
     /// registration and used as the runtime fallback when the stored value is
@@ -353,18 +473,20 @@ impl ShellConfig {
                 ..EnvConfig::default()
             },
             // Command-SHAPED patterns (mkfs/shutdown/reboot/dd) are anchored to
-            // argv[0] — `^(\S*/)?name` fires when the tool IS the command, not
-            // when the word appears in an argument, so `grep -rn shutdown src/`
-            // or `rg "dd if=" docs/` are not rejected. Argument-shaped patterns
-            // (rm -rf /, the fork bomb, /etc/shadow) stay full-line: their
-            // dangerous form lives in the arguments.
+            // argv[0] (tolerating a sudo/doas/nohup/env/timeout wrapper — see
+            // DENYLIST_WRAPPER_PREFIX) — they fire when the tool IS the
+            // command, not when the word appears in an argument, so
+            // `grep -rn shutdown src/` or `rg "dd if=" docs/` are not
+            // rejected. Argument-shaped patterns (rm -rf /, the fork bomb,
+            // /etc/shadow) stay full-line: their dangerous form lives in the
+            // arguments.
             denylist_patterns: vec![
                 r"rm\s+-rf\s+/".into(),
                 r":\(\)\s*\{\s*:\|".into(),
-                r"^(\S*/)?mkfs".into(),
-                r"^(\S*/)?dd\s+if=".into(),
-                r"^(\S*/)?shutdown\b".into(),
-                r"^(\S*/)?reboot\b".into(),
+                command_shaped_denylist_pattern("mkfs"),
+                command_shaped_denylist_pattern(r"dd\s+if="),
+                command_shaped_denylist_pattern(r"shutdown\b"),
+                command_shaped_denylist_pattern(r"reboot\b"),
                 "/etc/shadow".into(),
             ],
             fs: FsConfig {
@@ -526,20 +648,21 @@ impl ShellConfig {
     /// Parse a YAML seed (no denylist compile, no jail validation — those run
     /// in `configuration::build_runtime`).
     ///
-    /// The removed-key check parses to a `Value` first, but the config itself
-    /// deserializes from the TEXT again: `serde_yaml::from_value` self-tags
-    /// plain scalars (an unquoted `false` in `allowlist` becomes `Bool` and can
-    /// no longer deserialize into `String`), while `from_str` drives parsing by
-    /// the target type. Double-parsing a config-sized string is free.
+    /// The removed-key check runs over a `serde_json::Value` bridged from the
+    /// parsed YAML (`serde_yaml::Value` implements `Serialize`, so
+    /// `serde_json::to_value` round-trips it) so `from_yaml`/`from_json` share
+    /// ONE traversal (`check_removed_keys`) instead of duplicating the
+    /// top-level/`fs`/`env` walk per funnel. The config itself still
+    /// deserializes from the ORIGINAL TEXT, not the bridged Value:
+    /// `serde_yaml::from_value` self-tags plain scalars (an unquoted `false`
+    /// in `allowlist` becomes `Bool` and can no longer deserialize into
+    /// `String`), while `from_str` drives parsing by the target type.
+    /// Double-parsing a config-sized string is free.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let raw: serde_yaml::Value =
             serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
-        if let Some(map) = raw.as_mapping() {
-            check_removed_keys(map.keys().filter_map(|k| k.as_str()))?;
-            if let Some(fs) = map.get("fs").and_then(|v| v.as_mapping()) {
-                check_removed_fs_keys(fs.keys().filter_map(|k| k.as_str()))?;
-            }
-        }
+        let bridged = serde_json::to_value(&raw).map_err(|e| format!("yaml->json bridge: {e}"))?;
+        check_removed_keys(&bridged)?;
         serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
     }
 
@@ -551,12 +674,7 @@ impl ShellConfig {
 
     /// Deserialize the live value fetched from the configuration worker.
     pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
-        if let Some(obj) = value.as_object() {
-            check_removed_keys(obj.keys().map(String::as_str))?;
-            if let Some(fs) = obj.get("fs").and_then(serde_json::Value::as_object) {
-                check_removed_fs_keys(fs.keys().map(String::as_str))?;
-            }
-        }
+        check_removed_keys(value)?;
         serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))
     }
 
@@ -723,20 +841,91 @@ mod tests {
             vec!["/sbin/shutdown".to_string(), "-r".into()],
             vec!["reboot".to_string()],
             vec!["mkfs.ext4".to_string(), "/dev/sda1".into()],
-            vec!["dd".to_string(), "if=/dev/zero".into(), "of=/dev/sda".into()],
+            vec![
+                "dd".to_string(),
+                "if=/dev/zero".into(),
+                "of=/dev/sda".into(),
+            ],
         ] {
             assert!(
                 c.is_command_allowed(&argv).is_err(),
                 "{argv:?} must trip the anchored denylist"
             );
         }
+        // ...and a bounded set of wrapper prefixes are tolerated too: mkfs/
+        // dd-to-device/shutdown/reboot normally require root, so `sudo
+        // shutdown -h now` is arguably the MOST likely accidental invocation
+        // — anchoring bare argv[0] alone would silently drop exactly this
+        // case (a real regression caught in review).
+        for argv in [
+            vec![
+                "sudo".to_string(),
+                "shutdown".into(),
+                "-h".into(),
+                "now".into(),
+            ],
+            vec!["/usr/bin/sudo".to_string(), "reboot".into()],
+            vec!["doas".to_string(), "reboot".into()],
+            vec!["nohup".to_string(), "shutdown".into(), "-r".into()],
+            vec![
+                "sudo".to_string(),
+                "dd".to_string(),
+                "if=/dev/zero".into(),
+                "of=/dev/sda".into(),
+            ],
+            vec![
+                "timeout".to_string(),
+                "10".into(),
+                "shutdown".into(),
+                "now".into(),
+            ],
+            // env's idiomatic form: KEY=VALUE assignments before the command
+            // — a bare `env cmd` check alone would miss the common case.
+            vec![
+                "env".to_string(),
+                "FOO=bar".into(),
+                "shutdown".into(),
+                "-h".into(),
+                "now".into(),
+            ],
+            vec![
+                "env".to_string(),
+                "A=1".into(),
+                "B=2".into(),
+                "reboot".into(),
+            ],
+            // Case-insensitive: the tripwire exists to catch mistakes, not
+            // to reward exact casing.
+            vec![
+                "SUDO".to_string(),
+                "shutdown".into(),
+                "-h".into(),
+                "now".into(),
+            ],
+            vec!["Sudo".to_string(), "Shutdown".into()],
+        ] {
+            assert!(
+                c.is_command_allowed(&argv).is_err(),
+                "{argv:?} (wrapped) must trip the anchored denylist"
+            );
+        }
         // ...but NOT when the word merely appears in an argument — a coding
         // agent grepping a codebase for "shutdown" is not a mistake.
         for argv in [
-            vec!["grep".to_string(), "-rn".into(), "shutdown".into(), "src/".into()],
+            vec![
+                "grep".to_string(),
+                "-rn".into(),
+                "shutdown".into(),
+                "src/".into(),
+            ],
             vec!["cargo".to_string(), "test".into(), "reboot".into()],
             vec!["rg".to_string(), "dd if=".into(), "docs/".into()],
-            vec!["git".to_string(), "log".into(), "--grep".into(), "mkfs".into()],
+            vec![
+                "git".to_string(),
+                "log".into(),
+                "--grep".into(),
+                "mkfs".into(),
+            ],
         ] {
             assert!(
                 c.is_command_allowed(&argv).is_ok(),
@@ -838,7 +1027,9 @@ mod tests {
     #[test]
     fn json_schema_every_field_has_description() {
         let schema = ShellConfig::json_schema();
-        let props = schema["properties"].as_object().expect("top-level properties");
+        let props = schema["properties"]
+            .as_object()
+            .expect("top-level properties");
         assert!(!props.is_empty());
         for (name, prop) in props {
             assert!(
@@ -1022,7 +1213,8 @@ sandbox:
     fn validate_fs_jail_accepts_single_host_root() {
         let mut c = ShellConfig::default();
         c.fs.host_roots = vec![std::path::PathBuf::from("/tmp/something")];
-        c.validate_fs_jail().expect("a one-entry host_roots is valid");
+        c.validate_fs_jail()
+            .expect("a one-entry host_roots is valid");
     }
 
     #[test]
@@ -1141,7 +1333,8 @@ sandbox:
     /// ignore it and parse a config with NO jail configured.
     #[test]
     fn from_yaml_rejects_removed_fs_host_root_with_hint() {
-        let err = ShellConfig::from_yaml("fs:\n  host_root: /tmp\n").expect_err("removed key rejects");
+        let err =
+            ShellConfig::from_yaml("fs:\n  host_root: /tmp\n").expect_err("removed key rejects");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("fs.host_roots"), "{err}");
     }
@@ -1154,6 +1347,39 @@ sandbox:
         let err = ShellConfig::from_json(&v).expect_err("removed key rejects");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("fs.host_roots"), "{err}");
+        assert!(err.contains("configuration::set"), "{err}");
+    }
+
+    /// Both a top-level removed env key AND the nested `fs.host_root` present
+    /// at once must name BOTH in one error — the unified `check_removed_keys`
+    /// walks the top-level, `fs`, and `env` objects together, not as two
+    /// independent checks that could each report only their own hit.
+    #[test]
+    fn removed_keys_error_names_both_env_and_fs_hits() {
+        let v = serde_json::json!({
+            "inherit_env": true,
+            "fs": {"host_root": "/tmp"},
+        });
+        let err = ShellConfig::from_json(&v).expect_err("removed keys reject");
+        assert!(err.contains("`inherit_env` -> `env.inherit`"), "{err}");
+        assert!(err.contains("fs.host_roots"), "{err}");
+    }
+
+    /// Half-migration: nesting the OLD field names under the NEW `env:`
+    /// block (e.g. an operator who read "nest it under env:" too literally)
+    /// must get the SAME friendly migration hint as every other removed-key
+    /// case, not `EnvConfig`'s generic `deny_unknown_fields` serde error —
+    /// found during pre-landing review as a DX regression the unified
+    /// checker introduced.
+    #[test]
+    fn from_json_rejects_half_migrated_env_block_with_hint() {
+        let v = serde_json::json!({
+            "env": {"inherit_env": true},
+            "fs": {"allow_unjailed": true},
+        });
+        let err = ShellConfig::from_json(&v).expect_err("half-migrated env block rejects");
+        assert!(err.contains("removed in 0.7.0"), "{err}");
+        assert!(err.contains("`env.inherit_env` -> `env.inherit`"), "{err}");
         assert!(err.contains("configuration::set"), "{err}");
     }
 }

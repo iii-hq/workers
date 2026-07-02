@@ -452,6 +452,12 @@ search_response_budget_bytes: 11
 
     #[test]
     fn from_yaml_expands_env_var() {
+        // Serialized against every other process-env-mutating test in the
+        // crate (see ENV_TEST_MUTEX) — set_var/var race across threads
+        // otherwise.
+        let _env_lock = crate::config::ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob");
         let yaml = "non_accessible_globs:\n  - \"${CODER_TEST_ROOT}\"\n";
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
