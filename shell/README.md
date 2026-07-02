@@ -42,10 +42,18 @@ engine with pure defaults. The full operator surface:
 | `--version` | — | Print the worker version (also registered with the engine as worker metadata). |
 | `RUST_LOG` env var | `info` | Log filter (tracing `EnvFilter` syntax, e.g. `RUST_LOG=shell=debug,info`). |
 
-If the engine is unreachable at boot, a pre-connect probe logs one ERROR
-("engine unreachable at <url> — is the iii engine running? Set --url or the
-III_URL env var...") and the worker keeps retrying in the background every 2s —
-it never exits, so supervised deployments recover as soon as the engine is up.
+If the engine is unreachable at boot, a pre-connect probe (run detached, so it
+never delays startup) logs one ERROR ("engine unreachable at <host>:<port> —
+is the iii engine running? Set --url or the III_URL env var...", logging the
+resolved host/port rather than the raw URL) and the worker keeps retrying in
+the background every 2s — it never exits, so supervised deployments recover
+as soon as the engine is up.
+
+A `--config` seed file that exists but fails to parse (for example, one still
+carrying 0.6.x keys) aborts boot rather than silently falling back to the
+permissive built-in default — see [Upgrading to 0.7.0](#upgrading-to-070). A
+genuinely missing file still falls through gracefully to the stored value or
+the built-in zero-config default.
 
 ## Configure
 
@@ -68,8 +76,10 @@ env:
 # allowlist means OPEN — the shipped default, so any command runs.
 # denylist_patterns are advisory regex over argv.join(" "), a tripwire for
 # catastrophic mistakes only, NOT a security boundary. Command-shaped
-# patterns are anchored to argv[0] so `grep -rn shutdown src/` is not
-# rejected; argument-shaped ones (rm -rf /) stay unanchored.
+# patterns are anchored to argv[0] (tolerating a sudo/doas/nohup/env/timeout
+# wrapper) so `grep -rn shutdown src/` is not rejected but `sudo shutdown -h
+# now` still is; argument-shaped ones (rm -rf /) stay unanchored. See the
+# shipped config.yaml for the full patterns.
 allowlist: []
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
@@ -218,7 +228,13 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
   shape. **Sequencing matters**: update the binary FIRST, then the stored
   value — writing the new shape while 0.6.x is still running makes the old
   worker hot-reload it, ignore the unknown `env` block, and silently stop
-  forwarding env until restart.
+  forwarding env until restart. A **half-migration** (nesting the OLD key
+  names under the new block, e.g. `env: { inherit_env: true }`) is also
+  rejected — `env` denies unknown fields — rather than silently falling back
+  to the wider default `allow` list.
+  A `--config` seed file carrying any of these removed keys now **aborts
+  boot** rather than warning and falling back to the permissive built-in
+  seed; only a genuinely missing seed file falls through gracefully.
 - **BREAKING: `fs.host_root` (single-root alias) removed.** The 0.6.x
   one-entry alias for the jail root is **rejected at parse** with a migration
   hint ("config key removed in 0.7.0: `fs.host_root` -> `fs.host_roots`
@@ -242,15 +258,24 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
   value at boot (the `migrated_from_coder` marker field is gone too; stored
   values still carrying it parse fine and the marker is ignored). Boot also
   no longer probes `configuration::get` for the `coder` entry, so the
-  "configuration 'coder' not found" WARN retries at startup are gone. If you
-  are upgrading a pre-0.6 stack that still relies on the fold, boot 0.6.x
-  once first (it performs the migration), then upgrade to 0.7.0.
+  "configuration 'coder' not found" WARN retries at startup are gone.
+  **Consequence if you skip the escape hatch below**: an install with only a
+  standalone `coder` entry and no `shell` entry boots 0.7.0 with the generic
+  permissive `/tmp` dev seed for `shell` — the old `coder` roots and
+  protected globs are NOT carried over, silently. If you are upgrading a
+  pre-0.6 stack that still relies on the fold, boot 0.6.x once first (it
+  performs the migration and writes the `shell` entry), THEN upgrade to
+  0.7.0.
 - **`--version` added**, and `--url`/`III_URL` and `RUST_LOG` are now
   documented (see [Running](#running)).
-- **Unreachable-engine boot is loud**: one ERROR with the URL and the fix
-  hint, instead of only the SDK's silent retry WARNs.
+- **Unreachable-engine boot is loud**: one ERROR naming the host/port and the
+  fix hint, instead of only the SDK's silent retry WARNs. The probe runs
+  detached so it never delays boot.
 - **Every config field now carries a schema description**, so the console
   configuration UI documents each knob inline.
+- **Command-shaped denylist patterns tolerate a wrapper prefix**
+  (`sudo`/`doas`/`nohup`/`env`/`timeout [duration]`, optionally
+  path-qualified): `sudo shutdown -h now` trips the tripwire again.
 
 ## Upgrading to 0.4.0
 
