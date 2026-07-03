@@ -30,9 +30,11 @@ Terminal job after the publish chain, per released tag: posts
 *(pre-release)* when `is_prerelease` is true. Runs when
 `dry_run != 'true'` and the chain is not failed/cancelled; checks the Slack
 API `ok` field so a bad token fails the job red instead of rotting
-silently. Nothing depends on it. Requires repo secret `SLACK_BOT_TOKEN`
-(`chat:write`) and the bot invited to the channel. No Linear link in the
-message — the Linear wave release is created later by the skill.
+silently. Nothing depends on it. `SLACK_BOT_TOKEN` is an org-level secret
+already visible to this repo (same bot the iii engine release pipeline
+uses); the only setup is creating `#worker-releases` and inviting that bot.
+No Linear link in the message — the Linear wave release is created later by
+the skill.
 
 ## Decision
 

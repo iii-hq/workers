@@ -207,8 +207,9 @@ Confirm:
 
 Slack announcement is automatic: the terminal `announce` job in
 `release.yml` posts `🚀 <worker> vX.Y.Z` to `#worker-releases` for every
-successful non-dry-run release (requires repo secret `SLACK_BOT_TOKEN` and
-the bot invited to the channel).
+successful non-dry-run release. `SLACK_BOT_TOKEN` is org-level (the same
+bot as the iii engine release pipeline); the bot must be invited to
+`#worker-releases`.
 
 After a release session — any number of tags — run `/release-sync` in Claude
 Code from the repo root. Same-day tags form one **wave** = one release in
