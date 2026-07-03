@@ -295,6 +295,8 @@ mod tests {
             turn_count: 1,
             depth: 0,
             abort: false,
+            awaiting_continue: false,
+            interactive: false,
             watermark_entry_id: None,
             stream_request_id: None,
             options: TurnOptions {

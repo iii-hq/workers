@@ -119,9 +119,11 @@ pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, Harne
 
 /// Ensure the session, persist the message, and seed/merge the turn.
 ///
-/// `interactive` is `true` for `harness::send` (a chat turn that may pause at
-/// `max_turns`) and `false` for `harness::run` (auto-ends so the poller never
-/// hangs on a parked turn).
+/// `interactive` is `true` for `harness::send` (a user-facing chat turn that
+/// may pause at `max_turns` to ask whether to continue). Autonomous turns —
+/// `harness::spawn` children, parentless/CLI spawns, and `harness::react`
+/// reactions — are seeded elsewhere with `interactive: false` and auto-end,
+/// so nothing parks waiting for a user who isn't there.
 pub async fn start(
     deps: &Deps,
     req: SendRequest,
@@ -212,20 +214,23 @@ pub async fn inject(
     let cfg = deps.cfg().await;
     let session = deps.session().await;
 
-    let options = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
-        .await?
-        .map(|rec| rec.options)
-        .ok_or_else(|| {
-            HarnessError::InvalidRequest(format!(
-                "cannot deliver notification to session `{session_id}`: it has no prior turn to \
-                 inherit model/options from"
-            ))
-        })?;
+    let (options, interactive) =
+        crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
+            .await?
+            .map(|rec| (rec.options, rec.interactive))
+            .ok_or_else(|| {
+                HarnessError::InvalidRequest(format!(
+                    "cannot deliver notification to session `{session_id}`: it has no prior turn \
+                     to inherit model/options from"
+                ))
+            })?;
 
     session
         .append(session_id, &message, entry_id, None, origin)
         .await?;
-    seed_or_merge(deps, &cfg, session_id, options).await
+    // A woken turn keeps the session's interactivity: a user-facing chat may
+    // pause at `max_turns`; an autonomous (spawned/reactive) session auto-ends.
+    seed_or_merge(deps, &cfg, session_id, options, interactive).await
 }
 
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
