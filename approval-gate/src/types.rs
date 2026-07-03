@@ -134,6 +134,36 @@ pub struct DenialEnvelope {
     pub reason: String,
 }
 
+/// What a pending record represents. `Function` is the default AND what an
+/// absent field on read means — old stored records (written before this
+/// field existed) deserialize as `Function`, never `FolderAccess`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingKind {
+    /// A function call held by `approval::gate` (the normal case).
+    #[default]
+    Function,
+    /// A function call held by `approval::grant-watch` after a jail-scope
+    /// rejection carrying a `grant_hint` — the console should ask "allow
+    /// access to `dir`?" instead of a generic approve/deny prompt.
+    FolderAccess,
+}
+
+/// The folder-access ask, parsed from the shell/coder `grant_hint` tail
+/// (contracts.md § Shell grant hint). Only present on `kind: "folder_access"`
+/// records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GrantRequest {
+    /// Canonical directory a grant should target (existing directory, or
+    /// nearest existing ancestor directory of the offending path).
+    pub dir: String,
+    /// The raw offending path from the request, as sent by the caller.
+    pub offending_path: String,
+    /// The jail-scope rejection code that produced this hint (`S215`,
+    /// `S220`, `C215`, `C218`).
+    pub error_code: String,
+}
+
 // ---------------------------------------------------------------------------
 // Pending inbox
 // ---------------------------------------------------------------------------
@@ -172,6 +202,14 @@ pub struct PendingApprovalRecord {
     /// `HookInput` in v1, so always omitted today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_excerpt: Option<String>,
+
+    /// `"function"` (default — and what an absent field means on read) or
+    /// `"folder_access"`.
+    #[serde(default)]
+    pub kind: PendingKind,
+    /// Present only when `kind == "folder_access"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_request: Option<GrantRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -215,6 +253,37 @@ pub struct HookCall {
     pub arguments: Value,
 }
 
+/// `result.details.error` on a dispatch failure — the harness normalizes
+/// both shell remote errors and coder string-JSON errors into this shape
+/// (contracts.md § post_trigger hook can now HOLD).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct HookResultError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct HookResultDetails {
+    #[serde(default)]
+    pub error: Option<HookResultError>,
+}
+
+/// `post_trigger` payload: the function_result the harness is about to
+/// deliver to the model.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct HookResult {
+    #[serde(default)]
+    pub function_call_id: String,
+    #[serde(default)]
+    pub function_id: String,
+    #[serde(default)]
+    pub content: Vec<TextBlock>,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default)]
+    pub details: HookResultDetails,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct HookInput {
     #[serde(default)]
@@ -226,12 +295,16 @@ pub struct HookInput {
     /// Sub-agent depth (hooks run for child turns too).
     #[serde(default)]
     pub depth: i64,
-    /// The per-send tracing metadata.
+    /// The per-send tracing metadata (`metadata.working_dir` is the
+    /// user-picked session workspace, absolute + canonical).
     #[serde(default)]
     pub metadata: Option<JsonMap>,
     /// pre_trigger payload.
     #[serde(default)]
     pub call: Option<HookCall>,
+    /// post_trigger payload: the function_result about to be delivered.
+    #[serde(default)]
+    pub result: Option<HookResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -272,6 +345,21 @@ pub enum ResolveDecision {
     Deny,
 }
 
+/// How far an `allow` on a `folder_access` pending record should apply.
+/// Ignored (logged) when the target record's `kind` is not
+/// `"folder_access"`. Defaults to `once` when omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantScope {
+    /// One-shot: trust the directory for just the released call.
+    Once,
+    /// Durable for the rest of the session (`harness::workspace::grant`).
+    Session,
+    /// Durable for the session AND persisted to the `shell` deployment
+    /// configuration (`fs.host_roots`), best-effort.
+    Always,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ResolveRequest {
     pub session_id: String,
@@ -280,6 +368,10 @@ pub struct ResolveRequest {
     /// Surfaced to the model on deny.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Only meaningful when the target record is `kind: "folder_access"`
+    /// and `decision: "allow"`. Defaults to `once`.
+    #[serde(default)]
+    pub grant_scope: Option<GrantScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -488,12 +580,113 @@ mod tests {
             session_metadata: None,
             depth: 0,
             assistant_excerpt: None,
+            kind: PendingKind::Function,
+            grant_request: None,
         };
         let v = serde_json::to_value(&record).unwrap();
         assert!(v.get("session_title").is_none());
         assert!(v.get("assistant_excerpt").is_none());
         let back: PendingApprovalRecord = serde_json::from_value(v).unwrap();
         assert_eq!(back, record);
+    }
+
+    /// Back-compat: a record stored before `kind` existed (no field at
+    /// all) must deserialize as `Function` — never `FolderAccess`.
+    #[test]
+    fn pending_record_without_kind_deserializes_as_function() {
+        let stored = json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "function_call_id": "c_1",
+            "function_id": "shell::run",
+            "pending_at": 100,
+        });
+        let record: PendingApprovalRecord = serde_json::from_value(stored).unwrap();
+        assert_eq!(record.kind, PendingKind::Function);
+        assert!(record.grant_request.is_none());
+    }
+
+    #[test]
+    fn pending_kind_wire_values() {
+        assert_eq!(
+            serde_json::to_value(PendingKind::Function).unwrap(),
+            json!("function")
+        );
+        assert_eq!(
+            serde_json::to_value(PendingKind::FolderAccess).unwrap(),
+            json!("folder_access")
+        );
+    }
+
+    #[test]
+    fn folder_access_record_carries_grant_request() {
+        let record = PendingApprovalRecord {
+            session_id: "s_1".into(),
+            turn_id: "t_1".into(),
+            function_call_id: "c_1".into(),
+            function_id: "shell::fs::read".into(),
+            arguments_excerpt: json!({ "path": "/a/b/x" }),
+            pending_at: 100,
+            session_title: None,
+            session_description: None,
+            session_metadata: None,
+            depth: 0,
+            assistant_excerpt: None,
+            kind: PendingKind::FolderAccess,
+            grant_request: Some(GrantRequest {
+                dir: "/a/b".into(),
+                offending_path: "/a/b/x".into(),
+                error_code: "S215".into(),
+            }),
+        };
+        let v = serde_json::to_value(&record).unwrap();
+        assert_eq!(v["kind"], json!("folder_access"));
+        assert_eq!(v["grant_request"]["dir"], json!("/a/b"));
+        let back: PendingApprovalRecord = serde_json::from_value(v).unwrap();
+        assert_eq!(back, record);
+    }
+
+    /// Back-compat: a `grant_scope` on a request that targets a plain
+    /// `function` record is a wire-legal no-op — `ResolveRequest` parses
+    /// regardless of what kind of record it will eventually be matched
+    /// against (the ignore-and-warn happens in `resolve::handle`).
+    #[test]
+    fn resolve_request_tolerates_grant_scope_on_any_record_kind() {
+        let req: ResolveRequest = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "function_call_id": "c_1",
+            "decision": "allow",
+            "grant_scope": "always",
+        }))
+        .unwrap();
+        assert_eq!(req.grant_scope, Some(GrantScope::Always));
+    }
+
+    #[test]
+    fn resolve_request_defaults_grant_scope_to_none() {
+        let req: ResolveRequest = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "function_call_id": "c_1",
+            "decision": "allow",
+        }))
+        .unwrap();
+        assert_eq!(req.grant_scope, None);
+    }
+
+    #[test]
+    fn grant_scope_wire_values() {
+        assert_eq!(
+            serde_json::to_value(GrantScope::Once).unwrap(),
+            json!("once")
+        );
+        assert_eq!(
+            serde_json::to_value(GrantScope::Session).unwrap(),
+            json!("session")
+        );
+        assert_eq!(
+            serde_json::to_value(GrantScope::Always).unwrap(),
+            json!("always")
+        );
     }
 
     #[test]

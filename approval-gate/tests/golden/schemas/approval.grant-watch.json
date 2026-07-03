@@ -1,6 +1,6 @@
 {
-  "description": "pre_trigger hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.",
-  "function_id": "approval::gate",
+  "description": "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope grant_hint and hold a folder_access pending approval for it. Called by the harness only.",
+  "function_id": "approval::grant-watch",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {

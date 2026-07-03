@@ -4,6 +4,32 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "GrantScope": {
+        "description": "How far an `allow` on a `folder_access` pending record should apply. Ignored (logged) when the target record's `kind` is not `\"folder_access\"`. Defaults to `once` when omitted.",
+        "oneOf": [
+          {
+            "description": "One-shot: trust the directory for just the released call.",
+            "enum": [
+              "once"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durable for the rest of the session (`harness::workspace::grant`).",
+            "enum": [
+              "session"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durable for the session AND persisted to the `shell` deployment configuration (`fs.host_roots`), best-effort.",
+            "enum": [
+              "always"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "ResolveDecision": {
         "enum": [
           "allow",
@@ -18,6 +44,18 @@
       },
       "function_call_id": {
         "type": "string"
+      },
+      "grant_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GrantScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Only meaningful when the target record is `kind: \"folder_access\"` and `decision: \"allow\"`. Defaults to `once`."
       },
       "reason": {
         "default": null,

@@ -174,6 +174,7 @@ mod tests {
                     "modes": ["auto"]
                 }),
             ],
+            grant_reask_limit: crate::config::default_grant_reask_limit(),
         }
     }
 

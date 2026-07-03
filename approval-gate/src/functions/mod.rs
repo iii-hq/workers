@@ -8,6 +8,7 @@ pub mod clear_settings;
 pub mod gate;
 pub mod get_pending;
 pub mod get_settings;
+pub mod grant_watch;
 pub mod list_pending;
 pub mod on_session_deleted;
 pub mod on_turn_completed;
@@ -39,6 +40,9 @@ use crate::events::EventSink;
 
 pub const GATE_ID: &str = "approval::gate";
 pub const GATE_DESC: &str = "pre_trigger hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.";
+
+pub const GRANT_WATCH_ID: &str = "approval::grant-watch";
+pub const GRANT_WATCH_DESC: &str = "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope grant_hint and hold a folder_access pending approval for it. Called by the harness only.";
 
 pub const RESOLVE_ID: &str = "approval::resolve";
 pub const RESOLVE_DESC: &str = "Apply a human decision to a held call: release it for execution (allow) or deliver a denial (deny). Human/console-only.";
@@ -128,6 +132,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, GATE_ID, GATE_DESC, |d, r| async move {
         gate::handle(&d, r).await
     });
+    register(
+        iii,
+        deps,
+        GRANT_WATCH_ID,
+        GRANT_WATCH_DESC,
+        |d, r| async move { grant_watch::handle(&d, r).await },
+    );
     register(iii, deps, RESOLVE_ID, RESOLVE_DESC, |d, r| async move {
         resolve::handle(&d, r).await
     });
@@ -252,6 +263,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
 
     vec![
         spec::<HookInput, HookOutput>(GATE_ID, GATE_DESC),
+        spec::<HookInput, HookOutput>(GRANT_WATCH_ID, GRANT_WATCH_DESC),
         spec::<ResolveRequest, ResolveResponse>(RESOLVE_ID, RESOLVE_DESC),
         spec::<ListPendingRequest, ListPendingResponse>(LIST_PENDING_ID, LIST_PENDING_DESC),
         spec::<GetPendingRequest, Option<GetPendingResponse>>(GET_PENDING_ID, GET_PENDING_DESC),

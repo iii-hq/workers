@@ -13,11 +13,12 @@
 //!   4. Register the two custom trigger types (`approval::pending-created`,
 //!      `approval::pending-resolved`) — first, because the function
 //!      handlers capture the subscriber sets they fan out to.
-//!   5. Register the 12 `approval::*` functions (each reads the live config
+//!   5. Register the 13 `approval::*` functions (each reads the live config
 //!      snapshot per call).
-//!   6. Bind the fixed gate hook + the session/turn triggers, all
-//!      best-effort (in a standalone deployment some of these trigger types
-//!      don't exist yet; the worker still boots and serves its RPCs).
+//!   6. Bind the fixed gate + grant-watch hooks + the session/turn
+//!      triggers, all best-effort (in a standalone deployment some of these
+//!      trigger types don't exist yet; the worker still boots and serves
+//!      its RPCs).
 //!   7. Bind the `configuration` change trigger LAST so its handler closes
 //!      over the fully-built snapshot cell.
 //!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly.
@@ -166,6 +167,7 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &deps);
 
     configuration::bind_hook(&iii);
+    configuration::bind_grant_watch_hook(&iii);
 
     // These two carry no config and are never re-bound — best-effort only.
     bind_best_effort(
@@ -186,7 +188,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!("approval-gate ready: 12 approval::* functions + 2 custom trigger types");
+    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("approval-gate shutting down");

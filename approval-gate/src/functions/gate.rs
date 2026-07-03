@@ -20,6 +20,7 @@ use crate::session;
 use crate::settings;
 use crate::types::{
     now_ms, validate_id, HookCall, HookInput, HookOutput, JsonMap, PendingApprovalRecord,
+    PendingKind,
 };
 
 pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, ApprovalError> {
@@ -131,6 +132,8 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
         session_metadata,
         depth: input.depth,
         assistant_excerpt: None,
+        kind: PendingKind::Function,
+        grant_request: None,
     };
 
     match pending::put(iii, &record).await {
@@ -155,8 +158,10 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
 }
 
 /// Best-effort `session::get` — fields are omitted on any failure
-/// (session-manager absent, timeout, unknown session).
-async fn fetch_session_context(
+/// (session-manager absent, timeout, unknown session). Shared with
+/// `grant_watch` (the same soft-fetch, so the console card has the same
+/// session context for both pending-record kinds).
+pub(super) async fn fetch_session_context(
     deps: &Deps,
     session_id: &str,
 ) -> (Option<String>, Option<String>, Option<JsonMap>) {

@@ -23,6 +23,8 @@ pub mod denial;
 pub mod error;
 pub mod events;
 pub mod functions;
+pub mod grant;
+pub mod grant_state;
 pub mod harness;
 pub mod manifest;
 pub mod pending;
@@ -30,6 +32,7 @@ pub mod permissions;
 pub mod redact;
 pub mod session;
 pub mod settings;
+pub mod shell_config;
 pub mod state;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;

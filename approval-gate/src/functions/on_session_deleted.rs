@@ -1,11 +1,14 @@
 //! `approval::on-session-deleted` — bound to session-manager's
-//! `session::deleted` trigger type. Purges the session's settings record
-//! and every pending record (the cascade the prior deployment lacked).
+//! `session::deleted` trigger type. Purges the session's settings record,
+//! every pending record, the grant-watch attempt counters, and the
+//! grant-watch denied-directory memory (the cascade the prior deployment
+//! lacked).
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{purge, Deps};
+use crate::grant_state;
 use crate::settings;
 use crate::types::EventAck;
 
@@ -22,8 +25,18 @@ pub async fn handle(
     if let Err(e) = settings::clear(deps.iii.as_ref(), &event.session_id).await {
         tracing::warn!(session_id = %event.session_id, error = %e, "settings purge failed");
     }
+    if let Err(e) = grant_state::clear_denied(deps.iii.as_ref(), &event.session_id).await {
+        tracing::warn!(session_id = %event.session_id, error = %e, "grant-denied memory purge failed");
+    }
+    let purged_attempts =
+        grant_state::purge_matching(deps.iii.as_ref(), |r| r.session_id == event.session_id).await;
     let purged = purge::purge_matching(deps, |r| r.session_id == event.session_id).await;
-    tracing::info!(session_id = %event.session_id, purged, "session deleted: approval records purged");
+    tracing::info!(
+        session_id = %event.session_id,
+        purged,
+        purged_attempts,
+        "session deleted: approval records purged"
+    );
     Ok(EventAck { ok: true })
 }
 
@@ -83,6 +96,53 @@ mod tests {
             let events = log_snapshot(&stack.resolved);
             assert_eq!(events.len(), 2);
             assert!(events.iter().all(|e| e["outcome"] == json!("aborted")));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn purges_grant_denied_memory_and_only_the_sessions_attempt_counters() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            state_set(
+                &stack.iii,
+                grant_state::DENIED_SCOPE,
+                "s_1",
+                json!(["/a/b"]),
+            )
+            .await;
+            state_set(
+                &stack.iii,
+                grant_state::ATTEMPTS_SCOPE,
+                "s_1/c_1",
+                json!({ "session_id": "s_1", "function_call_id": "c_1", "turn_id": "t_1", "count": 1 }),
+            )
+            .await;
+            state_set(
+                &stack.iii,
+                grant_state::ATTEMPTS_SCOPE,
+                "s_2/c_9",
+                json!({ "session_id": "s_2", "function_call_id": "c_9", "turn_id": "t_9", "count": 1 }),
+            )
+            .await;
+
+            handle(
+                &stack.deps,
+                SessionDeletedEvent {
+                    session_id: "s_1".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(state_get(&stack.iii, grant_state::DENIED_SCOPE, "s_1")
+                .await
+                .is_null());
+            assert!(state_get(&stack.iii, grant_state::ATTEMPTS_SCOPE, "s_1/c_1")
+                .await
+                .is_null());
+            assert!(!state_get(&stack.iii, grant_state::ATTEMPTS_SCOPE, "s_2/c_9")
+                .await
+                .is_null());
         })
         .await;
     }

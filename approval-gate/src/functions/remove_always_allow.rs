@@ -42,6 +42,7 @@ mod tests {
                     serde_json::json!({"function": "state::get", "action": "allow", "modes": ["auto"]}),
                     serde_json::json!({"function": "shell::run", "action": "allow", "modes": ["auto"]}),
                 ],
+                grant_reask_limit: crate::config::default_grant_reask_limit(),
             });
             let res = handle(
                 &stack.deps,

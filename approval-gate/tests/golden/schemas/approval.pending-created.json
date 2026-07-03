@@ -2,6 +2,50 @@
   "description": "A function call was held for human approval and its inbox record written. Payload: PendingApprovalRecord (redacted args, session context, expiry). Bind notification workers here.",
   "payload_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GrantRequest": {
+        "description": "The folder-access ask, parsed from the shell/coder `grant_hint` tail (contracts.md § Shell grant hint). Only present on `kind: \"folder_access\"` records.",
+        "properties": {
+          "dir": {
+            "description": "Canonical directory a grant should target (existing directory, or nearest existing ancestor directory of the offending path).",
+            "type": "string"
+          },
+          "error_code": {
+            "description": "The jail-scope rejection code that produced this hint (`S215`, `S220`, `C215`, `C218`).",
+            "type": "string"
+          },
+          "offending_path": {
+            "description": "The raw offending path from the request, as sent by the caller.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dir",
+          "error_code",
+          "offending_path"
+        ],
+        "type": "object"
+      },
+      "PendingKind": {
+        "description": "What a pending record represents. `Function` is the default AND what an absent field on read means — old stored records (written before this field existed) deserialize as `Function`, never `FolderAccess`.",
+        "oneOf": [
+          {
+            "description": "A function call held by `approval::gate` (the normal case).",
+            "enum": [
+              "function"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A function call held by `approval::grant-watch` after a jail-scope rejection carrying a `grant_hint` — the console should ask \"allow access to `dir`?\" instead of a generic approve/deny prompt.",
+            "enum": [
+              "folder_access"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
     "description": "The inbox payload — shared by both triggers, `list_pending`, and `get_pending`. Self-describing (all ids inside the value) and notification-safe (arguments pass through redaction).",
     "properties": {
       "arguments_excerpt": {
@@ -26,6 +70,26 @@
       },
       "function_id": {
         "type": "string"
+      },
+      "grant_request": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GrantRequest"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Present only when `kind == \"folder_access\"`."
+      },
+      "kind": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/PendingKind"
+          }
+        ],
+        "default": "function",
+        "description": "`\"function\"` (default — and what an absent field means on read) or `\"folder_access\"`."
       },
       "pending_at": {
         "description": "ms epoch",
