@@ -202,3 +202,19 @@ Confirm:
 - Function and trigger types match expectations.
 - GitHub Release has complete assets (per-target archives + `.sha256` for
   binary/bundle deploys).
+
+## Announce & organize
+
+Slack announcement is automatic: the terminal `announce` job in
+`release.yml` posts `🚀 <worker> vX.Y.Z` to `#worker-releases` for every
+successful non-dry-run release. `SLACK_BOT_TOKEN` is org-level (the same
+bot as the iii engine release pipeline); the bot must be invited to
+`#worker-releases`.
+
+After a release session — any number of tags — run `/release-sync` in Claude
+Code from the repo root. Same-day tags form one **wave** = one release in
+the Linear **Workers** pipeline (version = the date) with all shipped
+`MOT-###` issues attached and one combined per-worker note. Catch-up
+semantics: tags released without running the skill are picked up on the
+next run. Conventions and setup checklist:
+[Release workflow — workers](https://linear.app/motia/document/release-workflow-workers-a3240a17967f).
