@@ -27,6 +27,7 @@ on:
       - 'provider-anthropic/v*'
       - 'provider-openai/v*'
       - 'provider-xai/v*'
+      - 'pubsub/v*'
       - 'rbac-proxy/v*'
       - 'session-manager/v*'
       - 'slack/v*'
