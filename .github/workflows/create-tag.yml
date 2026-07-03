@@ -16,6 +16,7 @@ on:
           - console
           - grok
           - context-manager
+          - cron
           - database
           - email
           - harness

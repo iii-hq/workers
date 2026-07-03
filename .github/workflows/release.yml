@@ -11,6 +11,7 @@ on:
       - 'console/v*'
       - 'grok/v*'
       - 'context-manager/v*'
+      - 'cron/v*'
       - 'database/v*'
       - 'email/v*'
       - 'harness/v*'
