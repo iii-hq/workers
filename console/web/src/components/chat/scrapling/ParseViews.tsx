@@ -17,6 +17,19 @@ import {
 const MAX_RESULT_ROWS = 50
 const MAX_SIMILAR_ITEMS = 20
 
+/** Smart Element Tracking marker — the match survives site redesigns via saved
+ *  element identities. */
+function AdaptiveChip({ domain }: { domain?: string }) {
+  return (
+    <Chip className="text-accent border-accent/40">
+      <span className="uppercase tracking-[0.06em]">adaptive</span>
+      {domain ? (
+        <span className="ml-1 normal-case text-ink">{domain}</span>
+      ) : null}
+    </Chip>
+  )
+}
+
 function RunningNote({ label }: { label: string }) {
   return (
     <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
@@ -84,6 +97,7 @@ export function ExtractView({
       {req.selectors?.length ? (
         <FilterChip label="selectors" value={req.selectors.length} />
       ) : null}
+      {req.adaptive ? <AdaptiveChip domain={req.adaptive_domain} /> : null}
       {req.html != null ? (
         <FilterChip label="html" value={formatChars(req.html.length)} />
       ) : null}
@@ -144,6 +158,7 @@ export function QueryView({
       <FilterChip label={op === 'regex' ? 'pattern' : op} value={query} />
       {req.attr ? <FilterChip label="attr" value={req.attr} /> : null}
       {req.first ? <Chip>first</Chip> : null}
+      {req.adaptive ? <AdaptiveChip domain={req.adaptive_domain} /> : null}
       {req.html != null ? (
         <FilterChip label="html" value={formatChars(req.html.length)} />
       ) : null}

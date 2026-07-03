@@ -13,7 +13,10 @@ import { longMarkdown } from './long-markdown'
 import { markdownStress } from './markdown-stress'
 import { multiFunctionAgent } from './multi-function-agent'
 import { pendingApproval } from './pending-approval'
+import { scraplingCrawlScenario } from './scrapling-crawl'
+import { scraplingParse } from './scrapling-parse'
 import { scraplingScrape } from './scrapling-scrape'
+import { scraplingSession } from './scrapling-session'
 import { slowTokens } from './slow-tokens'
 
 export type ScenarioGroup =
@@ -137,6 +140,33 @@ export const SCENARIOS: PlaygroundScenario[] = [
     group: 'agent',
     preferredMode: 'agent',
     backend: scraplingScrape,
+  },
+  {
+    id: 'scrapling-parse',
+    label: 'scrapling · parse',
+    description:
+      'pure parsers: find-by-text → describe → to-markdown over static HTML (no approval).',
+    group: 'agent',
+    preferredMode: 'agent',
+    backend: scraplingParse,
+  },
+  {
+    id: 'scrapling-session',
+    label: 'scrapling · session',
+    description:
+      'session lifecycle: gated open → gated fetch (reuses cookies) → list → close.',
+    group: 'agent',
+    preferredMode: 'agent',
+    backend: scraplingSession,
+  },
+  {
+    id: 'scrapling-crawl',
+    label: 'scrapling · crawl',
+    description:
+      'gated crawl that BFS-follows same-domain links and streams extracted items back.',
+    group: 'agent',
+    preferredMode: 'agent',
+    backend: scraplingCrawlScenario,
   },
   {
     id: 'pending-approval',

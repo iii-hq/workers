@@ -1,14 +1,27 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
+import { CrawlPreview, CrawlView } from './CrawlView'
 import { FetchPreview, FetchView } from './FetchView'
+import { MarkdownView } from './MarkdownView'
 import { ExtractView, FindSimilarView, QueryView } from './ParseViews'
 import {
+  ELEMENT_SEARCH_FUNCTION_IDS,
   FETCH_FUNCTION_IDS,
   isScraplingFunction,
+  SESSION_GATED_FUNCTION_IDS,
   unwrapEnvelope,
 } from './parsers'
 import { ScreenshotPreview, ScreenshotView } from './ScreenshotView'
+import { DescribeView, ElementsView } from './SearchViews'
+import {
+  SessionCloseView,
+  SessionFetchPreview,
+  SessionFetchView,
+  SessionListView,
+  SessionOpenPreview,
+  SessionOpenView,
+} from './SessionViews'
 
 /**
  * Header label for `scrapling::*` ids — dims the namespace prefix so the op
@@ -61,6 +74,16 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
       />
     )
   }
+  if (ELEMENT_SEARCH_FUNCTION_IDS.has(message.functionId)) {
+    return (
+      <ElementsView
+        functionId={message.functionId}
+        input={input}
+        output={output}
+        running={running}
+      />
+    )
+  }
   switch (message.functionId) {
     case 'scrapling::screenshot':
       return <ScreenshotView input={input} output={output} running={running} />
@@ -79,6 +102,22 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
       )
     case 'scrapling::find-similar':
       return <FindSimilarView input={input} output={output} running={running} />
+    case 'scrapling::describe':
+      return <DescribeView input={input} output={output} running={running} />
+    case 'scrapling::to-markdown':
+      return <MarkdownView input={input} output={output} running={running} />
+    case 'scrapling::session-open':
+      return <SessionOpenView input={input} output={output} running={running} />
+    case 'scrapling::session-fetch':
+      return (
+        <SessionFetchView input={input} output={output} running={running} />
+      )
+    case 'scrapling::session-close':
+      return <SessionCloseView output={output} />
+    case 'scrapling::session-list':
+      return <SessionListView output={output} />
+    case 'scrapling::crawl':
+      return <CrawlView input={input} output={output} running={running} />
     default:
       return null
   }
@@ -96,6 +135,16 @@ function tryRenderPreview(
   }
   if (message.functionId === 'scrapling::screenshot') {
     return <ScreenshotPreview input={input} />
+  }
+  if (SESSION_GATED_FUNCTION_IDS.has(message.functionId)) {
+    return message.functionId === 'scrapling::session-open' ? (
+      <SessionOpenPreview input={input} />
+    ) : (
+      <SessionFetchPreview input={input} />
+    )
+  }
+  if (message.functionId === 'scrapling::crawl') {
+    return <CrawlPreview input={input} />
   }
   return null
 }

@@ -138,6 +138,8 @@ function OptionChips({
       {req.selectors?.length ? (
         <FilterChip label="selectors" value={req.selectors.length} />
       ) : null}
+      {req.format ? <FilterChip label="as" value={req.format} /> : null}
+      {req.main_content_only ? <Chip>main only</Chip> : null}
       {req.include_html ? <Chip>html</Chip> : null}
     </>
   )
@@ -193,10 +195,14 @@ function SinglePane({
         <span className="break-all">{page.url || req.url || ''}</span>
       </ActionLine>
       {page.extracted ? <Extracted extracted={page.extracted} /> : null}
+      {page.content != null ? (
+        <RenderedContent format={page.format} content={page.content} />
+      ) : null}
       {page.html != null ? <HtmlSnippet html={page.html} /> : null}
-      {!page.extracted && page.html == null ? (
+      {!page.extracted && page.content == null && page.html == null ? (
         <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost">
-          · page fetched — pass `selectors` or `include_html` for content
+          · page fetched — pass `selectors`, `format`, or `include_html` for
+          content
         </div>
       ) : null}
     </div>
@@ -231,6 +237,30 @@ function Extracted({ extracted }: { extracted: Record<string, unknown> }) {
         extracted · {Object.keys(extracted).length}
       </div>
       <JsonHighlight code={JSON.stringify(extracted, null, 2)} wrap />
+    </div>
+  )
+}
+
+function RenderedContent({
+  format,
+  content,
+}: {
+  format?: string
+  content: string
+}) {
+  const truncated = content.length > HTML_PREVIEW_CHARS
+  return (
+    <div>
+      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+        {format ?? 'content'} · {formatChars(content.length)}
+        {truncated ? ' · truncated' : ''}
+      </div>
+      <pre className="px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink whitespace-pre-wrap break-words m-0">
+        <code>
+          {content.slice(0, HTML_PREVIEW_CHARS)}
+          {truncated ? '…' : ''}
+        </code>
+      </pre>
     </div>
   )
 }
