@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 const STORE_FILE_NAME: &str = "queue_store.json";
@@ -51,6 +51,83 @@ pub trait QueueStore: Send + Sync + 'static {
     async fn redrive_dlq(&self, topic: &str) -> u64;
     async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool;
     async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool;
+}
+
+#[derive(Clone)]
+pub struct SwappableStore {
+    inner: Arc<RwLock<Arc<dyn QueueStore>>>,
+}
+
+impl SwappableStore {
+    pub fn new(store: Arc<dyn QueueStore>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(store)),
+        }
+    }
+
+    pub async fn current(&self) -> Arc<dyn QueueStore> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn replace(&self, store: Arc<dyn QueueStore>) {
+        *self.inner.write().await = store;
+    }
+}
+
+#[async_trait]
+impl QueueStore for SwappableStore {
+    async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String> {
+        self.current().await.enqueue(topic, payload).await
+    }
+
+    async fn dequeue(&self, topic: &str) -> Option<Job> {
+        self.current().await.dequeue(topic).await
+    }
+
+    async fn ack(&self, topic: &str, job_id: &str) {
+        self.current().await.ack(topic, job_id).await;
+    }
+
+    async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64) {
+        self.current()
+            .await
+            .nack(topic, job, max_retries, backoff_ms)
+            .await;
+    }
+
+    async fn list_topics(&self) -> Vec<String> {
+        self.current().await.list_topics().await
+    }
+
+    async fn topic_stats(&self, topic: &str) -> TopicStats {
+        self.current().await.topic_stats(topic).await
+    }
+
+    async fn dlq_topics(&self) -> Vec<(String, u64)> {
+        self.current().await.dlq_topics().await
+    }
+
+    async fn dlq_messages(&self, topic: &str, limit: u64) -> Vec<Job> {
+        self.current().await.dlq_messages(topic, limit).await
+    }
+
+    async fn redrive_dlq(&self, topic: &str) -> u64 {
+        self.current().await.redrive_dlq(topic).await
+    }
+
+    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+        self.current()
+            .await
+            .redrive_dlq_message(topic, job_id)
+            .await
+    }
+
+    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+        self.current()
+            .await
+            .discard_dlq_message(topic, job_id)
+            .await
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

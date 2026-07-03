@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::QueueConfig;
-use crate::store::{FileStore, InMemoryStore, QueueStore};
+use crate::store::{FileStore, InMemoryStore, QueueStore, SwappableStore};
 use crate::trigger::{IiiInvoker, QueueTriggerHandler, SubscriberSpec};
 use crate::TRIGGER_TYPE;
 
@@ -19,7 +19,7 @@ pub type ConfigCell = Arc<RwLock<Arc<QueueConfig>>>;
 pub type ApplyLock = Arc<Mutex<()>>;
 
 pub struct BootHandle {
-    pub store: Arc<dyn QueueStore>,
+    pub store: Arc<SwappableStore>,
     pub trigger_handler: QueueTriggerHandler,
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
@@ -34,7 +34,7 @@ impl BootHandle {
 pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
 
-    let store = build_store(&config).await?;
+    let store = Arc::new(SwappableStore::new(build_store(&config).await?));
     let config = Arc::new(RwLock::new(Arc::new(config.normalized())));
     let apply_lock = Arc::new(Mutex::new(()));
 

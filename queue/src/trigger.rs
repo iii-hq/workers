@@ -128,7 +128,10 @@ impl QueueTriggerHandler {
         }
     }
 
-    async fn register(&self, registration: RegisteredSubscriber) -> Result<(), String> {
+    pub async fn register_subscriber(
+        &self,
+        registration: RegisteredSubscriber,
+    ) -> Result<(), String> {
         if registration.spec.queue.trim().is_empty() {
             return Err("queue is required for durable:subscriber trigger".to_string());
         }
@@ -162,7 +165,7 @@ impl TriggerHandler for QueueTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let spec: SubscriberSpec = serde_json::from_value(config.config.clone())
             .map_err(|e| Error::Handler(format!("invalid durable:subscriber config: {e}")))?;
-        self.register(RegisteredSubscriber {
+        self.register_subscriber(RegisteredSubscriber {
             trigger_id: config.id,
             function_id: config.function_id,
             spec,
