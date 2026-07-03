@@ -1,0 +1,12 @@
+iii: v1
+name: cron
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: cron
+description: Schedule functions with cron expressions - registers the `cron` trigger type.
+config:
+  adapter:
+    name: local
+dependencies:
+  configuration: "^0.19.0"
