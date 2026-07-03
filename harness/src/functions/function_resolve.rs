@@ -20,6 +20,10 @@ pub struct FunctionResolveRequest {
     /// hook-held call through the remaining trigger pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// execute only: one-shot additional roots trusted by the caller and
+    /// unioned with the session's durable workspace grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_roots: Option<Vec<String>>,
     // deliver only:
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<ContentBlock>>,

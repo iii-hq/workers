@@ -13,6 +13,7 @@ pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
 pub mod turn;
+pub mod workspace;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -54,6 +55,18 @@ pub const STOP_DESC: &str =
 
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
+
+pub const WORKSPACE_GRANT_ID: &str = "harness::workspace::grant";
+pub const WORKSPACE_GRANT_DESC: &str =
+    "Internal control-plane: grant a session access to an additional workspace root.";
+
+pub const WORKSPACE_GRANTS_ID: &str = "harness::workspace::grants";
+pub const WORKSPACE_GRANTS_DESC: &str =
+    "Internal control-plane: list additional workspace roots granted to a session.";
+
+pub const WORKSPACE_REVOKE_ID: &str = "harness::workspace::revoke";
+pub const WORKSPACE_REVOKE_DESC: &str =
+    "Internal control-plane: revoke a session's access to an additional workspace root.";
 
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
@@ -111,6 +124,30 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
     });
+
+    // Internal workspace grant controls — registered for trusted callers, kept
+    // off the model-facing catalog.
+    register(
+        iii,
+        deps,
+        WORKSPACE_GRANT_ID,
+        WORKSPACE_GRANT_DESC,
+        |d, r| async move { workspace::grant(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        WORKSPACE_GRANTS_ID,
+        WORKSPACE_GRANTS_DESC,
+        |d, r| async move { workspace::grants(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        WORKSPACE_REVOKE_ID,
+        WORKSPACE_REVOKE_DESC,
+        |d, r| async move { workspace::revoke(&d, r).await },
+    );
 
     // Internal cron target — registered, but kept off the public catalog.
     register(
