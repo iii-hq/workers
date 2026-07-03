@@ -43,6 +43,8 @@ _FETCH_RESPONSE = {
         "encoding": {"type": ["string", "null"]},
         "extracted": _OBJECT,
         "html": _STR,
+        "content": {**_STR, "description": "markdown/text render when `format` requested"},
+        "format": _STR,
         "captured_xhr": {"type": "array", "items": _OBJECT},
         "results": {"type": "array", "items": _OBJECT},
         "error": _STR,
@@ -50,7 +52,13 @@ _FETCH_RESPONSE = {
 }
 
 _BULK_TARGET = {"url": _STR, "urls": _STR_LIST}
-_COMMON_OUT = {"selectors": _SELECTORS, "include_html": _BOOL}
+# Post-fetch content rendering (reuses Scrapling's Convertor): compact the page
+# to markdown/text instead of dumping raw HTML.
+_CONTENT_OUT = {
+    "format": {"type": "string", "enum": ["markdown", "text"], "description": "render page body to this format"},
+    "main_content_only": {**_BOOL, "description": "strip nav/scripts/hidden before rendering"},
+}
+_COMMON_OUT = {"selectors": _SELECTORS, "include_html": _BOOL, **_CONTENT_OUT}
 
 _FETCH_REQUEST = {
     "type": "object",
@@ -63,10 +71,17 @@ _FETCH_REQUEST = {
         "json": _OBJECT,
         "cookies": _OBJECT,
         "proxy": _STR,
+        "proxies": {**_OBJECT, "description": 'per-scheme proxies, e.g. {"https": "http://..."}'},
+        "proxy_auth": {"type": "array", "items": _STR, "description": "[user, password]"},
         "impersonate": {**_STR, "description": "TLS/UA fingerprint, e.g. 'chrome'"},
         "timeout": {**_NUM, "description": "seconds (HTTP fetcher)"},
         "follow_redirects": _BOOL,
+        "max_redirects": {"type": "integer"},
         "stealthy_headers": _BOOL,
+        "http3": _BOOL,
+        "verify": _BOOL,
+        "retries": {"type": "integer"},
+        "retry_delay": _NUM,
         **_COMMON_OUT,
     },
 }
@@ -74,17 +89,28 @@ _FETCH_REQUEST = {
 _BROWSER_WAIT = {
     "headless": _BOOL,
     "network_idle": _BOOL,
+    "load_dom": _BOOL,
     "timeout": {**_NUM, "description": "milliseconds (browser fetcher)"},
     "wait": {**_NUM, "description": "extra ms to wait after load"},
     "wait_selector": _STR,
     "wait_selector_state": {"type": "string", "enum": ["attached", "detached", "visible", "hidden"]},
     "disable_resources": _BOOL,
     "block_ads": _BOOL,
+    "blocked_domains": _STR_LIST,
     "proxy": _STR,
     "useragent": _STR,
     "cookies": _OBJECT,
+    "extra_headers": _OBJECT,
     "google_search": _BOOL,
     "capture_xhr": _STR,
+    "locale": _STR,
+    "timezone_id": _STR,
+    "dns_over_https": _BOOL,
+    "extra_flags": _STR_LIST,
+    "additional_args": _OBJECT,
+    "max_pages": {"type": "integer"},
+    "retries": {"type": "integer"},
+    "retry_delay": _NUM,
 }
 
 _STEALTHY_REQUEST = {
@@ -107,7 +133,6 @@ _DYNAMIC_REQUEST = {
         **_BROWSER_WAIT,
         "real_chrome": _BOOL,
         "cdp_url": _STR,
-        "extra_flags": _STR_LIST,
         **_COMMON_OUT,
     },
 }
@@ -132,16 +157,32 @@ _SCREENSHOT_RESPONSE = {
     "properties": {"image_base64": _STR, "mime": _STR, "url": _STR},
 }
 
+# Smart Element Tracking (adaptive relocation). `adaptive_domain` keys the saved
+# identities per site; `identifier` names a single css/xpath match (extract keys
+# each match by its selector `name`).
+_ADAPTIVE = {
+    "adaptive": {**_BOOL, "description": "relocate elements after a site change via saved identities"},
+    "auto_save": {**_BOOL, "description": "save matched identities (defaults on when adaptive)"},
+    "adaptive_domain": {**_STR, "description": "page URL/domain that keys saved identities"},
+}
+
 _EXTRACT_REQUEST = {
     "type": "object",
-    "properties": {"html": _STR, "selectors": _SELECTORS, "adaptive": _BOOL},
+    "properties": {"html": _STR, "selectors": _SELECTORS, **_ADAPTIVE},
     "required": ["html", "selectors"],
 }
 _EXTRACT_RESPONSE = {"type": "object", "properties": {"extracted": _OBJECT}}
 
 _QUERY_REQUEST = {
     "type": "object",
-    "properties": {"html": _STR, "query": _STR, "first": _BOOL, "attr": _STR},
+    "properties": {
+        "html": _STR,
+        "query": _STR,
+        "first": _BOOL,
+        "attr": _STR,
+        "identifier": {**_STR, "description": "stable key for the saved element"},
+        **_ADAPTIVE,
+    },
     "required": ["html", "query"],
 }
 _QUERY_RESPONSE = {"type": "object", "properties": {"result": _RESULT}}
@@ -166,6 +207,211 @@ _FIND_SIMILAR_REQUEST = {
 _FIND_SIMILAR_RESPONSE = {
     "type": "object",
     "properties": {"count": {"type": "integer"}, "items": {"type": "array", "items": _OBJECT}},
+}
+
+# One matched element: text, inner HTML, attributes, and the auto-generated
+# CSS/XPath selectors that locate it.
+_ELEMENT = {
+    "type": "object",
+    "properties": {"tag": _STR, "text": _STR, "html": _STR, "attrs": _OBJECT, "css": _STR, "xpath": _STR},
+}
+_ELEMENTS_RESPONSE = {
+    "type": "object",
+    "properties": {"count": {"type": "integer"}, "items": {"type": "array", "items": _ELEMENT}},
+}
+
+_FIND_REQUEST = {
+    "type": "object",
+    "properties": {
+        "html": _STR,
+        "tag": {"type": ["string", "array"], "items": _STR, "description": "tag name or list of tag names"},
+        "attrs": {**_OBJECT, "description": 'attribute filters, e.g. {"class": "card"}'},
+        "text_regex": {**_STR, "description": "keep only elements whose text matches this regex"},
+        "first": _BOOL,
+        "limit": {"type": "integer"},
+    },
+    "required": ["html"],
+}
+
+_FIND_BY_TEXT_REQUEST = {
+    "type": "object",
+    "properties": {
+        "html": _STR,
+        "text": _STR,
+        "partial": {**_BOOL, "description": "match elements that contain the text"},
+        "case_sensitive": _BOOL,
+        "clean_match": {**_BOOL, "description": "ignore surrounding/collapsing whitespace"},
+        "first": _BOOL,
+        "limit": {"type": "integer"},
+    },
+    "required": ["html", "text"],
+}
+
+_FIND_BY_REGEX_REQUEST = {
+    "type": "object",
+    "properties": {
+        "html": _STR,
+        "pattern": _STR,
+        "case_sensitive": _BOOL,
+        "clean_match": _BOOL,
+        "first": _BOOL,
+        "limit": {"type": "integer"},
+    },
+    "required": ["html", "pattern"],
+}
+
+_DESCRIBE_REQUEST = {
+    "type": "object",
+    "properties": {
+        "html": _STR,
+        "query": _STR,
+        "kind": {"type": "string", "enum": ["css", "xpath"]},
+    },
+    "required": ["html", "query"],
+}
+_DESCRIBE_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "found": _BOOL,
+        "element": {
+            "type": "object",
+            "properties": {
+                **_ELEMENT["properties"],
+                "full_css": _STR,
+                "full_xpath": _STR,
+                "classes": _STR_LIST,
+                "parent_tag": {"type": ["string", "null"]},
+                "children": {"type": "integer"},
+                "siblings": {"type": "integer"},
+            },
+        },
+    },
+}
+
+_MARKDOWN_REQUEST = {
+    "type": "object",
+    "properties": {
+        "html": _STR,
+        "format": {"type": "string", "enum": ["markdown", "text", "html"]},
+        "css_selector": {**_STR, "description": "convert only the subtree matching this CSS selector"},
+        "main_content_only": {**_BOOL, "description": "strip nav/scripts/hidden nodes first"},
+    },
+    "required": ["html"],
+}
+_MARKDOWN_RESPONSE = {
+    "type": "object",
+    "properties": {"format": _STR, "content": _STR},
+}
+
+# Persistent sessions: open once, reuse cookies/browser across fetches, close.
+_SESSION_OPEN_REQUEST = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": ["http", "dynamic", "stealthy"], "description": "session engine"},
+        "impersonate": _STR,
+        "headers": _OBJECT,
+        "proxy": _STR,
+        "proxies": _OBJECT,
+        "headless": _BOOL,
+        "useragent": _STR,
+        "solve_cloudflare": _BOOL,
+        "real_chrome": _BOOL,
+        "timeout": _NUM,
+    },
+}
+_SESSION_OPEN_RESPONSE = {
+    "type": "object",
+    "properties": {"session_id": _STR, "type": _STR},
+}
+
+_SESSION_FETCH_REQUEST = {
+    "type": "object",
+    "properties": {
+        "session_id": _STR,
+        "url": _STR,
+        "method": {"type": "string", "enum": ["get", "post", "put", "delete"]},
+        "headers": _OBJECT,
+        "params": _OBJECT,
+        "data": _OBJECT,
+        "json": _OBJECT,
+        "wait_selector": _STR,
+        "capture_xhr": _STR,
+        **_COMMON_OUT,
+    },
+    "required": ["session_id", "url"],
+}
+
+_SESSION_CLOSE_REQUEST = {
+    "type": "object",
+    "properties": {"session_id": _STR},
+    "required": ["session_id"],
+}
+_SESSION_CLOSE_RESPONSE = {"type": "object", "properties": {"closed": _BOOL}}
+
+_SESSION_LIST_REQUEST = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": ["http", "dynamic", "stealthy"], "description": "filter by type"}
+    },
+}
+_SESSION_LIST_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "sessions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "session_id": _STR,
+                    "type": _STR,
+                    "created_at": _NUM,
+                    "last_used": _NUM,
+                    "idle_s": _NUM,
+                },
+            },
+        }
+    },
+}
+
+# Declarative crawl: BFS from start_urls, extract per page, stream items.
+_CRAWL_REQUEST = {
+    "type": "object",
+    "properties": {
+        "start_urls": _STR_LIST,
+        "url": {**_STR, "description": "single start URL (alternative to start_urls)"},
+        "fetcher": {"type": "string", "enum": ["http", "stealthy", "dynamic"]},
+        "selectors": _SELECTORS,
+        "allowed_domains": {**_STR_LIST, "description": "only follow links on these hosts"},
+        "same_domain": {**_BOOL, "description": "follow only same-host links (default true)"},
+        "max_pages": {"type": "integer"},
+        "max_depth": {"type": "integer"},
+        "concurrency": {"type": "integer"},
+        "download_delay": {**_NUM, "description": "seconds to wait between crawl rounds"},
+        "format": {"type": "string", "enum": ["markdown", "text"]},
+        "include_html": _BOOL,
+        "impersonate": _STR,
+        "stream_name": {**_STR, "description": "stream to emit items on (default scrapling::crawl)"},
+    },
+}
+_CRAWL_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "stats": {
+            "type": "object",
+            "properties": {
+                "crawled": {"type": "integer"},
+                "items": {"type": "integer"},
+                "errors": {"type": "integer"},
+                "stopped": _STR,
+            },
+        },
+        "items": {"type": "array", "items": _OBJECT, "description": "a small sample of streamed items"},
+        "stream": {
+            "type": "object",
+            "properties": {"name": _STR, "group_id": _STR},
+            "description": "read the full item stream via stream::on with this name + group_id",
+        },
+    },
 }
 
 
@@ -233,5 +479,75 @@ FUNCTIONS: list[dict[str, Any]] = [
         "description": "Structural auto-match: given one example element, return it plus similar elements.",
         "request": _FIND_SIMILAR_REQUEST,
         "response": _FIND_SIMILAR_RESPONSE,
+    },
+    {
+        "id": "scrapling::find",
+        "handler": "find",
+        "description": "Find elements by tag/attribute filters (+ optional text regex); BeautifulSoup-style.",
+        "request": _FIND_REQUEST,
+        "response": _ELEMENTS_RESPONSE,
+    },
+    {
+        "id": "scrapling::find-by-text",
+        "handler": "find_by_text",
+        "description": "Find elements whose visible text matches a string (exact or `partial`).",
+        "request": _FIND_BY_TEXT_REQUEST,
+        "response": _ELEMENTS_RESPONSE,
+    },
+    {
+        "id": "scrapling::find-by-regex",
+        "handler": "find_by_regex",
+        "description": "Find elements whose visible text matches a regex pattern.",
+        "request": _FIND_BY_REGEX_REQUEST,
+        "response": _ELEMENTS_RESPONSE,
+    },
+    {
+        "id": "scrapling::describe",
+        "handler": "describe",
+        "description": "Describe the first css/xpath match: attrs, generated selectors, class list, DOM context.",
+        "request": _DESCRIBE_REQUEST,
+        "response": _DESCRIBE_RESPONSE,
+    },
+    {
+        "id": "scrapling::to-markdown",
+        "handler": "to_markdown",
+        "description": "Convert HTML to compact Markdown (or text/html); optional CSS scope + main-content clean.",
+        "request": _MARKDOWN_REQUEST,
+        "response": _MARKDOWN_RESPONSE,
+    },
+    {
+        "id": "scrapling::session-open",
+        "handler": "session_open",
+        "description": "Open a persistent HTTP/browser session; returns a session_id that reuses cookies + state.",
+        "request": _SESSION_OPEN_REQUEST,
+        "response": _SESSION_OPEN_RESPONSE,
+    },
+    {
+        "id": "scrapling::session-fetch",
+        "handler": "session_fetch",
+        "description": "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
+        "request": _SESSION_FETCH_REQUEST,
+        "response": _FETCH_RESPONSE,
+    },
+    {
+        "id": "scrapling::session-close",
+        "handler": "session_close",
+        "description": "Close a session and free its browser/connection.",
+        "request": _SESSION_CLOSE_REQUEST,
+        "response": _SESSION_CLOSE_RESPONSE,
+    },
+    {
+        "id": "scrapling::session-list",
+        "handler": "session_list",
+        "description": "List open sessions with their type and idle time.",
+        "request": _SESSION_LIST_REQUEST,
+        "response": _SESSION_LIST_RESPONSE,
+    },
+    {
+        "id": "scrapling::crawl",
+        "handler": "crawl",
+        "description": "BFS-crawl from start_urls (follow same-domain links), extract per page, stream items.",
+        "request": _CRAWL_REQUEST,
+        "response": _CRAWL_RESPONSE,
     },
 ]

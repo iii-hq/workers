@@ -133,3 +133,33 @@ def test_unsupported_method_raises(monkeypatch):
     h = _h(monkeypatch)
     with pytest.raises(ValueError):
         asyncio.run(h["fetch"]({"url": "https://e.com", "method": "patch"}))
+
+
+def test_fetch_forwards_widened_http_params(monkeypatch):
+    sink: dict = {}
+    _patch_get(monkeypatch, sink)
+    h = create_handlers(lambda: CFG)
+    asyncio.run(
+        h["fetch"](
+            {
+                "url": "https://e.com",
+                "proxies": {"https": "http://p:8080"},
+                "proxy_auth": ["user", "pw"],
+                "http3": True,
+                "max_redirects": 2,
+            }
+        )
+    )
+    kw = sink["kwargs"]
+    assert kw["proxies"] == {"https": "http://p:8080"}
+    assert kw["proxy_auth"] == ["user", "pw"]
+    assert kw["http3"] is True
+    assert kw["max_redirects"] == 2
+
+
+def test_fetch_format_markdown_renders_content(monkeypatch):
+    h = _h(monkeypatch)
+    res = asyncio.run(h["fetch"]({"url": "https://e.com", "format": "markdown"}))
+    assert res["format"] == "markdown"
+    assert "Hi" in res["content"]  # the FakePage HTML has <h1>Hi</h1>
+    assert "html" not in res  # format does not imply raw html

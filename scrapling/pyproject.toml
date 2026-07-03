@@ -15,6 +15,7 @@ requires-python = ">=3.11"
 dependencies = [
     "iii-sdk==0.20.0",
     "scrapling[fetchers]==0.4.9",
+    "markdownify",  # scrapling's HTML→Markdown backend (only in its [shell]/[ai] extras)
     "pyyaml",
 ]
 

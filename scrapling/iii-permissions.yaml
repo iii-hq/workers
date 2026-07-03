@@ -14,3 +14,8 @@ rules:
   - scrapling::xpath
   - scrapling::regex
   - scrapling::find-similar
+  - scrapling::find
+  - scrapling::find-by-text
+  - scrapling::find-by-regex
+  - scrapling::describe
+  - scrapling::to-markdown

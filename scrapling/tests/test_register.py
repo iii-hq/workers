@@ -15,6 +15,16 @@ EXPECTED_IDS = {
     "scrapling::xpath",
     "scrapling::regex",
     "scrapling::find-similar",
+    "scrapling::find",
+    "scrapling::find-by-text",
+    "scrapling::find-by-regex",
+    "scrapling::describe",
+    "scrapling::to-markdown",
+    "scrapling::session-open",
+    "scrapling::session-fetch",
+    "scrapling::session-close",
+    "scrapling::session-list",
+    "scrapling::crawl",
 }
 
 

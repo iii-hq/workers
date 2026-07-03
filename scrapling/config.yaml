@@ -12,3 +12,14 @@ defaults:
 
 # Max concurrent requests when a fetch is called with a `urls` array.
 max_bulk_concurrency: 5
+
+# Adaptive Smart Element Tracking: SQLite file where saved element identities
+# live so `adaptive: true` extract/css/xpath can relocate elements after a site
+# redesign. Persists across calls/restarts on this host; NOT across a fresh
+# container redeploy (no manifest volume) — point at a durable path if needed.
+adaptive_storage_path: ./data/scrapling/elements.db
+
+# Persistent sessions (scrapling::session-*). Each open session holds a live
+# HTTP client or browser in-process on its own thread.
+max_sessions: 8                 # reject session-open past this many live sessions
+session_idle_timeout_s: 900     # reap a session with no fetch for this long (0/empty = never)

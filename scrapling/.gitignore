@@ -8,3 +8,4 @@ build/
 .introspect-venv/
 .ruff_cache/
 .impeccable/
+data/
