@@ -35,7 +35,7 @@ def cmd_bump(args: argparse.Namespace) -> int:
     path = Path(args.manifest)
     try:
         current = _lib.read_version(path)
-        new = _lib.bump(current, args.kind)
+        new = current if args.kind == "none" else _lib.bump(current, args.kind)
         _lib.write_version(path, new)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_bump = sub.add_parser("bump", help="bump the manifest version in place")
     p_bump.add_argument("manifest")
-    p_bump.add_argument("--kind", choices=["patch", "minor", "major"], required=True)
+    p_bump.add_argument("--kind", choices=["patch", "minor", "major", "none"], required=True)
     p_bump.set_defaults(func=cmd_bump)
 
     p_verify = sub.add_parser("verify", help="assert the manifest version equals --expected")

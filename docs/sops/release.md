@@ -162,6 +162,13 @@ VS Code** manually with the existing tag and the failed target:
 Use `publish_target=all` only for the first publish attempt or when all targets
 are known to be safe to run again.
 
+### Pre-bumped manifest
+
+If a merged PR already set the manifest version (e.g. a breaking change
+that names its own release), use Create Tag with **Bump = none**: it
+releases the manifest version as-is, skips the bump commit, and still
+refuses existing tags.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -209,7 +216,10 @@ Slack announcement is automatic: the terminal `announce` job in
 `release.yml` posts `🚀 <worker> vX.Y.Z` to `#worker-releases` for every
 successful non-dry-run release. `SLACK_BOT_TOKEN` is org-level (the same
 bot as the iii engine release pipeline); the bot must be invited to
-`#worker-releases`.
+`#worker-releases`. The GitHub release-notes body is posted as a thread
+reply under the announcement. Ticket association rides on PR titles —
+`(MOT-##) type: description` — enforced by the `PR Linear Check` workflow
+(`no-ticket` label for bump/typo/CI-only PRs).
 
 After a release session — any number of tags — run `/release-sync` in Claude
 Code from the repo root. Same-day tags form one **wave** = one Linear

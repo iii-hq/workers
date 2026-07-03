@@ -230,6 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Post to Slack
+        id: post
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL: worker-releases
@@ -243,6 +244,33 @@ jobs:
           if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
           text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
           payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
+          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$payload")
+          if ! echo "$resp" | jq -e .ok > /dev/null; then
+            echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
+            exit 1
+          fi
+          echo "ts=$(echo "$resp" | jq -r .ts)" >> "$GITHUB_OUTPUT"
+
+      - name: Post release notes in thread
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL: worker-releases
+          TAG: ${{ needs.setup.outputs.tag }}
+          THREAD_TS: ${{ steps.post.outputs.ts }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes=$(gh release view "$TAG" -R "${{ github.repository }}" --json body --jq .body 2>/dev/null || true)
+          if [[ -z "$notes" ]]; then
+            echo "::notice::no release notes body; skipping thread reply"
+            exit 0
+          fi
+          notes=$(printf '%s' "$notes" | head -c 2900)
+          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$notes" --arg ts "$THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $ts}')
           resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
             -H "Content-Type: application/json; charset=utf-8" \
