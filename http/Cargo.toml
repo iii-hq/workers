@@ -1,0 +1,53 @@
+[workspace]
+
+[package]
+name = "iii-http"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP server worker for iii — exposes functions as HTTP endpoints (http trigger type)"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "iii_http"
+path = "src/lib.rs"
+
+[[bin]]
+name = "http"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.20.0"
+# Direct dep for W3C trace-context propagation helpers
+# (`observability::extract_context` + the re-exported `opentelemetry` crate).
+# Pinned to the version `iii-sdk` already resolves so the `opentelemetry` types
+# line up across both crates.
+iii-helpers = "=0.20.0"
+# W3C trace-context parent propagation on `tracing::Span` (`OpenTelemetrySpanExt`).
+# 0.32 pairs with opentelemetry 0.31 (same as the engine).
+tracing-opentelemetry = "0.32"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+schemars = "0.8"
+axum = "0.7"
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["cors", "timeout", "limit"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serial_test = "3"
+# trace-context propagation e2e: an in-memory OTel exporter + tracing bridge so
+# the test can observe `set_parent`/`add_event` output on the HTTP span.
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["testing"] }

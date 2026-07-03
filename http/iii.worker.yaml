@@ -1,0 +1,17 @@
+iii: v1
+name: http
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: http
+description: Expose functions as HTTP endpoints — registers the `http` trigger type and serves matched routes.
+config:
+  port: 3111
+  host: 127.0.0.1
+  default_timeout: 30000
+  concurrency_request_limit: 1024
+  cors:
+    allowed_origins: ['*']
+    allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
+dependencies:
+  configuration: "^0.19.0"
