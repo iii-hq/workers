@@ -1,7 +1,7 @@
 {
-  "C210_config_both_root_forms_set": {
+  "C210_config_no_reachable_roots": {
     "code": "C210",
-    "message": "both `base_path` and `base_paths` are set; set either `base_path` or `base_paths` in config.yaml, not both. Remove `base_path` and keep only `base_paths` (legacy `base_path` is honored as a one-entry list)."
+    "message": "no reachable roots: none of [/this/does/not/exist/golden-xyz] could be canonicalized. Ensure the directories exist and are accessible, then set `fs.host_roots` to at least one reachable path."
   },
   "C210_create_bad_mode": {
     "code": "C210",

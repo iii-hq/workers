@@ -1,6 +1,6 @@
 // Regression test for S-C1 (symlink-parent jail escape). Originally
 // this case demonstrated the vuln by writing through a symlink whose
-// target was outside host_root and observing the bytes land outside;
+// target was outside the jail root and observing the bytes land outside;
 // after the fix in `shell/src/fs/host.rs` (canonicalize_with_fallback
 // + lexical normalization of the non-existent tail), the same
 // invocation must reject with S215. Runs only against
@@ -39,8 +39,8 @@ export const VULN_REPRO_JAILED_CASES: TestCase[] = [
 
       // FIX: validate_path now canonicalizes the longest existing
       // ancestor (which resolves the symlink to externalDir, outside
-      // host_root) and lexically appends the non-existent tail. The
-      // resulting path no longer starts_with(host_root) — engine
+      // the jail root) and lexically appends the non-existent tail. The
+      // resulting path no longer resolves inside the jail root — engine
       // rejects with S215.
       let rejected = false;
       let observed = '';
@@ -81,7 +81,7 @@ export const VULN_REPRO_JAILED_CASES: TestCase[] = [
     // The original lexical-fallback flaw existed both in validate_path
     // and in the parents:true defense-in-depth re-check. The fix to
     // validate_path closes the upstream side; the defense-in-depth now
-    // uses host_root_canon (precomputed at HostFsBackend::new()) to
+    // uses host_roots_canon (precomputed at HostFsBackend::new()) to
     // re-check the parent. This case exercises the parents:true path
     // explicitly: the external escape directory does NOT pre-exist, so
     // create_dir_all has to walk through the symlink, and the

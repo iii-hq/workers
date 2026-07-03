@@ -1,7 +1,7 @@
 //! Path resolution and access control.
 //!
-//! The worker is jailed to a set of allowed roots (`base_paths`; the
-//! legacy `base_path` is honored as a one-entry list). Relative wire
+//! The worker is jailed to a set of allowed roots (`base_paths`, filled at
+//! runtime from `fs.host_roots`). Relative wire
 //! paths resolve against the FIRST root (the "primary"); absolute wire
 //! paths are accepted when they canonicalise inside ANY allowed root.
 //! `PathResolver` canonicalises inputs (symlink-aware) and verifies
@@ -54,9 +54,8 @@ pub struct PathResolver {
     default_exclude_dirs: GlobSet,
 }
 
-/// Effective roots when neither `base_paths` nor legacy `base_path` is
-/// configured: the engine workspace cwd plus `/tmp` (a deliberate,
-/// user-approved default).
+/// Effective roots when `base_paths` is empty: the engine workspace cwd
+/// plus `/tmp` (a deliberate, user-approved default).
 fn default_roots() -> Vec<PathBuf> {
     vec![PathBuf::from("./"), PathBuf::from("/tmp")]
 }
@@ -83,19 +82,10 @@ fn display_paths(paths: &[PathBuf]) -> String {
 
 impl PathResolver {
     pub fn new(cfg: &CoderConfig) -> Result<Self, CoderError> {
-        let configured: Vec<PathBuf> = match (&cfg.base_path, cfg.base_paths.as_slice()) {
-            (Some(_), [_, ..]) => {
-                return Err(CoderError::BadInput(
-                    "both `base_path` and `base_paths` are set; set either \
-                     `base_path` or `base_paths` in config.yaml, not both. \
-                     Remove `base_path` and keep only `base_paths` \
-                     (legacy `base_path` is honored as a one-entry list)."
-                        .into(),
-                ))
-            }
-            (Some(single), []) => vec![single.clone()],
-            (None, []) => default_roots(),
-            (None, many) => many.to_vec(),
+        let configured: Vec<PathBuf> = if cfg.base_paths.is_empty() {
+            default_roots()
+        } else {
+            cfg.base_paths.clone()
         };
 
         let mut roots_canon: Vec<PathBuf> = Vec::with_capacity(configured.len());
@@ -115,12 +105,12 @@ impl PathResolver {
             }
         }
         if roots_canon.is_empty() {
-            // C210 like the both-set case above: an operator config error
-            // detected at construction time, not a runtime I/O failure.
+            // C210: an operator config error detected at construction time,
+            // not a runtime I/O failure.
             return Err(CoderError::BadInput(format!(
                 "no reachable roots: none of [{}] could be canonicalized. \
                  Ensure the directories exist and are accessible, then set \
-                 `base_paths` in config.yaml to at least one reachable path.",
+                 `fs.host_roots` to at least one reachable path.",
                 display_paths(&configured)
             )));
         }
@@ -686,19 +676,6 @@ mod tests {
     }
 
     #[test]
-    fn both_base_path_and_base_paths_set_is_construction_error() {
-        let a = tempdir().unwrap();
-        let b = tempdir().unwrap();
-        let cfg = CoderConfig {
-            base_path: Some(a.path().to_path_buf()),
-            base_paths: vec![b.path().to_path_buf()],
-            ..CoderConfig::default()
-        };
-        let err = PathResolver::new(&cfg).unwrap_err();
-        assert_eq!(err.code(), "C210");
-    }
-
-    #[test]
     fn zero_reachable_roots_is_construction_error() {
         let cfg = cfg_roots(
             vec![
@@ -708,7 +685,19 @@ mod tests {
             vec![],
         );
         let err = PathResolver::new(&cfg).unwrap_err();
-        // C210: operator config error, same class as the both-set case.
+        // C210: operator config error detected at construction time.
+        assert_eq!(err.code(), "C210");
+    }
+
+    #[test]
+    fn single_unreachable_root_is_construction_error() {
+        // One-entry form of the case above (the shape a single-root
+        // fs.host_roots produces): still an operator config error.
+        let cfg = cfg_roots(
+            vec![PathBuf::from("/this/does/not/exist/probably/xyz123")],
+            vec![],
+        );
+        let err = PathResolver::new(&cfg).unwrap_err();
         assert_eq!(err.code(), "C210");
     }
 
@@ -776,12 +765,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_base_path_honored_as_single_root() {
+    fn single_base_path_entry_jails_to_that_root() {
         let tmp = tempdir().unwrap();
-        let cfg = CoderConfig {
-            base_path: Some(tmp.path().to_path_buf()),
-            ..CoderConfig::default()
-        };
+        let cfg = cfg_roots(vec![tmp.path().to_path_buf()], vec![]);
         let r = PathResolver::new(&cfg).unwrap();
         assert_eq!(r.roots().len(), 1);
         assert_eq!(r.resolve(".").unwrap(), canon(tmp.path()));
@@ -941,17 +927,6 @@ mod tests {
         let dir = r.resolve("node_modules").unwrap();
         assert!(!r.is_non_accessible(&dir));
         assert!(r.require_writable("node_modules/x.txt").is_ok());
-    }
-
-    #[test]
-    fn legacy_missing_base_path_is_construction_error() {
-        let cfg = CoderConfig {
-            base_path: Some(PathBuf::from("/this/does/not/exist/probably/xyz123")),
-            ..CoderConfig::default()
-        };
-        let err = PathResolver::new(&cfg).unwrap_err();
-        // C210: operator config error, same class as the both-set case.
-        assert_eq!(err.code(), "C210");
     }
 
     // RECOVERY-PAIR TEST: parse the first allowed root out of the C215 error

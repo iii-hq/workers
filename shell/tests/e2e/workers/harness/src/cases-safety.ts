@@ -12,11 +12,11 @@ export const SAFETY_CASES: TestCase[] = [
     },
   },
   {
-    // This suite runs UNJAILED (config.yaml host_root: null). In that mode a
+    // This suite runs UNJAILED (config.yaml sets no host_roots). In that mode a
     // command path (anything with '/') is rejected outright: the whole host FS
     // is writable via shell::fs::write, so a path could execute agent-planted
     // bytes and bypass the read-only allowlist. Bare PATH-resolved names work.
-    // (In jailed mode an absolute path OUTSIDE host_root is still permitted by
+    // (In jailed mode an absolute path OUTSIDE the jail roots is still permitted by
     // basename — exercised by the jailed suite / Rust unit tests.)
     name: 'unjailed mode rejects command paths (RCE guard)',
     async run({ call, expectError }) {

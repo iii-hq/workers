@@ -2,6 +2,11 @@ data/*
 !data/.gitkeep
 reports/*
 !reports/.gitkeep
+# Engine-externalized worker config (runtime state): newer engines move the
+# `workers[].config` blocks from config.yaml into ./config/*.yaml on boot and
+# stamp the block with a pointer comment. The tracked config.yaml stays
+# self-contained; delete ./config/ to re-derive from it.
+config/
 node_modules/
 dist/
 *.log

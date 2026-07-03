@@ -116,16 +116,16 @@ so they're easy to grep.
 | Finding | Where | Suite |
 |---|---|---|
 | S-H1 (`chmod -R` follows symlinks) | `cases-vuln-repro.ts` | default |
-| S-H2 (`host_root: null` is unjailed) | `cases-vuln-repro.ts` | default |
+| S-H2 (no `host_roots` is unjailed) | `cases-vuln-repro.ts` | default |
 | S-H3 (denylist regex bypass via shell vars) | `cases-vuln-repro.ts` | default |
 | S-H4 (`shell::list` cross-call argv/stdout leak) | `cases-vuln-repro.ts` | default |
 | S-C1 (symlink-parent jail escape on writes) | `cases-vuln-repro-jailed.ts` | jailed |
 
 The default suite (`./run-tests.sh`) runs the unjailed four alongside
 the rest. The jailed suite (`./run-tests-jailed.sh`) boots the engine
-with `config-jailed.yaml` (`host_root: /private/tmp/iii-shell-jailed-root`)
+with `config-jailed.yaml` (`host_roots: [/private/tmp/iii-shell-jailed-root]`)
 and runs only the C1 repro — the rest of the suite assumes
-`host_root: null` and would mis-fail with a jail set.
+no jail (`host_roots` unset) and would mis-fail with a jail set.
 
 ## Coder BDD coverage
 

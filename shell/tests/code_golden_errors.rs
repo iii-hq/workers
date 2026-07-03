@@ -177,16 +177,18 @@ async fn error_message_formats_match_golden() {
         );
     };
 
-    // --- C210: operator config error — both root forms set -------------
+    // --- C210: operator config error — no reachable roots ---------------
+    // (Replaces the retired both-root-forms case: `base_path` was removed in
+    // 0.7.0, so the remaining construction-time config error is a root set
+    // where nothing canonicalizes.)
     {
         let cfg = CoderConfig {
-            base_path: Some(jail.root0.clone()),
-            base_paths: vec![jail.root1.clone()],
+            base_paths: vec![PathBuf::from("/this/does/not/exist/golden-xyz")],
             ..CoderConfig::default()
         };
-        let err = PathResolver::new(&cfg).expect_err("both-set must fail");
+        let err = PathResolver::new(&cfg).expect_err("unreachable roots must fail");
         put(
-            "C210_config_both_root_forms_set",
+            "C210_config_no_reachable_roots",
             from_coder_error(&err),
             &jail,
         );

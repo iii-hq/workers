@@ -8,23 +8,28 @@ use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 
+/// Configuration for the folded `coder::*` code surface: protected/noise
+/// globs plus per-call read/search/tree budgets. Roots are NOT taken from
+/// here at runtime — the resolver uses `fs.host_roots` (one jail config).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CoderConfig {
-    /// Legacy single-root form. Honored as a one-entry `base_paths` list.
-    /// Setting BOTH `base_path` and `base_paths` is a startup error
-    /// (checked at `PathResolver` construction).
-    #[serde(default)]
-    pub base_path: Option<PathBuf>,
-
-    /// Root directories the worker operates inside. The FIRST entry is
-    /// the primary root: relative wire paths resolve against it. Absolute
-    /// wire paths are accepted when they canonicalize inside ANY listed
-    /// root. When neither this nor `base_path` is set, the effective
+    /// Runtime plumbing, NEVER read from config: the resolver's roots are
+    /// copied here from `fs.host_roots` by
+    /// `ShellConfig::code_resolver_config`, so there is a single jail
+    /// config. The FIRST entry is the primary root: relative wire paths
+    /// resolve against it; absolute wire paths are accepted when they
+    /// canonicalize inside ANY listed root. When empty, the effective
     /// default is `["./", "/tmp"]` (resolved at `PathResolver`
-    /// construction).
-    #[serde(default)]
+    /// construction). The 0.6.x `code.base_path`/`base_paths` config keys
+    /// were removed from the schema in 0.7.0; a stored value still carrying
+    /// either is REJECTED at parse (`config::check_removed_keys`) — hard
+    /// migration, no silent tolerance even though they were already inert
+    /// before removal.
+    #[serde(skip)]
+    #[schemars(skip)]
     pub base_paths: Vec<PathBuf>,
 
     /// Glob patterns matched against the path *relative to its containing
@@ -42,27 +47,45 @@ pub struct CoderConfig {
     #[serde(default = "default_default_exclude_globs")]
     pub default_exclude_globs: Vec<String>,
 
+    /// Per-file IO ceiling, in bytes, for `coder::read-file` in every mode
+    /// (full, windowed, batch). A larger file fails with C213 naming the
+    /// size. Default 10485760 (10 MiB).
     #[serde(default = "default_max_read_bytes")]
     pub max_read_bytes: u64,
 
+    /// Cap, in bytes, on the content of a single `coder::create-file` /
+    /// `coder::update-file` call (C213 when exceeded). Default 10485760
+    /// (10 MiB).
     #[serde(default = "default_max_write_bytes")]
     pub max_write_bytes: u64,
 
+    /// Directory depth `coder::tree` descends when the caller omits `depth`.
+    /// Default 4.
     #[serde(default = "default_tree_default_depth")]
     pub tree_default_depth: u32,
 
+    /// Maximum entries `coder::tree` lists per folder before eliding the
+    /// rest (flagged in the response). Default 50.
     #[serde(default = "default_tree_per_folder_limit")]
     pub tree_per_folder_limit: u32,
 
+    /// Page size `coder::list-folder` uses when the caller omits one.
+    /// Default 100.
     #[serde(default = "default_list_default_page_size")]
     pub list_default_page_size: u32,
 
+    /// Hard cap on a `coder::list-folder` page; a larger requested page size
+    /// is clamped to this. Default 1000.
     #[serde(default = "default_list_max_page_size")]
     pub list_max_page_size: u32,
 
+    /// Maximum matches one `coder::search` call returns when the caller
+    /// omits `max_matches`. Default 1000.
     #[serde(default = "default_search_max_matches")]
     pub search_default_max_matches: u32,
 
+    /// Per-line byte cap for `coder::search` results; longer matched lines
+    /// are truncated for the response. Default 4096.
     #[serde(default = "default_search_max_line_bytes")]
     pub search_default_max_line_bytes: u32,
 
@@ -157,9 +180,6 @@ fn default_search_response_budget_bytes() -> u64 {
 #[cfg(test)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct JailSignature {
-    /// Legacy single-root form. A change re-roots the jail — restart-required
-    /// (`PathResolver` compiles the effective root set from this + `base_paths`).
-    pub base_path: Option<PathBuf>,
     /// The root directories the jail confines all access to. A change to the
     /// set (or order — the first entry is the primary root) moves the security
     /// boundary, so it is restart-required: the `PathResolver` canonicalizes
@@ -180,7 +200,6 @@ pub struct JailSignature {
 impl Default for CoderConfig {
     fn default() -> Self {
         Self {
-            base_path: None,
             base_paths: Vec::new(),
             non_accessible_globs: Vec::new(),
             default_exclude_globs: default_default_exclude_globs(),
@@ -201,9 +220,9 @@ impl Default for CoderConfig {
 
 impl CoderConfig {
     /// Test helper: parse a config from a YAML string, expanding `${NAME}`
-    /// against the process environment first. Production loads the `code` block
-    /// as JSON via [`from_json`]; this YAML path is exercised only by unit
-    /// tests.
+    /// against the process environment first. Production deserializes the
+    /// `code` block as part of `ShellConfig` (serde derive); this YAML path
+    /// is exercised only by unit tests.
     #[cfg(test)]
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
@@ -212,9 +231,12 @@ impl CoderConfig {
         Ok(cfg)
     }
 
-    /// Parse a config from a JSON value already env-expanded by the
-    /// configuration worker. Does NOT run `expand_env` — double-expansion would
-    /// be a bug — and tolerates a zero-field object (serde defaults fill in).
+    /// Parse a config from a standalone JSON value. Does NOT run `expand_env`
+    /// — double-expansion would be a bug — and tolerates a zero-field object
+    /// (serde defaults fill in). Production deserializes the `code` block as
+    /// part of `ShellConfig`; this was the coder-migration entry point and is
+    /// now exercised only by unit tests.
+    #[cfg(test)]
     pub fn from_json(value: &Value) -> Result<Self, String> {
         let cfg: CoderConfig =
             serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))?;
@@ -226,9 +248,9 @@ impl CoderConfig {
         serde_json::to_value(self).expect("CoderConfig serializes")
     }
 
-    /// Build the restart-required jail signature. These four fields are
-    /// EVERYTHING the `PathResolver` compiles: the root set (`base_path` +
-    /// `base_paths`) that bounds the security jail, the access-deny globs
+    /// Build the restart-required jail signature. These three fields are
+    /// EVERYTHING the `PathResolver` compiles: the root set (`base_paths`)
+    /// that bounds the security jail, the access-deny globs
     /// (`non_accessible_globs`), and the resolver-compiled noise filter
     /// (`default_exclude_globs`). A live config update that changes ANY of them
     /// is refused on hot-reload (logged "restart coder to apply", previous
@@ -238,7 +260,6 @@ impl CoderConfig {
     #[cfg(test)]
     pub fn jail_signature(&self) -> JailSignature {
         JailSignature {
-            base_path: self.base_path.clone(),
             base_paths: self.base_paths.clone(),
             non_accessible_globs: self.non_accessible_globs.clone(),
             default_exclude_globs: self.default_exclude_globs.clone(),
@@ -289,7 +310,6 @@ mod tests {
     #[test]
     fn empty_yaml_parses_to_defaults() {
         let cfg: CoderConfig = serde_yaml::from_str("{}").expect("empty yaml parses");
-        assert_eq!(cfg.base_path, None);
         assert!(cfg.base_paths.is_empty());
         assert!(cfg.non_accessible_globs.is_empty());
         assert_eq!(
@@ -327,18 +347,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_base_path_parses_as_option() {
-        let cfg: CoderConfig = serde_yaml::from_str("base_path: /tmp/legacy").unwrap();
-        assert_eq!(cfg.base_path, Some(PathBuf::from("/tmp/legacy")));
-        assert!(cfg.base_paths.is_empty());
-    }
-
-    #[test]
     fn custom_yaml_overrides_each_field() {
         let yaml = r#"
-base_paths:
-  - /tmp/c
-  - /tmp/d
 non_accessible_globs:
   - "**/.env"
 default_exclude_globs:
@@ -356,11 +366,6 @@ max_output_bytes: 31
 search_response_budget_bytes: 29
 "#;
         let cfg: CoderConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.base_path, None);
-        assert_eq!(
-            cfg.base_paths,
-            vec![PathBuf::from("/tmp/c"), PathBuf::from("/tmp/d")]
-        );
         assert_eq!(cfg.non_accessible_globs, vec!["**/.env".to_string()]);
         assert_eq!(cfg.default_exclude_globs, vec!["**/build/**".to_string()]);
         assert_eq!(cfg.max_read_bytes, 42);
@@ -393,13 +398,11 @@ search_response_budget_bytes: 29
     #[test]
     fn from_json_round_trips_custom_values() {
         let json = serde_json::json!({
-            "base_paths": ["/tmp/x"],
             "non_accessible_globs": ["**/.env"],
             "max_read_bytes": 99,
             "tree_default_depth": 2,
         });
         let cfg = CoderConfig::from_json(&json).unwrap();
-        assert_eq!(cfg.base_paths, vec![PathBuf::from("/tmp/x")]);
         assert_eq!(cfg.non_accessible_globs, vec!["**/.env".to_string()]);
         assert_eq!(cfg.max_read_bytes, 99);
         assert_eq!(cfg.tree_default_depth, 2);
@@ -429,24 +432,30 @@ search_response_budget_bytes: 29
     #[test]
     fn to_json_round_trips_through_from_json() {
         let yaml = r#"
-base_paths:
-  - /tmp/a
 max_output_bytes: 7
 search_response_budget_bytes: 11
 "#;
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
         let back = CoderConfig::from_json(&cfg.to_json()).unwrap();
-        assert_eq!(back.base_paths, vec![PathBuf::from("/tmp/a")]);
         assert_eq!(back.max_output_bytes, 7);
         assert_eq!(back.search_response_budget_bytes, 11);
     }
 
     #[test]
     fn from_yaml_expands_env_var() {
-        std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-root");
-        let yaml = "base_paths:\n  - \"${CODER_TEST_ROOT}\"\n";
+        // Serialized against every other process-env-mutating test in the
+        // crate (see ENV_TEST_MUTEX) — set_var/var race across threads
+        // otherwise.
+        let _env_lock = crate::config::ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob");
+        let yaml = "non_accessible_globs:\n  - \"${CODER_TEST_ROOT}\"\n";
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
-        assert_eq!(cfg.base_paths, vec![PathBuf::from("/tmp/expanded-root")]);
+        assert_eq!(
+            cfg.non_accessible_globs,
+            vec!["/tmp/expanded-glob".to_string()]
+        );
         std::env::remove_var("CODER_TEST_ROOT");
     }
 
@@ -484,16 +493,6 @@ search_response_budget_bytes: 11
             ..base.clone()
         };
         assert_eq!(base.jail_signature(), tuned.jail_signature());
-    }
-
-    #[test]
-    fn jail_signature_differs_when_base_path_changes() {
-        let a = CoderConfig::default();
-        let b = CoderConfig {
-            base_path: Some(PathBuf::from("/tmp/legacy")),
-            ..CoderConfig::default()
-        };
-        assert_ne!(a.jail_signature(), b.jail_signature());
     }
 
     #[test]

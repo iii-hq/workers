@@ -40,9 +40,9 @@ pub fn build_command(
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
     }
-    if !cfg.inherit_env {
+    if !cfg.env.inherit {
         cmd.env_clear();
-        for k in &cfg.allowed_env {
+        for k in &cfg.env.allow {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
             }
@@ -50,8 +50,8 @@ pub fn build_command(
     }
     // Per-call env overrides are applied LAST so a permitted key's per-call
     // value wins over the config-forwarded value. Keys were already gated
-    // against allowed_env + DANGEROUS_ENV_KEYS in the handler, so this loop
-    // trusts the validated map. Note: when inherit_env is true the child
+    // against env.allow + DANGEROUS_ENV_KEYS in the handler, so this loop
+    // trusts the validated map. Note: when env.inherit is true the child
     // already inherits the worker's full env; the override still sets these
     // keys explicitly on top.
     if let Some(env) = &overrides.env {
@@ -252,7 +252,7 @@ mod tests {
 
     fn test_cfg() -> ShellConfig {
         let mut c = ShellConfig {
-            inherit_env: true,
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             ..Default::default()
         };
@@ -365,7 +365,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("workdir")).unwrap();
         let mut cfg = test_cfg();
-        cfg.fs.host_root = Some(root.clone());
+        cfg.fs.host_roots = vec![root.clone()];
 
         let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, None, &cfg)
             .expect("workdir is inside the jail");
@@ -387,7 +387,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("session")).unwrap();
         let mut cfg = test_cfg();
-        cfg.fs.host_root = Some(root.clone());
+        cfg.fs.host_roots = vec![root.clone()];
         let base = root.join("session").to_string_lossy().into_owned();
 
         let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), &cfg)
@@ -401,13 +401,87 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Removes the named process env vars on drop, even if the test body
+    /// panics between `set_var` and where a plain cleanup call would have
+    /// run — an assertion failure without this leaks the var into every
+    /// later test in the binary. Unique per-test var names (see the caller)
+    /// keep the residual risk to a logical leak, not a data race: full
+    /// concurrent-mutation safety would need a process-wide env mutex shared
+    /// with `code/config.rs`'s `CODER_TEST_ROOT` test, a larger change than
+    /// this test warrants on its own.
+    /// Holds [`crate::config::ENV_TEST_MUTEX`] for its whole lifetime AND
+    /// removes the named process env vars on drop, even if the test body
+    /// panics between `set_var` and where a plain cleanup call would have
+    /// run. The mutex serializes against every other test in the crate that
+    /// touches process env (see that constant's doc comment for why); the
+    /// Drop cleanup handles the panic case the mutex alone doesn't cover.
+    /// Held across `.await` below — fine under the default `#[tokio::test]`
+    /// current-thread flavor, where the outer test future need not be
+    /// `Send`.
+    struct EnvVarGuard {
+        keys: &'static [&'static str],
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvVarGuard {
+        fn new(keys: &'static [&'static str]) -> Self {
+            let lock = crate::config::ENV_TEST_MUTEX
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self { keys, _lock: lock }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for k in self.keys {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
+    /// With `env.inherit: false`, the child env is scrubbed to exactly the
+    /// `env.allow` keys: an allowed worker var round-trips, a non-allowed one
+    /// never reaches the child. (Unit twin of the e2e scrub/passthrough cases.)
+    #[tokio::test]
+    async fn inherit_false_forwards_only_allow_keys() {
+        const ALLOWED: &str = "SHELL_DX_ALLOWED_9F3A";
+        const BLOCKED: &str = "SHELL_DX_BLOCKED_9F3A";
+        // Guard acquired BEFORE set_var: it holds the cross-test env mutex,
+        // so the sets below can't race with another test's env mutation.
+        let _guard = EnvVarGuard::new(&[ALLOWED, BLOCKED]);
+        std::env::set_var(ALLOWED, "allowed-value");
+        std::env::set_var(BLOCKED, "blocked-value");
+
+        let mut cfg = test_cfg();
+        cfg.env.inherit = false;
+        cfg.env.allow = vec!["PATH".into(), ALLOWED.into()];
+
+        let out = run_to_completion(
+            &["env".into()],
+            &cfg,
+            5000,
+            &crate::exec::policy::ExecOverrides::default(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.stdout.contains("SHELL_DX_ALLOWED_9F3A=allowed-value"),
+            "allowed key forwarded: {}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("SHELL_DX_BLOCKED_9F3A"),
+            "non-allowed key scrubbed: {}",
+            out.stdout
+        );
+    }
+
     /// A permitted `env` key is visible to the child process. We forward
-    /// `printenv NODE_ENV`; with NODE_ENV in allowed_env and a per-call value,
+    /// `printenv NODE_ENV`; with NODE_ENV in env.allow and a per-call value,
     /// the child sees it.
     #[tokio::test]
     async fn env_override_is_visible_to_child() {
         let mut cfg = test_cfg();
-        cfg.allowed_env = vec!["NODE_ENV".into()];
+        cfg.env.allow = vec!["NODE_ENV".into()];
 
         let mut env = std::collections::BTreeMap::new();
         env.insert("NODE_ENV".to_string(), "from-override".to_string());
@@ -425,12 +499,12 @@ mod tests {
         assert_eq!(out.stdout.trim(), "from-override");
     }
 
-    /// An env key NOT in allowed_env is rejected (S210) before any spawn,
+    /// An env key NOT in env.allow is rejected (S210) before any spawn,
     /// naming the offending key — the call never reaches the child.
     #[tokio::test]
-    async fn env_key_outside_allowed_env_is_rejected_s210() {
+    async fn env_key_outside_allow_list_is_rejected_s210() {
         let mut cfg = test_cfg();
-        cfg.allowed_env = vec!["NODE_ENV".into()];
+        cfg.env.allow = vec!["NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("SECRET_TOKEN".to_string(), "x".to_string());
         let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
@@ -444,12 +518,12 @@ mod tests {
     }
 
     /// LD_PRELOAD is rejected (S210) even when the test also adds it to
-    /// allowed_env — proof that the dangerous-key denylist wins over the
+    /// env.allow — proof that the dangerous-key denylist wins over the
     /// operator's allowlist.
     #[tokio::test]
     async fn dangerous_env_key_rejected_even_if_allowlisted_on_host_path() {
         let mut cfg = test_cfg();
-        cfg.allowed_env = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
+        cfg.env.allow = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
         let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
@@ -464,7 +538,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mut cfg = test_cfg();
-        cfg.fs.host_root = Some(root.clone());
+        cfg.fs.host_roots = vec![root.clone()];
         let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, &cfg)
             .expect_err("escape must reject");
         assert_eq!(err.code, "S215");

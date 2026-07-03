@@ -107,8 +107,8 @@ pub struct ExecRequest {
     pub timeout_ms: Option<u64>,
     /// Optional working directory for this call (host target only). Confined to
     /// the fs jail exactly like `shell::fs::*` paths: jail-relative when
-    /// `fs.host_root` is set (else absolute), canonicalized, and must resolve
-    /// inside `host_root` and miss the denylist — a path that escapes returns
+    /// `fs.host_roots` is set (else absolute), canonicalized, and must resolve
+    /// inside a jail root and miss the denylist — a path that escapes returns
     /// S215. Must already exist and be a directory. Omit to use the configured
     /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
     #[serde(default)]
@@ -118,10 +118,10 @@ pub struct ExecRequest {
     #[schemars(skip)]
     pub base_dir: Option<String>,
     /// Optional per-call environment values (host target only). A key may be
-    /// set ONLY if the operator listed it in `allowed_env`, and NEVER for an
+    /// set ONLY if the operator listed it in `env.allow`, and NEVER for an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
     /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS) — those are
-    /// rejected even if allowlisted. Supplying a key that is not in `allowed_env`,
+    /// rejected even if allowlisted. Supplying a key that is not in `env.allow`,
     /// or any dangerous key, rejects the WHOLE call (S210) naming the offending
     /// key; the env is never silently dropped. Permitted values override what
     /// would otherwise be forwarded for that key. Rejected (S210) on a sandbox target.
@@ -159,7 +159,7 @@ pub struct ExecBgRequest {
     pub timeout_ms: Option<u64>,
     /// Optional working directory for this job (host target only). Same jail
     /// confinement and rules as [`ExecRequest::cwd`]: canonicalized, must
-    /// resolve inside `host_root` (S215 on escape) and be an existing
+    /// resolve inside a jail root (S215 on escape) and be an existing
     /// directory. Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub cwd: Option<String>,
@@ -168,7 +168,7 @@ pub struct ExecBgRequest {
     #[schemars(skip)]
     pub base_dir: Option<String>,
     /// Optional per-call environment values (host target only). Same gating as
-    /// [`ExecRequest::env`]: a key must be in `allowed_env` and must not be an
+    /// [`ExecRequest::env`]: a key must be in `env.allow` and must not be an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
     /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS); any violation
     /// rejects the whole call (S210). Rejected (S210) on a sandbox target.

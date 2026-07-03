@@ -4,7 +4,7 @@
 // post-fix behavior (error code, redaction, opt-in flag). Names start
 // with `vuln_repro_` for grep continuity.
 //
-// Coverage in this file (default config = host_root: null,
+// Coverage in this file (default config = no host_roots,
 // allow_unjailed: true):
 //   - S-H1: chmod -R no longer rewrites symlink targets
 //   - S-H2: unjailed mode requires explicit allow_unjailed: true (the
@@ -16,7 +16,7 @@
 //     reachable only via shell::status <job_id> (the UUID is the cap).
 //
 // S-C1 (symlink-parent escape) is tested in `cases-vuln-repro-jailed.ts`
-// against `config-jailed.yaml` (host_root set).
+// against `config-jailed.yaml` (host_roots set).
 
 import { mkdtempSync, mkdirSync, writeFileSync, statSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -116,7 +116,7 @@ export const VULN_REPRO_CASES: TestCase[] = [
   },
   {
     // S-H2: shell/src/config.rs (validate_fs_jail).
-    // Fix: the worker refuses to start when host_root is null AND
+    // Fix: the worker refuses to start when host_roots is empty AND
     // fs.allow_unjailed is false. The test config sets allow_unjailed:
     // true (test harness writes to OS tmpdirs scattered across the
     // FS), so the writes-anywhere behavior is preserved as the

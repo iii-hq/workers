@@ -108,7 +108,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
     let config = prepare_config(cfg)?;
     if !config.fs.is_jailed() {
         tracing::warn!(
-            "fs.host_root/fs.host_roots are unset — host backend is unjailed; every absolute \
+            "fs.host_roots is empty — host backend is unjailed; every absolute \
              path is reachable by shell::fs::* (denylist still applies)"
         );
     }
@@ -131,144 +131,6 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
         config,
         host_backend,
     })
-}
-
-/// Fold a legacy `coder` config value into the `shell` config value, ONCE.
-///
-/// Returns `Some(merged)` when the stored `shell` value should be rewritten
-/// (gaps filled and/or the one-shot marker set), or `None` when the fold has
-/// already run (`migrated_from_coder` is set) — making it idempotent across
-/// reboots even while the inert `coder` entry still exists.
-///
-/// SECURITY — NEVER WIDEN. The fold only FILLS gaps; it never broadens access:
-///   * Roots: coder's roots are adopted ONLY when `shell` has no jail at all.
-///     If `shell` is already jailed its roots are kept untouched — adopting
-///     coder's would silently widen the jail. coder's *implicit* default
-///     (no `base_path`/`base_paths`) is never migrated.
-///   * Protected globs / code tuning: adopted only into an UNTOUCHED `code`
-///     block; a `shell` value that already tuned `code` keeps its values, and
-///     a non-empty `non_accessible_globs` is never dropped.
-///
-/// The roots that land in the merged value go to `fs.host_roots` (the unified
-/// jail), never to `code.base_paths`.
-pub fn fold_coder_into_shell(
-    mut shell: ShellConfig,
-    coder: &crate::code::config::CoderConfig,
-) -> Option<ShellConfig> {
-    if shell.migrated_from_coder {
-        return None;
-    }
-
-    // Roots — NEVER WIDEN. Only when shell has no jail do we adopt coder's
-    // EXPLICIT roots (its implicit ["./","/tmp"] default is not migrated).
-    if !shell.fs.is_jailed() {
-        let coder_roots: Vec<std::path::PathBuf> = if !coder.base_paths.is_empty() {
-            coder.base_paths.clone()
-        } else if let Some(p) = &coder.base_path {
-            vec![p.clone()]
-        } else {
-            Vec::new()
-        };
-        if !coder_roots.is_empty() {
-            shell.fs.host_roots = coder_roots;
-        }
-    }
-
-    // Code block — fill an UNTOUCHED block wholesale (globs + excludes +
-    // budgets), minus the roots (which live in fs.host_roots). A tuned block
-    // keeps its values; only an empty protected-glob list is back-filled.
-    let default_code = crate::code::config::CoderConfig::default();
-    // "Untouched" means the ENTIRE code block is still at its defaults (roots
-    // excluded — they live in fs and are cleared on both sides). Comparing the
-    // whole struct, not just the glob lists, prevents the fold from silently
-    // overwriting a tuned numeric knob (e.g. max_read_bytes) that the operator
-    // set while leaving the default globs.
-    let code_untouched = {
-        let mut probe = shell.code.clone();
-        probe.base_path = None;
-        probe.base_paths = Vec::new();
-        probe == default_code
-    };
-    if code_untouched {
-        let mut adopted = coder.clone();
-        adopted.base_path = None;
-        adopted.base_paths = Vec::new();
-        shell.code = adopted;
-    } else if shell.code.non_accessible_globs.is_empty() {
-        shell.code.non_accessible_globs = coder.non_accessible_globs.clone();
-    }
-
-    shell.migrated_from_coder = true;
-    Some(shell)
-}
-
-/// Fetch the stored value for an arbitrary configuration id (`Ok(None)` when
-/// the entry does not exist). Generalises [`try_get_config_value`] so the
-/// migration can read both `coder` and `shell`.
-async fn try_get_value_for(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": id })).await {
-        Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-/// One-shot boot migration: fold a legacy `coder` config entry into the `shell`
-/// value (see [`fold_coder_into_shell`]). MUST run AFTER schema registration
-/// and BEFORE the initial fetch so `build_runtime` sees the merged value.
-///
-/// BEST-EFFORT / NON-FATAL: a missing `coder` entry, an unparseable value, or a
-/// write failure logs and returns without aborting boot — the worker proceeds
-/// with the existing `shell` config. The legacy `coder` entry is left intact
-/// (inert) as the rollback artifact; the console annotates it (T8).
-pub async fn migrate_legacy_coder(iii: &IIIClient) {
-    let coder_value = match try_get_value_for(iii, "coder").await {
-        Ok(Some(v)) if !v.is_null() => v,
-        Ok(_) => return, // no legacy entry — fresh install or already gone
-        Err(e) => {
-            tracing::warn!(error = %e, "could not read legacy coder config; skipping migration");
-            return;
-        }
-    };
-    let coder = match crate::code::config::CoderConfig::from_json(&coder_value) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "legacy coder config unparseable; skipping migration");
-            return;
-        }
-    };
-    // Current shell value, or the (invalid, unjailed) default when none is
-    // stored yet — the latter is the "only coder was configured" upgrade path,
-    // where the fold derives a valid jailed shell config from coder's roots.
-    let shell = match try_get_value_for(iii, CONFIG_ID).await {
-        Ok(Some(v)) if !v.is_null() => match ShellConfig::from_json(&v) {
-            Ok(c) => c,
-            // A stored-but-unparseable shell value must NOT be silently
-            // overwritten by a default+coder fold — that would clobber a
-            // possibly-recoverable config. Skip; the subsequent fetch_config
-            // surfaces the parse error and boot fails closed cleanly.
-            Err(e) => {
-                tracing::warn!(error = %e, "stored shell config is unparseable; skipping coder migration");
-                return;
-            }
-        },
-        _ => ShellConfig::default(),
-    };
-    match fold_coder_into_shell(shell, &coder) {
-        None => tracing::debug!("coder→shell migration already applied; skipping"),
-        Some(merged) => {
-            let payload = json!({ "id": CONFIG_ID, "value": merged.to_json() });
-            match trigger_with_retry(iii, "configuration::set", payload).await {
-                Ok(_) => tracing::info!(
-                    "folded the legacy coder config into the shell config (one-shot)"
-                ),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "failed to persist coder→shell migration; continuing with the existing shell config"
-                ),
-            }
-        }
-    }
 }
 
 /// Register the `shell` configuration schema with the configuration worker.
@@ -294,7 +156,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
     };
     if let Some(cfg) = &candidate {
         // Validate with the SAME checks build_runtime uses (denylist regex
-        // compile, fs-jail rule, host_root/denylist reachability) BEFORE
+        // compile, fs-jail rule, host_roots/denylist reachability) BEFORE
         // persisting. configuration::register preserves the value after first
         // registration, so a one-line typo in --config — or an unbootable
         // built-in seed — would become a persistent outage. If invalid, register
@@ -324,6 +186,16 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 /// Read the live `shell` configuration (env-expanded by the configuration worker).
 pub async fn fetch_config(iii: &IIIClient) -> Result<ShellConfig, String> {
     let value = get_config_value(iii).await?;
+    parse_fetched_value(value)
+}
+
+/// Parse a successfully fetched raw configuration value. Split from
+/// [`fetch_config`] so `reload_serialized` can classify a PARSE failure of a
+/// fetched value as `Rejected` (permanent — re-fetching returns the same
+/// value) rather than a transient fetch error (retryable). Conflating the two
+/// turns every un-migrated stored value into a retry storm and hides the
+/// divergence from `shell::config-status`.
+fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
     if value.is_null() {
         // Null means register_config did not seed (its seed_default failed
         // validation) or the stored value was nulled at runtime. Fall back to
@@ -377,7 +249,7 @@ async fn apply_config(state: &AppState, cfg: ShellConfig) -> Result<(), String> 
     let now_jailed = new_runtime.config.fs.is_jailed();
     if was_jailed && !now_jailed {
         tracing::warn!(
-            "configuration change WIDENED the fs jail (host_root cleared); the entire \
+            "configuration change WIDENED the fs jail (host_roots cleared); the entire \
              host filesystem is now reachable through shell::fs::* (denylist still applies)"
         );
     }
@@ -434,14 +306,21 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
 /// awaited INSIDE the lock, so overlapping `configuration:updated` events are
 /// applied one at a time and each observes the latest authoritative value — a
 /// slow build from an older event can never overwrite a newer applied config.
+///
+/// Three-way classification: a TRANSPORT failure (fetch Err) is transient —
+/// surface Err so the dispatcher retries. A PARSE failure of the fetched value
+/// (removed 0.7.0 keys, malformed JSON shape) is permanent — re-fetching
+/// returns the same bytes — so it is `Rejected`: keep last-good, record for
+/// `shell::config-status`, ack (no retry storm). An unbuildable parsed config
+/// is likewise `Rejected` via `apply_config`.
 async fn reload_serialized<F, Fut>(state: &AppState, fetch: F) -> Result<ReloadOutcome, String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<ShellConfig, String>>,
+    Fut: std::future::Future<Output = Result<Value, String>>,
 {
     let _reload = state.reload_lock.lock().await;
-    let cfg = match fetch().await {
-        Ok(cfg) => cfg,
+    let raw = match fetch().await {
+        Ok(raw) => raw,
         Err(e) => {
             // Transient fetch failure (e.g. configuration::get timed out): the
             // authoritative value is unknown. Keep the previous runtime AND
@@ -451,6 +330,20 @@ where
                 "failed to fetch configuration on change; keeping previous runtime, signaling retry"
             );
             return Err(e);
+        }
+    };
+    let cfg = match parse_fetched_value(raw) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // The value WAS fetched; it just doesn't parse (e.g. an
+            // un-migrated 0.6.x shape carrying removed keys). Same class as
+            // unbuildable below: permanent until the store changes.
+            tracing::error!(
+                error = %e,
+                "rejected configuration change; keeping previous runtime (not retrying — value does not parse)"
+            );
+            state.reload_status.write().await.record_rejected(e);
+            return Ok(ReloadOutcome::Rejected);
         }
     };
     match apply_config(state, cfg).await {
@@ -463,7 +356,7 @@ where
         }
         Err(e) => {
             // Config was fetched but is unbuildable (bad denylist regex, unreachable
-            // host_root, …). Re-fetching returns the SAME rejected value, so ack +
+            // jail root, …). Re-fetching returns the SAME rejected value, so ack +
             // keep last-good to avoid a retry storm; the loud error log is the signal.
             // Record the rejection so `shell::config-status` makes the divergence
             // (active policy older than the central store) operator-visible.
@@ -491,7 +384,7 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
     // and a slow build from an older event cannot roll back a newer policy.
     // Steady-state: an invalid config keeps last-good (Rejected is not an error
     // here), only a transient fetch failure propagates Err for the dispatcher.
-    reload_serialized(state, || fetch_config(&state.iii))
+    reload_serialized(state, || get_config_value(&state.iii))
         .await
         .map(|_| ())
 }
@@ -504,7 +397,7 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
 /// (unbuildable) authoritative config aborts startup rather than serving the
 /// stale last-good runtime, and a transient fetch failure also aborts.
 pub async fn reconcile(state: &AppState) -> Result<(), String> {
-    reconcile_with(state, || fetch_config(&state.iii)).await
+    reconcile_with(state, || get_config_value(&state.iii)).await
 }
 
 /// Boot reconcile core, split from `fetch_config` so the fail-closed mapping is
@@ -512,7 +405,7 @@ pub async fn reconcile(state: &AppState) -> Result<(), String> {
 async fn reconcile_with<F, Fut>(state: &AppState, fetch: F) -> Result<(), String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<ShellConfig, String>>,
+    Fut: std::future::Future<Output = Result<Value, String>>,
 {
     match reload_serialized(state, fetch).await? {
         ReloadOutcome::Applied => Ok(()),
@@ -568,7 +461,7 @@ mod tests {
         // that silently retries but never panics or blocks this thread.
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59599", iii_sdk::InitOptions::default());
         let mut cfg = ShellConfig::default();
-        cfg.fs.host_root = Some(std::path::PathBuf::from("/nonexistent/shell-jail-xyz"));
+        cfg.fs.host_roots = vec![std::path::PathBuf::from("/nonexistent/shell-jail-xyz")];
         cfg.fs.allow_unjailed = false;
         let res = build_runtime(&cfg, &iii);
         assert!(res.is_err(), "build_runtime must return Err, not panic");
@@ -588,150 +481,25 @@ mod tests {
     }
 
     #[test]
-    fn prepare_config_accepts_pinned_host_root() {
+    fn prepare_config_accepts_pinned_host_roots() {
         let mut c = ShellConfig::default();
-        c.fs.host_root = Some(std::path::PathBuf::from("/tmp/shell"));
-        prepare_config(&c).expect("pinned host_root is valid");
+        c.fs.host_roots = vec![std::path::PathBuf::from("/tmp/shell")];
+        prepare_config(&c).expect("pinned host_roots is valid");
     }
 
     #[test]
-    fn legacy_host_root_only_config_boots_jailed_to_that_root() {
-        // REGRESSION (T6, CRITICAL): a pre-merge shell config — a single
-        // fs.host_root, NO fs.host_roots, NO `code:` block — must still
-        // deserialize via serde defaults, boot, and jail shell::fs to that one
-        // root. This guards every existing shell deployment across the coder
-        // merge. (Byte-identical fs *behaviour* is additionally proven by the
-        // unchanged shell::fs test suite continuing to pass.)
-        let dir = std::env::temp_dir().join("shell-t6-legacy-regression");
-        std::fs::create_dir_all(&dir).unwrap();
-        // Exactly the pre-merge config shape — nothing the merge added.
-        let yaml = format!("allowlist: []\nfs:\n  host_root: {}\n", dir.display());
-        let cfg = ShellConfig::from_yaml(&yaml).expect("legacy yaml parses via serde defaults");
-        assert!(
-            cfg.fs.host_roots.is_empty(),
-            "a legacy config carries no host_roots"
-        );
-        assert_eq!(cfg.fs.host_root.as_deref(), Some(dir.as_path()));
-        // The added `code` block defaulted (empty), and the effective jail is
-        // the single legacy root via the compatibility alias.
-        assert_eq!(cfg.fs.roots(), vec![dir.clone()]);
-        assert!(cfg.code.non_accessible_globs.is_empty());
-
-        let iii = iii_sdk::register_worker("ws://127.0.0.1:59571", iii_sdk::InitOptions::default());
-        let runtime = build_runtime(&cfg, &iii).expect("legacy config still builds a runtime");
-        assert!(runtime.config.fs.is_jailed());
-        assert_eq!(runtime.config.fs.roots(), vec![dir.clone()]);
-    }
-
-    #[test]
-    fn fold_never_widens_an_already_jailed_shell() {
-        // SECURITY: shell already has a jail root; coder declares DIFFERENT
-        // roots. The fold must KEEP shell's roots (adopting coder's would widen
-        // the jail) and only fill the empty code protected-globs.
-        let mut shell = ShellConfig::default();
-        shell.fs.host_root = Some("/srv/app".into());
-        let coder = crate::code::config::CoderConfig {
-            base_paths: vec!["/etc".into(), "/var".into()],
-            non_accessible_globs: vec!["**/.env".into()],
-            ..Default::default()
-        };
-        let merged = fold_coder_into_shell(shell, &coder).expect("a change (marker + globs)");
-        assert_eq!(
-            merged.fs.host_root.as_deref(),
-            Some(std::path::Path::new("/srv/app"))
-        );
-        assert!(
-            merged.fs.host_roots.is_empty(),
-            "coder roots must NOT be adopted into an already-jailed shell (no widening)"
-        );
-        assert_eq!(
-            merged.fs.roots(),
-            vec![std::path::PathBuf::from("/srv/app")]
-        );
-        assert_eq!(
-            merged.code.non_accessible_globs,
-            vec!["**/.env".to_string()]
-        );
-        assert!(merged.migrated_from_coder);
-    }
-
-    #[test]
-    fn fold_adopts_coder_roots_only_when_shell_unjailed() {
-        // The "only coder was configured" upgrade path: shell has no jail, coder
-        // does — derive shell's jail from coder's roots + tuning.
-        let shell = ShellConfig::default();
-        assert!(!shell.fs.is_jailed());
-        let coder = crate::code::config::CoderConfig {
-            base_paths: vec!["/work/project".into()],
-            non_accessible_globs: vec!["**/*.pem".into()],
-            ..Default::default()
-        };
-        let merged = fold_coder_into_shell(shell, &coder).expect("a change");
-        assert_eq!(
-            merged.fs.host_roots,
-            vec![std::path::PathBuf::from("/work/project")]
-        );
-        assert!(merged.fs.is_jailed());
-        assert_eq!(
-            merged.code.non_accessible_globs,
-            vec!["**/*.pem".to_string()]
-        );
-        assert!(merged.migrated_from_coder);
-    }
-
-    #[test]
-    fn fold_is_idempotent_once_marked() {
-        let shell = ShellConfig {
-            migrated_from_coder: true,
-            ..Default::default()
-        };
-        let coder = crate::code::config::CoderConfig::default();
-        assert!(
-            fold_coder_into_shell(shell, &coder).is_none(),
-            "an already-migrated shell value is a no-op"
-        );
-    }
-
-    #[test]
-    fn fold_never_drops_existing_shell_protected_globs() {
-        // shell already tuned its protected globs; the fold must not overwrite.
-        let mut shell = ShellConfig::default();
-        shell.fs.host_root = Some("/srv".into());
-        shell.code.non_accessible_globs = vec!["**/secret.key".into()];
-        let coder = crate::code::config::CoderConfig {
-            non_accessible_globs: vec!["**/.env".into()],
-            ..Default::default()
-        };
-        let merged = fold_coder_into_shell(shell, &coder).expect("marker set");
-        assert_eq!(
-            merged.code.non_accessible_globs,
-            vec!["**/secret.key".to_string()],
-            "shell's own protected globs must be preserved"
-        );
-    }
-
-    #[test]
-    fn fold_preserves_a_tuned_code_knob_with_default_globs() {
-        // Regression: a shell that tuned a numeric knob (max_read_bytes) but
-        // left default globs is NOT "untouched" — the fold must keep the knob,
-        // not overwrite the whole code block with coder's defaults.
-        let mut shell = ShellConfig::default();
-        shell.fs.host_root = Some("/srv".into());
-        shell.code.max_read_bytes = 5_000_000;
-        let coder = crate::code::config::CoderConfig {
-            non_accessible_globs: vec!["**/.env".into()],
-            ..Default::default()
-        };
-        let merged = fold_coder_into_shell(shell, &coder).expect("a change");
-        assert_eq!(
-            merged.code.max_read_bytes, 5_000_000,
-            "a tuned numeric knob must survive the fold"
-        );
-        // The empty protected globs are still back-filled from coder.
-        assert_eq!(
-            merged.code.non_accessible_globs,
-            vec!["**/.env".to_string()]
-        );
+    fn legacy_host_root_config_is_rejected_with_hint() {
+        // INVERSION of the old T6 regression test: through 0.6.x a single
+        // fs.host_root was honored as a one-entry jail, and this test proved
+        // that pre-merge shape still booted. 0.7.0 removes the alias outright,
+        // so the SAME config shape must now FAIL CLOSED at parse with a hint
+        // naming fs.host_roots — serde would otherwise ignore the stale key
+        // and the worker would refuse to start with a message that never
+        // names the actual mistake.
+        let yaml = "allowlist: []\nfs:\n  host_root: /tmp/legacy-root\n";
+        let err = ShellConfig::from_yaml(yaml).expect_err("the 0.6.x alias must be rejected");
+        assert!(err.contains("removed in 0.7.0"), "{err}");
+        assert!(err.contains("fs.host_roots"), "{err}");
     }
 
     #[test]
@@ -770,7 +538,7 @@ mod tests {
 
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59597", iii_sdk::InitOptions::default());
         let mut base = ShellConfig::default();
-        base.fs.host_root = Some(dir_old.clone());
+        base.fs.host_roots = vec![dir_old.clone()];
         let initial = build_runtime(&base, &iii).expect("initial runtime");
         let state = AppState {
             runtime: Arc::new(RwLock::new(initial)),
@@ -780,9 +548,9 @@ mod tests {
         };
 
         let mut cfg_old = ShellConfig::default();
-        cfg_old.fs.host_root = Some(dir_old.clone());
+        cfg_old.fs.host_roots = vec![dir_old.clone()];
         let mut cfg_new = ShellConfig::default();
-        cfg_new.fs.host_root = Some(dir_new.clone());
+        cfg_new.fs.host_roots = vec![dir_new.clone()];
 
         // OLDER reload: acquires the reload lock first, then stalls inside the
         // (lock-held) fetch — simulating a slow build for an older event.
@@ -791,7 +559,7 @@ mod tests {
         let h1 = tokio::spawn(async move {
             let _ = reload_serialized(&s1, || async move {
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                Ok::<_, String>(old)
+                Ok::<_, String>(old.to_json())
             })
             .await;
         });
@@ -804,16 +572,16 @@ mod tests {
         let s2 = state.clone();
         let new = cfg_new.clone();
         let h2 = tokio::spawn(async move {
-            let _ = reload_serialized(&s2, || async move { Ok::<_, String>(new) }).await;
+            let _ = reload_serialized(&s2, || async move { Ok::<_, String>(new.to_json()) }).await;
         });
 
         h1.await.unwrap();
         h2.await.unwrap();
 
-        let final_root = state.runtime.read().await.config.fs.host_root.clone();
+        let final_root = state.runtime.read().await.config.fs.host_roots.clone();
         assert_eq!(
             final_root,
-            Some(dir_new),
+            vec![dir_new],
             "newest config must win; a stale older build must not clobber it"
         );
     }
@@ -826,7 +594,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59596", iii_sdk::InitOptions::default());
         let mut base = ShellConfig::default();
-        base.fs.host_root = Some(dir.clone());
+        base.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&base, &iii).expect("initial"))),
             iii: iii.clone(),
@@ -834,7 +602,7 @@ mod tests {
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
         };
         let res = reload_serialized(&state, || async {
-            Err::<ShellConfig, String>("get timed out".into())
+            Err::<Value, String>("get timed out".into())
         })
         .await;
         assert!(
@@ -842,8 +610,8 @@ mod tests {
             "transient fetch failure must surface as Err, not ack success"
         );
         assert_eq!(
-            state.runtime.read().await.config.fs.host_root,
-            Some(dir),
+            state.runtime.read().await.config.fs.host_roots,
+            vec![dir],
             "runtime unchanged on fetch failure"
         );
         // A transient fetch failure is NOT a config rejection: status untouched.
@@ -863,25 +631,76 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59595", iii_sdk::InitOptions::default());
         let mut good = ShellConfig::default();
-        good.fs.host_root = Some(dir.clone());
+        good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
         };
-        // ShellConfig::default() is unjailed (host_root None, allow_unjailed false) → rejected by prepare_config.
-        let res =
-            reload_serialized(&state, || async { Ok::<_, String>(ShellConfig::default()) }).await;
+        // ShellConfig::default() is unjailed (empty host_roots, allow_unjailed false) → rejected by prepare_config.
+        let res = reload_serialized(&state, || async {
+            Ok::<_, String>(ShellConfig::default().to_json())
+        })
+        .await;
         assert!(
             matches!(res, Ok(ReloadOutcome::Rejected)),
             "invalid config must be acked as Rejected (no retry storm), not Err"
         );
         assert_eq!(
-            state.runtime.read().await.config.fs.host_root,
-            Some(dir),
+            state.runtime.read().await.config.fs.host_roots,
+            vec![dir],
             "runtime keeps last-good on invalid config"
         );
+    }
+
+    /// A stored value that FAILS TO PARSE (e.g. a 0.6.x shape carrying the
+    /// removed `inherit_env`/`allowed_env` keys) must classify the same as an
+    /// unbuildable-but-parseable config: `Rejected`, keep last-good, ack (no
+    /// retry storm), and record the rejection for `shell::config-status`.
+    /// Before the fix this hit the transient-fetch-failure branch instead —
+    /// re-fetching returns the identical bytes, so the dispatcher would retry
+    /// forever against a value that can never parse.
+    #[tokio::test]
+    async fn reload_rejects_and_records_unparseable_stored_value() {
+        let dir = std::env::temp_dir().join("shell-reload-unparseable-9b3c");
+        std::fs::create_dir_all(&dir).unwrap();
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:59593", iii_sdk::InitOptions::default());
+        let mut good = ShellConfig::default();
+        good.fs.host_roots = vec![dir.clone()];
+        let state = AppState {
+            runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
+            iii: iii.clone(),
+            reload_lock: Arc::new(Mutex::new(())),
+            reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
+        };
+        // A literal 0.6.x stored shape: top-level inherit_env/allowed_env,
+        // no `env` block — fails check_removed_keys inside parse_fetched_value.
+        let stale_060_shape = serde_json::json!({
+            "inherit_env": true,
+            "allowed_env": ["PATH", "HOME"],
+        });
+        let res =
+            reload_serialized(&state, || async move { Ok::<_, String>(stale_060_shape) }).await;
+        assert!(
+            matches!(res, Ok(ReloadOutcome::Rejected)),
+            "unparseable stored value must be Rejected (permanent), not Err (transient): {res:?}"
+        );
+        assert_eq!(
+            state.runtime.read().await.config.fs.host_roots,
+            vec![dir],
+            "runtime keeps last-good on an unparseable stored value"
+        );
+        let s = state.reload_status.read().await;
+        assert_eq!(s.last_outcome, ReloadOutcome::Rejected);
+        assert!(
+            s.last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("removed in 0.7.0")),
+            "config-status must surface the migration hint: {:?}",
+            s.last_error
+        );
+        assert_eq!(s.rejected_reloads, 1);
     }
 
     #[tokio::test]
@@ -893,9 +712,9 @@ mod tests {
         std::fs::create_dir_all(&dir_b).unwrap();
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59594", iii_sdk::InitOptions::default());
         let mut a = ShellConfig::default();
-        a.fs.host_root = Some(dir_a.clone());
+        a.fs.host_roots = vec![dir_a.clone()];
         let mut b = ShellConfig::default();
-        b.fs.host_root = Some(dir_b.clone());
+        b.fs.host_roots = vec![dir_b.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&a, &iii).expect("initial"))),
             iii: iii.clone(),
@@ -904,13 +723,13 @@ mod tests {
         };
         let res = reload_serialized(&state, {
             let b = b.clone();
-            move || async move { Ok::<_, String>(b) }
+            move || async move { Ok::<_, String>(b.to_json()) }
         })
         .await;
         assert!(matches!(res, Ok(ReloadOutcome::Applied)));
         assert_eq!(
-            state.runtime.read().await.config.fs.host_root,
-            Some(dir_b),
+            state.runtime.read().await.config.fs.host_roots,
+            vec![dir_b],
             "reconcile/reload applies the freshly fetched config"
         );
     }
@@ -924,7 +743,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59592", iii_sdk::InitOptions::default());
         let mut good = ShellConfig::default();
-        good.fs.host_root = Some(dir.clone());
+        good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
             iii: iii.clone(),
@@ -940,8 +759,10 @@ mod tests {
         }
 
         // A rejected (invalid: unjailed default) reload keeps last-good AND records it.
-        let res =
-            reload_serialized(&state, || async { Ok::<_, String>(ShellConfig::default()) }).await;
+        let res = reload_serialized(&state, || async {
+            Ok::<_, String>(ShellConfig::default().to_json())
+        })
+        .await;
         assert!(res.is_ok(), "invalid config is acked (no storm)");
         {
             let s = state.reload_status.read().await;
@@ -951,16 +772,16 @@ mod tests {
         }
         // Runtime kept the previous (valid) policy.
         assert_eq!(
-            state.runtime.read().await.config.fs.host_root,
-            Some(dir.clone())
+            state.runtime.read().await.config.fs.host_roots,
+            vec![dir.clone()]
         );
 
         // A subsequent valid reload flips back to Applied but preserves the count.
         let mut good2 = ShellConfig::default();
-        good2.fs.host_root = Some(dir.clone());
+        good2.fs.host_roots = vec![dir.clone()];
         let res = reload_serialized(&state, {
             let g = good2.clone();
-            move || async move { Ok::<_, String>(g) }
+            move || async move { Ok::<_, String>(g.to_json()) }
         })
         .await;
         assert!(res.is_ok());
@@ -1002,7 +823,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59591", iii_sdk::InitOptions::default());
         let mut good = ShellConfig::default();
-        good.fs.host_root = Some(dir.clone());
+        good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
             iii: iii.clone(),
@@ -1011,8 +832,10 @@ mod tests {
         };
 
         // Invalid (unjailed default) authoritative config → fail closed.
-        let res =
-            reconcile_with(&state, || async { Ok::<_, String>(ShellConfig::default()) }).await;
+        let res = reconcile_with(&state, || async {
+            Ok::<_, String>(ShellConfig::default().to_json())
+        })
+        .await;
         assert!(
             res.is_err(),
             "boot reconcile must fail closed on an invalid stored config"
@@ -1020,7 +843,7 @@ mod tests {
 
         // Transient fetch failure → fail closed too.
         let res = reconcile_with(&state, || async {
-            Err::<ShellConfig, String>("get timed out".into())
+            Err::<Value, String>("get timed out".into())
         })
         .await;
         assert!(
@@ -1030,10 +853,10 @@ mod tests {
 
         // A valid config reconciles cleanly.
         let mut good2 = ShellConfig::default();
-        good2.fs.host_root = Some(dir.clone());
+        good2.fs.host_roots = vec![dir.clone()];
         let res = reconcile_with(&state, {
             let g = good2.clone();
-            move || async move { Ok::<_, String>(g) }
+            move || async move { Ok::<_, String>(g.to_json()) }
         })
         .await;
         assert!(res.is_ok(), "boot reconcile applies a valid config");

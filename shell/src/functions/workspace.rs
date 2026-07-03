@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn roots_include_configured_host_root_and_operator_anchors() {
+    fn roots_include_configured_jail_root_and_operator_anchors() {
         let jail = tempdir().unwrap();
         let cfg = cfg_with_root(jail.path().to_path_buf());
 

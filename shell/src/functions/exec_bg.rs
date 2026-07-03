@@ -40,7 +40,7 @@ pub async fn handle(
     cfg.is_command_allowed(&argv)?;
 
     // Gate the per-call cwd/env up front, BEFORE branching on target. Same
-    // rules as shell::exec (jail-confined cwd, allowed_env + dangerous-key env
+    // rules as shell::exec (jail-confined cwd, env.allow + dangerous-key env
     // gating). exec_bg returns its spawn-time failures as plain strings (its
     // documented contract), so we stringify the S-code into the message — the
     // agent still sees the code (e.g. "S215") and the self-correcting text.
@@ -502,7 +502,7 @@ mod host_path_tests {
     // (0 → unbounded bg job.)
     fn cfg(bg_cap_ms: u64, max_concurrent_jobs: usize) -> Arc<ShellConfig> {
         let mut c = ShellConfig {
-            inherit_env: true,
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             max_timeout_ms: bg_cap_ms,
             max_bg_timeout_ms: bg_cap_ms,
@@ -790,7 +790,7 @@ mod sandbox_path_tests {
 
     fn cfg_open() -> Arc<ShellConfig> {
         let mut c = ShellConfig {
-            inherit_env: true,
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             ..Default::default()
         };
