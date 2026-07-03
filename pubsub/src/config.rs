@@ -78,10 +78,9 @@ mod tests {
 
     #[test]
     fn deserializes_adapter_entry() {
-        let c: PubSubConfig = serde_yaml::from_str(
-            "{adapter: {name: redis, config: {redis_url: 'redis://x:6379'}}}",
-        )
-        .unwrap();
+        let c: PubSubConfig =
+            serde_yaml::from_str("{adapter: {name: redis, config: {redis_url: 'redis://x:6379'}}}")
+                .unwrap();
         assert_eq!(c.effective_adapter_name(), "redis");
         assert_eq!(
             c.adapter.unwrap().config.unwrap()["redis_url"],

@@ -168,7 +168,9 @@ mod tests {
 
     #[test]
     fn empty_list_passes() {
-        assert!(!builtin_iii_pubsub_active(&serde_json::json!({"workers": []})));
+        assert!(!builtin_iii_pubsub_active(
+            &serde_json::json!({"workers": []})
+        ));
     }
 
     #[test]

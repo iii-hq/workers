@@ -127,7 +127,9 @@ pub fn register_config_trigger(
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
-        .description("Internal: reload pubsub configuration from the authoritative store on change."),
+        .description(
+            "Internal: reload pubsub configuration from the authoritative store on change.",
+        ),
     );
 
     iii.register_trigger(RegisterTriggerInput {
@@ -241,8 +243,14 @@ mod tests {
                 .unwrap();
 
         assert!(!swap_needed(&local, &local));
-        assert!(!swap_needed(&none, &local), "None normalizes to local (builtin parity)");
+        assert!(
+            !swap_needed(&none, &local),
+            "None normalizes to local (builtin parity)"
+        );
         assert!(swap_needed(&local, &redis));
-        assert!(swap_needed(&redis, &redis_url), "adapter config change forces a rebuild");
+        assert!(
+            swap_needed(&redis, &redis_url),
+            "adapter config change forces a rebuild"
+        );
     }
 }

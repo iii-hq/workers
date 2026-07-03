@@ -53,7 +53,9 @@ pub async fn build_adapter(
             Ok(Arc::new(RedisAdapter::connect(&url, invoker).await?))
         }
         other => {
-            anyhow::bail!("PubSub adapter factory '{other}' not found (expected 'local' or 'redis')")
+            anyhow::bail!(
+                "PubSub adapter factory '{other}' not found (expected 'local' or 'redis')"
+            )
         }
     }
 }

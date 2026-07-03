@@ -123,7 +123,10 @@ mod tests {
     #[async_trait]
     impl crate::adapters::PubSubAdapter for RecordingAdapter {
         async fn publish(&self, topic: &str, data: serde_json::Value) {
-            self.published.lock().unwrap().push((topic.to_string(), data));
+            self.published
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), data));
         }
         async fn subscribe(&self, topic: &str, id: &str, function_id: &str) {
             self.subscribed.lock().unwrap().push((
@@ -144,7 +147,10 @@ mod tests {
     async fn publish_rejects_empty_topic() {
         let adapter = Arc::new(RecordingAdapter::default());
         let hub = Hub::new(adapter.clone());
-        let err = hub.publish("", serde_json::json!({"x": 1})).await.unwrap_err();
+        let err = hub
+            .publish("", serde_json::json!({"x": 1}))
+            .await
+            .unwrap_err();
         assert!(err.contains("topic_not_set"));
         assert!(err.contains("Topic is not set"));
         assert!(adapter.published.lock().unwrap().is_empty());
@@ -154,9 +160,14 @@ mod tests {
     async fn publish_delegates_to_adapter() {
         let adapter = Arc::new(RecordingAdapter::default());
         let hub = Hub::new(adapter.clone());
-        hub.publish("orders", serde_json::json!({"id": 1})).await.unwrap();
+        hub.publish("orders", serde_json::json!({"id": 1}))
+            .await
+            .unwrap();
         let published = adapter.published.lock().unwrap();
-        assert_eq!(published.as_slice(), &[("orders".to_string(), serde_json::json!({"id": 1}))]);
+        assert_eq!(
+            published.as_slice(),
+            &[("orders".to_string(), serde_json::json!({"id": 1}))]
+        );
     }
 
     #[tokio::test]
