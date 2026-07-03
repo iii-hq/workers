@@ -116,6 +116,10 @@ fn function_result_to_wire(m: &FunctionResultMessage) -> Value {
 }
 
 pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
+    // Results displaced behind an interleaved user message (notification /
+    // steering injected mid call-window) must be pulled back next to their
+    // call: Anthropic rejects any other shape.
+    let messages = llm_router::types::messages::reorder_displaced_results(messages);
     let mut out: Vec<Value> = Vec::new();
     let mut pending: Vec<Value> = Vec::new();
 
@@ -131,7 +135,7 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
         .collect();
     // Assistant turns that actually emitted a tool_use on the wire.
     let mut emitted_call_ids: HashSet<String> = HashSet::new();
-    for m in messages {
+    for m in &messages {
         if let AgentMessage::Assistant(a) = m {
             for block in &a.content {
                 if let ContentBlock::FunctionCall { id, .. } = block {
@@ -318,6 +322,32 @@ mod tests {
         assert_eq!(wire.len(), 2);
         assert_eq!(wire[1]["role"], "user");
         assert_eq!(wire[1]["content"][0]["type"], "tool_result");
+    }
+
+    #[test]
+    fn user_message_between_call_and_result_keeps_result_adjacent() {
+        // Live 400 repro: a notification/steering user entry injected into a
+        // parked call window lands between the call and its result in the
+        // transcript. Anthropic requires the tool_result in the message
+        // IMMEDIATELY after the tool_use message.
+        let wire = to_wire_messages(&[
+            assistant(vec![call("t1")]),
+            user(vec![ContentBlock::Text {
+                text: "[notification] progress".into(),
+            }]),
+            result("t1", "ok", json!({})),
+        ]);
+        assert_eq!(wire[0]["role"], "assistant");
+        assert_eq!(wire[1]["role"], "user");
+        let content = wire[1]["content"].as_array().unwrap();
+        assert_eq!(
+            content[0]["type"], "tool_result",
+            "tool_result must sit in the message immediately after tool_use, got: {content:?}"
+        );
+        // The notification text must survive, after the result.
+        assert!(content
+            .iter()
+            .any(|b| b["type"] == "text" && b["text"].as_str().unwrap().contains("progress")));
     }
 
     #[test]

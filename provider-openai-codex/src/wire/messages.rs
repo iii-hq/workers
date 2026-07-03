@@ -77,6 +77,11 @@ fn upsert_output(out: &mut Vec<Value>, row: Value) {
 /// first `system` input item (Codex also accepts top-level `instructions`; a
 /// system item keeps ordering explicit and matches the reference).
 pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<Value> {
+    // Results displaced behind an interleaved user message (notification /
+    // steering injected mid call-window) must be pulled back next to their
+    // call: the Responses API rejects a user item between a function_call
+    // and its function_call_output.
+    let messages = llm_router::types::messages::reorder_displaced_results(messages);
     let mut out: Vec<Value> = Vec::new();
     if !system_prompt.is_empty() {
         out.push(json!({
@@ -191,6 +196,31 @@ mod tests {
             function_id: "shell::exec".into(),
             arguments: json!({ "cmd": "ls" }),
         }
+    }
+
+    #[test]
+    fn user_message_between_call_and_result_keeps_output_adjacent() {
+        // Live-repro class: a notification/steering user entry injected into a
+        // parked call window lands between the call and its result in the
+        // transcript. The Responses API rejects a user item between a
+        // function_call and its function_call_output.
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1")]),
+                user(vec![ContentBlock::Text {
+                    text: "[notification] progress".into(),
+                }]),
+                result("t1", "ok", json!({})),
+            ],
+            "",
+        );
+        assert_eq!(wire[0]["type"], "function_call");
+        assert_eq!(
+            wire[1]["type"], "function_call_output",
+            "output must directly follow its function_call, got: {wire:?}"
+        );
+        assert_eq!(wire[1]["call_id"], "t1");
+        assert_eq!(wire[2]["role"], "user");
     }
 
     #[test]
