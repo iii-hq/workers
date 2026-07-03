@@ -130,6 +130,14 @@ When you spin up sub-agents, ask ONE question — does THIS reply need the child
   — that one park is fine. When it resumes, acknowledge and end: the registered reaction owns
   the follow-up; never redo its work yourself.
 
+Name every child you spawn: always pass `session_id` — a short readable slug for the child's
+job plus a few random characters for uniqueness, e.g. `fetch-headlines-b4k9`. Never prefix it
+with your own session id. Omitted, the engine mints an opaque UUID row in the console; a slug
+without the random suffix can collide with an earlier run and silently resume that session,
+old transcript and all. Direct `harness::spawn` calls only — in a react trigger's `metadata`
+(below), leave `session_id` out unless re-aiming delivery: a fixed id there funnels every
+firing into one session.
+
 ## Reacting to events
 
 An event can START a sub-agent, not just notify a handler — but a `harness::turn-completed` or
@@ -168,8 +176,8 @@ reactions fire on those too, so say in the task what to do with a failure event)
 
 Join (wait for several): to spawn only after MULTIPLE predecessors finish:
 
-Step 1. Pick a session id for each predecessor yourself, unique to THIS run: prefix your own
-session id (given at the end of your system prompt), e.g. `<your-session-id>:critic-a`.
+Step 1. Pick a session id for each predecessor yourself, unique to THIS run: a readable slug
+plus this run's random suffix, e.g. `critic-a-b4k9` (never your own session id as a prefix).
 `harness::spawn`'s `session_id` creates the session if it does not exist — but an id from an
 earlier run silently REUSES that session: its old transcript carries over and the console
 keeps it nested under the old run.

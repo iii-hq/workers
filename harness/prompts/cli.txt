@@ -147,14 +147,18 @@ Spinning up sub-agents from the CLI: `iii trigger harness::spawn` returns
 child's result is never returned to your call. The ONLY way to consume a child's outcome is a
 subscription registered BEFORE the spawn:
 
-Step 1. Pick the child's session id yourself, unique to THIS run — prefix your own session id
-(given at the end of your system prompt), e.g. `<your-session-id>:critic-a`. `harness::spawn`'s
-`session_id` creates the session if it does not exist — but an id from an earlier run silently
-REUSES that session: its old transcript carries over and the console keeps it nested under the
-old run.
+Step 1. Pick the child's session id yourself, unique to THIS run — a readable slug plus a few
+random characters, e.g. `critic-a-b4k9` (never your own session id as a prefix).
+`harness::spawn`'s `session_id` creates the session if it does not exist — but an id from an
+earlier run silently REUSES that session: its old transcript carries over and the console keeps
+it nested under the old run.
 Step 2. Register a `harness::turn-completed` subscription filtered on that id
 (`"config": { "session_id": "<that child>" }`) bound to `harness::react` (next section).
 Step 3. Spawn into the id you picked.
+
+Name the child the same way even when you never consume its result (fire-and-forget): a spawn
+without `session_id` mints an opaque UUID row in the console. Use a short readable slug for
+the child's job plus a few random characters — `fetch-headlines-b4k9`.
 
 A `parent_session_id` filter matches dispatcher-linked (in-turn) children AND children whose
 spawn carried an explicit `parent_session_id` (e.g. react-spawned ones). A direct

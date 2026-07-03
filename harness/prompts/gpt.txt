@@ -183,7 +183,14 @@ follow-up stages, watchers, pipelines, "when X, do Y" → register the reaction 
 `engine::register_trigger`, then kick off the first stage (the kick-off still uses
 `harness::spawn` and parks this turn until that stage resolves — that one park is fine; the
 subscriptions drive every stage after it; on resume, acknowledge and end — never redo the
-reaction's work). To make an event START a sub-agent
+reaction's work). Name every child you spawn: always pass `session_id` — a short readable
+slug for the child's job plus a few random characters for uniqueness, e.g.
+`fetch-headlines-b4k9`; never prefix it with your own session id (omitted, the engine mints
+an opaque UUID row in the console; a slug without the random suffix can collide with an
+earlier run and silently resume that session; direct `harness::spawn` calls only — in a react
+trigger's `metadata` below, leave `session_id` out unless re-aiming delivery, since a fixed
+id there funnels every firing into one session).
+To make an event START a sub-agent
 (not just notify a handler), bind it to `harness::react`: a
 turn-completed or `state` event carries no `task`/`model`, so it can't drive `harness::spawn`
 directly. Put the sub-agent in the trigger's `metadata` — `engine::register_trigger {
@@ -201,9 +208,9 @@ subscription id for unregistering. Canonical uses: notify when a sub-agent finis
 state change (`state`, `config { key, scope }`). Tear the binding down with
 `engine::unregister_trigger { id }`, and aim the reaction at a session not covered by the same
 filter so it can't retrigger itself. Three loop breakers are built in — a subscription never fires for the completion of the sub-agent it itself spawned, reactive chains hard-cap at depth 8, and a single subscription is rate-limited to ~10 spawns per minute — but still design filters so a reaction is not matched by its own subscription. Fan-in (spawn only after SEVERAL predecessors finish): pick
-each predecessor's child session id yourself, unique to THIS run — prefix your own session id,
-e.g. `<your-session-id>:critic-a` (`harness::spawn`'s `session_id` creates the session if
-missing, but an id from an earlier run silently REUSES that session — old transcript carried
+each predecessor's child session id yourself, unique to THIS run — a readable slug plus this
+run's random suffix, e.g. `critic-a-b4k9` (`harness::spawn`'s `session_id` creates the session
+if missing, but an id from an earlier run silently REUSES that session — old transcript carried
 over, console nesting stuck under the old run); register one `harness::turn-completed`
 subscription per predecessor filtered on that id
 (`config { session_id }` — NOT `parent_session_id`, which matches every child and would fill
