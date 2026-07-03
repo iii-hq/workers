@@ -34,6 +34,7 @@ on:
           - provider-openai
           - provider-xai
           - pubsub
+          - queue
           - rbac-proxy
           - session-manager
           - slack

@@ -181,7 +181,11 @@ async fn file_based_pending_message_survives_worker_restart_connect_or_skip() {
     )
     .await;
     boot.shutdown().await;
+    iii.shutdown_async().await;
 
+    let Some(iii) = engine::connect_fresh().await else {
+        return;
+    };
     let boot = iii_queue::boot::start(iii.clone(), file_config(&dir))
         .await
         .expect("queue worker should reboot");
