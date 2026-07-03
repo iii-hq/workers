@@ -2,15 +2,14 @@
 //! http/src/trigger.rs: table keyed by trigger id because the SDK only
 //! populates `id` on unregister.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::scheduler::{JobSpec, Scheduler};
+use crate::boot::SchedulerCell;
+use crate::scheduler::JobSpec;
 
 /// Trigger config schema, field-parity with the engine's CronTriggerConfig.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -24,11 +23,11 @@ pub struct CronTriggerSpec {
 
 #[derive(Clone)]
 pub struct CronTriggerHandler {
-    pub scheduler: Arc<Scheduler>,
+    pub scheduler: SchedulerCell,
 }
 
 impl CronTriggerHandler {
-    pub fn new(scheduler: Arc<Scheduler>) -> Self {
+    pub fn new(scheduler: SchedulerCell) -> Self {
         Self { scheduler }
     }
 }
@@ -41,7 +40,8 @@ impl TriggerHandler for CronTriggerHandler {
                 "invalid cron trigger config (expression required): {e}"
             ))
         })?;
-        self.scheduler
+        let scheduler = self.scheduler.read().await.clone();
+        scheduler
             .register(JobSpec {
                 trigger_id: config.id,
                 expression: spec.expression,
@@ -53,7 +53,8 @@ impl TriggerHandler for CronTriggerHandler {
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let _ = self.scheduler.unregister(&config.id).await;
+        let scheduler = self.scheduler.read().await.clone();
+        let _ = scheduler.unregister(&config.id).await;
         Ok(())
     }
 }
@@ -62,6 +63,7 @@ impl TriggerHandler for CronTriggerHandler {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
 
     use crate::scheduler::Invoker;
 
@@ -84,10 +86,11 @@ mod tests {
 
     fn handler() -> CronTriggerHandler {
         let inv = Arc::new(FakeInvoker::default());
-        CronTriggerHandler::new(Arc::new(Scheduler::new(
+        let scheduler = Arc::new(crate::scheduler::Scheduler::new(
             Arc::new(crate::locks::LocalLock::new()),
             inv,
-        )))
+        ));
+        CronTriggerHandler::new(Arc::new(tokio::sync::RwLock::new(scheduler)))
     }
 
     fn trigger_config(id: &str, cfg: serde_json::Value) -> TriggerConfig {
@@ -108,12 +111,12 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(h.scheduler.job_specs().await.len(), 1);
+        assert_eq!(h.scheduler.read().await.job_specs().await.len(), 1);
 
         h.unregister_trigger(trigger_config("t1", serde_json::Value::Null))
             .await
             .unwrap();
-        assert_eq!(h.scheduler.job_specs().await.len(), 0);
+        assert_eq!(h.scheduler.read().await.job_specs().await.len(), 0);
     }
 
     #[tokio::test]
