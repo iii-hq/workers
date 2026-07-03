@@ -747,7 +747,11 @@ async fn park_awaiting_continue(
         "e_{}_await_continue_{}",
         record.turn_id, record.options.max_turns
     );
-    let _ = session
+    // Best-effort, but LOUD on failure: the console shows the continue/stop
+    // choice only off the notice + `waiting` status, so a silent failure here
+    // (e.g. a session-manager too old to know `waiting`) parks the turn with
+    // no visible way for the user to resume it.
+    if let Err(e) = session
         .append_custom(
             &record.session_id,
             "notice",
@@ -756,15 +760,30 @@ async fn park_awaiting_continue(
             Some(&origin(&record.turn_id)),
             Some(&notice),
         )
-        .await;
+        .await
+    {
+        tracing::warn!(
+            session_id = %record.session_id,
+            error = %e,
+            "failed to append the ask-to-continue notice; the pause is invisible in the console"
+        );
+    }
 
     record.status = TurnStatus::AwaitingFunctions;
     record.awaiting_continue = true;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    let _ = session
+    if let Err(e) = session
         .set_status(&record.session_id, "waiting", Some("max_turns"))
-        .await;
+        .await
+    {
+        tracing::warn!(
+            session_id = %record.session_id,
+            error = %e,
+            "failed to set session status to `waiting` (session-manager < 1.1.0?); \
+             the console will not offer continue/stop for this parked turn"
+        );
+    }
 
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
