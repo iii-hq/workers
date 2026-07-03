@@ -88,6 +88,7 @@ On boot, this worker queries `engine::workers::list` and refuses to start if
 | In-memory mode | jobs lost on restart/swap | same |
 | Transports | builtin/memory/redis/rabbitmq | builtin memory/file; redis+rabbitmq follow-up |
 | Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly once the engine remote-enqueue cut lands |
+| Latency benchmark | in-process baseline required | tracked in `queue/benches/enqueue_latency.md`; final budget is a pre-deprecation gate |
 
 The full engine `TriggerAction::Enqueue` path depends on the separate
 `QueueEnqueuer` engine cut tracked in the migration master plan.
