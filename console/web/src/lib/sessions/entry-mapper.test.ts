@@ -243,6 +243,39 @@ describe('applyEntryUpsert', () => {
       functionCallId: 'fc-1',
     })
   })
+
+  it('carries folderAccess through a snapshot re-derivation while pending', () => {
+    const local: Message = {
+      id: 'local-1',
+      role: 'function-call',
+      functionId: 'shell::fs::read',
+      input: {},
+      running: false,
+      pendingApproval: true,
+      functionCallId: 'fc-1',
+      sessionId: 'sess-a',
+      folderAccess: { dir: '/abs/existing/dir', errorCode: 'S215' },
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::fs::read',
+          arguments: {},
+        },
+      ]),
+    )
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e-a:0',
+      pendingApproval: true,
+      functionCallId: 'fc-1',
+      folderAccess: { dir: '/abs/existing/dir', errorCode: 'S215' },
+    })
+  })
 })
 
 describe('applyFcallPatch / clearTransientFlags', () => {

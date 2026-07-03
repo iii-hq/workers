@@ -581,6 +581,14 @@ export function DirectoryPicker({
               </div>
             </div>
           )}
+
+          {/* Static discoverability footnote — same line in both views, per
+              the folder-access spec §6: sets expectations before the first
+              grant prompt ever fires. */}
+          <div className="border-t border-rule-2 px-3 py-1.5 font-mono text-[10px] leading-relaxed text-ink-ghost">
+            the agent can use the chosen folder freely — it asks before touching
+            anything outside it.
+          </div>
         </div>
       ) : null}
     </div>

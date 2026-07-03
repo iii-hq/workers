@@ -1,3 +1,4 @@
+import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
 import { Markdown } from '@/lib/markdown'
@@ -24,12 +25,22 @@ interface MessageProps {
     functionCallId: string,
     functionId: string,
   ) => Promise<void>
+  onResolveFolderAccess?: (
+    sessionId: string,
+    functionCallId: string,
+    action: FolderAccessAction,
+  ) => Promise<void>
+  onManageFolderAccess?: () => void
+  workingDir?: string | null
 }
 
 export function Message({
   message,
   onResolveApproval,
   onAlwaysAllow,
+  onResolveFolderAccess,
+  onManageFolderAccess,
+  workingDir,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -48,6 +59,9 @@ export function Message({
       let onApprove: (() => Promise<void>) | undefined
       let onDeny: (() => Promise<void>) | undefined
       let onAlwaysAllowHandler: (() => Promise<void>) | undefined
+      let onResolveFolderAccessHandler:
+        | ((action: FolderAccessAction) => Promise<void>)
+        | undefined
       if (onResolveApproval && sessionId && functionCallId) {
         onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
         onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
@@ -56,12 +70,19 @@ export function Message({
         onAlwaysAllowHandler = () =>
           onAlwaysAllow(sessionId, functionCallId, message.functionId)
       }
+      if (onResolveFolderAccess && sessionId && functionCallId) {
+        onResolveFolderAccessHandler = (action) =>
+          onResolveFolderAccess(sessionId, functionCallId, action)
+      }
       return (
         <FunctionCallMessage
           message={message}
           onApprove={onApprove}
           onDeny={onDeny}
           onAlwaysAllow={onAlwaysAllowHandler}
+          onResolveFolderAccess={onResolveFolderAccessHandler}
+          onManageFolderAccess={onManageFolderAccess}
+          workingDir={workingDir}
         />
       )
     }

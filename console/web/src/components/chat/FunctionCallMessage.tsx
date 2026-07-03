@@ -23,6 +23,10 @@ import {
   WorkflowToolView,
 } from '@/components/chat/workflow'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
+import {
+  type FolderAccessAction,
+  FolderAccessPrompt,
+} from '@/components/permissions/FolderAccessPrompt'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -46,6 +50,16 @@ interface FunctionCallMessageProps {
    * function ids gate on a confirmation modal inside the button.
    */
   onAlwaysAllow?: () => void | Promise<void>
+  /**
+   * Resolve a folder-access grant request (see `message.folderAccess`).
+   * When set alongside `message.folderAccess`, replaces the standard
+   * approve/deny/always row with `FolderAccessPrompt`.
+   */
+  onResolveFolderAccess?: (action: FolderAccessAction) => void | Promise<void>
+  /** Opens the folder-access management dialog (§5 of the spec). */
+  onManageFolderAccess?: () => void
+  /** Conversation's session workspace — shown as "always allowed" context. */
+  workingDir?: string | null
   /**
    * When true, render without the outer `border border-rule bg-bg` chrome
    * so the parent (typically a `FunctionCallGroup`) can frame the stack.
@@ -153,10 +167,14 @@ export function FunctionCallMessage({
   onApprove,
   onDeny,
   onAlwaysAllow,
+  onResolveFolderAccess,
+  onManageFolderAccess,
+  workingDir,
   embedded,
 }: FunctionCallMessageProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
+  const folderAccess = pending ? message.folderAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const [submitting, setSubmitting] = useState<
@@ -241,7 +259,11 @@ export function FunctionCallMessage({
           <span className="font-mono text-[13px] text-ink truncate">
             {pending ? (
               <>
-                <span>permission to run</span>{' '}
+                <span>
+                  {folderAccess
+                    ? 'needs folder access to run'
+                    : 'permission to run'}
+                </span>{' '}
               </>
             ) : running ? (
               <>running </>
@@ -311,7 +333,19 @@ export function FunctionCallMessage({
         </div>
       ) : null}
 
-      {pending ? (
+      {pending && folderAccess ? (
+        <FolderAccessPrompt
+          // A held call can be re-parked with a fresh grant request (same
+          // function_call_id, different dir) — remount so submitting/confirm
+          // state from the previous round never wedges the buttons.
+          key={`${folderAccess.dir} ${folderAccess.offendingPath ?? ''}`}
+          dir={folderAccess.dir}
+          workingDir={workingDir}
+          onResolve={(action) => onResolveFolderAccess?.(action)}
+          onManage={onManageFolderAccess}
+          disabled={!onResolveFolderAccess}
+        />
+      ) : pending ? (
         <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <Button

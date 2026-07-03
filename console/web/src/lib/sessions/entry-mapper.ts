@@ -221,6 +221,7 @@ export type FcallPatch = Partial<
     | 'durationMs'
     | 'sessionId'
     | 'functionCallId'
+    | 'folderAccess'
   >
 >
 
@@ -303,6 +304,7 @@ export function applyEntryUpsert(
       running: existing.running,
       pendingApproval: existing.pendingApproval,
       sessionId: existing.sessionId ?? segment.sessionId,
+      folderAccess: existing.folderAccess ?? segment.folderAccess,
     }
   })
 

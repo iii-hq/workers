@@ -26,6 +26,13 @@ export type StreamEvent =
       functionCallId?: string
       /** iii session_id owning this call — needed to resolve approval. */
       sessionId?: string
+      /**
+       * Present when the pending approval is a folder-access grant request
+       * (`PendingApprovalRecord.kind === 'folder_access'`) rather than a
+       * plain function-call approval. Drives `FolderAccessPrompt` instead of
+       * the standard approve/deny/always row.
+       */
+      folderAccess?: { dir: string; offendingPath?: string; errorCode?: string }
     }
   | {
       kind: 'fcall-end'
@@ -159,6 +166,12 @@ export interface ChatBackend {
     sessionId: string,
     functionCallId: string,
     decision: 'allow' | 'deny',
+    /**
+     * Folder-access grant scope. Sent ONLY for folder_access resolutions
+     * (`opts.grantScope` set); omitted entirely for plain function-call
+     * approvals so old gates never see the field.
+     */
+    opts?: { grantScope?: 'once' | 'session' | 'always' },
   ): Promise<void>
   /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).

@@ -249,12 +249,17 @@ async function realResolveApproval(
   sessionId: string,
   functionCallId: string,
   decision: 'allow' | 'deny',
+  opts?: { grantScope?: 'once' | 'session' | 'always' },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('approval::resolve', {
     session_id: sessionId,
     function_call_id: functionCallId,
     decision,
+    // Only ride `grant_scope` on folder_access resolutions; omit entirely
+    // for plain approvals so old gates (that don't know the field) never
+    // see it.
+    ...(opts?.grantScope ? { grant_scope: opts.grantScope } : {}),
   })
 }
 

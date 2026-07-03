@@ -90,6 +90,12 @@ export interface FunctionCallMessage extends BaseMessage {
   functionCallId?: string
   /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
   sessionId?: string
+  /**
+   * Present when this pending call is a folder-access grant request rather
+   * than a plain function-call approval — renders `FolderAccessPrompt`
+   * instead of the standard approve/deny/always row.
+   */
+  folderAccess?: { dir: string; offendingPath?: string; errorCode?: string }
 }
 
 /**
@@ -131,6 +137,7 @@ export interface MessagePatch {
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
   functionCallId?: string
   sessionId?: string
+  folderAccess?: { dir: string; offendingPath?: string; errorCode?: string }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction'

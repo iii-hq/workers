@@ -47,7 +47,12 @@ interface ComposerProps {
   /** Show the per-session working-directory picker (real backend only). */
   showWorkingDir?: boolean
   workingDir?: string | null
-  /** Locked after the first send — picker renders read-only. */
+  /**
+   * When true, the picker renders read-only. NOT set after the first send —
+   * the working dir stays re-scopable mid-conversation (ChatView always
+   * passes `false`); this exists for callers that want a genuinely locked
+   * picker (e.g. an embedded/read-only surface).
+   */
   workingDirLocked?: boolean
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void

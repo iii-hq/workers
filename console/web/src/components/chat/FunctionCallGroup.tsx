@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
+import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
@@ -24,6 +25,13 @@ interface FunctionCallGroupProps {
     functionCallId: string,
     functionId: string,
   ) => Promise<void>
+  onResolveFolderAccess?: (
+    sessionId: string,
+    functionCallId: string,
+    action: FolderAccessAction,
+  ) => Promise<void>
+  onManageFolderAccess?: () => void
+  workingDir?: string | null
 }
 
 /**
@@ -138,6 +146,9 @@ export function FunctionCallGroup({
   defaultOpen,
   onResolveApproval,
   onAlwaysAllow,
+  onResolveFolderAccess,
+  onManageFolderAccess,
+  workingDir,
 }: FunctionCallGroupProps) {
   const status = deriveStatus(messages)
   const concerning = hasConcerningChild(messages)
@@ -197,6 +208,9 @@ export function FunctionCallGroup({
             let onApprove: (() => Promise<void>) | undefined
             let onDeny: (() => Promise<void>) | undefined
             let onAlwaysAllowHandler: (() => Promise<void>) | undefined
+            let onResolveFolderAccessHandler:
+              | ((action: FolderAccessAction) => Promise<void>)
+              | undefined
             if (onResolveApproval && sessionId && functionCallId) {
               onApprove = () =>
                 onResolveApproval(sessionId, functionCallId, 'allow')
@@ -207,6 +221,10 @@ export function FunctionCallGroup({
               onAlwaysAllowHandler = () =>
                 onAlwaysAllow(sessionId, functionCallId, m.functionId)
             }
+            if (onResolveFolderAccess && sessionId && functionCallId) {
+              onResolveFolderAccessHandler = (action) =>
+                onResolveFolderAccess(sessionId, functionCallId, action)
+            }
             return (
               <FunctionCallMessage
                 key={m.id}
@@ -214,6 +232,9 @@ export function FunctionCallGroup({
                 onApprove={onApprove}
                 onDeny={onDeny}
                 onAlwaysAllow={onAlwaysAllowHandler}
+                onResolveFolderAccess={onResolveFolderAccessHandler}
+                onManageFolderAccess={onManageFolderAccess}
+                workingDir={workingDir}
                 embedded
               />
             )

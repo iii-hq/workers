@@ -1,10 +1,13 @@
 import { Copy, Folder } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { FolderAccessDialog } from '@/components/permissions/FolderAccessDialog'
+import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
+import { useFolderGrants } from '@/hooks/use-folder-grants'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import {
   harnessComposerPlaceholder,
@@ -189,6 +192,53 @@ export function ChatView({
       announcer.announce(`approved always this session: ${functionId}`)
     }
   }, [backend, approvalSettings, announcer])
+
+  // Session-scoped folder grants (§5): loaded lazily by the management
+  // dialog; `addOptimistic` keeps the footer "· N" count in sync the
+  // instant a prompt resolves with session/always scope, without waiting
+  // for a round trip.
+  const folderGrants = useFolderGrants(sessionId)
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false)
+  const handleManageFolderAccess = useCallback(() => {
+    setFolderDialogOpen(true)
+  }, [])
+
+  const handleFolderResolve = useMemo(() => {
+    const resolveFn = backend.resolveApproval
+    if (!resolveFn) return undefined
+    return async (
+      sId: string,
+      functionCallId: string,
+      action: FolderAccessAction,
+    ) => {
+      const dir = messagesRef.current.find(
+        (m): m is FunctionCallMessage =>
+          m.role === 'function-call' && m.functionCallId === functionCallId,
+      )?.folderAccess?.dir
+
+      if (action === 'deny') {
+        await resolveFn(sId, functionCallId, 'deny')
+        announcer.announce(
+          dir ? `denied folder access to ${dir}` : 'denied folder access',
+        )
+        return
+      }
+
+      await resolveFn(sId, functionCallId, 'allow', { grantScope: action })
+      if (dir && (action === 'session' || action === 'always')) {
+        folderGrants.addOptimistic(dir)
+      }
+      if (dir) {
+        announcer.announce(
+          action === 'session'
+            ? `allowed ${dir} for this session`
+            : action === 'always'
+              ? `permanently allowed ${dir}`
+              : `allowed ${dir} for this call`,
+        )
+      }
+    }
+  }, [backend, announcer, folderGrants])
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -385,6 +435,7 @@ export function ChatView({
                     running: !event.pendingApproval,
                     functionCallId: event.functionCallId,
                     sessionId: event.sessionId,
+                    folderAccess: event.folderAccess,
                   })
                   fcallId = existing
                   break
@@ -406,6 +457,7 @@ export function ChatView({
                 pendingApproval: event.pendingApproval,
                 functionCallId: event.functionCallId,
                 sessionId: event.sessionId,
+                folderAccess: event.folderAccess,
                 createdAt: Date.now(),
               }
               fcallId = msg.id
@@ -725,6 +777,9 @@ export function ChatView({
         density={density}
         onResolveApproval={resolveApproval}
         onAlwaysAllow={handleAlwaysAllow}
+        onResolveFolderAccess={handleFolderResolve}
+        onManageFolderAccess={handleManageFolderAccess}
+        workingDir={conversation.workingDir ?? null}
       />
       <LiveRegion announcement={announcer.announcement} />
 
@@ -748,6 +803,16 @@ export function ChatView({
                   no working directory — using default workspace
                 </span>
               )}
+              <button
+                type="button"
+                onClick={handleManageFolderAccess}
+                className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
+              >
+                folder access
+                {folderGrants.grants.length > 0
+                  ? ` · ${folderGrants.grants.length}`
+                  : ''}
+              </button>
             </div>
           ) : null}
           <Composer
@@ -782,6 +847,19 @@ export function ChatView({
           />
         </div>
       </footer>
+
+      {workingDirEnabled ? (
+        <FolderAccessDialog
+          open={folderDialogOpen}
+          onOpenChange={setFolderDialogOpen}
+          workingDir={conversation.workingDir ?? null}
+          grants={folderGrants.grants}
+          grantsSupported={folderGrants.supported}
+          onRevoke={folderGrants.revoke}
+          onRefreshGrants={folderGrants.refresh}
+          sessionBusy={streamingIndicator}
+        />
+      ) : null}
     </section>
   )
 }

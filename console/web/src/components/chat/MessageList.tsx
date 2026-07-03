@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import type {
@@ -26,6 +27,13 @@ interface MessageListProps {
     functionCallId: string,
     functionId: string,
   ) => Promise<void>
+  onResolveFolderAccess?: (
+    sessionId: string,
+    functionCallId: string,
+    action: FolderAccessAction,
+  ) => Promise<void>
+  onManageFolderAccess?: () => void
+  workingDir?: string | null
 }
 
 type RenderItem =
@@ -79,6 +87,9 @@ export function MessageList({
   density = 'route',
   onResolveApproval,
   onAlwaysAllow,
+  onResolveFolderAccess,
+  onManageFolderAccess,
+  workingDir,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -158,6 +169,9 @@ export function MessageList({
               message={item.message}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
+              onResolveFolderAccess={onResolveFolderAccess}
+              onManageFolderAccess={onManageFolderAccess}
+              workingDir={workingDir}
             />
           ) : (
             <FunctionCallGroup
@@ -165,6 +179,9 @@ export function MessageList({
               messages={item.messages}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
+              onResolveFolderAccess={onResolveFolderAccess}
+              onManageFolderAccess={onManageFolderAccess}
+              workingDir={workingDir}
             />
           ),
         )}
