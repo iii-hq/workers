@@ -33,8 +33,9 @@ iii is a mesh of workers connected to one engine. Each worker registers function
 id looks like `worker::name`. Every call goes through the engine: worker → engine → worker.
 Workers never talk to each other directly. The function id is the only contract. A function is
 callable the moment its worker connects; workers registering the same id load-balance; worker
-restarts are invisible to callers. Triggers make functions run when events fire — if you want
-something to happen on an event, bind a trigger; do not poll.
+restarts are invisible to callers. Triggers make functions run when events fire, and
+`engine::register_trigger` binds them: if you want something to happen on an event or after
+other work finishes, register a trigger; do not poll, and do not keep a turn alive to wait.
 
 # The steps for every action
 
@@ -132,6 +133,97 @@ Copy the config keys from the schema. A binding can succeed and still never fire
 provider is down or the keys are wrong. The bound function receives what the trigger type
 delivers and returns what the type expects:
 the handler contract is the trigger type's, not a generic one.
+
+## Callbacks: engine::register_trigger
+
+`engine::register_trigger` is THE callback primitive. Any "when X happens, do Y" is a
+registered trigger — never a poll, never a shell loop re-running `iii trigger` to check on
+something. Subscriptions live in the engine: they fire with nothing of yours running, keep
+firing after your command returns, and are replayed after an engine restart. Registering a
+callback IS a deliverable: register it, say what you registered, move on.
+
+Spinning up sub-agents from the CLI: `iii trigger harness::spawn` returns
+`{ child_session_id, child_turn_id }` IMMEDIATELY — it never waits for the child, and the
+child's result is never returned to your call. The ONLY way to consume a child's outcome is a
+subscription registered BEFORE the spawn:
+
+Step 1. Pick the child's session id yourself, unique to THIS run — prefix your own session id
+(given at the end of your system prompt), e.g. `<your-session-id>:critic-a`. `harness::spawn`'s
+`session_id` creates the session if it does not exist — but an id from an earlier run silently
+REUSES that session: its old transcript carries over and the console keeps it nested under the
+old run.
+Step 2. Register a `harness::turn-completed` subscription filtered on that id
+(`"config": { "session_id": "<that child>" }`) bound to `harness::react` (next section).
+Step 3. Spawn into the id you picked.
+
+A `parent_session_id` filter matches dispatcher-linked (in-turn) children AND children whose
+spawn carried an explicit `parent_session_id` (e.g. react-spawned ones). A direct
+`iii trigger harness::spawn` WITHOUT that field creates an unparented child no such filter
+will ever match — pass `parent_session_id` on the spawn or filter by `session_id`.
+
+## Reacting to events
+
+An event can START a sub-agent, not just notify a handler — but a `harness::turn-completed` or
+`state` event carries no `task`/`model`, so it cannot bind straight to `harness::spawn`. Bind it
+to `harness::react` and put the sub-agent you want in the trigger's `metadata`:
+
+    iii trigger engine::register_trigger --json '{
+      "trigger_type": "harness::turn-completed",
+      "function_id": "harness::react",
+      "config": { "session_id": "<the child session id you picked>" },
+      "metadata": { "model": "<model>", "task": "<what the reacting sub-agent should do>",
+                    "session_id": "<spawn into this session; omit for a fresh child>",
+                    "parent_session_id": "<console root for the child — MUST be a real session id>" }
+    }'
+
+`metadata.parent_session_id` pins where the reacting sub-agent nests in the console tree;
+omitted, the reaction nests under the registering session's root automatically (session
+events: the firing session's root). If you pin one it MUST be a real session id — an invented
+group id has no session behind it, so the children render as disconnected top-level rows. `metadata.model` MUST be a live id from `router::models::list` — never a model name from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `"options": { "functions": { "allow": ["state::get", "shell::fs::*"] } }`.
+
+`harness::react` is documented here on purpose: it never runs as a direct call (agents are
+denied), only as a trigger target — do not look it up or probe it first; use the id exactly as
+written, and keep the id `register_trigger` returns as your handle to unregister.
+
+`harness::react` spawns a sub-agent (`harness::spawn`) with your `task` (the event JSON appended
+so it sees what fired — a `turn-completed` event carries the turn's `status` and, when it
+completed, its `result`; failed/cancelled turns carry `reason`/`result_error` instead, and
+reactions fire on those too, so say in the task what to do with a failure event) and your
+`model`. Two common shapes:
+
+- Consume a child's outcome: `harness::turn-completed` with
+  `config { session_id: "<the child you spawned>" }` — fires when that session's turn ends.
+- Start work on a state change: `state` with `config { key, scope }` — fires on
+  create / update / delete of that key.
+
+Join (wait for several): to spawn only after MULTIPLE predecessors finish:
+
+Step 1. Pick a session id for each predecessor yourself (as above).
+Step 2. Register ONE `harness::turn-completed` subscription per predecessor, filtered on that
+predecessor's own id: `"config": { "session_id": "<that child>" }`. Each subscription's
+`metadata` is the SAME full downstream spec — the combiner's `"model"` and `"task"` on all of
+them, the SAME `"join"` `"id"` and `"expect"` list, and only its OWN `"key"` differing (e.g.
+`"join": { "id": "J", "expect": ["a","b"], "key": "a" }` — the "b" predecessor uses
+`"key": "b"`). A metadata without model/task is silently ignored and the join never fires;
+differing tasks make the downstream nondeterministic (the last arrival's spec spawns it).
+Step 3. Spawn the predecessors into the ids you picked.
+
+`harness::react` accumulates each predecessor's result durably and spawns the downstream
+sub-agent EXACTLY ONCE, when the last one arrives, fed all their results (a failed predecessor
+still counts as arrived), and unregisters the join's predecessor subscriptions automatically (set "join": { ..., "rearm": true } on every predecessor to keep them registered — the join fires again on each next complete set) —
+a fan-in / dependency edge without a workflow spec.
+
+A completed join's downstream delivers into the session that registered it by default — the
+final output arrives there as a new turn. Set the LAST stage's metadata `session_id` only to
+deliver into a different session instead. Prefer join predecessors on `state` keys each stage
+writes (no session identity involved); a `harness::turn-completed` predecessor filtered by
+`session_id` requires that SAME id pinned on the upstream reaction's `session_id` — an id no
+spawn pins never exists, and the join starves at 0/N (registration returns a warning `note`
+when the filtered session doesn't exist).
+
+Unsubscribe with `iii trigger engine::unregister_trigger --json '{"id":"<id>"}'`. Aim the
+reaction at a session NOT covered by the same filter (or unsubscribe when done) so it cannot
+retrigger itself. Three loop breakers are built in — a subscription never fires for the completion of the sub-agent it itself spawned, reactive chains hard-cap at depth 8, and a single subscription is rate-limited to ~10 spawns per minute — but still design filters so a reaction is not matched by its own subscription.
 
 # Building new things
 

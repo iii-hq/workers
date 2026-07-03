@@ -125,7 +125,11 @@ async fn seed_child(
     let requested_policy = req.options.as_ref().and_then(|o| o.functions.as_ref());
     let functions = match parent_record {
         Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested_policy),
-        None => requested_policy.cloned(),
+        // Parentless (direct/CLI/trigger-fired) spawn: explicit options win;
+        // otherwise the configured read-only baseline instead of deny-all.
+        None => requested_policy
+            .cloned()
+            .or_else(|| cfg.default_functions.clone()),
     };
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
@@ -143,17 +147,37 @@ async fn seed_child(
     };
 
     // Child session, with sub-agent linkage merged into SessionMeta.metadata.
-    let linkage = parent.map(|p| {
-        json!({
+    // A live parent turn gives the full linkage (resolve + display). A direct /
+    // trigger-fired spawn has no parent turn, but a caller-supplied
+    // `parent_session_id` still writes a display-only link so the console nests
+    // the child (no policy inheritance, no parent-call resolution).
+    let linkage = match parent {
+        Some(p) => Some(json!({
             "parent_session_id": p.session_id,
             "parent_turn_id": p.turn_id,
             "function_call_id": p.function_call_id,
             "depth": depth,
-        })
-    });
+        })),
+        None => req.parent_session_id.as_ref().map(|psid| {
+            json!({
+                "parent_session_id": psid,
+                "depth": depth,
+            })
+        }),
+    };
     let child_session_id = match &req.session_id {
         Some(id) => {
-            session.ensure(id, None, linkage.as_ref()).await?;
+            let created = session.ensure(id, None, linkage.as_ref()).await?;
+            if !created {
+                // Reuse is legitimate (a fork, or delivering a reaction into an
+                // existing chat) but silent reuse of a stale id is a classic
+                // pipeline bug: the old transcript carries over and the console
+                // keeps the session nested under whoever created it first.
+                tracing::info!(
+                    child_session_id = %id,
+                    "harness::spawn reused an existing session — prior transcript and parent linkage retained"
+                );
+            }
             id.clone()
         }
         None => session.create(None, linkage.as_ref()).await?,
@@ -203,6 +227,20 @@ async fn seed_child(
         },
         calls: Default::default(),
         parent: parent.cloned(),
+        // Self-parent is dropped: a reaction delivered INTO session X (e.g. a
+        // reporter posting into the chat) must not carry X as its display
+        // parent, or its own turn-completed would match a
+        // `parent_session_id: X` subscription and re-fire the reaction — an
+        // infinite loop.
+        display_parent_session_id: match parent {
+            Some(_) => None,
+            None => req
+                .parent_session_id
+                .clone()
+                .filter(|p| p != &child_session_id),
+        },
+        spawned_by_subscription_id: req.spawned_by_subscription_id.clone(),
+        reactive_depth: req.reactive_depth,
         result: None,
         result_error: None,
         validation_retries: 0,

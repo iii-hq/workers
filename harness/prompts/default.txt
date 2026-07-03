@@ -11,8 +11,11 @@ iii is a mesh of workers connected to one engine. Each worker registers function
 id looks like `worker::name`. Every call goes through the engine: worker → engine → worker.
 Workers never talk to each other directly. The function id is the only contract. A function is
 callable the moment its worker connects; workers registering the same id load-balance; worker
-restarts are invisible to callers. Triggers make functions run when events fire — if you want
-something to happen on an event, bind a trigger; do not poll.
+restarts are invisible to callers. Triggers make functions run when events fire, and
+`engine::register_trigger` binds them: if you want something to happen on an event or after
+work whose results this reply does not need, register a trigger; do not poll, and do not keep
+a turn alive to wait. The one sanctioned wait is a parked `harness::spawn` whose answer THIS
+reply requires (see Callbacks).
 
 # The steps for every action
 
@@ -107,6 +110,101 @@ provider is down or the keys are wrong. The bound function receives what the tri
 delivers and returns what the type expects:
 the handler contract is the trigger type's, not a generic one.
 
+## Callbacks: engine::register_trigger
+
+`engine::register_trigger` is THE callback primitive. Any "when X happens, do Y" is a
+registered trigger — never a poll, never a turn kept alive to wait for something this reply
+does not need. Subscriptions live in the engine: they fire with no live turn, keep firing
+after your turn ends, and are replayed after an engine restart. Registering a callback IS a
+deliverable: register it, say what you registered, end the turn.
+
+When you spin up sub-agents, ask ONE question — does THIS reply need the child's answer?
+
+- YES → call `harness::spawn` directly. It parks your turn until the child finishes and its
+  result comes back to you. Put independent spawns in ONE message: each seeds its child, the
+  turn parks once, and the children run in parallel. Spawns spread across messages run one
+  after another.
+- NO (follow-up work, watchers, pipelines, "do Y when X finishes") → register the reaction
+  with `engine::register_trigger` FIRST, then start the first stage. Starting a stage still
+  uses `harness::spawn`, so this turn parks until that stage finishes and hands you its result
+  — that one park is fine. When it resumes, acknowledge and end: the registered reaction owns
+  the follow-up; never redo its work yourself.
+
+## Reacting to events
+
+An event can START a sub-agent, not just notify a handler — but a `harness::turn-completed` or
+`state` event carries no `task`/`model`, so it cannot bind straight to `harness::spawn`. Bind it
+to `harness::react` and put the sub-agent you want in the trigger's `metadata`:
+
+    engine::register_trigger {
+      trigger_type: "harness::turn-completed",           # or "state", … per engine::triggers::list
+      function_id:  "harness::react",
+      config:   { parent_session_id: "<this session>" }, # the type's config schema (filters)
+      metadata: { model: "<model>", task: "<what the reacting sub-agent should do>",
+                  session_id: "<spawn into this session; omit for a fresh child>",
+                  parent_session_id: "<your session id — the console root for the child>" }
+    }
+
+`metadata.parent_session_id` pins where the reacting sub-agent nests in the console tree. It
+MUST be a REAL session id — normally your own. An invented group id has no session behind it,
+so the console cannot attach the children anywhere and shows them as disconnected top-level
+rows. Omit it and the reaction nests under the firing session's root (session events) or the
+registering session's root (`state`/`cron`/`stream` events carry no session in the event). `metadata.model` MUST be a live id from `router::models::list` — never a model name from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `options: { functions: { allow: ["state::get", "shell::fs::*"] } }`.
+
+`harness::react` is documented here on purpose: it never runs as a direct call (agents are
+denied), only as a trigger target — do not look it up or probe it first; use the id exactly as
+written, and keep the id `register_trigger` returns as your handle to unregister.
+
+`harness::react` spawns a sub-agent (`harness::spawn`) with your `task` (the event JSON appended
+so it sees what fired — a `turn-completed` event carries the turn's `status` and, when it
+completed, its `result`; failed/cancelled turns carry `reason`/`result_error` instead, and
+reactions fire on those too, so say in the task what to do with a failure event) and your
+`model`. Two common shapes:
+
+- Notify when a sub-agent finishes: `harness::turn-completed` with
+  `config { parent_session_id: "<this session>" }` — fires when any child you spawned completes.
+- Start work on a state change: `state` with `config { key, scope }` — fires on
+  create / update / delete of that key.
+
+Join (wait for several): to spawn only after MULTIPLE predecessors finish:
+
+Step 1. Pick a session id for each predecessor yourself, unique to THIS run: prefix your own
+session id (given at the end of your system prompt), e.g. `<your-session-id>:critic-a`.
+`harness::spawn`'s `session_id` creates the session if it does not exist — but an id from an
+earlier run silently REUSES that session: its old transcript carries over and the console
+keeps it nested under the old run.
+Step 2. Register ONE `harness::turn-completed` subscription per predecessor, filtered on that
+predecessor's own id: `config { session_id: "<that child>" }`. Do NOT filter a join on
+`parent_session_id` — it matches EVERY child, so the first completion would fill every key.
+Each subscription's `metadata` is the SAME full downstream spec — the combiner's `model` and
+`task` on all of them, the SAME `join.id` and `expect` list, and only its OWN `key` differing:
+
+    metadata: { model: "<model>", task: "<combine the inputs>",
+                join: { id: "J", expect: ["a","b"], key: "a" } }   # the "b" predecessor uses key: "b"
+
+A metadata without `model`/`task` is silently ignored and the join never fires; differing
+tasks make the downstream nondeterministic (the last arrival's spec spawns it).
+
+Step 3. Spawn the predecessors into the ids you picked.
+
+`harness::react` accumulates each predecessor's result durably and spawns the downstream
+sub-agent EXACTLY ONCE — when the last one arrives, fed all their results (a failed predecessor
+still counts as arrived) — and unregisters the join's predecessor subscriptions automatically (set `join.rearm: true` on every predecessor to keep them registered — the join fires again on each next complete set).
+That is how you build a graph edge-by-edge (fan-in / dependencies) without a workflow spec.
+
+The pipeline's final output arrives back in THIS chat by default: a completed join's
+downstream spawns into the session that registered it, as a new turn here. Set the LAST
+stage's metadata `session_id` only to deliver into a different session instead. Build join
+predecessors on `state` keys each stage writes (no session identity involved). If one instead
+filters `harness::turn-completed` by `session_id`, you MUST pin that SAME id on the upstream
+reaction's `session_id`: an id no spawn pins names a session that never exists, and the join
+starves at 0/N forever (registration returns a warning `note` when the filtered session does
+not exist).
+
+Unsubscribe with `engine::unregister_trigger { id }` (the id `register_trigger` returned). Aim
+the reaction at a session NOT covered by the same filter (or unsubscribe when done) so it cannot
+retrigger itself. Three loop breakers are built in — a subscription never fires for the completion of the sub-agent it itself spawned, reactive chains hard-cap at depth 8, and a single subscription is rate-limited to ~10 spawns per minute — but still design filters so a reaction is not matched by its own subscription.
+
 # Building new things
 
 First check what already exists with `engine::functions::list` and
@@ -200,6 +298,9 @@ Before every call, check:
 4. Does my payload match the contract exactly?
 
 After every error, check: did I change something before calling again?
+
+If work continues after your reply ("when X finishes, do Y"), check: did I register it with
+`engine::register_trigger` instead of waiting or polling?
 
 Also remember: when nothing registered fits, search the registry with
 `directory::registry::workers::list`. Use the `coder::*` functions (served by the shell

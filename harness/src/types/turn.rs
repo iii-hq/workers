@@ -190,6 +190,19 @@ pub struct TurnRecord {
     pub calls: BTreeMap<String, CallCheckpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ParentLink>,
+    /// Display-only parent for trigger-fired spawns (no live parent turn):
+    /// lets `turn-completed` / `turn-started` `parent_session_id` filters match
+    /// react-spawned children too. Never set alongside `parent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_parent_session_id: Option<String>,
+    /// The subscription that react-spawned this turn; its own completion event
+    /// is never delivered back to that subscription (self-edge loop breaker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by_subscription_id: Option<String>,
+    /// Reactive-chain depth (react-spawned turns only), echoed on turn events
+    /// so `harness::react` can refuse chains past `MAX_REACTIVE_DEPTH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactive_depth: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -267,6 +280,9 @@ mod tests {
             },
             calls: Default::default(),
             parent: None,
+            display_parent_session_id: None,
+            spawned_by_subscription_id: None,
+            reactive_depth: None,
             result: None,
             result_error: None,
             validation_retries: 0,

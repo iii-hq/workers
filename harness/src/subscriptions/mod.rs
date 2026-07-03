@@ -25,6 +25,7 @@
 //! model arguments.
 
 pub mod notify_agent;
+pub mod reconcile;
 pub mod registry;
 
 pub use registry::{CapExceeded, SubscriptionRegistry};
@@ -32,6 +33,12 @@ pub use registry::{CapExceeded, SubscriptionRegistry};
 /// Hard cap on active subscriptions per session — a cheap DoS floor. Lifecycle
 /// otherwise leans on unsubscribe / `once` / `session::deleted` / process exit.
 pub const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 64;
+
+/// Metadata key stamping the owning session onto a `harness::react` binding.
+/// react bindings are durable engine-side but their in-memory session tracking
+/// is lost on harness restart; this durable owner reference lets startup
+/// reconciliation GC a binding whose session has since been deleted.
+pub const OWNER_SESSION_KEY: &str = "__owner_session_id";
 
 /// The single shared subscription fire handler id. Every subscription's trigger
 /// binds to this (via `engine::register_trigger`); kept OFF the agent-facing catalog.

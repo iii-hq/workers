@@ -24,8 +24,8 @@ pub async fn handle(
     event: SessionDeletedEvent,
 ) -> Result<SessionDeletedAck, HarnessError> {
     let dropped = deps.subscriptions.take_session(&event.session_id);
-    let removed = dropped.len() as u64;
-    if removed > 0 {
+    let tracked = dropped.len() as u64;
+    if tracked > 0 {
         for (_sub_id, trigger_id) in dropped {
             if let Some(trigger_id) = trigger_id {
                 crate::functions::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
@@ -33,11 +33,18 @@ pub async fn handle(
         }
         tracing::info!(
             session_id = %event.session_id,
-            removed,
+            removed = tracked,
             "session deleted: ephemeral subscriptions dropped"
         );
     }
     let cfg = deps.cfg().await;
     crate::filesystem_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
-    Ok(SessionDeletedAck { ok: true, removed })
+    // Durable complement: bindings registered before a harness restart are no
+    // longer in the in-memory registry but still fire engine-side — sweep them
+    // by their owner stamp so deleting a chat fully tears down its wiring.
+    let swept = crate::subscriptions::reconcile::sweep_owner(deps, &event.session_id).await;
+    Ok(SessionDeletedAck {
+        ok: true,
+        removed: tracked + swept as u64,
+    })
 }

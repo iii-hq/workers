@@ -58,16 +58,22 @@ impl BindingFilter {
         })
     }
 
-    fn matches(&self, session_id: &str, parent: Option<&ParentLink>) -> bool {
+    fn matches(
+        &self,
+        session_id: &str,
+        parent: Option<&ParentLink>,
+        display_parent: Option<&str>,
+    ) -> bool {
         if let Some(sid) = &self.session_id {
             if sid != session_id {
                 return false;
             }
         }
         if let Some(psid) = &self.parent_session_id {
-            match parent {
-                Some(p) if &p.session_id == psid => {}
-                _ => return false,
+            let link_matches = matches!(parent, Some(p) if &p.session_id == psid);
+            let display_matches = display_parent == Some(psid.as_str());
+            if !link_matches && !display_matches {
+                return false;
             }
         }
         true
@@ -76,8 +82,15 @@ impl BindingFilter {
 
 #[derive(Debug, Clone)]
 struct Binding {
+    /// The registration id (`engine::register_trigger`'s returned id) — stamped
+    /// into react sidecars so a fired join can unregister its predecessors.
+    id: String,
     function_id: String,
     filter: BindingFilter,
+    /// The trigger's registration `metadata`, forwarded to the bound function
+    /// as the invocation sidecar so targets like `harness::react` can carry
+    /// per-subscription context (the reaction spec).
+    metadata: Option<Value>,
 }
 
 #[derive(Clone, Default)]
@@ -89,10 +102,12 @@ impl SubscriberSet {
     fn add(&self, config: TriggerConfig) -> Result<(), String> {
         let filter = BindingFilter::parse(&config.config)?;
         self.lock().insert(
-            config.id,
+            config.id.clone(),
             Binding {
+                id: config.id,
                 function_id: config.function_id,
                 filter,
+                metadata: config.metadata,
             },
         );
         Ok(())
@@ -114,6 +129,7 @@ impl SubscriberSet {
 struct TurnEventTriggerHandler {
     type_id: &'static str,
     set: SubscriberSet,
+    iii: Arc<IIIClient>,
 }
 
 #[async_trait]
@@ -121,6 +137,18 @@ impl TriggerHandler for TurnEventTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let id = config.id.clone();
         let function_id = config.function_id.clone();
+        // A react binding with a bad spec would only surface as a silent no-op
+        // when the event fires — fail the registration instead. Shape first,
+        // then the model id against the live router catalog (models written
+        // from memory, e.g. "gpt-4o", would otherwise make every reaction fail
+        // at spawn time).
+        if function_id == crate::functions::react::REACT_ID {
+            crate::functions::react::validate_spec(config.metadata.as_ref())
+                .map_err(Error::Handler)?;
+            crate::functions::react::validate_model(&self.iii, config.metadata.as_ref())
+                .await
+                .map_err(Error::Handler)?;
+        }
         self.set.add(config).map_err(Error::Handler)?;
         tracing::info!(trigger_type = self.type_id, %id, %function_id, "turn-event subscription registered");
         Ok(())
@@ -129,6 +157,23 @@ impl TriggerHandler for TurnEventTriggerHandler {
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.set.remove(&config.id);
         Ok(())
+    }
+}
+
+/// Reactive-chain metadata carried by react-spawned turns, echoed on their
+/// turn events: `spawned_by` powers the self-edge loop breaker in `fan_out`,
+/// `depth` powers react's chain cap.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReactiveMeta<'a> {
+    pub spawned_by: Option<&'a str>,
+    pub depth: Option<u32>,
+}
+
+impl ReactiveMeta<'_> {
+    fn stamp(&self, payload: &mut Value) {
+        if let Some(d) = self.depth {
+            payload["reactive_depth"] = Value::from(d);
+        }
     }
 }
 
@@ -155,6 +200,7 @@ impl TurnEvents {
                 TurnEventTriggerHandler {
                     type_id: TURN_STARTED,
                     set: started.clone(),
+                    iii: iii.clone(),
                 },
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
@@ -166,6 +212,7 @@ impl TurnEvents {
                 TurnEventTriggerHandler {
                     type_id: TURN_COMPLETED,
                     set: completed.clone(),
+                    iii: iii.clone(),
                 },
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
@@ -179,7 +226,21 @@ impl TurnEvents {
         }
     }
 
-    pub async fn emit_started(&self, session_id: &str, turn_id: &str, parent: Option<&ParentLink>) {
+    pub async fn emit_started(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        parent: Option<&ParentLink>,
+        display_parent: Option<&str>,
+        reactive: ReactiveMeta<'_>,
+    ) {
+        tracing::info!(
+            session_id,
+            turn_id,
+            reactive_depth = reactive.depth,
+            spawned_by = reactive.spawned_by,
+            "turn started"
+        );
         let mut payload = serde_json::json!({
             "session_id": session_id,
             "turn_id": turn_id,
@@ -188,8 +249,20 @@ impl TurnEvents {
         if let Some(p) = parent {
             payload["parent"] = serde_json::to_value(p).unwrap_or(Value::Null);
         }
-        self.fan_out(&self.started, TURN_STARTED, session_id, parent, payload)
-            .await;
+        if let Some(dp) = display_parent {
+            payload["parent_session_id"] = Value::String(dp.to_string());
+        }
+        reactive.stamp(&mut payload);
+        self.fan_out(
+            &self.started,
+            TURN_STARTED,
+            session_id,
+            parent,
+            display_parent,
+            reactive.spawned_by,
+            payload,
+        )
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -202,7 +275,18 @@ impl TurnEvents {
         result_error: Option<&str>,
         reason: Option<&str>,
         parent: Option<&ParentLink>,
+        display_parent: Option<&str>,
+        reactive: ReactiveMeta<'_>,
     ) {
+        tracing::info!(
+            session_id,
+            turn_id,
+            status,
+            reactive_depth = reactive.depth,
+            spawned_by = reactive.spawned_by,
+            result_error,
+            "turn completed"
+        );
         let mut payload = serde_json::json!({
             "session_id": session_id,
             "turn_id": turn_id,
@@ -221,31 +305,75 @@ impl TurnEvents {
         if let Some(p) = parent {
             payload["parent"] = serde_json::to_value(p).unwrap_or(Value::Null);
         }
-        self.fan_out(&self.completed, TURN_COMPLETED, session_id, parent, payload)
-            .await;
+        if let Some(dp) = display_parent {
+            payload["parent_session_id"] = Value::String(dp.to_string());
+        }
+        reactive.stamp(&mut payload);
+        self.fan_out(
+            &self.completed,
+            TURN_COMPLETED,
+            session_id,
+            parent,
+            display_parent,
+            reactive.spawned_by,
+            payload,
+        )
+        .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fan_out(
         &self,
         set: &SubscriberSet,
         trigger_type: &str,
         session_id: &str,
         parent: Option<&ParentLink>,
+        display_parent: Option<&str>,
+        spawned_by_subscription: Option<&str>,
         payload: Value,
     ) {
         for binding in set.snapshot() {
-            if !binding.filter.matches(session_id, parent) {
+            if !binding.filter.matches(session_id, parent, display_parent) {
                 continue;
             }
-            let res = self
-                .iii
-                .trigger(TriggerRequest {
-                    function_id: binding.function_id.clone(),
-                    payload: payload.clone(),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
+            // Loop breaker #1 (self-edge): the subscription that react-spawned
+            // this turn never receives its completion — otherwise a reaction
+            // filtered on the same parent it spawns under re-fires itself
+            // forever (instantly, when the child fails fast).
+            if spawned_by_subscription == Some(binding.id.as_str()) {
+                tracing::debug!(
+                    trigger_type,
+                    subscription = %binding.id,
+                    "skipping self-edge delivery to the spawning subscription"
+                );
+                continue;
+            }
+            // React targets get the firing subscription's id stamped into the
+            // sidecar (`__subscription_id`) so a completed join can unregister
+            // its predecessor subscriptions.
+            let metadata = match &binding.metadata {
+                Some(Value::Object(m))
+                    if binding.function_id == crate::functions::react::REACT_ID =>
+                {
+                    let mut m = m.clone();
+                    m.insert(
+                        "__subscription_id".to_string(),
+                        Value::String(binding.id.clone()),
+                    );
+                    Some(Value::Object(m))
+                }
+                other => other.clone(),
+            };
+            let request = TriggerRequest {
+                function_id: binding.function_id.clone(),
+                payload: payload.clone(),
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            };
+            let res = match metadata {
+                Some(m) => self.iii.trigger(request.metadata(m)).await,
+                None => self.iii.trigger(request).await,
+            };
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
             }
@@ -271,8 +399,8 @@ mod tests {
             session_id: Some("s_1".into()),
             parent_session_id: None,
         };
-        assert!(f.matches("s_1", None));
-        assert!(!f.matches("s_2", None));
+        assert!(f.matches("s_1", None, None));
+        assert!(!f.matches("s_2", None, None));
 
         let pf = BindingFilter {
             session_id: None,
@@ -283,8 +411,34 @@ mod tests {
             turn_id: "t".into(),
             function_call_id: "fc".into(),
         };
-        assert!(pf.matches("child", Some(&parent)));
-        assert!(!pf.matches("child", None));
+        assert!(pf.matches("child", Some(&parent), None));
+        assert!(!pf.matches("child", None, None));
+    }
+
+    #[test]
+    fn filter_matches_display_parent_for_trigger_fired_children() {
+        let pf = BindingFilter {
+            session_id: None,
+            parent_session_id: Some("root_1".into()),
+        };
+        // React-spawned child: no ParentLink, display parent only.
+        assert!(pf.matches("child", None, Some("root_1")));
+        assert!(!pf.matches("child", None, Some("other_root")));
+    }
+
+    #[test]
+    fn reactive_meta_stamps_depth_only_when_present() {
+        let mut p = serde_json::json!({});
+        ReactiveMeta {
+            spawned_by: Some("sub-1"),
+            depth: Some(2),
+        }
+        .stamp(&mut p);
+        assert_eq!(p["reactive_depth"], 2);
+
+        let mut p = serde_json::json!({});
+        ReactiveMeta::default().stamp(&mut p);
+        assert!(p.get("reactive_depth").is_none());
     }
 
     #[test]

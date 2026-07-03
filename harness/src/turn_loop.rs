@@ -19,7 +19,9 @@ use crate::policy::{self, CallKind, CompiledPolicy};
 use crate::trigger;
 use crate::types::content::ContentBlock;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
-use crate::types::turn::{CallCheckpoint, CallState, ExposeMode, TurnRecord, TurnStatus};
+use crate::types::turn::{
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
+};
 
 pub const TURN_QUEUE: &str = "default";
 
@@ -130,7 +132,16 @@ pub async fn run_step(
         .await;
     if payload.step == 0 && record.turn_count == 0 {
         deps.events
-            .emit_started(&record.session_id, &record.turn_id, record.parent.as_ref())
+            .emit_started(
+                &record.session_id,
+                &record.turn_id,
+                record.parent.as_ref(),
+                record.display_parent_session_id.as_deref(),
+                crate::events::ReactiveMeta {
+                    spawned_by: record.spawned_by_subscription_id.as_deref(),
+                    depth: record.reactive_depth,
+                },
+            )
             .await;
         if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {
             return finalize_failed(
@@ -208,6 +219,20 @@ pub async fn run_step(
     };
     let mut gen_messages = assembled.messages.clone();
     gen_messages.extend(appended);
+
+    // Post-assembly invariant guard: providers reject a context where an
+    // assistant function_call has no function_result. Compaction can cut a
+    // pair (result summarized away, call kept) even when the TRANSCRIPT is
+    // fully paired — patch the assembled copy only.
+    let patched = patch_orphaned_calls(&mut gen_messages);
+    if patched > 0 {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            patched,
+            "assembled context contained orphaned function_calls; injected elided results (compaction cut a call/result pair)"
+        );
+    }
 
     // Never hand the provider an empty messages array (Anthropic 400:
     // "messages: at least one message is required"). Assembly's own guards
@@ -700,6 +725,11 @@ async fn finalize_completed(
             result_error.as_deref(),
             None,
             record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+                crate::events::ReactiveMeta {
+                    spawned_by: record.spawned_by_subscription_id.as_deref(),
+                    depth: record.reactive_depth,
+                },
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -746,6 +776,11 @@ async fn finalize_failed(
             None,
             Some(reason),
             record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+                crate::events::ReactiveMeta {
+                    spawned_by: record.spawned_by_subscription_id.as_deref(),
+                    depth: record.reactive_depth,
+                },
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -779,6 +814,11 @@ async fn finalize_cancelled(
             None,
             Some(reason),
             record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+                crate::events::ReactiveMeta {
+                    spawned_by: record.spawned_by_subscription_id.as_deref(),
+                    depth: record.reactive_depth,
+                },
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1067,25 +1107,138 @@ async fn assemble_context(
     }
 }
 
-/// Append a working-directory line to the system prompt when the turn carries a
-/// `filesystem_root` in its metadata. This is a model-facing AID only — the real
-/// scoping control plane stamps `fs_scope` onto each call
-/// (`filesystem_scope::inject`); this line just tells the model where it is so
-/// it reasons about relative paths sensibly.
+/// Append model-facing context aid lines to the system prompt: the session id
+/// (always — it makes the prompt's "<this session>" recipes actionable, e.g.
+/// `turn-completed` filters and reactive spawns that deliver into this chat),
+/// the working directory (when the turn carries a `filesystem_root`), and the
+/// dispatch-policy surface (when it is narrowed — see [`policy_aid`]). These
+/// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
+/// call (`filesystem_scope::inject`) and the policy stays fail-closed at
+/// dispatch.
 fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let Some(dir) = record.options.filesystem_root() else {
-        return system_prompt;
-    };
-    let line = format!("Your working directory is {dir}.");
+    let mut lines = vec![format!("Your session id is {}.", record.session_id)];
+    if let Some(dir) = record.options.filesystem_root() {
+        lines.push(format!("Your working directory is {dir}."));
+    }
+    if let Some(aid) = policy_aid(record.options.functions.as_ref()) {
+        lines.push(aid);
+    }
+    let aid = lines.join("\n");
     Some(match system_prompt {
-        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{line}"),
-        _ => line,
+        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{aid}"),
+        _ => aid,
     })
+}
+
+/// The dispatch-policy aid line for a narrowed turn, `None` when the surface
+/// is unrestricted (a `*` allow — the prompt's discovery doctrine is correct
+/// there). A narrowed agent is never otherwise shown its allow-list, so it
+/// dutifully follows that doctrine into a denied `engine::functions::list` on
+/// its very first step; telling it the exact surface makes discovery moot.
+fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
+    const MAX_LISTED: usize = 30;
+    let denied_all =
+        "Function dispatch is entirely disabled this turn — do not call any function.";
+    let Some(p) = policy else {
+        return Some(denied_all.to_string());
+    };
+    if p.allow.iter().any(|g| g == "*") {
+        return None;
+    }
+    if p.allow.is_empty() {
+        return Some(denied_all.to_string());
+    }
+    let mut allow: Vec<&str> = p.allow.iter().map(String::as_str).collect();
+    allow.sort_unstable();
+    allow.dedup();
+    let over = allow.len() > MAX_LISTED;
+    let shown = allow[..allow.len().min(MAX_LISTED)].join(", ");
+    let ellipsis = if over { ", …" } else { "" };
+    let deny = if p.deny.is_empty() {
+        String::new()
+    } else {
+        format!(" Deny-listed on top: {}.", p.deny.join(", "))
+    };
+    Some(format!(
+        "Your dispatch policy allows ONLY these functions: {shown}{ellipsis}.{deny} Anything \
+         else — including discovery (engine::functions::list / ::info) unless listed above — is \
+         denied. Do not probe: if the task needs a function not allowed here, say so and finish."
+    ))
 }
 
 struct Assembled {
     system_prompt: Option<String>,
     messages: Vec<Value>,
+}
+
+/// Patch an ASSEMBLED message list whose assistant `function_call` blocks lack
+/// a `function_result` anywhere in the list — the shape providers hard-reject
+/// (`tool_use` without `tool_result`). Injects a synthetic "elided" result
+/// message directly after each orphaned call's assistant message. Returns how
+/// many results were injected. The durable transcript is never touched; the
+/// orphan usually means compaction cut a call/result pair.
+fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
+    let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in messages.iter() {
+        if let Some(id) = m.get("function_call_id").and_then(Value::as_str) {
+            resolved.insert(id.to_string());
+        }
+        if let Some(blocks) = m.get("content").and_then(Value::as_array) {
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) == Some("function_result") {
+                    if let Some(id) = b.get("function_call_id").and_then(Value::as_str) {
+                        resolved.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut patched = 0usize;
+    let mut i = 0;
+    while i < messages.len() {
+        let mut missing: Vec<(String, String)> = Vec::new();
+        if messages[i].get("role").and_then(Value::as_str) == Some("assistant") {
+            if let Some(blocks) = messages[i].get("content").and_then(Value::as_array) {
+                for b in blocks {
+                    if b.get("type").and_then(Value::as_str) != Some("function_call") {
+                        continue;
+                    }
+                    let Some(id) = b.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if resolved.contains(id) {
+                        continue;
+                    }
+                    let fid = b
+                        .get("function_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    missing.push((id.to_string(), fid.to_string()));
+                }
+            }
+        }
+        let inserted = missing.len();
+        for (off, (id, fid)) in missing.into_iter().enumerate() {
+            messages.insert(
+                i + 1 + off,
+                json!({
+                    "role": "function_result",
+                    "function_call_id": id,
+                    "function_id": fid,
+                    "content": [{
+                        "type": "text",
+                        "text": "result elided from the assembled context (compaction); the call completed in an earlier turn — consult the transcript if its output matters",
+                    }],
+                    "is_error": false,
+                    "timestamp": AgentMessage::now_ms(),
+                }),
+            );
+            patched += 1;
+        }
+        i += 1 + inserted;
+    }
+    patched
 }
 
 /// Build the invocation-schema surface attached to the generate request
@@ -1175,6 +1328,65 @@ impl Clone for SessionStreamSink {
 mod tests {
     use super::cancel_requested;
     use crate::types::event::StopReason;
+
+    #[test]
+    fn policy_aid_names_the_narrowed_surface_and_skips_wildcards() {
+        use crate::types::turn::FunctionPolicy;
+        // No policy / empty allow: dispatch is off entirely — say so.
+        assert!(super::policy_aid(None).unwrap().contains("disabled"));
+        let empty = FunctionPolicy::default();
+        assert!(super::policy_aid(Some(&empty)).unwrap().contains("disabled"));
+        // A `*` allow is the full surface: the discovery doctrine applies, no aid.
+        let full = FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        };
+        assert!(super::policy_aid(Some(&full)).is_none());
+        // Narrowed: the exact surface is spelled out, discovery is called out.
+        let narrowed = FunctionPolicy {
+            allow: vec!["state::set".into(), "state::get".into()],
+            deny: vec!["state::delete".into()],
+            ..Default::default()
+        };
+        let aid = super::policy_aid(Some(&narrowed)).unwrap();
+        assert!(aid.contains("ONLY these functions: state::get, state::set"));
+        assert!(aid.contains("Deny-listed on top: state::delete"));
+        assert!(aid.contains("engine::functions::list"));
+        // Long allow-lists are capped, not dumped.
+        let long = FunctionPolicy {
+            allow: (0..40).map(|i| format!("w{i:02}::fn")).collect(),
+            ..Default::default()
+        };
+        let aid = super::policy_aid(Some(&long)).unwrap();
+        assert!(aid.contains("w00::fn"));
+        assert!(!aid.contains("w39::fn"));
+        assert!(aid.contains("…"));
+    }
+
+    #[test]
+    fn patch_orphaned_calls_injects_elided_results_adjacent_to_the_call() {
+        use serde_json::json;
+        let mut msgs = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "function_call", "id": "toolu_ok", "function_id": "a::b", "arguments": {}},
+                {"type": "function_call", "id": "toolu_orphan", "function_id": "c::d", "arguments": {}},
+            ]}),
+            json!({"role": "function_result", "function_call_id": "toolu_ok", "function_id": "a::b",
+                   "content": [{"type": "text", "text": "ok"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "next"}]}),
+        ];
+        assert_eq!(super::patch_orphaned_calls(&mut msgs), 1);
+        // The synthetic result sits directly after the assistant message.
+        assert_eq!(
+            msgs[2].get("function_call_id").and_then(serde_json::Value::as_str),
+            Some("toolu_orphan")
+        );
+        assert_eq!(msgs.len(), 5);
+        // Fully paired context is untouched.
+        assert_eq!(super::patch_orphaned_calls(&mut msgs), 0);
+        assert_eq!(msgs.len(), 5);
+    }
 
     #[test]
     fn durable_abort_is_observed_even_when_local_is_stale_and_stream_completed() {

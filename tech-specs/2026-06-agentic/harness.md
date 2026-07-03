@@ -74,7 +74,7 @@ steps so a crash or restart resumes mid-turn (see
 attributable to a turn. One `harness::turn` step does:
 
 1. Mark working: `session::set-status working` and emit
-   [`harness::turn_started`](#trigger-types-emitted) (first step of a turn), then run the
+   [`harness::turn-started`](#trigger-types-emitted) (first step of a turn), then run the
    `pre_turn` [hook chain](#hooks) — a `deny` ends the turn (`failed`, with the hook's reason)
    before any model spend.
 2. Load active path: `session::messages` with `include_custom: true` (custom entries carry the
@@ -120,7 +120,7 @@ attributable to a turn. One `harness::turn` step does:
    with another generate step. Otherwise finalise: resolve the turn `result` per the
    [output contract](#output-contract) (a schema-bearing contract with no valid result yet nudges
    instead, bounded), mark the turn `completed`, `session::set-status done`, emit
-   [`harness::turn_completed`](#trigger-types-emitted), and — for a sub-agent turn — resolve the
+   [`harness::turn-completed`](#trigger-types-emitted), and — for a sub-agent turn — resolve the
    parent's pending call (see [Sub-agents](#sub-agents-harnessspawn)).
 
 A `max_turns` guard caps runaway loops (turn ends `completed` with a synthetic notice). Cancellation
@@ -136,7 +136,7 @@ The harness maps the turn lifecycle onto the session's coarse status: `working` 
 running or awaiting functions, `done` when it ends `completed` or `cancelled`, and `error` (with a
 short `reason`) when it ends `failed`. The internal `TurnStatus` (below) is finer-grained and stays
 inside the harness; consumers watch the session status, bind
-[`harness::turn_completed`](#trigger-types-emitted) for turn outcomes (terminal status + result),
+[`harness::turn-completed`](#trigger-types-emitted) for turn outcomes (terminal status + result),
 or call `harness::status` when they need a point-in-time read.
 
 ## Compaction persistence
@@ -352,6 +352,88 @@ blackboard — those compose on top as siblings (see
 [Out of scope](#out-of-scope-future-sibling-workers)). One parent turn fans out to bounded children
 and joins on their results; that is the whole feature.
 
+## Reactive subscriptions (`harness::react`)
+
+An event cannot bind straight to `harness::spawn` — a `harness::turn-completed` or `state` event
+carries no `task`/`model`. `harness::react` is the trigger bridge that closes the gap: bind any
+trigger type to it with `engine::register_trigger` and put the sub-agent you want in the
+registration's `metadata`; when the event fires, react reshapes it into a `harness::spawn`.
+
+```
+engine::register_trigger {
+  trigger_type: "harness::turn-completed" | "state" | ...,
+  function_id: "harness::react",
+  config: <the trigger type's filters>,
+  metadata: { model, task, session_id?, parent_session_id?, provider?, options?, join? }
+}
+```
+
+- The event JSON is appended to `task`. A `turn-completed` event carries the terminal `status`
+  and, on success, `result`; failures carry `reason`/`result_error` — reactions fire on those
+  too, so the task should say what to do with a failure event.
+- `metadata.model` is validated against the live `router::models::list` at registration time
+  (turn-event bindings go through the harness's `engine::register_trigger` interceptor, which
+  also validates the spec shape synchronously) and again at fire time (covers bindings
+  registered with other trigger providers, e.g. `state`). An unknown id refuses to spawn instead
+  of creating a failing session per event.
+- `metadata.session_id` pins the spawn into an existing session (creating it if missing) — set
+  it to the subscribing session to deliver a pipeline's final output back into that chat. A
+  completed join's downstream does this by default: when its spec omits `session_id` it spawns
+  into the registering session (raw unstamped registrations keep the fresh-child default).
+- Join predecessors are most robust on `state` keys (no session identity). A
+  `harness::turn-completed` predecessor filtered by `session_id` must pin the SAME id on the
+  upstream reaction's spec — an unpinned upstream spawns random child ids and the join never
+  fires. Registration returns an advisory `note` when a turn-event filter names a session
+  that doesn't exist, and when a join predecessor binds the same event source as a sibling
+  key of the same join (the join would complete instantly with duplicate payloads).
+  `metadata.parent_session_id` pins console-tree nesting and must be a REAL session id. When
+  omitted, the reaction nests under the root of the firing session (turn events) or of the
+  registering session via the interceptor's `__owner_session_id` stamp (state/cron/stream
+  events carry no session id).
+- `metadata.options` mirrors `SpawnOptions`. A trigger-fired spawn has no live parent turn, so
+  it gets the configured `default_functions` read-only baseline unless `options.functions`
+  grants more — there is no parent policy to inherit.
+- Direct calls no-op: the reaction spec travels ONLY in trigger metadata, so a caller invoking
+  `harness::react` as a function has nothing to spawn.
+
+### Joins (fan-in)
+
+A join spawns the downstream sub-agent exactly once, after EVERY predecessor has fired. Each
+predecessor's subscription carries the SAME downstream spec plus
+`join: { id, expect: [<every key>], key: <its own key> }` — `expect` is the ARRAY of keys, never
+a count. Results accumulate durably in iii-state (scope `harness::react_join`) keyed by
+`join.id`; an atomic increment guards exactly-once firing; the downstream task is fed all
+predecessors' events. A failed predecessor still counts as arrived. After the fire, the
+predecessor subscriptions auto-unregister and the accumulator record is deleted — unless
+`join.rearm: true`, which keeps the subscriptions registered so the join fires again on each
+next complete set (standing watchers).
+
+### Loop breakers
+
+Reactive chains are guarded three ways, all checked at fire time:
+
+1. **Self-edge drop** — a subscription never receives the completion of the sub-agent it itself
+   spawned (`spawned_by_subscription_id` is stamped on react-spawned turns and matched in the
+   turn-event fan-out).
+2. **Depth cap** — react-spawned turns carry `reactive_depth`; a chain past depth 8 refuses to
+   spawn.
+3. **Fire-rate breaker** — a single subscription is capped at ~10 spawns per minute. A cycle
+   routed through an agent `state::set` re-enters at depth 0, so the rate cap is what stops it.
+
+The breakers are backstops, not the design — still aim reactions at sessions not covered by
+their own subscription's filter.
+
+### Instrumenting an error-triggered reaction
+
+A common pattern binds a reaction to a state key a worker writes on failure (an incident fixer,
+an alerter). When instrumenting the worker, distinguish **expected, handled outcomes** (a
+validation error, a not-found, a rejected precondition — the handler's normal control flow) from
+**unexpected faults** (an uncaught exception, a dependency failure). Write only the faults to the
+key the reaction watches; route the handled outcomes to a separate key (or don't record them at
+all). Firing the reaction on expected errors spawns a fixer for a non-bug — wasted work, and with
+enough traffic the fire-rate breaker starts refusing real incidents. The distinction lives in the
+worker's own error shape (e.g. a typed `ValidationError` vs. anything else), not in the reaction.
+
 ## Output contract
 
 A turn can declare what it must produce — free text (default) or JSON, optionally validated against
@@ -379,7 +461,7 @@ shared — see [README § Output contract](README.md#output-contract).
     best-effort `result`.
 
 The result is stored on the turn record, returned by [`harness::status`](#harnessstatus), carried on the
-[`harness::turn_completed`](#trigger-types-emitted) event, and — for sub-agents — delivered to the
+[`harness::turn-completed`](#trigger-types-emitted) event, and — for sub-agents — delivered to the
 parent in the `function_result` (`details` carries the structured value; `content` a text
 rendering).
 
@@ -388,7 +470,7 @@ rendering).
 Hooks are the **synchronous** counterpart to the turn events: iii functions the harness calls
 *in-path* at fixed points of the loop, which can veto, hold, or mutate what happens next. The rule
 for choosing between them: if you only need to *know*, bind an event
-([`harness::turn_started` / `turn_completed`](#trigger-types-emitted), or the session triggers); if
+([`harness::turn-started` / `turn-completed`](#trigger-types-emitted), or the session triggers); if
 you must *block or change* something, bind a hook. Every hook adds latency and a failure mode
 to the hot path — events are always the cheaper tool.
 
@@ -513,7 +595,7 @@ type HookOutput =
   previous one; the first `deny` or `hold` short-circuits the rest. Mutations from different hooks
   can conflict — keep chains short and set `priority` deliberately.
 - **Deny.** At `pre_turn` / `pre_generate` the turn ends `failed` with the hook's `reason` (a
-  `custom` error entry + `harness::turn_completed`, like any failure). At `pre_trigger` the call
+  `custom` error entry + `harness::turn-completed`, like any failure). At `pre_trigger` the call
   is answered with an `is_error` function_result carrying the reason — the model sees it and can
   adapt.
 - **Hold** (`pre_trigger` only) reuses
@@ -555,7 +637,7 @@ For operators wiring hooks and developers writing them:
    (hook -> turn -> hook). If a hook must trigger follow-up work, emit through a queue or carry a
    hop counter in `session.metadata`.
 6. **Reach for events first.** If observe-only is enough, bind
-   [`harness::turn_completed`](#trigger-types-emitted) or the session triggers instead — hooks are
+   [`harness::turn-completed`](#trigger-types-emitted) or the session triggers instead — hooks are
    for the cases that must block or change the loop.
 
 ## Registered functions
@@ -596,8 +678,10 @@ polling `harness::status`. Events are async and observe-only; a sibling that mus
 mutate* the loop binds a [hook](#hooks) instead. Bind with the standard two-step pattern (see
 [README § Reactive pattern](README.md#reactive-pattern)).
 
-- **`harness::turn_started`** — a turn began executing (first loop step).
-  - Config: `{ session_id?: string; parent_session_id?: string }`.
+- **`harness::turn-started`** — a turn began executing (first loop step).
+  - Config: `{ session_id?: string; parent_session_id?: string }`. The `parent_session_id`
+    filter matches real parent links AND the display parent of trigger-fired (react-spawned)
+    children.
   - Payload:
 
 ```typescript
@@ -605,11 +689,13 @@ type TurnStartedEvent = {
   session_id: string;
   turn_id: string;
   parent?: { session_id: string; turn_id: string; function_call_id: string }; // sub-agent turns only
+  parent_session_id?: string; // display parent (react-spawned turns have no parent link)
+  reactive_depth?: number;    // set on react-spawned turns (loop-breaker depth)
   timestamp: number;
 };
 ```
 
-- **`harness::turn_completed`** — a turn reached a terminal status.
+- **`harness::turn-completed`** — a turn reached a terminal status.
   - Config: `{ session_id?: string; parent_session_id?: string }`.
   - Payload:
 
@@ -622,11 +708,13 @@ type TurnCompletedEvent = {
   result_error?: string;   // set when the contract could not be satisfied
   reason?: string;         // failure cause when status is "failed"
   parent?: { session_id: string; turn_id: string; function_call_id: string };
+  parent_session_id?: string; // display parent (react-spawned turns have no parent link)
+  reactive_depth?: number;    // set on react-spawned turns (loop-breaker depth)
   timestamp: number;
 };
 ```
 
-A backend worker that chains agents binds `harness::turn_completed` and calls `harness::send`
+A backend worker that chains agents binds `harness::turn-completed` and calls `harness::send`
 from the handler — that is the supported way to build event-driven loops. **The
 loop guard is the consumer's:** `max_turns` bounds one turn, not a chain of turns; an event loop
 (completed -> send -> completed -> …) must carry its own termination condition — a hop counter in
@@ -837,7 +925,7 @@ type TurnStepResult = {
 
 Failure handling: an unexpected throw marks the turn `failed`, appends a `custom`
 (`custom_type: "error"`) entry so the UI sees the reason, sets `session::set-status error` with a
-short `reason`, and emits [`harness::turn_completed`](#trigger-types-emitted)
+short `reason`, and emits [`harness::turn-completed`](#trigger-types-emitted)
 (`status: "failed"`) — resolving the parent's pending call with `is_error: true` when the turn is a
 sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). A step may opt into queue retry/backoff for
 transient provider errors instead of failing the turn (subject to
@@ -940,7 +1028,7 @@ in-flight stream via [`router::abort`](llm-router.md#routerabort) using the `str
 the turn record. Non-terminal spawned children recorded in `calls` are stopped first, recursively —
 each resolves its parent call with `is_error: true` (see [Sub-agents](#sub-agents-harnessspawn)).
 The turn record transitions to `cancelled` before `session::set-status done`, and
-[`harness::turn_completed`](#trigger-types-emitted) fires with `status: "cancelled"`.
+[`harness::turn-completed`](#trigger-types-emitted) fires with `status: "cancelled"`.
 
 - Invocation: **sync**
 
@@ -1018,7 +1106,7 @@ Kept out to preserve thinness; each is a clean add-on that wraps the loop or sub
   inbox and its triggers, and the UI — never loop changes.
 - **llm-budget** — track spend from `router` usage and cap per workspace/agent: a `pre_turn` /
   `pre_generate` [hook](#hooks) enforces the cap, and
-  [`harness::turn_completed`](#trigger-types-emitted) plus the sub-agent linkage metadata give it
+  [`harness::turn-completed`](#trigger-types-emitted) plus the sub-agent linkage metadata give it
   per-tree aggregation.
 - **context-scheduler** — decide *when* to compact (the optional reactive trigger in
   [context-manager](context-manager.md#triggers)); the harness only compacts inline on overflow.
