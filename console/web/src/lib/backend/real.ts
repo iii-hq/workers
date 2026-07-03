@@ -184,11 +184,27 @@ async function* realStream(
       }
     }
 
+    // Attachment blocks (file-mention expansions) upgrade the message to the
+    // structured MessageInput form; plain sends keep the string sugar so the
+    // wire payload stays byte-identical for the common case.
+    const attachedBlocks = opts?.attachedBlocks ?? []
+    const message =
+      attachedBlocks.length > 0
+        ? {
+            role: 'user' as const,
+            content: [prompt, ...attachedBlocks].map((text) => ({
+              type: 'text' as const,
+              text,
+            })),
+            timestamp: Date.now(),
+          }
+        : prompt
+
     // Kick off (or steer) the turn. A turn already running for this session
     // folds the message in (merge) rather than rejecting — no busy error.
     void sendTurn(client, {
       session_id: sessionId,
-      message: prompt,
+      message,
       model: modelId,
       provider,
       idempotency_key: messageId,

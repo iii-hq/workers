@@ -59,11 +59,28 @@ export interface HarnessSessionInit {
   metadata?: Record<string, unknown>
 }
 
+/** A text content block on a structured user message. */
+export interface HarnessTextBlock {
+  type: 'text'
+  text: string
+}
+
+/**
+ * The structured form of `harness::send`'s `message` (MessageInput::Message
+ * with `role: user`). The console uses it when a send carries `#file(...)`
+ * attachment blocks; plain sends keep the string-sugar form.
+ */
+export interface HarnessUserMessage {
+  role: 'user'
+  content: HarnessTextBlock[]
+  timestamp: number
+}
+
 export interface HarnessSendRequest {
   /** Omit to create a new session. */
   session_id?: string
   /** A string is sugar for a user text message. */
-  message: string
+  message: string | HarnessUserMessage
   model: string
   provider?: string
   /** Webhook dedupe: a repeated key returns the original `{session_id, turn_id}`. */

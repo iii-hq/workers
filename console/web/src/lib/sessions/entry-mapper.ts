@@ -22,7 +22,9 @@
  * read-backs as the source of truth.
  */
 
+import { parseAttachedFileHeader } from '@/lib/file-mentions'
 import type {
+  Attachment,
   FunctionCallMessage,
   Message,
   SystemMessage,
@@ -58,6 +60,36 @@ function textOf(blocks: ContentBlock[]): string {
     if (block.type === 'text') out += block.text
   }
   return out
+}
+
+/**
+ * Split a user message's blocks into visible text and attachment chips.
+ * `<attached-file …>` blocks are console-authored `#file(...)` mention
+ * expansions — rendering their full content in the user bubble would dump
+ * whole files into the chat, so they collapse to chips instead (failure
+ * placeholders keep the error visible in the chip name).
+ */
+function splitUserContent(blocks: ContentBlock[]): {
+  text: string
+  attachments: Attachment[]
+} {
+  let text = ''
+  const attachments: Attachment[] = []
+  for (const block of blocks) {
+    if (block.type !== 'text') continue
+    const header = parseAttachedFileHeader(block.text)
+    if (header) {
+      attachments.push({
+        id: `mention-${header.path}`,
+        name: header.error ? `${header.path} (${header.error})` : header.path,
+        size: header.size ?? 0,
+        type: 'text/x-file-mention',
+      })
+    } else {
+      text += block.text
+    }
+  }
+  return { text, attachments }
 }
 
 function compactionMarker(
@@ -109,11 +141,13 @@ export function entrySegments(
       const notif = (item.origin as { notification?: unknown } | undefined)
         ?.notification
       const isNotif = notif === true || item.entry_id.startsWith('e_notify_')
+      const { text, attachments } = splitUserContent(message.content)
       const msg: UserMessage = {
         id: item.entry_id,
         role: 'user',
-        content: textOf(message.content),
+        content: text,
         createdAt: message.timestamp,
+        ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
       }
       return [msg]
@@ -309,8 +343,11 @@ export function applyEntryUpsert(
   })
 
   // Preserve optimistic-only fields when replacing a user message in place.
+  // Snapshot-derived attachments (collapsed `<attached-file>` blocks) win —
+  // they are the durable truth; optimistic chips only fill the gap.
   segments = segments.map((segment) => {
     if (segment.role !== 'user') return segment
+    if (segment.attachments) return segment
     const existing = messages.find(
       (m): m is UserMessage => m.role === 'user' && m.id === segment.id,
     )

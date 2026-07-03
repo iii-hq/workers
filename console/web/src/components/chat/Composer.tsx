@@ -156,6 +156,7 @@ export function Composer({
           disabled={inputDisabled}
           initialContent={initialContent}
           functionEntries={functionEntries}
+          workingDir={workingDir}
         />
       </div>
 
