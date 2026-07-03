@@ -214,7 +214,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         react::REACT_ID,
         react::REACT_DESC,
-        |d, ev: Value, meta| async move { react::handle(&d, ev, meta).await },
+        |d, ev: react::ReactEvent, meta| async move { react::handle(&d, ev.0, meta).await },
     );
 
     tracing::info!("all harness::* functions registered");
