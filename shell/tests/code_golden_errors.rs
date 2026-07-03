@@ -100,17 +100,24 @@ impl Jail {
             (&self.root1, "<ROOT1_PARENT>"),
         ] {
             if let Some(parent) = root.parent() {
-                out = out.replace(
-                    &format!("\"dir\":\"{}\"", parent.display()),
-                    &format!("\"dir\":\"{token}\""),
-                );
+                for key in ["dir", "requested_root"] {
+                    out = out.replace(
+                        &format!("\"{key}\":\"{}\"", parent.display()),
+                        &format!("\"{key}\":\"{token}\""),
+                    );
+                }
             }
         }
         // `/etc/passwd` is a stable caller path in the case input, but the
         // canonical existing directory differs on macOS (`/private/etc`) vs
         // Linux (`/etc`). Normalize only the hint dir, not the echoed path.
         for etc_dir in ["/private/etc", "/etc"] {
-            out = out.replace(&format!("\"dir\":\"{etc_dir}\""), "\"dir\":\"<ETC>\"");
+            for key in ["dir", "requested_root"] {
+                out = out.replace(
+                    &format!("\"{key}\":\"{etc_dir}\""),
+                    &format!("\"{key}\":\"<ETC>\""),
+                );
+            }
         }
         // DEFENSIVE: the substitution table only carries the CANONICAL root
         // forms. A future C2xx message that embedded the RAW (non-canonical)
