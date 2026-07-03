@@ -745,10 +745,10 @@ async fn finalize_completed(
             None,
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-                crate::events::ReactiveMeta {
-                    spawned_by: record.spawned_by_subscription_id.as_deref(),
-                    depth: record.reactive_depth,
-                },
+            crate::events::ReactiveMeta {
+                spawned_by: record.spawned_by_subscription_id.as_deref(),
+                depth: record.reactive_depth,
+            },
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -796,10 +796,10 @@ async fn finalize_failed(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-                crate::events::ReactiveMeta {
-                    spawned_by: record.spawned_by_subscription_id.as_deref(),
-                    depth: record.reactive_depth,
-                },
+            crate::events::ReactiveMeta {
+                spawned_by: record.spawned_by_subscription_id.as_deref(),
+                depth: record.reactive_depth,
+            },
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -834,10 +834,10 @@ async fn finalize_cancelled(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-                crate::events::ReactiveMeta {
-                    spawned_by: record.spawned_by_subscription_id.as_deref(),
-                    depth: record.reactive_depth,
-                },
+            crate::events::ReactiveMeta {
+                spawned_by: record.spawned_by_subscription_id.as_deref(),
+                depth: record.reactive_depth,
+            },
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1181,8 +1181,7 @@ fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) 
 /// its very first step; telling it the exact surface makes discovery moot.
 fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
     const MAX_LISTED: usize = 30;
-    let denied_all =
-        "Function dispatch is entirely disabled this turn — do not call any function.";
+    let denied_all = "Function dispatch is entirely disabled this turn — do not call any function.";
     let Some(p) = policy else {
         return Some(denied_all.to_string());
     };
@@ -1234,8 +1233,7 @@ fn rotate_mid_generation_users(messages: &mut Vec<Value>, new_suffix_len: usize)
     }
     let last = messages.len() - 1;
     let tail = &messages[last];
-    let trailing_callless_assistant = tail.get("role").and_then(Value::as_str)
-        == Some("assistant")
+    let trailing_callless_assistant = tail.get("role").and_then(Value::as_str) == Some("assistant")
         && !tail
             .get("content")
             .and_then(Value::as_array)
@@ -1425,7 +1423,9 @@ mod tests {
         // No policy / empty allow: dispatch is off entirely — say so.
         assert!(super::policy_aid(None).unwrap().contains("disabled"));
         let empty = FunctionPolicy::default();
-        assert!(super::policy_aid(Some(&empty)).unwrap().contains("disabled"));
+        assert!(super::policy_aid(Some(&empty))
+            .unwrap()
+            .contains("disabled"));
         // A `*` allow is the full surface: the discovery doctrine applies, no aid.
         let full = FunctionPolicy {
             allow: vec!["*".into()],
@@ -1489,7 +1489,12 @@ mod tests {
             // The live prefill-400 repro: notification appended during
             // generation/assembly sits before the assistant entry; the
             // re-generate must end with the notification, not the assistant.
-            let mut m = vec![user("task"), assistant("a1"), user("notif"), assistant("a2")];
+            let mut m = vec![
+                user("task"),
+                assistant("a1"),
+                user("notif"),
+                assistant("a2"),
+            ];
             rotate_mid_generation_users(&mut m, 2);
             assert_eq!(tags(&m), vec!["task", "a1", "a2", "notif"]);
         }
@@ -1575,7 +1580,9 @@ mod tests {
         assert_eq!(super::patch_orphaned_calls(&mut msgs), 1);
         // The synthetic result sits directly after the assistant message.
         assert_eq!(
-            msgs[2].get("function_call_id").and_then(serde_json::Value::as_str),
+            msgs[2]
+                .get("function_call_id")
+                .and_then(serde_json::Value::as_str),
             Some("toolu_orphan")
         );
         assert_eq!(msgs.len(), 5);

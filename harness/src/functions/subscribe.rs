@@ -347,7 +347,8 @@ async fn join_wiring_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<Str
         else {
             continue;
         };
-        if let Some(sibling) = same_event_join_sibling(&info, &req.trigger_type, &req.config, jid, jkey)
+        if let Some(sibling) =
+            same_event_join_sibling(&info, &req.trigger_type, &req.config, jid, jkey)
         {
             return Some(format!(
                 "warning: join \"{jid}\" key \"{sibling}\" is already bound to this exact event \
@@ -620,12 +621,18 @@ mod tests {
             serde_json::from_value(json!({ "trigger_type": ty, "config": cfg })).unwrap()
         };
         // Turn-event types with a session filter are the starvation-prone shape.
-        let r = mk(crate::events::TURN_COMPLETED, json!({ "session_id": "s_x" }));
+        let r = mk(
+            crate::events::TURN_COMPLETED,
+            json!({ "session_id": "s_x" }),
+        );
         assert_eq!(turn_event_session_filter(&r), Some("s_x"));
         let r = mk(crate::events::TURN_STARTED, json!({ "session_id": "s_x" }));
         assert_eq!(turn_event_session_filter(&r), Some("s_x"));
         // Other filters and other types are not advised on.
-        let r = mk(crate::events::TURN_COMPLETED, json!({ "parent_session_id": "s_x" }));
+        let r = mk(
+            crate::events::TURN_COMPLETED,
+            json!({ "parent_session_id": "s_x" }),
+        );
         assert_eq!(turn_event_session_filter(&r), None);
         let r = mk("state", json!({ "session_id": "s_x" }));
         assert_eq!(turn_event_session_filter(&r), None);

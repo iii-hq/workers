@@ -247,7 +247,10 @@ mod tests {
             "",
         );
         assert_eq!(wire[0]["role"], "assistant");
-        assert_eq!(wire[1]["role"], "tool", "tool row must directly follow tool_calls, got: {wire:?}");
+        assert_eq!(
+            wire[1]["role"], "tool",
+            "tool row must directly follow tool_calls, got: {wire:?}"
+        );
         assert_eq!(wire[1]["tool_call_id"], "t1");
         assert_eq!(wire[2]["role"], "user");
     }

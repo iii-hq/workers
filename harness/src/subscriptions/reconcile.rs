@@ -135,7 +135,10 @@ async fn reconcile_react(deps: &Deps) {
         }
     }
     if gc > 0 {
-        tracing::info!(count = gc, "react reconcile: GC'd orphaned react bindings on startup");
+        tracing::info!(
+            count = gc,
+            "react reconcile: GC'd orphaned react bindings on startup"
+        );
     }
 }
 
@@ -232,7 +235,10 @@ async fn reconcile_notify(deps: &Deps) {
         }
     }
     if gc > 0 {
-        tracing::info!(count = gc, "notify reconcile: GC'd dead notify bindings on startup");
+        tracing::info!(
+            count = gc,
+            "notify reconcile: GC'd dead notify bindings on startup"
+        );
     }
 }
 
@@ -256,7 +262,10 @@ mod tests {
         assert_eq!(owner_key(NOTIFY_AGENT_ID), "session_id");
         // react (and anything else) matches only the explicit owner stamp —
         // react's own `session_id` field means "spawn into", not ownership.
-        assert_eq!(owner_key(crate::functions::react::REACT_ID), OWNER_SESSION_KEY);
+        assert_eq!(
+            owner_key(crate::functions::react::REACT_ID),
+            OWNER_SESSION_KEY
+        );
     }
 
     #[test]

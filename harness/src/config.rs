@@ -286,12 +286,24 @@ mod tests {
     fn default_functions_is_read_only_baseline_and_nullable() {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         let policy = cfg.default_functions.expect("baseline present by default");
-        assert!(policy.allow.contains(&"engine::functions::list".to_string()));
-        assert!(policy.allow.contains(&"engine::register_trigger".to_string()));
+        assert!(policy
+            .allow
+            .contains(&"engine::functions::list".to_string()));
+        assert!(policy
+            .allow
+            .contains(&"engine::register_trigger".to_string()));
         assert!(policy.allow.contains(&"state::get".to_string()));
         // No write surface, no spend, no spawning in the baseline.
-        for denied in ["state::set", "harness::spawn", "router::chat", "shell::exec"] {
-            assert!(!policy.allow.contains(&denied.to_string()), "{denied} must not be in the baseline");
+        for denied in [
+            "state::set",
+            "harness::spawn",
+            "router::chat",
+            "shell::exec",
+        ] {
+            assert!(
+                !policy.allow.contains(&denied.to_string()),
+                "{denied} must not be in the baseline"
+            );
         }
         // Explicit null restores deny-all.
         let cfg =

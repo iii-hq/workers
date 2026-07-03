@@ -342,8 +342,7 @@ async fn join_edge(
     if let Some(sid) = &spec.subscription_id {
         ops.push(merge_op("bindings", json!({ &join.key: sid })));
     }
-    let rec = match state_update(deps, &join.id, ops).await
-    {
+    let rec = match state_update(deps, &join.id, ops).await {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, join = %join.id, "harness::react: join record update failed");
@@ -556,7 +555,10 @@ async fn state_delete(deps: &Deps, key: &str) -> Result<(), HarnessError> {
 // --- pure helpers (unit-tested) ---------------------------------------------
 
 fn single_event_task(base: &str, event: &Value) -> String {
-    format!("{base}\n\n<event>\n```json\n{}\n```\n</event>", pretty(event))
+    format!(
+        "{base}\n\n<event>\n```json\n{}\n```\n</event>",
+        pretty(event)
+    )
 }
 
 fn gather_inputs_task(base: &str, rec: &Value) -> String {
@@ -603,7 +605,10 @@ pub async fn validate_model(
         return Ok(()); // shape errors are validate_spec's job
     };
     let Some(ids) = known_model_ids(iii).await else {
-        tracing::warn!(model, "harness::react: model catalog unreachable; accepting unverified");
+        tracing::warn!(
+            model,
+            "harness::react: model catalog unreachable; accepting unverified"
+        );
         return Ok(());
     };
     if ids.iter().any(|id| id == model) {
@@ -876,7 +881,10 @@ mod tests {
         let ids = parse_model_ids(&json!({
             "models": [ { "id": "claude-sonnet-5" }, "bare-id", { "no_id": true } ]
         }));
-        assert_eq!(ids, vec!["claude-sonnet-5".to_string(), "bare-id".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["claude-sonnet-5".to_string(), "bare-id".to_string()]
+        );
         assert!(parse_model_ids(&json!({})).is_empty());
     }
 
