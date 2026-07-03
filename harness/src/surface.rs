@@ -6,9 +6,11 @@
 //! `harness::on-config-change`) are intentionally excluded — they are not part
 //! of the agent-facing surface.
 
+use crate::functions::react::REACT_ID;
 use crate::functions::{
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
+    react::{ReactEvent, ReactResult},
     send::{SendRequest, SendResponse},
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
@@ -62,5 +64,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
+        spec::<ReactEvent, ReactResult>(REACT_ID),
     ]
 }
