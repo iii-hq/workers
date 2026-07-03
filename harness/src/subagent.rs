@@ -16,7 +16,7 @@ use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{ParentLink, TurnOptions, TurnRecord, TurnStatus};
+use crate::types::turn::{ParentLink, TurnOptions, TurnRecord, TurnStatus, WORKING_DIR_KEY};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -196,7 +196,7 @@ async fn seed_child(
                 .and_then(|o| o.output.clone())
                 .unwrap_or_default(),
             functions,
-            metadata: None,
+            metadata: inherit_workspace(parent_record),
             max_validation_retries: cfg.max_validation_retries,
         },
         calls: Default::default(),
@@ -216,10 +216,83 @@ async fn seed_child(
     })
 }
 
+/// A child inherits ONLY the parent's workspace scope (`working_dir`), so the
+/// session's picked directory stays reachable from sub-agent shell/coder
+/// calls. The rest of the parent metadata (message ids, tracing passthrough)
+/// belongs to the parent's turn and must not leak onto the child.
+fn inherit_workspace(parent: Option<&TurnRecord>) -> Option<Value> {
+    let dir = parent.and_then(|p| p.options.working_dir())?;
+    Some(json!({ WORKING_DIR_KEY: dir }))
+}
+
 fn is_error(code: &str, message: String) -> ResultData {
     ResultData {
         content: vec![ContentBlock::text(message.clone())],
         is_error: true,
         details: json!({ "error": code, "message": message }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::output::OutputContract;
+
+    fn parent_record(metadata: Option<Value>) -> TurnRecord {
+        TurnRecord {
+            turn_id: "t_parent".into(),
+            session_id: "s_parent".into(),
+            status: TurnStatus::AwaitingFunctions,
+            step: 1,
+            turn_count: 1,
+            depth: 0,
+            abort: false,
+            watermark_entry_id: None,
+            stream_request_id: None,
+            options: TurnOptions {
+                model: "m".into(),
+                provider: None,
+                system_prompt: None,
+                mode: None,
+                max_turns: 16,
+                thinking_level: None,
+                output: OutputContract::Text,
+                functions: None,
+                metadata,
+                max_validation_retries: 2,
+            },
+            calls: Default::default(),
+            parent: None,
+            result: None,
+            result_error: None,
+            validation_retries: 0,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn child_inherits_the_parent_working_dir() {
+        let parent = parent_record(Some(json!({
+            "working_dir": "/work/project",
+            "message_id": "m_1",
+            "session_id": "s_console",
+        })));
+        assert_eq!(
+            inherit_workspace(Some(&parent)),
+            Some(json!({ "working_dir": "/work/project" }))
+        );
+    }
+
+    #[test]
+    fn child_metadata_stays_none_without_a_parent_working_dir() {
+        // Direct spawns have no parent record; parents without a picked
+        // directory must not fabricate one. Other metadata keys are per-turn
+        // tracing and never leak onto the child.
+        assert_eq!(inherit_workspace(None), None);
+        let unscoped = parent_record(Some(json!({ "message_id": "m_1" })));
+        assert_eq!(inherit_workspace(Some(&unscoped)), None);
+        let bare = parent_record(None);
+        assert_eq!(inherit_workspace(Some(&bare)), None);
     }
 }

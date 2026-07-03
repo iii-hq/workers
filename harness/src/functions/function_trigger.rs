@@ -92,7 +92,17 @@ pub async fn handle(
         ));
     }
 
-    let mut arguments = req.call.arguments.clone();
+    // Stamp the turn's workspace scope onto scoped shell/coder args BEFORE the
+    // hook chain (an approver must see the base_dir the call will run under)
+    // and re-apply it before invocation so neither a direct caller nor a hook
+    // rewrite can widen the session scope. No turn record → no scope: any
+    // caller-supplied base_dir is stripped.
+    let working_dir = record.as_ref().and_then(|r| r.options.working_dir());
+    let mut arguments = crate::workspace_inject::inject(
+        &req.call.function_id,
+        req.call.arguments.clone(),
+        working_dir,
+    );
     if let Some(rec) = &record {
         match deps
             .hooks
@@ -129,6 +139,10 @@ pub async fn handle(
             }
         }
     }
+
+    // Re-stamp after the hook chain (idempotent) — a hook rewrite must not
+    // widen or drop the session scope.
+    let arguments = crate::workspace_inject::inject(&req.call.function_id, arguments, working_dir);
 
     // Single invocation chokepoint: subscription control calls are intercepted
     // (trusted session injected); everything else invokes the target.

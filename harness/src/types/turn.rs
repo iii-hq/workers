@@ -12,6 +12,13 @@ use crate::prompt::Mode;
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 
+/// The options-metadata key that carries the session working directory. The
+/// read side (`TurnOptions::working_dir`) and the sub-agent write side
+/// (`subagent::inherit_workspace`) share this constant so a rename can't
+/// silently desync the two and drop child scope. Mirrors
+/// `workspace_inject::BASE_DIR_FIELD`.
+pub const WORKING_DIR_KEY: &str = "working_dir";
+
 /// The coarse, harness-internal turn lifecycle (harness.md § API Reference).
 /// Finer-grained than the session's `status`, which the loop derives from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -83,6 +90,21 @@ pub struct TurnOptions {
 
 fn default_max_validation_retries() -> u32 {
     2
+}
+
+impl TurnOptions {
+    /// The session working directory this turn is scoped to: the
+    /// `working_dir` key of the frozen options metadata. Every path that
+    /// invokes a scoped `shell::*` / `coder::*` call (turn loop, deferred
+    /// release, `function::trigger`) must stamp this via
+    /// `workspace_inject::inject` so the console-picked directory stays
+    /// reachable.
+    pub fn working_dir(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.get(WORKING_DIR_KEY))
+            .and_then(Value::as_str)
+    }
 }
 
 /// Lifecycle of one function call within a turn (harness.md § Per-call
@@ -245,6 +267,23 @@ mod tests {
             pending_timeout_ms: None,
             pending_at: None,
         }
+    }
+
+    #[test]
+    fn working_dir_reads_the_metadata_key() {
+        let mut r = record();
+        r.options.metadata = Some(json!({ "working_dir": "/work/p", "message_id": "m_1" }));
+        assert_eq!(r.options.working_dir(), Some("/work/p"));
+    }
+
+    #[test]
+    fn working_dir_is_none_without_metadata_or_key_or_string() {
+        let mut r = record();
+        assert_eq!(r.options.working_dir(), None);
+        r.options.metadata = Some(json!({ "message_id": "m_1" }));
+        assert_eq!(r.options.working_dir(), None);
+        r.options.metadata = Some(json!({ "working_dir": 7 }));
+        assert_eq!(r.options.working_dir(), None);
     }
 
     #[test]
