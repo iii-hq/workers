@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   pathGet,
   pathSet,
+  pathToDomId,
   pathToPointer,
   pathUnset,
   pointerToPath,
@@ -149,5 +150,16 @@ describe('pathToPointer / pointerToPath', () => {
 
   it('keeps tokens that look like padded numbers as strings', () => {
     expect(pointerToPath('/01')).toEqual(['01'])
+  })
+})
+
+describe('pathToDomId', () => {
+  it('builds deterministic field anchors from schema paths', () => {
+    expect(pathToDomId(['fs', 'host_roots'])).toBe(
+      'configuration-field-fs-host_roots',
+    )
+    expect(pathToDomId(['items', 0, 'weird/key'])).toBe(
+      'configuration-field-items-0-weird-key',
+    )
   })
 })

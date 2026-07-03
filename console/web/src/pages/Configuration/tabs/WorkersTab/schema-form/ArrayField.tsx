@@ -5,6 +5,7 @@ import { wt } from '../typography'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
 import { DeleteButton, DragHandle } from './RowChrome'
+import { pathToDomId } from './path'
 import { isInlineLeaf, schemaDefault } from './ref-resolver'
 import { moveItem } from './reorder'
 import { useDragReorder } from './useDragReorder'
@@ -105,6 +106,7 @@ export function ArrayField(props: FieldProps) {
         description={description}
         required={required}
         errorMessage={errorForField(props)}
+        anchorId={pathToDomId(path)}
       >
         {() => (
           <div className={cn(wt.caption, 'text-ink-faint')}>

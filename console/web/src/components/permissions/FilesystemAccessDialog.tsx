@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/Dialog'
 import { getShellHostRoots } from '@/lib/backend/shell-roots'
 
-const SHELL_CONFIG_HASH = '#/configuration/workers/shell'
+const SHELL_HOST_ROOTS_HASH = '#/configuration/workers/shell/fs/host_roots'
 
 interface FilesystemAccessDialogProps {
   open: boolean
@@ -63,22 +63,24 @@ export function FilesystemAccessDialog({
         <div className="mt-5 flex flex-col gap-5">
           <FolderGroup title="workspace">
             {workingDir ? (
-              <div className="flex items-center gap-2 px-2 py-1.5">
+              <div className="flex items-start gap-2 px-2 py-1.5">
                 <Folder
                   size={13}
-                  className="shrink-0 text-ink-faint"
+                  className="mt-0.5 shrink-0 text-ink-faint"
                   aria-hidden
                 />
-                <span
-                  dir="rtl"
-                  className="truncate text-left font-mono text-[12px] text-ink"
-                  title={workingDir}
-                >
-                  {workingDir}
-                </span>
-                <span className="ml-auto shrink-0 font-mono text-[10px] lowercase text-ink-ghost">
-                  always allowed — change it with the directory picker
-                </span>
+                <div className="min-w-0 flex-1">
+                  <span
+                    dir="rtl"
+                    className="block truncate text-left font-mono text-[12px] text-ink"
+                    title={workingDir}
+                  >
+                    {workingDir}
+                  </span>
+                  <span className="block font-mono text-[10px] lowercase text-ink-ghost">
+                    always allowed — change it with the directory picker
+                  </span>
+                </div>
               </div>
             ) : (
               <div className="px-2 py-1.5 font-mono text-[11px] lowercase text-ink-ghost">
@@ -167,7 +169,8 @@ export function FilesystemAccessDialog({
               </div>
             )}
             <a
-              href={SHELL_CONFIG_HASH}
+              href={SHELL_HOST_ROOTS_HASH}
+              onClick={() => onOpenChange(false)}
               className="mt-1 inline-block px-2 font-mono text-[11px] lowercase text-accent hover:underline"
             >
               edit in shell configuration →

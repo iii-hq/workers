@@ -5,6 +5,7 @@ import type { JsonSchema, JsonValue } from '../api'
 import { wt } from '../typography'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
+import { pathToDomId } from './path'
 import { DeleteButton, DragHandle } from './RowChrome'
 import { isInlineLeaf, schemaDefault } from './ref-resolver'
 import { moveItem } from './reorder'
@@ -162,6 +163,7 @@ export function DictionaryField(props: FieldProps) {
         description={description}
         required={required}
         errorMessage={errorForField(props)}
+        anchorId={pathToDomId(path)}
       >
         {() => (
           <div className={cn(wt.caption, 'text-ink-faint')}>

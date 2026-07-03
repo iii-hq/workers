@@ -28,6 +28,7 @@ interface FieldShellProps {
    */
   children: (controlId: string) => ReactNode
   className?: string
+  anchorId?: string
   /**
    * Suppress the label row + description so the bare control can sit
    * inline (e.g. as the value cell of a dictionary row or an array item,
@@ -44,15 +45,24 @@ export function FieldShell({
   errorMessage,
   children,
   className,
+  anchorId,
   hideLabel,
 }: FieldShellProps) {
-  const controlId = useId()
+  const generatedControlId = useId()
+  const controlId = anchorId ? `${anchorId}-control` : generatedControlId
   const descriptionId = `${controlId}-desc`
   const errorId = `${controlId}-err`
   const showDescription = !hideLabel && !!description
 
   return (
-    <div className={cn('space-y-1.5', className)}>
+    <div
+      id={anchorId}
+      tabIndex={anchorId ? -1 : undefined}
+      className={cn(
+        'space-y-1.5 scroll-mt-24 focus:outline-none focus:ring-1 focus:ring-accent/60 focus:ring-offset-4 focus:ring-offset-bg',
+        className,
+      )}
+    >
       {hideLabel ? null : (
         <div className="flex items-baseline gap-2">
           <label

@@ -130,6 +130,17 @@ export function pathToPointer(path: Path): string {
   )
 }
 
+export function pathToDomId(path: Path): string {
+  const tokens = path.length === 0 ? ['root'] : path
+  const suffix = tokens
+    .map((token) => {
+      const safe = String(token).replace(/[^A-Za-z0-9_-]+/g, '-')
+      return safe.length > 0 ? safe : 'empty'
+    })
+    .join('-')
+  return `configuration-field-${suffix}`
+}
+
 /**
  * Decode an RFC 6901 JSON Pointer back into a structured path. Numeric
  * tokens that look like array indices are returned as numbers so the

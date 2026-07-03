@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils'
 import type { JsonSchema, JsonValue } from '../api'
 import { wt } from '../typography'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
+import { pathToDomId } from './path'
 
 /**
  * Renders `type: object` schemas with a `properties` map as a titled
@@ -84,7 +85,7 @@ export function ObjectSection(props: FieldProps) {
   }
 
   return (
-    <section className="space-y-2">
+    <section id={pathToDomId(path)} className="space-y-2 scroll-mt-24">
       <header>
         <h3 className={cn(wt.body, 'text-ink lowercase tracking-[-0.01em]')}>
           {title}

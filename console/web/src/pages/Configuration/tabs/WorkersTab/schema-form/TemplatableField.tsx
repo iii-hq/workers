@@ -24,6 +24,7 @@ import { wt } from '../typography'
 import { EnvLexicalInput } from './env-lexical/EnvLexicalInput'
 import type { FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
+import { pathToDomId } from './path'
 
 interface TemplatableFieldProps {
   props: FieldProps
@@ -50,6 +51,7 @@ export function TemplatableField({
       required={required}
       errorMessage={errorForField(props)}
       hideLabel={hideLabel}
+      anchorId={pathToDomId(props.path)}
     >
       {(controlId) => (
         <div className="space-y-1.5">
