@@ -33,6 +33,7 @@ on:
       - 'telegram-bot/v*'
       - 'shell/v*'
       - 'storage/v*'
+      - 'scrapling/v*'
       - 'web/v*'
   workflow_dispatch:
     inputs:

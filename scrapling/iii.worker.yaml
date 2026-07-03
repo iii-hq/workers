@@ -1,0 +1,22 @@
+name: scrapling
+description: >-
+  Scrapling as an iii worker — scrapling::* functions run HTTP / anti-bot /
+  browser fetches and CSS/XPath/regex/adaptive extraction over the iii bus.
+
+runtime:
+  base_image: docker.io/iiidev/python:latest
+
+env:
+  III_URL: "ws://localhost:49134"
+
+# Browsers (Camoufox / Chromium fetched by `scrapling install`) are RAM-hungry.
+resources:
+  memory: 4096
+  cpus: 2
+
+scripts:
+  # base_image + this install step build the image (no Dockerfile). `scrapling
+  # install` downloads the Camoufox/Chromium browsers used by
+  # stealthy-fetch / dynamic-fetch / screenshot.
+  install: "pip install -e . && scrapling install"
+  start: "python -m src.main"

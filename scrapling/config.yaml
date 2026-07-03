@@ -1,0 +1,14 @@
+engine_url: ws://127.0.0.1:49134
+
+# Applied when the caller omits the field. Units are Scrapling-native; `timeout`
+# is intentionally NOT defaulted here because it means seconds for the HTTP
+# Fetcher but milliseconds for the browser fetchers — pass it per call.
+defaults:
+  impersonate: chrome     # HTTP Fetcher TLS/UA fingerprint
+  headless: true          # browser fetchers (stealthy / dynamic)
+  network_idle: false     # browser fetchers: wait for network to settle
+  proxy: ""               # all fetchers; "" = no proxy
+  include_html: false     # opt-in raw HTML in fetch output (avoids payload bloat)
+
+# Max concurrent requests when a fetch is called with a `urls` array.
+max_bulk_concurrency: 5

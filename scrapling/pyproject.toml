@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# NOT "scrapling": this project depends on the PyPI `scrapling`; a same-named
+# project is a self-dependency and breaks `pip install`. The iii worker name
+# (folder + iii.worker.yaml) is still `scrapling` — CI validates that, not this.
+name = "scrapling-worker"
+version = "0.1.0"
+description = "Scrapling as an iii worker: HTTP / anti-bot / browser fetch + CSS/XPath/regex/adaptive extraction as scrapling::* functions."
+authors = [{ name = "iii" }]
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "iii-sdk==0.20.0",
+    "scrapling[fetchers]==0.4.9",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+scrapling-worker = "src.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
