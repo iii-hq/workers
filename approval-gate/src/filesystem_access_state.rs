@@ -1,4 +1,4 @@
-//! State for the `approval::grant-watch` ladder's memory rungs (steps 6-7
+//! State for the `approval::filesystem-access-watch` ladder's memory rungs (steps 6-7
 //! of contracts.md § post_trigger / spec-pr3): the per-session "denied this
 //! session" directory list and the per-call re-ask attempt counter.
 //!
@@ -16,20 +16,20 @@ use serde_json::Value;
 
 use crate::state;
 
-pub const DENIED_SCOPE: &str = "approval_grant_denied";
-pub const ATTEMPTS_SCOPE: &str = "approval_grant_attempts";
+pub const DENIED_SCOPE: &str = "approval_filesystem_access_denied";
+pub const ATTEMPTS_SCOPE: &str = "approval_filesystem_access_attempts";
 
 // ---------------------------------------------------------------------------
-// Denied memory: approval_grant_denied/<session_id> -> string[]
+// Denied memory: approval_filesystem_access_denied/<session_id> -> string[]
 // ---------------------------------------------------------------------------
 
 /// Idempotent append — mirrors `settings::with_grant`.
-pub fn with_denied(entries: &[String], dir: &str) -> Vec<String> {
-    if entries.iter().any(|d| d == dir) {
+pub fn with_denied(entries: &[String], requested_root: &str) -> Vec<String> {
+    if entries.iter().any(|d| d == requested_root) {
         return entries.to_vec();
     }
     let mut next = entries.to_vec();
-    next.push(dir.to_string());
+    next.push(requested_root.to_string());
     next
 }
 
@@ -57,9 +57,13 @@ pub async fn read_denied(iii: &IIIClient, session_id: &str) -> Vec<String> {
 
 /// Record a denial. Read-modify-write; races only widen the list by an
 /// idempotent no-op (the entry is deduped either way).
-pub async fn add_denied(iii: &IIIClient, session_id: &str, dir: &str) -> Result<(), Error> {
+pub async fn add_denied(
+    iii: &IIIClient,
+    session_id: &str,
+    requested_root: &str,
+) -> Result<(), Error> {
     let value = state::get(iii, DENIED_SCOPE, session_id).await?;
-    let next = with_denied(&parse_denied(&value), dir);
+    let next = with_denied(&parse_denied(&value), requested_root);
     state::set(
         iii,
         DENIED_SCOPE,
@@ -77,7 +81,7 @@ pub async fn clear_denied(iii: &IIIClient, session_id: &str) -> Result<(), Error
 }
 
 // ---------------------------------------------------------------------------
-// Attempt cap: approval_grant_attempts/<session_id>/<function_call_id>
+// Attempt cap: approval_filesystem_access_attempts/<session_id>/<function_call_id>
 // ---------------------------------------------------------------------------
 
 /// Stored value — carries `session_id` / `function_call_id` / `turn_id` so

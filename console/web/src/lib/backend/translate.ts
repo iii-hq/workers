@@ -39,9 +39,10 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
   switch (event.kind) {
     case 'approval-created': {
       const { record } = event
-      const grantRequest =
-        record.kind === 'folder_access' && record.grant_request?.dir
-          ? record.grant_request
+      const accessRequest =
+        record.kind === 'filesystem_access' &&
+        record.access_request?.requested_root
+          ? record.access_request
           : undefined
       return [
         {
@@ -51,12 +52,12 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
           pendingApproval: true,
           functionCallId: record.function_call_id,
           sessionId: record.session_id,
-          ...(grantRequest
+          ...(accessRequest
             ? {
-                folderAccess: {
-                  dir: grantRequest.dir,
-                  offendingPath: grantRequest.offending_path,
-                  errorCode: grantRequest.error_code,
+                filesystemAccess: {
+                  requestedRoot: accessRequest.requested_root,
+                  attemptedPath: accessRequest.attempted_path,
+                  errorCode: accessRequest.error_code,
                 },
               }
             : {}),

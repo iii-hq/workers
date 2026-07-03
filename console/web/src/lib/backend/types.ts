@@ -27,12 +27,16 @@ export type StreamEvent =
       /** iii session_id owning this call — needed to resolve approval. */
       sessionId?: string
       /**
-       * Present when the pending approval is a folder-access grant request
-       * (`PendingApprovalRecord.kind === 'folder_access'`) rather than a
-       * plain function-call approval. Drives `FolderAccessPrompt` instead of
+       * Present when the pending approval is a filesystem-access request
+       * (`PendingApprovalRecord.kind === 'filesystem_access'`) rather than a
+       * plain function-call approval. Drives `FilesystemAccessPrompt` instead of
        * the standard approve/deny/always row.
        */
-      folderAccess?: { dir: string; offendingPath?: string; errorCode?: string }
+      filesystemAccess?: {
+        requestedRoot: string
+        attemptedPath?: string
+        errorCode?: string
+      }
     }
   | {
       kind: 'fcall-end'
@@ -98,10 +102,8 @@ export interface ChatStreamOptions {
    */
   thinkingLevel?: import('@/types/chat').ThinkingLevel
   /**
-   * Per-session working directory. The real backend forwards it as
-   * `harness::send` `options.metadata.working_dir` so the harness can scope
-   * the turn's shell/coder calls to it (`base_dir`). Session metadata alone is
-   * NOT on the turn record, so it must travel on every send.
+   * Per-session filesystem scope root. The real backend forwards it as
+   * `harness::send` `options.metadata.fs_scope.root`.
    */
   workingDir?: string | null
   /** mean delay between assistant tokens, in ms */
@@ -167,11 +169,9 @@ export interface ChatBackend {
     functionCallId: string,
     decision: 'allow' | 'deny',
     /**
-     * Folder-access grant scope. Sent ONLY for folder_access resolutions
-     * (`opts.grantScope` set); omitted entirely for plain function-call
-     * approvals so old gates never see the field.
+     * Filesystem access duration. Sent only for filesystem_access resolutions.
      */
-    opts?: { grantScope?: 'once' | 'session' | 'always' },
+    opts?: { accessDuration?: 'once' | 'session' | 'always' },
   ): Promise<void>
   /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).

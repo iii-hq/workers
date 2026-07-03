@@ -66,17 +66,20 @@
         "type": "object"
       },
       "HookResultError": {
-        "description": "`result.details.error` on a dispatch failure — the harness normalizes both shell remote errors and coder string-JSON errors into this shape (contracts.md § post_trigger hook can now HOLD).",
+        "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can now HOLD).",
         "properties": {
           "code": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message": {
             "type": "string"
           }
         },
         "required": [
-          "code",
           "message"
         ],
         "type": "object"
@@ -118,7 +121,7 @@
       "metadata": {
         "additionalProperties": true,
         "default": null,
-        "description": "The per-send tracing metadata (`metadata.working_dir` is the user-picked session workspace, absolute + canonical).",
+        "description": "The per-send tracing metadata (`metadata.fs_scope.root` is the user-picked session workspace, absolute + canonical).",
         "type": [
           "object",
           "null"

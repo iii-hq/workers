@@ -8,13 +8,13 @@
 //! emit — a crash between the first two leaks one record until turn/session
 //! cleanup; it can never lose a decision.
 //!
-//! `folder_access` records (held by `approval::grant-watch`) additionally
-//! apply `req.grant_scope` on allow (spec-pr3-approval-gate.md § Resolve
-//! orchestration): `once` rides the release as a one-shot `extra_roots`,
-//! `session`/`always` install a durable `harness::workspace::grant` first
-//! (falling back to once-style `extra_roots` on failure so the user's click
-//! still works), and `always` additionally best-effort persists the dir into
-//! the `shell` deployment configuration. `grant_scope` on a plain `function`
+//! `filesystem_access` records (held by `approval::filesystem-access-watch`) additionally
+//! apply `req.access_duration` on allow (spec-pr3-approval-gate.md § Resolve
+//! orchestration): `once` rides the release as a one-shot `fs_scope.grants`,
+//! `session`/`always` install a durable `harness::filesystem::grant` first
+//! (falling back to once-style `fs_scope.grants` on failure so the user's click
+//! still works), and `always` additionally best-effort persists the root into
+//! the `shell` deployment configuration. `access_duration` on a plain `function`
 //! record — or on a `deny` decision — is ignored (logged).
 
 use serde_json::{json, Value};
@@ -22,12 +22,12 @@ use serde_json::{json, Value};
 use super::Deps;
 use crate::denial::{render_text, user_deny_envelope};
 use crate::error::ApprovalError;
-use crate::grant_state;
+use crate::filesystem_access_state;
 use crate::harness;
 use crate::pending;
 use crate::shell_config;
 use crate::types::{
-    now_ms, validate_id, GrantRequest, GrantScope, PendingApprovalRecord, PendingKind,
+    now_ms, validate_id, AccessDuration, AccessRequest, PendingApprovalRecord, PendingKind,
     PendingResolvedEvent, ResolveDecision, ResolveRequest, ResolveResponse, ResolvedOutcome,
 };
 
@@ -48,12 +48,12 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         });
     };
 
-    if req.grant_scope.is_some() && record.kind != PendingKind::FolderAccess {
+    if req.access_duration.is_some() && record.kind != PendingKind::FilesystemAccess {
         tracing::warn!(
             session_id = %req.session_id,
             function_call_id = %req.function_call_id,
             function_id = %record.function_id,
-            "grant_scope ignored: pending record is not folder_access"
+            "access_duration ignored: pending record is not filesystem_access"
         );
     }
 
@@ -111,31 +111,31 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
 }
 
 /// Build the `harness::function::resolve` payload for `req`/`record`.
-/// `function` records (and `folder_access` records under `deny`) build the
-/// same payload as before this feature existed; `folder_access` + `allow`
-/// additionally applies `grant_scope`.
+/// `function` records (and `filesystem_access` records under `deny`) build the
+/// same payload as before this feature existed; `filesystem_access` + `allow`
+/// additionally applies `access_duration`.
 async fn build_payload(deps: &Deps, req: &ResolveRequest, record: &PendingApprovalRecord) -> Value {
     match req.decision {
-        ResolveDecision::Allow if record.kind == PendingKind::FolderAccess => {
+        ResolveDecision::Allow if record.kind == PendingKind::FilesystemAccess => {
             build_grant_allow_payload(deps, req, record).await
         }
         ResolveDecision::Allow => execute_payload(req, &record.turn_id, None),
-        ResolveDecision::Deny if record.kind == PendingKind::FolderAccess => {
+        ResolveDecision::Deny if record.kind == PendingKind::FilesystemAccess => {
             build_grant_deny_payload(deps, req, record).await
         }
         ResolveDecision::Deny => deliver_denial_payload(req, record, req.reason.as_deref()),
     }
 }
 
-fn execute_payload(req: &ResolveRequest, turn_id: &str, extra_roots: Option<&[String]>) -> Value {
+fn execute_payload(req: &ResolveRequest, turn_id: &str, grants: Option<&[String]>) -> Value {
     let mut payload = json!({
         "session_id": req.session_id,
         "turn_id": turn_id,
         "function_call_id": req.function_call_id,
         "action": "execute",
     });
-    if let Some(dirs) = extra_roots {
-        payload["extra_roots"] = json!(dirs);
+    if let Some(dirs) = grants {
+        payload["fs_scope"] = json!({ "grants": dirs });
     }
     payload
 }
@@ -161,36 +161,37 @@ fn deliver_denial_payload(
     })
 }
 
-/// `allow` on a `folder_access` record: apply `grant_scope` (default
+/// `allow` on a `filesystem_access` record: apply `access_duration` (default
 /// `once`) — spec-pr3-approval-gate.md § Resolve orchestration.
 async fn build_grant_allow_payload(
     deps: &Deps,
     req: &ResolveRequest,
     record: &PendingApprovalRecord,
 ) -> Value {
-    let Some(grant) = &record.grant_request else {
-        // Defensive: a folder_access record without a grant_request should
-        // never happen (grant-watch always sets it), but a missing dir
+    let Some(grant) = &record.access_request else {
+        // Defensive: a filesystem_access record without a access_request should
+        // never happen (filesystem-access-watch always sets it), but a missing access request root
         // must not crash resolve — behave like a plain execute.
         tracing::warn!(
             function_call_id = %req.function_call_id,
-            "folder_access record missing grant_request; releasing without extra_roots"
+            "filesystem_access record missing access_request; releasing without fs_scope.grants"
         );
         return execute_payload(req, &record.turn_id, None);
     };
 
     let iii = deps.iii.as_ref();
-    match req.grant_scope.unwrap_or(GrantScope::Once) {
-        GrantScope::Once => once_payload(req, &record.turn_id, grant),
-        GrantScope::Session => {
-            match apply_workspace_grant(iii, &req.session_id, &grant.dir).await {
+    match req.access_duration.unwrap_or(AccessDuration::Once) {
+        AccessDuration::Once => once_payload(req, &record.turn_id, grant),
+        AccessDuration::Session => {
+            match apply_filesystem_grant(iii, &req.session_id, &grant.requested_root).await {
                 Ok(()) => execute_payload(req, &record.turn_id, None),
                 Err(()) => once_payload(req, &record.turn_id, grant),
             }
         }
-        GrantScope::Always => {
-            let grant_applied = apply_workspace_grant(iii, &req.session_id, &grant.dir).await;
-            persist_host_root_best_effort(iii, &grant.dir).await;
+        AccessDuration::Always => {
+            let grant_applied =
+                apply_filesystem_grant(iii, &req.session_id, &grant.requested_root).await;
+            persist_host_root_best_effort(iii, &grant.requested_root).await;
             match grant_applied {
                 Ok(()) => execute_payload(req, &record.turn_id, None),
                 Err(()) => once_payload(req, &record.turn_id, grant),
@@ -199,63 +200,74 @@ async fn build_grant_allow_payload(
     }
 }
 
-fn once_payload(req: &ResolveRequest, turn_id: &str, grant: &GrantRequest) -> Value {
-    execute_payload(req, turn_id, Some(std::slice::from_ref(&grant.dir)))
+fn once_payload(req: &ResolveRequest, turn_id: &str, grant: &AccessRequest) -> Value {
+    execute_payload(
+        req,
+        turn_id,
+        Some(std::slice::from_ref(&grant.requested_root)),
+    )
 }
 
-/// `harness::workspace::grant` — its failure is never fatal to the
+/// `harness::filesystem::grant` — its failure is never fatal to the
 /// release, only to durability: the caller falls back to once-style
-/// `extra_roots` so the user's click still works.
-async fn apply_workspace_grant(
+/// `fs_scope.grants` so the user's click still works.
+async fn apply_filesystem_grant(
     iii: &iii_sdk::IIIClient,
     session_id: &str,
-    dir: &str,
+    requested_root: &str,
 ) -> Result<(), ()> {
-    match harness::workspace_grant(iii, session_id, dir).await {
+    match harness::filesystem_grant(iii, session_id, requested_root).await {
         Ok(_) => Ok(()),
         Err(e) => {
             tracing::warn!(
                 session_id,
-                dir,
+                requested_root,
                 error = %e,
-                "harness::workspace::grant failed; falling back to once-style extra_roots for this release"
+                "harness::filesystem::grant failed; falling back to once-style fs_scope.grants for this release"
             );
             Err(())
         }
     }
 }
 
-async fn persist_host_root_best_effort(iii: &iii_sdk::IIIClient, dir: &str) {
-    if let Err(e) = shell_config::add_host_root(iii, dir).await {
+async fn persist_host_root_best_effort(iii: &iii_sdk::IIIClient, requested_root: &str) {
+    if let Err(e) = shell_config::add_host_root(iii, requested_root).await {
         tracing::warn!(
-            dir,
+            requested_root,
             error = %e,
             "best-effort shell fs.host_roots persist failed; the session-scoped grant (if any) still applies"
         );
     }
 }
 
-/// `deny` on a `folder_access` record: remember the denial for the rest of
-/// the session BEFORE delivering, and default the reason to mention folder
+/// `deny` on a `filesystem_access` record: remember the denial for the rest of
+/// the session BEFORE delivering, and default the reason to mention filesystem
 /// access specifically.
 async fn build_grant_deny_payload(
     deps: &Deps,
     req: &ResolveRequest,
     record: &PendingApprovalRecord,
 ) -> Value {
-    let dir = record.grant_request.as_ref().map(|g| g.dir.as_str());
-    if let Some(dir) = dir {
-        if let Err(e) = grant_state::add_denied(deps.iii.as_ref(), &req.session_id, dir).await {
+    let requested_root = record
+        .access_request
+        .as_ref()
+        .map(|g| g.requested_root.as_str());
+    if let Some(requested_root) = requested_root {
+        if let Err(e) =
+            filesystem_access_state::add_denied(deps.iii.as_ref(), &req.session_id, requested_root)
+                .await
+        {
             tracing::warn!(
                 session_id = %req.session_id,
-                dir,
+                requested_root,
                 error = %e,
-                "denied-memory write failed; grant-watch may re-ask for this dir again"
+                "denied-memory write failed; filesystem-access-watch may re-ask for this root again"
             );
         }
     }
 
-    let default_reason = dir.map(|d| format!("user denied folder access to {d}"));
+    let default_reason =
+        requested_root.map(|root| format!("user denied filesystem access to {root}"));
     let reason = req
         .reason
         .as_deref()
@@ -288,7 +300,7 @@ mod tests {
             depth: 0,
             assistant_excerpt: None,
             kind: PendingKind::Function,
-            grant_request: None,
+            access_request: None,
         };
         state_set(
             iii,
@@ -305,7 +317,7 @@ mod tests {
             function_call_id: "c_1".into(),
             decision,
             reason: reason.map(str::to_string),
-            grant_scope: None,
+            access_duration: None,
         }
     }
 
@@ -367,7 +379,7 @@ mod tests {
                     function_call_id: "c_1".into(),
                     decision: ResolveDecision::Allow,
                     reason: None,
-                    grant_scope: None,
+                    access_duration: None,
                 },
             )
             .await
@@ -378,26 +390,26 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // folder_access + grant_scope
+    // filesystem_access + access_duration
     // -----------------------------------------------------------------
 
-    async fn seed_folder_access_record(iii: &iii_sdk::IIIClient, dir: &str) {
+    async fn seed_filesystem_access_record(iii: &iii_sdk::IIIClient, requested_root: &str) {
         let record = PendingApprovalRecord {
             session_id: "s_1".into(),
             turn_id: "t_9".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::fs::read".into(),
-            arguments_excerpt: json!({ "path": dir }),
+            arguments_excerpt: json!({ "path": requested_root }),
             pending_at: 100,
             session_title: None,
             session_description: None,
             session_metadata: None,
             depth: 0,
             assistant_excerpt: None,
-            kind: PendingKind::FolderAccess,
-            grant_request: Some(GrantRequest {
-                dir: dir.to_string(),
-                offending_path: format!("{dir}/x"),
+            kind: PendingKind::FilesystemAccess,
+            access_request: Some(AccessRequest {
+                requested_root: requested_root.to_string(),
+                attempted_path: format!("{requested_root}/x"),
                 error_code: "S215".to_string(),
             }),
         };
@@ -410,24 +422,24 @@ mod tests {
         .await;
     }
 
-    fn grant_req(scope: Option<GrantScope>) -> ResolveRequest {
+    fn grant_req(scope: Option<AccessDuration>) -> ResolveRequest {
         ResolveRequest {
             session_id: "s_1".into(),
             function_call_id: "c_1".into(),
             decision: ResolveDecision::Allow,
             reason: None,
-            grant_scope: scope,
+            access_duration: scope,
         }
     }
 
-    /// Fake `harness::workspace::grant`, logging to `stack.harness_calls`
+    /// Fake `harness::filesystem::grant`, logging to `stack.harness_calls`
     /// tagged so a test can tell it apart from `harness::function::resolve`
     /// deliveries.
-    fn register_workspace_grant_fake(stack: &TestStack, fail: bool) {
+    fn register_filesystem_grant_fake(stack: &TestStack, fail: bool) {
         let iii = stack.iii.clone();
         let log = stack.harness_calls.clone();
         iii.register_function(
-            "harness::workspace::grant",
+            "harness::filesystem::grant",
             iii_sdk::RegisterFunction::new_async(move |req: Value| {
                 let log = log.clone();
                 async move {
@@ -435,7 +447,7 @@ mod tests {
                         return Err(iii_sdk::errors::Error::Handler("boom".into()));
                     }
                     let mut tagged = req.clone();
-                    tagged["__fn"] = json!("harness::workspace::grant");
+                    tagged["__fn"] = json!("harness::filesystem::grant");
                     log_push(&log, tagged);
                     let root = req.get("root").cloned().unwrap_or(Value::Null);
                     Ok::<_, iii_sdk::errors::Error>(json!({
@@ -448,12 +460,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn once_scope_carries_extra_roots_and_does_not_call_workspace_grant() {
+    async fn once_scope_carries_fs_scope_grants_and_does_not_call_filesystem_grant() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
-            register_workspace_grant_fake(&stack, false);
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            register_filesystem_grant_fake(&stack, false);
 
-            let res = handle(&stack.deps, grant_req(Some(GrantScope::Once)))
+            let res = handle(&stack.deps, grant_req(Some(AccessDuration::Once)))
                 .await
                 .unwrap();
             assert!(res.resolved);
@@ -461,40 +473,40 @@ mod tests {
             let harness = log_snapshot(&stack.harness_calls);
             assert_eq!(harness.len(), 1, "only function::resolve, no grant call");
             assert_eq!(harness[0]["action"], json!("execute"));
-            assert_eq!(harness[0]["extra_roots"], json!(["/a/b"]));
+            assert_eq!(harness[0]["fs_scope"]["grants"], json!(["/a/b"]));
         })
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn default_grant_scope_behaves_like_once() {
+    async fn default_access_duration_behaves_like_once() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
-            register_workspace_grant_fake(&stack, false);
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            register_filesystem_grant_fake(&stack, false);
 
             handle(&stack.deps, grant_req(None)).await.unwrap();
 
             let harness = log_snapshot(&stack.harness_calls);
-            assert_eq!(harness[0]["extra_roots"], json!(["/a/b"]));
+            assert_eq!(harness[0]["fs_scope"]["grants"], json!(["/a/b"]));
         })
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn session_scope_grants_before_execute_and_omits_extra_roots() {
+    async fn session_scope_grants_before_execute_and_omits_fs_scope_grants() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
-            register_workspace_grant_fake(&stack, false);
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            register_filesystem_grant_fake(&stack, false);
 
-            handle(&stack.deps, grant_req(Some(GrantScope::Session)))
+            handle(&stack.deps, grant_req(Some(AccessDuration::Session)))
                 .await
                 .unwrap();
 
             let calls = log_snapshot(&stack.harness_calls);
             let grant_call = calls
                 .iter()
-                .find(|c| c["__fn"] == json!("harness::workspace::grant"))
-                .expect("workspace::grant was called");
+                .find(|c| c["__fn"] == json!("harness::filesystem::grant"))
+                .expect("filesystem::grant was called");
             assert_eq!(grant_call["root"], json!("/a/b"));
             assert_eq!(grant_call["session_id"], json!("s_1"));
 
@@ -502,18 +514,18 @@ mod tests {
                 .iter()
                 .find(|c| c["action"] == json!("execute"))
                 .expect("execute call");
-            assert!(execute_call.get("extra_roots").is_none());
+            assert!(execute_call.get("fs_scope").is_none());
         })
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn session_scope_falls_back_to_extra_roots_when_grant_fails() {
+    async fn session_scope_falls_back_to_fs_scope_grants_when_grant_fails() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
-            register_workspace_grant_fake(&stack, true);
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            register_filesystem_grant_fake(&stack, true);
 
-            let res = handle(&stack.deps, grant_req(Some(GrantScope::Session)))
+            let res = handle(&stack.deps, grant_req(Some(AccessDuration::Session)))
                 .await
                 .unwrap();
             assert!(
@@ -524,7 +536,7 @@ mod tests {
             let harness = log_snapshot(&stack.harness_calls);
             assert_eq!(harness.len(), 1);
             assert_eq!(harness[0]["action"], json!("execute"));
-            assert_eq!(harness[0]["extra_roots"], json!(["/a/b"]));
+            assert_eq!(harness[0]["fs_scope"]["grants"], json!(["/a/b"]));
         })
         .await;
     }
@@ -532,8 +544,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn always_scope_grants_and_persists_configuration_best_effort() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
-            register_workspace_grant_fake(&stack, false);
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            register_filesystem_grant_fake(&stack, false);
             crate::testkit::call(
                 &stack.iii,
                 "configuration::register",
@@ -548,19 +560,19 @@ mod tests {
             .await
             .expect("register shell configuration");
 
-            handle(&stack.deps, grant_req(Some(GrantScope::Always)))
+            handle(&stack.deps, grant_req(Some(AccessDuration::Always)))
                 .await
                 .unwrap();
 
             let calls = log_snapshot(&stack.harness_calls);
             assert!(calls
                 .iter()
-                .any(|c| c["__fn"] == json!("harness::workspace::grant")));
+                .any(|c| c["__fn"] == json!("harness::filesystem::grant")));
             let execute_call = calls
                 .iter()
                 .find(|c| c["action"] == json!("execute"))
                 .expect("execute call");
-            assert!(execute_call.get("extra_roots").is_none());
+            assert!(execute_call.get("fs_scope").is_none());
 
             let shell_cfg =
                 crate::testkit::call(&stack.iii, "configuration::get", json!({ "id": "shell" }))
@@ -569,7 +581,7 @@ mod tests {
             assert_eq!(
                 shell_cfg["value"]["fs"]["host_roots"],
                 json!(["/a/b"]),
-                "always scope persists the dir into shell's fs.host_roots"
+                "always scope persists the root into shell's fs.host_roots"
             );
         })
         .await;
@@ -578,12 +590,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn always_scope_still_executes_when_configuration_persist_is_unavailable() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
-            register_workspace_grant_fake(&stack, false);
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            register_filesystem_grant_fake(&stack, false);
             // No `shell` configuration id registered -> configuration::get
             // fails -> add_host_root fails -> logged, never blocks execute.
 
-            let res = handle(&stack.deps, grant_req(Some(GrantScope::Always)))
+            let res = handle(&stack.deps, grant_req(Some(AccessDuration::Always)))
                 .await
                 .unwrap();
             assert!(res.resolved);
@@ -593,22 +605,22 @@ mod tests {
                 .iter()
                 .find(|c| c["action"] == json!("execute"))
                 .expect("execute call");
-            assert!(execute_call.get("extra_roots").is_none());
+            assert!(execute_call.get("fs_scope").is_none());
         })
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn deny_records_the_dir_and_defaults_a_folder_access_reason() {
+    async fn deny_records_the_dir_and_defaults_a_filesystem_access_reason() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            seed_folder_access_record(&stack.iii, "/a/b").await;
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
 
             let req = ResolveRequest {
                 session_id: "s_1".into(),
                 function_call_id: "c_1".into(),
                 decision: ResolveDecision::Deny,
                 reason: None,
-                grant_scope: None,
+                access_duration: None,
             };
             handle(&stack.deps, req).await.unwrap();
 
@@ -616,18 +628,18 @@ mod tests {
             assert_eq!(harness[0]["action"], json!("deliver"));
             assert_eq!(
                 harness[0]["content"][0]["text"],
-                json!("user denied folder access to /a/b")
+                json!("user denied filesystem access to /a/b")
             );
             assert_eq!(harness[0]["details"]["denied_by"], json!("user"));
 
-            let denied = state_get(&stack.iii, grant_state::DENIED_SCOPE, "s_1").await;
+            let denied = state_get(&stack.iii, filesystem_access_state::DENIED_SCOPE, "s_1").await;
             assert_eq!(denied, json!(["/a/b"]));
         })
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn grant_scope_on_a_plain_function_record_is_ignored() {
+    async fn access_duration_on_a_plain_function_record_is_ignored() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             seed_record(&stack.iii).await;
             let req = ResolveRequest {
@@ -635,14 +647,14 @@ mod tests {
                 function_call_id: "c_1".into(),
                 decision: ResolveDecision::Allow,
                 reason: None,
-                grant_scope: Some(GrantScope::Always),
+                access_duration: Some(AccessDuration::Always),
             };
             handle(&stack.deps, req).await.unwrap();
 
             let harness = log_snapshot(&stack.harness_calls);
             assert_eq!(harness.len(), 1);
             assert_eq!(harness[0]["action"], json!("execute"));
-            assert!(harness[0].get("extra_roots").is_none());
+            assert!(harness[0].get("fs_scope").is_none());
         })
         .await;
     }

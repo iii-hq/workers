@@ -33,8 +33,8 @@ fn default_rules() -> Vec<Value> {
     default_rules_value()
 }
 
-/// Default cap on `approval::grant-watch` re-asks per held call
-/// (spec-pr3-approval-gate.md § New function `approval::grant-watch`,
+/// Default cap on `approval::filesystem-access-watch` re-asks per held call
+/// (spec-pr3-approval-gate.md § New function `approval::filesystem-access-watch`,
 /// step 7) — chosen to give a user a few genuine retries (a hint that
 /// keeps landing on a different directory) without letting a
 /// misbehaving/looping caller re-prompt forever.
@@ -76,8 +76,8 @@ pub struct WorkerConfig {
     #[serde(default = "default_rules")]
     #[schemars(schema_with = "rules_schema")]
     pub rules: Vec<Value>,
-    /// Cap on how many times `approval::grant-watch` will re-ask (hold a
-    /// call again) for jail-scope `grant_hint` rejections on the SAME
+    /// Cap on how many times `approval::filesystem-access-watch` will re-ask (hold a
+    /// call again) for jail-scope `filesystem_access_request` rejections on the SAME
     /// function call before standing down and letting the error reach the
     /// model. Default 3.
     #[serde(default = "default_grant_reask_limit")]

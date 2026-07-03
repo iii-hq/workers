@@ -337,9 +337,9 @@ pub async fn run_step(
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
         let session_grants =
-            crate::workspace_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+            crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
                 .await?;
-        let working_dir = record.options.working_dir().map(str::to_string);
+        let filesystem_root = record.options.filesystem_root().map(str::to_string);
         for call in trigger_calls.iter().copied() {
             // Per-call checkpoint: skip done/pending, recover an interrupted
             // trigger.
@@ -375,13 +375,13 @@ pub async fn run_step(
             }
 
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
-            // args ALREADY carrying the workspace stamp so an approver reviews
-            // the base_dir the call will actually run under; the stamp is
+            // args ALREADY carrying the filesystem scope stamp so an approver
+            // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
-            let trusted_call_args = crate::workspace_inject::inject(
+            let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
                 call.arguments.clone(),
-                working_dir.as_deref(),
+                filesystem_root.as_deref(),
                 &session_grants,
             );
             let (eff_args, pre_ann) = match deps
@@ -399,10 +399,10 @@ pub async fn run_step(
                     arguments,
                     annotations,
                 } => {
-                    let arguments = crate::workspace_inject::inject(
+                    let arguments = crate::filesystem_scope::inject(
                         &call.function_id,
                         arguments,
-                        working_dir.as_deref(),
+                        filesystem_root.as_deref(),
                         &session_grants,
                     );
                     (arguments, annotations)
@@ -1056,24 +1056,24 @@ async fn assemble_context(
                 messages = candidate_values.clone();
             }
             Ok(Assembled {
-                system_prompt: with_working_dir_aid(Some(out.system_prompt), record),
+                system_prompt: with_filesystem_root_aid(Some(out.system_prompt), record),
                 messages,
             })
         }
         Ok(None) | Err(_) => Ok(Assembled {
-            system_prompt: with_working_dir_aid(record.options.system_prompt.clone(), record),
+            system_prompt: with_filesystem_root_aid(record.options.system_prompt.clone(), record),
             messages: candidate_values,
         }),
     }
 }
 
 /// Append a working-directory line to the system prompt when the turn carries a
-/// `working_dir` in its metadata. This is a model-facing AID only — the real
-/// scoping control plane stamps `base_dir` onto each call
-/// (`workspace_inject::inject`); this line just tells the model where it is so
+/// `filesystem_root` in its metadata. This is a model-facing AID only — the real
+/// scoping control plane stamps `fs_scope` onto each call
+/// (`filesystem_scope::inject`); this line just tells the model where it is so
 /// it reasons about relative paths sensibly.
-fn with_working_dir_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let Some(dir) = record.options.working_dir() else {
+fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
+    let Some(dir) = record.options.filesystem_root() else {
         return system_prompt;
     };
     let line = format!("Your working directory is {dir}.");

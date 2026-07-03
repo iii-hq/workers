@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
 pub mod on_session_deleted;
@@ -13,7 +14,6 @@ pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
 pub mod turn;
-pub mod workspace;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -56,17 +56,17 @@ pub const STOP_DESC: &str =
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
 
-pub const WORKSPACE_GRANT_ID: &str = "harness::workspace::grant";
-pub const WORKSPACE_GRANT_DESC: &str =
-    "Internal control-plane: grant a session access to an additional workspace root.";
+pub const FILESYSTEM_GRANT_ID: &str = "harness::filesystem::grant";
+pub const FILESYSTEM_GRANT_DESC: &str =
+    "Internal control-plane: grant a session access to an additional filesystem root.";
 
-pub const WORKSPACE_GRANTS_ID: &str = "harness::workspace::grants";
-pub const WORKSPACE_GRANTS_DESC: &str =
-    "Internal control-plane: list additional workspace roots granted to a session.";
+pub const FILESYSTEM_GRANTS_ID: &str = "harness::filesystem::grants";
+pub const FILESYSTEM_GRANTS_DESC: &str =
+    "Internal control-plane: list additional filesystem roots granted to a session.";
 
-pub const WORKSPACE_REVOKE_ID: &str = "harness::workspace::revoke";
-pub const WORKSPACE_REVOKE_DESC: &str =
-    "Internal control-plane: revoke a session's access to an additional workspace root.";
+pub const FILESYSTEM_REVOKE_ID: &str = "harness::filesystem::revoke";
+pub const FILESYSTEM_REVOKE_DESC: &str =
+    "Internal control-plane: revoke a session's access to an additional filesystem root.";
 
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
@@ -125,28 +125,28 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         status::handle(&d, r).await
     });
 
-    // Internal workspace grant controls — registered for trusted callers, kept
+    // Internal filesystem grant controls — registered for trusted callers, kept
     // off the model-facing catalog.
     register(
         iii,
         deps,
-        WORKSPACE_GRANT_ID,
-        WORKSPACE_GRANT_DESC,
-        |d, r| async move { workspace::grant(&d, r).await },
+        FILESYSTEM_GRANT_ID,
+        FILESYSTEM_GRANT_DESC,
+        |d, r| async move { filesystem::grant(&d, r).await },
     );
     register(
         iii,
         deps,
-        WORKSPACE_GRANTS_ID,
-        WORKSPACE_GRANTS_DESC,
-        |d, r| async move { workspace::grants(&d, r).await },
+        FILESYSTEM_GRANTS_ID,
+        FILESYSTEM_GRANTS_DESC,
+        |d, r| async move { filesystem::grants(&d, r).await },
     );
     register(
         iii,
         deps,
-        WORKSPACE_REVOKE_ID,
-        WORKSPACE_REVOKE_DESC,
-        |d, r| async move { workspace::revoke(&d, r).await },
+        FILESYSTEM_REVOKE_ID,
+        FILESYSTEM_REVOKE_DESC,
+        |d, r| async move { filesystem::revoke(&d, r).await },
     );
 
     // Internal cron target — registered, but kept off the public catalog.

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::ShellConfig;
 use crate::exec::host::parse_argv;
-use crate::exec::policy::{base_dir_for_target, build_overrides};
+use crate::exec::policy::{build_overrides, scope_root_for_target};
 use crate::exec_dispatch::pick_exec_backend;
 use crate::functions::types::{ExecRequest, ExecResponse};
 
@@ -18,7 +18,7 @@ pub async fn handle(
     // `args.as_ref()` preserves the legacy two-mode contract on `parse_argv`:
     //   None → tokenize `command` via shell-words (single-string path)
     //   Some(_) → use args verbatim, even if empty
-    // The typed-schema migration must NOT collapse "absent args" into
+    // The typed-schema path must NOT collapse "absent args" into
     // "args: []" or callers lose the shell-words path.
     // argv-parse and allowlist/denylist rejections are plain Strings with no
     // S-code; via `From<String> for Error` they become the engine's
@@ -34,15 +34,16 @@ pub async fn handle(
     // (S215) or an env key outside env.allow / in DANGEROUS_ENV_KEYS (S210)
     // rejects here, carrying the S-code to the wire via From<ExecError>. The
     // sandbox backend additionally rejects any populated override (host-only).
-    // `base_dir` only scopes the host working directory: drop it for a sandbox
+    // `scope_root` only scopes the host working directory: drop it for a sandbox
     // target so the harness-injected session dir does not surface as a host cwd
-    // override and get rejected (see `base_dir_for_target`).
-    let base_dir = base_dir_for_target(&req.target, req.base_dir.as_deref());
+    // override and get rejected (see `scope_root_for_target`).
+    let scope_root =
+        scope_root_for_target(&req.target, crate::fs::scope_root(req.fs_scope.as_ref()));
     let mut overrides = build_overrides(
         req.cwd.as_deref(),
         req.env.as_ref(),
-        base_dir,
-        req.extra_roots.as_deref(),
+        scope_root,
+        crate::fs::scope_grants(req.fs_scope.as_ref()),
         &cfg,
     )
     .map_err(iii_sdk::errors::Error::from)?;

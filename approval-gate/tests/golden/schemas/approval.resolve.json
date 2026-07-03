@@ -4,8 +4,8 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
-      "GrantScope": {
-        "description": "How far an `allow` on a `folder_access` pending record should apply. Ignored (logged) when the target record's `kind` is not `\"folder_access\"`. Defaults to `once` when omitted.",
+      "AccessDuration": {
+        "description": "How far an `allow` on a `filesystem_access` pending record should apply. Ignored (logged) when the target record's `kind` is not `\"filesystem_access\"`. Defaults to `once` when omitted.",
         "oneOf": [
           {
             "description": "One-shot: trust the directory for just the released call.",
@@ -15,7 +15,7 @@
             "type": "string"
           },
           {
-            "description": "Durable for the rest of the session (`harness::workspace::grant`).",
+            "description": "Durable for the rest of the session (`harness::filesystem::grant`).",
             "enum": [
               "session"
             ],
@@ -39,23 +39,23 @@
       }
     },
     "properties": {
-      "decision": {
-        "$ref": "#/definitions/ResolveDecision"
-      },
-      "function_call_id": {
-        "type": "string"
-      },
-      "grant_scope": {
+      "access_duration": {
         "anyOf": [
           {
-            "$ref": "#/definitions/GrantScope"
+            "$ref": "#/definitions/AccessDuration"
           },
           {
             "type": "null"
           }
         ],
         "default": null,
-        "description": "Only meaningful when the target record is `kind: \"folder_access\"` and `decision: \"allow\"`. Defaults to `once`."
+        "description": "Only meaningful when the target record is `kind: \"filesystem_access\"` and `decision: \"allow\"`. Defaults to `once`."
+      },
+      "decision": {
+        "$ref": "#/definitions/ResolveDecision"
+      },
+      "function_call_id": {
+        "type": "string"
       },
       "reason": {
         "default": null,

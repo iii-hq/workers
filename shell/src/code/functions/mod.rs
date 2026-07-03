@@ -288,8 +288,10 @@ fn register_read_file(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 let cfg = cells.config.read().await.clone();
                 read_file::handle(resolver, cfg, req)
                     .await
@@ -307,8 +309,10 @@ fn register_search(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 let cfg = cells.config.read().await.clone();
                 search::handle(resolver, cfg, req)
                     .await
@@ -326,8 +330,10 @@ fn register_update_file(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 let cfg = cells.config.read().await.clone();
                 update_file::handle(resolver, cfg, req)
                     .await
@@ -345,8 +351,10 @@ fn register_create_file(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 let cfg = cells.config.read().await.clone();
                 create_file::handle(resolver, cfg, req)
                     .await
@@ -364,8 +372,10 @@ fn register_delete_file(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 delete_file::handle(resolver, req)
                     .await
                     .map_err(Error::from)
@@ -382,8 +392,10 @@ fn register_list_folder(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 let cfg = cells.config.read().await.clone();
                 list_folder::handle(resolver, cfg, req)
                     .await
@@ -401,8 +413,10 @@ fn register_tree(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 let cfg = cells.config.read().await.clone();
                 tree::handle(resolver, cfg, req).await.map_err(Error::from)
             }
@@ -418,8 +432,10 @@ fn register_move_file(iii: &IIIClient, cells: CodeCells) {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
-                let resolver =
-                    resolver.session_scoped(req.base_dir.as_deref(), req.extra_roots.as_deref());
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
                 move_file::handle(resolver, req).await.map_err(Error::from)
             }
         })

@@ -92,24 +92,24 @@ pub async fn handle(
         ));
     }
 
-    // Stamp the turn's workspace scope onto scoped shell/coder args BEFORE the
-    // hook chain (an approver must see the base_dir the call will run under)
+    // Stamp the turn's filesystem scope onto scoped shell/coder args BEFORE the
+    // hook chain (an approver must see the fs_scope the call will run under)
     // and re-apply it before invocation so neither a direct caller nor a hook
     // rewrite can widen the session scope. No turn record → no scope: any
-    // caller-supplied base_dir is stripped.
+    // caller-supplied fs_scope is stripped.
     let session_grants = if record.is_some() {
-        crate::workspace_grants::roots(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+        crate::filesystem_grants::roots(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
     } else {
         Vec::new()
     };
-    let working_dir = record
+    let filesystem_root = record
         .as_ref()
-        .and_then(|rec| rec.options.working_dir())
+        .and_then(|rec| rec.options.filesystem_root())
         .map(str::to_string);
-    let mut arguments = crate::workspace_inject::inject(
+    let mut arguments = crate::filesystem_scope::inject(
         &req.call.function_id,
         req.call.arguments.clone(),
-        working_dir.as_deref(),
+        filesystem_root.as_deref(),
         &session_grants,
     );
     if let Some(rec) = &record {
@@ -125,10 +125,10 @@ pub async fn handle(
             .await
         {
             PreTriggerOutcome::Continue { arguments: a, .. } => {
-                arguments = crate::workspace_inject::inject(
+                arguments = crate::filesystem_scope::inject(
                     &req.call.function_id,
                     a,
-                    working_dir.as_deref(),
+                    filesystem_root.as_deref(),
                     &session_grants,
                 );
             }
@@ -158,10 +158,10 @@ pub async fn handle(
 
     // Re-stamp after the hook chain (idempotent) — a hook rewrite must not
     // widen or drop the session scope.
-    let arguments = crate::workspace_inject::inject(
+    let arguments = crate::filesystem_scope::inject(
         &req.call.function_id,
         arguments,
-        working_dir.as_deref(),
+        filesystem_root.as_deref(),
         &session_grants,
     );
 

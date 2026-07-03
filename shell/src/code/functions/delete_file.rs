@@ -25,14 +25,10 @@ pub struct DeleteFileInput {
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]
     pub recursive: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
-    /// Internal harness-granted roots; omitted from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub extra_roots: Option<Vec<String>>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -72,10 +68,10 @@ pub async fn handle(
             "`paths` must not be empty".into(),
         )));
     }
-    let base_dir = req.base_dir.as_deref();
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
     let mut entries = Vec::with_capacity(req.paths.len());
     for p in req.paths {
-        match resolver.require_writable_opt(base_dir, &p) {
+        match resolver.require_writable_opt(scope_root, &p) {
             Ok(abs) => entries.push((p, Ok(abs))),
             Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
             Err(e) => entries.push((p, Err(e))),
@@ -83,14 +79,14 @@ pub async fn handle(
     }
     let results = entries
         .into_iter()
-        .map(|(p, resolved)| delete_one(&resolver, base_dir, &p, req.recursive, resolved))
+        .map(|(p, resolved)| delete_one(&resolver, scope_root, &p, req.recursive, resolved))
         .collect();
     Ok(DeleteFileOutput { results })
 }
 
 fn delete_one(
     resolver: &PathResolver,
-    base_dir: Option<&str>,
+    scope_root: Option<&str>,
     rel: &str,
     recursive: bool,
     resolved: Result<std::path::PathBuf, CoderError>,
@@ -111,7 +107,7 @@ fn delete_one(
         }
     };
     let wire_path = abs.display().to_string();
-    match try_delete_one(resolver, base_dir, &abs, recursive) {
+    match try_delete_one(resolver, scope_root, &abs, recursive) {
         Ok(removed) => DeleteFileResult {
             path: wire_path,
             success: true,
@@ -136,7 +132,7 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
 
 fn try_delete_one(
     resolver: &PathResolver,
-    base_dir: Option<&str>,
+    scope_root: Option<&str>,
     abs: &Path,
     recursive: bool,
 ) -> Result<bool, CoderError> {
@@ -146,11 +142,11 @@ fn try_delete_one(
         ));
     }
     // A session-scoped delete must not remove the session working directory
-    // itself. With `base_dir` set, `paths: ["."]` (or any path that resolves
-    // back to base_dir) canonicalizes to the session directory — which is a
+    // itself. With `scope_root` set, `paths: ["."]` (or any path that resolves
+    // back to scope_root) canonicalizes to the session directory — which is a
     // SUBDIR of an allowed root, so the `is_root` guard above never catches it.
     // Without this, a recursive delete would wipe the active project directory.
-    if let Some(base) = base_dir {
+    if let Some(base) = scope_root {
         if resolver.session_root(base).as_deref() == Some(abs) {
             return Err(CoderError::BadInput(
                 "refusing to delete the session working directory itself".into(),
@@ -225,8 +221,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -244,8 +239,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -263,8 +257,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".env".into()],
                 recursive: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -284,8 +277,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -303,8 +295,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -323,8 +314,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -348,8 +338,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["secrets".into()],
                 recursive: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -381,8 +370,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -405,8 +393,10 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
-                base_dir: Some(session.to_string_lossy().into_owned()),
-                extra_roots: None,
+                fs_scope: Some(crate::fs::FsScope {
+                    root: session.to_string_lossy().into_owned(),
+                    grants: Vec::new(),
+                }),
             },
         )
         .await
@@ -430,8 +420,10 @@ mod tests {
             DeleteFileInput {
                 paths: vec![abs.clone()],
                 recursive: true,
-                base_dir: Some(abs),
-                extra_roots: None,
+                fs_scope: Some(crate::fs::FsScope {
+                    root: abs,
+                    grants: Vec::new(),
+                }),
             },
         )
         .await
@@ -454,8 +446,10 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
-                base_dir: Some(session.to_string_lossy().into_owned()),
-                extra_roots: None,
+                fs_scope: Some(crate::fs::FsScope {
+                    root: session.to_string_lossy().into_owned(),
+                    grants: Vec::new(),
+                }),
             },
         )
         .await

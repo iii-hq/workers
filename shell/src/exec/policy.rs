@@ -14,9 +14,9 @@
 //!   (operator opted into `allow_unjailed`), the same code path runs with no
 //!   root to confine to, matching the fs backend's unjailed behaviour.
 //! - `env` may set a VALUE only for a key the operator already put in
-//!   `cfg.env.allow`, and NEVER for an exec-hijacking key (see
+//!   `cfg.allowed_env`, and NEVER for an exec-hijacking key (see
 //!   [`DANGEROUS_ENV_KEYS`]) — those are rejected even if an operator
-//!   mistakenly lists them in `env.allow`. Any offending key rejects the
+//!   mistakenly lists them in `allowed_env`. Any offending key rejects the
 //!   WHOLE call `S210` (we never silently drop a key — the agent must learn its
 //!   env was not applied), naming the offending key and listing the permitted
 //!   ones so the agent can self-correct.
@@ -29,10 +29,10 @@ use crate::exec::error::ExecError;
 use crate::target::Target;
 
 /// Environment keys that an agent may NEVER set per-call, regardless of
-/// `env.allow`. Setting any of these can hijack which binary the child
+/// `allowed_env`. Setting any of these can hijack which binary the child
 /// actually executes or which shared libraries it loads — turning a benign
 /// allowlisted `command` into arbitrary code execution. The denylist is a
-/// HARD boundary: it wins over `env.allow` so an operator's typo can't open
+/// HARD boundary: it wins over `allowed_env` so an operator's typo can't open
 /// a privesc hole.
 ///
 /// - `PATH` / `IFS`: change which binary an allowlisted name resolves to / how
@@ -86,7 +86,7 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
 /// the dynamic-loader variables (`LD_*` on glibc, `DYLD_*` on macOS) — the set
 /// of these is open-ended across libc/OS versions, so an exact-name list would
 /// silently let a future `LD_SOMETHING` through if an operator widened
-/// `env.allow`; (2) the explicit [`DANGEROUS_ENV_KEYS`] denylist for the
+/// `allowed_env`; (2) the explicit [`DANGEROUS_ENV_KEYS`] denylist for the
 /// non-family names (PATH/IFS/HOME, glibc lookup paths, interpreter startup
 /// keys). Case-sensitive: env var names are case-sensitive on Unix and the
 /// dangerous names are upper-case.
@@ -102,7 +102,7 @@ pub struct ExecOverrides {
     /// Canonical, jail-confined working directory. `None` falls back to
     /// `cfg.working_dir` in `build_command`.
     pub cwd: Option<PathBuf>,
-    /// Per-call env values, already gated against `env.allow` +
+    /// Per-call env values, already gated against `allowed_env` +
     /// [`DANGEROUS_ENV_KEYS`]. Applied on top of the config-forwarded env.
     pub env: Option<BTreeMap<String, String>>,
     /// Bytes fed to the child's stdin (then EOF). `None` leaves stdin closed
@@ -149,7 +149,7 @@ fn jail_inputs(cfg: &ShellConfig) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ExecEr
 }
 
 /// Verify a directory operand exists and is a directory (following one symlink
-/// level). Shared by the `cwd` check and the `base_dir` check — a missing or
+/// level). Shared by the `cwd` check and the `scope_root` check — a missing or
 /// wrong-type directory is a clear request error, not a spawn-time surprise.
 fn require_existing_dir(canon: &PathBuf, raw: &str, kind: &str) -> Result<(), ExecError> {
     let md = std::fs::symlink_metadata(canon)
@@ -169,47 +169,47 @@ fn require_existing_dir(canon: &PathBuf, raw: &str, kind: &str) -> Result<(), Ex
     Ok(())
 }
 
-/// Resolve and validate an OPTIONAL trusted per-call `base_dir` for exec.
-/// `None` ⇒ `Ok(None)` (unchanged behaviour). An absolute `base_dir` may point
+/// Resolve and validate an OPTIONAL trusted per-call `scope_root` for exec.
+/// `None` ⇒ `Ok(None)` (unchanged behaviour). An absolute `scope_root` may point
 /// outside configured host roots and becomes the effective root for this call.
 /// Relative values are rejected; the harness-controlled workspace selection is
 /// always an absolute path.
-fn confine_base_dir(
-    base_dir: Option<&str>,
+fn confine_scope_root(
+    scope_root: Option<&str>,
     denylist_canon: &[PathBuf],
 ) -> Result<Option<PathBuf>, ExecError> {
-    let Some(base_dir) = base_dir else {
+    let Some(scope_root) = scope_root else {
         return Ok(None);
     };
-    if base_dir.is_empty() {
-        return Err(ExecError::new("S210", "base_dir must not be empty"));
+    if scope_root.is_empty() {
+        return Err(ExecError::new("S210", "scope_root must not be empty"));
     }
-    let p = Path::new(base_dir);
+    let p = Path::new(scope_root);
     if !p.is_absolute() {
         return Err(ExecError::new(
             "S210",
-            format!("base_dir must be an absolute path: {base_dir}"),
+            format!("scope_root must be an absolute path: {scope_root}"),
         ));
     }
     let canon = crate::path::canonicalize_with_fallback(p)
-        .map_err(|e| ExecError::new("S210", format!("{base_dir}: {e}")))?;
+        .map_err(|e| ExecError::new("S210", format!("{scope_root}: {e}")))?;
     for deny in denylist_canon {
         if canon.starts_with(deny) {
             return Err(ExecError::new(
                 "S215",
-                format!("base_dir is denylisted: {base_dir}"),
+                format!("scope_root is denylisted: {scope_root}"),
             ));
         }
     }
-    require_existing_dir(&canon, base_dir, "base_dir")?;
+    require_existing_dir(&canon, scope_root, "scope_root")?;
     Ok(Some(canon))
 }
 
 /// Confine a raw `cwd` string against the fs jail and verify it is an existing
 /// directory. Reuses the fs backend's
-/// [`crate::fs::host::confine_path_with_base_dir`] so the rule is literally the
+/// [`crate::fs::host::confine_path_with_scope_root`] so the rule is literally the
 /// same one `shell::fs::*` enforces: canonicalize → `starts_with(root)` →
-/// denylist. When `base_dir_canon` is set the confinement root is the session
+/// denylist. When `scope_root_canon` is set the confinement root is the session
 /// directory (relative `cwd` anchors there; an absolute `cwd` outside it is
 /// S220); otherwise it is the jail roots (unchanged). Per-call (not cached
 /// like the fs backend) because the exec handler reads the live config
@@ -217,15 +217,15 @@ fn confine_base_dir(
 fn confine_cwd(
     cwd: &str,
     host_roots_canon: &[PathBuf],
-    base_dir_canon: Option<&std::path::Path>,
-    extra_roots_canon: &[PathBuf],
+    scope_root_canon: Option<&std::path::Path>,
+    scope_grants_canon: &[PathBuf],
     denylist_canon: &[PathBuf],
 ) -> Result<PathBuf, ExecError> {
-    let canon = crate::fs::host::confine_path_with_base_dir(
+    let canon = crate::fs::host::confine_path_with_scope_root(
         cwd,
         host_roots_canon,
-        base_dir_canon,
-        extra_roots_canon,
+        scope_root_canon,
+        scope_grants_canon,
         denylist_canon,
     )
     // FsError and ExecError carry the same { code, message } shape; the
@@ -252,7 +252,7 @@ fn static_code(code: &str) -> &'static str {
 }
 
 /// Validate a per-call `env` map: every key must be present in
-/// `cfg.env.allow` AND absent from [`DANGEROUS_ENV_KEYS`]. The dangerous
+/// `cfg.allowed_env` AND absent from [`DANGEROUS_ENV_KEYS`]. The dangerous
 /// check runs FIRST so a key that is both dangerous and (mistakenly)
 /// allowlisted is still rejected. On any violation the WHOLE call fails S210 —
 /// we never partially apply env, so the agent always knows whether its env took
@@ -261,13 +261,12 @@ fn validate_env(
     env: &BTreeMap<String, String>,
     cfg: &ShellConfig,
 ) -> Result<BTreeMap<String, String>, ExecError> {
-    // The keys an agent can actually set per call: in env.allow AND not in the
-    // dangerous denylist. Listing the raw env.allow would name HOME/PATH (both
+    // The keys an agent can actually set per call: in allowed_env AND not in the
+    // dangerous denylist. Listing the raw allowed_env would name HOME/PATH (both
     // default-allowed but always-rejected) as "settable", contradicting the very
     // error that rejected them and sending the agent into a retry loop.
     let settable = cfg
-        .env
-        .allow
+        .allowed_env
         .iter()
         .filter(|k| !is_dangerous_env_key(k))
         .cloned()
@@ -279,15 +278,15 @@ fn validate_env(
                 "S210",
                 format!(
                     "env key '{key}' is never settable per-call (exec-hijacking key); \
-                     remove it. Settable keys (env.allow minus exec-hijacking keys): [{settable}]"
+                     remove it. Settable keys (allowed_env minus exec-hijacking keys): [{settable}]"
                 ),
             ));
         }
-        if !cfg.env.allow.iter().any(|a| a == key) {
+        if !cfg.allowed_env.iter().any(|a| a == key) {
             return Err(ExecError::new(
                 "S210",
                 format!(
-                    "env key '{key}' is not in the operator's env.allow list; the operator must \
+                    "env key '{key}' is not in the operator's allowed_env list; the operator must \
                      permit it. Settable keys: [{settable}]"
                 ),
             ));
@@ -301,43 +300,43 @@ fn validate_env(
 /// the wire) on any violation. All inputs `None` ⇒ an empty `ExecOverrides`,
 /// i.e. unchanged default behaviour.
 ///
-/// `base_dir` (when set) scopes the call to a session directory: it becomes
+/// `scope_root` (when set) scopes the call to a session directory: it becomes
 /// BOTH the confinement root for `cwd` AND the effective working directory when
 /// no `cwd` is given.
 ///
-/// - `base_dir=None`: today's behaviour — `cwd` is confined to the jail roots
+/// - `scope_root=None`: today's behaviour — `cwd` is confined to the jail roots
 ///   and an omitted `cwd` leaves the working dir to fall back to
 ///   `cfg.working_dir`.
-/// - `base_dir=Some`, `cwd=None`: the child runs in `base_dir`.
-/// - `base_dir=Some`, `cwd=Some`: the child runs in `cwd`, which must resolve
-///   inside `base_dir` (relative anchors there; an absolute cwd outside it is
+/// - `scope_root=Some`, `cwd=None`: the child runs in `scope_root`.
+/// - `scope_root=Some`, `cwd=Some`: the child runs in `cwd`, which must resolve
+///   inside `scope_root` (relative anchors there; an absolute cwd outside it is
 ///   S220).
 pub fn build_overrides(
     cwd: Option<&str>,
     env: Option<&BTreeMap<String, String>>,
-    base_dir: Option<&str>,
-    extra_roots: Option<&[String]>,
+    scope_root: Option<&str>,
+    scope_grants: Option<&[String]>,
     cfg: &ShellConfig,
 ) -> Result<ExecOverrides, ExecError> {
     let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
     // Resolve the session directory first: it gates the cwd confinement below
     // and, when no cwd is supplied, becomes the working directory itself.
-    let base_dir_canon = confine_base_dir(base_dir, &denylist_canon)?;
-    let extra_roots_canon = crate::fs::host::confine_extra_roots(extra_roots, &denylist_canon);
+    let scope_root_canon = confine_scope_root(scope_root, &denylist_canon)?;
+    let scope_grants_canon = crate::fs::host::confine_scope_grants(scope_grants, &denylist_canon);
 
     let cwd = match cwd {
         Some(c) => Some(confine_cwd(
             c,
             &host_roots_canon,
-            base_dir_canon.as_deref(),
-            &extra_roots_canon,
+            scope_root_canon.as_deref(),
+            &scope_grants_canon,
             &denylist_canon,
         )?),
-        // No explicit cwd: a session base_dir (already validated as an existing
+        // No explicit cwd: a session scope_root (already validated as an existing
         // directory) becomes the working directory, so the child runs in the
-        // session root instead of `cfg.working_dir`. Without base_dir this stays
+        // session root instead of `cfg.working_dir`. Without scope_root this stays
         // None and build_command falls back to `cfg.working_dir` (unchanged).
-        None => base_dir_canon,
+        None => scope_root_canon,
     };
     let env = match env {
         Some(e) => Some(validate_env(e, cfg)?),
@@ -352,19 +351,19 @@ pub fn build_overrides(
     })
 }
 
-/// The `base_dir` that actually applies to a given exec `target`.
+/// The `scope_root` that actually applies to a given exec `target`.
 ///
-/// `base_dir` scopes a HOST working directory. A sandbox target runs against the
-/// VM's own filesystem, so an injected `base_dir` is meaningless there and must
+/// `scope_root` scopes a HOST working directory. A sandbox target runs against the
+/// VM's own filesystem, so an injected `scope_root` is meaningless there and must
 /// be dropped: left in place it materializes (via [`build_overrides`]) as a
 /// populated host `cwd` override, which both exec sandbox paths reject as
-/// host-only (S210). Since the harness stamps `base_dir` onto EVERY `shell::*`
+/// host-only (S210). Since the harness stamps `scope_root` onto EVERY `shell::*`
 /// call, that would break every sandbox exec issued from a working-dir-scoped
 /// chat. Genuine user-supplied `cwd`/`env`/`stdin` on a sandbox call are still
-/// rejected — only the harness `base_dir` is dropped here.
-pub fn base_dir_for_target<'a>(target: &Target, base_dir: Option<&'a str>) -> Option<&'a str> {
+/// rejected — only the harness `scope_root` is dropped here.
+pub fn scope_root_for_target<'a>(target: &Target, scope_root: Option<&'a str>) -> Option<&'a str> {
     match target {
-        Target::Host => base_dir,
+        Target::Host => scope_root,
         Target::Sandbox { .. } => None,
     }
 }
@@ -375,32 +374,32 @@ mod tests {
 
     fn cfg_jailed(root: &std::path::Path) -> ShellConfig {
         let mut c = ShellConfig {
-            env: crate::config::EnvConfig {
-                allow: vec!["NODE_ENV".into(), "MY_VAR".into()],
-                ..Default::default()
-            },
+            allowed_env: vec!["NODE_ENV".into(), "MY_VAR".into()],
             ..Default::default()
         };
         c.fs.host_roots = vec![root.to_path_buf()];
         c
     }
 
-    // base_dir applies to a HOST target verbatim, but must be dropped for a
+    // scope_root applies to a HOST target verbatim, but must be dropped for a
     // sandbox target — otherwise the harness-injected session dir becomes a
     // populated host cwd override and the sandbox exec paths reject it (S210),
     // breaking sandbox exec for every working-dir-scoped chat.
     #[test]
-    fn base_dir_dropped_for_sandbox_target_kept_for_host() {
+    fn scope_root_dropped_for_sandbox_target_kept_for_host() {
         let sandbox = Target::Sandbox {
             sandbox_id: uuid::Uuid::nil(),
         };
-        assert_eq!(base_dir_for_target(&sandbox, Some("/work/session-7")), None);
-        assert_eq!(base_dir_for_target(&sandbox, None), None);
         assert_eq!(
-            base_dir_for_target(&Target::Host, Some("/work/session-7")),
+            scope_root_for_target(&sandbox, Some("/work/session-7")),
+            None
+        );
+        assert_eq!(scope_root_for_target(&sandbox, None), None);
+        assert_eq!(
+            scope_root_for_target(&Target::Host, Some("/work/session-7")),
             Some("/work/session-7")
         );
-        assert_eq!(base_dir_for_target(&Target::Host, None), None);
+        assert_eq!(scope_root_for_target(&Target::Host, None), None);
     }
 
     #[test]
@@ -433,10 +432,7 @@ mod tests {
     #[test]
     fn env_in_allowed_is_accepted() {
         let c = ShellConfig {
-            env: crate::config::EnvConfig {
-                allow: vec!["NODE_ENV".into()],
-                ..Default::default()
-            },
+            allowed_env: vec!["NODE_ENV".into()],
             ..Default::default()
         };
         let mut env = BTreeMap::new();
@@ -448,10 +444,7 @@ mod tests {
     #[test]
     fn env_not_in_allowed_is_rejected_naming_key_and_listing_permitted() {
         let c = ShellConfig {
-            env: crate::config::EnvConfig {
-                allow: vec!["NODE_ENV".into(), "MY_VAR".into()],
-                ..Default::default()
-            },
+            allowed_env: vec!["NODE_ENV".into(), "MY_VAR".into()],
             ..Default::default()
         };
         let mut env = BTreeMap::new();
@@ -477,13 +470,10 @@ mod tests {
 
     #[test]
     fn dangerous_key_rejected_even_when_allowlisted() {
-        // The denylist must WIN over env.allow: an operator typo listing
+        // The denylist must WIN over allowed_env: an operator typo listing
         // LD_PRELOAD must not open a code-injection hole.
         let c = ShellConfig {
-            env: crate::config::EnvConfig {
-                allow: vec!["LD_PRELOAD".into()],
-                ..Default::default()
-            },
+            allowed_env: vec!["LD_PRELOAD".into()],
             ..Default::default()
         };
         let mut env = BTreeMap::new();
@@ -495,8 +485,8 @@ mod tests {
     }
 
     /// Test shim: derive the canonical jail inputs from `cfg` and confine `cwd`
-    /// against the jail roots with NO session base_dir, so the existing
-    /// no-base_dir cwd tests keep asserting the same contract against the new
+    /// against the jail roots with NO session scope_root, so the existing
+    /// no-scope_root cwd tests keep asserting the same contract against the new
     /// four-arg `confine_cwd`.
     fn confine_cwd_via_cfg(cwd: &str, cfg: &ShellConfig) -> Result<PathBuf, ExecError> {
         let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
@@ -555,40 +545,40 @@ mod tests {
         assert!(ov.is_empty());
     }
 
-    // --- per-call base_dir (session scope) ---
+    // --- per-call scope_root (session scope) ---
 
-    /// With base_dir set, a relative cwd anchors at base_dir (not the jail root),
-    /// and an OMITTED cwd makes base_dir itself the working directory.
+    /// With scope_root set, a relative cwd anchors at scope_root (not the jail root),
+    /// and an OMITTED cwd makes scope_root itself the working directory.
     #[test]
-    fn base_dir_anchors_relative_cwd_and_becomes_default_cwd() {
+    fn scope_root_anchors_relative_cwd_and_becomes_default_cwd() {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("session/inner")).unwrap();
         let c = cfg_jailed(&root);
         let base = root.join("session").to_string_lossy().into_owned();
 
-        // cwd omitted ⇒ working dir is base_dir.
-        let ov = build_overrides(None, None, Some(&base), None, &c).expect("base_dir is valid");
+        // cwd omitted ⇒ working dir is scope_root.
+        let ov = build_overrides(None, None, Some(&base), None, &c).expect("scope_root is valid");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("session").canonicalize().unwrap().as_path()),
-            "omitted cwd defaults to base_dir"
+            "omitted cwd defaults to scope_root"
         );
 
-        // relative cwd anchors at base_dir, not the jail root.
+        // relative cwd anchors at scope_root, not the jail root.
         let ov = build_overrides(Some("inner"), None, Some(&base), None, &c)
-            .expect("inner is under base_dir");
+            .expect("inner is under scope_root");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("session/inner").canonicalize().unwrap().as_path()),
-            "relative cwd anchors at base_dir"
+            "relative cwd anchors at scope_root"
         );
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// DX-1: an ABSOLUTE cwd that is inside the jail but OUTSIDE base_dir is
+    /// DX-1: an ABSOLUTE cwd that is inside the jail but OUTSIDE scope_root is
     /// rejected with the new S220 code, and the message names the session dir.
     #[test]
-    fn abs_cwd_inside_jail_but_outside_base_dir_is_s220_naming_session() {
+    fn abs_cwd_inside_jail_but_outside_scope_root_is_s220_naming_session() {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("session")).unwrap();
         std::fs::create_dir_all(root.join("other")).unwrap();
@@ -596,8 +586,8 @@ mod tests {
         let outside = root.join("other").canonicalize().unwrap();
         let base = root.join("session").to_string_lossy().into_owned();
         let err = build_overrides(Some(outside.to_str().unwrap()), None, Some(&base), None, &c)
-            .expect_err("abs cwd outside base_dir must reject");
-        assert_eq!(err.code, "S220", "must be the distinct base_dir code");
+            .expect_err("abs cwd outside scope_root must reject");
+        assert_eq!(err.code, "S220", "must be the distinct scope_root code");
         let session_canon = root.join("session").canonicalize().unwrap();
         assert!(
             err.message.contains(&session_canon.display().to_string()),
@@ -613,10 +603,10 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// An absolute selected base_dir outside the configured jail roots is
+    /// An absolute selected scope_root outside the configured jail roots is
     /// trusted as the working directory root for exec.
     #[test]
-    fn absolute_base_dir_outside_jail_roots_is_honored() {
+    fn absolute_scope_root_outside_jail_roots_is_honored() {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         let selected =
             std::env::temp_dir().join(format!("shell-policy-selected-{}", uuid::Uuid::new_v4()));
@@ -625,13 +615,13 @@ mod tests {
         let c = cfg_jailed(&root);
         let selected_raw = selected.to_string_lossy().into_owned();
         let ov = build_overrides(None, None, Some(&selected_raw), None, &c)
-            .expect("absolute selected base_dir is valid");
+            .expect("absolute selected scope_root is valid");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(selected.canonicalize().unwrap().as_path())
         );
         let ov = build_overrides(Some("inner"), None, Some(&selected_raw), None, &c)
-            .expect("relative cwd anchors at selected base_dir");
+            .expect("relative cwd anchors at selected scope_root");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(selected.join("inner").canonicalize().unwrap().as_path())
@@ -640,15 +630,15 @@ mod tests {
         std::fs::remove_dir_all(&selected).ok();
     }
 
-    /// `base_dir` is trusted harness metadata, so relative values are rejected
+    /// `scope_root` is trusted harness metadata, so relative values are rejected
     /// instead of interpreted relative to the jail root.
     #[test]
-    fn relative_base_dir_is_rejected() {
+    fn relative_scope_root_is_rejected() {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let c = cfg_jailed(&root);
         let err = build_overrides(None, None, Some("../../etc"), None, &c)
-            .expect_err("relative base_dir is not part of the trusted contract");
+            .expect_err("relative scope_root is not part of the trusted contract");
         assert_eq!(err.code, "S210");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -656,24 +646,24 @@ mod tests {
     /// With no session scope, a relative cwd still anchors at the primary jail root and an
     /// omitted cwd stays None (build_command then falls back to cfg.working_dir).
     #[test]
-    fn base_dir_none_is_unchanged_behaviour() {
+    fn scope_root_none_is_unchanged_behaviour() {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("sub")).unwrap();
         let c = cfg_jailed(&root);
 
-        // Omitted cwd + omitted base_dir ⇒ no cwd override (cfg.working_dir wins).
+        // Omitted cwd + omitted scope_root ⇒ no cwd override (cfg.working_dir wins).
         let ov = build_overrides(None, None, None, None, &c).expect("ok");
         assert!(
             ov.cwd.is_none(),
-            "no base_dir, no cwd ⇒ None (prior behaviour)"
+            "no scope_root, no cwd ⇒ None (prior behaviour)"
         );
 
-        // Relative cwd still anchors at the primary jail root when base_dir is absent.
+        // Relative cwd still anchors at the primary jail root when scope_root is absent.
         let ov = build_overrides(Some("sub"), None, None, None, &c).expect("ok");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("sub").canonicalize().unwrap().as_path()),
-            "relative cwd anchors at the primary jail root when base_dir is absent"
+            "relative cwd anchors at the primary jail root when scope_root is absent"
         );
         std::fs::remove_dir_all(&root).ok();
     }

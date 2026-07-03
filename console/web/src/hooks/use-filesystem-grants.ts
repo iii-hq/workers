@@ -2,12 +2,12 @@ import { useCallback, useRef, useState } from 'react'
 import {
   listGrantedDirs,
   revokeDir as rpcRevokeDir,
-} from '@/lib/backend/workspace-grants'
+} from '@/lib/backend/filesystem-grants'
 
-interface UseFolderGrantsResult {
+interface UseFilesystemGrantsResult {
   /** Session-scoped granted dirs (plain path strings — no metadata). */
   grants: string[]
-  /** False once a `harness::workspace::grants` call has failed (older harness). */
+  /** False once a `harness::filesystem::grants` call has failed. */
   supported: boolean
   loaded: boolean
   /** Re-read from the harness. Call when the management dialog opens. */
@@ -16,20 +16,20 @@ interface UseFolderGrantsResult {
   revoke(root: string): Promise<void>
   /**
    * Locally append a freshly-granted dir without a round trip — called right
-   * after a folder-access prompt resolves with `session`/`always` scope, so
-   * the "folder access · N" affordance updates immediately instead of
+   * after a filesystem-access prompt resolves with `session`/`always` scope, so
+   * the "filesystem access · N" affordance updates immediately instead of
    * waiting for the next dialog open.
    */
   addOptimistic(root: string): void
 }
 
 /**
- * Session-scoped folder-grant management (§5 of the spec). Loads lazily —
+ * Session-scoped filesystem grant management. Loads lazily —
  * callers drive `refresh()` (e.g. on dialog open) rather than the hook
  * auto-fetching on every session change, since the grants group is normally
  * hidden until the user opens the management dialog.
  */
-export function useFolderGrants(sessionId: string): UseFolderGrantsResult {
+export function useFilesystemGrants(sessionId: string): UseFilesystemGrantsResult {
   const [grants, setGrants] = useState<string[]>([])
   const [supported, setSupported] = useState(true)
   const [loaded, setLoaded] = useState(false)
@@ -61,7 +61,7 @@ export function useFolderGrants(sessionId: string): UseFolderGrantsResult {
           setGrants(next)
         }
       } catch (err) {
-        console.error('[folder-grants] revoke failed', err)
+        console.error('[filesystem-grants] revoke failed', err)
         // Re-add only the root that failed to revoke, applied against the
         // *current* state — never overwrite with a stale pre-call snapshot,
         // which could clobber a concurrent successful revoke of another root.

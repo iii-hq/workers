@@ -1,7 +1,7 @@
 /**
  * Read-only peek at shell's permanent allowed folders
  * (`configuration::get { id: 'shell' }` → `value.fs.host_roots`), for the
- * folder-access management dialog's "always allowed (all sessions)" group.
+ * filesystem-access management dialog's "always allowed (all sessions)" group.
  * Editing happens on the existing configuration editor
  * (`#/configuration/workers/shell`) — this is read-only here on purpose.
  */

@@ -49,6 +49,7 @@ mod tests {
                     "turn_id": "t_1",
                     "function_call_id": "c_1",
                     "function_id": "shell::run",
+                    "kind": "function",
                     "pending_at": 1,
                 }),
             )

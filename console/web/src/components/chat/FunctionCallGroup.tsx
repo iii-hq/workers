@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
+import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
@@ -25,12 +25,12 @@ interface FunctionCallGroupProps {
     functionCallId: string,
     functionId: string,
   ) => Promise<void>
-  onResolveFolderAccess?: (
+  onResolveFilesystemAccess?: (
     sessionId: string,
     functionCallId: string,
-    action: FolderAccessAction,
+    action: FilesystemAccessAction,
   ) => Promise<void>
-  onManageFolderAccess?: () => void
+  onManageFilesystemAccess?: () => void
   workingDir?: string | null
 }
 
@@ -146,8 +146,8 @@ export function FunctionCallGroup({
   defaultOpen,
   onResolveApproval,
   onAlwaysAllow,
-  onResolveFolderAccess,
-  onManageFolderAccess,
+  onResolveFilesystemAccess,
+  onManageFilesystemAccess,
   workingDir,
 }: FunctionCallGroupProps) {
   const status = deriveStatus(messages)
@@ -208,8 +208,8 @@ export function FunctionCallGroup({
             let onApprove: (() => Promise<void>) | undefined
             let onDeny: (() => Promise<void>) | undefined
             let onAlwaysAllowHandler: (() => Promise<void>) | undefined
-            let onResolveFolderAccessHandler:
-              | ((action: FolderAccessAction) => Promise<void>)
+            let onResolveFilesystemAccessHandler:
+              | ((action: FilesystemAccessAction) => Promise<void>)
               | undefined
             if (onResolveApproval && sessionId && functionCallId) {
               onApprove = () =>
@@ -221,9 +221,9 @@ export function FunctionCallGroup({
               onAlwaysAllowHandler = () =>
                 onAlwaysAllow(sessionId, functionCallId, m.functionId)
             }
-            if (onResolveFolderAccess && sessionId && functionCallId) {
-              onResolveFolderAccessHandler = (action) =>
-                onResolveFolderAccess(sessionId, functionCallId, action)
+            if (onResolveFilesystemAccess && sessionId && functionCallId) {
+              onResolveFilesystemAccessHandler = (action) =>
+                onResolveFilesystemAccess(sessionId, functionCallId, action)
             }
             return (
               <FunctionCallMessage
@@ -232,8 +232,8 @@ export function FunctionCallGroup({
                 onApprove={onApprove}
                 onDeny={onDeny}
                 onAlwaysAllow={onAlwaysAllowHandler}
-                onResolveFolderAccess={onResolveFolderAccessHandler}
-                onManageFolderAccess={onManageFolderAccess}
+                onResolveFilesystemAccess={onResolveFilesystemAccessHandler}
+                onManageFilesystemAccess={onManageFilesystemAccess}
                 workingDir={workingDir}
                 embedded
               />

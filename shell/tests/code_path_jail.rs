@@ -150,14 +150,14 @@ fn nested_dotenv_blocked_by_glob() {
 }
 
 #[tokio::test]
-async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
+async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
     let tmp = tempdir().unwrap();
     let project = tmp.path().join("project");
     std::fs::create_dir(&project).unwrap();
     std::fs::write(project.join("inside.txt"), b"inside").unwrap();
     std::fs::write(tmp.path().join("sibling.txt"), b"sibling").unwrap();
     let (r, c) = make_resolver(tmp.path().to_path_buf(), vec![]);
-    let base_dir = project.to_string_lossy().into_owned();
+    let scope_root = project.to_string_lossy().into_owned();
 
     // `../sibling.txt` is still inside the worker's allowed root, so a plain
     // jail check is not enough. Session-scoped calls must reject it with C218.
@@ -166,8 +166,10 @@ async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
         c.clone(),
         ReadFileInput {
             path: Some("../sibling.txt".into()),
-            base_dir: Some(base_dir.clone()),
-            extra_roots: None,
+            fs_scope: Some(shell::fs::FsScope {
+                root: scope_root.clone(),
+                grants: Vec::new(),
+            }),
             ..ReadFileInput::default()
         },
     )
@@ -186,8 +188,10 @@ async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
                 parents: true,
                 overwrite: false,
             }],
-            base_dir: Some(base_dir.clone()),
-            extra_roots: None,
+            fs_scope: Some(shell::fs::FsScope {
+                root: scope_root.clone(),
+                grants: Vec::new(),
+            }),
         },
     )
     .await
@@ -203,8 +207,10 @@ async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
         DeleteFileInput {
             paths: vec!["../sibling.txt".into()],
             recursive: false,
-            base_dir: Some(base_dir),
-            extra_roots: None,
+            fs_scope: Some(shell::fs::FsScope {
+                root: scope_root,
+                grants: Vec::new(),
+            }),
         },
     )
     .await

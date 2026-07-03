@@ -58,7 +58,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "approval::gate",
-            "approval::grant-watch",
+            "approval::filesystem-access-watch",
             "approval::resolve",
             "approval::list-pending",
             "approval::get-pending",
@@ -153,7 +153,7 @@ fn schemas_carry_field_descriptions() {
     // their generated schema (struct-level or field-level doc comments):
     let must_have_descriptions = [
         "approval::gate",
-        "approval::grant-watch",
+        "approval::filesystem-access-watch",
         "approval::resolve",
         "approval::list-pending",
         "approval::get-pending",

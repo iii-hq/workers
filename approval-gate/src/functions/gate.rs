@@ -133,7 +133,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
         depth: input.depth,
         assistant_excerpt: None,
         kind: PendingKind::Function,
-        grant_request: None,
+        access_request: None,
     };
 
     match pending::put(iii, &record).await {
@@ -159,7 +159,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
 
 /// Best-effort `session::get` — fields are omitted on any failure
 /// (session-manager absent, timeout, unknown session). Shared with
-/// `grant_watch` (the same soft-fetch, so the console card has the same
+/// `filesystem_access_watch` (the same soft-fetch, so the console card has the same
 /// session context for both pending-record kinds).
 pub(super) async fn fetch_session_context(
     deps: &Deps,

@@ -93,23 +93,28 @@ pub async fn resolve(
                 .await
                 .unwrap_or(Value::Null);
             // The release path runs OUTSIDE the turn loop, so re-apply the
-            // workspace stamp the loop would have added: without it an
+            // filesystem scope stamp the loop would have added: without it an
             // approved shell/coder call runs un-scoped (the session's picked
-            // directory becomes unreachable) and a model-supplied base_dir
+            // directory becomes unreachable) and a model-supplied fs_scope
             // recovered from the transcript would survive un-stripped.
-            let session_grants = crate::workspace_grants::roots(
+            let session_grants = crate::filesystem_grants::roots(
                 &deps.iii,
                 &record.session_id,
                 cfg.session_timeout_ms,
             )
             .await?;
-            let trusted_roots =
-                union_roots(session_grants, req.extra_roots.clone().unwrap_or_default());
-            let working_dir = record.options.working_dir().map(str::to_string);
-            let arguments = crate::workspace_inject::inject(
+            let trusted_roots = union_roots(
+                session_grants,
+                req.fs_scope
+                    .as_ref()
+                    .map(|s| s.grants.clone())
+                    .unwrap_or_default(),
+            );
+            let filesystem_root = record.options.filesystem_root().map(str::to_string);
+            let arguments = crate::filesystem_scope::inject(
                 &function_id,
                 arguments,
-                working_dir.as_deref(),
+                filesystem_root.as_deref(),
                 &trusted_roots,
             );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
@@ -286,7 +291,7 @@ pub async fn resolve_parent(
         turn_id: parent.turn_id.clone(),
         function_call_id: parent.function_call_id.clone(),
         action: Some("deliver".to_string()),
-        extra_roots: None,
+        fs_scope: None,
         content: Some(content),
         is_error: Some(is_error),
         details: Some(details),
@@ -348,7 +353,7 @@ pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
             turn_id,
             function_call_id: call_id,
             action: Some("deliver".to_string()),
-            extra_roots: None,
+            fs_scope: None,
             content: Some(vec![ContentBlock::text(
                 "pending call timed out".to_string(),
             )]),
@@ -377,10 +382,10 @@ fn render_text(value: &Value) -> String {
     }
 }
 
-fn union_roots(session_roots: Vec<String>, extra_roots: Vec<String>) -> Vec<String> {
+fn union_roots(session_roots: Vec<String>, fs_scope_grants: Vec<String>) -> Vec<String> {
     session_roots
         .into_iter()
-        .chain(extra_roots)
+        .chain(fs_scope_grants)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()

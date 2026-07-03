@@ -1,14 +1,14 @@
 //! `approval::on-session-deleted` — bound to session-manager's
 //! `session::deleted` trigger type. Purges the session's settings record,
-//! every pending record, the grant-watch attempt counters, and the
-//! grant-watch denied-directory memory (the cascade the prior deployment
+//! every pending record, the filesystem-access-watch attempt counters, and the
+//! filesystem-access-watch denied-directory memory (the cascade the prior deployment
 //! lacked).
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{purge, Deps};
-use crate::grant_state;
+use crate::filesystem_access_state;
 use crate::settings;
 use crate::types::EventAck;
 
@@ -25,11 +25,15 @@ pub async fn handle(
     if let Err(e) = settings::clear(deps.iii.as_ref(), &event.session_id).await {
         tracing::warn!(session_id = %event.session_id, error = %e, "settings purge failed");
     }
-    if let Err(e) = grant_state::clear_denied(deps.iii.as_ref(), &event.session_id).await {
+    if let Err(e) =
+        filesystem_access_state::clear_denied(deps.iii.as_ref(), &event.session_id).await
+    {
         tracing::warn!(session_id = %event.session_id, error = %e, "grant-denied memory purge failed");
     }
-    let purged_attempts =
-        grant_state::purge_matching(deps.iii.as_ref(), |r| r.session_id == event.session_id).await;
+    let purged_attempts = filesystem_access_state::purge_matching(deps.iii.as_ref(), |r| {
+        r.session_id == event.session_id
+    })
+    .await;
     let purged = purge::purge_matching(deps, |r| r.session_id == event.session_id).await;
     tracing::info!(
         session_id = %event.session_id,
@@ -59,6 +63,7 @@ mod tests {
                 "turn_id": "t_1",
                 "function_call_id": cid,
                 "function_id": "shell::run",
+                "kind": "function",
                 "pending_at": 1,
             }),
         )
@@ -105,21 +110,21 @@ mod tests {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             state_set(
                 &stack.iii,
-                grant_state::DENIED_SCOPE,
+                filesystem_access_state::DENIED_SCOPE,
                 "s_1",
                 json!(["/a/b"]),
             )
             .await;
             state_set(
                 &stack.iii,
-                grant_state::ATTEMPTS_SCOPE,
+                filesystem_access_state::ATTEMPTS_SCOPE,
                 "s_1/c_1",
                 json!({ "session_id": "s_1", "function_call_id": "c_1", "turn_id": "t_1", "count": 1 }),
             )
             .await;
             state_set(
                 &stack.iii,
-                grant_state::ATTEMPTS_SCOPE,
+                filesystem_access_state::ATTEMPTS_SCOPE,
                 "s_2/c_9",
                 json!({ "session_id": "s_2", "function_call_id": "c_9", "turn_id": "t_9", "count": 1 }),
             )
@@ -134,13 +139,13 @@ mod tests {
             .await
             .unwrap();
 
-            assert!(state_get(&stack.iii, grant_state::DENIED_SCOPE, "s_1")
+            assert!(state_get(&stack.iii, filesystem_access_state::DENIED_SCOPE, "s_1")
                 .await
                 .is_null());
-            assert!(state_get(&stack.iii, grant_state::ATTEMPTS_SCOPE, "s_1/c_1")
+            assert!(state_get(&stack.iii, filesystem_access_state::ATTEMPTS_SCOPE, "s_1/c_1")
                 .await
                 .is_null());
-            assert!(!state_get(&stack.iii, grant_state::ATTEMPTS_SCOPE, "s_2/c_9")
+            assert!(!state_get(&stack.iii, filesystem_access_state::ATTEMPTS_SCOPE, "s_2/c_9")
                 .await
                 .is_null());
         })

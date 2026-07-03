@@ -7,14 +7,14 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 
-export type FolderAccessAction = 'once' | 'session' | 'always' | 'deny'
+export type FilesystemAccessAction = 'once' | 'session' | 'always' | 'deny'
 
-interface FolderAccessPromptProps {
-  /** Canonical directory a grant would target (see contracts.md grant_hint). */
-  dir: string
+interface FilesystemAccessPromptProps {
+  /** Canonical root a filesystem grant would target. */
+  requestedRoot: string
   /** The session's working directory, if any — shown as "always allowed". */
   workingDir?: string | null
-  onResolve: (action: FolderAccessAction) => void | Promise<void>
+  onResolve: (action: FilesystemAccessAction) => void | Promise<void>
   /** Footer link to the grants management dialog (§5). */
   onManage?: () => void
   /** Disables every button — set when no resolve handler is wired. */
@@ -22,25 +22,25 @@ interface FolderAccessPromptProps {
 }
 
 /**
- * Pending-footer replacement for a `folder_access` approval record: the
+ * Pending-footer replacement for a `filesystem_access` approval record: the
  * agent tried to touch a path outside the session's allowed folders and the
  * gate parked the call for a human. Offers once / session / always / deny
  * instead of the standard approve/deny/always row. "always allow" gates on
  * a destructive-style confirmation (it edits shell's permanent
  * `fs.host_roots` for every conversation), mirroring `AlwaysAllowButton`.
  */
-export function FolderAccessPrompt({
-  dir,
+export function FilesystemAccessPrompt({
+  requestedRoot,
   workingDir,
   onResolve,
   onManage,
   disabled,
-}: FolderAccessPromptProps) {
-  const [submitting, setSubmitting] = useState<FolderAccessAction | null>(null)
+}: FilesystemAccessPromptProps) {
+  const [submitting, setSubmitting] = useState<FilesystemAccessAction | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  const run = async (action: FolderAccessAction) => {
+  const run = async (action: FilesystemAccessAction) => {
     if (submitting) return
     setSubmitError(null)
     setSubmitting(action)
@@ -63,9 +63,9 @@ export function FolderAccessPrompt({
           // visible when truncated, matching the working-dir footer banner.
           dir="rtl"
           className="truncate text-left font-mono text-[12px] text-ink bg-paper-2 px-2 py-1"
-          title={dir}
+          title={requestedRoot}
         >
-          {dir}
+          {requestedRoot}
         </div>
         <p className="font-mono text-[11px] text-ink-faint">
           this folder is outside the session's allowed folders.
@@ -127,7 +127,7 @@ export function FolderAccessPrompt({
           onClick={onManage}
           className="self-start font-mono text-[11px] text-ink-faint hover:text-ink hover:underline underline-offset-2"
         >
-          manage folder access…
+          manage filesystem access…
         </button>
       ) : null}
 
@@ -137,7 +137,10 @@ export function FolderAccessPrompt({
             always allow this folder?
           </DialogTitle>
           <DialogDescription className="mt-3 text-ink">
-            this adds <code className="px-1 bg-paper-2 text-accent">{dir}</code>{' '}
+            this adds{' '}
+            <code className="px-1 bg-paper-2 text-accent">
+              {requestedRoot}
+            </code>{' '}
             to the permanent allowed folders (shell fs.host_roots) for every
             conversation.
           </DialogDescription>
@@ -160,7 +163,7 @@ export function FolderAccessPrompt({
               }}
               className="font-mono text-[12px] px-3 py-1 border border-alert bg-alert text-bg hover:bg-bg hover:text-alert transition-colors"
             >
-              always allow {dir}
+              always allow {requestedRoot}
             </button>
           </div>
         </DialogContent>

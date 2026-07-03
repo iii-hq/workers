@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::HarnessError;
 
-pub const WORKSPACE_GRANTS_SCOPE: &str = "harness_workspace_grants";
+pub const FILESYSTEM_GRANTS_SCOPE: &str = "harness_filesystem_grants";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantSet {
@@ -60,7 +60,7 @@ pub async fn revoke(
 }
 
 pub async fn purge(iii: &IIIClient, session_id: &str, timeout_ms: u64) -> Result<(), HarnessError> {
-    crate::state::state_delete(iii, WORKSPACE_GRANTS_SCOPE, session_id, timeout_ms).await
+    crate::state::state_delete(iii, FILESYSTEM_GRANTS_SCOPE, session_id, timeout_ms).await
 }
 
 async fn read(
@@ -69,12 +69,12 @@ async fn read(
     timeout_ms: u64,
 ) -> Result<GrantSet, HarnessError> {
     let value =
-        crate::state::state_get(iii, WORKSPACE_GRANTS_SCOPE, session_id, timeout_ms).await?;
+        crate::state::state_get(iii, FILESYSTEM_GRANTS_SCOPE, session_id, timeout_ms).await?;
     if value.is_null() {
         return Ok(GrantSet::default());
     }
     serde_json::from_value(value)
-        .map_err(|e| HarnessError::State(format!("workspace grants parse: {e}")))
+        .map_err(|e| HarnessError::State(format!("filesystem grants parse: {e}")))
 }
 
 async fn write(
@@ -84,8 +84,8 @@ async fn write(
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
     let value = serde_json::to_value(grants)
-        .map_err(|e| HarnessError::State(format!("workspace grants serialize: {e}")))?;
-    crate::state::state_set(iii, WORKSPACE_GRANTS_SCOPE, session_id, value, timeout_ms).await
+        .map_err(|e| HarnessError::State(format!("filesystem grants serialize: {e}")))?;
+    crate::state::state_set(iii, FILESYSTEM_GRANTS_SCOPE, session_id, value, timeout_ms).await
 }
 
 #[cfg(test)]

@@ -224,7 +224,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<ShellConfig, String> {
 /// [`fetch_config`] so `reload_serialized` can classify a PARSE failure of a
 /// fetched value as `Rejected` (permanent — re-fetching returns the same
 /// value) rather than a transient fetch error (retryable). Conflating the two
-/// turns every un-migrated stored value into a retry storm and hides the
+/// turns every removed-key stored value into a retry storm and hides the
 /// divergence from `shell::config-status`.
 fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
     if value.is_null() {
@@ -385,7 +385,7 @@ where
         Ok(cfg) => cfg,
         Err(e) => {
             // The value WAS fetched; it just doesn't parse (e.g. an
-            // un-migrated 0.6.x shape carrying removed keys). Same class as
+            // removed-key 0.6.x shape carrying removed keys). Same class as
             // unbuildable below: permanent until the store changes.
             tracing::error!(
                 error = %e,
@@ -505,7 +505,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_runtime_errors_on_unreachable_host_root() {
+    fn build_runtime_errors_on_unreachable_host_roots() {
         // register_worker returns immediately; connect() fires a background thread
         // that silently retries but never panics or blocks this thread.
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59599", iii_sdk::InitOptions::default());
@@ -537,14 +537,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_host_root_config_is_rejected_with_hint() {
-        // INVERSION of the old T6 regression test: through 0.6.x a single
-        // fs.host_root was honored as a one-entry jail, and this test proved
-        // that pre-merge shape still booted. 0.7.0 removes the alias outright,
-        // so the SAME config shape must now FAIL CLOSED at parse with a hint
-        // naming fs.host_roots — serde would otherwise ignore the stale key
-        // and the worker would refuse to start with a message that never
-        // names the actual mistake.
+    fn removed_host_root_config_is_rejected_with_hint() {
+        // The removed single-root key must fail closed before serde ignores it
+        // and before runtime validation reports only "host_roots is unset".
         let yaml = "allowlist: []\nfs:\n  host_root: /tmp/legacy-root\n";
         let err = ShellConfig::from_yaml(yaml).expect_err("the 0.6.x alias must be rejected");
         assert!(err.contains("removed in 0.7.0"), "{err}");
@@ -727,11 +722,11 @@ mod tests {
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
         };
-        // A literal 0.6.x stored shape: top-level inherit_env/allowed_env,
-        // no `env` block — fails check_removed_keys inside parse_fetched_value.
+        // A literal removed stored shape: fs.host_roots must fail the parse
+        // path before serde drops it and runtime validation reports only
+        // "host_roots is unset".
         let stale_060_shape = serde_json::json!({
-            "inherit_env": true,
-            "allowed_env": ["PATH", "HOME"],
+            "fs": { "host_root": "/tmp/legacy-root" },
         });
         let res =
             reload_serialized(&state, || async move { Ok::<_, String>(stale_060_shape) }).await;
@@ -750,7 +745,7 @@ mod tests {
             s.last_error
                 .as_deref()
                 .is_some_and(|e| e.contains("removed in 0.7.0")),
-            "config-status must surface the migration hint: {:?}",
+            "config-status must surface the removed-key hint: {:?}",
             s.last_error
         );
         assert_eq!(s.rejected_reloads, 1);

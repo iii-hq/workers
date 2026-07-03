@@ -123,7 +123,7 @@ mod tests {
             depth: 0,
             assistant_excerpt: None,
             kind: crate::types::PendingKind::Function,
-            grant_request: None,
+            access_request: None,
         }
     }
 

@@ -3,31 +3,31 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantHint {
+pub struct FilesystemAccessRequest {
     pub v: u8,
-    pub dir: String,
-    pub path: String,
-    pub code: String,
+    pub requested_root: String,
+    pub attempted_path: String,
+    pub error_code: String,
 }
 
-impl GrantHint {
+impl FilesystemAccessRequest {
     pub fn new(code: &str, raw_path: &str, resolved_path: &Path) -> Self {
         Self {
             v: 1,
-            dir: nearest_existing_dir(resolved_path).display().to_string(),
-            path: raw_path.to_string(),
-            code: code.to_string(),
+            requested_root: nearest_existing_dir(resolved_path).display().to_string(),
+            attempted_path: raw_path.to_string(),
+            error_code: code.to_string(),
         }
     }
 
     pub fn suffix(&self) -> String {
-        let json = serde_json::to_string(self).expect("GrantHint serializes");
-        format!(" grant_hint={json}")
+        let json = serde_json::to_string(self).expect("FilesystemAccessRequest serializes");
+        format!(" filesystem_access_request={json}")
     }
 }
 
-pub fn hint_suffix(code: &str, raw_path: &str, resolved_path: &Path) -> String {
-    GrantHint::new(code, raw_path, resolved_path).suffix()
+pub fn request_suffix(code: &str, raw_path: &str, resolved_path: &Path) -> String {
+    FilesystemAccessRequest::new(code, raw_path, resolved_path).suffix()
 }
 
 fn nearest_existing_dir(path: &Path) -> PathBuf {

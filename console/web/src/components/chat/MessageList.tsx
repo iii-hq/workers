@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
+import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import type {
@@ -27,12 +27,12 @@ interface MessageListProps {
     functionCallId: string,
     functionId: string,
   ) => Promise<void>
-  onResolveFolderAccess?: (
+  onResolveFilesystemAccess?: (
     sessionId: string,
     functionCallId: string,
-    action: FolderAccessAction,
+    action: FilesystemAccessAction,
   ) => Promise<void>
-  onManageFolderAccess?: () => void
+  onManageFilesystemAccess?: () => void
   workingDir?: string | null
 }
 
@@ -87,8 +87,8 @@ export function MessageList({
   density = 'route',
   onResolveApproval,
   onAlwaysAllow,
-  onResolveFolderAccess,
-  onManageFolderAccess,
+  onResolveFilesystemAccess,
+  onManageFilesystemAccess,
   workingDir,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -169,8 +169,8 @@ export function MessageList({
               message={item.message}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
-              onResolveFolderAccess={onResolveFolderAccess}
-              onManageFolderAccess={onManageFolderAccess}
+              onResolveFilesystemAccess={onResolveFilesystemAccess}
+              onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
             />
           ) : (
@@ -179,8 +179,8 @@ export function MessageList({
               messages={item.messages}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
-              onResolveFolderAccess={onResolveFolderAccess}
-              onManageFolderAccess={onManageFolderAccess}
+              onResolveFilesystemAccess={onResolveFilesystemAccess}
+              onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
             />
           ),

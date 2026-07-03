@@ -24,9 +24,9 @@ import {
 } from '@/components/chat/workflow'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
 import {
-  type FolderAccessAction,
-  FolderAccessPrompt,
-} from '@/components/permissions/FolderAccessPrompt'
+  type FilesystemAccessAction,
+  FilesystemAccessPrompt,
+} from '@/components/permissions/FilesystemAccessPrompt'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -51,13 +51,13 @@ interface FunctionCallMessageProps {
    */
   onAlwaysAllow?: () => void | Promise<void>
   /**
-   * Resolve a folder-access grant request (see `message.folderAccess`).
-   * When set alongside `message.folderAccess`, replaces the standard
-   * approve/deny/always row with `FolderAccessPrompt`.
+   * Resolve a filesystem-access grant request (see `message.filesystemAccess`).
+   * When set alongside `message.filesystemAccess`, replaces the standard
+   * approve/deny/always row with `FilesystemAccessPrompt`.
    */
-  onResolveFolderAccess?: (action: FolderAccessAction) => void | Promise<void>
-  /** Opens the folder-access management dialog (§5 of the spec). */
-  onManageFolderAccess?: () => void
+  onResolveFilesystemAccess?: (action: FilesystemAccessAction) => void | Promise<void>
+  /** Opens the filesystem-access management dialog (§5 of the spec). */
+  onManageFilesystemAccess?: () => void
   /** Conversation's session workspace — shown as "always allowed" context. */
   workingDir?: string | null
   /**
@@ -167,14 +167,14 @@ export function FunctionCallMessage({
   onApprove,
   onDeny,
   onAlwaysAllow,
-  onResolveFolderAccess,
-  onManageFolderAccess,
+  onResolveFilesystemAccess,
+  onManageFilesystemAccess,
   workingDir,
   embedded,
 }: FunctionCallMessageProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
-  const folderAccess = pending ? message.folderAccess : undefined
+  const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const [submitting, setSubmitting] = useState<
@@ -260,8 +260,8 @@ export function FunctionCallMessage({
             {pending ? (
               <>
                 <span>
-                  {folderAccess
-                    ? 'needs folder access to run'
+                  {filesystemAccess
+                    ? 'needs filesystem access to run'
                     : 'permission to run'}
                 </span>{' '}
               </>
@@ -333,17 +333,17 @@ export function FunctionCallMessage({
         </div>
       ) : null}
 
-      {pending && folderAccess ? (
-        <FolderAccessPrompt
-          // A held call can be re-parked with a fresh grant request (same
-          // function_call_id, different dir) — remount so submitting/confirm
+      {pending && filesystemAccess ? (
+        <FilesystemAccessPrompt
+          // A held call can be re-parked with a fresh access request (same
+          // function_call_id, different root) — remount so submitting/confirm
           // state from the previous round never wedges the buttons.
-          key={`${folderAccess.dir} ${folderAccess.offendingPath ?? ''}`}
-          dir={folderAccess.dir}
+          key={`${filesystemAccess.requestedRoot} ${filesystemAccess.attemptedPath ?? ''}`}
+          requestedRoot={filesystemAccess.requestedRoot}
           workingDir={workingDir}
-          onResolve={(action) => onResolveFolderAccess?.(action)}
-          onManage={onManageFolderAccess}
-          disabled={!onResolveFolderAccess}
+          onResolve={(action) => onResolveFilesystemAccess?.(action)}
+          onManage={onManageFilesystemAccess}
+          disabled={!onResolveFilesystemAccess}
         />
       ) : pending ? (
         <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">

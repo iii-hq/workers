@@ -89,14 +89,10 @@ pub struct SearchInput {
     /// Search file paths (default true).
     #[serde(default = "default_true")]
     pub search_paths: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
-    /// Internal harness-granted roots; omitted from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub extra_roots: Option<Vec<String>>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 fn default_true() -> bool {
@@ -198,7 +194,8 @@ fn inner(
     // Use `resolve` rather than `require_writable` so a search rooted at
     // a folder that *contains* non-accessible children still works; the
     // per-file `is_non_accessible` filter below still guards their bytes.
-    let walk_root = resolver.resolve_opt(req.base_dir.as_deref(), &req.path)?;
+    let walk_root =
+        resolver.resolve_opt(crate::fs::scope_root(req.fs_scope.as_ref()), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -559,8 +556,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -605,8 +601,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -655,8 +650,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -687,8 +681,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: false,
                 search_paths: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -720,8 +713,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -759,8 +751,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -803,8 +794,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -833,8 +823,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -866,8 +855,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: false,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -896,8 +884,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -926,8 +913,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -957,8 +943,7 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -992,8 +977,7 @@ mod tests {
             use_default_excludes: true,
             search_content: true,
             search_paths: false,
-            base_dir: None,
-            extra_roots: None,
+            fs_scope: None,
         }
     }
 

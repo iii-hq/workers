@@ -12,12 +12,8 @@ use crate::prompt::Mode;
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 
-/// The options-metadata key that carries the session working directory. The
-/// read side (`TurnOptions::working_dir`) and the sub-agent write side
-/// (`subagent::inherit_workspace`) share this constant so a rename can't
-/// silently desync the two and drop child scope. Mirrors
-/// `workspace_inject::BASE_DIR_FIELD`.
-pub const WORKING_DIR_KEY: &str = "working_dir";
+pub const FS_SCOPE_KEY: &str = "fs_scope";
+pub const FS_SCOPE_ROOT_KEY: &str = "root";
 
 /// The coarse, harness-internal turn lifecycle (harness.md § API Reference).
 /// Finer-grained than the session's `status`, which the loop derives from it.
@@ -93,24 +89,22 @@ fn default_max_validation_retries() -> u32 {
 }
 
 impl TurnOptions {
-    /// The session working directory this turn is scoped to: the
-    /// `working_dir` key of the frozen options metadata. Every path that
-    /// invokes a scoped `shell::*` / `coder::*` call (turn loop, deferred
-    /// release, `function::trigger`) must stamp this via
-    /// `workspace_inject::inject` so the console-picked directory stays
-    /// reachable.
-    pub fn working_dir(&self) -> Option<&str> {
+    /// The filesystem root this turn is scoped to:
+    /// `metadata.fs_scope.root`.
+    pub fn filesystem_root(&self) -> Option<&str> {
         self.metadata
             .as_ref()
-            .and_then(|m| m.get(WORKING_DIR_KEY))
+            .and_then(|m| m.get(FS_SCOPE_KEY))
+            .and_then(Value::as_object)
+            .and_then(|scope| scope.get(FS_SCOPE_ROOT_KEY))
             .and_then(Value::as_str)
     }
 
-    pub fn refresh_working_dir_from(&mut self, incoming: &TurnOptions) -> bool {
-        let Some(working_dir) = incoming.working_dir() else {
+    pub fn refresh_filesystem_root_from(&mut self, incoming: &TurnOptions) -> bool {
+        let Some(root) = incoming.filesystem_root() else {
             return false;
         };
-        if self.working_dir() == Some(working_dir) {
+        if self.filesystem_root() == Some(root) {
             return false;
         }
 
@@ -121,10 +115,12 @@ impl TurnOptions {
             *metadata = Value::Object(Default::default());
         }
         if let Some(map) = metadata.as_object_mut() {
-            map.insert(
-                WORKING_DIR_KEY.to_string(),
-                Value::String(working_dir.to_string()),
+            let mut fs_scope = serde_json::Map::new();
+            fs_scope.insert(
+                FS_SCOPE_ROOT_KEY.to_string(),
+                Value::String(root.to_string()),
             );
+            map.insert(FS_SCOPE_KEY.to_string(), Value::Object(fs_scope));
         }
         true
     }
@@ -293,20 +289,21 @@ mod tests {
     }
 
     #[test]
-    fn working_dir_reads_the_metadata_key() {
+    fn filesystem_root_reads_the_metadata_key() {
         let mut r = record();
-        r.options.metadata = Some(json!({ "working_dir": "/work/p", "message_id": "m_1" }));
-        assert_eq!(r.options.working_dir(), Some("/work/p"));
+        r.options.metadata =
+            Some(json!({ "fs_scope": { "root": "/work/p" }, "message_id": "m_1" }));
+        assert_eq!(r.options.filesystem_root(), Some("/work/p"));
     }
 
     #[test]
-    fn working_dir_is_none_without_metadata_or_key_or_string() {
+    fn filesystem_root_is_none_without_metadata_or_key_or_string() {
         let mut r = record();
-        assert_eq!(r.options.working_dir(), None);
+        assert_eq!(r.options.filesystem_root(), None);
         r.options.metadata = Some(json!({ "message_id": "m_1" }));
-        assert_eq!(r.options.working_dir(), None);
-        r.options.metadata = Some(json!({ "working_dir": 7 }));
-        assert_eq!(r.options.working_dir(), None);
+        assert_eq!(r.options.filesystem_root(), None);
+        r.options.metadata = Some(json!({ "fs_scope": { "root": 7 } }));
+        assert_eq!(r.options.filesystem_root(), None);
     }
 
     #[test]
@@ -360,15 +357,15 @@ mod tests {
     }
 
     #[test]
-    fn refresh_working_dir_updates_only_when_incoming_has_scope() {
+    fn refresh_filesystem_root_updates_only_when_incoming_has_scope() {
         let mut existing = record().options;
-        existing.metadata = Some(json!({ "trace": "keep", "working_dir": "/old" }));
+        existing.metadata = Some(json!({ "trace": "keep", "fs_scope": { "root": "/old" } }));
 
         let mut incoming = existing.clone();
-        incoming.metadata = Some(json!({ "working_dir": "/new", "ignored": true }));
+        incoming.metadata = Some(json!({ "fs_scope": { "root": "/new" }, "ignored": true }));
 
-        assert!(existing.refresh_working_dir_from(&incoming));
-        assert_eq!(existing.working_dir(), Some("/new"));
+        assert!(existing.refresh_filesystem_root_from(&incoming));
+        assert_eq!(existing.filesystem_root(), Some("/new"));
         assert_eq!(
             existing
                 .metadata
@@ -380,7 +377,7 @@ mod tests {
 
         let mut no_scope = incoming;
         no_scope.metadata = Some(json!({ "other": "/ignored" }));
-        assert!(!existing.refresh_working_dir_from(&no_scope));
-        assert_eq!(existing.working_dir(), Some("/new"));
+        assert!(!existing.refresh_filesystem_root_from(&no_scope));
+        assert_eq!(existing.filesystem_root(), Some("/new"));
     }
 }

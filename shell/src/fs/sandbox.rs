@@ -195,8 +195,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, id);
         let resp = b
             .ls(LsArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
             })
             .await
@@ -220,8 +219,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub, false, Uuid::new_v4());
         let err = b
             .ls(LsArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
             })
             .await
@@ -238,8 +236,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub, true, Uuid::new_v4());
         let err = b
             .ls(LsArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
             })
             .await
@@ -256,8 +253,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub, true, Uuid::new_v4());
         let err = b
             .ls(LsArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
             })
             .await
@@ -280,8 +276,7 @@ mod tests {
         };
         let resp = b
             .write(WriteArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -311,8 +306,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, Uuid::new_v4());
         let err = b
             .write(WriteArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -343,8 +337,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, id);
         let resp = b
             .read(ReadArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/sb/y".into(),
             })
             .await
@@ -379,8 +372,7 @@ mod tests {
         let b = SandboxFsBackend::new(Arc::new(RemoteFwd), true, Uuid::new_v4());
         let err = b
             .rm(RmArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
                 recursive: false,
             })
@@ -408,8 +400,7 @@ mod tests {
         let b = SandboxFsBackend::new(Arc::new(WrappedFwd), true, Uuid::new_v4());
         let err = b
             .ls(LsArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
             })
             .await
@@ -427,8 +418,7 @@ mod tests {
         let b = SandboxFsBackend::new(stub.clone(), true, id);
         let _ = b
             .grep(GrepArgs {
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
                 path: "/x".into(),
                 pattern: "p".into(),
                 recursive: true,

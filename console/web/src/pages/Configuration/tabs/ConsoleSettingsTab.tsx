@@ -244,11 +244,11 @@ export function ConsoleSettingsTab({
         </Section>
 
         <Section
-          title="folder access"
+          title="filesystem access"
           description="the agent can always use a conversation's chosen workspace. touching anything outside it prompts in the chat — allow once, for the session, or permanently."
         >
           <Row
-            label="folder access"
+            label="filesystem access"
             control={
               <a
                 href={SHELL_CONFIG_HASH}
@@ -257,7 +257,7 @@ export function ConsoleSettingsTab({
                 edit permanent roots
               </a>
             }
-            meta="workspace + per-session grants are managed from the chat's folder access dialog. permanent roots (allowed for every conversation) live in shell configuration."
+            meta="workspace + per-session grants are managed from the chat's filesystem access dialog. permanent roots (allowed for every conversation) live in shell configuration."
           />
         </Section>
       </div>

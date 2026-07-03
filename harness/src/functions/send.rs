@@ -273,7 +273,7 @@ async fn seed_or_merge(
                 crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
             match recheck {
                 Some(mut r) if !r.status.is_terminal() => {
-                    if r.options.refresh_working_dir_from(&options) {
+                    if r.options.refresh_filesystem_root_from(&options) {
                         r.updated_at = AgentMessage::now_ms();
                         crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
                     }

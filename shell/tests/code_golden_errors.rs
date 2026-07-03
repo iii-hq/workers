@@ -168,8 +168,7 @@ async fn create_err(
         cfg,
         create_file::CreateFileInput {
             files: vec![spec],
-            base_dir: None,
-            extra_roots: None,
+            fs_scope: None,
         },
     )
     .await
@@ -261,8 +260,7 @@ async fn error_message_formats_match_golden() {
             delete_file::DeleteFileInput {
                 paths: vec!["blocked-dir".into()],
                 recursive: true,
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -440,8 +438,7 @@ async fn error_message_formats_match_golden() {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -471,8 +468,7 @@ async fn error_message_formats_match_golden() {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -501,8 +497,7 @@ async fn error_message_formats_match_golden() {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -547,8 +542,7 @@ async fn error_message_formats_match_golden() {
                             expect_matches: Some(1),
                         }],
                     }],
-                    base_dir: None,
-                    extra_roots: None,
+                    fs_scope: None,
                 },
             )
             .await
@@ -575,8 +569,7 @@ async fn error_message_formats_match_golden() {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await

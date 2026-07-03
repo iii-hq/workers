@@ -1,6 +1,6 @@
 //! Thin wrappers around the harness's `harness::function::resolve` and
-//! `harness::workspace::*` control-plane functions (contracts.md §
-//! Workspace grant control-plane functions). All three workspace RPCs
+//! `harness::filesystem::*` control-plane functions (contracts.md §
+//! Filesystem grant control-plane functions). All three filesystem RPCs
 //! respond `{session_id, roots: string[]}` — plain strings, no
 //! timestamps/attribution.
 
@@ -32,13 +32,13 @@ fn parse_roots(reply: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The session's current durable workspace grants (may be empty; never an
+/// The session's current durable filesystem grants (may be empty; never an
 /// error on "no grants" — only on transport/RPC failure, e.g. an older
 /// harness that doesn't implement this control plane yet).
-pub async fn workspace_grants(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, Error> {
+pub async fn filesystem_grants(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, Error> {
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "harness::workspace::grants".into(),
+            function_id: "harness::filesystem::grants".into(),
             payload: json!({ "session_id": session_id }),
             action: None,
             timeout_ms: None,
@@ -47,17 +47,17 @@ pub async fn workspace_grants(iii: &IIIClient, session_id: &str) -> Result<Vec<S
     Ok(parse_roots(&reply))
 }
 
-/// Add a durable workspace grant for the session. Returns the updated root
+/// Add a durable filesystem grant for the session. Returns the updated root
 /// list (unused by callers today, but kept for parity with the wire
 /// contract and future use).
-pub async fn workspace_grant(
+pub async fn filesystem_grant(
     iii: &IIIClient,
     session_id: &str,
     root: &str,
 ) -> Result<Vec<String>, Error> {
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "harness::workspace::grant".into(),
+            function_id: "harness::filesystem::grant".into(),
             payload: json!({ "session_id": session_id, "root": root }),
             action: None,
             timeout_ms: None,

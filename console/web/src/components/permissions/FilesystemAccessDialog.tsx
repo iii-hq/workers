@@ -11,14 +11,14 @@ import { getShellHostRoots } from '@/lib/backend/shell-roots'
 
 const SHELL_CONFIG_HASH = '#/configuration/workers/shell'
 
-interface FolderAccessDialogProps {
+interface FilesystemAccessDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The conversation's session workspace — always allowed, no revoke. */
   workingDir?: string | null
   /** Session-scoped granted dirs (plain path strings). */
   grants: string[]
-  /** False when the harness's workspace-grants functions aren't registered. */
+  /** False when the harness's filesystem-grants functions aren't registered. */
   grantsSupported: boolean
   onRevoke: (root: string) => void | Promise<void>
   /** Called on open so the grants list is fresh. */
@@ -34,7 +34,7 @@ interface FolderAccessDialogProps {
  * deep-links to the existing editor). Opened from the prompt-card footer
  * link and the ChatView working-dir footer row.
  */
-export function FolderAccessDialog({
+export function FilesystemAccessDialog({
   open,
   onOpenChange,
   workingDir,
@@ -43,7 +43,7 @@ export function FolderAccessDialog({
   onRevoke,
   onRefreshGrants,
   sessionBusy,
-}: FolderAccessDialogProps) {
+}: FilesystemAccessDialogProps) {
   const [shellRoots, setShellRoots] = useState<string[] | null>(null)
 
   useEffect(() => {
@@ -55,7 +55,7 @@ export function FolderAccessDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
-        <DialogTitle className="text-[14px]">folder access</DialogTitle>
+        <DialogTitle className="text-[14px]">filesystem access</DialogTitle>
         <DialogDescription className="mt-1">
           folders the agent can read and write in this conversation.
         </DialogDescription>

@@ -15,7 +15,7 @@
 //!      handlers capture the subscriber sets they fan out to.
 //!   5. Register the 13 `approval::*` functions (each reads the live config
 //!      snapshot per call).
-//!   6. Bind the fixed gate + grant-watch hooks + the session/turn
+//!   6. Bind the fixed gate + filesystem-access-watch hooks + the session/turn
 //!      triggers, all best-effort (in a standalone deployment some of these
 //!      trigger types don't exist yet; the worker still boots and serves
 //!      its RPCs).
@@ -167,7 +167,7 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &deps);
 
     configuration::bind_hook(&iii);
-    configuration::bind_grant_watch_hook(&iii);
+    configuration::bind_filesystem_access_watch_hook(&iii);
 
     // These two carry no config and are never re-bound — best-effort only.
     bind_best_effort(

@@ -17,14 +17,10 @@ use crate::code::path::PathResolver;
 #[schemars(example = "example_create_file_input")]
 pub struct CreateFileInput {
     pub files: Vec<CreateFileSpec>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
-    /// Internal harness-granted roots; omitted from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub extra_roots: Option<Vec<String>>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -102,10 +98,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let base_dir = req.base_dir.as_deref();
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
     let mut entries = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        match resolver.require_writable_opt(base_dir, &spec.path) {
+        match resolver.require_writable_opt(scope_root, &spec.path) {
             Ok(abs) => entries.push((spec, Ok(abs))),
             Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
             Err(e) => entries.push((spec, Err(e))),
@@ -238,8 +234,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -275,8 +270,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -300,8 +294,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -330,8 +323,7 @@ mod tests {
                     parents: true,
                     overwrite: true,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -357,8 +349,7 @@ mod tests {
                     parents: true,
                     overwrite: true,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -394,8 +385,7 @@ mod tests {
                         overwrite: false,
                     },
                 ],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -429,8 +419,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -462,8 +451,7 @@ mod tests {
                         overwrite: false,
                     },
                 ],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -492,8 +480,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await

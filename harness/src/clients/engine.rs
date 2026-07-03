@@ -109,10 +109,35 @@ fn parse_dispatch_error_message(raw: &str) -> DispatchError {
         }
     }
 
+    if let Some(code) = parse_remote_error_code(raw) {
+        return DispatchError {
+            code: Some(code),
+            message: raw.to_string(),
+        };
+    }
+
     DispatchError {
         code: None,
         message: raw.to_string(),
     }
+}
+
+fn parse_remote_error_code(raw: &str) -> Option<String> {
+    const MARKER: &str = "remote error (";
+    let start = raw.find(MARKER)? + MARKER.len();
+    let rest = &raw[start..];
+    let end = rest.find("):")?;
+    let code = &rest[..end];
+    if code.is_empty() {
+        return None;
+    }
+    if !code
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '/'))
+    {
+        return None;
+    }
+    Some(code.to_string())
 }
 
 fn parse_dispatch_error_value(input: &str) -> Option<DispatchError> {
@@ -211,5 +236,17 @@ mod tests {
         );
         assert_eq!(err.code.as_deref(), Some("C218"));
         assert_eq!(err.message, "outside session");
+    }
+
+    #[test]
+    fn dispatch_error_parser_extracts_shell_remote_error_code() {
+        let err = parse_dispatch_error_message(
+            "remote error (S215): path escapes the fs jail roots [/private/tmp]: /Users/example filesystem_access_request={\"v\":1,\"requested_root\":\"/Users/example\",\"attempted_path\":\"/Users/example\",\"error_code\":\"S215\"}",
+        );
+        assert_eq!(err.code.as_deref(), Some("S215"));
+        assert_eq!(
+            err.message,
+            "remote error (S215): path escapes the fs jail roots [/private/tmp]: /Users/example filesystem_access_request={\"v\":1,\"requested_root\":\"/Users/example\",\"attempted_path\":\"/Users/example\",\"error_code\":\"S215\"}"
+        );
     }
 }

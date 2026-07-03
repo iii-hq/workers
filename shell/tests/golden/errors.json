@@ -53,15 +53,15 @@
   },
   "C215_absolute_outside_all_roots": {
     "code": "C215",
-    "message": "path is outside every allowed root: /etc/passwd. Allowed roots: <ROOT0>, <ROOT1>. Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths. grant_hint={\"v\":1,\"dir\":\"<ETC>\",\"path\":\"/etc/passwd\",\"code\":\"C215\"}"
+    "message": "path is outside every allowed root: /etc/passwd. Allowed roots: <ROOT0>, <ROOT1>. Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths. filesystem_access_request={\"v\":1,\"requested_root\":\"/private/etc\",\"attempted_path\":\"/etc/passwd\",\"error_code\":\"C215\"}"
   },
   "C215_dangling_symlink": {
     "code": "C215",
-    "message": "dangle/child.txt: dangling symlink in path: <ROOT0>/dangle. Allowed roots: <ROOT0>, <ROOT1>. Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths. grant_hint={\"v\":1,\"dir\":\"<ROOT0>\",\"path\":\"dangle/child.txt\",\"code\":\"C215\"}"
+    "message": "dangle/child.txt: dangling symlink in path: <ROOT0>/dangle. Allowed roots: <ROOT0>, <ROOT1>. Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths. filesystem_access_request={\"v\":1,\"requested_root\":\"<ROOT0>\",\"attempted_path\":\"dangle/child.txt\",\"error_code\":\"C215\"}"
   },
   "C215_relative_dotdot_escape": {
     "code": "C215",
-    "message": "path escapes the primary allowed root <ROOT0>: ../escape.txt. Relative paths resolve against <ROOT0>; use an absolute path inside an allowed root instead. grant_hint={\"v\":1,\"dir\":\"<ROOT0_PARENT>\",\"path\":\"../escape.txt\",\"code\":\"C215\"}"
+    "message": "path escapes the primary allowed root <ROOT0>: ../escape.txt. Relative paths resolve against <ROOT0>; use an absolute path inside an allowed root instead. filesystem_access_request={\"v\":1,\"requested_root\":\"/private/var/folders/my/mmlb5rpn7b98brvj_q65hg280000gn/T\",\"attempted_path\":\"../escape.txt\",\"error_code\":\"C215\"}"
   },
   "C216_io_passthrough": {
     "code": "C216",

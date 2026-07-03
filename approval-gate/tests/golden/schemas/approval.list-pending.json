@@ -45,32 +45,43 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
-      "GrantRequest": {
-        "description": "The folder-access ask, parsed from the shell/coder `grant_hint` tail (contracts.md § Shell grant hint). Only present on `kind: \"folder_access\"` records.",
+      "AccessRequest": {
+        "description": "The filesystem access ask parsed from the shell/coder `filesystem_access_request` tail. Only present on `kind: \"filesystem_access\"` records.",
         "properties": {
-          "dir": {
-            "description": "Canonical directory a grant should target (existing directory, or nearest existing ancestor directory of the offending path).",
+          "attempted_path": {
+            "description": "The raw offending path from the request, as sent by the caller.",
             "type": "string"
           },
           "error_code": {
             "description": "The jail-scope rejection code that produced this hint (`S215`, `S220`, `C215`, `C218`).",
             "type": "string"
           },
-          "offending_path": {
-            "description": "The raw offending path from the request, as sent by the caller.",
+          "requested_root": {
+            "description": "Canonical root a grant should target (existing directory, or nearest existing ancestor directory of the offending path).",
             "type": "string"
           }
         },
         "required": [
-          "dir",
+          "attempted_path",
           "error_code",
-          "offending_path"
+          "requested_root"
         ],
         "type": "object"
       },
       "PendingApprovalRecord": {
         "description": "The inbox payload — shared by both triggers, `list_pending`, and `get_pending`. Self-describing (all ids inside the value) and notification-safe (arguments pass through redaction).",
         "properties": {
+          "access_request": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AccessRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present only when `kind == \"filesystem_access\"`."
+          },
           "arguments_excerpt": {
             "default": null,
             "description": "Redacted — safe to forward to notification channels."
@@ -94,25 +105,13 @@
           "function_id": {
             "type": "string"
           },
-          "grant_request": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/GrantRequest"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Present only when `kind == \"folder_access\"`."
-          },
           "kind": {
             "allOf": [
               {
                 "$ref": "#/definitions/PendingKind"
               }
             ],
-            "default": "function",
-            "description": "`\"function\"` (default — and what an absent field means on read) or `\"folder_access\"`."
+            "description": "`\"function\"` or `\"filesystem_access\"`."
           },
           "pending_at": {
             "description": "ms epoch",
@@ -149,6 +148,7 @@
         "required": [
           "function_call_id",
           "function_id",
+          "kind",
           "pending_at",
           "session_id",
           "turn_id"
@@ -156,7 +156,7 @@
         "type": "object"
       },
       "PendingKind": {
-        "description": "What a pending record represents. `Function` is the default AND what an absent field on read means — old stored records (written before this field existed) deserialize as `Function`, never `FolderAccess`.",
+        "description": "What a pending record represents.",
         "oneOf": [
           {
             "description": "A function call held by `approval::gate` (the normal case).",
@@ -166,9 +166,9 @@
             "type": "string"
           },
           {
-            "description": "A function call held by `approval::grant-watch` after a jail-scope rejection carrying a `grant_hint` — the console should ask \"allow access to `dir`?\" instead of a generic approve/deny prompt.",
+            "description": "A function call held by `approval::filesystem-access-watch` after a jail-scope rejection carrying a `filesystem_access_request` — the console should ask \"allow access to `requested_root`?\" instead of a generic approve/deny prompt.",
             "enum": [
-              "folder_access"
+              "filesystem_access"
             ],
             "type": "string"
           }

@@ -144,6 +144,18 @@
             "type": "object"
           }
         ]
+      },
+      "ResolveFsScope": {
+        "properties": {
+          "grants": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
       }
     },
     "properties": {
@@ -164,15 +176,16 @@
         ]
       },
       "details": true,
-      "extra_roots": {
-        "description": "execute only: one-shot additional roots trusted by the caller and unioned with the session's durable workspace grants.",
-        "items": {
-          "type": "string"
-        },
-        "type": [
-          "array",
-          "null"
-        ]
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResolveFsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "execute only: one-shot additional roots trusted by the caller and unioned with the session's durable filesystem grants."
       },
       "function_call_id": {
         "type": "string"

@@ -219,14 +219,10 @@ pub struct ReadFileInput {
     /// neither is set.
     #[serde(default)]
     pub paths: Option<Vec<ReadTarget>>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
-    /// Internal harness-granted roots; omitted from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub extra_roots: Option<Vec<String>>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -401,7 +397,7 @@ fn inner(
             let p = p.clone();
             let single_req = SingleReadReq {
                 path: &p,
-                base_dir: req.base_dir.as_deref(),
+                scope_root: crate::fs::scope_root(req.fs_scope.as_ref()),
                 line_from: req.line_from,
                 line_to: req.line_to,
                 stat: req.stat,
@@ -424,15 +420,21 @@ fn inner(
         // Batch mode
         (None, Some(targets)) => {
             for target in targets {
-                if let Err(e) =
-                    resolver.require_writable_opt(req.base_dir.as_deref(), target.path())
-                {
+                if let Err(e) = resolver.require_writable_opt(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    target.path(),
+                ) {
                     if is_jail_scope_error(&e) {
                         return Err(e);
                     }
                 }
             }
-            let results = batch_read(resolver, cfg, req.base_dir.as_deref(), targets);
+            let results = batch_read(
+                resolver,
+                cfg,
+                crate::fs::scope_root(req.fs_scope.as_ref()),
+                targets,
+            );
             Ok(ReadFileOutput {
                 path: None,
                 content: None,
@@ -462,7 +464,7 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
 
 struct SingleReadReq<'a> {
     path: &'a str,
-    base_dir: Option<&'a str>,
+    scope_root: Option<&'a str>,
     line_from: Option<u64>,
     line_to: Option<u64>,
     stat: bool,
@@ -524,7 +526,7 @@ fn single_read(
     // REDACTION ORDERING: resolve + deny-check (C211) BEFORE any metadata
     // syscall — stat on a denied path must be byte-identical to stat on a
     // missing path, and no budget may reclassify either.
-    let abs = resolver.require_writable_opt(req.base_dir, req.path)?;
+    let abs = resolver.require_writable_opt(req.scope_root, req.path)?;
     let md = std::fs::metadata(&abs).map_err(|e| CoderError::io_for_path(e, req.path))?;
     if !md.is_file() {
         return Err(CoderError::BadInput(format!(
@@ -792,7 +794,7 @@ fn entry_failure(path: String, error: WireError) -> ReadEntryResult {
 fn batch_read(
     resolver: &PathResolver,
     cfg: &CoderConfig,
-    base_dir: Option<&str>,
+    scope_root: Option<&str>,
     targets: &[ReadTarget],
 ) -> Vec<ReadEntryResult> {
     let mut remaining_budget: u64 = cfg.batch_read_budget_bytes;
@@ -829,7 +831,7 @@ fn batch_read(
 
         // Resolve + accessibility check; failures echo the caller's input
         // verbatim and do NOT consume budget.
-        let abs = match resolver.require_writable_opt(base_dir, wire_path) {
+        let abs = match resolver.require_writable_opt(scope_root, wire_path) {
             Ok(p) => p,
             Err(e) => {
                 results.push(entry_failure(wire_path.to_string(), e.to_wire_error()));

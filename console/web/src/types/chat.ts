@@ -91,11 +91,15 @@ export interface FunctionCallMessage extends BaseMessage {
   /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
   sessionId?: string
   /**
-   * Present when this pending call is a folder-access grant request rather
-   * than a plain function-call approval — renders `FolderAccessPrompt`
+   * Present when this pending call is a filesystem-access grant request rather
+   * than a plain function-call approval — renders `FilesystemAccessPrompt`
    * instead of the standard approve/deny/always row.
    */
-  folderAccess?: { dir: string; offendingPath?: string; errorCode?: string }
+  filesystemAccess?: {
+    requestedRoot: string
+    attemptedPath?: string
+    errorCode?: string
+  }
 }
 
 /**
@@ -137,7 +141,11 @@ export interface MessagePatch {
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
   functionCallId?: string
   sessionId?: string
-  folderAccess?: { dir: string; offendingPath?: string; errorCode?: string }
+  filesystemAccess?: {
+    requestedRoot: string
+    attemptedPath?: string
+    errorCode?: string
+  }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction'
@@ -161,10 +169,9 @@ export interface Conversation {
   model: ModelId | null
   mode: Mode
   /**
-   * Per-session working directory. Confines this chat's shell/coder operations
-   * to one project dir (the harness forwards it as `base_dir`). Chosen
-   * explicitly (no silent default), shown as a full-path banner, and re-scopable
-   * mid-conversation.
+   * Per-session filesystem scope root. Confines this chat's shell/coder
+   * operations to one project directory. Chosen explicitly (no silent default),
+   * shown as a full-path banner, and re-scopable mid-conversation.
    */
   workingDir?: string | null
   messages: Message[]

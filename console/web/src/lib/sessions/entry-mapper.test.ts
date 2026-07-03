@@ -244,7 +244,7 @@ describe('applyEntryUpsert', () => {
     })
   })
 
-  it('carries folderAccess through a snapshot re-derivation while pending', () => {
+  it('carries filesystemAccess through a snapshot re-derivation while pending', () => {
     const local: Message = {
       id: 'local-1',
       role: 'function-call',
@@ -254,7 +254,10 @@ describe('applyEntryUpsert', () => {
       pendingApproval: true,
       functionCallId: 'fc-1',
       sessionId: 'sess-a',
-      folderAccess: { dir: '/abs/existing/dir', errorCode: 'S215' },
+      filesystemAccess: {
+        requestedRoot: '/abs/existing/dir',
+        errorCode: 'S215',
+      },
       createdAt: 0,
     }
     const next = applyEntryUpsert(
@@ -273,7 +276,10 @@ describe('applyEntryUpsert', () => {
       id: 'e-a:0',
       pendingApproval: true,
       functionCallId: 'fc-1',
-      folderAccess: { dir: '/abs/existing/dir', errorCode: 'S215' },
+      filesystemAccess: {
+        requestedRoot: '/abs/existing/dir',
+        errorCode: 'S215',
+      },
     })
   })
 })

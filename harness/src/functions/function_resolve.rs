@@ -12,6 +12,12 @@ use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ResolveFsScope {
+    #[serde(default)]
+    pub grants: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct FunctionResolveRequest {
     pub session_id: String,
     pub turn_id: String,
@@ -21,9 +27,9 @@ pub struct FunctionResolveRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     /// execute only: one-shot additional roots trusted by the caller and
-    /// unioned with the session's durable workspace grants.
+    /// unioned with the session's durable filesystem grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_roots: Option<Vec<String>>,
+    pub fs_scope: Option<ResolveFsScope>,
     // deliver only:
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<ContentBlock>>,

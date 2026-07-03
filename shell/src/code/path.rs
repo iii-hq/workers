@@ -147,21 +147,21 @@ impl PathResolver {
     /// Return a resolver that also treats a trusted, existing session
     /// directory as an allowed root. The configured roots stay intact; the
     /// session root is additive and only used for calls whose request still
-    /// carries `base_dir`, so [`resolve_in`] continues to enforce the stricter
-    /// "all paths stay under base_dir" containment check.
+    /// carries `scope_root`, so [`resolve_in`] continues to enforce the stricter
+    /// "all paths stay under scope_root" containment check.
     pub fn session_scoped(
         self: &Arc<Self>,
-        base_dir: Option<&str>,
-        extra_roots: Option<&[String]>,
+        scope_root: Option<&str>,
+        scope_grants: Option<&[String]>,
     ) -> Arc<Self> {
         let mut roots_canon = self.roots_canon.clone();
         let mut grant_roots_canon = self.grant_roots_canon.clone();
         let mut changed = false;
 
-        if let Some(base_dir) = base_dir {
-            let base_path = Path::new(base_dir);
+        if let Some(scope_root) = scope_root {
+            let base_path = Path::new(scope_root);
             if base_path.is_absolute() {
-                if let Ok(base_canon) = self.canonicalize_wire(base_dir, base_path) {
+                if let Ok(base_canon) = self.canonicalize_wire(scope_root, base_path) {
                     if base_canon.is_dir() && !roots_canon.contains(&base_canon) {
                         roots_canon.push(base_canon);
                         changed = true;
@@ -170,7 +170,7 @@ impl PathResolver {
             }
         }
 
-        for extra in confine_extra_roots(extra_roots) {
+        for extra in confine_scope_grants(scope_grants) {
             if !roots_canon.contains(&extra) {
                 roots_canon.push(extra.clone());
                 changed = true;
@@ -207,24 +207,24 @@ impl PathResolver {
             .map(PathBuf::as_path)
     }
 
-    /// Canonical form of a session `base_dir` (the per-call working directory
+    /// Canonical form of a session `scope_root` (the per-call working directory
     /// the harness scopes a call to), using the SAME canonicalisation as
-    /// [`resolve_in`]. `None` when `base_dir` cannot be canonicalised or sits
+    /// [`resolve_in`]. `None` when `scope_root` cannot be canonicalised or sits
     /// outside every allowed root — exactly the conditions under which
     /// `resolve_in` rejects, so any caller that already resolved a path through
-    /// this `base_dir` gets `Some`.
+    /// this `scope_root` gets `Some`.
     ///
     /// Used to refuse operations that target the session directory itself (which
     /// is a SUBDIR of an allowed root, so [`is_root`] does not catch it).
     ///
     /// [`resolve_in`]: Self::resolve_in
     /// [`is_root`]: Self::is_root
-    pub fn session_root(&self, base_dir: &str) -> Option<PathBuf> {
-        let base_path = Path::new(base_dir);
+    pub fn session_root(&self, scope_root: &str) -> Option<PathBuf> {
+        let base_path = Path::new(scope_root);
         if !base_path.is_absolute() {
             return None;
         }
-        let base_canon = self.canonicalize_wire(base_dir, base_path).ok()?;
+        let base_canon = self.canonicalize_wire(scope_root, base_path).ok()?;
         self.containing_root(&base_canon)
             .is_some()
             .then_some(base_canon)
@@ -266,7 +266,7 @@ impl PathResolver {
                     "path is outside every allowed root: {path}. \
                      {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
                     roots = self.roots_list(),
-                    hint = crate::grant::hint_suffix("C215", path, &canon),
+                    hint = crate::filesystem_access::request_suffix("C215", path, &canon),
                 )));
             } else {
                 // Relative path that escaped the primary root (e.g. via `..`).
@@ -275,7 +275,7 @@ impl PathResolver {
                     "path escapes the primary allowed root {primary}: {path}. \
                      Relative paths resolve against {primary}; \
                      use an absolute path inside an allowed root instead.{hint}",
-                    hint = crate::grant::hint_suffix("C215", path, &canon),
+                    hint = crate::filesystem_access::request_suffix("C215", path, &canon),
                 )));
             }
         }
@@ -360,7 +360,7 @@ impl PathResolver {
                 CoderError::OutsideBase(format!(
                     "{path}: {msg}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
                     roots = self.roots_list(),
-                    hint = crate::grant::hint_suffix("C215", path, joined),
+                    hint = crate::filesystem_access::request_suffix("C215", path, joined),
                 ))
             } else if e.kind() == std::io::ErrorKind::InvalidInput
                 || e.kind() == std::io::ErrorKind::NotFound
@@ -375,48 +375,48 @@ impl PathResolver {
         })
     }
 
-    /// Resolve a wire `path` for a session scoped to `base_dir` — the
+    /// Resolve a wire `path` for a session scoped to `scope_root` — the
     /// per-call working directory the harness sets. A containment check and
     /// relative-anchor LAYERED on top of the existing resolver, reusing
     /// `containing_root` and the shared `canonicalize_wire` algorithm; the
     /// MIRROR-INVARIANT jail core is untouched.
     ///
     /// Semantics (all three checks, in order):
-    /// 1. `base_dir` itself must be absolute and canonicalise inside one of the
+    /// 1. `scope_root` itself must be absolute and canonicalise inside one of the
     ///    configured allowed roots — else `C215` (an operator/route error: the session
     ///    was scoped to a directory the worker is not allowed to serve).
-    /// 2. relative `path` anchors at `base_dir` (not the primary root);
+    /// 2. relative `path` anchors at `scope_root` (not the primary root);
     ///    absolute `path` is taken as-is. Either form runs through the SAME
     ///    `canonicalize_wire` as `resolve`.
-    /// 3. the canonical result must stay inside the canonical `base_dir` —
+    /// 3. the canonical result must stay inside the canonical `scope_root` —
     ///    else `C218` (DX-1), which NAMES the session directory rather than
     ///    reusing the generic "outside every allowed root" wording.
     ///
     /// This is strictly NARROWER than `resolve`: it can only reject paths
     /// `resolve` would accept (those inside an allowed root but outside the
-    /// session), never widen access. `base_dir = None` callers use
+    /// session), never widen access. `scope_root = None` callers use
     /// `resolve`/`require_writable`.
-    pub fn resolve_in(&self, base_dir: &str, path: &str) -> Result<PathBuf, CoderError> {
-        let base_path = Path::new(base_dir);
+    pub fn resolve_in(&self, scope_root: &str, path: &str) -> Result<PathBuf, CoderError> {
+        let base_path = Path::new(scope_root);
         if !base_path.is_absolute() {
             return Err(CoderError::BadInput(format!(
-                "base_dir must be an absolute path: {base_dir}"
+                "scope_root must be an absolute path: {scope_root}"
             )));
         }
-        // (c) base_dir must canonicalise inside an EXISTING allowed root.
+        // (c) scope_root must canonicalise inside an EXISTING allowed root.
         // Reuse the shared canonicalisation so a `..`/symlink escape in the
         // session dir itself fails closed exactly like a wire path would.
-        let base_canon = self.canonicalize_wire(base_dir, base_path)?;
+        let base_canon = self.canonicalize_wire(scope_root, base_path)?;
         if self.containing_root(&base_canon).is_none() {
             return Err(CoderError::OutsideBase(format!(
-                "base_dir is outside every allowed root: {base_dir}. \
+                "scope_root is outside every allowed root: {scope_root}. \
                  {C215_ROOTS_PREFIX}{roots}. The session working directory \
                  must canonicalize inside one of the allowed roots; {SHELL_FS_HINT}",
                 roots = self.roots_list()
             )));
         }
 
-        // (a) relative anchors at base_dir; absolute is taken as-is.
+        // (a) relative anchors at scope_root; absolute is taken as-is.
         let wire = Path::new(path);
         let joined = if wire.is_absolute() {
             wire.to_path_buf()
@@ -440,7 +440,7 @@ impl PathResolver {
                     "this session is scoped to {base}; {path} is inside an \
                      allowed root but outside the session directory — use a \
                      path under {base}.{hint}",
-                    hint = crate::grant::hint_suffix("C218", path, &canon),
+                    hint = crate::filesystem_access::request_suffix("C218", path, &canon),
                 )));
             }
             // Outside the session AND outside every allowed root: the
@@ -449,56 +449,56 @@ impl PathResolver {
                 "path is outside the session directory {base} and outside \
                  every allowed root: {path}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
                 roots = self.roots_list(),
-                hint = crate::grant::hint_suffix("C215", path, &canon),
+                hint = crate::filesystem_access::request_suffix("C215", path, &canon),
             )));
         }
         Ok(canon)
     }
 
-    /// `require_writable` for a session scoped to `base_dir`: resolve via
+    /// `require_writable` for a session scoped to `scope_root`: resolve via
     /// `resolve_in`, then apply the same non-accessible glob gate. Mutating
-    /// ops in `base_dir`-present mode call this instead of `require_writable`.
-    pub fn require_writable_in(&self, base_dir: &str, rel: &str) -> Result<PathBuf, CoderError> {
-        let abs = self.resolve_in(base_dir, rel)?;
+    /// ops in `scope_root`-present mode call this instead of `require_writable`.
+    pub fn require_writable_in(&self, scope_root: &str, rel: &str) -> Result<PathBuf, CoderError> {
+        let abs = self.resolve_in(scope_root, rel)?;
         if self.is_non_accessible(&abs) {
             return Err(CoderError::not_found_or_denied(rel));
         }
         Ok(abs)
     }
 
-    /// Dispatch helper: resolve `path` against `base_dir` when present, else
-    /// use the normal resolver. Handlers thread the per-call `base_dir` straight
+    /// Dispatch helper: resolve `path` against `scope_root` when present, else
+    /// use the normal resolver. Handlers thread the per-call `scope_root` straight
     /// through.
-    pub fn resolve_opt(&self, base_dir: Option<&str>, path: &str) -> Result<PathBuf, CoderError> {
-        match base_dir {
+    pub fn resolve_opt(&self, scope_root: Option<&str>, path: &str) -> Result<PathBuf, CoderError> {
+        match scope_root {
             Some(b) => self.resolve_in(b, path),
             None => self.resolve(path),
         }
     }
 
     /// Dispatch helper mirroring [`resolve_opt`] for mutating/accessibility-
-    /// gated reads: `require_writable_in` when `base_dir` is present, else
+    /// gated reads: `require_writable_in` when `scope_root` is present, else
     /// the unchanged `require_writable`.
     ///
     /// [`resolve_opt`]: Self::resolve_opt
     pub fn require_writable_opt(
         &self,
-        base_dir: Option<&str>,
+        scope_root: Option<&str>,
         rel: &str,
     ) -> Result<PathBuf, CoderError> {
-        match base_dir {
+        match scope_root {
             Some(b) => self.require_writable_in(b, rel),
             None => self.require_writable(rel),
         }
     }
 }
 
-fn confine_extra_roots(extra_roots: Option<&[String]>) -> Vec<PathBuf> {
+fn confine_scope_grants(scope_grants: Option<&[String]>) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Some(extra_roots) = extra_roots else {
+    let Some(scope_grants) = scope_grants else {
         return out;
     };
-    for raw in extra_roots {
+    for raw in scope_grants {
         if raw.is_empty() {
             continue;
         }
@@ -1088,15 +1088,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Per-call base_dir (resolve_in / require_writable_in): a containment
+    // Per-call scope_root (resolve_in / require_writable_in): a containment
     // check + relative-anchor LAYERED on the existing jail core. These
-    // exercise the new C218 DX-1 error and prove base_dir=None is unchanged.
+    // exercise the new C218 DX-1 error and prove scope_root=None is unchanged.
     // -----------------------------------------------------------------------
 
-    /// Relative wire paths anchor at base_dir, NOT the primary root — even
-    /// when base_dir is a nested subdirectory of the single allowed root.
+    /// Relative wire paths anchor at scope_root, NOT the primary root — even
+    /// when scope_root is a nested subdirectory of the single allowed root.
     #[test]
-    fn resolve_in_relative_anchors_at_base_dir_not_primary_root() {
+    fn resolve_in_relative_anchors_at_scope_root_not_primary_root() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("session/sub")).unwrap();
         std::fs::write(tmp.path().join("session/sub/a.txt"), b"hi").unwrap();
@@ -1112,9 +1112,9 @@ mod tests {
         assert_ne!(got, canon(&tmp.path().join("a.txt")));
     }
 
-    /// `.` resolves to base_dir itself (the anchor), not the primary root.
+    /// `.` resolves to scope_root itself (the anchor), not the primary root.
     #[test]
-    fn resolve_in_dot_returns_base_dir() {
+    fn resolve_in_dot_returns_scope_root() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("session")).unwrap();
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec![])).unwrap();
@@ -1123,9 +1123,9 @@ mod tests {
         assert_eq!(got, canon(&tmp.path().join("session")));
     }
 
-    /// An absolute wire path INSIDE base_dir is accepted as-is.
+    /// An absolute wire path INSIDE scope_root is accepted as-is.
     #[test]
-    fn resolve_in_absolute_inside_base_dir_ok() {
+    fn resolve_in_absolute_inside_scope_root_ok() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("session")).unwrap();
         std::fs::write(tmp.path().join("session/f.txt"), b"x").unwrap();
@@ -1137,11 +1137,11 @@ mod tests {
     }
 
     /// DX-1: an absolute path that IS inside a configured root but OUTSIDE
-    /// base_dir is rejected with the new C218 code, and the message NAMES
+    /// scope_root is rejected with the new C218 code, and the message NAMES
     /// the session directory (not the generic "outside every allowed root"
     /// wording, which would contradict coder::info's allowed-roots list).
     #[test]
-    fn resolve_in_absolute_inside_root_but_outside_base_dir_rejected_c218_naming_session() {
+    fn resolve_in_absolute_inside_root_but_outside_scope_root_rejected_c218_naming_session() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("session")).unwrap();
         std::fs::write(tmp.path().join("sibling.txt"), b"x").unwrap();
@@ -1174,10 +1174,10 @@ mod tests {
     }
 
     /// In a multi-root config, an absolute path inside the SECOND root but
-    /// outside the base_dir (which lives in the FIRST root) is still the
+    /// outside the scope_root (which lives in the FIRST root) is still the
     /// DX-1 C218 case — it is inside *an* allowed root, just not the session.
     #[test]
-    fn resolve_in_absolute_in_other_root_outside_base_dir_is_c218() {
+    fn resolve_in_absolute_in_other_root_outside_scope_root_is_c218() {
         let a = tempdir().unwrap();
         let b = tempdir().unwrap();
         std::fs::write(b.path().join("y.txt"), b"y").unwrap();
@@ -1194,11 +1194,11 @@ mod tests {
         assert!(err.to_string().contains(&base));
     }
 
-    /// base_dir that canonicalizes OUTSIDE every allowed root is a C215
+    /// scope_root that canonicalizes OUTSIDE every allowed root is a C215
     /// (operator/route error): the session was scoped to a directory the
     /// worker may not serve.
     #[test]
-    fn resolve_in_base_dir_outside_all_roots_rejected_c215() {
+    fn resolve_in_scope_root_outside_all_roots_rejected_c215() {
         let tmp = tempdir().unwrap();
         let outside = tempdir().unwrap();
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec![])).unwrap();
@@ -1208,18 +1208,18 @@ mod tests {
         assert_eq!(err.code(), "C215");
         let msg = err.to_string();
         assert!(
-            msg.contains("base_dir is outside every allowed root"),
-            "C215 must explain the base_dir is unserveable; got: {msg}"
+            msg.contains("scope_root is outside every allowed root"),
+            "C215 must explain the scope_root is unserveable; got: {msg}"
         );
         assert!(msg.contains(C215_ROOTS_PREFIX));
     }
 
-    /// The live registration layer can trust a harness-provided `base_dir` by
+    /// The live registration layer can trust a harness-provided `scope_root` by
     /// adding that directory as an ephemeral session root. This lets console
     /// sessions work in a selected host directory that is outside the configured
     /// coder roots while keeping every operation confined below that directory.
     #[test]
-    fn session_scoped_base_dir_outside_roots_becomes_effective_root() {
+    fn session_scoped_scope_root_outside_roots_becomes_effective_root() {
         let jail = tempdir().unwrap();
         let selected = tempdir().unwrap();
         std::fs::create_dir(selected.path().join("sub")).unwrap();
@@ -1229,7 +1229,7 @@ mod tests {
 
         assert!(
             r.resolve_in(&base, "sub/a.txt").is_err(),
-            "unscoped resolver must still reject a base_dir outside configured roots"
+            "unscoped resolver must still reject a scope_root outside configured roots"
         );
 
         let scoped = r.session_scoped(Some(&base), None);
@@ -1238,7 +1238,7 @@ mod tests {
     }
 
     #[test]
-    fn session_scoped_base_dir_outside_roots_applies_non_accessible_globs() {
+    fn session_scoped_scope_root_outside_roots_applies_non_accessible_globs() {
         let jail = tempdir().unwrap();
         let selected = tempdir().unwrap();
         std::fs::write(selected.path().join(".env"), b"secret").unwrap();
@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn session_scoped_extra_roots_allow_absolute_grants_without_moving_relative_anchor() {
+    fn session_scoped_scope_grants_allow_absolute_grants_without_moving_relative_anchor() {
         let jail = tempdir().unwrap();
         let session = jail.path().join("session");
         std::fs::create_dir(&session).unwrap();
@@ -1273,11 +1273,11 @@ mod tests {
         assert_eq!(
             relative,
             canon(&session.join("same-name.txt")),
-            "relative paths must keep anchoring at base_dir, not an extra root"
+            "relative paths must keep anchoring at scope_root, not an extra root"
         );
     }
 
-    /// A `..` escape from base_dir that lands OUTSIDE every allowed root is
+    /// A `..` escape from scope_root that lands OUTSIDE every allowed root is
     /// rejected (fails closed — same guarantee as resolve()).
     #[test]
     fn resolve_in_dotdot_escape_outside_roots_rejected() {
@@ -1295,7 +1295,7 @@ mod tests {
     }
 
     /// A single `..` that stays inside the allowed root but climbs OUT of
-    /// base_dir is the DX-1 C218 case (inside a root, outside the session).
+    /// scope_root is the DX-1 C218 case (inside a root, outside the session).
     #[test]
     fn resolve_in_dotdot_within_root_but_outside_base_is_c218() {
         let tmp = tempdir().unwrap();
@@ -1310,11 +1310,11 @@ mod tests {
         assert!(err.to_string().contains(&base));
     }
 
-    /// A symlink inside base_dir pointing OUTSIDE the allowed root cannot be
+    /// A symlink inside scope_root pointing OUTSIDE the allowed root cannot be
     /// used to escape — same symlink-safety guarantee the jail core gives
     /// resolve().
     #[test]
-    fn resolve_in_symlink_escape_from_base_dir_rejected() {
+    fn resolve_in_symlink_escape_from_scope_root_rejected() {
         let tmp = tempdir().unwrap();
         let outside = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("session")).unwrap();
@@ -1342,7 +1342,7 @@ mod tests {
         assert_eq!(err.code(), "C211");
     }
 
-    /// BACK-COMPAT: the dispatch helpers with base_dir=None must produce
+    /// BACK-COMPAT: the dispatch helpers with scope_root=None must produce
     /// EXACTLY what resolve()/require_writable() produce — both the Ok path
     /// and the error path, byte-for-byte. This pins that the None branch is
     /// the unchanged legacy code.

@@ -1,5 +1,5 @@
-//! Best-effort persistence for `always`-scoped folder-access grants: append
-//! the granted directory to the `shell` deployment configuration's
+//! Best-effort persistence for `always`-scoped filesystem access: append
+//! the granted root to the `shell` deployment configuration's
 //! `fs.host_roots` list (spec-pr3-approval-gate.md § Resolve orchestration).
 //!
 //! This is deliberately decoupled from the `shell` worker's own config
@@ -27,12 +27,12 @@ fn host_root_lock() -> &'static AsyncMutex<()> {
     LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
-/// Pure: return a NEW configuration value with `dir` appended to
-/// `fs.host_roots` (idempotent — a `dir` already present is left alone).
+/// Pure: return a NEW configuration value with `requested_root` appended to
+/// `fs.host_roots` (idempotent — a root already present is left alone).
 /// Tolerant of a missing/non-object `value`, `fs`, or `host_roots` — each
 /// missing piece is synthesized as empty rather than erroring, since the
 /// whole call site is best-effort.
-pub fn with_host_root(value: &Value, dir: &str) -> Value {
+pub fn with_host_root(value: &Value, requested_root: &str) -> Value {
     let mut root = value.as_object().cloned().unwrap_or_default();
     let mut fs = root
         .get("fs")
@@ -44,8 +44,8 @@ pub fn with_host_root(value: &Value, dir: &str) -> Value {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    if !roots.iter().any(|v| v.as_str() == Some(dir)) {
-        roots.push(Value::String(dir.to_string()));
+    if !roots.iter().any(|v| v.as_str() == Some(requested_root)) {
+        roots.push(Value::String(requested_root.to_string()));
     }
     fs.insert("host_roots".to_string(), Value::Array(roots));
     root.insert("fs".to_string(), Value::Object(fs));
@@ -55,7 +55,7 @@ pub fn with_host_root(value: &Value, dir: &str) -> Value {
 /// `configuration::get {id:"shell"}` -> `with_host_root` -> `configuration::set`.
 /// Every failure (missing `shell` config entry, transport error) is the
 /// caller's to log; this never blocks the resolve-execute it precedes.
-pub async fn add_host_root(iii: &IIIClient, dir: &str) -> Result<(), Error> {
+pub async fn add_host_root(iii: &IIIClient, requested_root: &str) -> Result<(), Error> {
     let _guard = host_root_lock().lock().await;
     let reply = iii
         .trigger(TriggerRequest {
@@ -66,7 +66,7 @@ pub async fn add_host_root(iii: &IIIClient, dir: &str) -> Result<(), Error> {
         })
         .await?;
     let current = reply.get("value").cloned().unwrap_or(Value::Null);
-    let next = with_host_root(&current, dir);
+    let next = with_host_root(&current, requested_root);
     iii.trigger(TriggerRequest {
         function_id: "configuration::set".into(),
         payload: json!({ "id": SHELL_CONFIG_ID, "value": next }),

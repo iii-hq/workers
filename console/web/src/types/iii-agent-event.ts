@@ -76,17 +76,13 @@ export interface PendingApprovalRecord {
   session_metadata?: Record<string, unknown> | null
   /** Always `"pending"` on the create event; absent on `list-pending` rows. */
   status?: 'pending'
-  /**
-   * Discriminates a plain function-call approval from a folder-access grant
-   * request. Absent on records from an older gate — treat as `'function'`
-   * (the standard 3-button card).
-   */
-  kind?: 'function' | 'folder_access'
-  /** Present when `kind === 'folder_access'` — the jail-scope rejection that
-   * triggered the ask (see contracts.md `grant_hint`). */
-  grant_request?: {
-    dir: string
-    offending_path: string
+  /** Discriminates a plain function-call approval from a filesystem-access request. */
+  kind?: 'function' | 'filesystem_access'
+  /** Present when `kind === 'filesystem_access'` — the jail-scope rejection that
+   * triggered the ask. */
+  access_request?: {
+    requested_root: string
+    attempted_path: string
     error_code: string
   }
 }

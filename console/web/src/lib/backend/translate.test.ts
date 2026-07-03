@@ -61,15 +61,15 @@ describe('translateTurnSource — approvals', () => {
     ])
   })
 
-  it('maps a folder_access record to fcall-start carrying folderAccess', () => {
+  it('maps a filesystem_access record to fcall-start carrying filesystemAccess', () => {
     const event: TurnSourceEvent = {
       kind: 'approval-created',
       record: pendingRecord({
-        kind: 'folder_access',
+        kind: 'filesystem_access',
         function_id: 'shell::fs::read',
-        grant_request: {
-          dir: '/abs/existing/dir',
-          offending_path: '/abs/existing/dir/secret.txt',
+        access_request: {
+          requested_root: '/abs/existing/dir',
+          attempted_path: '/abs/existing/dir/secret.txt',
           error_code: 'S215',
         },
       }),
@@ -82,31 +82,31 @@ describe('translateTurnSource — approvals', () => {
         pendingApproval: true,
         functionCallId: 'fc-1',
         sessionId: 'sess-a',
-        folderAccess: {
-          dir: '/abs/existing/dir',
-          offendingPath: '/abs/existing/dir/secret.txt',
+        filesystemAccess: {
+          requestedRoot: '/abs/existing/dir',
+          attemptedPath: '/abs/existing/dir/secret.txt',
           errorCode: 'S215',
         },
       },
     ])
   })
 
-  it('omits folderAccess for a plain function-call record (kind absent)', () => {
+  it('omits filesystemAccess for a plain function-call record (kind absent)', () => {
     const event: TurnSourceEvent = {
       kind: 'approval-created',
       record: pendingRecord(),
     }
     const [translated] = translateTurnSource(event)
-    expect(translated).not.toHaveProperty('folderAccess')
+    expect(translated).not.toHaveProperty('filesystemAccess')
   })
 
-  it('omits folderAccess when kind is folder_access but grant_request.dir is missing', () => {
+  it('omits filesystemAccess when kind is filesystem_access but access_request.requested_root is missing', () => {
     const event: TurnSourceEvent = {
       kind: 'approval-created',
-      record: pendingRecord({ kind: 'folder_access' }),
+      record: pendingRecord({ kind: 'filesystem_access' }),
     }
     const [translated] = translateTurnSource(event)
-    expect(translated).not.toHaveProperty('folderAccess')
+    expect(translated).not.toHaveProperty('filesystemAccess')
   })
 
   it('maps approval-resolved to fcall-approval-cleared (result arrives via the transcript)', () => {

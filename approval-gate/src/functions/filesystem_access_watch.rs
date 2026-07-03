@@ -1,36 +1,36 @@
-//! `approval::grant-watch` — the `post_trigger` hook handler
-//! (spec-pr3-approval-gate.md § New function `approval::grant-watch`).
+//! `approval::filesystem-access-watch` — the `post_trigger` hook handler
+//! (spec-pr3-approval-gate.md § New function `approval::filesystem-access-watch`).
 //! Watches `shell::*` / `coder::*` dispatch failures for a jail-scope
-//! `grant_hint` tail and, when one is found and nothing already excuses it,
-//! converts the failure into a held `folder_access` pending approval so the
-//! console can ask "allow access to `<dir>`?" instead of surfacing a raw
+//! `filesystem_access_request` tail and, when one is found and nothing already excuses it,
+//! converts the failure into a held `filesystem_access` pending approval so the
+//! console can ask for filesystem access instead of surfacing a raw
 //! rejection to the model.
 //!
 //! Bound with `on_error: "fail_open"` (unlike the pre_trigger gate's
-//! `fail_closed`): a crashed or absent grant-watch must never turn an
+//! `fail_closed`): a crashed or absent filesystem-access-watch must never turn an
 //! already-decided function_result into a stuck call — the ladder's
 //! default at every rung, on every failure mode, is `Continue` (deliver
-//! the original error to the model unchanged, exactly as if grant-watch
+//! the original error to the model unchanged, exactly as if filesystem-access-watch
 //! were not bound at all).
 //!
 //! Ladder steps 1-4 (is_error / code / hint parse / workspace guard) are
-//! pure and live in `crate::grant::extract_hint`; steps 5-8 need state +
+//! pure and live in `crate::filesystem_access::extract_hint`; steps 5-8 need state +
 //! harness RPCs and live here.
 
 use super::Deps;
 use crate::error::ApprovalError;
-use crate::grant::{self, HintOutcome};
-use crate::grant_state::{self, AttemptOutcome};
+use crate::filesystem_access::{self, HintOutcome};
+use crate::filesystem_access_state::{self, AttemptOutcome};
 use crate::harness;
 use crate::pending;
 use crate::redact::redact;
 use crate::types::{
-    now_ms, validate_id, GrantRequest, HookCall, HookInput, HookOutput, PendingApprovalRecord,
+    now_ms, validate_id, AccessRequest, HookCall, HookInput, HookOutput, PendingApprovalRecord,
     PendingKind,
 };
 
 pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, ApprovalError> {
-    match grant::extract_hint(&input) {
+    match filesystem_access::extract_hint(&input) {
         HintOutcome::NoHint => Ok(HookOutput::Continue),
         HintOutcome::WorkspaceItself(hint) => {
             // A harness stamp hole, not something to prompt about — the
@@ -38,8 +38,8 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
             tracing::error!(
                 session_id = %input.session_id,
                 turn_id = %input.turn_id,
-                dir = %hint.dir,
-                "grant-watch: workspace itself was rejected — harness stamp hole, not prompting"
+                requested_root = %hint.requested_root,
+                "filesystem-access-watch: workspace itself was rejected — harness stamp hole, not prompting"
             );
             Ok(HookOutput::Continue)
         }
@@ -50,7 +50,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
 /// Steps 5-8. Any miss (including transport failures — this hook is
 /// fail-open) resolves to `Continue`; the caller never sees a held call it
 /// cannot explain.
-async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOutput {
+async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOutput {
     let Some(call) = input.call.clone() else {
         return HookOutput::Continue;
     };
@@ -62,16 +62,16 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
 
     let iii = deps.iii.as_ref();
 
-    // 5. Already granted: an existing durable grant covering `hint.dir`
+    // 5. Already granted: an existing durable grant covering `hint.requested_root`
     // means shell/coder still rejected it — a store/stamp skew, not
     // something a re-ask fixes. Deliver the error, don't loop. A harness
-    // without this control plane (old harness, not deployed) also lands
+    // without this control plane (harness missing filesystem grant functions) also lands
     // here: fail-open, standing the watch down entirely.
-    match harness::workspace_grants(iii, &input.session_id).await {
+    match harness::filesystem_grants(iii, &input.session_id).await {
         Ok(roots) => {
             if roots
                 .iter()
-                .any(|root| grant::dir_contains(root, &hint.dir))
+                .any(|root| filesystem_access::dir_contains(root, &hint.requested_root))
             {
                 return HookOutput::Continue;
             }
@@ -80,28 +80,31 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
             tracing::debug!(
                 session_id = %input.session_id,
                 error = %e,
-                "grant-watch: harness::workspace::grants unavailable; standing down"
+                "filesystem-access-watch: harness::filesystem::grants unavailable; standing down"
             );
             return HookOutput::Continue;
         }
     }
 
-    // 6. Denied memory: the user already said no to this dir this session.
-    let denied = grant_state::read_denied(iii, &input.session_id).await;
-    if denied.iter().any(|d| grant::dir_contains(d, &hint.dir)) {
+    // 6. Denied memory: the user already said no to this root this session.
+    let denied = filesystem_access_state::read_denied(iii, &input.session_id).await;
+    if denied
+        .iter()
+        .any(|d| filesystem_access::dir_contains(d, &hint.requested_root))
+    {
         return HookOutput::Continue;
     }
 
     // Idempotency: a redelivered post_trigger step re-holds the same call
     // without re-counting an attempt or re-emitting — mirrors gate.rs's
     // hold(). This only applies when the existing record is a redelivery of
-    // THIS SAME failure (its grant_request matches `hint`); a record left
+    // THIS SAME failure (its access_request matches `hint`); a record left
     // behind for a different failure (e.g. an orphan from a delete that
     // failed after resolve — see resolve.rs's "retry or purge will collect
-    // it" path) must not be silently reused for a genuinely new dir/path,
+    // it" path) must not be silently reused for a genuinely new root/path,
     // or the attempt cap (step 7) and the console never learn about it.
     match pending::get(iii, &input.session_id, &call.id).await {
-        Ok(Some(existing)) if existing.grant_request.as_ref() == Some(&hint) => {
+        Ok(Some(existing)) if existing.access_request.as_ref() == Some(&hint) => {
             return HookOutput::Hold;
         }
         Ok(Some(_stale)) => {
@@ -114,7 +117,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
                     session_id = %input.session_id,
                     function_call_id = %call.id,
                     error = %e,
-                    "grant-watch: stale pending record cleanup failed; continuing (fail-open)"
+                    "filesystem-access-watch: stale pending record cleanup failed; continuing (fail-open)"
                 );
                 return HookOutput::Continue;
             }
@@ -125,7 +128,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
                 session_id = %input.session_id,
                 function_call_id = %call.id,
                 error = %e,
-                "grant-watch: pending record read failed; continuing (fail-open)"
+                "filesystem-access-watch: pending record read failed; continuing (fail-open)"
             );
             return HookOutput::Continue;
         }
@@ -135,7 +138,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
     // eventual hold (above) never double-counts, but a genuinely new
     // failure for the same call (a different path this time) does.
     let cfg = deps.config().await;
-    let bumped = grant_state::check_and_bump(
+    let bumped = filesystem_access_state::check_and_bump(
         iii,
         &input.session_id,
         &call.id,
@@ -151,7 +154,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
                 session_id = %input.session_id,
                 function_call_id = %call.id,
                 error = %e,
-                "grant-watch: attempt-cap write failed; continuing (fail-open)"
+                "filesystem-access-watch: attempt-cap write failed; continuing (fail-open)"
             );
             return HookOutput::Continue;
         }
@@ -163,7 +166,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: GrantRequest) -> HookOut
 /// Step 8: write the pending record synchronously, THEN emit
 /// `pending_created` fire-and-forget, THEN return hold — the exact same
 /// ordering discipline as `gate::hold`.
-async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: GrantRequest) -> HookOutput {
+async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: AccessRequest) -> HookOutput {
     let iii = deps.iii.as_ref();
     let (session_title, session_description, session_metadata) =
         super::gate::fetch_session_context(deps, &input.session_id).await;
@@ -180,8 +183,8 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: GrantReques
         session_metadata,
         depth: input.depth,
         assistant_excerpt: None,
-        kind: PendingKind::FolderAccess,
-        grant_request: Some(hint),
+        kind: PendingKind::FilesystemAccess,
+        access_request: Some(hint),
     };
 
     match pending::put(iii, &record).await {
@@ -190,7 +193,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: GrantReques
                 session_id = %input.session_id,
                 function_call_id = %call.id,
                 error = %e,
-                "grant-watch: pending record write failed; continuing (fail-open, mirrors gate's fail-closed-toward-delivery discipline)"
+                "filesystem-access-watch: pending record write failed; continuing (fail-open, mirrors gate's fail-closed-toward-delivery discipline)"
             );
             HookOutput::Continue
         }
@@ -217,9 +220,9 @@ mod tests {
         log_snapshot, settle, state_get, state_set, with_stack, BootOpts, TestStack,
     };
 
-    fn jail_message(dir: &str) -> String {
+    fn jail_message(requested_root: &str) -> String {
         format!(
-            "outside jail grant_hint={{\"v\":1,\"dir\":\"{dir}\",\"path\":\"{dir}/x\",\"code\":\"S215\"}}"
+            "outside jail filesystem_access_request={{\"v\":1,\"requested_root\":\"{requested_root}\",\"attempted_path\":\"{requested_root}/x\",\"error_code\":\"S215\"}}"
         )
     }
 
@@ -253,28 +256,28 @@ mod tests {
         serde_json::from_value(base).unwrap()
     }
 
-    fn jail_input(session_id: &str, call_id: &str, dir: &str) -> HookInput {
+    fn jail_input(session_id: &str, call_id: &str, requested_root: &str) -> HookInput {
         post_trigger_input(
             session_id,
             call_id,
             "shell::fs::read",
             true,
             Some("S215"),
-            &jail_message(dir),
+            &jail_message(requested_root),
             None,
         )
     }
 
     /// Register the fakes `evaluate()` depends on beyond the standard
-    /// testkit boot: `harness::workspace::grants` (empty by default) and
-    /// `harness::workspace::grant`. Both log to `stack.harness_calls` under
+    /// testkit boot: `harness::filesystem::grants` (empty by default) and
+    /// `harness::filesystem::grant`. Both log to `stack.harness_calls` under
     /// a `{"__fn": ...}` tag so a test can distinguish them from
     /// `harness::function::resolve` log entries if needed.
     fn register_workspace_fakes(stack: &TestStack, existing_roots: Vec<String>) {
         let iii = stack.iii.clone();
         let roots = existing_roots;
         iii.register_function(
-            "harness::workspace::grants",
+            "harness::filesystem::grants",
             iii_sdk::RegisterFunction::new_async(move |_req: serde_json::Value| {
                 let roots = roots.clone();
                 async move { Ok::<_, iii_sdk::errors::Error>(json!({ "roots": roots })) }
@@ -282,7 +285,7 @@ mod tests {
         );
         let log = stack.harness_calls.clone();
         iii.register_function(
-            "harness::workspace::grant",
+            "harness::filesystem::grant",
             iii_sdk::RegisterFunction::new_async(move |req: serde_json::Value| {
                 let log = log.clone();
                 async move {
@@ -371,7 +374,7 @@ mod tests {
                 true,
                 Some("S215"),
                 &jail_message("/ws/sub"),
-                Some(json!({ "working_dir": "/ws" })),
+                Some(json!({ "fs_scope": { "root": "/ws" } })),
             );
             assert_eq!(
                 handle(&stack.deps, input).await.unwrap(),
@@ -403,7 +406,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn no_harness_workspace_support_stands_down() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            // No `harness::workspace::grants` fake registered at all — the
+            // No `harness::filesystem::grants` fake registered at all — the
             // trigger simply doesn't exist.
             let input = jail_input("s_1", "c_1", "/a/b");
             assert_eq!(
@@ -420,7 +423,7 @@ mod tests {
             register_workspace_fakes(&stack, vec![]);
             state_set(
                 &stack.iii,
-                grant_state::DENIED_SCOPE,
+                filesystem_access_state::DENIED_SCOPE,
                 "s_1",
                 json!(["/a/b"]),
             )
@@ -469,7 +472,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn happy_path_holds_a_folder_access_record() {
+    async fn happy_path_holds_a_filesystem_access_record() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
             let out = handle(&stack.deps, jail_input("s_1", "c_1", "/a/b"))
@@ -478,9 +481,9 @@ mod tests {
             assert_eq!(out, HookOutput::Hold);
 
             let record = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
-            assert_eq!(record["kind"], json!("folder_access"));
-            assert_eq!(record["grant_request"]["dir"], json!("/a/b"));
-            assert_eq!(record["grant_request"]["error_code"], json!("S215"));
+            assert_eq!(record["kind"], json!("filesystem_access"));
+            assert_eq!(record["access_request"]["requested_root"], json!("/a/b"));
+            assert_eq!(record["access_request"]["error_code"], json!("S215"));
             assert_eq!(record["function_id"], json!("shell::fs::read"));
 
             assert!(
@@ -488,7 +491,7 @@ mod tests {
                     .await
             );
             let created = log_snapshot(&stack.created);
-            assert_eq!(created[0]["kind"], json!("folder_access"));
+            assert_eq!(created[0]["kind"], json!("filesystem_access"));
         })
         .await;
     }
@@ -542,12 +545,19 @@ mod tests {
             assert_eq!(out2, HookOutput::Hold);
 
             let record = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
-            assert_eq!(record["grant_request"]["dir"], json!("/c/d"));
+            assert_eq!(record["access_request"]["requested_root"], json!("/c/d"));
 
             settle().await;
             let created = log_snapshot(&stack.created);
-            assert_eq!(created.len(), 2, "the new dir gets its own pending_created");
-            assert_eq!(created[1]["grant_request"]["dir"], json!("/c/d"));
+            assert_eq!(
+                created.len(),
+                2,
+                "the new root gets its own pending_created"
+            );
+            assert_eq!(
+                created[1]["access_request"]["requested_root"],
+                json!("/c/d")
+            );
         })
         .await;
     }

@@ -36,14 +36,10 @@ use crate::code::path::PathResolver;
 #[schemars(example = "example_update_file_input")]
 pub struct UpdateFileInput {
     pub files: Vec<UpdateFileSpec>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
-    /// Internal harness-granted roots; omitted from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub extra_roots: Option<Vec<String>>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -214,10 +210,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let base_dir = req.base_dir.as_deref();
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
     let mut entries = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        match resolver.require_writable_opt(base_dir, &spec.path) {
+        match resolver.require_writable_opt(scope_root, &spec.path) {
             Ok(abs) => entries.push((spec, Ok(abs))),
             Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
             Err(e) => entries.push((spec, Err(e))),
@@ -1915,15 +1911,14 @@ mod handler_tests {
                         content: "x".into(),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
         .unwrap_err();
         assert!(err.contains("\"code\":\"C215\""));
         assert!(err.contains("../escape.txt"));
-        assert!(err.contains("grant_hint="));
+        assert!(err.contains("filesystem_access_request="));
     }
 
     #[tokio::test]
@@ -1942,8 +1937,7 @@ mod handler_tests {
                         content: "TWO".into(),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -1976,8 +1970,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2013,8 +2006,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2045,8 +2037,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2076,8 +2067,7 @@ mod handler_tests {
                         content: "new".into(),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2104,8 +2094,7 @@ mod handler_tests {
                         content: "inserted".into(),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2142,8 +2131,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2188,8 +2176,7 @@ mod handler_tests {
                         }],
                     },
                 ],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2226,8 +2213,7 @@ mod handler_tests {
             c,
             UpdateFileInput {
                 files: vec![spec("missing.txt"), spec(".env")],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2282,8 +2268,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2303,8 +2288,7 @@ mod handler_tests {
             c,
             UpdateFileInput {
                 files: vec![],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2328,8 +2312,7 @@ mod handler_tests {
                     path: "f.txt".into(),
                     ops,
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2690,8 +2673,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2742,8 +2724,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2794,8 +2775,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2840,8 +2820,7 @@ mod handler_tests {
                         ops: vec![replace(None)],
                     },
                 ],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2896,8 +2875,7 @@ mod handler_tests {
                         expect_matches: Some(2),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2950,8 +2928,7 @@ mod handler_tests {
                         expect_matches: Some(0),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3042,8 +3019,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3111,8 +3087,7 @@ mod handler_tests {
                         }],
                     },
                 ],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3176,8 +3151,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3214,8 +3188,7 @@ mod handler_tests {
                     path: "a.txt".into(),
                     ops: vec![op("$1a")],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3242,8 +3215,7 @@ mod handler_tests {
                     path: "a.txt".into(),
                     ops: vec![op("${1}a")],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3275,8 +3247,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3315,8 +3286,7 @@ mod handler_tests {
                         expect_matches: Some(0),
                     }],
                 }],
-                base_dir: None,
-                extra_roots: None,
+                fs_scope: None,
             },
         )
         .await

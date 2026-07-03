@@ -1,4 +1,4 @@
-import type { FolderAccessAction } from '@/components/permissions/FolderAccessPrompt'
+import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
 import { Markdown } from '@/lib/markdown'
@@ -25,12 +25,12 @@ interface MessageProps {
     functionCallId: string,
     functionId: string,
   ) => Promise<void>
-  onResolveFolderAccess?: (
+  onResolveFilesystemAccess?: (
     sessionId: string,
     functionCallId: string,
-    action: FolderAccessAction,
+    action: FilesystemAccessAction,
   ) => Promise<void>
-  onManageFolderAccess?: () => void
+  onManageFilesystemAccess?: () => void
   workingDir?: string | null
 }
 
@@ -38,8 +38,8 @@ export function Message({
   message,
   onResolveApproval,
   onAlwaysAllow,
-  onResolveFolderAccess,
-  onManageFolderAccess,
+  onResolveFilesystemAccess,
+  onManageFilesystemAccess,
   workingDir,
 }: MessageProps) {
   switch (message.role) {
@@ -59,8 +59,8 @@ export function Message({
       let onApprove: (() => Promise<void>) | undefined
       let onDeny: (() => Promise<void>) | undefined
       let onAlwaysAllowHandler: (() => Promise<void>) | undefined
-      let onResolveFolderAccessHandler:
-        | ((action: FolderAccessAction) => Promise<void>)
+      let onResolveFilesystemAccessHandler:
+        | ((action: FilesystemAccessAction) => Promise<void>)
         | undefined
       if (onResolveApproval && sessionId && functionCallId) {
         onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
@@ -70,9 +70,9 @@ export function Message({
         onAlwaysAllowHandler = () =>
           onAlwaysAllow(sessionId, functionCallId, message.functionId)
       }
-      if (onResolveFolderAccess && sessionId && functionCallId) {
-        onResolveFolderAccessHandler = (action) =>
-          onResolveFolderAccess(sessionId, functionCallId, action)
+      if (onResolveFilesystemAccess && sessionId && functionCallId) {
+        onResolveFilesystemAccessHandler = (action) =>
+          onResolveFilesystemAccess(sessionId, functionCallId, action)
       }
       return (
         <FunctionCallMessage
@@ -80,8 +80,8 @@ export function Message({
           onApprove={onApprove}
           onDeny={onDeny}
           onAlwaysAllow={onAlwaysAllowHandler}
-          onResolveFolderAccess={onResolveFolderAccessHandler}
-          onManageFolderAccess={onManageFolderAccess}
+          onResolveFilesystemAccess={onResolveFilesystemAccessHandler}
+          onManageFilesystemAccess={onManageFilesystemAccess}
           workingDir={workingDir}
         />
       )

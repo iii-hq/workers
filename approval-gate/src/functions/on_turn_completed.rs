@@ -1,6 +1,6 @@
 //! `approval::on-turn-completed` — bound to the harness's
 //! `harness::turn-completed` trigger type. Purges the turn's pending
-//! records AND its grant-watch attempt counters when it goes terminal
+//! records AND its filesystem-access-watch attempt counters when it goes terminal
 //! (covers `harness::stop` cancellation cascades and failed turns). A
 //! `completed` turn has no live holds by construction — the purge is then
 //! a harmless stale-record cleanup.
@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{purge, Deps};
-use crate::grant_state;
+use crate::filesystem_access_state;
 use crate::types::EventAck;
 
 /// `harness::turn-completed` payload (only the field we read).
@@ -24,13 +24,14 @@ pub async fn handle(
 ) -> Result<EventAck, crate::error::ApprovalError> {
     let purged = purge::purge_matching(deps, |r| r.turn_id == event.turn_id).await;
     let purged_attempts =
-        grant_state::purge_matching(deps.iii.as_ref(), |r| r.turn_id == event.turn_id).await;
+        filesystem_access_state::purge_matching(deps.iii.as_ref(), |r| r.turn_id == event.turn_id)
+            .await;
     if purged > 0 || purged_attempts > 0 {
         tracing::info!(
             turn_id = %event.turn_id,
             purged,
             purged_attempts,
-            "terminal turn: pending approvals + grant-watch attempts purged"
+            "terminal turn: pending approvals + filesystem-access-watch attempts purged"
         );
     }
     Ok(EventAck { ok: true })
@@ -57,6 +58,7 @@ mod tests {
                         "turn_id": tid,
                         "function_call_id": cid,
                         "function_id": "shell::run",
+                        "kind": "function",
                         "pending_at": 1,
                     }),
                 )
@@ -87,12 +89,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn purges_grant_watch_attempt_counters_by_turn_id() {
+    async fn purges_filesystem_access_watch_attempt_counters_by_turn_id() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             for (sid, cid, tid) in [("s_1", "c_1", "t_1"), ("s_1", "c_2", "t_2")] {
                 state_set(
                     &stack.iii,
-                    grant_state::ATTEMPTS_SCOPE,
+                    filesystem_access_state::ATTEMPTS_SCOPE,
                     &format!("{sid}/{cid}"),
                     json!({
                         "session_id": sid,
@@ -113,16 +115,20 @@ mod tests {
             .await
             .unwrap();
 
-            assert!(
-                state_get(&stack.iii, grant_state::ATTEMPTS_SCOPE, "s_1/c_1")
-                    .await
-                    .is_null()
-            );
-            assert!(
-                !state_get(&stack.iii, grant_state::ATTEMPTS_SCOPE, "s_1/c_2")
-                    .await
-                    .is_null()
-            );
+            assert!(state_get(
+                &stack.iii,
+                filesystem_access_state::ATTEMPTS_SCOPE,
+                "s_1/c_1"
+            )
+            .await
+            .is_null());
+            assert!(!state_get(
+                &stack.iii,
+                filesystem_access_state::ATTEMPTS_SCOPE,
+                "s_1/c_2"
+            )
+            .await
+            .is_null());
         })
         .await;
     }

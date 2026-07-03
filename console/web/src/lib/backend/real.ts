@@ -81,12 +81,7 @@ function toThinkingLevel(
   return level && level !== 'off' ? level : undefined
 }
 
-/**
- * Build `harness::send` `options.metadata`. `working_dir` MUST ride this
- * per-turn channel (not session metadata, which the harness can't see at the
- * dispatch choke point) so the harness can scope the turn's shell/coder calls
- * to it as `base_dir`. Omitted when no directory is set.
- */
+/** Build `harness::send` `options.metadata` for filesystem scope. */
 export function buildTurnMetadata(
   sessionId: string,
   messageId: string,
@@ -95,7 +90,7 @@ export function buildTurnMetadata(
   return {
     session_id: sessionId,
     message_id: messageId,
-    ...(workingDir ? { working_dir: workingDir } : {}),
+    ...(workingDir ? { fs_scope: { root: workingDir } } : {}),
   }
 }
 
@@ -249,17 +244,15 @@ async function realResolveApproval(
   sessionId: string,
   functionCallId: string,
   decision: 'allow' | 'deny',
-  opts?: { grantScope?: 'once' | 'session' | 'always' },
+  opts?: { accessDuration?: 'once' | 'session' | 'always' },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('approval::resolve', {
     session_id: sessionId,
     function_call_id: functionCallId,
     decision,
-    // Only ride `grant_scope` on folder_access resolutions; omit entirely
-    // for plain approvals so old gates (that don't know the field) never
-    // see it.
-    ...(opts?.grantScope ? { grant_scope: opts.grantScope } : {}),
+    // Only ride `access_duration` on filesystem_access resolutions.
+    ...(opts?.accessDuration ? { access_duration: opts.accessDuration } : {}),
   })
 }
 
