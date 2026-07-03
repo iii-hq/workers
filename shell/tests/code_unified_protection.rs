@@ -58,6 +58,7 @@ async fn code_non_accessible_globs_block_the_fs_read() {
         .read(ReadArgs {
             path: abs_env,
             base_dir: None,
+            extra_roots: None,
         })
         .await
         .expect_err("a glob declared under code.non_accessible_globs must block the fs read too");
@@ -85,6 +86,7 @@ async fn fs_surface_not_protected_without_code_glob() {
         .stat(StatArgs {
             path: abs_env.clone(),
             base_dir: None,
+            extra_roots: None,
         })
         .await
         .expect_err("stat must hit the same protection gate as read");
@@ -97,6 +99,7 @@ async fn fs_surface_not_protected_without_code_glob() {
         .stat(StatArgs {
             path: abs_env,
             base_dir: None,
+            extra_roots: None,
         })
         .await;
     assert!(

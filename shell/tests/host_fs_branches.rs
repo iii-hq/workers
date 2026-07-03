@@ -41,6 +41,7 @@ async fn mkdir_parents_true_creates_deeply_nested_path() {
     let r = backend()
         .mkdir(MkdirArgs {
             base_dir: None,
+            extra_roots: None,
             path: deep.to_string_lossy().into_owned(),
             mode: "0755".into(),
             parents: true,
@@ -52,6 +53,7 @@ async fn mkdir_parents_true_creates_deeply_nested_path() {
     let again = backend()
         .mkdir(MkdirArgs {
             base_dir: None,
+            extra_roots: None,
             path: deep.to_string_lossy().into_owned(),
             mode: "0755".into(),
             parents: true,
@@ -75,6 +77,7 @@ async fn mv_overwrite_true_replaces_existing_dst() {
     let r = backend()
         .mv(MvArgs {
             base_dir: None,
+            extra_roots: None,
             src: src.to_string_lossy().into_owned(),
             dst: dst.to_string_lossy().into_owned(),
             overwrite: true,
@@ -96,6 +99,7 @@ async fn chmod_recursive_walks_subtree_and_counts() {
     let r = backend()
         .chmod(ChmodArgs {
             base_dir: None,
+            extra_roots: None,
             path: root.to_string_lossy().into_owned(),
             // 0750 preserves +x on dirs so walkdir can descend.
             mode: "0750".into(),
@@ -120,6 +124,7 @@ async fn grep_include_glob_filters_paths() {
     let r = backend()
         .grep(GrepArgs {
             base_dir: None,
+            extra_roots: None,
             path: root.to_string_lossy().into_owned(),
             pattern: "needle".into(),
             recursive: true,
@@ -148,6 +153,7 @@ async fn grep_exclude_glob_skips_paths() {
     let r = backend()
         .grep(GrepArgs {
             base_dir: None,
+            extra_roots: None,
             path: root.to_string_lossy().into_owned(),
             pattern: "needle".into(),
             recursive: true,
@@ -176,6 +182,7 @@ async fn sed_walks_directory_with_include_exclude_globs() {
     let r = backend()
         .sed(SedArgs {
             base_dir: None,
+            extra_roots: None,
             files: vec![],
             path: Some(root.to_string_lossy().into_owned()),
             recursive: true,
@@ -205,6 +212,7 @@ async fn sed_recursive_false_on_directory_rejected_with_s210() {
     let err = backend()
         .sed(SedArgs {
             base_dir: None,
+            extra_roots: None,
             files: vec![],
             path: Some(root.to_string_lossy().into_owned()),
             recursive: false,
@@ -229,6 +237,7 @@ async fn sed_first_only_replaces_just_the_first_match_per_line() {
     let r = backend()
         .sed(SedArgs {
             base_dir: None,
+            extra_roots: None,
             files: vec![f.to_string_lossy().into_owned()],
             path: None,
             recursive: false,
@@ -257,6 +266,7 @@ async fn rm_recursive_true_removes_non_empty_dir() {
     let r = backend()
         .rm(RmArgs {
             base_dir: None,
+            extra_roots: None,
             path: target.to_string_lossy().into_owned(),
             recursive: true,
         })
@@ -277,6 +287,7 @@ async fn stat_reports_is_symlink_for_symlink_target() {
     let s = backend()
         .stat(StatArgs {
             base_dir: None,
+            extra_roots: None,
             path: link.to_string_lossy().into_owned(),
         })
         .await
@@ -300,6 +311,7 @@ async fn mkdir_parents_over_existing_file_errors() {
     let err = backend()
         .mkdir(MkdirArgs {
             base_dir: None,
+            extra_roots: None,
             path: f.to_string_lossy().into_owned(),
             mode: "0755".into(),
             parents: true,
@@ -319,6 +331,7 @@ async fn host_responses_populate_new_path_fields() {
     let mk = backend()
         .mkdir(MkdirArgs {
             base_dir: None,
+            extra_roots: None,
             path: d.to_string_lossy().into_owned(),
             mode: "0755".into(),
             parents: false,
@@ -331,6 +344,7 @@ async fn host_responses_populate_new_path_fields() {
     let ch = backend()
         .chmod(ChmodArgs {
             base_dir: None,
+            extra_roots: None,
             path: d.to_string_lossy().into_owned(),
             mode: "0700".into(),
             uid: None,
@@ -348,6 +362,7 @@ async fn host_responses_populate_new_path_fields() {
     let mv = backend()
         .mv(MvArgs {
             base_dir: None,
+            extra_roots: None,
             src: src.to_string_lossy().into_owned(),
             dst: dst.to_string_lossy().into_owned(),
             overwrite: false,
@@ -361,6 +376,7 @@ async fn host_responses_populate_new_path_fields() {
     let r = backend()
         .rm(RmArgs {
             base_dir: None,
+            extra_roots: None,
             path: dst.to_string_lossy().into_owned(),
             recursive: false,
         })

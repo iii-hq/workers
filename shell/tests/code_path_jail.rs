@@ -167,6 +167,7 @@ async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
         ReadFileInput {
             path: Some("../sibling.txt".into()),
             base_dir: Some(base_dir.clone()),
+            extra_roots: None,
             ..ReadFileInput::default()
         },
     )
@@ -174,7 +175,7 @@ async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
     .expect_err("scoped read must not escape the session dir");
     assert_eq!(wire_err_code(&read_err), "C218");
 
-    let create = create_handle(
+    let create_err = create_handle(
         r.clone(),
         c,
         CreateFileInput {
@@ -186,29 +187,29 @@ async fn scoped_base_dir_blocks_sibling_escape_across_handlers() {
                 overwrite: false,
             }],
             base_dir: Some(base_dir.clone()),
+            extra_roots: None,
         },
     )
     .await
-    .unwrap();
-    let create_error = create.results[0].error.as_ref().expect("create rejected");
-    assert_eq!(create_error.code, "C218");
+    .expect_err("scoped create must not escape the session dir");
+    assert_eq!(wire_err_code(&create_err), "C218");
     assert!(
         !tmp.path().join("created-outside.txt").exists(),
         "rejected create must not write into a sibling of the session dir"
     );
 
-    let delete = delete_handle(
+    let delete_err = delete_handle(
         r,
         DeleteFileInput {
             paths: vec!["../sibling.txt".into()],
             recursive: false,
             base_dir: Some(base_dir),
+            extra_roots: None,
         },
     )
     .await
-    .unwrap();
-    let delete_error = delete.results[0].error.as_ref().expect("delete rejected");
-    assert_eq!(delete_error.code, "C218");
+    .expect_err("scoped delete must not escape the session dir");
+    assert_eq!(wire_err_code(&delete_err), "C218");
     assert!(
         tmp.path().join("sibling.txt").exists(),
         "rejected delete must leave sibling files untouched"

@@ -53,6 +53,7 @@ async fn bottom_up_application_e2e() {
                 ],
             }],
             base_dir: None,
+            extra_roots: None,
         },
     )
     .await
@@ -108,6 +109,7 @@ async fn batch_with_mix_of_success_and_failure_preserves_originals() {
                 },
             ],
             base_dir: None,
+            extra_roots: None,
         },
     )
     .await
@@ -152,6 +154,7 @@ async fn crlf_line_endings_preserved_after_update() {
                 }],
             }],
             base_dir: None,
+            extra_roots: None,
         },
     )
     .await
@@ -180,6 +183,7 @@ async fn regex_replace_e2e() {
                 }],
             }],
             base_dir: None,
+            extra_roots: None,
         },
     )
     .await

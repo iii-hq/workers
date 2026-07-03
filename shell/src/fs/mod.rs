@@ -77,6 +77,8 @@ pub struct LsArgs {
     pub path: String,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +86,8 @@ pub struct StatArgs {
     pub path: String,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +99,8 @@ pub struct MkdirArgs {
     pub parents: bool,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +110,8 @@ pub struct RmArgs {
     pub recursive: bool,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +126,8 @@ pub struct ChmodArgs {
     pub recursive: bool,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +138,8 @@ pub struct MvArgs {
     pub overwrite: bool,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +160,8 @@ pub struct GrepArgs {
     pub max_line_bytes: u64,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 fn default_max_matches() -> u64 {
     10_000
@@ -184,6 +198,8 @@ pub struct SedArgs {
     pub ignore_case: bool,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 fn default_true() -> bool {
     true
@@ -205,6 +221,7 @@ pub struct WriteArgs {
     pub parents: bool,
     pub content: WriteContent,
     pub base_dir: Option<String>,
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +229,8 @@ pub struct ReadArgs {
     pub path: String,
     #[serde(default)]
     pub base_dir: Option<String>,
+    #[serde(default)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 // Registration-boundary requests — each carries `target` plus the matching
@@ -230,6 +249,10 @@ pub struct LsRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl LsRequest {
     pub fn split(self) -> (Target, LsArgs) {
@@ -238,6 +261,7 @@ impl LsRequest {
             LsArgs {
                 path: self.path,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -254,6 +278,10 @@ pub struct StatRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl StatRequest {
     pub fn split(self) -> (Target, StatArgs) {
@@ -262,6 +290,7 @@ impl StatRequest {
             StatArgs {
                 path: self.path,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -284,6 +313,10 @@ pub struct MkdirRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl MkdirRequest {
     pub fn split(self) -> (Target, MkdirArgs) {
@@ -294,6 +327,7 @@ impl MkdirRequest {
                 mode: self.mode,
                 parents: self.parents,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -313,6 +347,10 @@ pub struct RmRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl RmRequest {
     pub fn split(self) -> (Target, RmArgs) {
@@ -322,6 +360,7 @@ impl RmRequest {
                 path: self.path,
                 recursive: self.recursive,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -349,6 +388,10 @@ pub struct ChmodRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl ChmodRequest {
     pub fn split(self) -> (Target, ChmodArgs) {
@@ -361,6 +404,7 @@ impl ChmodRequest {
                 gid: self.gid,
                 recursive: self.recursive,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -382,6 +426,10 @@ pub struct MvRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl MvRequest {
     pub fn split(self) -> (Target, MvArgs) {
@@ -392,6 +440,7 @@ impl MvRequest {
                 dst: self.dst,
                 overwrite: self.overwrite,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -428,6 +477,10 @@ pub struct GrepRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl GrepRequest {
     pub fn split(self) -> (Target, GrepArgs) {
@@ -443,6 +496,7 @@ impl GrepRequest {
                 max_matches: self.max_matches,
                 max_line_bytes: self.max_line_bytes,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -485,6 +539,10 @@ pub struct SedRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl SedRequest {
     pub fn split(self) -> (Target, SedArgs) {
@@ -502,6 +560,7 @@ impl SedRequest {
                 first_only: self.first_only,
                 ignore_case: self.ignore_case,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }
@@ -578,6 +637,10 @@ pub struct WriteRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl WriteRequest {
     /// Normalize into `(target, specs, is_batch)`. `is_batch` is true when the
@@ -609,6 +672,7 @@ impl WriteRequest {
             // base_dir is a per-CALL session scope, not a per-file attribute, so
             // every batch entry shares the request-level base_dir.
             let base_dir = self.base_dir;
+            let extra_roots = self.extra_roots;
             let specs = files
                 .into_iter()
                 .map(|f| WriteArgs {
@@ -617,6 +681,7 @@ impl WriteRequest {
                     parents: f.parents,
                     content: f.content.into(),
                     base_dir: base_dir.clone(),
+                    extra_roots: extra_roots.clone(),
                 })
                 .collect();
             Ok((self.target, specs, true))
@@ -638,6 +703,7 @@ impl WriteRequest {
                     parents: self.parents.unwrap_or(false),
                     content: content.into(),
                     base_dir: self.base_dir,
+                    extra_roots: self.extra_roots,
                 }],
                 false,
             ))
@@ -656,6 +722,10 @@ pub struct ReadRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 impl ReadRequest {
     pub fn split(self) -> (Target, ReadArgs) {
@@ -664,6 +734,7 @@ impl ReadRequest {
             ReadArgs {
                 path: self.path,
                 base_dir: self.base_dir,
+                extra_roots: self.extra_roots,
             },
         )
     }

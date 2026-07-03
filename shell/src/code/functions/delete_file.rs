@@ -29,6 +29,10 @@ pub struct DeleteFileInput {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -69,10 +73,18 @@ pub async fn handle(
         )));
     }
     let base_dir = req.base_dir.as_deref();
-    let mut results = Vec::with_capacity(req.paths.len());
+    let mut entries = Vec::with_capacity(req.paths.len());
     for p in req.paths {
-        results.push(delete_one(&resolver, base_dir, &p, req.recursive));
+        match resolver.require_writable_opt(base_dir, &p) {
+            Ok(abs) => entries.push((p, Ok(abs))),
+            Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
+            Err(e) => entries.push((p, Err(e))),
+        }
     }
+    let results = entries
+        .into_iter()
+        .map(|(p, resolved)| delete_one(&resolver, base_dir, &p, req.recursive, resolved))
+        .collect();
     Ok(DeleteFileOutput { results })
 }
 
@@ -81,12 +93,13 @@ fn delete_one(
     base_dir: Option<&str>,
     rel: &str,
     recursive: bool,
+    resolved: Result<std::path::PathBuf, CoderError>,
 ) -> DeleteFileResult {
     // Resolve up front: deletion operates ONLY on the resolver-returned
     // path, and the result echoes that canonical absolute path. When
     // resolution fails there is no canonical path, so the caller's input
     // is echoed verbatim.
-    let abs = match resolver.require_writable_opt(base_dir, rel) {
+    let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
             return DeleteFileResult {
@@ -112,6 +125,13 @@ fn delete_one(
             error: Some((&e).into()),
         },
     }
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 fn try_delete_one(
@@ -206,6 +226,7 @@ mod tests {
                 paths: vec!["a.txt".into()],
                 recursive: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -224,6 +245,7 @@ mod tests {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -242,6 +264,7 @@ mod tests {
                 paths: vec![".env".into()],
                 recursive: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -262,6 +285,7 @@ mod tests {
                 paths: vec!["d".into()],
                 recursive: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -280,6 +304,7 @@ mod tests {
                 paths: vec!["d".into()],
                 recursive: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -299,6 +324,7 @@ mod tests {
                 paths: vec!["d".into()],
                 recursive: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -323,6 +349,7 @@ mod tests {
                 paths: vec!["secrets".into()],
                 recursive: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -355,6 +382,7 @@ mod tests {
                 paths: vec![".".into()],
                 recursive: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -378,6 +406,7 @@ mod tests {
                 paths: vec![".".into()],
                 recursive: true,
                 base_dir: Some(session.to_string_lossy().into_owned()),
+                extra_roots: None,
             },
         )
         .await
@@ -402,6 +431,7 @@ mod tests {
                 paths: vec![abs.clone()],
                 recursive: true,
                 base_dir: Some(abs),
+                extra_roots: None,
             },
         )
         .await
@@ -425,6 +455,7 @@ mod tests {
                 paths: vec!["a.txt".into()],
                 recursive: false,
                 base_dir: Some(session.to_string_lossy().into_owned()),
+                extra_roots: None,
             },
         )
         .await

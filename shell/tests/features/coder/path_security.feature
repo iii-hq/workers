@@ -7,7 +7,7 @@ Feature: coder path security
       """
       {"files":[{"path":"{{outside}}/escape.txt","content":"escape","overwrite":true}]}
       """
-    Then the result for "{{outside}}/escape.txt" failed with code "C215"
+    Then the call failed with code "C215"
 
   Scenario: protected globs are listable but not readable or writable
     Given a jailed code surface

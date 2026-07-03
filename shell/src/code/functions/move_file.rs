@@ -30,6 +30,10 @@ pub struct MoveFileInput {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -118,11 +122,27 @@ pub async fn handle(
         )));
     }
     let base_dir = req.base_dir.as_deref();
+    for spec in &req.files {
+        for path in [&spec.from, &spec.to] {
+            if let Err(e) = resolver.require_writable_opt(base_dir, path) {
+                if is_jail_scope_error(&e) {
+                    return Err(err_to_string(e));
+                }
+            }
+        }
+    }
     let mut results = Vec::with_capacity(req.files.len());
     for spec in req.files {
         results.push(move_one(&resolver, base_dir, spec));
     }
     Ok(MoveFileOutput { results })
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +436,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -454,6 +475,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -483,6 +505,7 @@ mod tests {
                         parents: true,
                     }],
                     base_dir: None,
+                    extra_roots: None,
                 },
             )
             .await
@@ -533,6 +556,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -565,6 +589,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -626,6 +651,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -670,6 +696,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -708,6 +735,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -736,6 +764,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -774,6 +803,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -788,6 +818,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -832,6 +863,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -858,6 +890,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -885,6 +918,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -922,6 +956,7 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -959,6 +994,7 @@ mod tests {
                         parents: true,
                     }],
                     base_dir: None,
+                    extra_roots: None,
                 },
             )
             .await
@@ -1000,6 +1036,7 @@ mod tests {
                     parents: false,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -1038,6 +1075,7 @@ mod tests {
                     },
                 ],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -1054,10 +1092,10 @@ mod tests {
     // Echo rules: canonical when resolved, verbatim when not
     // ------------------------------------------------------------------
     #[tokio::test]
-    async fn echo_verbatim_on_resolution_failure() {
+    async fn jail_escape_aborts_batch_with_top_level_c215() {
         let (_tmp, r) = setup_single();
         // A path that escapes the jail will fail resolution (C215).
-        let out = handle(
+        let err = handle(
             r,
             MoveFileInput {
                 files: vec![MoveFileSpec {
@@ -1067,16 +1105,15 @@ mod tests {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
-        .unwrap();
-        assert!(!out.results[0].success);
-        // The jail escape must surface as a per-item C215 (the write-side
-        // jail contract), not some other code or a swallowed success.
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C215");
-        // The `from` echo must be the caller's verbatim input, not a resolved path.
-        assert_eq!(out.results[0].from, "/etc/passwd");
+        .unwrap_err();
+        // Jail-scope errors must be visible to the hook as whole-call errors.
+        assert!(err.contains("\"code\":\"C215\""));
+        assert!(err.contains("/etc/passwd"));
+        assert!(err.contains("grant_hint="));
     }
 
     // ------------------------------------------------------------------
@@ -1106,6 +1143,7 @@ mod tests {
                     },
                 ],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await

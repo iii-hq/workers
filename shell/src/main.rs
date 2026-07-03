@@ -13,6 +13,7 @@ mod exec;
 mod exec_dispatch;
 mod fs;
 mod functions;
+mod grant;
 mod jobs;
 mod path;
 mod scode;
@@ -197,8 +198,19 @@ async fn main() -> Result<()> {
         );
     }
 
+    let code_cells = if cfg.fs.is_jailed() {
+        Some(
+            configuration::build_code_cells(&cfg)
+                .map_err(anyhow::Error::msg)
+                .context("building initial code surface state (coder::*)")?,
+        )
+    } else {
+        None
+    };
+
     let state = AppState {
         runtime: std::sync::Arc::new(tokio::sync::RwLock::new(runtime)),
+        code_cells: code_cells.clone(),
         iii: iii.clone(),
         reload_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         reload_status: std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -232,12 +244,8 @@ async fn main() -> Result<()> {
     // whole worker fails closed (no half-booted surface). The code surface
     // requires a jail: unjailed shells don't expose coder::*.
     if cfg.fs.is_jailed() {
-        let code_cfg = cfg.code_resolver_config();
-        let resolver = code::path::PathResolver::new(&code_cfg)
-            .map_err(|e| anyhow::anyhow!("failed to build code PathResolver (coder::*): {e}"))?;
-        let cell: code::ConfigCell =
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(code_cfg)));
-        code::register_all(&iii, std::sync::Arc::new(resolver), cell);
+        let cells = code_cells.expect("code cells exist when fs is jailed");
+        code::register_all(&iii, cells);
         tracing::info!("code surface (coder::*) registered over the unified fs jail");
     } else {
         tracing::warn!(
