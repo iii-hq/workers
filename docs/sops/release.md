@@ -212,9 +212,10 @@ bot as the iii engine release pipeline); the bot must be invited to
 `#worker-releases`.
 
 After a release session — any number of tags — run `/release-sync` in Claude
-Code from the repo root. Same-day tags form one **wave** = one release in
-the Linear **Workers** pipeline (version = the date) with all shipped
-`MOT-###` issues attached and one combined per-worker note. Catch-up
+Code from the repo root. Same-day tags form one **wave** = one Linear
+document on team iii (`Release YYYY-MM-DD`) holding the combined
+per-worker note, with shipped `MOT-###` issues carrying a
+`release · YYYY-MM-DD` label. Catch-up
 semantics: tags released without running the skill are picked up on the
 next run. Conventions and setup checklist:
 [Release workflow — workers](https://linear.app/motia/document/release-workflow-workers-a3240a17967f).
