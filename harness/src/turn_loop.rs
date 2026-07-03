@@ -336,6 +336,10 @@ pub async fn run_step(
     if !trigger_calls.is_empty() {
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
+        let session_grants =
+            crate::workspace_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+                .await?;
+        let working_dir = record.options.working_dir().map(str::to_string);
         for call in trigger_calls.iter().copied() {
             // Per-call checkpoint: skip done/pending, recover an interrupted
             // trigger.
@@ -374,10 +378,11 @@ pub async fn run_step(
             // args ALREADY carrying the workspace stamp so an approver reviews
             // the base_dir the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
-            let staged_args = crate::workspace_inject::inject(
+            let trusted_call_args = crate::workspace_inject::inject(
                 &call.function_id,
                 call.arguments.clone(),
-                record.options.working_dir(),
+                working_dir.as_deref(),
+                &session_grants,
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -386,14 +391,22 @@ pub async fn run_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
-                    &staged_args,
+                    &trusted_call_args,
                 )
                 .await
             {
                 crate::hooks::runner::PreTriggerOutcome::Continue {
                     arguments,
                     annotations,
-                } => (arguments, annotations),
+                } => {
+                    let arguments = crate::workspace_inject::inject(
+                        &call.function_id,
+                        arguments,
+                        working_dir.as_deref(),
+                        &session_grants,
+                    );
+                    (arguments, annotations)
+                }
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
                     let data = trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
@@ -469,17 +482,6 @@ pub async fn run_step(
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
-            // Stamp the per-session working directory onto scoped shell/coder
-            // calls as `base_dir` BEFORE invocation. The harness owns scoping:
-            // this overwrites any model-supplied base_dir so the model cannot
-            // widen its own workspace. A None working_dir is a no-op (the args
-            // pass through byte-for-byte unchanged).
-            let scoped_args = crate::workspace_inject::inject(
-                &call.function_id,
-                eff_args,
-                record.options.working_dir(),
-            );
-
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
@@ -488,15 +490,42 @@ pub async fn run_step(
                 &engine,
                 &policy,
                 &call.function_id,
-                &scoped_args,
+                &eff_args,
                 &record.session_id,
             )
             .await;
-            let (data, post_ann) = deps
+            let post_outcome = deps
                 .hooks
-                .run_post_trigger(&record, payload.step, &call.id, &call.function_id, raw)
+                .run_post_trigger(
+                    &record,
+                    payload.step,
+                    &call.id,
+                    &call.function_id,
+                    &eff_args,
+                    raw,
+                )
                 .await;
             let mut annotations = pre_ann;
+            let (data, post_ann) = match post_outcome {
+                crate::hooks::runner::PostTriggerOutcome::Result {
+                    result,
+                    annotations,
+                } => (result, annotations),
+                crate::hooks::runner::PostTriggerOutcome::Hold {
+                    held_by,
+                    annotations: _,
+                } => {
+                    let info = trigger::PendingInfo {
+                        pending_timeout_ms: None,
+                        held_by: Some(held_by),
+                        child_session_id: None,
+                        child_turn_id: None,
+                    };
+                    checkpoint_pending(&mut record, &call.id, call, &info);
+                    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                    continue;
+                }
+            };
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }

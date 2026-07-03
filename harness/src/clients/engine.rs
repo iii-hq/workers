@@ -9,8 +9,6 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
-use crate::error::HarnessError;
-
 /// A registry function descriptor (id + optional schemas/description). Only
 /// the fields the harness reads are typed; the rest pass through as `extra`.
 #[derive(Debug, Clone)]
@@ -18,6 +16,12 @@ pub struct FunctionDescriptor {
     pub function_id: String,
     pub description: Option<String>,
     pub parameters: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchError {
+    pub code: Option<String>,
+    pub message: String,
 }
 
 #[derive(Clone)]
@@ -33,7 +37,11 @@ impl EngineClient {
 
     /// Dispatch an arbitrary iii function and return its raw result. This is
     /// the target invocation of an unwrapped `agent_trigger` call.
-    pub async fn dispatch(&self, function_id: &str, payload: Value) -> Result<Value, HarnessError> {
+    pub async fn dispatch(
+        &self,
+        function_id: &str,
+        payload: Value,
+    ) -> Result<Value, DispatchError> {
         self.iii
             .trigger(TriggerRequest {
                 function_id: function_id.to_string(),
@@ -42,7 +50,12 @@ impl EngineClient {
                 timeout_ms: Some(self.timeout_ms),
             })
             .await
-            .map_err(|e| HarnessError::Dependency(format!("{function_id}: {e}")))
+            .map_err(|e| {
+                let raw = e.to_string();
+                let mut parsed = parse_dispatch_error_message(&raw);
+                parsed.message = format!("{function_id}: {}", parsed.message);
+                parsed
+            })
     }
 
     /// List registry function descriptors (best-effort; empty on failure).
@@ -84,6 +97,60 @@ impl EngineClient {
     }
 }
 
+fn parse_dispatch_error_message(raw: &str) -> DispatchError {
+    if let Some(parsed) = parse_dispatch_error_value(raw) {
+        return parsed;
+    }
+
+    for index in raw.char_indices().map(|(index, _)| index) {
+        let suffix = &raw[index..];
+        if let Some(parsed) = parse_dispatch_error_value(suffix) {
+            return parsed;
+        }
+    }
+
+    DispatchError {
+        code: None,
+        message: raw.to_string(),
+    }
+}
+
+fn parse_dispatch_error_value(input: &str) -> Option<DispatchError> {
+    let value: Value = serde_json::from_str(input).ok()?;
+    parse_dispatch_error_json(&value)
+}
+
+fn parse_dispatch_error_json(value: &Value) -> Option<DispatchError> {
+    match value {
+        Value::Object(map) => {
+            let code = map.get("code").and_then(Value::as_str).map(str::to_string);
+            let message = map
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            match (code, message) {
+                (Some(code), Some(message)) => Some(DispatchError {
+                    code: Some(code),
+                    message,
+                }),
+                (None, Some(message)) => {
+                    if let Ok(inner) = serde_json::from_str::<Value>(&message) {
+                        parse_dispatch_error_json(&inner)
+                    } else {
+                        Some(DispatchError {
+                            code: None,
+                            message,
+                        })
+                    }
+                }
+                _ => None,
+            }
+        }
+        Value::String(s) => parse_dispatch_error_value(s),
+        _ => None,
+    }
+}
+
 fn parse_descriptor_list(v: &Value) -> Vec<FunctionDescriptor> {
     let items: Vec<&Value> = match v {
         Value::Array(items) => items.iter().collect(),
@@ -122,4 +189,27 @@ fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
         description,
         parameters,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_error_parser_extracts_plain_json_code_and_message() {
+        let err = parse_dispatch_error_message(
+            "remote error: {\"code\":\"C215\",\"message\":\"outside jail\"}",
+        );
+        assert_eq!(err.code.as_deref(), Some("C215"));
+        assert_eq!(err.message, "outside jail");
+    }
+
+    #[test]
+    fn dispatch_error_parser_extracts_coder_string_error_json() {
+        let err = parse_dispatch_error_message(
+            "handler error: \"{\\\"code\\\":\\\"C218\\\",\\\"message\\\":\\\"outside session\\\"}\"",
+        );
+        assert_eq!(err.code.as_deref(), Some("C218"));
+        assert_eq!(err.message, "outside session");
+    }
 }

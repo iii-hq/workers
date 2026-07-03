@@ -78,11 +78,14 @@ pub async fn invoke_target(
                 details: value,
             }
         }
-        Err(e) => ResultData {
-            content: vec![ContentBlock::text(e.to_string())],
-            is_error: true,
-            details: json!({ "error": e.to_string() }),
-        },
+        Err(e) => {
+            let message = e.message.clone();
+            ResultData {
+                content: vec![ContentBlock::text(message.clone())],
+                is_error: true,
+                details: json!({ "error": { "code": e.code, "message": message } }),
+            }
+        }
     }
 }
 

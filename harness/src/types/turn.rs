@@ -105,6 +105,29 @@ impl TurnOptions {
             .and_then(|m| m.get(WORKING_DIR_KEY))
             .and_then(Value::as_str)
     }
+
+    pub fn refresh_working_dir_from(&mut self, incoming: &TurnOptions) -> bool {
+        let Some(working_dir) = incoming.working_dir() else {
+            return false;
+        };
+        if self.working_dir() == Some(working_dir) {
+            return false;
+        }
+
+        let metadata = self
+            .metadata
+            .get_or_insert_with(|| Value::Object(Default::default()));
+        if !metadata.is_object() {
+            *metadata = Value::Object(Default::default());
+        }
+        if let Some(map) = metadata.as_object_mut() {
+            map.insert(
+                WORKING_DIR_KEY.to_string(),
+                Value::String(working_dir.to_string()),
+            );
+        }
+        true
+    }
 }
 
 /// Lifecycle of one function call within a turn (harness.md § Per-call
@@ -334,5 +357,30 @@ mod tests {
         assert!(r.calls.is_empty());
         assert_eq!(r.options.max_validation_retries, 2);
         assert_eq!(r.options.output, OutputContract::Text);
+    }
+
+    #[test]
+    fn refresh_working_dir_updates_only_when_incoming_has_scope() {
+        let mut existing = record().options;
+        existing.metadata = Some(json!({ "trace": "keep", "working_dir": "/old" }));
+
+        let mut incoming = existing.clone();
+        incoming.metadata = Some(json!({ "working_dir": "/new", "ignored": true }));
+
+        assert!(existing.refresh_working_dir_from(&incoming));
+        assert_eq!(existing.working_dir(), Some("/new"));
+        assert_eq!(
+            existing
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("trace"))
+                .and_then(Value::as_str),
+            Some("keep")
+        );
+
+        let mut no_scope = incoming;
+        no_scope.metadata = Some(json!({ "other": "/ignored" }));
+        assert!(!existing.refresh_working_dir_from(&no_scope));
+        assert_eq!(existing.working_dir(), Some("/new"));
     }
 }

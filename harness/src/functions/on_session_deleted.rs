@@ -37,5 +37,7 @@ pub async fn handle(
             "session deleted: ephemeral subscriptions dropped"
         );
     }
+    let cfg = deps.cfg().await;
+    crate::workspace_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     Ok(SessionDeletedAck { ok: true, removed })
 }

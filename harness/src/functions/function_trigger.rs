@@ -97,11 +97,20 @@ pub async fn handle(
     // and re-apply it before invocation so neither a direct caller nor a hook
     // rewrite can widen the session scope. No turn record → no scope: any
     // caller-supplied base_dir is stripped.
-    let working_dir = record.as_ref().and_then(|r| r.options.working_dir());
+    let session_grants = if record.is_some() {
+        crate::workspace_grants::roots(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+    } else {
+        Vec::new()
+    };
+    let working_dir = record
+        .as_ref()
+        .and_then(|rec| rec.options.working_dir())
+        .map(str::to_string);
     let mut arguments = crate::workspace_inject::inject(
         &req.call.function_id,
         req.call.arguments.clone(),
-        working_dir,
+        working_dir.as_deref(),
+        &session_grants,
     );
     if let Some(rec) = &record {
         match deps
@@ -115,7 +124,14 @@ pub async fn handle(
             )
             .await
         {
-            PreTriggerOutcome::Continue { arguments: a, .. } => arguments = a,
+            PreTriggerOutcome::Continue { arguments: a, .. } => {
+                arguments = crate::workspace_inject::inject(
+                    &req.call.function_id,
+                    a,
+                    working_dir.as_deref(),
+                    &session_grants,
+                );
+            }
             PreTriggerOutcome::Deny(reason) => {
                 let data = trigger::ResultData {
                     content: vec![ContentBlock::text(reason.clone())],
@@ -142,7 +158,12 @@ pub async fn handle(
 
     // Re-stamp after the hook chain (idempotent) — a hook rewrite must not
     // widen or drop the session scope.
-    let arguments = crate::workspace_inject::inject(&req.call.function_id, arguments, working_dir);
+    let arguments = crate::workspace_inject::inject(
+        &req.call.function_id,
+        arguments,
+        working_dir.as_deref(),
+        &session_grants,
+    );
 
     // Single invocation chokepoint: subscription control calls are intercepted
     // (trusted session injected); everything else invokes the target.
@@ -156,10 +177,28 @@ pub async fn handle(
     )
     .await;
     let data = if let Some(rec) = &record {
-        deps.hooks
-            .run_post_trigger(rec, rec.step, &req.call.id, &req.call.function_id, raw)
+        match deps
+            .hooks
+            .run_post_trigger(
+                rec,
+                rec.step,
+                &req.call.id,
+                &req.call.function_id,
+                &arguments,
+                raw,
+            )
             .await
-            .0
+        {
+            crate::hooks::runner::PostTriggerOutcome::Result { result, .. } => result,
+            crate::hooks::runner::PostTriggerOutcome::Hold { .. } => {
+                return Ok(FunctionTriggerResponse::Pending(TriggerPendingResponse {
+                    function_call_id: req.call.id,
+                    function_id: req.call.function_id,
+                    pending: true,
+                    pending_timeout_ms: None,
+                }));
+            }
+        }
     } else {
         raw
     };

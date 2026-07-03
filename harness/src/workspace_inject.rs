@@ -14,6 +14,7 @@ use serde_json::Value;
 /// The per-call field the harness stamps onto scoped function arguments.
 /// `snake_case` on the wire — the shell/coder workers read it verbatim.
 const BASE_DIR_FIELD: &str = "base_dir";
+const EXTRA_ROOTS_FIELD: &str = "extra_roots";
 
 /// True when `function_id` names a workspace-scoped worker call (`shell::*` or
 /// `coder::*`) whose paths must be anchored at the session working directory.
@@ -31,9 +32,15 @@ fn is_scoped_function(function_id: &str) -> bool {
 ///
 /// When it does apply, the top-level `base_dir` is SET to `working_dir`,
 /// OVERWRITING any caller-supplied value. If no `working_dir` is active, a
-/// caller-supplied `base_dir` is removed. The harness controls scoping and the
-/// model must not be able to widen it.
-pub fn inject(function_id: &str, args: Value, working_dir: Option<&str>) -> Value {
+/// caller-supplied `base_dir` is removed. `extra_roots` is always replaced with
+/// the trusted grant list, or stripped when that list is empty. The harness
+/// controls scoping and the model must not be able to widen it.
+pub fn inject(
+    function_id: &str,
+    args: Value,
+    working_dir: Option<&str>,
+    extra_roots: &[String],
+) -> Value {
     if !is_scoped_function(function_id) {
         return args;
     }
@@ -47,6 +54,19 @@ pub fn inject(function_id: &str, args: Value, working_dir: Option<&str>) -> Valu
         None => {
             map.remove(BASE_DIR_FIELD);
         }
+    }
+    if extra_roots.is_empty() {
+        map.remove(EXTRA_ROOTS_FIELD);
+    } else {
+        map.insert(
+            EXTRA_ROOTS_FIELD.to_string(),
+            Value::Array(
+                extra_roots
+                    .iter()
+                    .map(|root| Value::String(root.clone()))
+                    .collect(),
+            ),
+        );
     }
     Value::Object(map)
 }
@@ -62,6 +82,7 @@ mod tests {
             "shell::exec",
             json!({ "command": "ls" }),
             Some("/work/session-7"),
+            &[],
         );
         assert_eq!(
             out,
@@ -75,6 +96,7 @@ mod tests {
             "coder::fs::read",
             json!({ "path": "src/main.rs" }),
             Some("/work/session-7"),
+            &[],
         );
         assert_eq!(
             out,
@@ -90,6 +112,7 @@ mod tests {
             "shell::exec",
             json!({ "command": "ls", "base_dir": "/etc" }),
             Some("/work/session-7"),
+            &[],
         );
         assert_eq!(
             out,
@@ -98,10 +121,25 @@ mod tests {
     }
 
     #[test]
+    fn overwrites_caller_supplied_extra_roots_with_trusted_grants() {
+        let grants = vec!["/approved".to_string()];
+        let out = inject(
+            "shell::exec",
+            json!({ "command": "ls", "base_dir": "/etc", "extra_roots": ["/model"] }),
+            Some("/work/session-7"),
+            &grants,
+        );
+        assert_eq!(
+            out,
+            json!({ "command": "ls", "base_dir": "/work/session-7", "extra_roots": ["/approved"] })
+        );
+    }
+
+    #[test]
     fn strips_caller_supplied_base_dir_when_working_dir_absent() {
         // With no session scope, the model must not be able to invent one.
-        let args = json!({ "command": "ls", "base_dir": "/etc" });
-        let out = inject("shell::exec", args, None);
+        let args = json!({ "command": "ls", "base_dir": "/etc", "extra_roots": ["/model"] });
+        let out = inject("shell::exec", args, None, &[]);
         assert_eq!(out, json!({ "command": "ls" }));
     }
 
@@ -112,6 +150,7 @@ mod tests {
             "shell::workspace::validate",
             args.clone(),
             Some("/work/session-7"),
+            &["/approved".to_string()],
         );
         assert_eq!(out, args);
     }
@@ -119,7 +158,12 @@ mod tests {
     #[test]
     fn passthrough_for_non_scoped_function() {
         let args = json!({ "to": "user", "text": "hi" });
-        let out = inject("telegram::send", args.clone(), Some("/work/session-7"));
+        let out = inject(
+            "telegram::send",
+            args.clone(),
+            Some("/work/session-7"),
+            &["/approved".to_string()],
+        );
         assert_eq!(out, args);
     }
 
@@ -128,11 +172,16 @@ mod tests {
         // A non-object payload has no top-level slot for base_dir; return it as
         // received rather than reshaping it.
         let args = json!(["ls", "-la"]);
-        let out = inject("shell::exec", args.clone(), Some("/work/session-7"));
+        let out = inject("shell::exec", args.clone(), Some("/work/session-7"), &[]);
         assert_eq!(out, args);
 
         let scalar = json!("raw");
-        let out = inject("coder::fs::read", scalar.clone(), Some("/work/session-7"));
+        let out = inject(
+            "coder::fs::read",
+            scalar.clone(),
+            Some("/work/session-7"),
+            &[],
+        );
         assert_eq!(out, scalar);
     }
 }
