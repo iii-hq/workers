@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from iii import InitOptions, register_worker
 
+from . import guidance
 from .handlers import create_handlers
 from .schemas import FUNCTIONS
 
@@ -54,6 +55,8 @@ def main() -> None:
             request_format=spec["request"],
             response_format=spec["response"],
         )
+
+    guidance.setup(iii)
 
     print(f"scrapling worker connected to {url} ({len(FUNCTIONS)} functions)")
 
