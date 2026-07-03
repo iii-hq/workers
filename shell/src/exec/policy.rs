@@ -218,12 +218,14 @@ fn confine_cwd(
     cwd: &str,
     host_roots_canon: &[PathBuf],
     base_dir_canon: Option<&std::path::Path>,
+    extra_roots_canon: &[PathBuf],
     denylist_canon: &[PathBuf],
 ) -> Result<PathBuf, ExecError> {
     let canon = crate::fs::host::confine_path_with_base_dir(
         cwd,
         host_roots_canon,
         base_dir_canon,
+        extra_roots_canon,
         denylist_canon,
     )
     // FsError and ExecError carry the same { code, message } shape; the
@@ -314,18 +316,21 @@ pub fn build_overrides(
     cwd: Option<&str>,
     env: Option<&BTreeMap<String, String>>,
     base_dir: Option<&str>,
+    extra_roots: Option<&[String]>,
     cfg: &ShellConfig,
 ) -> Result<ExecOverrides, ExecError> {
     let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
     // Resolve the session directory first: it gates the cwd confinement below
     // and, when no cwd is supplied, becomes the working directory itself.
     let base_dir_canon = confine_base_dir(base_dir, &denylist_canon)?;
+    let extra_roots_canon = crate::fs::host::confine_extra_roots(extra_roots, &denylist_canon);
 
     let cwd = match cwd {
         Some(c) => Some(confine_cwd(
             c,
             &host_roots_canon,
             base_dir_canon.as_deref(),
+            &extra_roots_canon,
             &denylist_canon,
         )?),
         // No explicit cwd: a session base_dir (already validated as an existing
@@ -495,7 +500,7 @@ mod tests {
     /// four-arg `confine_cwd`.
     fn confine_cwd_via_cfg(cwd: &str, cfg: &ShellConfig) -> Result<PathBuf, ExecError> {
         let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
-        confine_cwd(cwd, &host_roots_canon, None, &denylist_canon)
+        confine_cwd(cwd, &host_roots_canon, None, &[], &denylist_canon)
     }
 
     #[test]
@@ -546,7 +551,7 @@ mod tests {
     #[test]
     fn build_overrides_both_none_is_empty() {
         let c = ShellConfig::default();
-        let ov = build_overrides(None, None, None, &c).expect("ok");
+        let ov = build_overrides(None, None, None, None, &c).expect("ok");
         assert!(ov.is_empty());
     }
 
@@ -562,7 +567,7 @@ mod tests {
         let base = root.join("session").to_string_lossy().into_owned();
 
         // cwd omitted ⇒ working dir is base_dir.
-        let ov = build_overrides(None, None, Some(&base), &c).expect("base_dir is valid");
+        let ov = build_overrides(None, None, Some(&base), None, &c).expect("base_dir is valid");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("session").canonicalize().unwrap().as_path()),
@@ -570,8 +575,8 @@ mod tests {
         );
 
         // relative cwd anchors at base_dir, not the jail root.
-        let ov =
-            build_overrides(Some("inner"), None, Some(&base), &c).expect("inner is under base_dir");
+        let ov = build_overrides(Some("inner"), None, Some(&base), None, &c)
+            .expect("inner is under base_dir");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("session/inner").canonicalize().unwrap().as_path()),
@@ -590,7 +595,7 @@ mod tests {
         let c = cfg_jailed(&root);
         let outside = root.join("other").canonicalize().unwrap();
         let base = root.join("session").to_string_lossy().into_owned();
-        let err = build_overrides(Some(outside.to_str().unwrap()), None, Some(&base), &c)
+        let err = build_overrides(Some(outside.to_str().unwrap()), None, Some(&base), None, &c)
             .expect_err("abs cwd outside base_dir must reject");
         assert_eq!(err.code, "S220", "must be the distinct base_dir code");
         let session_canon = root.join("session").canonicalize().unwrap();
@@ -619,13 +624,13 @@ mod tests {
         std::fs::create_dir_all(selected.join("inner")).unwrap();
         let c = cfg_jailed(&root);
         let selected_raw = selected.to_string_lossy().into_owned();
-        let ov = build_overrides(None, None, Some(&selected_raw), &c)
+        let ov = build_overrides(None, None, Some(&selected_raw), None, &c)
             .expect("absolute selected base_dir is valid");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(selected.canonicalize().unwrap().as_path())
         );
-        let ov = build_overrides(Some("inner"), None, Some(&selected_raw), &c)
+        let ov = build_overrides(Some("inner"), None, Some(&selected_raw), None, &c)
             .expect("relative cwd anchors at selected base_dir");
         assert_eq!(
             ov.cwd.as_deref(),
@@ -642,7 +647,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let c = cfg_jailed(&root);
-        let err = build_overrides(None, None, Some("../../etc"), &c)
+        let err = build_overrides(None, None, Some("../../etc"), None, &c)
             .expect_err("relative base_dir is not part of the trusted contract");
         assert_eq!(err.code, "S210");
         std::fs::remove_dir_all(&root).ok();
@@ -657,14 +662,14 @@ mod tests {
         let c = cfg_jailed(&root);
 
         // Omitted cwd + omitted base_dir ⇒ no cwd override (cfg.working_dir wins).
-        let ov = build_overrides(None, None, None, &c).expect("ok");
+        let ov = build_overrides(None, None, None, None, &c).expect("ok");
         assert!(
             ov.cwd.is_none(),
             "no base_dir, no cwd ⇒ None (prior behaviour)"
         );
 
         // Relative cwd still anchors at the primary jail root when base_dir is absent.
-        let ov = build_overrides(Some("sub"), None, None, &c).expect("ok");
+        let ov = build_overrides(Some("sub"), None, None, None, &c).expect("ok");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("sub").canonicalize().unwrap().as_path()),

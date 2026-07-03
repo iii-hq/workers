@@ -40,6 +40,10 @@ pub struct UpdateFileInput {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -211,24 +215,31 @@ pub async fn handle(
         )));
     }
     let base_dir = req.base_dir.as_deref();
-    let mut results = Vec::with_capacity(req.files.len());
+    let mut entries = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(update_one(&resolver, &cfg, base_dir, spec));
+        match resolver.require_writable_opt(base_dir, &spec.path) {
+            Ok(abs) => entries.push((spec, Ok(abs))),
+            Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
+            Err(e) => entries.push((spec, Err(e))),
+        }
     }
+    let results = entries
+        .into_iter()
+        .map(|(spec, resolved)| update_one(&cfg, spec, resolved))
+        .collect();
     Ok(UpdateFileOutput { results })
 }
 
 fn update_one(
-    resolver: &PathResolver,
     cfg: &CoderConfig,
-    base_dir: Option<&str>,
     spec: UpdateFileSpec,
+    resolved: Result<std::path::PathBuf, CoderError>,
 ) -> UpdateFileResult {
     // Resolve up front: the edit pipeline operates ONLY on the
     // resolver-returned path, and the result echoes that canonical
     // absolute path. When resolution fails there is no canonical path,
     // so the caller's input is echoed verbatim.
-    let abs = match resolver.require_writable_opt(base_dir, &spec.path) {
+    let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
             return UpdateFileResult {
@@ -263,6 +274,13 @@ fn update_one(
             error: Some((&e).into()),
         },
     }
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 fn try_update_one(
@@ -1882,12 +1900,11 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn jail_escape_reports_c215_per_item() {
-        // A path that escapes the jail must fail resolution and surface as a
-        // per-item C215 rather than touching anything on disk — the
-        // write-side jail contract for update-file.
+    async fn jail_escape_aborts_batch_with_top_level_c215() {
+        // A path that escapes the jail must fail resolution before any file
+        // I/O and surface as a top-level C215 for the grant hook.
         let (_tmp, r, c) = setup();
-        let out = handle(
+        let err = handle(
             r,
             c,
             UpdateFileInput {
@@ -1899,12 +1916,14 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
-        .unwrap();
-        assert!(!out.results[0].success);
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C215");
+        .unwrap_err();
+        assert!(err.contains("\"code\":\"C215\""));
+        assert!(err.contains("../escape.txt"));
+        assert!(err.contains("grant_hint="));
     }
 
     #[tokio::test]
@@ -1924,6 +1943,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -1957,6 +1977,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -1993,6 +2014,7 @@ mod handler_tests {
                     ],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2024,6 +2046,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2054,6 +2077,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2081,6 +2105,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2118,6 +2143,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2163,6 +2189,7 @@ mod handler_tests {
                     },
                 ],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2200,6 +2227,7 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![spec("missing.txt"), spec(".env")],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2255,6 +2283,7 @@ mod handler_tests {
                     ],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2275,6 +2304,7 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2299,6 +2329,7 @@ mod handler_tests {
                     ops,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2660,6 +2691,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2711,6 +2743,7 @@ mod handler_tests {
                     ],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2762,6 +2795,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2807,6 +2841,7 @@ mod handler_tests {
                     },
                 ],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2862,6 +2897,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -2915,6 +2951,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3006,6 +3043,7 @@ mod handler_tests {
                     ],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3074,6 +3112,7 @@ mod handler_tests {
                     },
                 ],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3138,6 +3177,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3175,6 +3215,7 @@ mod handler_tests {
                     ops: vec![op("$1a")],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3202,6 +3243,7 @@ mod handler_tests {
                     ops: vec![op("${1}a")],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3234,6 +3276,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -3273,6 +3316,7 @@ mod handler_tests {
                     }],
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await

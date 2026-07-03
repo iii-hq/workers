@@ -367,8 +367,9 @@ mod tests {
         let mut cfg = test_cfg();
         cfg.fs.host_roots = vec![root.clone()];
 
-        let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, None, &cfg)
-            .expect("workdir is inside the jail");
+        let overrides =
+            crate::exec::policy::build_overrides(Some("workdir"), None, None, None, &cfg)
+                .expect("workdir is inside the jail");
         let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
             .await
             .unwrap();
@@ -390,7 +391,7 @@ mod tests {
         cfg.fs.host_roots = vec![root.clone()];
         let base = root.join("session").to_string_lossy().into_owned();
 
-        let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), &cfg)
+        let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), None, &cfg)
             .expect("session is inside the jail");
         let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
             .await
@@ -485,7 +486,7 @@ mod tests {
 
         let mut env = std::collections::BTreeMap::new();
         env.insert("NODE_ENV".to_string(), "from-override".to_string());
-        let overrides = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
+        let overrides = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
             .expect("NODE_ENV is allowlisted");
 
         let out = run_to_completion(
@@ -507,7 +508,7 @@ mod tests {
         cfg.env.allow = vec!["NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("SECRET_TOKEN".to_string(), "x".to_string());
-        let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
+        let err = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
             .expect_err("non-allowlisted key must reject");
         assert_eq!(err.code, "S210");
         assert!(
@@ -526,7 +527,7 @@ mod tests {
         cfg.env.allow = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
-        let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
+        let err = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
             .expect_err("LD_PRELOAD must reject even when allowlisted");
         assert_eq!(err.code, "S210");
         assert!(err.message.contains("LD_PRELOAD"));
@@ -539,7 +540,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut cfg = test_cfg();
         cfg.fs.host_roots = vec![root.clone()];
-        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, &cfg)
+        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, None, &cfg)
             .expect_err("escape must reject");
         assert_eq!(err.code, "S215");
         std::fs::remove_dir_all(&root).ok();

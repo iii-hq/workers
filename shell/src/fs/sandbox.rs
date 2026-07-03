@@ -196,6 +196,7 @@ mod tests {
         let resp = b
             .ls(LsArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
             })
             .await
@@ -220,6 +221,7 @@ mod tests {
         let err = b
             .ls(LsArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
             })
             .await
@@ -237,6 +239,7 @@ mod tests {
         let err = b
             .ls(LsArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
             })
             .await
@@ -254,6 +257,7 @@ mod tests {
         let err = b
             .ls(LsArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
             })
             .await
@@ -277,6 +281,7 @@ mod tests {
         let resp = b
             .write(WriteArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -307,6 +312,7 @@ mod tests {
         let err = b
             .write(WriteArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
@@ -338,6 +344,7 @@ mod tests {
         let resp = b
             .read(ReadArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/sb/y".into(),
             })
             .await
@@ -373,6 +380,7 @@ mod tests {
         let err = b
             .rm(RmArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
                 recursive: false,
             })
@@ -401,6 +409,7 @@ mod tests {
         let err = b
             .ls(LsArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
             })
             .await
@@ -419,6 +428,7 @@ mod tests {
         let _ = b
             .grep(GrepArgs {
                 base_dir: None,
+                extra_roots: None,
                 path: "/x".into(),
                 pattern: "p".into(),
                 recursive: true,

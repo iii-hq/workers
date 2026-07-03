@@ -95,6 +95,23 @@ impl Jail {
         for (raw, token) in subs {
             out = out.replace(&raw, token);
         }
+        for (root, token) in [
+            (&self.root0, "<ROOT0_PARENT>"),
+            (&self.root1, "<ROOT1_PARENT>"),
+        ] {
+            if let Some(parent) = root.parent() {
+                out = out.replace(
+                    &format!("\"dir\":\"{}\"", parent.display()),
+                    &format!("\"dir\":\"{token}\""),
+                );
+            }
+        }
+        // `/etc/passwd` is a stable caller path in the case input, but the
+        // canonical existing directory differs on macOS (`/private/etc`) vs
+        // Linux (`/etc`). Normalize only the hint dir, not the echoed path.
+        for etc_dir in ["/private/etc", "/etc"] {
+            out = out.replace(&format!("\"dir\":\"{etc_dir}\""), "\"dir\":\"<ETC>\"");
+        }
         // DEFENSIVE: the substitution table only carries the CANONICAL root
         // forms. A future C2xx message that embedded the RAW (non-canonical)
         // base_path — e.g. /var/folders/... vs /private/var/folders/... on
@@ -152,6 +169,7 @@ async fn create_err(
         create_file::CreateFileInput {
             files: vec![spec],
             base_dir: None,
+            extra_roots: None,
         },
     )
     .await
@@ -244,6 +262,7 @@ async fn error_message_formats_match_golden() {
                 paths: vec!["blocked-dir".into()],
                 recursive: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -422,6 +441,7 @@ async fn error_message_formats_match_golden() {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -452,6 +472,7 @@ async fn error_message_formats_match_golden() {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -481,6 +502,7 @@ async fn error_message_formats_match_golden() {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -526,6 +548,7 @@ async fn error_message_formats_match_golden() {
                         }],
                     }],
                     base_dir: None,
+                    extra_roots: None,
                 },
             )
             .await
@@ -553,6 +576,7 @@ async fn error_message_formats_match_golden() {
                     parents: true,
                 }],
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await

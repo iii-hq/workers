@@ -52,6 +52,7 @@ pub struct PathResolver {
     /// — on other entry kinds the companions would wrongly drop a file
     /// or symlink merely NAMED like an excluded directory.
     default_exclude_dirs: GlobSet,
+    grant_roots_canon: Vec<PathBuf>,
 }
 
 /// Effective roots when `base_paths` is empty: the engine workspace cwd
@@ -128,6 +129,7 @@ impl PathResolver {
             non_accessible,
             default_exclude,
             default_exclude_dirs,
+            grant_roots_canon: Vec::new(),
         })
     }
 
@@ -147,27 +149,47 @@ impl PathResolver {
     /// session root is additive and only used for calls whose request still
     /// carries `base_dir`, so [`resolve_in`] continues to enforce the stricter
     /// "all paths stay under base_dir" containment check.
-    pub fn session_scoped(self: &Arc<Self>, base_dir: Option<&str>) -> Arc<Self> {
-        let Some(base_dir) = base_dir else {
-            return self.clone();
-        };
-        let base_path = Path::new(base_dir);
-        if !base_path.is_absolute() {
-            return self.clone();
-        }
-        let Ok(base_canon) = self.canonicalize_wire(base_dir, base_path) else {
-            return self.clone();
-        };
-        if !base_canon.is_dir() || self.roots_canon.contains(&base_canon) {
-            return self.clone();
-        }
+    pub fn session_scoped(
+        self: &Arc<Self>,
+        base_dir: Option<&str>,
+        extra_roots: Option<&[String]>,
+    ) -> Arc<Self> {
         let mut roots_canon = self.roots_canon.clone();
-        roots_canon.push(base_canon);
+        let mut grant_roots_canon = self.grant_roots_canon.clone();
+        let mut changed = false;
+
+        if let Some(base_dir) = base_dir {
+            let base_path = Path::new(base_dir);
+            if base_path.is_absolute() {
+                if let Ok(base_canon) = self.canonicalize_wire(base_dir, base_path) {
+                    if base_canon.is_dir() && !roots_canon.contains(&base_canon) {
+                        roots_canon.push(base_canon);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        for extra in confine_extra_roots(extra_roots) {
+            if !roots_canon.contains(&extra) {
+                roots_canon.push(extra.clone());
+                changed = true;
+            }
+            if !grant_roots_canon.contains(&extra) {
+                grant_roots_canon.push(extra);
+                changed = true;
+            }
+        }
+
+        if !changed {
+            return self.clone();
+        }
         Arc::new(Self {
             roots_canon,
             non_accessible: self.non_accessible.clone(),
             default_exclude: self.default_exclude.clone(),
             default_exclude_dirs: self.default_exclude_dirs.clone(),
+            grant_roots_canon,
         })
     }
 
@@ -242,8 +264,9 @@ impl PathResolver {
                 // consts are parsed back out by the recovery-pair test.
                 return Err(CoderError::OutsideBase(format!(
                     "path is outside every allowed root: {path}. \
-                     {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}",
-                    roots = self.roots_list()
+                     {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
+                    roots = self.roots_list(),
+                    hint = crate::grant::hint_suffix("C215", path, &canon),
                 )));
             } else {
                 // Relative path that escaped the primary root (e.g. via `..`).
@@ -251,7 +274,8 @@ impl PathResolver {
                 return Err(CoderError::OutsideBase(format!(
                     "path escapes the primary allowed root {primary}: {path}. \
                      Relative paths resolve against {primary}; \
-                     use an absolute path inside an allowed root instead."
+                     use an absolute path inside an allowed root instead.{hint}",
+                    hint = crate::grant::hint_suffix("C215", path, &canon),
                 )));
             }
         }
@@ -334,8 +358,9 @@ impl PathResolver {
                 // caller knows where they are allowed to work. The marker
                 // consts are parsed back out by the recovery-pair test.
                 CoderError::OutsideBase(format!(
-                    "{path}: {msg}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}",
-                    roots = self.roots_list()
+                    "{path}: {msg}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
+                    roots = self.roots_list(),
+                    hint = crate::grant::hint_suffix("C215", path, joined),
                 ))
             } else if e.kind() == std::io::ErrorKind::InvalidInput
                 || e.kind() == std::io::ErrorKind::NotFound
@@ -406,21 +431,25 @@ impl PathResolver {
         // "outside every allowed root" wording, which would contradict
         // coder::info's allowed-roots list for a path that genuinely lives
         // in a root.
-        if !canon.starts_with(&base_canon) {
+        if !canon.starts_with(&base_canon)
+            && !self.grant_roots_canon.iter().any(|r| canon.starts_with(r))
+        {
             let base = base_canon.display();
             if self.containing_root(&canon).is_some() {
                 return Err(CoderError::OutsideSession(format!(
                     "this session is scoped to {base}; {path} is inside an \
                      allowed root but outside the session directory — use a \
-                     path under {base}."
+                     path under {base}.{hint}",
+                    hint = crate::grant::hint_suffix("C218", path, &canon),
                 )));
             }
             // Outside the session AND outside every allowed root: the
             // generic C215 wording is correct and most actionable here.
             return Err(CoderError::OutsideBase(format!(
                 "path is outside the session directory {base} and outside \
-                 every allowed root: {path}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}",
-                roots = self.roots_list()
+                 every allowed root: {path}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
+                roots = self.roots_list(),
+                hint = crate::grant::hint_suffix("C215", path, &canon),
             )));
         }
         Ok(canon)
@@ -462,6 +491,32 @@ impl PathResolver {
             None => self.require_writable(rel),
         }
     }
+}
+
+fn confine_extra_roots(extra_roots: Option<&[String]>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Some(extra_roots) = extra_roots else {
+        return out;
+    };
+    for raw in extra_roots {
+        if raw.is_empty() {
+            continue;
+        }
+        let p = Path::new(raw);
+        if !p.is_absolute() {
+            continue;
+        }
+        let Ok(canon) = canonicalize_with_fallback(p) else {
+            continue;
+        };
+        if !canon.is_dir() {
+            continue;
+        }
+        if !out.iter().any(|r| r == &canon) {
+            out.push(canon);
+        }
+    }
+    out
 }
 
 fn compile_globset(patterns: &[String], key: &str) -> Result<GlobSet, CoderError> {
@@ -1177,7 +1232,7 @@ mod tests {
             "unscoped resolver must still reject a base_dir outside configured roots"
         );
 
-        let scoped = r.session_scoped(Some(&base));
+        let scoped = r.session_scoped(Some(&base), None);
         let got = scoped.resolve_in(&base, "sub/a.txt").unwrap();
         assert_eq!(got, canon(&selected.path().join("sub/a.txt")));
     }
@@ -1192,9 +1247,34 @@ mod tests {
         );
         let base = selected.path().display().to_string();
 
-        let scoped = r.session_scoped(Some(&base));
+        let scoped = r.session_scoped(Some(&base), None);
         let err = scoped.require_writable_in(&base, ".env").unwrap_err();
         assert_eq!(err.code(), "C211");
+    }
+
+    #[test]
+    fn session_scoped_extra_roots_allow_absolute_grants_without_moving_relative_anchor() {
+        let jail = tempdir().unwrap();
+        let session = jail.path().join("session");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join("same-name.txt"), b"session").unwrap();
+        let granted = tempdir().unwrap();
+        std::fs::write(granted.path().join("same-name.txt"), b"grant").unwrap();
+        let r = Arc::new(PathResolver::new(&cfg_with(jail.path().to_path_buf(), vec![])).unwrap());
+        let base = session.display().to_string();
+        let extras = vec![granted.path().display().to_string()];
+
+        let scoped = r.session_scoped(Some(&base), Some(&extras));
+        let absolute_grant = granted.path().join("same-name.txt").display().to_string();
+        let got = scoped.resolve_in(&base, &absolute_grant).unwrap();
+        assert_eq!(got, canon(&granted.path().join("same-name.txt")));
+
+        let relative = scoped.resolve_in(&base, "same-name.txt").unwrap();
+        assert_eq!(
+            relative,
+            canon(&session.join("same-name.txt")),
+            "relative paths must keep anchoring at base_dir, not an extra root"
+        );
     }
 
     /// A `..` escape from base_dir that lands OUTSIDE every allowed root is

@@ -33,6 +33,10 @@ pub struct ListFolderInput {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 fn default_path() -> String {
@@ -236,6 +240,7 @@ mod tests {
                 page: 1,
                 page_size: None,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -268,6 +273,7 @@ mod tests {
                 page: 2,
                 page_size: Some(2),
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -296,6 +302,7 @@ mod tests {
                 page: 1,
                 page_size: Some(9999),
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -316,6 +323,7 @@ mod tests {
                 page: 1,
                 page_size: None,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -346,6 +354,7 @@ mod tests {
                 page: 1,
                 page_size: None,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await

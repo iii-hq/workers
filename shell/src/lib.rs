@@ -9,6 +9,7 @@ pub mod exec;
 pub mod exec_dispatch;
 pub mod fs;
 pub mod functions;
+pub mod grant;
 pub mod jobs;
 pub mod path;
 pub mod scode;

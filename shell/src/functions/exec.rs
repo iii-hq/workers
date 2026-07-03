@@ -38,8 +38,14 @@ pub async fn handle(
     // target so the harness-injected session dir does not surface as a host cwd
     // override and get rejected (see `base_dir_for_target`).
     let base_dir = base_dir_for_target(&req.target, req.base_dir.as_deref());
-    let mut overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), base_dir, &cfg)
-        .map_err(iii_sdk::errors::Error::from)?;
+    let mut overrides = build_overrides(
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+        base_dir,
+        req.extra_roots.as_deref(),
+        &cfg,
+    )
+    .map_err(iii_sdk::errors::Error::from)?;
     // stdin needs no gating (opaque input bytes); it is host-only, enforced by
     // the sandbox backend's is_empty() rejection of any populated override.
     overrides.stdin = req.stdin;

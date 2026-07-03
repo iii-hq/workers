@@ -117,6 +117,10 @@ pub struct ExecRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
     /// Optional per-call environment values (host target only). A key may be
     /// set ONLY if the operator listed it in `env.allow`, and NEVER for an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
@@ -167,6 +171,10 @@ pub struct ExecBgRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
     /// Optional per-call environment values (host target only). Same gating as
     /// [`ExecRequest::env`]: a key must be in `env.allow` and must not be an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup

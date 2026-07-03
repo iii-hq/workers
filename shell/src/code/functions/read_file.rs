@@ -223,6 +223,10 @@ pub struct ReadFileInput {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -419,6 +423,15 @@ fn inner(
         }
         // Batch mode
         (None, Some(targets)) => {
+            for target in targets {
+                if let Err(e) =
+                    resolver.require_writable_opt(req.base_dir.as_deref(), target.path())
+                {
+                    if is_jail_scope_error(&e) {
+                        return Err(e);
+                    }
+                }
+            }
             let results = batch_read(resolver, cfg, req.base_dir.as_deref(), targets);
             Ok(ReadFileOutput {
                 path: None,
@@ -434,6 +447,13 @@ fn inner(
             })
         }
     }
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 // ---------------------------------------------------------------------------

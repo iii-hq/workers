@@ -93,6 +93,10 @@ pub struct SearchInput {
     #[serde(default)]
     #[schemars(skip)]
     pub base_dir: Option<String>,
+    /// Internal harness-granted roots; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub extra_roots: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -556,6 +560,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -601,6 +606,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -650,6 +656,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -681,6 +688,7 @@ mod tests {
                 search_content: false,
                 search_paths: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -713,6 +721,7 @@ mod tests {
                 search_content: true,
                 search_paths: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -751,6 +760,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -794,6 +804,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -823,6 +834,7 @@ mod tests {
                 search_content: true,
                 search_paths: true,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -855,6 +867,7 @@ mod tests {
                 search_content: false,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -884,6 +897,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -913,6 +927,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -943,6 +958,7 @@ mod tests {
                 search_content: true,
                 search_paths: false,
                 base_dir: None,
+                extra_roots: None,
             },
         )
         .await
@@ -977,6 +993,7 @@ mod tests {
             search_content: true,
             search_paths: false,
             base_dir: None,
+            extra_roots: None,
         }
     }
 
