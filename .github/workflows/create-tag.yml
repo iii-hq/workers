@@ -14,11 +14,14 @@ on:
           - claude-code
           - codex
           - console
+          - grok
           - context-manager
+          - cron
           - database
           - email
           - harness
           - hermes
+          - http
           - iii-directory
           - lsp
           - lsp-vscode
@@ -29,6 +32,7 @@ on:
           - pi
           - provider-anthropic
           - provider-openai
+          - provider-xai
           - rbac-proxy
           - session-manager
           - slack
