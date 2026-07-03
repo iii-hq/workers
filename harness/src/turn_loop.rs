@@ -175,11 +175,26 @@ pub async fn run_step(
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
+    // The previous step's watermark marks which entries arrived while that
+    // step was generating (assemble_context rotates them past the reply they
+    // interrupted — see rotate_mid_generation_users). The new watermark is
+    // assigned only AFTER the generate is consumed: the pre-generate put_turn
+    // must persist the OLD one, or a redelivered step loses the rotation
+    // window and re-issues the prefill-rejected trailing-assistant shape on
+    // every retry.
+    let prev_watermark = record.watermark_entry_id.clone();
     let watermark = entries.last().map(|e| e.entry_id.clone());
-    record.watermark_entry_id = watermark.clone();
 
     // Assemble the model-ready context (+ compaction persistence).
-    let assembled = assemble_context(deps, &session, &record, &entries, payload.step).await?;
+    let assembled = assemble_context(
+        deps,
+        &session,
+        &record,
+        &entries,
+        payload.step,
+        prev_watermark.as_deref(),
+    )
+    .await?;
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -295,6 +310,10 @@ pub async fn run_step(
 
     let router = deps.router().await;
     let outcome = router.chat(params, &sink).await?;
+
+    // Generation consumed: advance the steering watermark (persisted by the
+    // advance()/finalize call that ends this step).
+    record.watermark_entry_id = watermark;
 
     // Persist the final assistant message into the streamed entry.
     let _ = session
@@ -972,7 +991,10 @@ async fn has_user_after_watermark(
     let Some(watermark) = &record.watermark_entry_id else {
         return Ok(false);
     };
-    let entries = session.messages(&record.session_id, false).await?;
+    // include_custom must match the watermark's source list (the step entry
+    // loads with `true`): a watermark landing on a custom entry would
+    // otherwise never be found and the steering check silently dies.
+    let entries = session.messages(&record.session_id, true).await?;
     let mut after = false;
     for entry in entries {
         if after {
@@ -996,6 +1018,7 @@ async fn assemble_context(
     record: &TurnRecord,
     entries: &[LoadedEntry],
     step: u64,
+    prev_watermark: Option<&str>,
 ) -> Result<Assembled, HarnessError> {
     // Latest compaction custom entry on the path (if any).
     let mut previous_summary: Option<String> = None;
@@ -1021,21 +1044,37 @@ async fn assemble_context(
     // entries themselves are never sent to the model).
     let mut started = tail_start.is_none();
     let mut candidate: Vec<(String, AgentMessage)> = Vec::new();
+    // Index (into `candidate`) of the first entry appended after the previous
+    // step's watermark — i.e. while that step was generating.
+    let mut first_new: Option<usize> = None;
+    let mut past_prev_watermark = false;
     for entry in entries {
         if let Some(ts) = &tail_start {
             if &entry.entry_id == ts {
                 started = true;
             }
         }
-        if !started {
-            continue;
-        }
-        if let Some(msg) = &entry.message {
-            if !matches!(msg, AgentMessage::Custom(_)) {
-                candidate.push((entry.entry_id.clone(), msg.clone()));
+        if started {
+            if let Some(msg) = &entry.message {
+                if !matches!(msg, AgentMessage::Custom(_)) {
+                    if past_prev_watermark && first_new.is_none() {
+                        first_new = Some(candidate.len());
+                    }
+                    candidate.push((entry.entry_id.clone(), msg.clone()));
+                }
             }
         }
+        if prev_watermark == Some(entry.entry_id.as_str()) {
+            past_prev_watermark = true;
+        }
     }
+
+    // Rotation happens on the FINAL assembled values (below), never on
+    // `candidate`: compaction bookkeeping maps tail_start_index into
+    // `candidate` as a log-order cursor, and rotating first would persist a
+    // tail_start_entry_id that silently drops the rotated user message from
+    // every future window.
+    let new_suffix_len = first_new.map(|i| candidate.len() - i).unwrap_or(0);
 
     let candidate_values: Vec<Value> = candidate
         .iter()
@@ -1095,15 +1134,20 @@ async fn assemble_context(
                 );
                 messages = candidate_values.clone();
             }
+            rotate_mid_generation_users(&mut messages, new_suffix_len);
             Ok(Assembled {
                 system_prompt: with_filesystem_root_aid(Some(out.system_prompt), record),
                 messages,
             })
         }
-        Ok(None) | Err(_) => Ok(Assembled {
-            system_prompt: with_filesystem_root_aid(record.options.system_prompt.clone(), record),
-            messages: candidate_values,
-        }),
+        Ok(None) | Err(_) => {
+            let mut messages = candidate_values;
+            rotate_mid_generation_users(&mut messages, new_suffix_len);
+            Ok(Assembled {
+                system_prompt: with_filesystem_root_aid(record.options.system_prompt.clone(), record),
+                messages,
+            })
+        }
     }
 }
 
@@ -1169,6 +1213,52 @@ fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
 struct Assembled {
     system_prompt: Option<String>,
     messages: Vec<Value>,
+}
+
+/// A user entry appended while a step was generating (or assembling — the
+/// compaction/hook window) lands BEFORE that step's assistant entry in the
+/// durable log. The steering check then re-generates, but the assembled list
+/// would END with the assistant message: a prefill request Anthropic rejects
+/// ("This model does not support assistant message prefill. The conversation
+/// must end with a user message."), wedging the turn on every retry. Present
+/// mid-generation arrivals AFTER the reply they interrupted — semantically
+/// exact: the model answered without seeing them. Runs on the FINAL assembled
+/// values so compaction bookkeeping stays in log order; `new_suffix_len` is
+/// how many trailing messages arrived after the previous step's watermark
+/// (only user messages inside that suffix rotate). The window is clamped off
+/// the opening message so the context always still starts with the user turn.
+/// The durable transcript is untouched.
+fn rotate_mid_generation_users(messages: &mut Vec<Value>, new_suffix_len: usize) {
+    if new_suffix_len == 0 || messages.len() < 2 {
+        return;
+    }
+    let last = messages.len() - 1;
+    let tail = &messages[last];
+    let trailing_callless_assistant = tail.get("role").and_then(Value::as_str)
+        == Some("assistant")
+        && !tail
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("function_call"))
+            })
+            .unwrap_or(false);
+    if !trailing_callless_assistant {
+        return;
+    }
+    let window_start = messages.len().saturating_sub(new_suffix_len).max(1);
+    let mut moved: Vec<Value> = Vec::new();
+    let mut i = window_start;
+    while i < messages.len() - 1 {
+        if messages[i].get("role").and_then(Value::as_str) == Some("user") {
+            moved.push(messages.remove(i));
+        } else {
+            i += 1;
+        }
+    }
+    messages.extend(moved);
 }
 
 /// Patch an ASSEMBLED message list whose assistant `function_call` blocks lack
@@ -1361,6 +1451,112 @@ mod tests {
         assert!(aid.contains("w00::fn"));
         assert!(!aid.contains("w39::fn"));
         assert!(aid.contains("…"));
+    }
+
+    mod rotate_mid_generation_users {
+        use super::super::rotate_mid_generation_users;
+        use serde_json::{json, Value};
+
+        fn user(tag: &str) -> Value {
+            json!({"role": "user", "content": [{"type": "text", "text": tag}]})
+        }
+        fn assistant(tag: &str) -> Value {
+            json!({"role": "assistant", "content": [{"type": "text", "text": tag}]})
+        }
+        fn assistant_call(tag: &str) -> Value {
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": tag},
+                {"type": "function_call", "id": "t1", "function_id": "f", "arguments": {}},
+            ]})
+        }
+        fn result(tag: &str) -> Value {
+            json!({"role": "function_result", "function_call_id": "t1", "function_id": "f",
+                   "content": [{"type": "text", "text": tag}]})
+        }
+        fn tags(msgs: &[Value]) -> Vec<&str> {
+            msgs.iter()
+                .map(|m| {
+                    m["content"][0]["text"]
+                        .as_str()
+                        .or_else(|| m["content"].as_str())
+                        .unwrap_or("?")
+                })
+                .collect()
+        }
+
+        #[test]
+        fn mid_generation_notification_rotates_past_the_reply() {
+            // The live prefill-400 repro: notification appended during
+            // generation/assembly sits before the assistant entry; the
+            // re-generate must end with the notification, not the assistant.
+            let mut m = vec![user("task"), assistant("a1"), user("notif"), assistant("a2")];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(tags(&m), vec!["task", "a1", "a2", "notif"]);
+        }
+
+        #[test]
+        fn opening_message_never_moves() {
+            // Suffix covering the whole list (first generate, or compaction
+            // cut into the suffix): the window clamps off the opener so the
+            // context still starts with a user turn.
+            let mut m = vec![user("task"), user("notif"), assistant("a1")];
+            rotate_mid_generation_users(&mut m, 3);
+            assert_eq!(tags(&m), vec!["task", "a1", "notif"]);
+        }
+
+        #[test]
+        fn empty_suffix_is_a_noop() {
+            let mut m = vec![user("task"), assistant("a1")];
+            rotate_mid_generation_users(&mut m, 0);
+            assert_eq!(tags(&m), vec!["task", "a1"]);
+        }
+
+        #[test]
+        fn trailing_assistant_with_calls_is_left_for_the_result_path() {
+            // Calls pending → results follow → the wire never ends assistant.
+            let mut m = vec![user("task"), user("notif"), assistant_call("a1")];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(tags(&m), vec!["task", "notif", "a1"]);
+        }
+
+        #[test]
+        fn results_in_the_new_suffix_stay_in_place() {
+            // Result and notification both landed after the watermark; only
+            // the user message rotates, pairing stays intact.
+            let mut m = vec![
+                user("task"),
+                assistant_call("a1"),
+                result("r1"),
+                user("notif"),
+                assistant("a2"),
+            ];
+            rotate_mid_generation_users(&mut m, 3);
+            assert_eq!(tags(&m), vec!["task", "a1", "r1", "a2", "notif"]);
+        }
+
+        #[test]
+        fn trailing_user_is_a_noop() {
+            let mut m = vec![user("task"), assistant("a1"), user("steer")];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(tags(&m), vec!["task", "a1", "steer"]);
+        }
+
+        #[test]
+        fn redelivered_step_with_stale_empty_assistant_still_rotates() {
+            // The verifier's retry schedule: attempt 1 appended its empty
+            // assistant entry then died before generating; the retry's
+            // suffix covers [notif, empty-assistant]. The notification must
+            // still rotate past the trailing (empty, call-less) assistant.
+            let mut m = vec![
+                user("task"),
+                assistant("a1"),
+                user("notif"),
+                json!({"role": "assistant", "content": []}),
+            ];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(m[3]["role"], "user");
+            assert_eq!(m[3]["content"][0]["text"], "notif");
+        }
     }
 
     #[test]
