@@ -21,4 +21,3 @@ pub mod path;
 pub mod state;
 
 pub use functions::register_all;
-pub use state::ConfigCell;

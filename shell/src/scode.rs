@@ -62,7 +62,7 @@ pub fn map_static_code(code: &str) -> &'static str {
         "S217" => "S217",
         "S218" => "S218",
         "S219" => "S219",
-        // base_dir (per-call session-scope) containment violation.
+        // scope_root (per-call session-scope) containment violation.
         "S220" => "S220",
         _ => FALLBACK_CODE,
     }

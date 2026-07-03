@@ -115,6 +115,7 @@ mod tests {
             "turn_id": "t_1",
             "function_call_id": cid,
             "function_id": "shell::run",
+            "kind": "function",
             "arguments_excerpt": {},
             "pending_at": pending_at,
             "depth": 0,

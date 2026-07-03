@@ -14,7 +14,7 @@ pub use backend::{ExecBackend, ExecCallResult, ExecOutcome};
 #[allow(unused_imports)]
 pub use policy::{build_overrides, ExecOverrides};
 // These two re-exports are the public-API surface for downstream
-// consumers of `shell::exec::*` and the back-compat surface for
+// consumers of `shell::exec::*` and the stable surface for
 // internal `crate::exec::{parse_argv, build_command, run_to_completion,
 // HostExecBackend, ExecError}` import paths. Rustc flags them as
 // unused inside the binary target (the binary uses fully-qualified

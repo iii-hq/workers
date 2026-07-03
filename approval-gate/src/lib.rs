@@ -22,6 +22,8 @@ pub mod decision;
 pub mod denial;
 pub mod error;
 pub mod events;
+pub mod filesystem_access;
+pub mod filesystem_access_state;
 pub mod functions;
 pub mod harness;
 pub mod manifest;
@@ -30,6 +32,7 @@ pub mod permissions;
 pub mod redact;
 pub mod session;
 pub mod settings;
+pub mod shell_config;
 pub mod state;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;

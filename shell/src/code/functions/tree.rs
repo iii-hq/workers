@@ -46,10 +46,10 @@ pub struct TreeInput {
     /// are omitted. Pass `false` to list everything.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 fn default_path() -> String {
@@ -143,7 +143,7 @@ fn inner(
     cfg: &CoderConfig,
     req: TreeInput,
 ) -> Result<TreeOutput, CoderError> {
-    let abs = resolver.resolve_opt(req.base_dir.as_deref(), &req.path)?;
+    let abs = resolver.resolve_opt(crate::fs::scope_root(req.fs_scope.as_ref()), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -348,7 +348,7 @@ mod tests {
             max_depth: None,
             per_folder_limit: None,
             use_default_excludes: true,
-            base_dir: None,
+            fs_scope: None,
         }
     }
 

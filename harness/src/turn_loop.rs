@@ -336,6 +336,10 @@ pub async fn run_step(
     if !trigger_calls.is_empty() {
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
+        let session_grants =
+            crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+                .await?;
+        let filesystem_root = record.options.filesystem_root().map(str::to_string);
         for call in trigger_calls.iter().copied() {
             // Per-call checkpoint: skip done/pending, recover an interrupted
             // trigger.
@@ -371,13 +375,14 @@ pub async fn run_step(
             }
 
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
-            // args ALREADY carrying the workspace stamp so an approver reviews
-            // the base_dir the call will actually run under; the stamp is
+            // args ALREADY carrying the filesystem scope stamp so an approver
+            // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
-            let staged_args = crate::workspace_inject::inject(
+            let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
                 call.arguments.clone(),
-                record.options.working_dir(),
+                filesystem_root.as_deref(),
+                &session_grants,
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -386,14 +391,22 @@ pub async fn run_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
-                    &staged_args,
+                    &trusted_call_args,
                 )
                 .await
             {
                 crate::hooks::runner::PreTriggerOutcome::Continue {
                     arguments,
                     annotations,
-                } => (arguments, annotations),
+                } => {
+                    let arguments = crate::filesystem_scope::inject(
+                        &call.function_id,
+                        arguments,
+                        filesystem_root.as_deref(),
+                        &session_grants,
+                    );
+                    (arguments, annotations)
+                }
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
                     let data = trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
@@ -469,17 +482,6 @@ pub async fn run_step(
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
-            // Stamp the per-session working directory onto scoped shell/coder
-            // calls as `base_dir` BEFORE invocation. The harness owns scoping:
-            // this overwrites any model-supplied base_dir so the model cannot
-            // widen its own workspace. A None working_dir is a no-op (the args
-            // pass through byte-for-byte unchanged).
-            let scoped_args = crate::workspace_inject::inject(
-                &call.function_id,
-                eff_args,
-                record.options.working_dir(),
-            );
-
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
@@ -488,15 +490,42 @@ pub async fn run_step(
                 &engine,
                 &policy,
                 &call.function_id,
-                &scoped_args,
+                &eff_args,
                 &record.session_id,
             )
             .await;
-            let (data, post_ann) = deps
+            let post_outcome = deps
                 .hooks
-                .run_post_trigger(&record, payload.step, &call.id, &call.function_id, raw)
+                .run_post_trigger(
+                    &record,
+                    payload.step,
+                    &call.id,
+                    &call.function_id,
+                    &eff_args,
+                    raw,
+                )
                 .await;
             let mut annotations = pre_ann;
+            let (data, post_ann) = match post_outcome {
+                crate::hooks::runner::PostTriggerOutcome::Result {
+                    result,
+                    annotations,
+                } => (result, annotations),
+                crate::hooks::runner::PostTriggerOutcome::Hold {
+                    held_by,
+                    annotations: _,
+                } => {
+                    let info = trigger::PendingInfo {
+                        pending_timeout_ms: None,
+                        held_by: Some(held_by),
+                        child_session_id: None,
+                        child_turn_id: None,
+                    };
+                    checkpoint_pending(&mut record, &call.id, call, &info);
+                    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                    continue;
+                }
+            };
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
@@ -1027,24 +1056,24 @@ async fn assemble_context(
                 messages = candidate_values.clone();
             }
             Ok(Assembled {
-                system_prompt: with_working_dir_aid(Some(out.system_prompt), record),
+                system_prompt: with_filesystem_root_aid(Some(out.system_prompt), record),
                 messages,
             })
         }
         Ok(None) | Err(_) => Ok(Assembled {
-            system_prompt: with_working_dir_aid(record.options.system_prompt.clone(), record),
+            system_prompt: with_filesystem_root_aid(record.options.system_prompt.clone(), record),
             messages: candidate_values,
         }),
     }
 }
 
 /// Append a working-directory line to the system prompt when the turn carries a
-/// `working_dir` in its metadata. This is a model-facing AID only — the real
-/// scoping control plane stamps `base_dir` onto each call
-/// (`workspace_inject::inject`); this line just tells the model where it is so
+/// `filesystem_root` in its metadata. This is a model-facing AID only — the real
+/// scoping control plane stamps `fs_scope` onto each call
+/// (`filesystem_scope::inject`); this line just tells the model where it is so
 /// it reasons about relative paths sensibly.
-fn with_working_dir_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let Some(dir) = record.options.working_dir() else {
+fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
+    let Some(dir) = record.options.filesystem_root() else {
         return system_prompt;
     };
     let line = format!("Your working directory is {dir}.");

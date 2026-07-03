@@ -2,6 +2,7 @@ import { ModeToggle } from '@/components/ui/ModeToggle'
 import { cn } from '@/lib/utils'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { FieldShell } from './FieldShell'
+import { pathToDomId } from './path'
 import { schemaDefault, withoutNull } from './ref-resolver'
 
 type Mode = 'set' | 'unset'
@@ -45,6 +46,7 @@ export function NullableField(props: FieldProps) {
         description={description}
         required={required}
         errorMessage={null}
+        anchorId={pathToDomId(props.path)}
       >
         {() => (
           <ModeToggle<Mode>

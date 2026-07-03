@@ -122,6 +122,8 @@ mod tests {
             session_metadata: None,
             depth: 0,
             assistant_excerpt: None,
+            kind: crate::types::PendingKind::Function,
+            access_request: None,
         }
     }
 

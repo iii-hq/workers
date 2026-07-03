@@ -23,6 +23,9 @@ import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 // Provider credentials + settings now live in the llm-router `configuration`
 // entry, edited via the schema-driven form on the workers tab.
 const HARNESS_CONFIG_HASH = '#/configuration/workers/llm-router'
+// Shell's permanent `fs.host_roots` list — do NOT build a second editor for
+// it here; deep-link to the existing schema-driven form instead.
+const SHELL_CONFIG_HASH = '#/configuration/workers/shell'
 
 interface ConsoleSettingsTabProps {
   theme: Theme
@@ -237,6 +240,24 @@ export function ConsoleSettingsTab({
               </a>
             }
             meta="credentials + settings live in the harness configuration (workers tab). the form's shape grows with each provider that registers; api keys are masked."
+          />
+        </Section>
+
+        <Section
+          title="filesystem access"
+          description="the agent can always use a conversation's chosen workspace. touching anything outside it prompts in the chat — allow once, for the session, or permanently."
+        >
+          <Row
+            label="filesystem access"
+            control={
+              <a
+                href={SHELL_CONFIG_HASH}
+                className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
+              >
+                edit permanent roots
+              </a>
+            }
+            meta="workspace + per-session grants are managed from the chat's filesystem access dialog. permanent roots (allowed for every conversation) live in shell configuration."
           />
         </Section>
       </div>

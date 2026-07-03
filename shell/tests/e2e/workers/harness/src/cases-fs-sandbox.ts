@@ -1,4 +1,4 @@
-import type { ISdk } from 'iii-sdk';
+import type { FunctionRef, ISdk } from 'iii-sdk';
 import { ChannelReader } from 'iii-sdk';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 
@@ -14,8 +14,11 @@ let nextResponse: any = null;
 let nextErrorMessage: string | null = null;
 let sandboxWriteDrainedBytes: Buffer | null = null;
 let sandboxReadBytesToServe: Buffer | null = null;
+let mockSdk: ISdk | null = null;
+let mockRefs: FunctionRef[] = [];
 
 export function resetMocks(): void {
+  refreshSandboxMocks();
   captured.length = 0;
   nextResponse = null;
   nextErrorMessage = null;
@@ -46,9 +49,23 @@ export function getCapturedCalls(): readonly CapturedCall[] {
 export const SANDBOX_ID = '11111111-2222-3333-4444-555555555555';
 
 export function setupSandboxMocks(iii: ISdk): void {
+  mockSdk = iii;
+  refreshSandboxMocks();
+}
+
+function refreshSandboxMocks(): void {
+  const sdk = mockSdk;
+  if (sdk === null) return;
+  // The real iii-sandbox worker can register the same fs ids after the harness
+  // starts; re-own them before each mock case so wire-shape tests stay isolated.
+  for (const ref of mockRefs) {
+    ref.unregister();
+  }
+  mockRefs = [];
+
   const simpleOps = ['ls', 'stat', 'mkdir', 'rm', 'chmod', 'mv', 'grep', 'sed'];
   for (const op of simpleOps) {
-    iii.registerFunction(`sandbox::fs::${op}`, async (payload: any) => {
+    const ref = sdk.registerFunction(`sandbox::fs::${op}`, async (payload: any) => {
       captured.push({ function_id: `sandbox::fs::${op}`, payload });
       if (nextErrorMessage !== null) {
         const m = nextErrorMessage;
@@ -59,8 +76,9 @@ export function setupSandboxMocks(iii: ISdk): void {
       nextResponse = null;
       return r ?? {};
     });
+    mockRefs.push(ref);
   }
-  iii.registerFunction('sandbox::fs::write', async (payload: any) => {
+  mockRefs.push(sdk.registerFunction('sandbox::fs::write', async (payload: any) => {
     captured.push({ function_id: 'sandbox::fs::write', payload });
     sandboxWriteDrainedBytes = null;
     if (nextErrorMessage !== null) {
@@ -74,8 +92,8 @@ export function setupSandboxMocks(iii: ISdk): void {
     const r = nextResponse;
     nextResponse = null;
     return r ?? { bytes_written: drained.length, path: payload.path };
-  });
-  iii.registerFunction('sandbox::fs::read', async (payload: any) => {
+  }));
+  mockRefs.push(sdk.registerFunction('sandbox::fs::read', async (payload: any) => {
     captured.push({ function_id: 'sandbox::fs::read', payload });
     if (nextErrorMessage !== null) {
       const m = nextErrorMessage;
@@ -83,7 +101,7 @@ export function setupSandboxMocks(iii: ISdk): void {
       throw new Error(m);
     }
     const bytes = sandboxReadBytesToServe ?? Buffer.from('');
-    const channel = await iii.createChannel(64);
+    const channel = await sdk.createChannel(64);
     (async () => {
       channel.writer.stream.write(bytes, (err: Error | null | undefined) => {
         if (err) {
@@ -103,7 +121,7 @@ export function setupSandboxMocks(iii: ISdk): void {
         mtime: 1700000000,
       }
     );
-  });
+  }));
   // NOTE: we deliberately do NOT mock `sandbox::exec` here. The
   // exec-side e2e cases (cases-exec-sandbox.ts) drive the *real*
   // iii-sandbox worker so the test exercises the full

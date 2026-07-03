@@ -25,7 +25,7 @@ import { cn } from '@/lib/utils'
  * selects it (projects). Every selection — pasted, remembered, or browsed — is
  * validated against the live shell worker before it's accepted, and the
  * worker-echoed canonical path is what gets stored. The chosen dir is what the
- * harness scopes the chat to (`base_dir`); it is re-scopable mid-conversation
+ * harness scopes the chat to (`fs_scope.root`); it is re-scopable mid-conversation
  * (a change drops a visible transcript marker).
  */
 
@@ -581,6 +581,14 @@ export function DirectoryPicker({
               </div>
             </div>
           )}
+
+          {/* Static discoverability footnote — same line in both views, per
+              the filesystem-access spec §6: sets expectations before the first
+              grant prompt ever fires. */}
+          <div className="border-t border-rule-2 px-3 py-1.5 font-mono text-[10px] leading-relaxed text-ink-ghost">
+            the agent can use the chosen folder freely — it asks before touching
+            anything outside it.
+          </div>
         </div>
       ) : null}
     </div>

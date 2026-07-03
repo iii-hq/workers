@@ -4,6 +4,7 @@ import type { JsonValue } from '../api'
 import { wt } from '../typography'
 import type { FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
+import { pathToDomId } from './path'
 
 /**
  * Enum field for schemas with an `enum` keyword. Options come straight
@@ -44,6 +45,7 @@ export function EnumField(props: FieldProps) {
       required={required}
       errorMessage={errorForField(props)}
       hideLabel={hideLabel}
+      anchorId={pathToDomId(props.path)}
     >
       {() => (
         <Select<string>

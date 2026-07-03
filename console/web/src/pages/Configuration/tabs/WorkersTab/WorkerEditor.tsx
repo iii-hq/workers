@@ -8,6 +8,7 @@ import { parseSetError } from './errors'
 import { useConfigurationValue, useSetConfiguration } from './hooks'
 import { SaveBar, type SaveStatus } from './SaveBar'
 import { isObjectSchema } from './schema-form/guard'
+import { pathToDomId, type Path } from './schema-form/path'
 import { SchemaForm } from './schema-form/SchemaForm'
 import { validateConfig } from './schema-form/validate'
 import { wt } from './typography'
@@ -88,6 +89,24 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
   useEffect(() => {
     onDirtyChange(dirty)
   }, [dirty, onDirtyChange])
+
+  useEffect(() => {
+    if (draft === undefined) return
+    const focusLinkedField = () => {
+      const path = fieldPathFromHash(entry.id)
+      if (!path) return
+      const target = document.getElementById(pathToDomId(path))
+      if (!target) return
+      target.scrollIntoView({ block: 'center' })
+      target.focus({ preventScroll: true })
+    }
+    const id = window.requestAnimationFrame(focusLinkedField)
+    window.addEventListener('hashchange', focusLinkedField)
+    return () => {
+      window.cancelAnimationFrame(id)
+      window.removeEventListener('hashchange', focusLinkedField)
+    }
+  }, [draft, entry.id])
 
   // Unmount cleanup: tell the shell we're no longer dirty when the
   // editor goes away (e.g. switching workers). Without this, the dirty
@@ -262,4 +281,16 @@ export function WorkerEditorEmptySelection({
       description="pick a worker on the left to view and edit its current value."
     />
   )
+}
+
+function fieldPathFromHash(workerId: string): Path | null {
+  if (typeof window === 'undefined') return null
+  const prefix = `#/configuration/workers/${encodeURIComponent(workerId)}/`
+  if (!window.location.hash.startsWith(prefix)) return null
+  const rest = window.location.hash.slice(prefix.length)
+  const path = rest
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => decodeURIComponent(segment))
+  return path.length > 0 ? path : null
 }

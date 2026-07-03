@@ -1,6 +1,6 @@
 //! Typed request/response shapes for the 5 `shell::*` (non-fs) functions.
 //! These mirror the inline `json!()` schemas that lived in `main.rs` before
-//! the migration to `RegisterFunction::new_async`. The wire format is
+//! the transition to `RegisterFunction::new_async`. The wire format is
 //! unchanged from prior versions.
 //!
 //! `ExecRequest` and `ExecBgRequest` use per-field custom deserializers so the
@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::exec::ExecOutcome;
+use crate::fs::FsScope;
 use crate::jobs::{JobRecord, JobStatus};
 use crate::target::Target;
 
@@ -107,16 +108,16 @@ pub struct ExecRequest {
     pub timeout_ms: Option<u64>,
     /// Optional working directory for this call (host target only). Confined to
     /// the fs jail exactly like `shell::fs::*` paths: jail-relative when
-    /// `fs.host_roots` is set (else absolute), canonicalized, and must resolve
+    /// `fs.host_roots` are set (else absolute), canonicalized, and must resolve
     /// inside a jail root and miss the denylist — a path that escapes returns
     /// S215. Must already exist and be a directory. Omit to use the configured
     /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
     /// Optional per-call environment values (host target only). A key may be
     /// set ONLY if the operator listed it in `env.allow`, and NEVER for an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
@@ -163,10 +164,10 @@ pub struct ExecBgRequest {
     /// directory. Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
     /// Optional per-call environment values (host target only). Same gating as
     /// [`ExecRequest::env`]: a key must be in `env.allow` and must not be an
     /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup

@@ -5,6 +5,7 @@
 
 pub mod approve_always;
 pub mod clear_settings;
+pub mod filesystem_access_watch;
 pub mod gate;
 pub mod get_pending;
 pub mod get_settings;
@@ -39,6 +40,9 @@ use crate::events::EventSink;
 
 pub const GATE_ID: &str = "approval::gate";
 pub const GATE_DESC: &str = "pre_trigger hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.";
+
+pub const FILESYSTEM_ACCESS_WATCH_ID: &str = "approval::filesystem-access-watch";
+pub const FILESYSTEM_ACCESS_WATCH_DESC: &str = "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.";
 
 pub const RESOLVE_ID: &str = "approval::resolve";
 pub const RESOLVE_DESC: &str = "Apply a human decision to a held call: release it for execution (allow) or deliver a denial (deny). Human/console-only.";
@@ -128,6 +132,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, GATE_ID, GATE_DESC, |d, r| async move {
         gate::handle(&d, r).await
     });
+    register(
+        iii,
+        deps,
+        FILESYSTEM_ACCESS_WATCH_ID,
+        FILESYSTEM_ACCESS_WATCH_DESC,
+        |d, r| async move { filesystem_access_watch::handle(&d, r).await },
+    );
     register(iii, deps, RESOLVE_ID, RESOLVE_DESC, |d, r| async move {
         resolve::handle(&d, r).await
     });
@@ -252,6 +263,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
 
     vec![
         spec::<HookInput, HookOutput>(GATE_ID, GATE_DESC),
+        spec::<HookInput, HookOutput>(FILESYSTEM_ACCESS_WATCH_ID, FILESYSTEM_ACCESS_WATCH_DESC),
         spec::<ResolveRequest, ResolveResponse>(RESOLVE_ID, RESOLVE_DESC),
         spec::<ListPendingRequest, ListPendingResponse>(LIST_PENDING_ID, LIST_PENDING_DESC),
         spec::<GetPendingRequest, Option<GetPendingResponse>>(GET_PENDING_ID, GET_PENDING_DESC),

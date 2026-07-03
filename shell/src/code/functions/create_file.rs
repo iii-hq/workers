@@ -17,10 +17,10 @@ use crate::code::path::PathResolver;
 #[schemars(example = "example_create_file_input")]
 pub struct CreateFileInput {
     pub files: Vec<CreateFileSpec>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -98,25 +98,32 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let base_dir = req.base_dir.as_deref();
-    let mut results = Vec::with_capacity(req.files.len());
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+    let mut entries = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(create_one(&resolver, &cfg, base_dir, spec));
+        match resolver.require_writable_opt(scope_root, &spec.path) {
+            Ok(abs) => entries.push((spec, Ok(abs))),
+            Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
+            Err(e) => entries.push((spec, Err(e))),
+        }
     }
+    let results = entries
+        .into_iter()
+        .map(|(spec, resolved)| create_one(&cfg, spec, resolved))
+        .collect();
     Ok(CreateFileOutput { results })
 }
 
 fn create_one(
-    resolver: &PathResolver,
     cfg: &CoderConfig,
-    base_dir: Option<&str>,
     spec: CreateFileSpec,
+    resolved: Result<std::path::PathBuf, CoderError>,
 ) -> CreateFileResult {
     // Resolve up front: from here on every filesystem operation uses ONLY
     // the resolver-returned path (never re-derived from the raw request),
     // and the result echoes that canonical absolute path. When resolution
     // fails there is no canonical path, so the input is echoed verbatim.
-    let abs = match resolver.require_writable_opt(base_dir, &spec.path) {
+    let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
             return CreateFileResult {
@@ -142,6 +149,13 @@ fn create_one(
             error: Some((&e).into()),
         },
     }
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 fn try_create_one(cfg: &CoderConfig, abs: &Path, spec: CreateFileSpec) -> Result<u64, CoderError> {
@@ -220,7 +234,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -256,7 +270,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -280,7 +294,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -309,7 +323,7 @@ mod tests {
                     parents: true,
                     overwrite: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -335,7 +349,7 @@ mod tests {
                     parents: true,
                     overwrite: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -345,24 +359,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jail_escape_reports_c215_per_item_and_batch_continues() {
-        // A jail escape on one entry must surface as a per-item C215 (not a
-        // top-level failure) and must NOT abort the rest of the batch — the
-        // write-side per-item jail contract that the dropped path-security
-        // BDD scenarios asserted.
+    async fn jail_escape_aborts_batch_before_any_write() {
+        // Jail-scope failures must be top-level call errors so the harness
+        // post-trigger approval hook can see the C215/C218 and hold the call.
+        // Preflight all paths before I/O: a later escape must not leave earlier
+        // entries partially written before the call is re-invoked after a grant.
         let (tmp, r, c) = setup();
-        let out = handle(
+        let err = handle(
             r,
             c,
             CreateFileInput {
                 files: vec![
-                    CreateFileSpec {
-                        path: "../escape.txt".into(),
-                        content: "x".into(),
-                        mode: "0644".into(),
-                        parents: true,
-                        overwrite: false,
-                    },
                     CreateFileSpec {
                         path: "ok.txt".into(),
                         content: "y".into(),
@@ -370,22 +377,22 @@ mod tests {
                         parents: true,
                         overwrite: false,
                     },
+                    CreateFileSpec {
+                        path: "../escape.txt".into(),
+                        content: "x".into(),
+                        mode: "0644".into(),
+                        parents: true,
+                        overwrite: false,
+                    },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
-        .unwrap();
-        assert!(!out.results[0].success, "escape entry must fail");
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C215");
-        assert!(
-            out.results[1].success,
-            "the in-jail entry must still be written"
-        );
-        assert_eq!(
-            std::fs::read_to_string(tmp.path().join("ok.txt")).unwrap(),
-            "y"
-        );
+        .unwrap_err();
+        let wire: serde_json::Value = serde_json::from_str(&err).unwrap();
+        assert_eq!(wire["code"], "C215");
+        assert!(!tmp.path().join("ok.txt").exists());
         assert!(
             !tmp.path().join("../escape.txt").exists(),
             "the escaping path must never be created"
@@ -412,7 +419,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -444,7 +451,7 @@ mod tests {
                         overwrite: false,
                     },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -473,7 +480,7 @@ mod tests {
                     parents: true,
                     overwrite: false,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await

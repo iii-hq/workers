@@ -11,6 +11,7 @@ mod config;
 mod configuration;
 mod exec;
 mod exec_dispatch;
+mod filesystem_access;
 mod fs;
 mod functions;
 mod jobs;
@@ -197,8 +198,19 @@ async fn main() -> Result<()> {
         );
     }
 
+    let code_cells = if cfg.fs.is_jailed() {
+        Some(
+            configuration::build_code_cells(&cfg)
+                .map_err(anyhow::Error::msg)
+                .context("building initial code surface state (coder::*)")?,
+        )
+    } else {
+        None
+    };
+
     let state = AppState {
         runtime: std::sync::Arc::new(tokio::sync::RwLock::new(runtime)),
+        code_cells: code_cells.clone(),
         iii: iii.clone(),
         reload_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         reload_status: std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -232,16 +244,12 @@ async fn main() -> Result<()> {
     // whole worker fails closed (no half-booted surface). The code surface
     // requires a jail: unjailed shells don't expose coder::*.
     if cfg.fs.is_jailed() {
-        let code_cfg = cfg.code_resolver_config();
-        let resolver = code::path::PathResolver::new(&code_cfg)
-            .map_err(|e| anyhow::anyhow!("failed to build code PathResolver (coder::*): {e}"))?;
-        let cell: code::ConfigCell =
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(code_cfg)));
-        code::register_all(&iii, std::sync::Arc::new(resolver), cell);
+        let cells = code_cells.expect("code cells exist when fs is jailed");
+        code::register_all(&iii, cells);
         tracing::info!("code surface (coder::*) registered over the unified fs jail");
     } else {
         tracing::warn!(
-            "fs is unjailed (fs.host_roots is empty) — code surface (coder::*) NOT \
+            "fs is unjailed (no fs.host_roots) — code surface (coder::*) NOT \
              registered; coder file functions require a jail root"
         );
     }
@@ -560,7 +568,7 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
          to run in a microVM. Errors return { code, message }; common: S210 bad path, S211 not found, \
          S212 not a directory, S215 jail/denylist.");
     fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
-        "Stat a single path (jail-relative when fs.host_roots is set). Returns the entry's type, size, \
+        "Stat a single path (jail-relative when fs.host_roots are set). Returns the entry's type, size, \
          mode, and mtime. Errors return { code, message }; common: S211 not found, S215 jail/denylist.");
     fs_fn!("shell::fs::mkdir", fs_mkdir, fs::MkdirRequest, fs::MkdirResponse,
         "Create a directory. `mode` is an octal string like \"0755\". `parents: true` creates missing \

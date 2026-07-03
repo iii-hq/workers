@@ -272,12 +272,18 @@ async fn seed_or_merge(
             let recheck =
                 crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
             match recheck {
-                Some(r) if !r.status.is_terminal() => Ok(StartOutcome {
-                    session_id: session_id.to_string(),
-                    turn_id: r.turn_id,
-                    merged: true,
-                    deduplicated: false,
-                }),
+                Some(mut r) if !r.status.is_terminal() => {
+                    if r.options.refresh_filesystem_root_from(&options) {
+                        r.updated_at = AgentMessage::now_ms();
+                        crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
+                    }
+                    Ok(StartOutcome {
+                        session_id: session_id.to_string(),
+                        turn_id: r.turn_id,
+                        merged: true,
+                        deduplicated: false,
+                    })
+                }
                 _ => seed_new(deps, cfg, session_id, options).await,
             }
         }

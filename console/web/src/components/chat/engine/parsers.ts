@@ -32,11 +32,7 @@ const ENGINE_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(
   ENGINE_FUNCTION_IDS,
 )
 
-/**
- * Predicate for both the list catalogues and the singular `info` lookup.
- * Name kept for backwards compatibility with the FCM wiring; the family
- * now covers every renderer in this module.
- */
+/** Predicate for every engine-rendered function in this module. */
 export function isEngineListFunction(id: string): id is EngineFunctionId {
   return ENGINE_FUNCTION_ID_SET.has(id)
 }

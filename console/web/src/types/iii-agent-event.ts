@@ -76,6 +76,15 @@ export interface PendingApprovalRecord {
   session_metadata?: Record<string, unknown> | null
   /** Always `"pending"` on the create event; absent on `list-pending` rows. */
   status?: 'pending'
+  /** Discriminates a plain function-call approval from a filesystem-access request. */
+  kind?: 'function' | 'filesystem_access'
+  /** Present when `kind === 'filesystem_access'` — the jail-scope rejection that
+   * triggered the ask. */
+  access_request?: {
+    requested_root: string
+    attempted_path: string
+    error_code: string
+  }
 }
 
 /** `approval::pending-resolved` payload — a held call left the inbox. */

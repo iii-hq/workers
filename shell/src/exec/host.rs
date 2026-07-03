@@ -367,8 +367,9 @@ mod tests {
         let mut cfg = test_cfg();
         cfg.fs.host_roots = vec![root.clone()];
 
-        let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, None, &cfg)
-            .expect("workdir is inside the jail");
+        let overrides =
+            crate::exec::policy::build_overrides(Some("workdir"), None, None, None, &cfg)
+                .expect("workdir is inside the jail");
         let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
             .await
             .unwrap();
@@ -378,19 +379,19 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A per-call `base_dir` with NO explicit `cwd` makes the session directory
-    /// the child's working directory: `pwd` prints base_dir, not the worker's
+    /// A per-call `scope_root` with NO explicit `cwd` makes the session directory
+    /// the child's working directory: `pwd` prints scope_root, not the worker's
     /// cwd or `cfg.working_dir`. Proves exec both confines to AND cwds at
-    /// base_dir.
+    /// scope_root.
     #[tokio::test]
-    async fn base_dir_becomes_child_working_directory() {
+    async fn scope_root_becomes_child_working_directory() {
         let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("session")).unwrap();
         let mut cfg = test_cfg();
         cfg.fs.host_roots = vec![root.clone()];
         let base = root.join("session").to_string_lossy().into_owned();
 
-        let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), &cfg)
+        let overrides = crate::exec::policy::build_overrides(None, None, Some(&base), None, &cfg)
             .expect("session is inside the jail");
         let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
             .await
@@ -409,7 +410,9 @@ mod tests {
     /// concurrent-mutation safety would need a process-wide env mutex shared
     /// with `code/config.rs`'s `CODER_TEST_ROOT` test, a larger change than
     /// this test warrants on its own.
-    /// Holds [`crate::config::ENV_TEST_MUTEX`] for its whole lifetime AND
+    static ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds [`ENV_TEST_MUTEX`] for its whole lifetime AND
     /// removes the named process env vars on drop, even if the test body
     /// panics between `set_var` and where a plain cleanup call would have
     /// run. The mutex serializes against every other test in the crate that
@@ -424,7 +427,7 @@ mod tests {
     }
     impl EnvVarGuard {
         fn new(keys: &'static [&'static str]) -> Self {
-            let lock = crate::config::ENV_TEST_MUTEX
+            let lock = ENV_TEST_MUTEX
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             Self { keys, _lock: lock }
@@ -485,7 +488,7 @@ mod tests {
 
         let mut env = std::collections::BTreeMap::new();
         env.insert("NODE_ENV".to_string(), "from-override".to_string());
-        let overrides = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
+        let overrides = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
             .expect("NODE_ENV is allowlisted");
 
         let out = run_to_completion(
@@ -507,7 +510,7 @@ mod tests {
         cfg.env.allow = vec!["NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("SECRET_TOKEN".to_string(), "x".to_string());
-        let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
+        let err = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
             .expect_err("non-allowlisted key must reject");
         assert_eq!(err.code, "S210");
         assert!(
@@ -526,7 +529,7 @@ mod tests {
         cfg.env.allow = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
-        let err = crate::exec::policy::build_overrides(None, Some(&env), None, &cfg)
+        let err = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
             .expect_err("LD_PRELOAD must reject even when allowlisted");
         assert_eq!(err.code, "S210");
         assert!(err.message.contains("LD_PRELOAD"));
@@ -539,7 +542,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut cfg = test_cfg();
         cfg.fs.host_roots = vec![root.clone()];
-        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, &cfg)
+        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, None, None, &cfg)
             .expect_err("escape must reject");
         assert_eq!(err.code, "S215");
         std::fs::remove_dir_all(&root).ok();

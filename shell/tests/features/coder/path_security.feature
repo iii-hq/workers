@@ -7,7 +7,7 @@ Feature: coder path security
       """
       {"files":[{"path":"{{outside}}/escape.txt","content":"escape","overwrite":true}]}
       """
-    Then the result for "{{outside}}/escape.txt" failed with code "C215"
+    Then the call failed with code "C215"
 
   Scenario: protected globs are listable but not readable or writable
     Given a jailed code surface
@@ -41,7 +41,7 @@ Feature: coder path security
       """
     Then the call failed with code "C215"
 
-  Scenario: session base_dir cannot reach sibling files
+  Scenario: session filesystem scope cannot reach sibling files
     Given a jailed code surface
     And a session directory at "session"
     And a file at "outside-session.txt" with content:
@@ -50,6 +50,6 @@ Feature: coder path security
       """
     When I call coder::read-file with payload:
       """
-      {"path":"../outside-session.txt","base_dir":"{{session}}"}
+      {"path":"../outside-session.txt","fs_scope":{"root":"{{session}}"}}
       """
     Then the call failed with code "C218"

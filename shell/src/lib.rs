@@ -7,6 +7,7 @@ pub mod config;
 pub mod configuration;
 pub mod exec;
 pub mod exec_dispatch;
+pub mod filesystem_access;
 pub mod fs;
 pub mod functions;
 pub mod jobs;

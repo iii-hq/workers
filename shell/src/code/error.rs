@@ -76,7 +76,7 @@ pub enum CoderError {
     AlreadyExists(String),
 
     /// Path canonicalises inside a configured root but OUTSIDE the
-    /// per-call `base_dir` the session is scoped to. Distinct from `C215`
+    /// per-call `scope_root` the session is scoped to. Distinct from `C215`
     /// (outside EVERY root) so the rejection can name the session
     /// directory rather than contradict `coder::info`'s allowed-roots list.
     #[error("C218: {0}")]

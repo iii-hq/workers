@@ -134,6 +134,33 @@ pub struct DenialEnvelope {
     pub reason: String,
 }
 
+/// What a pending record represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingKind {
+    /// A function call held by `approval::gate` (the normal case).
+    Function,
+    /// A function call held by `approval::filesystem-access-watch` after a jail-scope
+    /// rejection carrying a `filesystem_access_request` — the console should ask "allow
+    /// access to `requested_root`?" instead of a generic approve/deny prompt.
+    FilesystemAccess,
+}
+
+/// The filesystem access ask parsed from the shell/coder
+/// `filesystem_access_request` tail. Only present on
+/// `kind: "filesystem_access"` records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AccessRequest {
+    /// Canonical root a grant should target (existing directory, or nearest
+    /// existing ancestor directory of the offending path).
+    pub requested_root: String,
+    /// The raw offending path from the request, as sent by the caller.
+    pub attempted_path: String,
+    /// The jail-scope rejection code that produced this hint (`S215`,
+    /// `S220`, `C215`, `C218`).
+    pub error_code: String,
+}
+
 // ---------------------------------------------------------------------------
 // Pending inbox
 // ---------------------------------------------------------------------------
@@ -172,6 +199,12 @@ pub struct PendingApprovalRecord {
     /// `HookInput` in v1, so always omitted today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_excerpt: Option<String>,
+
+    /// `"function"` or `"filesystem_access"`.
+    pub kind: PendingKind,
+    /// Present only when `kind == "filesystem_access"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_request: Option<AccessRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -215,6 +248,39 @@ pub struct HookCall {
     pub arguments: Value,
 }
 
+/// `result.details.error` on a dispatch failure. New harness versions fill
+/// `code`; older/plain remote errors can arrive without one, so consumers may
+/// recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can
+/// now HOLD).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct HookResultError {
+    #[serde(default)]
+    pub code: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct HookResultDetails {
+    #[serde(default)]
+    pub error: Option<HookResultError>,
+}
+
+/// `post_trigger` payload: the function_result the harness is about to
+/// deliver to the model.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct HookResult {
+    #[serde(default)]
+    pub function_call_id: String,
+    #[serde(default)]
+    pub function_id: String,
+    #[serde(default)]
+    pub content: Vec<TextBlock>,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default)]
+    pub details: HookResultDetails,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct HookInput {
     #[serde(default)]
@@ -226,12 +292,16 @@ pub struct HookInput {
     /// Sub-agent depth (hooks run for child turns too).
     #[serde(default)]
     pub depth: i64,
-    /// The per-send tracing metadata.
+    /// The per-send tracing metadata (`metadata.fs_scope.root` is the
+    /// user-picked session workspace, absolute + canonical).
     #[serde(default)]
     pub metadata: Option<JsonMap>,
     /// pre_trigger payload.
     #[serde(default)]
     pub call: Option<HookCall>,
+    /// post_trigger payload: the function_result about to be delivered.
+    #[serde(default)]
+    pub result: Option<HookResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -272,6 +342,21 @@ pub enum ResolveDecision {
     Deny,
 }
 
+/// How far an `allow` on a `filesystem_access` pending record should apply.
+/// Ignored (logged) when the target record's `kind` is not
+/// `"filesystem_access"`. Defaults to `once` when omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessDuration {
+    /// One-shot: trust the directory for just the released call.
+    Once,
+    /// Durable for the rest of the session (`harness::filesystem::grant`).
+    Session,
+    /// Durable for the session AND persisted to the `shell` deployment
+    /// configuration (`fs.host_roots`), best-effort.
+    Always,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ResolveRequest {
     pub session_id: String,
@@ -280,6 +365,10 @@ pub struct ResolveRequest {
     /// Surfaced to the model on deny.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Only meaningful when the target record is `kind: "filesystem_access"`
+    /// and `decision: "allow"`. Defaults to `once`.
+    #[serde(default)]
+    pub access_duration: Option<AccessDuration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -488,12 +577,95 @@ mod tests {
             session_metadata: None,
             depth: 0,
             assistant_excerpt: None,
+            kind: PendingKind::Function,
+            access_request: None,
         };
         let v = serde_json::to_value(&record).unwrap();
         assert!(v.get("session_title").is_none());
         assert!(v.get("assistant_excerpt").is_none());
         let back: PendingApprovalRecord = serde_json::from_value(v).unwrap();
         assert_eq!(back, record);
+    }
+
+    #[test]
+    fn pending_kind_wire_values() {
+        assert_eq!(
+            serde_json::to_value(PendingKind::Function).unwrap(),
+            json!("function")
+        );
+        assert_eq!(
+            serde_json::to_value(PendingKind::FilesystemAccess).unwrap(),
+            json!("filesystem_access")
+        );
+    }
+
+    #[test]
+    fn filesystem_access_record_carries_access_request() {
+        let record = PendingApprovalRecord {
+            session_id: "s_1".into(),
+            turn_id: "t_1".into(),
+            function_call_id: "c_1".into(),
+            function_id: "shell::fs::read".into(),
+            arguments_excerpt: json!({ "path": "/a/b/x" }),
+            pending_at: 100,
+            session_title: None,
+            session_description: None,
+            session_metadata: None,
+            depth: 0,
+            assistant_excerpt: None,
+            kind: PendingKind::FilesystemAccess,
+            access_request: Some(AccessRequest {
+                requested_root: "/a/b".into(),
+                attempted_path: "/a/b/x".into(),
+                error_code: "S215".into(),
+            }),
+        };
+        let v = serde_json::to_value(&record).unwrap();
+        assert_eq!(v["kind"], json!("filesystem_access"));
+        assert_eq!(v["access_request"]["requested_root"], json!("/a/b"));
+        let back: PendingApprovalRecord = serde_json::from_value(v).unwrap();
+        assert_eq!(back, record);
+    }
+
+    /// `access_duration` on a request that targets a plain `function` record is
+    /// a wire-legal no-op; the ignore-and-warn happens in `resolve::handle`.
+    #[test]
+    fn resolve_request_tolerates_access_duration_on_any_record_kind() {
+        let req: ResolveRequest = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "function_call_id": "c_1",
+            "decision": "allow",
+            "access_duration": "always",
+        }))
+        .unwrap();
+        assert_eq!(req.access_duration, Some(AccessDuration::Always));
+    }
+
+    #[test]
+    fn resolve_request_defaults_access_duration_to_none() {
+        let req: ResolveRequest = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "function_call_id": "c_1",
+            "decision": "allow",
+        }))
+        .unwrap();
+        assert_eq!(req.access_duration, None);
+    }
+
+    #[test]
+    fn access_duration_wire_values() {
+        assert_eq!(
+            serde_json::to_value(AccessDuration::Once).unwrap(),
+            json!("once")
+        );
+        assert_eq!(
+            serde_json::to_value(AccessDuration::Session).unwrap(),
+            json!("session")
+        );
+        assert_eq!(
+            serde_json::to_value(AccessDuration::Always).unwrap(),
+            json!("always")
+        );
     }
 
     #[test]

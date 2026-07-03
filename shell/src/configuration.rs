@@ -11,6 +11,8 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::code::path::PathResolver;
+use crate::code::state::CodeCells;
 use crate::config::ShellConfig;
 use crate::fs::host::{HostFsBackend, HostFsConfig, IiiChannelMaker};
 use crate::fs::FsBackend;
@@ -34,6 +36,7 @@ pub struct ShellRuntime {
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<RwLock<ShellRuntime>>,
+    pub code_cells: Option<CodeCells>,
     pub iii: IIIClient,
     /// Serializes hot-reloads: held across the authoritative fetch + build + swap
     /// so an older event's slow build can never clobber a newer applied config.
@@ -41,6 +44,34 @@ pub struct AppState {
     /// Last hot-reload outcome, exposed via `shell::config-status` so operators
     /// can detect when a stored config was rejected and the active policy diverged.
     pub reload_status: Arc<RwLock<ReloadStatus>>,
+}
+
+pub fn build_code_cells(cfg: &ShellConfig) -> Result<CodeCells, String> {
+    let (code_cfg, resolver) = build_code_snapshot(cfg)?;
+    Ok(CodeCells {
+        config: Arc::new(RwLock::new(code_cfg)),
+        resolver: Arc::new(RwLock::new(resolver)),
+    })
+}
+
+fn build_code_snapshot(
+    cfg: &ShellConfig,
+) -> Result<
+    (
+        Arc<crate::code::config::CoderConfig>,
+        Arc<crate::code::path::PathResolver>,
+    ),
+    String,
+> {
+    if !cfg.fs.is_jailed() {
+        return Err("coder surface requires a jailed fs.host_roots config".to_string());
+    }
+    let code_cfg = Arc::new(cfg.code_resolver_config());
+    let resolver = Arc::new(
+        PathResolver::new(&code_cfg)
+            .map_err(|e| format!("failed to build code PathResolver (coder::*): {e}"))?,
+    );
+    Ok((code_cfg, resolver))
 }
 
 /// Outcome of the most recent hot-reload attempt, exposed via `shell::config-status`.
@@ -193,7 +224,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<ShellConfig, String> {
 /// [`fetch_config`] so `reload_serialized` can classify a PARSE failure of a
 /// fetched value as `Rejected` (permanent — re-fetching returns the same
 /// value) rather than a transient fetch error (retryable). Conflating the two
-/// turns every un-migrated stored value into a retry storm and hides the
+/// turns every removed-key stored value into a retry storm and hides the
 /// divergence from `shell::config-status`.
 fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
     if value.is_null() {
@@ -244,6 +275,19 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 /// module guards against). Kept private so the reload lock is the only entry point.
 async fn apply_config(state: &AppState, cfg: ShellConfig) -> Result<(), String> {
     let new_runtime = build_runtime(&cfg, &state.iii)?;
+    let code_snapshot = state
+        .code_cells
+        .as_ref()
+        .and_then(|_| match build_code_snapshot(&cfg) {
+            Ok(snapshot) => Some(snapshot),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "keeping last-good coder config/resolver after rejected code-surface reload"
+                );
+                None
+            }
+        });
     let mut guard = state.runtime.write().await;
     let was_jailed = guard.config.fs.is_jailed();
     let now_jailed = new_runtime.config.fs.is_jailed();
@@ -254,6 +298,11 @@ async fn apply_config(state: &AppState, cfg: ShellConfig) -> Result<(), String> 
         );
     }
     *guard = new_runtime;
+    drop(guard);
+    if let (Some(cells), Some((code_cfg, resolver))) = (&state.code_cells, code_snapshot) {
+        *cells.resolver.write().await = resolver;
+        *cells.config.write().await = code_cfg;
+    }
     Ok(())
 }
 
@@ -336,7 +385,7 @@ where
         Ok(cfg) => cfg,
         Err(e) => {
             // The value WAS fetched; it just doesn't parse (e.g. an
-            // un-migrated 0.6.x shape carrying removed keys). Same class as
+            // removed-key 0.6.x shape carrying removed keys). Same class as
             // unbuildable below: permanent until the store changes.
             tracing::error!(
                 error = %e,
@@ -456,7 +505,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_runtime_errors_on_unreachable_host_root() {
+    fn build_runtime_errors_on_unreachable_host_roots() {
         // register_worker returns immediately; connect() fires a background thread
         // that silently retries but never panics or blocks this thread.
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59599", iii_sdk::InitOptions::default());
@@ -488,14 +537,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_host_root_config_is_rejected_with_hint() {
-        // INVERSION of the old T6 regression test: through 0.6.x a single
-        // fs.host_root was honored as a one-entry jail, and this test proved
-        // that pre-merge shape still booted. 0.7.0 removes the alias outright,
-        // so the SAME config shape must now FAIL CLOSED at parse with a hint
-        // naming fs.host_roots — serde would otherwise ignore the stale key
-        // and the worker would refuse to start with a message that never
-        // names the actual mistake.
+    fn removed_host_root_config_is_rejected_with_hint() {
+        // The removed single-root key must fail closed before serde ignores it
+        // and before runtime validation reports only "host_roots is unset".
         let yaml = "allowlist: []\nfs:\n  host_root: /tmp/legacy-root\n";
         let err = ShellConfig::from_yaml(yaml).expect_err("the 0.6.x alias must be rejected");
         assert!(err.contains("removed in 0.7.0"), "{err}");
@@ -542,6 +586,7 @@ mod tests {
         let initial = build_runtime(&base, &iii).expect("initial runtime");
         let state = AppState {
             runtime: Arc::new(RwLock::new(initial)),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
@@ -597,6 +642,7 @@ mod tests {
         base.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&base, &iii).expect("initial"))),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
@@ -634,6 +680,7 @@ mod tests {
         good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
@@ -670,15 +717,16 @@ mod tests {
         good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
         };
-        // A literal 0.6.x stored shape: top-level inherit_env/allowed_env,
-        // no `env` block — fails check_removed_keys inside parse_fetched_value.
+        // A literal removed stored shape: fs.host_roots must fail the parse
+        // path before serde drops it and runtime validation reports only
+        // "host_roots is unset".
         let stale_060_shape = serde_json::json!({
-            "inherit_env": true,
-            "allowed_env": ["PATH", "HOME"],
+            "fs": { "host_root": "/tmp/legacy-root" },
         });
         let res =
             reload_serialized(&state, || async move { Ok::<_, String>(stale_060_shape) }).await;
@@ -697,7 +745,7 @@ mod tests {
             s.last_error
                 .as_deref()
                 .is_some_and(|e| e.contains("removed in 0.7.0")),
-            "config-status must surface the migration hint: {:?}",
+            "config-status must surface the removed-key hint: {:?}",
             s.last_error
         );
         assert_eq!(s.rejected_reloads, 1);
@@ -717,6 +765,7 @@ mod tests {
         b.fs.host_roots = vec![dir_b.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&a, &iii).expect("initial"))),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
@@ -735,6 +784,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reload_applies_coder_config_and_resolver_cells() {
+        let dir_a = std::env::temp_dir().join("shell-reload-code-a-9b3c");
+        let dir_b = std::env::temp_dir().join("shell-reload-code-b-9b3c");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_b.join("new.txt"), "ok").unwrap();
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:59591", iii_sdk::InitOptions::default());
+        let mut a = ShellConfig::default();
+        a.fs.host_roots = vec![dir_a.clone()];
+        let mut b = ShellConfig::default();
+        b.fs.host_roots = vec![dir_b.clone()];
+        let cells = build_code_cells(&a).expect("initial code cells");
+        let state = AppState {
+            runtime: Arc::new(RwLock::new(build_runtime(&a, &iii).expect("initial"))),
+            code_cells: Some(cells.clone()),
+            iii: iii.clone(),
+            reload_lock: Arc::new(Mutex::new(())),
+            reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
+        };
+
+        let before = cells.resolver.read().await.clone();
+        assert_eq!(before.roots(), &[std::fs::canonicalize(&dir_a).unwrap()]);
+
+        let res = reload_serialized(&state, {
+            let b = b.clone();
+            move || async move { Ok::<_, String>(b.to_json()) }
+        })
+        .await;
+        assert!(matches!(res, Ok(ReloadOutcome::Applied)));
+
+        let after = cells.resolver.read().await.clone();
+        assert_eq!(after.roots(), &[std::fs::canonicalize(&dir_b).unwrap()]);
+        assert!(
+            after.resolve("new.txt").is_ok(),
+            "coder resolver must see the newly reloaded shell root"
+        );
+        assert_eq!(cells.config.read().await.base_paths, vec![dir_b]);
+    }
+
+    #[tokio::test]
     async fn reload_status_tracks_rejection_then_recovery() {
         // Finding 2: a rejected (unbuildable) config keeps last-good but must be
         // VISIBLE — recorded as Rejected with a reason and a cumulative count;
@@ -746,6 +835,7 @@ mod tests {
         good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),
@@ -826,6 +916,7 @@ mod tests {
         good.fs.host_roots = vec![dir.clone()];
         let state = AppState {
             runtime: Arc::new(RwLock::new(build_runtime(&good, &iii).expect("initial"))),
+            code_cells: None,
             iii: iii.clone(),
             reload_lock: Arc::new(Mutex::new(())),
             reload_status: Arc::new(RwLock::new(ReloadStatus::default())),

@@ -4,6 +4,8 @@
 //! expires stragglers so a lost child or abandoned approval can never park a
 //! turn forever.
 
+use std::collections::BTreeSet;
+
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
@@ -91,14 +93,29 @@ pub async fn resolve(
                 .await
                 .unwrap_or(Value::Null);
             // The release path runs OUTSIDE the turn loop, so re-apply the
-            // workspace stamp the loop would have added: without it an
+            // filesystem scope stamp the loop would have added: without it an
             // approved shell/coder call runs un-scoped (the session's picked
-            // directory becomes unreachable) and a model-supplied base_dir
+            // directory becomes unreachable) and a model-supplied fs_scope
             // recovered from the transcript would survive un-stripped.
-            let arguments = crate::workspace_inject::inject(
+            let session_grants = crate::filesystem_grants::roots(
+                &deps.iii,
+                &record.session_id,
+                cfg.session_timeout_ms,
+            )
+            .await?;
+            let trusted_roots = union_roots(
+                session_grants,
+                req.fs_scope
+                    .as_ref()
+                    .map(|s| s.grants.clone())
+                    .unwrap_or_default(),
+            );
+            let filesystem_root = record.options.filesystem_root().map(str::to_string);
+            let arguments = crate::filesystem_scope::inject(
                 &function_id,
                 arguments,
-                record.options.working_dir(),
+                filesystem_root.as_deref(),
+                &trusted_roots,
             );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;
@@ -119,16 +136,40 @@ pub async fn resolve(
                 &record.session_id,
             )
             .await;
-            let (data, annotations) = deps
+            let post_outcome = deps
                 .hooks
                 .run_post_trigger(
                     &record,
                     record.step,
                     &req.function_call_id,
                     &function_id,
+                    &arguments,
                     raw,
                 )
                 .await;
+            let (data, annotations) = match post_outcome {
+                crate::hooks::runner::PostTriggerOutcome::Result {
+                    result,
+                    annotations,
+                } => (result, annotations),
+                crate::hooks::runner::PostTriggerOutcome::Hold {
+                    held_by,
+                    annotations: _,
+                } => {
+                    if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                        cp.state = CallState::Pending;
+                        cp.held_by = Some(held_by);
+                        cp.pending_at = Some(AgentMessage::now_ms());
+                    }
+                    record.status = TurnStatus::AwaitingFunctions;
+                    record.updated_at = AgentMessage::now_ms();
+                    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                    return Ok(FunctionResolveResponse {
+                        resolved: true,
+                        turn_resumed: false,
+                    });
+                }
+            };
 
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
             let mut origin = serde_json::Map::new();
@@ -250,6 +291,7 @@ pub async fn resolve_parent(
         turn_id: parent.turn_id.clone(),
         function_call_id: parent.function_call_id.clone(),
         action: Some("deliver".to_string()),
+        fs_scope: None,
         content: Some(content),
         is_error: Some(is_error),
         details: Some(details),
@@ -311,6 +353,7 @@ pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
             turn_id,
             function_call_id: call_id,
             action: Some("deliver".to_string()),
+            fs_scope: None,
             content: Some(vec![ContentBlock::text(
                 "pending call timed out".to_string(),
             )]),
@@ -337,6 +380,15 @@ fn render_text(value: &Value) -> String {
         Value::String(s) => s.clone(),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+fn union_roots(session_roots: Vec<String>, fs_scope_grants: Vec<String>) -> Vec<String> {
+    session_roots
+        .into_iter()
+        .chain(fs_scope_grants)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
@@ -397,5 +449,20 @@ mod tests {
         let default = 1_800_000;
         let stale = cp(CallState::Pending, None, None, now - default as i64);
         assert!(pending_call_expired(&stale, default, now));
+    }
+
+    #[test]
+    fn union_roots_dedupes_session_and_one_shot_roots() {
+        assert_eq!(
+            union_roots(
+                vec!["/session".to_string(), "/shared".to_string()],
+                vec!["/once".to_string(), "/shared".to_string()],
+            ),
+            vec![
+                "/once".to_string(),
+                "/session".to_string(),
+                "/shared".to_string()
+            ]
+        );
     }
 }

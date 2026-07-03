@@ -16,7 +16,9 @@ use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{ParentLink, TurnOptions, TurnRecord, TurnStatus, WORKING_DIR_KEY};
+use crate::types::turn::{
+    ParentLink, TurnOptions, TurnRecord, TurnStatus, FS_SCOPE_KEY, FS_SCOPE_ROOT_KEY,
+};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -196,7 +198,7 @@ async fn seed_child(
                 .and_then(|o| o.output.clone())
                 .unwrap_or_default(),
             functions,
-            metadata: inherit_workspace(parent_record),
+            metadata: inherit_filesystem_scope(parent_record),
             max_validation_retries: cfg.max_validation_retries,
         },
         calls: Default::default(),
@@ -216,13 +218,12 @@ async fn seed_child(
     })
 }
 
-/// A child inherits ONLY the parent's workspace scope (`working_dir`), so the
-/// session's picked directory stays reachable from sub-agent shell/coder
-/// calls. The rest of the parent metadata (message ids, tracing passthrough)
-/// belongs to the parent's turn and must not leak onto the child.
-fn inherit_workspace(parent: Option<&TurnRecord>) -> Option<Value> {
-    let dir = parent.and_then(|p| p.options.working_dir())?;
-    Some(json!({ WORKING_DIR_KEY: dir }))
+/// A child inherits only the parent's filesystem scope, so the session's
+/// picked directory stays reachable from sub-agent shell/coder calls. The rest
+/// of the parent metadata belongs to the parent's turn and must not leak.
+fn inherit_filesystem_scope(parent: Option<&TurnRecord>) -> Option<Value> {
+    let root = parent.and_then(|p| p.options.filesystem_root())?;
+    Some(json!({ FS_SCOPE_KEY: { FS_SCOPE_ROOT_KEY: root } }))
 }
 
 fn is_error(code: &str, message: String) -> ResultData {
@@ -272,27 +273,27 @@ mod tests {
     }
 
     #[test]
-    fn child_inherits_the_parent_working_dir() {
+    fn child_inherits_the_parent_filesystem_root() {
         let parent = parent_record(Some(json!({
-            "working_dir": "/work/project",
+            "fs_scope": { "root": "/work/project" },
             "message_id": "m_1",
             "session_id": "s_console",
         })));
         assert_eq!(
-            inherit_workspace(Some(&parent)),
-            Some(json!({ "working_dir": "/work/project" }))
+            inherit_filesystem_scope(Some(&parent)),
+            Some(json!({ "fs_scope": { "root": "/work/project" } }))
         );
     }
 
     #[test]
-    fn child_metadata_stays_none_without_a_parent_working_dir() {
+    fn child_metadata_stays_none_without_a_parent_filesystem_root() {
         // Direct spawns have no parent record; parents without a picked
         // directory must not fabricate one. Other metadata keys are per-turn
         // tracing and never leak onto the child.
-        assert_eq!(inherit_workspace(None), None);
+        assert_eq!(inherit_filesystem_scope(None), None);
         let unscoped = parent_record(Some(json!({ "message_id": "m_1" })));
-        assert_eq!(inherit_workspace(Some(&unscoped)), None);
+        assert_eq!(inherit_filesystem_scope(Some(&unscoped)), None);
         let bare = parent_record(None);
-        assert_eq!(inherit_workspace(Some(&bare)), None);
+        assert_eq!(inherit_filesystem_scope(Some(&bare)), None);
     }
 }

@@ -46,7 +46,7 @@ fn trigger_spec_to_pretty_json(spec: &TriggerSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 12 registered functions, in
+/// The catalog must cover exactly the 13 registered functions, in
 /// registration order (kept in lockstep with `register_all`). The internal
 /// `approval::on-config-change` handler is registered separately via
 /// `configuration::register_config_trigger` (mirroring session-manager /
@@ -58,6 +58,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "approval::gate",
+            "approval::filesystem-access-watch",
             "approval::resolve",
             "approval::list-pending",
             "approval::get-pending",
@@ -152,6 +153,7 @@ fn schemas_carry_field_descriptions() {
     // their generated schema (struct-level or field-level doc comments):
     let must_have_descriptions = [
         "approval::gate",
+        "approval::filesystem-access-watch",
         "approval::resolve",
         "approval::list-pending",
         "approval::get-pending",

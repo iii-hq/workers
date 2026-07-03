@@ -92,16 +92,25 @@ pub async fn handle(
         ));
     }
 
-    // Stamp the turn's workspace scope onto scoped shell/coder args BEFORE the
-    // hook chain (an approver must see the base_dir the call will run under)
+    // Stamp the turn's filesystem scope onto scoped shell/coder args BEFORE the
+    // hook chain (an approver must see the fs_scope the call will run under)
     // and re-apply it before invocation so neither a direct caller nor a hook
     // rewrite can widen the session scope. No turn record → no scope: any
-    // caller-supplied base_dir is stripped.
-    let working_dir = record.as_ref().and_then(|r| r.options.working_dir());
-    let mut arguments = crate::workspace_inject::inject(
+    // caller-supplied fs_scope is stripped.
+    let session_grants = if record.is_some() {
+        crate::filesystem_grants::roots(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+    } else {
+        Vec::new()
+    };
+    let filesystem_root = record
+        .as_ref()
+        .and_then(|rec| rec.options.filesystem_root())
+        .map(str::to_string);
+    let mut arguments = crate::filesystem_scope::inject(
         &req.call.function_id,
         req.call.arguments.clone(),
-        working_dir,
+        filesystem_root.as_deref(),
+        &session_grants,
     );
     if let Some(rec) = &record {
         match deps
@@ -115,7 +124,14 @@ pub async fn handle(
             )
             .await
         {
-            PreTriggerOutcome::Continue { arguments: a, .. } => arguments = a,
+            PreTriggerOutcome::Continue { arguments: a, .. } => {
+                arguments = crate::filesystem_scope::inject(
+                    &req.call.function_id,
+                    a,
+                    filesystem_root.as_deref(),
+                    &session_grants,
+                );
+            }
             PreTriggerOutcome::Deny(reason) => {
                 let data = trigger::ResultData {
                     content: vec![ContentBlock::text(reason.clone())],
@@ -142,7 +158,12 @@ pub async fn handle(
 
     // Re-stamp after the hook chain (idempotent) — a hook rewrite must not
     // widen or drop the session scope.
-    let arguments = crate::workspace_inject::inject(&req.call.function_id, arguments, working_dir);
+    let arguments = crate::filesystem_scope::inject(
+        &req.call.function_id,
+        arguments,
+        filesystem_root.as_deref(),
+        &session_grants,
+    );
 
     // Single invocation chokepoint: subscription control calls are intercepted
     // (trusted session injected); everything else invokes the target.
@@ -156,10 +177,28 @@ pub async fn handle(
     )
     .await;
     let data = if let Some(rec) = &record {
-        deps.hooks
-            .run_post_trigger(rec, rec.step, &req.call.id, &req.call.function_id, raw)
+        match deps
+            .hooks
+            .run_post_trigger(
+                rec,
+                rec.step,
+                &req.call.id,
+                &req.call.function_id,
+                &arguments,
+                raw,
+            )
             .await
-            .0
+        {
+            crate::hooks::runner::PostTriggerOutcome::Result { result, .. } => result,
+            crate::hooks::runner::PostTriggerOutcome::Hold { .. } => {
+                return Ok(FunctionTriggerResponse::Pending(TriggerPendingResponse {
+                    function_call_id: req.call.id,
+                    function_id: req.call.function_id,
+                    pending: true,
+                    pending_timeout_ms: None,
+                }));
+            }
+        }
     } else {
         raw
     };

@@ -26,10 +26,10 @@ pub struct MoveFileInput {
     /// Entries to move. Each entry is processed independently so a single
     /// failure never aborts the rest.
     pub files: Vec<MoveFileSpec>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -117,21 +117,41 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let base_dir = req.base_dir.as_deref();
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+    for spec in &req.files {
+        for path in [&spec.from, &spec.to] {
+            if let Err(e) = resolver.require_writable_opt(scope_root, path) {
+                if is_jail_scope_error(&e) {
+                    return Err(err_to_string(e));
+                }
+            }
+        }
+    }
     let mut results = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(move_one(&resolver, base_dir, spec));
+        results.push(move_one(&resolver, scope_root, spec));
     }
     Ok(MoveFileOutput { results })
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Per-entry logic
 // ---------------------------------------------------------------------------
 
-fn move_one(resolver: &PathResolver, base_dir: Option<&str>, spec: MoveFileSpec) -> MoveFileResult {
+fn move_one(
+    resolver: &PathResolver,
+    scope_root: Option<&str>,
+    spec: MoveFileSpec,
+) -> MoveFileResult {
     // Resolve source.
-    let abs_from = match resolver.require_writable_opt(base_dir, &spec.from) {
+    let abs_from = match resolver.require_writable_opt(scope_root, &spec.from) {
         Ok(p) => p,
         Err(e) => {
             return MoveFileResult {
@@ -145,7 +165,7 @@ fn move_one(resolver: &PathResolver, base_dir: Option<&str>, spec: MoveFileSpec)
     };
 
     // Resolve destination (may not exist yet — resolution via fallback is fine).
-    let abs_to = match resolver.require_writable_opt(base_dir, &spec.to) {
+    let abs_to = match resolver.require_writable_opt(scope_root, &spec.to) {
         Ok(p) => p,
         Err(e) => {
             return MoveFileResult {
@@ -415,7 +435,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -453,7 +473,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -482,7 +502,7 @@ mod tests {
                         overwrite,
                         parents: true,
                     }],
-                    base_dir: None,
+                    fs_scope: None,
                 },
             )
             .await
@@ -532,7 +552,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -564,7 +584,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -625,7 +645,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -669,7 +689,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -707,7 +727,7 @@ mod tests {
                     overwrite: true,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -735,7 +755,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -773,7 +793,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -787,7 +807,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -831,7 +851,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -857,7 +877,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -884,7 +904,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -921,7 +941,7 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -958,7 +978,7 @@ mod tests {
                         overwrite,
                         parents: true,
                     }],
-                    base_dir: None,
+                    fs_scope: None,
                 },
             )
             .await
@@ -999,7 +1019,7 @@ mod tests {
                     overwrite: false,
                     parents: false,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -1037,7 +1057,7 @@ mod tests {
                         parents: true,
                     },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -1054,10 +1074,10 @@ mod tests {
     // Echo rules: canonical when resolved, verbatim when not
     // ------------------------------------------------------------------
     #[tokio::test]
-    async fn echo_verbatim_on_resolution_failure() {
+    async fn jail_escape_aborts_batch_with_top_level_c215() {
         let (_tmp, r) = setup_single();
         // A path that escapes the jail will fail resolution (C215).
-        let out = handle(
+        let err = handle(
             r,
             MoveFileInput {
                 files: vec![MoveFileSpec {
@@ -1066,17 +1086,15 @@ mod tests {
                     overwrite: false,
                     parents: true,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
-        .unwrap();
-        assert!(!out.results[0].success);
-        // The jail escape must surface as a per-item C215 (the write-side
-        // jail contract), not some other code or a swallowed success.
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C215");
-        // The `from` echo must be the caller's verbatim input, not a resolved path.
-        assert_eq!(out.results[0].from, "/etc/passwd");
+        .unwrap_err();
+        // Jail-scope errors must be visible to the hook as whole-call errors.
+        assert!(err.contains("\"code\":\"C215\""));
+        assert!(err.contains("/etc/passwd"));
+        assert!(err.contains("filesystem_access_request="));
     }
 
     // ------------------------------------------------------------------
@@ -1105,7 +1123,7 @@ mod tests {
                         parents: true,
                     },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await

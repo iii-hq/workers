@@ -36,10 +36,10 @@ use crate::code::path::PathResolver;
 #[schemars(example = "example_update_file_input")]
 pub struct UpdateFileInput {
     pub files: Vec<UpdateFileSpec>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -210,25 +210,32 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let base_dir = req.base_dir.as_deref();
-    let mut results = Vec::with_capacity(req.files.len());
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+    let mut entries = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(update_one(&resolver, &cfg, base_dir, spec));
+        match resolver.require_writable_opt(scope_root, &spec.path) {
+            Ok(abs) => entries.push((spec, Ok(abs))),
+            Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
+            Err(e) => entries.push((spec, Err(e))),
+        }
     }
+    let results = entries
+        .into_iter()
+        .map(|(spec, resolved)| update_one(&cfg, spec, resolved))
+        .collect();
     Ok(UpdateFileOutput { results })
 }
 
 fn update_one(
-    resolver: &PathResolver,
     cfg: &CoderConfig,
-    base_dir: Option<&str>,
     spec: UpdateFileSpec,
+    resolved: Result<std::path::PathBuf, CoderError>,
 ) -> UpdateFileResult {
     // Resolve up front: the edit pipeline operates ONLY on the
     // resolver-returned path, and the result echoes that canonical
     // absolute path. When resolution fails there is no canonical path,
     // so the caller's input is echoed verbatim.
-    let abs = match resolver.require_writable_opt(base_dir, &spec.path) {
+    let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
             return UpdateFileResult {
@@ -263,6 +270,13 @@ fn update_one(
             error: Some((&e).into()),
         },
     }
+}
+
+fn is_jail_scope_error(e: &CoderError) -> bool {
+    matches!(
+        e,
+        CoderError::OutsideBase(_) | CoderError::OutsideSession(_)
+    )
 }
 
 fn try_update_one(
@@ -1882,12 +1896,11 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn jail_escape_reports_c215_per_item() {
-        // A path that escapes the jail must fail resolution and surface as a
-        // per-item C215 rather than touching anything on disk — the
-        // write-side jail contract for update-file.
+    async fn jail_escape_aborts_batch_with_top_level_c215() {
+        // A path that escapes the jail must fail resolution before any file
+        // I/O and surface as a top-level C215 for the grant hook.
         let (_tmp, r, c) = setup();
-        let out = handle(
+        let err = handle(
             r,
             c,
             UpdateFileInput {
@@ -1898,13 +1911,14 @@ mod handler_tests {
                         content: "x".into(),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
-        .unwrap();
-        assert!(!out.results[0].success);
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C215");
+        .unwrap_err();
+        assert!(err.contains("\"code\":\"C215\""));
+        assert!(err.contains("../escape.txt"));
+        assert!(err.contains("filesystem_access_request="));
     }
 
     #[tokio::test]
@@ -1923,7 +1937,7 @@ mod handler_tests {
                         content: "TWO".into(),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -1956,7 +1970,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -1992,7 +2006,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2023,7 +2037,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2053,7 +2067,7 @@ mod handler_tests {
                         content: "new".into(),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2080,7 +2094,7 @@ mod handler_tests {
                         content: "inserted".into(),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2117,7 +2131,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2162,7 +2176,7 @@ mod handler_tests {
                         }],
                     },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2199,7 +2213,7 @@ mod handler_tests {
             c,
             UpdateFileInput {
                 files: vec![spec("missing.txt"), spec(".env")],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2254,7 +2268,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2274,7 +2288,7 @@ mod handler_tests {
             c,
             UpdateFileInput {
                 files: vec![],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2298,7 +2312,7 @@ mod handler_tests {
                     path: "f.txt".into(),
                     ops,
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2659,7 +2673,7 @@ mod handler_tests {
                         expect_matches: None,
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2710,7 +2724,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2761,7 +2775,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2806,7 +2820,7 @@ mod handler_tests {
                         ops: vec![replace(None)],
                     },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2861,7 +2875,7 @@ mod handler_tests {
                         expect_matches: Some(2),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -2914,7 +2928,7 @@ mod handler_tests {
                         expect_matches: Some(0),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3005,7 +3019,7 @@ mod handler_tests {
                         },
                     ],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3073,7 +3087,7 @@ mod handler_tests {
                         }],
                     },
                 ],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3137,7 +3151,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3174,7 +3188,7 @@ mod handler_tests {
                     path: "a.txt".into(),
                     ops: vec![op("$1a")],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3201,7 +3215,7 @@ mod handler_tests {
                     path: "a.txt".into(),
                     ops: vec![op("${1}a")],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3233,7 +3247,7 @@ mod handler_tests {
                         expect_matches: Some(1),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -3272,7 +3286,7 @@ mod handler_tests {
                         expect_matches: Some(0),
                     }],
                 }],
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await

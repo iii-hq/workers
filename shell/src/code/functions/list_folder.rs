@@ -29,10 +29,10 @@ pub struct ListFolderInput {
     /// `config.list_default_page_size` when omitted.
     #[serde(default)]
     pub page_size: Option<u32>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<crate::fs::FsScope>,
 }
 
 fn default_path() -> String {
@@ -107,7 +107,7 @@ fn inner(
     // list-folder uses `resolve`, not `require_writable`, so callers can
     // list a directory that contains non-accessible *children* even if the
     // directory itself happened to match a glob.
-    let abs = resolver.resolve_opt(req.base_dir.as_deref(), &req.path)?;
+    let abs = resolver.resolve_opt(crate::fs::scope_root(req.fs_scope.as_ref()), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -235,7 +235,7 @@ mod tests {
                 path: ".".into(),
                 page: 1,
                 page_size: None,
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -267,7 +267,7 @@ mod tests {
                 path: ".".into(),
                 page: 2,
                 page_size: Some(2),
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -295,7 +295,7 @@ mod tests {
                 path: ".".into(),
                 page: 1,
                 page_size: Some(9999),
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -315,7 +315,7 @@ mod tests {
                 path: ".".into(),
                 page: 1,
                 page_size: None,
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await
@@ -345,7 +345,7 @@ mod tests {
                 path: "a.txt".into(),
                 page: 1,
                 page_size: None,
-                base_dir: None,
+                fs_scope: None,
             },
         )
         .await

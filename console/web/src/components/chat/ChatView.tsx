@@ -1,10 +1,13 @@
 import { Copy, Folder } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
+import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
+import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import {
   harnessComposerPlaceholder,
@@ -189,6 +192,51 @@ export function ChatView({
       announcer.announce(`approved always this session: ${functionId}`)
     }
   }, [backend, approvalSettings, announcer])
+
+  const filesystemGrants = useFilesystemGrants(sessionId)
+  const [filesystemDialogOpen, setFilesystemDialogOpen] = useState(false)
+  const handleManageFilesystemAccess = useCallback(() => {
+    setFilesystemDialogOpen(true)
+  }, [])
+
+  const handleFilesystemResolve = useMemo(() => {
+    const resolveFn = backend.resolveApproval
+    if (!resolveFn) return undefined
+    return async (
+      sId: string,
+      functionCallId: string,
+      action: FilesystemAccessAction,
+    ) => {
+      const requestedRoot = messagesRef.current.find(
+        (m): m is FunctionCallMessage =>
+          m.role === 'function-call' && m.functionCallId === functionCallId,
+      )?.filesystemAccess?.requestedRoot
+
+      if (action === 'deny') {
+        await resolveFn(sId, functionCallId, 'deny')
+        announcer.announce(
+          requestedRoot
+            ? `denied filesystem access to ${requestedRoot}`
+            : 'denied filesystem access',
+        )
+        return
+      }
+
+      await resolveFn(sId, functionCallId, 'allow', { accessDuration: action })
+      if (requestedRoot && (action === 'session' || action === 'always')) {
+        filesystemGrants.addOptimistic(requestedRoot)
+      }
+      if (requestedRoot) {
+        announcer.announce(
+          action === 'session'
+            ? `allowed ${requestedRoot} for this session`
+            : action === 'always'
+              ? `permanently allowed ${requestedRoot}`
+              : `allowed ${requestedRoot} for this call`,
+        )
+      }
+    }
+  }, [backend, announcer, filesystemGrants])
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -385,6 +433,7 @@ export function ChatView({
                     running: !event.pendingApproval,
                     functionCallId: event.functionCallId,
                     sessionId: event.sessionId,
+                    filesystemAccess: event.filesystemAccess,
                   })
                   fcallId = existing
                   break
@@ -406,6 +455,7 @@ export function ChatView({
                 pendingApproval: event.pendingApproval,
                 functionCallId: event.functionCallId,
                 sessionId: event.sessionId,
+                filesystemAccess: event.filesystemAccess,
                 createdAt: Date.now(),
               }
               fcallId = msg.id
@@ -725,6 +775,9 @@ export function ChatView({
         density={density}
         onResolveApproval={resolveApproval}
         onAlwaysAllow={handleAlwaysAllow}
+        onResolveFilesystemAccess={handleFilesystemResolve}
+        onManageFilesystemAccess={handleManageFilesystemAccess}
+        workingDir={conversation.workingDir ?? null}
       />
       <LiveRegion announcement={announcer.announcement} />
 
@@ -748,6 +801,16 @@ export function ChatView({
                   no working directory — using default workspace
                 </span>
               )}
+              <button
+                type="button"
+                onClick={handleManageFilesystemAccess}
+                className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
+              >
+                filesystem access
+                {filesystemGrants.grants.length > 0
+                  ? ` · ${filesystemGrants.grants.length}`
+                  : ''}
+              </button>
             </div>
           ) : null}
           <Composer
@@ -782,6 +845,19 @@ export function ChatView({
           />
         </div>
       </footer>
+
+      {workingDirEnabled ? (
+        <FilesystemAccessDialog
+          open={filesystemDialogOpen}
+          onOpenChange={setFilesystemDialogOpen}
+          workingDir={conversation.workingDir ?? null}
+          grants={filesystemGrants.grants}
+          grantsSupported={filesystemGrants.supported}
+          onRevoke={filesystemGrants.revoke}
+          onRefreshGrants={filesystemGrants.refresh}
+          sessionBusy={streamingIndicator}
+        />
+      ) : null}
     </section>
   )
 }

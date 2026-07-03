@@ -16,6 +16,35 @@ use crate::fs::wire::{FsEntry, FsMatch, FsSedFileResult};
 // `fs` and `exec` consumers.
 pub use crate::target::Target;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FsScope {
+    pub root: String,
+    #[serde(default)]
+    pub grants: Vec<String>,
+}
+
+impl FsScope {
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    pub fn grants(&self) -> Option<&[String]> {
+        if self.grants.is_empty() {
+            None
+        } else {
+            Some(&self.grants)
+        }
+    }
+}
+
+pub fn scope_root(scope: Option<&FsScope>) -> Option<&str> {
+    scope.map(FsScope::root)
+}
+
+pub fn scope_grants(scope: Option<&FsScope>) -> Option<&[String]> {
+    scope.and_then(FsScope::grants)
+}
+
 /// Wire-identical mirror of `iii_sdk::channels::StreamChannelRef`. The SDK
 /// type lacks `JsonSchema` in 0.11.3, which would block typed registration
 /// of `shell::fs::write`/`read`.
@@ -66,24 +95,23 @@ impl From<iii_sdk::channels::StreamChannelRef> for ContentRef {
 
 // Backend args — `FsBackend` trait inputs, no `target`, no `JsonSchema`.
 //
-// Every backend args struct carries an OPTIONAL trusted per-call `base_dir`.
-// When set, the op is scoped to that session directory: relative paths anchor
-// at `base_dir` and an absolute path outside it is rejected. The directory is
-// supplied by harness metadata, not by the published tool schema. When `None`
-// (the default, and the wire-absent case) the op behaves exactly as before.
+// Every backend args struct carries an optional trusted filesystem scope. When
+// set, relative paths anchor at `fs_scope.root`; absolute paths outside that
+// root are rejected unless they sit under one of `fs_scope.grants`. The harness
+// supplies this metadata.
 
 #[derive(Debug, Deserialize)]
 pub struct LsArgs {
     pub path: String,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StatArgs {
     pub path: String,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +122,7 @@ pub struct MkdirArgs {
     #[serde(default)]
     pub parents: bool,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,7 +131,7 @@ pub struct RmArgs {
     #[serde(default)]
     pub recursive: bool,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,7 +145,7 @@ pub struct ChmodArgs {
     #[serde(default)]
     pub recursive: bool,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,7 +155,7 @@ pub struct MvArgs {
     #[serde(default)]
     pub overwrite: bool,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +175,7 @@ pub struct GrepArgs {
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 fn default_max_matches() -> u64 {
     10_000
@@ -183,7 +211,7 @@ pub struct SedArgs {
     #[serde(default)]
     pub ignore_case: bool,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 fn default_true() -> bool {
     true
@@ -204,32 +232,32 @@ pub struct WriteArgs {
     pub mode: String,
     pub parents: bool,
     pub content: WriteContent,
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReadArgs {
     pub path: String,
     #[serde(default)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 
 // Registration-boundary requests — each carries `target` plus the matching
 // `*Args` fields and derives `JsonSchema` for the SDK.
 
-/// `base_dir` is accepted at deserialization time for trusted harness metadata,
+/// `fs_scope` is accepted at deserialization time for trusted harness metadata,
 /// but is omitted from every published `shell::fs::*` request schema.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LsRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl LsRequest {
     pub fn split(self) -> (Target, LsArgs) {
@@ -237,7 +265,7 @@ impl LsRequest {
             self.target,
             LsArgs {
                 path: self.path,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -248,12 +276,12 @@ pub struct StatRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl StatRequest {
     pub fn split(self) -> (Target, StatArgs) {
@@ -261,7 +289,7 @@ impl StatRequest {
             self.target,
             StatArgs {
                 path: self.path,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -272,7 +300,7 @@ pub struct MkdirRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
     /// Octal permission string, e.g. "0755".
     #[serde(default = "default_mkdir_mode")]
@@ -280,10 +308,10 @@ pub struct MkdirRequest {
     /// Create missing parent directories.
     #[serde(default)]
     pub parents: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl MkdirRequest {
     pub fn split(self) -> (Target, MkdirArgs) {
@@ -293,7 +321,7 @@ impl MkdirRequest {
                 path: self.path,
                 mode: self.mode,
                 parents: self.parents,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -304,15 +332,15 @@ pub struct RmRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
     /// Required to delete a non-empty directory.
     #[serde(default)]
     pub recursive: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl RmRequest {
     pub fn split(self) -> (Target, RmArgs) {
@@ -321,7 +349,7 @@ impl RmRequest {
             RmArgs {
                 path: self.path,
                 recursive: self.recursive,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -332,7 +360,7 @@ pub struct ChmodRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
     /// Octal permission string, e.g. "0755".
     pub mode: String,
@@ -345,10 +373,10 @@ pub struct ChmodRequest {
     /// Apply mode/owner change to all files under the path recursively.
     #[serde(default)]
     pub recursive: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl ChmodRequest {
     pub fn split(self) -> (Target, ChmodArgs) {
@@ -360,7 +388,7 @@ impl ChmodRequest {
                 uid: self.uid,
                 gid: self.gid,
                 recursive: self.recursive,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -371,17 +399,17 @@ pub struct MvRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Source path; jail-relative when fs.host_roots is set, else absolute.
+    /// Source path; jail-relative when fs.host_roots are set, else absolute.
     pub src: String,
-    /// Destination path; jail-relative when fs.host_roots is set, else absolute.
+    /// Destination path; jail-relative when fs.host_roots are set, else absolute.
     pub dst: String,
     /// Replace an existing destination instead of returning an error.
     #[serde(default)]
     pub overwrite: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl MvRequest {
     pub fn split(self) -> (Target, MvArgs) {
@@ -391,7 +419,7 @@ impl MvRequest {
                 src: self.src,
                 dst: self.dst,
                 overwrite: self.overwrite,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -402,7 +430,7 @@ pub struct GrepRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
     /// Rust regex (RE2-like) matched against each line.
     pub pattern: String,
@@ -424,10 +452,10 @@ pub struct GrepRequest {
     /// Skip lines longer than this many bytes (default 4 096).
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl GrepRequest {
     pub fn split(self) -> (Target, GrepArgs) {
@@ -442,7 +470,7 @@ impl GrepRequest {
                 exclude_glob: self.exclude_glob,
                 max_matches: self.max_matches,
                 max_line_bytes: self.max_line_bytes,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -481,10 +509,10 @@ pub struct SedRequest {
     /// Match pattern case-insensitively.
     #[serde(default)]
     pub ignore_case: bool,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl SedRequest {
     pub fn split(self) -> (Target, SedArgs) {
@@ -501,7 +529,7 @@ impl SedRequest {
                 regex: self.regex,
                 first_only: self.first_only,
                 ignore_case: self.ignore_case,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }
@@ -532,7 +560,7 @@ impl From<WriteContentWire> for WriteContent {
 /// One file in a batch `shell::fs::write` (`files: [...]`).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFileSpec {
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
     /// Inline string (recommended) or a streaming ContentRef.
     pub content: WriteContentWire,
@@ -549,7 +577,7 @@ pub struct WriteRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Single-file form: the path to write. Jail-relative when fs.host_roots is
+    /// Single-file form: the path to write. Jail-relative when fs.host_roots are
     /// set, else absolute. Omit when using `files`.
     #[serde(default)]
     pub path: Option<String>,
@@ -574,10 +602,10 @@ pub struct WriteRequest {
     /// single-file fields (`path`/`content`/`mode`/`parents`) must be omitted.
     #[serde(default)]
     pub files: Option<Vec<WriteFileSpec>>,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl WriteRequest {
     /// Normalize into `(target, specs, is_batch)`. `is_batch` is true when the
@@ -606,9 +634,7 @@ impl WriteRequest {
                     "`files` is empty; provide at least one { path, content } entry",
                 ));
             }
-            // base_dir is a per-CALL session scope, not a per-file attribute, so
-            // every batch entry shares the request-level base_dir.
-            let base_dir = self.base_dir;
+            let fs_scope = self.fs_scope;
             let specs = files
                 .into_iter()
                 .map(|f| WriteArgs {
@@ -616,7 +642,7 @@ impl WriteRequest {
                     mode: f.mode,
                     parents: f.parents,
                     content: f.content.into(),
-                    base_dir: base_dir.clone(),
+                    fs_scope: fs_scope.clone(),
                 })
                 .collect();
             Ok((self.target, specs, true))
@@ -637,7 +663,7 @@ impl WriteRequest {
                     mode: self.mode.unwrap_or_else(default_write_mode),
                     parents: self.parents.unwrap_or(false),
                     content: content.into(),
-                    base_dir: self.base_dir,
+                    fs_scope: self.fs_scope,
                 }],
                 false,
             ))
@@ -650,12 +676,12 @@ pub struct ReadRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
-    /// Jail-relative when fs.host_roots is set, else absolute.
+    /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
-    /// Internal harness-scoped working directory; omitted from published schema.
+    /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
-    pub base_dir: Option<String>,
+    pub fs_scope: Option<FsScope>,
 }
 impl ReadRequest {
     pub fn split(self) -> (Target, ReadArgs) {
@@ -663,7 +689,7 @@ impl ReadRequest {
             self.target,
             ReadArgs {
                 path: self.path,
-                base_dir: self.base_dir,
+                fs_scope: self.fs_scope,
             },
         )
     }

@@ -26,6 +26,17 @@ export type StreamEvent =
       functionCallId?: string
       /** iii session_id owning this call — needed to resolve approval. */
       sessionId?: string
+      /**
+       * Present when the pending approval is a filesystem-access request
+       * (`PendingApprovalRecord.kind === 'filesystem_access'`) rather than a
+       * plain function-call approval. Drives `FilesystemAccessPrompt` instead of
+       * the standard approve/deny/always row.
+       */
+      filesystemAccess?: {
+        requestedRoot: string
+        attemptedPath?: string
+        errorCode?: string
+      }
     }
   | {
       kind: 'fcall-end'
@@ -91,10 +102,8 @@ export interface ChatStreamOptions {
    */
   thinkingLevel?: import('@/types/chat').ThinkingLevel
   /**
-   * Per-session working directory. The real backend forwards it as
-   * `harness::send` `options.metadata.working_dir` so the harness can scope
-   * the turn's shell/coder calls to it (`base_dir`). Session metadata alone is
-   * NOT on the turn record, so it must travel on every send.
+   * Per-session filesystem scope root. The real backend forwards it as
+   * `harness::send` `options.metadata.fs_scope.root`.
    */
   workingDir?: string | null
   /** mean delay between assistant tokens, in ms */
@@ -159,6 +168,10 @@ export interface ChatBackend {
     sessionId: string,
     functionCallId: string,
     decision: 'allow' | 'deny',
+    /**
+     * Filesystem access duration. Sent only for filesystem_access resolutions.
+     */
+    opts?: { accessDuration?: 'once' | 'session' | 'always' },
   ): Promise<void>
   /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).

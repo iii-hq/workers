@@ -116,7 +116,7 @@ function metadataFor(
     ...(c.model ? { model: c.model } : {}),
     mode: c.mode,
     ...(c.titleManual ? { title_manual: true } : {}),
-    ...(c.workingDir ? { working_dir: c.workingDir } : {}),
+    ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
   }
 }
 
@@ -130,8 +130,11 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.model === 'string' && md.model.length > 0 ? md.model : null,
     mode: isMode(md.mode) ? md.mode : DEFAULT_MODE,
     workingDir:
-      typeof md.working_dir === 'string' && md.working_dir.length > 0
-        ? md.working_dir
+      typeof md.fs_scope === 'object' &&
+      md.fs_scope !== null &&
+      typeof (md.fs_scope as Record<string, unknown>).root === 'string' &&
+      ((md.fs_scope as Record<string, unknown>).root as string).length > 0
+        ? ((md.fs_scope as Record<string, unknown>).root as string)
         : null,
     parentId:
       typeof md.parent_session_id === 'string'

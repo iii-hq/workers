@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
 pub mod on_session_deleted;
@@ -54,6 +55,18 @@ pub const STOP_DESC: &str =
 
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
+
+pub const FILESYSTEM_GRANT_ID: &str = "harness::filesystem::grant";
+pub const FILESYSTEM_GRANT_DESC: &str =
+    "Internal control-plane: grant a session access to an additional filesystem root.";
+
+pub const FILESYSTEM_GRANTS_ID: &str = "harness::filesystem::grants";
+pub const FILESYSTEM_GRANTS_DESC: &str =
+    "Internal control-plane: list additional filesystem roots granted to a session.";
+
+pub const FILESYSTEM_REVOKE_ID: &str = "harness::filesystem::revoke";
+pub const FILESYSTEM_REVOKE_DESC: &str =
+    "Internal control-plane: revoke a session's access to an additional filesystem root.";
 
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
@@ -111,6 +124,30 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
     });
+
+    // Internal filesystem grant controls — registered for trusted callers, kept
+    // off the model-facing catalog.
+    register(
+        iii,
+        deps,
+        FILESYSTEM_GRANT_ID,
+        FILESYSTEM_GRANT_DESC,
+        |d, r| async move { filesystem::grant(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        FILESYSTEM_GRANTS_ID,
+        FILESYSTEM_GRANTS_DESC,
+        |d, r| async move { filesystem::grants(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        FILESYSTEM_REVOKE_ID,
+        FILESYSTEM_REVOKE_DESC,
+        |d, r| async move { filesystem::revoke(&d, r).await },
+    );
 
     // Internal cron target — registered, but kept off the public catalog.
     register(

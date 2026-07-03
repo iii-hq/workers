@@ -1,0 +1,222 @@
+{
+  "description": "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.",
+  "function_id": "approval::filesystem-access-watch",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "HookCall": {
+        "properties": {
+          "arguments": {
+            "default": null
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id",
+          "id"
+        ],
+        "type": "object"
+      },
+      "HookResult": {
+        "description": "`post_trigger` payload: the function_result the harness is about to deliver to the model.",
+        "properties": {
+          "content": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/TextBlock"
+            },
+            "type": "array"
+          },
+          "details": {
+            "$ref": "#/definitions/HookResultDetails"
+          },
+          "function_call_id": {
+            "default": "",
+            "type": "string"
+          },
+          "function_id": {
+            "default": "",
+            "type": "string"
+          },
+          "is_error": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "HookResultDetails": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/HookResultError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "HookResultError": {
+        "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can now HOLD).",
+        "properties": {
+          "code": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "TextBlock": {
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "type"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "call": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/HookCall"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "pre_trigger payload."
+      },
+      "depth": {
+        "default": 0,
+        "description": "Sub-agent depth (hooks run for child turns too).",
+        "format": "int64",
+        "type": "integer"
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "default": null,
+        "description": "The per-send tracing metadata (`metadata.fs_scope.root` is the user-picked session workspace, absolute + canonical).",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "point": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "result": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/HookResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "post_trigger payload: the function_result about to be delivered."
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "step": {
+        "default": null,
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "turn_id"
+    ],
+    "title": "HookInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "oneOf": [
+      {
+        "properties": {
+          "decision": {
+            "enum": [
+              "continue"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "decision": {
+            "enum": [
+              "deny"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "reason"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "decision": {
+            "enum": [
+              "hold"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "HookOutput"
+  }
+}

@@ -16,7 +16,7 @@ use crate::types::turn::{IdemRecord, TurnRecord};
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
 
-async fn state_get(
+pub(crate) async fn state_get(
     iii: &IIIClient,
     scope: &str,
     key: &str,
@@ -32,7 +32,7 @@ async fn state_get(
     .map_err(|e| HarnessError::State(format!("state::get {scope}/{key}: {e}")))
 }
 
-async fn state_set(
+pub(crate) async fn state_set(
     iii: &IIIClient,
     scope: &str,
     key: &str,
@@ -50,7 +50,7 @@ async fn state_set(
     .map_err(|e| HarnessError::State(format!("state::set {scope}/{key}: {e}")))
 }
 
-async fn state_delete(
+pub(crate) async fn state_delete(
     iii: &IIIClient,
     scope: &str,
     key: &str,

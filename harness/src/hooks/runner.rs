@@ -55,6 +55,17 @@ pub enum PreTriggerOutcome {
     },
 }
 
+pub enum PostTriggerOutcome {
+    Result {
+        result: crate::trigger::ResultData,
+        annotations: Map<String, Value>,
+    },
+    Hold {
+        held_by: String,
+        annotations: Map<String, Value>,
+    },
+}
+
 impl HookRegistry {
     fn envelope(&self, point: HookPoint, record: &TurnRecord, step: u64) -> Value {
         let mut v = serde_json::json!({
@@ -185,14 +196,20 @@ impl HookRegistry {
         step: u64,
         call_id: &str,
         function_id: &str,
+        arguments: &Value,
         mut result: crate::trigger::ResultData,
-    ) -> (crate::trigger::ResultData, Map<String, Value>) {
+    ) -> PostTriggerOutcome {
         let mut annotations = Map::new();
         for binding in self.post_trigger.ordered() {
             if !functions_match(&binding, function_id) {
                 continue;
             }
             let mut input = self.envelope(HookPoint::PostTrigger, record, step);
+            input["call"] = serde_json::json!({
+                "id": call_id,
+                "function_id": function_id,
+                "arguments": arguments,
+            });
             input["result"] = serde_json::json!({
                 "function_call_id": call_id,
                 "function_id": function_id,
@@ -200,21 +217,34 @@ impl HookRegistry {
                 "is_error": result.is_error,
                 "details": result.details,
             });
-            // deny/hold are not valid at post_trigger — treat as continue.
-            if let HookOutcome::Continue(m) = self.invoke(&binding, input).await {
-                if let Some(c) = m.content {
-                    result.content = c;
+            match self.invoke(&binding, input).await {
+                HookOutcome::Continue(m) => {
+                    if let Some(c) = m.content {
+                        result.content = c;
+                    }
+                    if let Some(d) = m.details {
+                        result.details = d;
+                    }
+                    if let Some(e) = m.is_error {
+                        result.is_error = e;
+                    }
+                    merge(&mut annotations, m.annotations);
                 }
-                if let Some(d) = m.details {
-                    result.details = d;
+                // Deny is not valid at post_trigger; fail-open like existing
+                // post-trigger error handling.
+                HookOutcome::Deny(_) => {}
+                HookOutcome::Hold => {
+                    return PostTriggerOutcome::Hold {
+                        held_by: binding.function_id.clone(),
+                        annotations,
+                    };
                 }
-                if let Some(e) = m.is_error {
-                    result.is_error = e;
-                }
-                merge(&mut annotations, m.annotations);
             }
         }
-        (result, annotations)
+        PostTriggerOutcome::Result {
+            result,
+            annotations,
+        }
     }
 
     /// Invoke one bound hook function, bounded by `timeout_ms` and resolved by

@@ -37,17 +37,33 @@ export function isTerminalSource(event: TurnSourceEvent): boolean {
 
 export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
   switch (event.kind) {
-    case 'approval-created':
+    case 'approval-created': {
+      const { record } = event
+      const accessRequest =
+        record.kind === 'filesystem_access' &&
+        record.access_request?.requested_root
+          ? record.access_request
+          : undefined
       return [
         {
           kind: 'fcall-start',
-          functionId: event.record.function_id,
-          input: event.record.arguments_excerpt ?? {},
+          functionId: record.function_id,
+          input: record.arguments_excerpt ?? {},
           pendingApproval: true,
-          functionCallId: event.record.function_call_id,
-          sessionId: event.record.session_id,
+          functionCallId: record.function_call_id,
+          sessionId: record.session_id,
+          ...(accessRequest
+            ? {
+                filesystemAccess: {
+                  requestedRoot: accessRequest.requested_root,
+                  attemptedPath: accessRequest.attempted_path,
+                  errorCode: accessRequest.error_code,
+                },
+              }
+            : {}),
         },
       ]
+    }
 
     case 'approval-resolved':
       // The released call's result (or deny error) arrives via the session

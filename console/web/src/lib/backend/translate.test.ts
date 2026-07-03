@@ -61,6 +61,54 @@ describe('translateTurnSource — approvals', () => {
     ])
   })
 
+  it('maps a filesystem_access record to fcall-start carrying filesystemAccess', () => {
+    const event: TurnSourceEvent = {
+      kind: 'approval-created',
+      record: pendingRecord({
+        kind: 'filesystem_access',
+        function_id: 'shell::fs::read',
+        access_request: {
+          requested_root: '/abs/existing/dir',
+          attempted_path: '/abs/existing/dir/secret.txt',
+          error_code: 'S215',
+        },
+      }),
+    }
+    expect(translateTurnSource(event)).toEqual([
+      {
+        kind: 'fcall-start',
+        functionId: 'shell::fs::read',
+        input: { path: '/tmp/x' },
+        pendingApproval: true,
+        functionCallId: 'fc-1',
+        sessionId: 'sess-a',
+        filesystemAccess: {
+          requestedRoot: '/abs/existing/dir',
+          attemptedPath: '/abs/existing/dir/secret.txt',
+          errorCode: 'S215',
+        },
+      },
+    ])
+  })
+
+  it('omits filesystemAccess for a plain function-call record (kind absent)', () => {
+    const event: TurnSourceEvent = {
+      kind: 'approval-created',
+      record: pendingRecord(),
+    }
+    const [translated] = translateTurnSource(event)
+    expect(translated).not.toHaveProperty('filesystemAccess')
+  })
+
+  it('omits filesystemAccess when kind is filesystem_access but access_request.requested_root is missing', () => {
+    const event: TurnSourceEvent = {
+      kind: 'approval-created',
+      record: pendingRecord({ kind: 'filesystem_access' }),
+    }
+    const [translated] = translateTurnSource(event)
+    expect(translated).not.toHaveProperty('filesystemAccess')
+  })
+
   it('maps approval-resolved to fcall-approval-cleared (result arrives via the transcript)', () => {
     const resolved: PendingResolvedEvent = {
       function_call_id: 'fc-1',

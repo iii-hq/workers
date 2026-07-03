@@ -42,6 +42,15 @@ const HOOK_FUNCTIONS: &[&str] = &["*"];
 const HOOK_TIMEOUT_MS: u64 = 5_000;
 const HOOK_ON_ERROR: &str = "fail_closed";
 
+/// Fixed `harness::hook::post-trigger` binding for `approval::filesystem-access-watch`
+/// — only `shell::*` / `coder::*` dispatch results carry a `filesystem_access_request`
+/// worth watching for. `fail_open` (unlike the pre_trigger gate): a
+/// crashed/timed-out filesystem-access-watch must never turn an already-decided
+/// function_result into a stuck call.
+const FILESYSTEM_ACCESS_WATCH_FUNCTIONS: &[&str] = &["shell::*", "coder::*"];
+const FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS: u64 = 5_000;
+const FILESYSTEM_ACCESS_WATCH_ON_ERROR: &str = "fail_open";
+
 /// Register the `approval-gate` configuration schema with the
 /// configuration worker. When `seed` is present, its value is installed
 /// as `initial_value`. Otherwise, the built-in default is seeded only
@@ -127,6 +136,35 @@ pub fn bind_hook(iii: &IIIClient) {
         Err(e) => tracing::warn!(
             trigger_type = "harness::hook::pre-trigger",
             function_id = "approval::gate",
+            error = %e,
+            "trigger binding failed (sibling absent?)"
+        ),
+    }
+}
+
+/// Bind the fixed `harness::hook::post-trigger` hook for
+/// `approval::filesystem-access-watch` at worker startup — beside `bind_hook`, same
+/// best-effort discipline (a standalone deployment without the harness
+/// still boots; a missing binding surfaces as a log, never an `Err` here).
+pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
+    match iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "harness::hook::post-trigger".to_string(),
+        function_id: "approval::filesystem-access-watch".to_string(),
+        config: json!({
+            "functions": FILESYSTEM_ACCESS_WATCH_FUNCTIONS,
+            "timeout_ms": FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS,
+            "on_error": FILESYSTEM_ACCESS_WATCH_ON_ERROR,
+        }),
+        metadata: None,
+    }) {
+        Ok(_) => tracing::info!(
+            trigger_type = "harness::hook::post-trigger",
+            function_id = "approval::filesystem-access-watch",
+            "trigger binding requested"
+        ),
+        Err(e) => tracing::warn!(
+            trigger_type = "harness::hook::post-trigger",
+            function_id = "approval::filesystem-access-watch",
             error = %e,
             "trigger binding failed (sibling absent?)"
         ),

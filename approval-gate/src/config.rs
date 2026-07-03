@@ -33,6 +33,15 @@ fn default_rules() -> Vec<Value> {
     default_rules_value()
 }
 
+/// Default cap on `approval::filesystem-access-watch` re-asks per held call
+/// (spec-pr3-approval-gate.md § New function `approval::filesystem-access-watch`,
+/// step 7) — chosen to give a user a few genuine retries (a hint that
+/// keeps landing on a different directory) without letting a
+/// misbehaving/looping caller re-prompt forever.
+pub fn default_grant_reask_limit() -> usize {
+    3
+}
+
 /// JSON Schema for the `rules` array — string shorthands the console
 /// renders as an editable list. Matches what the gate actually evaluates:
 /// `parse_rules_from_config` reads each entry as a shorthand.
@@ -67,6 +76,12 @@ pub struct WorkerConfig {
     #[serde(default = "default_rules")]
     #[schemars(schema_with = "rules_schema")]
     pub rules: Vec<Value>,
+    /// Cap on how many times `approval::filesystem-access-watch` will re-ask (hold a
+    /// call again) for jail-scope `filesystem_access_request` rejections on the SAME
+    /// function call before standing down and letting the error reach the
+    /// model. Default 3.
+    #[serde(default = "default_grant_reask_limit")]
+    pub grant_reask_limit: usize,
 }
 
 impl WorkerConfig {
@@ -140,6 +155,7 @@ impl Default for WorkerConfig {
         Self {
             default_mode: PermissionMode::default(),
             rules: default_rules(),
+            grant_reask_limit: default_grant_reask_limit(),
         }
     }
 }
@@ -183,6 +199,19 @@ mod tests {
         assert_eq!(cfg.default_mode, PermissionMode::Manual);
         assert!(!cfg.rules.is_empty());
         assert!(cfg.auto_allow_seed().is_empty());
+        assert_eq!(cfg.grant_reask_limit, 3);
+    }
+
+    #[test]
+    fn partial_yaml_fills_grant_reask_limit_default() {
+        let cfg: WorkerConfig = serde_yaml::from_str("default_mode: auto\n").unwrap();
+        assert_eq!(cfg.grant_reask_limit, 3);
+    }
+
+    #[test]
+    fn grant_reask_limit_is_configurable() {
+        let cfg: WorkerConfig = serde_yaml::from_str("grant_reask_limit: 5\n").unwrap();
+        assert_eq!(cfg.grant_reask_limit, 5);
     }
 
     #[test]
@@ -210,7 +239,7 @@ mod tests {
             .get("properties")
             .and_then(|p| p.as_object())
             .expect("schema has a properties object");
-        for field in ["default_mode", "rules"] {
+        for field in ["default_mode", "rules", "grant_reask_limit"] {
             assert!(
                 props.get(field).is_some(),
                 "missing schema property {field}"

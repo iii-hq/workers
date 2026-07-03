@@ -3,6 +3,7 @@ import { wt } from '../typography'
 import { EnvLexicalInput } from './env-lexical/EnvLexicalInput'
 import type { FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
+import { pathToDomId } from './path'
 
 /**
  * Free-form string field. Defaults to the Lexical-based `EnvLexicalInput`
@@ -51,6 +52,7 @@ export function StringField(props: FieldProps) {
       required={required}
       errorMessage={errorForField(props)}
       hideLabel={hideLabel}
+      anchorId={pathToDomId(props.path)}
     >
       {(controlId) =>
         useLexical ? (

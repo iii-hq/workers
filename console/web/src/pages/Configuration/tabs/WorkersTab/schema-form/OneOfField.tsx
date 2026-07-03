@@ -5,6 +5,7 @@ import { wt } from '../typography'
 import { EnumField } from './EnumField'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
+import { pathToDomId } from './path'
 import {
   discriminator,
   hasRenderableProps,
@@ -120,6 +121,7 @@ export function OneOfField(props: FieldProps) {
           description={description}
           required={required}
           errorMessage={errorForField(props)}
+          anchorId={pathToDomId(props.path)}
         >
           {() => (
             <Select<string>
@@ -165,6 +167,7 @@ export function OneOfField(props: FieldProps) {
         description={description}
         required={required}
         errorMessage={errorForField(props)}
+        anchorId={pathToDomId(props.path)}
       >
         {() => (
           <Select<string>

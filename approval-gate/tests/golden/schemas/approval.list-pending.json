@@ -45,9 +45,43 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "AccessRequest": {
+        "description": "The filesystem access ask parsed from the shell/coder `filesystem_access_request` tail. Only present on `kind: \"filesystem_access\"` records.",
+        "properties": {
+          "attempted_path": {
+            "description": "The raw offending path from the request, as sent by the caller.",
+            "type": "string"
+          },
+          "error_code": {
+            "description": "The jail-scope rejection code that produced this hint (`S215`, `S220`, `C215`, `C218`).",
+            "type": "string"
+          },
+          "requested_root": {
+            "description": "Canonical root a grant should target (existing directory, or nearest existing ancestor directory of the offending path).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempted_path",
+          "error_code",
+          "requested_root"
+        ],
+        "type": "object"
+      },
       "PendingApprovalRecord": {
         "description": "The inbox payload — shared by both triggers, `list_pending`, and `get_pending`. Self-describing (all ids inside the value) and notification-safe (arguments pass through redaction).",
         "properties": {
+          "access_request": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AccessRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present only when `kind == \"filesystem_access\"`."
+          },
           "arguments_excerpt": {
             "default": null,
             "description": "Redacted — safe to forward to notification channels."
@@ -70,6 +104,14 @@
           },
           "function_id": {
             "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/PendingKind"
+              }
+            ],
+            "description": "`\"function\"` or `\"filesystem_access\"`."
           },
           "pending_at": {
             "description": "ms epoch",
@@ -106,11 +148,31 @@
         "required": [
           "function_call_id",
           "function_id",
+          "kind",
           "pending_at",
           "session_id",
           "turn_id"
         ],
         "type": "object"
+      },
+      "PendingKind": {
+        "description": "What a pending record represents.",
+        "oneOf": [
+          {
+            "description": "A function call held by `approval::gate` (the normal case).",
+            "enum": [
+              "function"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A function call held by `approval::filesystem-access-watch` after a jail-scope rejection carrying a `filesystem_access_request` — the console should ask \"allow access to `requested_root`?\" instead of a generic approve/deny prompt.",
+            "enum": [
+              "filesystem_access"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
