@@ -6,13 +6,14 @@ import { coderUpdate } from './coder-update'
 import { errorOnFcall } from './error-on-fcall'
 import { fastTokens } from './fast-tokens'
 import { happyAgent } from './happy-agent'
-import { harnessSpawn } from './harness-spawn'
 import { happyAsk } from './happy-ask'
 import { happyPlan } from './happy-plan'
+import { harnessSpawn } from './harness-spawn'
 import { longMarkdown } from './long-markdown'
 import { markdownStress } from './markdown-stress'
 import { multiFunctionAgent } from './multi-function-agent'
 import { pendingApproval } from './pending-approval'
+import { scraplingScrape } from './scrapling-scrape'
 import { slowTokens } from './slow-tokens'
 
 export type ScenarioGroup =
@@ -127,6 +128,15 @@ export const SCENARIOS: PlaygroundScenario[] = [
     group: 'agent',
     preferredMode: 'agent',
     backend: harnessSpawn,
+  },
+  {
+    id: 'scrapling-scrape',
+    label: 'scrapling · scrape',
+    description:
+      'gated scrapling::stealthy-fetch (approve → extraction), then fetch + css cards.',
+    group: 'agent',
+    preferredMode: 'agent',
+    backend: scraplingScrape,
   },
   {
     id: 'pending-approval',
