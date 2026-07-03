@@ -106,6 +106,14 @@ export interface ChatStreamOptions {
    * `harness::send` `options.metadata.fs_scope.root`.
    */
   workingDir?: string | null
+  /**
+   * Extra text content blocks appended after the prompt on the outgoing
+   * user message — `#file(...)` mention expansions (`<attached-file …>`
+   * blocks). When present the real backend sends a structured
+   * `harness::send` message instead of the string-sugar form. Mock
+   * backends ignore this.
+   */
+  attachedBlocks?: string[]
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**

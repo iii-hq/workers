@@ -68,6 +68,47 @@ describe('entrySegments', () => {
     })
   })
 
+  it('collapses attached-file blocks into chips instead of dumping content', () => {
+    const item: TranscriptItem = {
+      entry_id: 'msg-2-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'review #file(src/a.rs) please' },
+          {
+            type: 'text',
+            text: '<attached-file path="src/a.rs" size="12" total-lines="1">\nfn main() {}\n</attached-file>',
+          },
+          {
+            type: 'text',
+            text: '<attached-file path="gone.txt" error="not found" />',
+          },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: 'review #file(src/a.rs) please',
+      attachments: [
+        {
+          id: 'mention-src/a.rs',
+          name: 'src/a.rs',
+          size: 12,
+          type: 'text/x-file-mention',
+        },
+        {
+          id: 'mention-gone.txt',
+          name: 'gone.txt (not found)',
+          size: 0,
+          type: 'text/x-file-mention',
+        },
+      ],
+    })
+    expect((msg as { content: string }).content).not.toContain('fn main')
+  })
+
   it('marks only trusted notification user entries', () => {
     expect(
       entrySegments(userItem('e-1', 'normal', { notification: false }))[0],

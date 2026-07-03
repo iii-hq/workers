@@ -1,6 +1,7 @@
 import type { Element, Root, RootContent, Text } from 'hast'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -10,17 +11,19 @@ interface MarkdownProps {
   className?: string
 }
 
-/* Matches `@fn(<id>)` where `<id>` excludes whitespace and `)`. Tolerates
-   trailing punctuation outside the parens. The pattern is intentionally
-   defensive: we never accept arbitrary content inside the parens, so the
-   pill can't be smuggled into otherwise-safe markdown. */
-const FN_MENTION_RE = /@fn\(([^)\s]+)\)/g
+/* Matches `@fn(<id>)` (id excludes whitespace and `)`) or `#file(<path>)`
+   (path excludes `)` — file names may carry spaces). Tolerates trailing
+   punctuation outside the parens. The pattern is intentionally defensive:
+   we never accept arbitrary content inside the parens, so the pill can't
+   be smuggled into otherwise-safe markdown. */
+const MENTION_RE = /@fn\(([^)\s]+)\)|#file\(([^)]+)\)/g
 
 /* Inline rehype plugin: walks the hast tree and splits any `text` node that
-   contains `@fn(<id>)` into a mix of leftover text + a marker `span` element
-   carrying the function id. The actual pill rendering happens in the `span`
-   component override below. Code / pre subtrees are skipped so literal
-   mentions inside fenced blocks stay verbatim. */
+   contains `@fn(<id>)` or `#file(<path>)` into a mix of leftover text + a
+   marker `span` element carrying the mention payload. The actual pill
+   rendering happens in the `span` component override below. Code / pre
+   subtrees are skipped so literal mentions inside fenced blocks stay
+   verbatim. */
 function rehypeFnMention() {
   return (tree: Root) => walk(tree)
 }
@@ -57,21 +60,25 @@ function hasLanguageJson(node: Element): boolean {
 }
 
 function splitMention(value: string): Array<Text | Element> {
-  if (!value.includes('@fn(')) return []
+  if (!value.includes('@fn(') && !value.includes('#file(')) return []
   const out: Array<Text | Element> = []
   let last = 0
   /* matchAll iterates with stateless semantics on a /g regex, so we don't
-     have to babysit FN_MENTION_RE.lastIndex between calls. */
-  for (const m of value.matchAll(FN_MENTION_RE)) {
+     have to babysit MENTION_RE.lastIndex between calls. */
+  for (const m of value.matchAll(MENTION_RE)) {
     const index = m.index ?? 0
     if (index > last) {
       out.push({ type: 'text', value: value.slice(last, index) })
     }
+    /* Group 1 = `@fn` id, group 2 = `#file` path (the alternation makes
+       exactly one of them defined per match). */
     out.push({
       type: 'element',
       tagName: 'span',
-      properties: { className: ['fn-mention'] },
-      children: [{ type: 'text', value: m[1] }],
+      properties: {
+        className: [m[1] !== undefined ? 'fn-mention' : 'file-mention'],
+      },
+      children: [{ type: 'text', value: m[1] ?? m[2] }],
     })
     last = index + m[0].length
   }
@@ -240,14 +247,19 @@ const components: Components = {
   },
   span: ({ className, children, ...rest }) => {
     const cls = typeof className === 'string' ? className : ''
-    if (cls.split(/\s+/).includes('fn-mention')) {
-      const id =
+    const classes = cls.split(/\s+/)
+    if (classes.includes('fn-mention') || classes.includes('file-mention')) {
+      const payload =
         typeof children === 'string'
           ? children
           : Array.isArray(children) && typeof children[0] === 'string'
             ? children[0]
             : ''
-      return <FunctionMentionPill functionId={id} />
+      return classes.includes('fn-mention') ? (
+        <FunctionMentionPill functionId={payload} />
+      ) : (
+        <FileMentionPill path={payload} />
+      )
     }
     return (
       <span className={className} {...rest}>

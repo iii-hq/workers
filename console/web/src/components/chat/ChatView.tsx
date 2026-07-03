@@ -19,6 +19,7 @@ import type { ChatBackend } from '@/lib/backend'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
 import type { CompactResult } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
@@ -357,6 +358,42 @@ export function ChatView({
         return
       }
 
+      // Expand `#file(...)` mentions into attachment blocks (real backend
+      // with a working dir only). Failures never block the send — a failed
+      // mention becomes a placeholder block plus a warn notice.
+      let attachedBlocks: string[] | undefined
+      const workingDir = conversation.workingDir
+      const mentionPaths =
+        backend.id === 'real' && workingDir
+          ? parseFileMentions(payload.text)
+          : []
+      if (workingDir && mentionPaths.length > 0) {
+        const expanded = await expandFileMentions(workingDir, mentionPaths)
+        attachedBlocks = expanded.blocks
+        if (expanded.attachments.length > 0) {
+          onPatchMessage(conversationId, userMsg.id, {
+            attachments: [
+              ...(userMsg.attachments ?? []),
+              ...expanded.attachments.map((a) => ({
+                id: `mention-${a.path}`,
+                name: a.path,
+                size: a.size,
+                type: 'text/x-file-mention',
+              })),
+            ],
+          })
+        }
+        for (const failure of expanded.failures) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not attach ${failure.path} — ${failure.reason}`,
+              'warn',
+            ),
+          )
+        }
+      }
+
       const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
@@ -380,6 +417,9 @@ export function ChatView({
             thinkingLevel,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
+            ...(attachedBlocks && attachedBlocks.length > 0
+              ? { attachedBlocks }
+              : {}),
           },
         )) {
           switch (event.kind) {

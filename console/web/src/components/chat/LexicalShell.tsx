@@ -15,6 +15,9 @@ import {
 } from 'lexical'
 import { useEffect, useMemo, useRef } from 'react'
 import type { FunctionEntry } from '@/lib/functions'
+import { FileMentionNode } from './lexical/FileMentionNode'
+import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
+import { FileMentionTransformPlugin } from './lexical/FileMentionTransformPlugin'
 import { FunctionMentionNode } from './lexical/FunctionMentionNode'
 import { FunctionMentionTransformPlugin } from './lexical/FunctionMentionTransformPlugin'
 import { MentionsPlugin } from './lexical/MentionsPlugin'
@@ -32,7 +35,7 @@ const baseConfig = {
   /* no theme classes — surface inherits Chivo Mono from <body> */
   theme: {},
   /* Decorator nodes must be registered up-front so importJSON/restore work. */
-  nodes: [FunctionMentionNode],
+  nodes: [FunctionMentionNode, FileMentionNode],
   onError(error: Error) {
     console.error(error)
   },
@@ -126,6 +129,8 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
   /** Optional one-shot initializer that runs once on mount inside the editor. */
   initialContent?: (editor: LexicalEditor) => void
   functionEntries?: FunctionEntry[]
+  /** Enables the `#` file-mention typeahead, scoped to this directory. */
+  workingDir?: string | null
 }
 
 export function LexicalShell({
@@ -136,6 +141,7 @@ export function LexicalShell({
   clearToken,
   initialContent,
   functionEntries,
+  workingDir,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
      so the initializer callback identity doesn't trigger a remount on re-render. */
@@ -178,8 +184,12 @@ export function LexicalShell({
         menuOpenRef={menuOpenRef}
         functionEntries={functionEntries}
       />
+      {workingDir ? (
+        <FileMentionsPlugin menuOpenRef={menuOpenRef} workingDir={workingDir} />
+      ) : null}
       <SlashCommandsPlugin menuOpenRef={menuOpenRef} />
       <FunctionMentionTransformPlugin />
+      <FileMentionTransformPlugin />
     </LexicalComposer>
   )
 }
