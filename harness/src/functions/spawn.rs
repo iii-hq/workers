@@ -50,9 +50,28 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Spawn into an existing session (e.g. a fork); default: create fresh.
+    /// Spawn into this session, creating it if it does not exist (e.g. a fork,
+    /// or a pre-chosen id to filter `turn-completed` subscriptions on); default:
+    /// create fresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Display-only parent for the console session tree, used when there is no
+    /// live parent turn (e.g. a trigger-fired spawn from `harness::react`).
+    /// Writes `SessionMeta.metadata.parent_session_id` so the console nests this
+    /// child; it does NOT grant policy inheritance or parent-call resolution.
+    /// Ignored when the dispatcher injects a real parent link (an in-turn spawn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// Stamped by `harness::react` (not caller-supplied): the subscription that
+    /// spawned this turn. Its completion event is never delivered back to that
+    /// same subscription (self-edge loop breaker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by_subscription_id: Option<String>,
+    /// Stamped by `harness::react` (not caller-supplied): reactive-chain depth,
+    /// echoed on this turn's `turn-completed` event so react can cap runaway
+    /// chains at `MAX_REACTIVE_DEPTH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactive_depth: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<SpawnOptions>,
 }

@@ -15,6 +15,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::types::turn::FunctionPolicy;
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
@@ -69,6 +71,16 @@ pub struct WorkerConfig {
     /// structural field: a change re-binds the cron trigger live.
     #[serde(default = "default_sweep_expression")]
     pub sweep_expression: String,
+
+    /// Dispatch policy for a PARENTLESS spawn (a direct/CLI `harness::spawn`
+    /// or a trigger-fired `harness::react` spawn) whose request carries no
+    /// `options.functions`. Children of live turns still inherit/subset the
+    /// parent policy, and explicit options always win. Defaults to a
+    /// read-only baseline (discovery, reads, subscription management — no
+    /// writes, no spend, no spawning); set to `null` explicitly to restore
+    /// deny-all.
+    #[serde(default = "default_functions")]
+    pub default_functions: Option<FunctionPolicy>,
 }
 
 impl WorkerConfig {
@@ -170,6 +182,46 @@ fn default_sweep_expression() -> String {
     // daily at midnight.
     "0 0 0 * * *".to_string()
 }
+fn default_functions() -> Option<FunctionPolicy> {
+    // Read-only baseline for parentless spawns: discovery, reads, and
+    // subscription management. Deliberately excludes every write surface,
+    // router spend, and harness::spawn — a pipeline author grants those
+    // explicitly via options / react metadata.options.
+    Some(FunctionPolicy {
+        allow: [
+            "engine::functions::list",
+            "engine::functions::info",
+            "engine::triggers::list",
+            "engine::triggers::info",
+            "engine::workers::list",
+            "engine::workers::info",
+            "engine::registered-triggers::list",
+            "engine::registered-triggers::info",
+            "engine::register_trigger",
+            "engine::unregister_trigger",
+            "state::get",
+            "state::list",
+            "router::models::list",
+            "router::models::get",
+            "router::models::supports",
+            "harness::status",
+            "worker::list",
+            "directory::registry::workers::list",
+            "directory::registry::workers::info",
+            "coder::info",
+            "coder::read-file",
+            "coder::search",
+            "coder::list-folder",
+            "coder::tree",
+            "web::fetch",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+        deny: vec![],
+        expose: Default::default(),
+    })
+}
 
 fn expand_env(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -211,6 +263,7 @@ impl Default for WorkerConfig {
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
+            default_functions: default_functions(),
         }
     }
 }
@@ -227,6 +280,35 @@ mod tests {
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 5);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
+    }
+
+    #[test]
+    fn default_functions_is_read_only_baseline_and_nullable() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        let policy = cfg.default_functions.expect("baseline present by default");
+        assert!(policy
+            .allow
+            .contains(&"engine::functions::list".to_string()));
+        assert!(policy
+            .allow
+            .contains(&"engine::register_trigger".to_string()));
+        assert!(policy.allow.contains(&"state::get".to_string()));
+        // No write surface, no spend, no spawning in the baseline.
+        for denied in [
+            "state::set",
+            "harness::spawn",
+            "router::chat",
+            "shell::exec",
+        ] {
+            assert!(
+                !policy.allow.contains(&denied.to_string()),
+                "{denied} must not be in the baseline"
+            );
+        }
+        // Explicit null restores deny-all.
+        let cfg =
+            WorkerConfig::from_json(&serde_json::json!({ "default_functions": null })).unwrap();
+        assert!(cfg.default_functions.is_none());
     }
 
     #[test]

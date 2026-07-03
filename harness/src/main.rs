@@ -29,7 +29,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, discovery, functions, manifest};
+use harness::{config, discovery, functions, manifest, subscriptions};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -141,6 +141,14 @@ async fn main() -> Result<()> {
     tracing::info!(
         "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
     );
+
+    // Background GC of durable react bindings orphaned across restarts (their
+    // in-memory session tracking is gone; their owner session may have been
+    // deleted while this harness was down). Non-blocking — never delays ready.
+    {
+        let deps = deps.clone();
+        tokio::spawn(async move { subscriptions::reconcile::run(&deps).await });
+    }
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("harness shutting down");

@@ -100,6 +100,10 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  # Trigger-bridge target: fired only by subscriptions (engine-side, bypassing
+  # this gate). Never agent-callable directly — the model binds it via
+  # engine::register_trigger and names its id from the system prompt.
+  - '!harness::react'
   - '!context::on-config-change'
   - '!approval::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
@@ -146,6 +150,11 @@ rules:
   - engine::workers::info
   - engine::registered-triggers::list
   - engine::registered-triggers::info
+  # Reactive subscriptions: agents bind events to `harness::react` and tear
+  # them down. The trigger fires `harness::react` engine-side (bypassing this
+  # gate); registering/unregistering the binding is the agent-facing surface.
+  - engine::register_trigger
+  - engine::unregister_trigger
   - worker::list
   # Public worker-registry catalogue reads — the system prompt's
   # search-before-build ladder starts here. worker::add stays approval-gated.

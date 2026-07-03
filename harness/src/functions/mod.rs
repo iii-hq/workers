@@ -7,6 +7,7 @@ pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
 pub mod on_session_deleted;
+pub mod react;
 pub mod send;
 pub mod spawn;
 pub mod status;
@@ -23,6 +24,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -34,7 +36,10 @@ pub const SEND_DESC: &str =
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
-    "Spawn a sub-agent in a child session; the model-facing pending trigger.";
+    "Spawn a sub-agent in a child session; the model-facing pending trigger — parks the calling \
+     turn until the child resolves. Call it directly ONLY when the current turn needs the \
+     child's answer; for callbacks, follow-up stages, and fan-in, register the reaction via \
+     engine::register_trigger -> harness::react instead.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -89,6 +94,33 @@ fn register<Req, Resp, F, Fut>(
             let deps = deps.clone();
             let handler = handler.clone();
             async move { handler(deps, req).await.map_err(Error::from) }
+        })
+        .description(description),
+    );
+}
+
+/// Like [`register`], but the handler also receives the per-invocation
+/// `metadata` sidecar (`engine::register_trigger`'s `metadata`). Used by the
+/// trigger-bridge target `harness::react`.
+fn register_with_metadata<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req, Option<Value>) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
+{
+    let deps = deps.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new_async(move |req: Req, meta: Option<Value>| {
+            let deps = deps.clone();
+            let handler = handler.clone();
+            async move { handler(deps, req, meta).await.map_err(Error::from) }
         })
         .description(description),
     );
@@ -170,6 +202,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     // The single shared subscription fire handler — registered once, kept off
     // the catalog. Bound to by every subscription's trigger via the engine proxy.
     crate::subscriptions::notify_agent::register(deps.clone());
+
+    // Internal trigger-bridge target — fired only by subscriptions the agent
+    // binds via engine::register_trigger. Visible in the catalog (its
+    // description points binders at engine::register_trigger), but a direct
+    // call arrives without the trigger metadata sidecar and no-ops; deployment
+    // permission policies additionally deny it to agents. The event is the
+    // payload; the reaction spec arrives as the metadata sidecar.
+    register_with_metadata(
+        iii,
+        deps,
+        react::REACT_ID,
+        react::REACT_DESC,
+        |d, ev: Value, meta| async move { react::handle(&d, ev, meta).await },
+    );
 
     tracing::info!("all harness::* functions registered");
 }

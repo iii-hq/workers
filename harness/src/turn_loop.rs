@@ -19,7 +19,9 @@ use crate::policy::{self, CallKind, CompiledPolicy};
 use crate::trigger;
 use crate::types::content::ContentBlock;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
-use crate::types::turn::{CallCheckpoint, CallState, ExposeMode, TurnRecord, TurnStatus};
+use crate::types::turn::{
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
+};
 
 pub const TURN_QUEUE: &str = "default";
 
@@ -130,7 +132,16 @@ pub async fn run_step(
         .await;
     if payload.step == 0 && record.turn_count == 0 {
         deps.events
-            .emit_started(&record.session_id, &record.turn_id, record.parent.as_ref())
+            .emit_started(
+                &record.session_id,
+                &record.turn_id,
+                record.parent.as_ref(),
+                record.display_parent_session_id.as_deref(),
+                crate::events::ReactiveMeta {
+                    spawned_by: record.spawned_by_subscription_id.as_deref(),
+                    depth: record.reactive_depth,
+                },
+            )
             .await;
         if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {
             return finalize_failed(
@@ -164,11 +175,26 @@ pub async fn run_step(
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
+    // The previous step's watermark marks which entries arrived while that
+    // step was generating (assemble_context rotates them past the reply they
+    // interrupted — see rotate_mid_generation_users). The new watermark is
+    // assigned only AFTER the generate is consumed: the pre-generate put_turn
+    // must persist the OLD one, or a redelivered step loses the rotation
+    // window and re-issues the prefill-rejected trailing-assistant shape on
+    // every retry.
+    let prev_watermark = record.watermark_entry_id.clone();
     let watermark = entries.last().map(|e| e.entry_id.clone());
-    record.watermark_entry_id = watermark.clone();
 
     // Assemble the model-ready context (+ compaction persistence).
-    let assembled = assemble_context(deps, &session, &record, &entries, payload.step).await?;
+    let assembled = assemble_context(
+        deps,
+        &session,
+        &record,
+        &entries,
+        payload.step,
+        prev_watermark.as_deref(),
+    )
+    .await?;
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -208,6 +234,20 @@ pub async fn run_step(
     };
     let mut gen_messages = assembled.messages.clone();
     gen_messages.extend(appended);
+
+    // Post-assembly invariant guard: providers reject a context where an
+    // assistant function_call has no function_result. Compaction can cut a
+    // pair (result summarized away, call kept) even when the TRANSCRIPT is
+    // fully paired — patch the assembled copy only.
+    let patched = patch_orphaned_calls(&mut gen_messages);
+    if patched > 0 {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            patched,
+            "assembled context contained orphaned function_calls; injected elided results (compaction cut a call/result pair)"
+        );
+    }
 
     // Never hand the provider an empty messages array (Anthropic 400:
     // "messages: at least one message is required"). Assembly's own guards
@@ -270,6 +310,10 @@ pub async fn run_step(
 
     let router = deps.router().await;
     let outcome = router.chat(params, &sink).await?;
+
+    // Generation consumed: advance the steering watermark (persisted by the
+    // advance()/finalize call that ends this step).
+    record.watermark_entry_id = watermark;
 
     // Persist the final assistant message into the streamed entry.
     let _ = session
@@ -700,6 +744,11 @@ async fn finalize_completed(
             result_error.as_deref(),
             None,
             record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+            crate::events::ReactiveMeta {
+                spawned_by: record.spawned_by_subscription_id.as_deref(),
+                depth: record.reactive_depth,
+            },
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -746,6 +795,11 @@ async fn finalize_failed(
             None,
             Some(reason),
             record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+            crate::events::ReactiveMeta {
+                spawned_by: record.spawned_by_subscription_id.as_deref(),
+                depth: record.reactive_depth,
+            },
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -779,6 +833,11 @@ async fn finalize_cancelled(
             None,
             Some(reason),
             record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+            crate::events::ReactiveMeta {
+                spawned_by: record.spawned_by_subscription_id.as_deref(),
+                depth: record.reactive_depth,
+            },
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -932,7 +991,10 @@ async fn has_user_after_watermark(
     let Some(watermark) = &record.watermark_entry_id else {
         return Ok(false);
     };
-    let entries = session.messages(&record.session_id, false).await?;
+    // include_custom must match the watermark's source list (the step entry
+    // loads with `true`): a watermark landing on a custom entry would
+    // otherwise never be found and the steering check silently dies.
+    let entries = session.messages(&record.session_id, true).await?;
     let mut after = false;
     for entry in entries {
         if after {
@@ -956,6 +1018,7 @@ async fn assemble_context(
     record: &TurnRecord,
     entries: &[LoadedEntry],
     step: u64,
+    prev_watermark: Option<&str>,
 ) -> Result<Assembled, HarnessError> {
     // Latest compaction custom entry on the path (if any).
     let mut previous_summary: Option<String> = None;
@@ -981,21 +1044,37 @@ async fn assemble_context(
     // entries themselves are never sent to the model).
     let mut started = tail_start.is_none();
     let mut candidate: Vec<(String, AgentMessage)> = Vec::new();
+    // Index (into `candidate`) of the first entry appended after the previous
+    // step's watermark — i.e. while that step was generating.
+    let mut first_new: Option<usize> = None;
+    let mut past_prev_watermark = false;
     for entry in entries {
         if let Some(ts) = &tail_start {
             if &entry.entry_id == ts {
                 started = true;
             }
         }
-        if !started {
-            continue;
-        }
-        if let Some(msg) = &entry.message {
-            if !matches!(msg, AgentMessage::Custom(_)) {
-                candidate.push((entry.entry_id.clone(), msg.clone()));
+        if started {
+            if let Some(msg) = &entry.message {
+                if !matches!(msg, AgentMessage::Custom(_)) {
+                    if past_prev_watermark && first_new.is_none() {
+                        first_new = Some(candidate.len());
+                    }
+                    candidate.push((entry.entry_id.clone(), msg.clone()));
+                }
             }
         }
+        if prev_watermark == Some(entry.entry_id.as_str()) {
+            past_prev_watermark = true;
+        }
     }
+
+    // Rotation happens on the FINAL assembled values (below), never on
+    // `candidate`: compaction bookkeeping maps tail_start_index into
+    // `candidate` as a log-order cursor, and rotating first would persist a
+    // tail_start_entry_id that silently drops the rotated user message from
+    // every future window.
+    let new_suffix_len = first_new.map(|i| candidate.len() - i).unwrap_or(0);
 
     let candidate_values: Vec<Value> = candidate
         .iter()
@@ -1055,37 +1134,202 @@ async fn assemble_context(
                 );
                 messages = candidate_values.clone();
             }
+            rotate_mid_generation_users(&mut messages, new_suffix_len);
             Ok(Assembled {
                 system_prompt: with_filesystem_root_aid(Some(out.system_prompt), record),
                 messages,
             })
         }
-        Ok(None) | Err(_) => Ok(Assembled {
-            system_prompt: with_filesystem_root_aid(record.options.system_prompt.clone(), record),
-            messages: candidate_values,
-        }),
+        Ok(None) | Err(_) => {
+            let mut messages = candidate_values;
+            rotate_mid_generation_users(&mut messages, new_suffix_len);
+            Ok(Assembled {
+                system_prompt: with_filesystem_root_aid(
+                    record.options.system_prompt.clone(),
+                    record,
+                ),
+                messages,
+            })
+        }
     }
 }
 
-/// Append a working-directory line to the system prompt when the turn carries a
-/// `filesystem_root` in its metadata. This is a model-facing AID only — the real
-/// scoping control plane stamps `fs_scope` onto each call
-/// (`filesystem_scope::inject`); this line just tells the model where it is so
-/// it reasons about relative paths sensibly.
+/// Append model-facing context aid lines to the system prompt: the session id
+/// (always — it makes the prompt's "<this session>" recipes actionable, e.g.
+/// `turn-completed` filters and reactive spawns that deliver into this chat),
+/// the working directory (when the turn carries a `filesystem_root`), and the
+/// dispatch-policy surface (when it is narrowed — see [`policy_aid`]). These
+/// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
+/// call (`filesystem_scope::inject`) and the policy stays fail-closed at
+/// dispatch.
 fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let Some(dir) = record.options.filesystem_root() else {
-        return system_prompt;
-    };
-    let line = format!("Your working directory is {dir}.");
+    let mut lines = vec![format!("Your session id is {}.", record.session_id)];
+    if let Some(dir) = record.options.filesystem_root() {
+        lines.push(format!("Your working directory is {dir}."));
+    }
+    if let Some(aid) = policy_aid(record.options.functions.as_ref()) {
+        lines.push(aid);
+    }
+    let aid = lines.join("\n");
     Some(match system_prompt {
-        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{line}"),
-        _ => line,
+        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{aid}"),
+        _ => aid,
     })
+}
+
+/// The dispatch-policy aid line for a narrowed turn, `None` when the surface
+/// is unrestricted (a `*` allow — the prompt's discovery doctrine is correct
+/// there). A narrowed agent is never otherwise shown its allow-list, so it
+/// dutifully follows that doctrine into a denied `engine::functions::list` on
+/// its very first step; telling it the exact surface makes discovery moot.
+fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
+    const MAX_LISTED: usize = 30;
+    let denied_all = "Function dispatch is entirely disabled this turn — do not call any function.";
+    let Some(p) = policy else {
+        return Some(denied_all.to_string());
+    };
+    if p.allow.iter().any(|g| g == "*") {
+        return None;
+    }
+    if p.allow.is_empty() {
+        return Some(denied_all.to_string());
+    }
+    let mut allow: Vec<&str> = p.allow.iter().map(String::as_str).collect();
+    allow.sort_unstable();
+    allow.dedup();
+    let over = allow.len() > MAX_LISTED;
+    let shown = allow[..allow.len().min(MAX_LISTED)].join(", ");
+    let ellipsis = if over { ", …" } else { "" };
+    let deny = if p.deny.is_empty() {
+        String::new()
+    } else {
+        format!(" Deny-listed on top: {}.", p.deny.join(", "))
+    };
+    Some(format!(
+        "Your dispatch policy allows ONLY these functions: {shown}{ellipsis}.{deny} Anything \
+         else — including discovery (engine::functions::list / ::info) unless listed above — is \
+         denied. Do not probe: if the task needs a function not allowed here, say so and finish."
+    ))
 }
 
 struct Assembled {
     system_prompt: Option<String>,
     messages: Vec<Value>,
+}
+
+/// A user entry appended while a step was generating (or assembling — the
+/// compaction/hook window) lands BEFORE that step's assistant entry in the
+/// durable log. The steering check then re-generates, but the assembled list
+/// would END with the assistant message: a prefill request Anthropic rejects
+/// ("This model does not support assistant message prefill. The conversation
+/// must end with a user message."), wedging the turn on every retry. Present
+/// mid-generation arrivals AFTER the reply they interrupted — semantically
+/// exact: the model answered without seeing them. Runs on the FINAL assembled
+/// values so compaction bookkeeping stays in log order; `new_suffix_len` is
+/// how many trailing messages arrived after the previous step's watermark
+/// (only user messages inside that suffix rotate). The window is clamped off
+/// the opening message so the context always still starts with the user turn.
+/// The durable transcript is untouched.
+fn rotate_mid_generation_users(messages: &mut Vec<Value>, new_suffix_len: usize) {
+    if new_suffix_len == 0 || messages.len() < 2 {
+        return;
+    }
+    let last = messages.len() - 1;
+    let tail = &messages[last];
+    let trailing_callless_assistant = tail.get("role").and_then(Value::as_str) == Some("assistant")
+        && !tail
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("function_call"))
+            })
+            .unwrap_or(false);
+    if !trailing_callless_assistant {
+        return;
+    }
+    let window_start = messages.len().saturating_sub(new_suffix_len).max(1);
+    let mut moved: Vec<Value> = Vec::new();
+    let mut i = window_start;
+    while i < messages.len() - 1 {
+        if messages[i].get("role").and_then(Value::as_str) == Some("user") {
+            moved.push(messages.remove(i));
+        } else {
+            i += 1;
+        }
+    }
+    messages.extend(moved);
+}
+
+/// Patch an ASSEMBLED message list whose assistant `function_call` blocks lack
+/// a `function_result` anywhere in the list — the shape providers hard-reject
+/// (`tool_use` without `tool_result`). Injects a synthetic "elided" result
+/// message directly after each orphaned call's assistant message. Returns how
+/// many results were injected. The durable transcript is never touched; the
+/// orphan usually means compaction cut a call/result pair.
+fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
+    let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in messages.iter() {
+        if let Some(id) = m.get("function_call_id").and_then(Value::as_str) {
+            resolved.insert(id.to_string());
+        }
+        if let Some(blocks) = m.get("content").and_then(Value::as_array) {
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) == Some("function_result") {
+                    if let Some(id) = b.get("function_call_id").and_then(Value::as_str) {
+                        resolved.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut patched = 0usize;
+    let mut i = 0;
+    while i < messages.len() {
+        let mut missing: Vec<(String, String)> = Vec::new();
+        if messages[i].get("role").and_then(Value::as_str) == Some("assistant") {
+            if let Some(blocks) = messages[i].get("content").and_then(Value::as_array) {
+                for b in blocks {
+                    if b.get("type").and_then(Value::as_str) != Some("function_call") {
+                        continue;
+                    }
+                    let Some(id) = b.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if resolved.contains(id) {
+                        continue;
+                    }
+                    let fid = b
+                        .get("function_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    missing.push((id.to_string(), fid.to_string()));
+                }
+            }
+        }
+        let inserted = missing.len();
+        for (off, (id, fid)) in missing.into_iter().enumerate() {
+            messages.insert(
+                i + 1 + off,
+                json!({
+                    "role": "function_result",
+                    "function_call_id": id,
+                    "function_id": fid,
+                    "content": [{
+                        "type": "text",
+                        "text": "result elided from the assembled context (compaction); the call completed in an earlier turn — consult the transcript if its output matters",
+                    }],
+                    "is_error": false,
+                    "timestamp": AgentMessage::now_ms(),
+                }),
+            );
+            patched += 1;
+        }
+        i += 1 + inserted;
+    }
+    patched
 }
 
 /// Build the invocation-schema surface attached to the generate request
@@ -1175,6 +1419,180 @@ impl Clone for SessionStreamSink {
 mod tests {
     use super::cancel_requested;
     use crate::types::event::StopReason;
+
+    #[test]
+    fn policy_aid_names_the_narrowed_surface_and_skips_wildcards() {
+        use crate::types::turn::FunctionPolicy;
+        // No policy / empty allow: dispatch is off entirely — say so.
+        assert!(super::policy_aid(None).unwrap().contains("disabled"));
+        let empty = FunctionPolicy::default();
+        assert!(super::policy_aid(Some(&empty))
+            .unwrap()
+            .contains("disabled"));
+        // A `*` allow is the full surface: the discovery doctrine applies, no aid.
+        let full = FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        };
+        assert!(super::policy_aid(Some(&full)).is_none());
+        // Narrowed: the exact surface is spelled out, discovery is called out.
+        let narrowed = FunctionPolicy {
+            allow: vec!["state::set".into(), "state::get".into()],
+            deny: vec!["state::delete".into()],
+            ..Default::default()
+        };
+        let aid = super::policy_aid(Some(&narrowed)).unwrap();
+        assert!(aid.contains("ONLY these functions: state::get, state::set"));
+        assert!(aid.contains("Deny-listed on top: state::delete"));
+        assert!(aid.contains("engine::functions::list"));
+        // Long allow-lists are capped, not dumped.
+        let long = FunctionPolicy {
+            allow: (0..40).map(|i| format!("w{i:02}::fn")).collect(),
+            ..Default::default()
+        };
+        let aid = super::policy_aid(Some(&long)).unwrap();
+        assert!(aid.contains("w00::fn"));
+        assert!(!aid.contains("w39::fn"));
+        assert!(aid.contains("…"));
+    }
+
+    mod rotate_mid_generation_users {
+        use super::super::rotate_mid_generation_users;
+        use serde_json::{json, Value};
+
+        fn user(tag: &str) -> Value {
+            json!({"role": "user", "content": [{"type": "text", "text": tag}]})
+        }
+        fn assistant(tag: &str) -> Value {
+            json!({"role": "assistant", "content": [{"type": "text", "text": tag}]})
+        }
+        fn assistant_call(tag: &str) -> Value {
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": tag},
+                {"type": "function_call", "id": "t1", "function_id": "f", "arguments": {}},
+            ]})
+        }
+        fn result(tag: &str) -> Value {
+            json!({"role": "function_result", "function_call_id": "t1", "function_id": "f",
+                   "content": [{"type": "text", "text": tag}]})
+        }
+        fn tags(msgs: &[Value]) -> Vec<&str> {
+            msgs.iter()
+                .map(|m| {
+                    m["content"][0]["text"]
+                        .as_str()
+                        .or_else(|| m["content"].as_str())
+                        .unwrap_or("?")
+                })
+                .collect()
+        }
+
+        #[test]
+        fn mid_generation_notification_rotates_past_the_reply() {
+            // The live prefill-400 repro: notification appended during
+            // generation/assembly sits before the assistant entry; the
+            // re-generate must end with the notification, not the assistant.
+            let mut m = vec![
+                user("task"),
+                assistant("a1"),
+                user("notif"),
+                assistant("a2"),
+            ];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(tags(&m), vec!["task", "a1", "a2", "notif"]);
+        }
+
+        #[test]
+        fn opening_message_never_moves() {
+            // Suffix covering the whole list (first generate, or compaction
+            // cut into the suffix): the window clamps off the opener so the
+            // context still starts with a user turn.
+            let mut m = vec![user("task"), user("notif"), assistant("a1")];
+            rotate_mid_generation_users(&mut m, 3);
+            assert_eq!(tags(&m), vec!["task", "a1", "notif"]);
+        }
+
+        #[test]
+        fn empty_suffix_is_a_noop() {
+            let mut m = vec![user("task"), assistant("a1")];
+            rotate_mid_generation_users(&mut m, 0);
+            assert_eq!(tags(&m), vec!["task", "a1"]);
+        }
+
+        #[test]
+        fn trailing_assistant_with_calls_is_left_for_the_result_path() {
+            // Calls pending → results follow → the wire never ends assistant.
+            let mut m = vec![user("task"), user("notif"), assistant_call("a1")];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(tags(&m), vec!["task", "notif", "a1"]);
+        }
+
+        #[test]
+        fn results_in_the_new_suffix_stay_in_place() {
+            // Result and notification both landed after the watermark; only
+            // the user message rotates, pairing stays intact.
+            let mut m = vec![
+                user("task"),
+                assistant_call("a1"),
+                result("r1"),
+                user("notif"),
+                assistant("a2"),
+            ];
+            rotate_mid_generation_users(&mut m, 3);
+            assert_eq!(tags(&m), vec!["task", "a1", "r1", "a2", "notif"]);
+        }
+
+        #[test]
+        fn trailing_user_is_a_noop() {
+            let mut m = vec![user("task"), assistant("a1"), user("steer")];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(tags(&m), vec!["task", "a1", "steer"]);
+        }
+
+        #[test]
+        fn redelivered_step_with_stale_empty_assistant_still_rotates() {
+            // The verifier's retry schedule: attempt 1 appended its empty
+            // assistant entry then died before generating; the retry's
+            // suffix covers [notif, empty-assistant]. The notification must
+            // still rotate past the trailing (empty, call-less) assistant.
+            let mut m = vec![
+                user("task"),
+                assistant("a1"),
+                user("notif"),
+                json!({"role": "assistant", "content": []}),
+            ];
+            rotate_mid_generation_users(&mut m, 2);
+            assert_eq!(m[3]["role"], "user");
+            assert_eq!(m[3]["content"][0]["text"], "notif");
+        }
+    }
+
+    #[test]
+    fn patch_orphaned_calls_injects_elided_results_adjacent_to_the_call() {
+        use serde_json::json;
+        let mut msgs = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "function_call", "id": "toolu_ok", "function_id": "a::b", "arguments": {}},
+                {"type": "function_call", "id": "toolu_orphan", "function_id": "c::d", "arguments": {}},
+            ]}),
+            json!({"role": "function_result", "function_call_id": "toolu_ok", "function_id": "a::b",
+                   "content": [{"type": "text", "text": "ok"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "next"}]}),
+        ];
+        assert_eq!(super::patch_orphaned_calls(&mut msgs), 1);
+        // The synthetic result sits directly after the assistant message.
+        assert_eq!(
+            msgs[2]
+                .get("function_call_id")
+                .and_then(serde_json::Value::as_str),
+            Some("toolu_orphan")
+        );
+        assert_eq!(msgs.len(), 5);
+        // Fully paired context is untouched.
+        assert_eq!(super::patch_orphaned_calls(&mut msgs), 0);
+        assert_eq!(msgs.len(), 5);
+    }
 
     #[test]
     fn durable_abort_is_observed_even_when_local_is_stale_and_stream_completed() {

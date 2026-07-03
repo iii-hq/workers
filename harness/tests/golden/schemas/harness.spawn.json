@@ -654,14 +654,37 @@
           }
         ]
       },
+      "parent_session_id": {
+        "description": "Display-only parent for the console session tree, used when there is no live parent turn (e.g. a trigger-fired spawn from `harness::react`). Writes `SessionMeta.metadata.parent_session_id` so the console nests this child; it does NOT grant policy inheritance or parent-call resolution. Ignored when the dispatcher injects a real parent link (an in-turn spawn).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "provider": {
         "type": [
           "string",
           "null"
         ]
       },
+      "reactive_depth": {
+        "description": "Stamped by `harness::react` (not caller-supplied): reactive-chain depth, echoed on this turn's `turn-completed` event so react can cap runaway chains at `MAX_REACTIVE_DEPTH`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "session_id": {
-        "description": "Spawn into an existing session (e.g. a fork); default: create fresh.",
+        "description": "Spawn into this session, creating it if it does not exist (e.g. a fork, or a pre-chosen id to filter `turn-completed` subscriptions on); default: create fresh.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "spawned_by_subscription_id": {
+        "description": "Stamped by `harness::react` (not caller-supplied): the subscription that spawned this turn. Its completion event is never delivered back to that same subscription (self-edge loop breaker).",
         "type": [
           "string",
           "null"

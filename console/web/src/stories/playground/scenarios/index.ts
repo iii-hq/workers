@@ -6,6 +6,7 @@ import { coderUpdate } from './coder-update'
 import { errorOnFcall } from './error-on-fcall'
 import { fastTokens } from './fast-tokens'
 import { happyAgent } from './happy-agent'
+import { harnessSpawn } from './harness-spawn'
 import { happyAsk } from './happy-ask'
 import { happyPlan } from './happy-plan'
 import { longMarkdown } from './long-markdown'
@@ -117,6 +118,15 @@ export const SCENARIOS: PlaygroundScenario[] = [
     group: 'agent',
     preferredMode: 'agent',
     backend: multiFunctionAgent,
+  },
+  {
+    id: 'harness-spawn',
+    label: 'harness · spawn',
+    description:
+      'gated harness::spawn (approve → child running → markdown result), then a spawn_depth_exceeded error.',
+    group: 'agent',
+    preferredMode: 'agent',
+    backend: harnessSpawn,
   },
   {
     id: 'pending-approval',

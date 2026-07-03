@@ -26,6 +26,8 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub subscriptions: Arc<SubscriptionRegistry>,
+    /// react's per-subscription fire-rate breaker (loop breaker #3).
+    pub react_gate: Arc<crate::functions::react::FireGate>,
 }
 
 impl Deps {
@@ -44,6 +46,7 @@ impl Deps {
             hooks,
             locks: SessionLocks::new(),
             subscriptions: Arc::new(SubscriptionRegistry::new()),
+            react_gate: Arc::new(crate::functions::react::FireGate::default()),
         }
     }
 

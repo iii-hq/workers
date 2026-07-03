@@ -24,6 +24,15 @@ pub struct DispatchError {
     pub message: String,
 }
 
+impl std::fmt::Display for DispatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.code {
+            Some(code) => write!(f, "{code}: {}", self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct EngineClient {
     iii: Arc<IIIClient>,

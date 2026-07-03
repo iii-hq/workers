@@ -53,12 +53,14 @@ impl SessionClient {
     }
 
     /// Idempotently ensure a session exists, applying `metadata` on creation.
+    /// Returns whether this call CREATED the session — `false` means it already
+    /// existed and the supplied metadata (e.g. parent linkage) was NOT applied.
     pub async fn ensure(
         &self,
         session_id: &str,
         title: Option<&str>,
         metadata: Option<&Value>,
-    ) -> Result<(), HarnessError> {
+    ) -> Result<bool, HarnessError> {
         let mut payload = json!({ "session_id": session_id });
         if let Some(t) = title {
             payload["title"] = json!(t);
@@ -66,7 +68,11 @@ impl SessionClient {
         if let Some(m) = metadata {
             payload["metadata"] = m.clone();
         }
-        self.call("session::ensure", payload).await.map(|_| ())
+        let resp = self.call("session::ensure", payload).await?;
+        Ok(resp
+            .get("created")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
     }
 
     /// Create a fresh session, returning its id.

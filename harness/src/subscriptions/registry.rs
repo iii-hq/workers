@@ -17,6 +17,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use serde_json::Value;
+
 /// One live subscription's local bookkeeping. Held in an `Arc` so a firing
 /// handler reads it without holding the registry lock.
 pub struct SubEntry {
@@ -29,14 +31,19 @@ pub struct SubEntry {
     /// [`set_trigger_id`](SubscriptionRegistry::set_trigger_id)) and used to
     /// `engine::unregister_trigger` on teardown.
     trigger_id: Mutex<Option<String>>,
+    /// Canonicalized registration request for same-session idempotency
+    /// ([`find_duplicate`](SubscriptionRegistry::find_duplicate)); `Null` when
+    /// the caller opted out of dedup.
+    dedup_key: Value,
 }
 
 impl SubEntry {
-    fn new(session_id: String) -> Self {
+    fn new(session_id: String, dedup_key: Value) -> Self {
         Self {
             session_id,
             seq: AtomicU64::new(0),
             trigger_id: Mutex::new(None),
+            dedup_key,
         }
     }
 }
@@ -83,6 +90,19 @@ impl SubscriptionRegistry {
         session_id: &str,
         max: usize,
     ) -> Result<(), CapExceeded> {
+        self.try_insert_keyed(sub_id, session_id, max, Value::Null)
+    }
+
+    /// [`try_insert`](Self::try_insert) with a canonicalized request key so a
+    /// later identical registration can be answered idempotently via
+    /// [`find_duplicate`](Self::find_duplicate).
+    pub fn try_insert_keyed(
+        &self,
+        sub_id: &str,
+        session_id: &str,
+        max: usize,
+        dedup_key: Value,
+    ) -> Result<(), CapExceeded> {
         let mut inner = self.lock();
         let count = inner
             .by_session
@@ -99,9 +119,36 @@ impl SubscriptionRegistry {
             .insert(sub_id.to_string());
         inner.by_id.insert(
             sub_id.to_string(),
-            Arc::new(SubEntry::new(session_id.to_string())),
+            Arc::new(SubEntry::new(session_id.to_string(), dedup_key)),
         );
         Ok(())
+    }
+
+    /// The standing subscription in `session_id` registered with an identical
+    /// request, if any — registration idempotency: a retried or double-issued
+    /// `engine::register_trigger` returns the existing subscription instead of
+    /// wiring a twin binding. Only fully-bound entries count (trigger id
+    /// attached); an in-flight parallel registration is left to race. `Null`
+    /// keys (unkeyed inserts) never match.
+    pub fn find_duplicate(&self, session_id: &str, key: &Value) -> Option<String> {
+        if key.is_null() {
+            return None;
+        }
+        let inner = self.lock();
+        let subs = inner.by_session.get(session_id)?;
+        for sub_id in subs {
+            if let Some(e) = inner.by_id.get(sub_id) {
+                let bound = e
+                    .trigger_id
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some();
+                if bound && e.dedup_key == *key {
+                    return Some(sub_id.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Attach the engine-returned trigger id after a successful bind. Returns
@@ -157,6 +204,22 @@ impl SubscriptionRegistry {
         let mut inner = self.lock();
         let entry = remove_entry(&mut inner, sub_id)?;
         Some((entry.session_id.clone(), trigger_id(&entry)))
+    }
+
+    /// Remove the subscription bound to an ENGINE trigger id and return its
+    /// sub id. Used by react's join teardown: the engine binding is already
+    /// unregistered there, so the local slot must be evicted too or fired
+    /// joins would permanently leak the owning session's cap budget. Linear
+    /// scan — the map is bounded (per-session cap) and this runs only on
+    /// join teardown.
+    pub fn take_by_trigger_id(&self, trigger_id: &str) -> Option<String> {
+        let mut inner = self.lock();
+        let sub_id = inner.by_id.iter().find_map(|(id, e)| {
+            let t = e.trigger_id.lock().unwrap_or_else(|p| p.into_inner());
+            (t.as_deref() == Some(trigger_id)).then(|| id.clone())
+        })?;
+        remove_entry(&mut inner, &sub_id)?;
+        Some(sub_id)
     }
 
     /// Remove every subscription owned by a session and return each
@@ -216,6 +279,27 @@ mod tests {
         assert!(reg.try_insert("sub_3", "s", 2).is_err());
         // A different session has its own budget.
         assert!(reg.try_insert("sub_4", "s2", 2).is_ok());
+    }
+
+    #[test]
+    fn find_duplicate_matches_only_bound_identical_same_session_requests() {
+        let reg = SubscriptionRegistry::new();
+        let key = serde_json::json!({"trigger_type":"state","config":{"scope":"a","key":"k"}});
+        reg.try_insert_keyed("sub_1", "s", 8, key.clone()).unwrap();
+        // Unbound (engine registration in flight): allowed to race, no match.
+        assert_eq!(reg.find_duplicate("s", &key), None);
+        assert!(reg.set_trigger_id("sub_1", "t-1"));
+        assert_eq!(reg.find_duplicate("s", &key).as_deref(), Some("sub_1"));
+        // Different session or different request: no match.
+        assert_eq!(reg.find_duplicate("s2", &key), None);
+        assert_eq!(
+            reg.find_duplicate("s", &serde_json::json!({"trigger_type":"cron"})),
+            None
+        );
+        // Unkeyed inserts never dedup, even against a Null probe.
+        reg.try_insert("sub_2", "s", 8).unwrap();
+        assert!(reg.set_trigger_id("sub_2", "t-2"));
+        assert_eq!(reg.find_duplicate("s", &serde_json::Value::Null), None);
     }
 
     #[test]
@@ -280,6 +364,21 @@ mod tests {
         assert_eq!(dropped.len(), 2);
         assert!(reg.session_of("sub_1").is_none());
         assert!(reg.take_session("s").is_empty());
+    }
+
+    #[test]
+    fn take_by_trigger_id_evicts_the_bound_slot_and_frees_cap() {
+        let reg = SubscriptionRegistry::new();
+        reg.try_insert("sub_1", "s", 1).unwrap();
+        reg.set_trigger_id("sub_1", "trig_1");
+
+        assert_eq!(reg.take_by_trigger_id("trig_1").as_deref(), Some("sub_1"));
+        assert!(reg.session_of("sub_1").is_none());
+        // The freed slot must count against the cap again.
+        assert!(reg.try_insert("sub_2", "s", 1).is_ok());
+        // Unknown / already-evicted trigger ids are a no-op.
+        assert!(reg.take_by_trigger_id("trig_1").is_none());
+        assert!(reg.take_by_trigger_id("trig_unknown").is_none());
     }
 
     #[test]
