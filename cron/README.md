@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_cron::TRIGGER_TYPE.to_string(),
+        trigger_type: "cron".to_string(),
         function_id: "jobs::tick".into(),
         config: json!({ "expression": "*/5 * * * * *" }),
         metadata: None,
