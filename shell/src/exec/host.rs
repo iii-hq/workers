@@ -40,9 +40,9 @@ pub fn build_command(
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
     }
-    if !cfg.inherit_env {
+    if !cfg.env.inherit {
         cmd.env_clear();
-        for k in &cfg.allowed_env {
+        for k in &cfg.env.allow {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
             }
@@ -50,8 +50,8 @@ pub fn build_command(
     }
     // Per-call env overrides are applied LAST so a permitted key's per-call
     // value wins over the config-forwarded value. Keys were already gated
-    // against allowed_env + DANGEROUS_ENV_KEYS in the handler, so this loop
-    // trusts the validated map. Note: when inherit_env is true the child
+    // against env.allow + DANGEROUS_ENV_KEYS in the handler, so this loop
+    // trusts the validated map. Note: when env.inherit is true the child
     // already inherits the worker's full env; the override still sets these
     // keys explicitly on top.
     if let Some(env) = &overrides.env {
@@ -252,7 +252,7 @@ mod tests {
 
     fn test_cfg() -> ShellConfig {
         let mut c = ShellConfig {
-            inherit_env: true,
+            env: crate::config::EnvConfig::inherit_all(),
             max_output_bytes: 4096,
             ..Default::default()
         };
@@ -441,8 +441,8 @@ mod tests {
         }
     }
 
-    /// With `inherit_env: false`, the child env is scrubbed to exactly the
-    /// `allowed_env` keys: an allowed worker var round-trips, a non-allowed one
+    /// With `env.inherit: false`, the child env is scrubbed to exactly the
+    /// `env.allow` keys: an allowed worker var round-trips, a non-allowed one
     /// never reaches the child. (Unit twin of the e2e scrub/passthrough cases.)
     #[tokio::test]
     async fn inherit_false_forwards_only_allow_keys() {
@@ -455,8 +455,8 @@ mod tests {
         std::env::set_var(BLOCKED, "blocked-value");
 
         let mut cfg = test_cfg();
-        cfg.inherit_env = false;
-        cfg.allowed_env = vec!["PATH".into(), ALLOWED.into()];
+        cfg.env.inherit = false;
+        cfg.env.allow = vec!["PATH".into(), ALLOWED.into()];
 
         let out = run_to_completion(
             &["env".into()],
@@ -479,12 +479,12 @@ mod tests {
     }
 
     /// A permitted `env` key is visible to the child process. We forward
-    /// `printenv NODE_ENV`; with NODE_ENV in allowed_env and a per-call value,
+    /// `printenv NODE_ENV`; with NODE_ENV in env.allow and a per-call value,
     /// the child sees it.
     #[tokio::test]
     async fn env_override_is_visible_to_child() {
         let mut cfg = test_cfg();
-        cfg.allowed_env = vec!["NODE_ENV".into()];
+        cfg.env.allow = vec!["NODE_ENV".into()];
 
         let mut env = std::collections::BTreeMap::new();
         env.insert("NODE_ENV".to_string(), "from-override".to_string());
@@ -502,12 +502,12 @@ mod tests {
         assert_eq!(out.stdout.trim(), "from-override");
     }
 
-    /// An env key NOT in allowed_env is rejected (S210) before any spawn,
+    /// An env key NOT in env.allow is rejected (S210) before any spawn,
     /// naming the offending key — the call never reaches the child.
     #[tokio::test]
     async fn env_key_outside_allow_list_is_rejected_s210() {
         let mut cfg = test_cfg();
-        cfg.allowed_env = vec!["NODE_ENV".into()];
+        cfg.env.allow = vec!["NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("SECRET_TOKEN".to_string(), "x".to_string());
         let err = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
@@ -521,12 +521,12 @@ mod tests {
     }
 
     /// LD_PRELOAD is rejected (S210) even when the test also adds it to
-    /// allowed_env — proof that the dangerous-key denylist wins over the
+    /// env.allow — proof that the dangerous-key denylist wins over the
     /// operator's allowlist.
     #[tokio::test]
     async fn dangerous_env_key_rejected_even_if_allowlisted_on_host_path() {
         let mut cfg = test_cfg();
-        cfg.allowed_env = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
+        cfg.env.allow = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
         let mut env = std::collections::BTreeMap::new();
         env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
         let err = crate::exec::policy::build_overrides(None, Some(&env), None, None, &cfg)
