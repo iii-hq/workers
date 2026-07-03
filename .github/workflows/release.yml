@@ -217,3 +217,37 @@ jobs:
       bin: ${{ needs.setup.outputs.bin }}
       image_tag: ${{ needs.container-build.outputs.image_tag }}
     secrets: inherit
+
+  # ──────────────────────────────────────────────────────────────
+  # Announce the release in Slack (#worker-releases). Terminal job:
+  # nothing depends on it, but a bad token or channel fails red
+  # instead of rotting silently.
+  # ──────────────────────────────────────────────────────────────
+  announce:
+    name: Announce on Slack
+    needs: [setup, binary-build, container-build, bundle-build, publish]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL: worker-releases
+          WORKER: ${{ needs.setup.outputs.worker }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
+        run: |
+          set -euo pipefail
+          suffix=""
+          if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
+          text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
+          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
+          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$payload")
+          if ! echo "$resp" | jq -e .ok > /dev/null; then
+            echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
+            exit 1
+          fi

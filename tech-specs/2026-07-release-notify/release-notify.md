@@ -18,13 +18,21 @@ tickets (MOT-3634…MOT-3652), a pattern this work retires.
    in batches, so one release object per wave, all shipped issues attached,
    and **one AI-written note with a section per worker** (name + version +
    changes).
-2. Track the work under the **Harness 1.0** project (iii/MOT).
+2. Announce every successful worker release in Slack (`#worker-releases`),
+   automatically from CI.
+3. Track the work under the **Harness 1.0** project (iii/MOT).
 
-Slack notification was originally in scope but is already covered — the
-Slack channels receive release notifications through the existing wiring, so
-no CI change ships with this work. (An earlier revision designed a terminal
-`announce` job in `release.yml` posting via `chat.postMessage`; see git
-history of this file if that's ever wanted.)
+## CI: `announce` job in `release.yml`
+
+Terminal job after the publish chain, per released tag: posts
+`🚀 <worker> vX.Y.Z released — GitHub Release` to `#worker-releases` via
+`chat.postMessage` (curl + jq, no action dependency), labeled
+*(pre-release)* when `is_prerelease` is true. Runs when
+`dry_run != 'true'` and the chain is not failed/cancelled; checks the Slack
+API `ok` field so a bad token fails the job red instead of rotting
+silently. Nothing depends on it. Requires repo secret `SLACK_BOT_TOKEN`
+(`chat:write`) and the bot invited to the channel. No Linear link in the
+message — the Linear wave release is created later by the skill.
 
 ## Decision
 
@@ -91,7 +99,6 @@ append-only.
 
 ## Out of scope (deliberate)
 
-- CI Slack announcements (already covered by existing channel wiring).
 - Per-worker Linear pipelines or per-tag releases (waves are the unit).
 - Headless/cron invocation of the skill (Linear MCP auth is interactive;
   catch-up semantics make periodic manual runs sufficient).

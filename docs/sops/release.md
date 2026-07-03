@@ -203,7 +203,12 @@ Confirm:
 - GitHub Release has complete assets (per-target archives + `.sha256` for
   binary/bundle deploys).
 
-## Organize in Linear
+## Announce & organize
+
+Slack announcement is automatic: the terminal `announce` job in
+`release.yml` posts `🚀 <worker> vX.Y.Z` to `#worker-releases` for every
+successful non-dry-run release (requires repo secret `SLACK_BOT_TOKEN` and
+the bot invited to the channel).
 
 After a release session — any number of tags — run `/release-sync` in Claude
 Code from the repo root. Same-day tags form one **wave** = one release in
