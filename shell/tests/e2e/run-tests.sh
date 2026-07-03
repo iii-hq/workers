@@ -7,8 +7,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --config <temp.yaml> derived from the `shell` config block in config.yaml.
 # The shell worker registers that as the SEED with the built-in `configuration`
 # worker (configuration::register) and then reads it back (configuration::get).
-# The configuration worker is fresh per engine process, so the config.yaml block
-# is authoritative each run — no separate seed step is needed.
+# The engine's file-backed configuration worker persists entries under
+# ./config, so this script clears that generated directory before each run and
+# passes the engine a throwaway copy of config.yaml. The checked-in config file
+# remains the authoritative source and is not rewritten by the engine.
 
 # Path overrides (defaults assume the harness lives at shell/tests/e2e/ inside
 # the workers repo and the iii engine is on $PATH or at $HOME/.local/bin/iii —
@@ -26,6 +28,8 @@ REPORT_PATH="$ROOT_DIR/reports/report.json"
 TS=$(date +%Y%m%d-%H%M%S)
 ENGINE_LOG="$ROOT_DIR/reports/engine-$TS.log"
 HARNESS_LOG="$ROOT_DIR/reports/harness-$TS.log"
+ENGINE_CONFIG="$ROOT_DIR/reports/config-$TS.yaml"
+CONFIG_STATE_DIR="$ROOT_DIR/config"
 SENTINEL_TIMEOUT="${HARNESS_TIMEOUT:-90}"
 
 KEEP=0
@@ -126,8 +130,8 @@ fi
 
 # 4. Install harness deps if needed
 if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
-  echo "[run-tests] npm install (harness)"
-  (cd "$ROOT_DIR/workers/harness" && npm install --silent)
+  echo "[run-tests] npm ci (harness)"
+  (cd "$ROOT_DIR/workers/harness" && npm ci --silent)
 fi
 
 # 5. Set env vars used by the env-scrubbing/passthrough cases. HARNESS_TEST_VAR
@@ -140,8 +144,10 @@ export HARNESS_NOT_ALLOWED="harness-blocked-value"
 echo "[run-tests] starting iii engine"
 : > "$ENGINE_LOG"
 : > "$HARNESS_LOG"
+rm -rf "$CONFIG_STATE_DIR"
+cp "$ROOT_DIR/config.yaml" "$ENGINE_CONFIG"
 
-( cd "$ROOT_DIR" && "$III_BIN" --no-update-check -c ./config.yaml ) > "$ENGINE_LOG" 2>&1 &
+( cd "$ROOT_DIR" && "$III_BIN" --no-update-check -c "$ENGINE_CONFIG" ) > "$ENGINE_LOG" 2>&1 &
 ENGINE_PID=$!
 echo "[run-tests] engine pid=$ENGINE_PID"
 
