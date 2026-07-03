@@ -10,6 +10,7 @@ on:
       - 'codex/v*'
       - 'console/v*'
       - 'context-manager/v*'
+      - 'cron/v*'
       - 'database/v*'
       - 'email/v*'
       - 'harness/v*'
