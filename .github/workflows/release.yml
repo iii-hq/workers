@@ -28,6 +28,7 @@ on:
       - 'provider-openai/v*'
       - 'provider-xai/v*'
       - 'pubsub/v*'
+      - 'queue/v*'
       - 'rbac-proxy/v*'
       - 'session-manager/v*'
       - 'slack/v*'
