@@ -63,10 +63,11 @@ would be written (typical of a first backfill), show the plan
    `create_issue_label` with `parent: release`; skip if it exists).
 2. Label every verified issue: read the issue's current labels first and
    pass the union to `save_issue` — never drop existing labels.
-3. Worker labels: also apply `worker` group child labels (`shell`,
-   `console`, ...) matching the worker commit ranges that referenced the
-   issue — create missing children under the team label group `worker`
-   lazily; same union rule.
+3. Worker labels: also apply flat `worker:<name>` team labels
+   (`worker:shell`, `worker:console`, ...) matching the worker commit
+   ranges that referenced the issue — create missing ones lazily; same
+   union rule. Flat, NOT a label group: Linear group children are
+   mutually exclusive, and one issue often spans several workers.
 4. Document: `save_document` on team iii titled `Release YYYY-MM-DD`
    (update the existing one if present — look it up via `list_documents`).
    First line: the full tag list (idempotency record — always complete)
