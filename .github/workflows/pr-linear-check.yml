@@ -1,0 +1,40 @@
+# Every PR must reference a Linear ticket: title formatted
+# "(MOT-123) feat: ..." (squash-merge carries it into main history),
+# or an MOT-### reference in the body, or the no-ticket label for
+# bump/typo/CI-only changes.
+name: PR Linear Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, labeled, unlabeled]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  linear-ticket:
+    name: Linear ticket reference
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check for Linear ticket reference
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if [[ ",${LABELS}," == *",no-ticket,"* ]]; then
+            echo "::notice::no-ticket label present; skipping ticket requirement"
+            exit 0
+          fi
+          if [[ "$TITLE" =~ \(MOT-[0-9]+\) ]]; then
+            echo "::notice::Linear ticket found in PR title"
+            exit 0
+          fi
+          if [[ "${BODY:-}" =~ MOT-[0-9]+ ]]; then
+            echo "::notice::Linear ticket found in PR body"
+            exit 0
+          fi
+          echo "::error::No Linear ticket reference. Title the PR '(MOT-123) feat: ...', or add 'Fixes MOT-123' to the body, or apply the 'no-ticket' label for bump/typo/CI-only changes."
+          exit 1
