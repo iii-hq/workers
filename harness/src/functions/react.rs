@@ -244,7 +244,16 @@ pub async fn handle(
     let gate_key = spec.subscription_id.clone().unwrap_or_else(|| {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (&spec.model, &spec.task, &spec.session_id).hash(&mut h);
+        // Join predecessors share the WHOLE downstream spec except their
+        // `key` — without it in the hash every predecessor of one join
+        // shares a single fire budget and a wide join trips the breaker.
+        (
+            &spec.model,
+            &spec.task,
+            &spec.session_id,
+            spec.join.as_ref().map(|j| (&j.id, &j.key)),
+        )
+            .hash(&mut h);
         format!("spec:{:016x}", h.finish())
     });
     let now_ms = std::time::SystemTime::now()
@@ -411,8 +420,26 @@ async fn join_edge(
     spec.session_id = join_delivery_session(&spec);
     let task = gather_inputs_task(&spec.task, &rec);
     let res = spawn_reaction(deps, task, &spec, parent, spawn_depth).await;
-    if let Err(e) = state_delete(deps, &join.id).await {
-        tracing::warn!(error = %e, join = %join.id, "harness::react: join record cleanup failed");
+    // The delete is the cycle reset: a stale record (fire=1, all keys arrived)
+    // makes the next cycle's fire-guard land on 2 and refuse forever — for a
+    // rearmed join that is a permanent, silent wedge. Retry transient state
+    // errors before giving up.
+    // ponytail: 3 fixed retries; a generation-stamped fire guard if state
+    // outages ever outlast them.
+    let mut cleanup = state_delete(deps, &join.id).await;
+    for _ in 0..2 {
+        if cleanup.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        cleanup = state_delete(deps, &join.id).await;
+    }
+    if let Err(e) = cleanup {
+        if join.rearm {
+            tracing::error!(error = %e, join = %join.id, "harness::react: join record cleanup failed after retries — this REARMED join will not fire again until the record is deleted (scope harness::react_join)");
+        } else {
+            tracing::warn!(error = %e, join = %join.id, "harness::react: join record cleanup failed after retries (one-shot join; record is orphaned, not blocking)");
+        }
     }
     res
 }

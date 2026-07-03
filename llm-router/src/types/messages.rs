@@ -217,4 +217,30 @@ mod tests {
         assert!(is_result(out[3], "orphan"));
         assert!(matches!(out[4], AgentMessage::User(_)));
     }
+
+    #[test]
+    fn multi_owner_displaced_results_each_return_to_their_assistant() {
+        // Two assistants with open calls, results displaced across interleaved
+        // user messages — including a result for assistant #1 arriving after
+        // assistant #2. Each result must land behind ITS OWN assistant, in
+        // call order, with everything else keeping relative order.
+        let msgs = vec![
+            assistant(vec![call("t1"), call("t2")]),
+            user_text("n1"),
+            result("t1"),
+            assistant(vec![call("t3")]),
+            user_text("n2"),
+            result("t3"),
+            result("t2"),
+        ];
+        let out = reorder_displaced_results(&msgs);
+        assert_eq!(out.len(), 7);
+        assert!(matches!(out[0], AgentMessage::Assistant(_)));
+        assert!(is_result(out[1], "t1"));
+        assert!(is_result(out[2], "t2"));
+        assert!(matches!(out[3], AgentMessage::User(_)));
+        assert!(matches!(out[4], AgentMessage::Assistant(_)));
+        assert!(is_result(out[5], "t3"));
+        assert!(matches!(out[6], AgentMessage::User(_)));
+    }
 }

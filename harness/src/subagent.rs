@@ -36,12 +36,18 @@ pub async fn spawn_pending(
     arguments: &Value,
 ) -> Result<PendingInfo, ResultData> {
     let cfg = deps.cfg().await;
-    let req: SpawnRequest = serde_json::from_value(arguments.clone()).map_err(|e| {
+    let mut req: SpawnRequest = serde_json::from_value(arguments.clone()).map_err(|e| {
         is_error(
             "harness/invalid_request",
             format!("invalid spawn arguments: {e}"),
         )
     })?;
+    // Reactive bookkeeping is stamped ONLY by harness::react (which spawns
+    // through the direct function entry, never this dispatch path). A model
+    // could otherwise spoof these to defeat the self-edge breaker or the
+    // reactive depth cap.
+    req.spawned_by_subscription_id = None;
+    req.reactive_depth = None;
 
     // Depth budget.
     if parent.depth + 1 > cfg.max_depth {

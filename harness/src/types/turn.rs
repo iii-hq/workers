@@ -352,6 +352,11 @@ mod tests {
         let mut r = record();
         r.calls
             .insert("a".into(), cp(CallState::Pending, Some("s_child")));
+        // Populate the react-bridge fields so the round trip exercises them
+        // with values, not just their skip-if-none defaults.
+        r.display_parent_session_id = Some("s_display_parent".into());
+        r.spawned_by_subscription_id = Some("sub_1".into());
+        r.reactive_depth = Some(3);
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
     }

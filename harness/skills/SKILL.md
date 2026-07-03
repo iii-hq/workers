@@ -121,9 +121,11 @@ actually pin (or join on state keys instead); registration returns a warning
 drop, a reactive depth cap of 8, and a ~10-spawns/minute per-subscription rate
 limit — but still design filters so a reaction is not matched by its own
 subscription. Filter join predecessors by `session_id` (pre-pick the
-child session ids, unique per run — prefix the originating session id; spawn's
-`session_id` creates the session if missing but silently reuses an existing
-one, transcript and console nesting included), never `parent_session_id`. Set the last stage's `session_id` to the originating session
+child session ids, unique per run — a readable slug plus a few random
+characters, e.g. `critic-a-b4k9`, never the originating session id as a
+prefix; spawn's `session_id` creates the session if missing but silently
+reuses an existing one, transcript and console nesting included), never
+`parent_session_id`. Set the last stage's `session_id` to the originating session
 to deliver the pipeline's result back into that conversation. This is the in-run
 agent's chaining path; the `registerFunction` recipe below is for workers.
 
