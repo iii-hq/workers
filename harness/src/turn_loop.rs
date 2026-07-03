@@ -1144,7 +1144,10 @@ async fn assemble_context(
             let mut messages = candidate_values;
             rotate_mid_generation_users(&mut messages, new_suffix_len);
             Ok(Assembled {
-                system_prompt: with_filesystem_root_aid(record.options.system_prompt.clone(), record),
+                system_prompt: with_filesystem_root_aid(
+                    record.options.system_prompt.clone(),
+                    record,
+                ),
                 messages,
             })
         }
