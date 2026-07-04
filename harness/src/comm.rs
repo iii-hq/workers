@@ -96,9 +96,13 @@ pub fn collect_events(record: &Value, cap: usize) -> (Vec<CommEvent>, bool) {
         })
         .unwrap_or_default();
     events.sort_by_key(|e: &CommEvent| e.seq);
-    let truncated = events.len() > cap;
-    if truncated {
-        events.drain(..events.len() - cap);
+    // A prune trims the stored record to exactly `cap`, so count alone would
+    // read "not truncated" right after one; a first seq past 1 proves older
+    // events were dropped.
+    let truncated = events.len() > cap || events.first().is_some_and(|e| e.seq > 1);
+    if events.len() > cap {
+        let drop = events.len() - cap;
+        events.drain(..drop);
     }
     (events, truncated)
 }
@@ -314,8 +318,10 @@ impl CommEvents {
         )
         .await?;
         // ponytail: prune via whole-record rewrite; a concurrent append during
-        // the rare prune window can be lost. Move to engine-side list ops if
-        // that ever matters.
+        // the rare prune window can be lost, and the rewrite can roll `seq`
+        // back to the pruner's snapshot so one later seq gets reused and
+        // overwrites an event. Move to engine-side list ops if that ever
+        // matters.
         if seq % 128 == 0 {
             let pruned = pruned_record(&rec, COMM_LOG_CAP);
             crate::state::state_set(&self.iii, COMM_LOG_SCOPE, &key, pruned, timeout_ms).await?;

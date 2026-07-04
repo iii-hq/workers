@@ -385,7 +385,7 @@ pub async fn handle(
     };
 
     // Comm visibility: record the fire (spawned or refused) under the family
-    // root when one is resolvable; skip silently otherwise.
+    // root when one is resolvable; skip with a debug trace otherwise.
     let root = parent
         .clone()
         .or_else(|| res.child_session_id.clone())
@@ -426,6 +426,12 @@ pub async fn handle(
                 cfg.session_timeout_ms,
             )
             .await;
+    } else {
+        tracing::debug!(
+            subscription = spec.subscription_id.as_deref(),
+            spawned = res.spawned,
+            "harness::react: comm fire skipped — no resolvable family root"
+        );
     }
     Ok(res)
 }

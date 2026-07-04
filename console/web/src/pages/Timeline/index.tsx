@@ -40,6 +40,9 @@ export function Timeline() {
       const client = await getIiiClient()
       if (disposed) return
       offLive = startCommEventsSubscription(client, rootId, (e) => {
+        // At-least-once delivery on a shared handler id: a straggler from a
+        // previously-viewed family must not pollute this one.
+        if (e.root_session_id !== rootId) return
         setEvents((prev) => mergeEvents(prev, [e]))
       })
       try {
@@ -67,8 +70,12 @@ export function Timeline() {
   }
 
   const lanes = buildLanes(rootId, events)
-  const laneTitle = (id: string) =>
-    conversations.find((c) => c.id === id)?.title ?? id
+  // Sessions the console can't resolve (deleted mid-view, or never listed)
+  // get a tombstone marker instead of masquerading as a live title.
+  const laneTitle = (id: string) => {
+    const c = conversations.find((cv) => cv.id === id)
+    return c ? c.title : `† ${id}`
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">

@@ -63,7 +63,7 @@ export function TimelineGrid({
           </button>
         ))}
         {/* rows */}
-        {events.map((e) => {
+        {events.map((e, idx) => {
           const fromIdx = e.from ? lanes.indexOf(e.from.session_id) : -1
           const toId = e.to?.session_id ?? e.trigger?.child_session_id
           const toIdx = toId ? lanes.indexOf(toId) : -1
@@ -72,7 +72,12 @@ export function TimelineGrid({
           const hi = fromIdx >= 0 && toIdx >= 0 ? Math.max(fromIdx, toIdx) : anchor
           const leftward = fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx
           return (
-            <div key={`${e.seq}-${e.at}-${e.kind}`} className="contents">
+            <div
+              // seq is unique per family log; seq-0 (failed-append live
+              // events) fall back to the index to avoid key collisions.
+              key={e.seq !== 0 ? `s${e.seq}` : `u${idx}-${e.at}`}
+              className="contents"
+            >
               <div className="px-2 py-1.5 font-mono text-[10px] text-ink-ghost tabular-nums">
                 {timeOf(e.at)}
               </div>

@@ -1,5 +1,5 @@
 import { RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type RegisteredTriggerSummary,
   registeredTriggersListResponseSchema,
@@ -13,16 +13,21 @@ export function Triggers() {
   )
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  // Refresh racing a slower in-flight fetch must not resurface stale data.
+  const genRef = useRef(0)
 
   const load = useCallback(async () => {
+    const gen = ++genRef.current
     setError(null)
     try {
       const client = await getIiiClient()
       const raw = await client.trigger('engine::registered-triggers::list', {})
+      if (gen !== genRef.current) return
       const resp = safeParseResponse(registeredTriggersListResponseSchema, raw)
       if (!resp) throw new Error('unexpected response shape')
       setTriggers(resp.registered_triggers)
     } catch (e) {
+      if (gen !== genRef.current) return
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [])

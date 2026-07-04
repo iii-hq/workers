@@ -32,7 +32,7 @@ export function SessionTriggersButton({
         type="button"
         onClick={() => setOpen(true)}
         aria-label="session triggers"
-        title="triggers registered by this session"
+        title="triggers referencing this session"
         className="flex items-center justify-center size-6 text-ink-faint hover:text-ink transition-colors focus-visible:outline-none focus-visible:text-accent"
       >
         <Zap className="size-3.5" />

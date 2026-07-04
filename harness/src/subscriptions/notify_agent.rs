@@ -142,6 +142,9 @@ async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
             );
         }
         Ok(_) => {
+            // ponytail: no fire-rate gate here (react has FireGate) — a hot
+            // subscription pays one get_turn + two comm appends per fire; add
+            // a gate if a real source ever runs hot.
             let cfg = deps.cfg().await;
             let root = crate::state::get_turn(&deps.iii, &meta.session_id, cfg.session_timeout_ms)
                 .await
