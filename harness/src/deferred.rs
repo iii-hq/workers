@@ -1,8 +1,9 @@
 //! Deferred trigger (harness.md § Deferred trigger): a pending call parks the
 //! turn; `harness::function::resolve` settles it (delivering a result or
 //! releasing a hook-held call) and resumes the parked turn; a cron sweep
-//! expires stragglers so a lost child or abandoned approval can never park a
-//! turn forever.
+//! settles calls whose child turn died without resolving and expires
+//! stragglers past their wait guard, so a lost child can never park a turn
+//! forever (MOT-3856). Hook holds (`held_by`) never expire.
 
 use std::collections::BTreeSet;
 
@@ -262,15 +263,16 @@ async fn find_call_arguments(
 }
 
 /// Resolve a parked parent call from a finishing child (harness.md §
-/// Sub-agents). `completed` delivers the child's result; `failed`/`cancelled`
-/// deliver an `is_error`.
+/// Sub-agents). `completed` delivers the child's result; any other status
+/// delivers an `is_error` with that status as the error code. Returns whether
+/// the call was actually resolved (a terminal/mismatched parent no-ops).
 pub async fn resolve_parent(
     deps: &Deps,
     parent: &crate::types::turn::ParentLink,
     status: &str,
     result: Option<&Value>,
     reason: Option<&str>,
-) {
+) -> bool {
     let (content, details, is_error) = if status == "completed" {
         let text = result.map(render_text).unwrap_or_default();
         (
@@ -296,12 +298,56 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    if let Err(e) = resolve(deps, req).await {
-        tracing::warn!(
-            parent_session = %parent.session_id,
-            error = %e,
-            "resolving parent call from child completion failed"
-        );
+    match resolve(deps, req).await {
+        Ok(r) => r.resolved,
+        Err(e) => {
+            tracing::warn!(
+                parent_session = %parent.session_id,
+                error = %e,
+                "resolving parent call from child completion failed"
+            );
+            false
+        }
+    }
+}
+
+/// How a parked sub-agent call should settle based on its child's turn
+/// record (`None` = the child is live; leave the call to the pending
+/// timeout). A dead child — record gone, session moved on to another turn, or
+/// turn already terminal with its resolve lost — settles the call immediately
+/// with `(status, result, reason)` for [`resolve_parent`], re-delivering a
+/// finalized child's own outcome instead of a generic timeout (MOT-3856).
+fn child_settlement(
+    child: Option<&crate::types::turn::TurnRecord>,
+    expected_turn_id: &str,
+) -> Option<(&'static str, Option<Value>, Option<String>)> {
+    let Some(rec) = child else {
+        return Some((
+            "child_lost",
+            None,
+            Some("child turn record missing — the child died without resolving".to_string()),
+        ));
+    };
+    if rec.turn_id != expected_turn_id {
+        return Some((
+            "child_lost",
+            None,
+            Some("child session moved on to another turn without resolving".to_string()),
+        ));
+    }
+    match rec.status {
+        TurnStatus::Completed => Some(("completed", rec.result.clone(), None)),
+        TurnStatus::Failed => Some((
+            "failed",
+            None,
+            Some(
+                rec.result_error
+                    .clone()
+                    .unwrap_or_else(|| "child turn failed".to_string()),
+            ),
+        )),
+        TurnStatus::Cancelled => Some(("cancelled", None, Some("child turn cancelled".to_string()))),
+        TurnStatus::Running | TurnStatus::AwaitingFunctions => None,
     }
 }
 
@@ -323,46 +369,65 @@ fn pending_call_expired(
     now.saturating_sub(pending_at) as u64 >= timeout
 }
 
-/// Resolve every pending call past its `pending_timeout_ms` with an error.
+/// Settle parked pending calls: a call whose child turn is dead (record gone,
+/// session moved on, or already terminal with its resolve lost) settles
+/// immediately with the child's outcome; a call past its `pending_timeout_ms`
+/// resolves with a timeout error. Hook holds (`held_by`) never expire.
 pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
     let cfg = deps.cfg().await;
     let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
     let now = AgentMessage::now_ms();
 
-    // Collect expired (session, turn, call) tuples first; resolve re-reads.
-    let mut expired: Vec<(String, String, String)> = Vec::new();
-    for record in records {
+    // Child lookup from the same snapshot: turn records are keyed one per
+    // session, and a child is seeded (put_turn) before its parent checkpoints
+    // the call as pending, so a child absent here is genuinely gone.
+    let by_session: std::collections::HashMap<&str, &crate::types::turn::TurnRecord> =
+        records.iter().map(|r| (r.session_id.as_str(), r)).collect();
+
+    // Collect settlements first; resolve re-reads under each session lock.
+    type Settlement = (
+        crate::types::turn::ParentLink,
+        &'static str,
+        Option<Value>,
+        Option<String>,
+    );
+    let mut settle: Vec<Settlement> = Vec::new();
+    for record in &records {
         if record.status != TurnStatus::AwaitingFunctions {
             continue;
         }
         for (call_id, cp) in &record.calls {
+            if cp.state != CallState::Pending || cp.held_by.is_some() {
+                continue;
+            }
+            let link = crate::types::turn::ParentLink {
+                session_id: record.session_id.clone(),
+                turn_id: record.turn_id.clone(),
+                function_call_id: call_id.clone(),
+            };
+            if let (Some(cs), Some(ct)) = (&cp.child_session_id, &cp.child_turn_id) {
+                if let Some((status, result, reason)) =
+                    child_settlement(by_session.get(cs.as_str()).copied(), ct)
+                {
+                    settle.push((link, status, result, reason));
+                    continue;
+                }
+            }
             if pending_call_expired(cp, cfg.default_pending_timeout_ms, now) {
-                expired.push((
-                    record.session_id.clone(),
-                    record.turn_id.clone(),
-                    call_id.clone(),
+                settle.push((
+                    link,
+                    "pending_timeout",
+                    None,
+                    Some("pending call timed out".to_string()),
                 ));
             }
         }
     }
 
     let mut resolved = 0;
-    for (session_id, turn_id, call_id) in expired {
-        let req = FunctionResolveRequest {
-            session_id,
-            turn_id,
-            function_call_id: call_id,
-            action: Some("deliver".to_string()),
-            fs_scope: None,
-            content: Some(vec![ContentBlock::text(
-                "pending call timed out".to_string(),
-            )]),
-            is_error: Some(true),
-            details: Some(json!({ "error": "pending_timeout" })),
-        };
-        match resolve(deps, req).await {
-            Ok(r) if r.resolved => resolved += 1,
-            _ => {}
+    for (link, status, result, reason) in settle {
+        if resolve_parent(deps, &link, status, result.as_ref(), reason.as_deref()).await {
+            resolved += 1;
         }
     }
     Ok(resolved)
@@ -449,6 +514,91 @@ mod tests {
         let default = 1_800_000;
         let stale = cp(CallState::Pending, None, None, now - default as i64);
         assert!(pending_call_expired(&stale, default, now));
+    }
+
+    fn child_record(turn_id: &str, status: TurnStatus) -> crate::types::turn::TurnRecord {
+        crate::types::turn::TurnRecord {
+            turn_id: turn_id.into(),
+            session_id: "s_child".into(),
+            status,
+            step: 1,
+            turn_count: 1,
+            depth: 1,
+            abort: false,
+            watermark_entry_id: None,
+            stream_request_id: None,
+            options: crate::types::turn::TurnOptions {
+                model: "m".into(),
+                provider: None,
+                system_prompt: None,
+                mode: None,
+                max_turns: 16,
+                thinking_level: None,
+                output: Default::default(),
+                functions: None,
+                metadata: None,
+                max_validation_retries: 2,
+            },
+            calls: Default::default(),
+            parent: None,
+            display_parent_session_id: None,
+            spawned_by_subscription_id: None,
+            reactive_depth: None,
+            result: None,
+            result_error: None,
+            validation_retries: 0,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn missing_child_record_settles_the_parent_call_as_lost() {
+        // The wedge class from MOT-3856: the child died without resolving
+        // (state lost across a restart, record deleted) — the parent must not
+        // wait out the full pending timeout.
+        let (status, result, reason) = child_settlement(None, "t_child").expect("settles");
+        assert_eq!(status, "child_lost");
+        assert!(result.is_none());
+        assert!(reason.unwrap().contains("missing"));
+    }
+
+    #[test]
+    fn child_session_on_a_different_turn_settles_as_lost() {
+        let rec = child_record("t_other", TurnStatus::Running);
+        let (status, ..) = child_settlement(Some(&rec), "t_child").expect("settles");
+        assert_eq!(status, "child_lost");
+    }
+
+    #[test]
+    fn terminal_child_settles_with_its_own_outcome() {
+        // A finalized child whose resolve was lost: re-deliver its outcome
+        // rather than a generic timeout.
+        let mut done = child_record("t_child", TurnStatus::Completed);
+        done.result = Some(serde_json::json!("the answer"));
+        let (status, result, reason) = child_settlement(Some(&done), "t_child").expect("settles");
+        assert_eq!(status, "completed");
+        assert_eq!(result, Some(serde_json::json!("the answer")));
+        assert!(reason.is_none());
+
+        let mut failed = child_record("t_child", TurnStatus::Failed);
+        failed.result_error = Some("provider exploded".into());
+        let (status, result, reason) = child_settlement(Some(&failed), "t_child").expect("settles");
+        assert_eq!(status, "failed");
+        assert!(result.is_none());
+        assert_eq!(reason.as_deref(), Some("provider exploded"));
+
+        let cancelled = child_record("t_child", TurnStatus::Cancelled);
+        let (status, ..) = child_settlement(Some(&cancelled), "t_child").expect("settles");
+        assert_eq!(status, "cancelled");
+    }
+
+    #[test]
+    fn live_child_is_left_to_the_pending_timeout() {
+        let running = child_record("t_child", TurnStatus::Running);
+        assert!(child_settlement(Some(&running), "t_child").is_none());
+        let parked = child_record("t_child", TurnStatus::AwaitingFunctions);
+        assert!(child_settlement(Some(&parked), "t_child").is_none());
     }
 
     #[test]

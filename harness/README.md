@@ -139,7 +139,7 @@ field hot-reloads (no restart). The fields a deployment is most likely to tune:
 
 ```yaml
 default_max_turns: 16            # per-turn generate-step cap when a send omits it
-default_pending_timeout_ms: 1800000  # parked pending-call (sub-agent / hold) wait guard
+default_pending_timeout_ms: 7200000  # parked pending-call (sub-agent / hold) wait guard
 max_depth: 3                     # sub-agent depth budget
 max_children: 5                  # sub-agent fan-out budget
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep

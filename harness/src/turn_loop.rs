@@ -813,7 +813,7 @@ async fn finalize_failed(
     })
 }
 
-async fn finalize_cancelled(
+pub(crate) async fn finalize_cancelled(
     deps: &Deps,
     session: &SessionClient,
     record: &mut TurnRecord,

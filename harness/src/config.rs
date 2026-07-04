@@ -148,7 +148,10 @@ fn default_max_turns() -> u32 {
     500
 }
 fn default_pending_timeout_ms() -> u64 {
-    1_800_000
+    // Two hours. This only cuts off a LIVE child (the sweep settles dead
+    // children immediately), so it is sized for legitimately long sub-agent
+    // runs, not for wedge recovery.
+    7_200_000
 }
 fn default_max_depth() -> u32 {
     3
@@ -178,9 +181,11 @@ fn default_stream_coalesce_ms() -> u64 {
     150
 }
 fn default_sweep_expression() -> String {
-    // 6-field cron (engine cron worker, config key "expression"): once
-    // daily at midnight.
-    "0 0 0 * * *".to_string()
+    // 6-field cron (engine cron worker, config key "expression"): every
+    // minute. The sweep is the only net that unparks a turn whose child died
+    // without resolving its call (MOT-3856), so it must run at a cadence far
+    // below `default_pending_timeout_ms`, not daily.
+    "0 * * * * *".to_string()
 }
 fn default_functions() -> Option<FunctionPolicy> {
     // Read-only baseline for parentless spawns: discovery, reads, and
@@ -279,7 +284,9 @@ mod tests {
         assert_eq!(cfg.default_max_turns, 500);
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 5);
-        assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
+        // Every minute: the sweep is the only net that unparks a turn whose
+        // child died without resolving; daily would park it for up to 24h.
+        assert_eq!(cfg.sweep_expression, "0 * * * * *");
     }
 
     #[test]
