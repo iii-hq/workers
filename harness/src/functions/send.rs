@@ -284,10 +284,10 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => seed_new(deps, cfg, session_id, options).await,
+                other => seed_new(deps, cfg, session_id, options, other.as_ref()).await,
             }
         }
-        _ => seed_new(deps, cfg, session_id, options).await,
+        other => seed_new(deps, cfg, session_id, options, other.as_ref()).await,
     }
 }
 
@@ -296,6 +296,7 @@ async fn seed_new(
     cfg: &WorkerConfig,
     session_id: &str,
     options: TurnOptions,
+    prior: Option<&TurnRecord>,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -313,8 +314,11 @@ async fn seed_new(
         calls: Default::default(),
         parent: None,
         display_parent_session_id: None,
-        // A `harness::send` turn is its own root; no parent to inherit from.
-        root_session_id: None,
+        // A fresh `harness::send` session is its own root, but a woken/steered
+        // sub-agent must keep logging comm edges under its family's key — a
+        // send/inject into a completed child would otherwise fork the family
+        // log (the terminal record's stamp is the only durable copy here).
+        root_session_id: prior.and_then(|p| p.root_session_id.clone()),
         spawned_by_subscription_id: None,
         reactive_depth: None,
         result: None,
