@@ -76,7 +76,7 @@ function configRouteFromHash(hash: string): ConfigurationRoute {
   if (first === 'workers') {
     return {
       tab: 'workers',
-      workerId: second ? decodeURIComponent(second) : null,
+      workerId: second ? safeDecode(second) : null,
     }
   }
   return { tab: 'console', workerId: null }
@@ -180,7 +180,18 @@ export function useConfigurationRoute(): [
 function timelineSessionFromHash(hash: string): string | null {
   if (!hash.startsWith('#/timeline/')) return null
   const rest = hash.slice('#/timeline/'.length)
-  return rest ? decodeURIComponent(rest) : null
+  return rest ? safeDecode(rest) : null
+}
+
+/** decodeURIComponent that survives malformed percent-encoding in shared
+ * links — a URIError thrown from a useState initializer would blank the
+ * whole SPA (no ErrorBoundary above the routed views). */
+function safeDecode(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
 }
 
 /** Session-id sub-route for the Timeline page (`#/timeline/<sessionId>`). */

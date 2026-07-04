@@ -140,6 +140,8 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
         : undefined,
+    rootId:
+      typeof md.root_session_id === 'string' ? md.root_session_id : undefined,
     depth: typeof md.depth === 'number' ? md.depth : undefined,
     messages: [],
     status: meta.status,
@@ -290,10 +292,15 @@ export function useConversations(
                   ? md.parent_session_id
                   : undefined
               if (!parentId) return
+              const rootId =
+                typeof md.root_session_id === 'string'
+                  ? md.root_session_id
+                  : undefined
               const depth = typeof md.depth === 'number' ? md.depth : undefined
               patchConversation(event.session_id, (c) => ({
                 ...c,
                 parentId,
+                rootId,
                 depth,
               }))
             })
@@ -315,6 +322,10 @@ export function useConversations(
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id
                   : c.parentId,
+              rootId:
+                typeof md.root_session_id === 'string'
+                  ? md.root_session_id
+                  : c.rootId,
               depth: typeof md.depth === 'number' ? md.depth : c.depth,
               updatedAt: event.timestamp,
             }

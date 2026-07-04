@@ -51,17 +51,20 @@ export function SessionTriggersButton({
 
 function SessionTriggersBody({ sessionId }: { sessionId: string }) {
   const { conversations } = useConversationsCtx()
-  const [owned, setOwned] = useState<RegisteredTriggerSummary[] | null>(null)
+  const [related, setRelated] = useState<RegisteredTriggerSummary[] | null>(
+    null,
+  )
   const [fires, setFires] = useState<CommEvent[] | null>(null)
 
-  const rootId = useMemo(
-    () =>
-      resolveRootId(
-        sessionId,
-        (id) => conversations.find((c) => c.id === id)?.parentId ?? null,
-      ),
-    [sessionId, conversations],
-  )
+  const rootId = useMemo(() => {
+    // Harness-stamped root first; parentId walk is the pre-stamp fallback.
+    const stamped = conversations.find((c) => c.id === sessionId)?.rootId
+    if (stamped) return stamped
+    return resolveRootId(
+      sessionId,
+      (id) => conversations.find((c) => c.id === id)?.parentId ?? null,
+    )
+  }, [sessionId, conversations])
 
   useEffect(() => {
     let disposed = false
@@ -77,18 +80,22 @@ function SessionTriggersBody({ sessionId }: { sessionId: string }) {
           raw,
         )
         if (!disposed && resp) {
-          // Owner stamps live in registration metadata the list does not
-          // expose; config_summary carries the session filter for turn-event
-          // subscriptions. Substring match is the reliable lowest common
-          // denominator.
-          setOwned(
-            resp.registered_triggers.filter((t) =>
-              `${t.config_summary} ${t.id}`.includes(sessionId),
+          // Real ownership lives in registration metadata the list endpoint
+          // does not expose (the harness stamps __owner_session_id there), so
+          // this is a REFERENCE match: triggers whose config mentions this
+          // session. Console-internal browser handlers (iii::*) are excluded.
+          // ponytail: swap to an owner-stamp filter when
+          // engine::registered-triggers::list exposes metadata.
+          setRelated(
+            resp.registered_triggers.filter(
+              (t) =>
+                !t.function_id.startsWith('iii::') &&
+                `${t.config_summary} ${t.id}`.includes(sessionId),
             ),
           )
         }
       } catch {
-        if (!disposed) setOwned([])
+        if (!disposed) setRelated([])
       }
       try {
         const history = await fetchCommHistory(rootId)
@@ -108,15 +115,15 @@ function SessionTriggersBody({ sessionId }: { sessionId: string }) {
     <div className="mt-3 flex flex-col gap-4 font-mono text-[12px]">
       <section>
         <div className="text-[10px] uppercase tracking-[0.06em] text-ink-ghost mb-1">
-          registered by this session
+          triggers referencing this session
         </div>
-        {owned === null ? (
+        {related === null ? (
           <div className="text-ink-ghost animate-pulse">· loading…</div>
-        ) : owned.length === 0 ? (
+        ) : related.length === 0 ? (
           <div className="text-ink-ghost">· none found</div>
         ) : (
           <ul className="divide-y divide-rule-2 border-t border-b border-rule-2">
-            {owned.map((t) => (
+            {related.map((t) => (
               <li
                 key={t.id}
                 className="py-1.5 flex items-baseline gap-2 flex-wrap"

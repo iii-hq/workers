@@ -181,6 +181,13 @@ export interface Conversation {
    * Absent for root/orchestrator chats. Drives the sidebar tree grouping.
    */
   parentId?: string
+  /**
+   * Family root session id, from `SessionMeta.metadata.root_session_id`
+   * (stamped by the harness on spawn). The `harness::comm` log key —
+   * preferred over walking `parentId` links, which break when an
+   * intermediate session is deleted or not yet listed.
+   */
+  rootId?: string
   /** Spawn depth: 0 = root orchestrator (from `metadata.depth`). */
   depth?: number
   /** Driver-owned session status (spinner + sidebar indicator). */

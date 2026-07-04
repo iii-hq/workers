@@ -79,6 +79,18 @@ export function TimelineGrid({
               {lanes.map((laneId, i) => {
                 const inSpan = i >= lo && i <= hi
                 const isAnchor = i === anchor
+                // Spec click-through: spawn/notify/result rows open the
+                // session the event points at; trigger fires jump to the
+                // Triggers view (no per-trigger detail view exists yet).
+                const targetSession = toId ?? e.from?.session_id
+                const onRowClick =
+                  e.kind === 'trigger_fire'
+                    ? () => {
+                        window.location.hash = '#/triggers'
+                      }
+                    : targetSession
+                      ? () => onOpenSession(targetSession)
+                      : undefined
                 return (
                   <div
                     key={laneId}
@@ -88,7 +100,24 @@ export function TimelineGrid({
                     )}
                   >
                     {isAnchor ? (
-                      <span className="flex items-baseline gap-1.5 min-w-0">
+                      <button
+                        type="button"
+                        onClick={onRowClick}
+                        disabled={!onRowClick}
+                        title={
+                          e.kind === 'trigger_fire'
+                            ? 'open triggers view'
+                            : targetSession
+                              ? `open session ${targetSession}`
+                              : undefined
+                        }
+                        className={cn(
+                          'flex items-baseline gap-1.5 min-w-0 w-full text-left',
+                          onRowClick
+                            ? 'hover:bg-paper-2 focus-visible:bg-paper-2 focus-visible:outline-none transition-colors'
+                            : 'cursor-default',
+                        )}
+                      >
                         <span
                           className={cn(
                             'shrink-0',
@@ -107,7 +136,7 @@ export function TimelineGrid({
                             {e.summary}
                           </span>
                         ) : null}
-                      </span>
+                      </button>
                     ) : null}
                   </div>
                 )

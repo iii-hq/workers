@@ -19,6 +19,10 @@ export function Timeline() {
 
   const rootId = useMemo(() => {
     if (!sessionId) return null
+    // The harness-stamped root is authoritative (survives deleted or not-yet-
+    // listed intermediates); the parentId walk is the pre-stamp fallback.
+    const stamped = conversations.find((c) => c.id === sessionId)?.rootId
+    if (stamped) return stamped
     return resolveRootId(
       sessionId,
       (id) => conversations.find((c) => c.id === id)?.parentId ?? null,
