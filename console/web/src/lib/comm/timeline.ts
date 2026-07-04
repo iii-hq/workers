@@ -1,9 +1,10 @@
 import type { CommEvent } from '@/types/iii-agent-event'
 
 /**
- * Merge history + live comm events. `seq` is the identity (incoming wins on
- * collision); events with `seq === 0` (live events whose durable append
- * failed) have no identity — they are all kept and interleaved by `at`.
+ * Merge history + live comm events. `seq` is authoritative for sequenced
+ * events (incoming wins on collision); events with `seq === 0` (live events
+ * whose durable append failed) are interleaved by `at` without ever
+ * reordering sequenced events.
  */
 export function mergeEvents(
   existing: CommEvent[],
@@ -15,9 +16,14 @@ export function mergeEvents(
     if (e.seq === 0) unsequenced.push(e)
     else bySeq.set(e.seq, e)
   }
-  return [...bySeq.values(), ...unsequenced].sort((a, b) =>
-    a.seq !== 0 && b.seq !== 0 ? a.seq - b.seq : a.at - b.at,
-  )
+  const spine = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  unsequenced.sort((a, b) => a.at - b.at)
+  for (const e of unsequenced) {
+    const i = spine.findIndex((s) => s.at > e.at)
+    if (i === -1) spine.push(e)
+    else spine.splice(i, 0, e)
+  }
+  return spine
 }
 
 /** Lane order: root first, then sessions in order of first appearance. */

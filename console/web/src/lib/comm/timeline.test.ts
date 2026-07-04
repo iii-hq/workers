@@ -30,6 +30,18 @@ describe('mergeEvents', () => {
     const merged = mergeEvents([ev(1, { at: 4000 }), a], [b])
     expect(merged.map((e) => e.at)).toEqual([4000, 5000, 6000])
   })
+
+  it('never lets a seq-0 event reorder sequenced events (non-transitivity regression)', () => {
+    const a = ev(5, { at: 100 })
+    const b = ev(0, { at: 75 })
+    const c = ev(6, { at: 50 })
+    const merged = mergeEvents([a, b], [c])
+    expect(merged.map((e) => [e.seq, e.at])).toEqual([
+      [0, 75],
+      [5, 100],
+      [6, 50],
+    ])
+  })
 })
 
 describe('buildLanes', () => {
