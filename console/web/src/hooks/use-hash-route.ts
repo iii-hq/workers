@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
 // only routed views left are `traces` and `configuration`.
-export type View = 'configuration' | 'traces' | 'workers'
+export type View = 'configuration' | 'traces' | 'workers' | 'timeline' | 'triggers'
 
 /**
  * Sub-tab inside the Configuration page. URL-driven so deep links and the
@@ -39,6 +39,8 @@ function routeFromHash(hash: string): View | null {
   // Legacy dev-only routes: the spec sheet and streaming playground moved to
   // Storybook, so old bookmarks land on the default view instead of 404ing.
   if (hash === '#/examples' || hash === '#/playground') return 'traces'
+  if (hash === '#/triggers') return 'triggers'
+  if (hash === '#/timeline' || hash.startsWith('#/timeline/')) return 'timeline'
   return null
 }
 
@@ -50,6 +52,10 @@ function hashFor(view: View): string {
       return '#/workers'
     case 'configuration':
       return '#/configuration'
+    case 'timeline':
+      return '#/timeline'
+    case 'triggers':
+      return '#/triggers'
   }
 }
 
@@ -169,4 +175,45 @@ export function useConfigurationRoute(): [
   }, [])
 
   return [route, navigate]
+}
+
+function timelineSessionFromHash(hash: string): string | null {
+  if (!hash.startsWith('#/timeline/')) return null
+  const rest = hash.slice('#/timeline/'.length)
+  return rest ? decodeURIComponent(rest) : null
+}
+
+/** Session-id sub-route for the Timeline page (`#/timeline/<sessionId>`). */
+export function useTimelineRoute(): [
+  string | null,
+  (sessionId: string | null) => void,
+] {
+  const [sessionId, setSessionId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return timelineSessionFromHash(window.location.hash)
+  })
+  const ref = useRef(sessionId)
+  ref.current = sessionId
+
+  useEffect(() => {
+    const handle = () => {
+      const next = timelineSessionFromHash(window.location.hash)
+      if (next !== ref.current) setSessionId(next)
+    }
+    window.addEventListener('hashchange', handle)
+    return () => window.removeEventListener('hashchange', handle)
+  }, [])
+
+  const navigate = useCallback((next: string | null) => {
+    const targetHash = next
+      ? `#/timeline/${encodeURIComponent(next)}`
+      : '#/timeline'
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash
+    } else {
+      setSessionId(next)
+    }
+  }, [])
+
+  return [sessionId, navigate]
 }

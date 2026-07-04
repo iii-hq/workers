@@ -20,7 +20,9 @@ import {
 } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
+import { Timeline } from '@/pages/Timeline'
 import { Traces } from '@/pages/Traces'
+import { Triggers } from '@/pages/Triggers'
 import { Workers } from '@/pages/Workers'
 
 /* The component spec sheet and the streaming-scenario playground now live in
@@ -28,6 +30,8 @@ import { Workers } from '@/pages/Workers'
    single `traces` entry alongside the configuration gear. */
 const VIEW_OPTIONS: { value: View; label: string }[] = [
   { value: 'traces', label: 'traces' },
+  { value: 'timeline', label: 'timeline' },
+  { value: 'triggers', label: 'triggers' },
   { value: 'workers', label: 'workers' },
 ]
 
@@ -98,6 +102,10 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
+            ) : view === 'timeline' ? (
+              <Timeline />
+            ) : view === 'triggers' ? (
+              <Triggers />
             ) : (
               <Traces />
             )}
