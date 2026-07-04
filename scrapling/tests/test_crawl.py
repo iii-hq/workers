@@ -4,6 +4,8 @@ and per-URL error capture — with `core.fetch_raw` faked (no network) and no bu
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import pytest
 from scrapling import Selector
@@ -133,3 +135,100 @@ def test_crawl_streams_each_item(monkeypatch):
     assert first["stream_name"] == "crawl-x"
     assert first["group_id"] == out["stream"]["group_id"]
     assert "data" in first
+
+
+WWW_GRAPH = {
+    "https://example.com/": '<html><body><a href="https://www.example.com/a">A</a></body></html>',
+    "https://www.example.com/a": "<html><body><h1>A</h1></body></html>",
+}
+
+
+def test_crawl_same_domain_treats_www_as_same_site(monkeypatch):
+    _patch(monkeypatch, graph=WWW_GRAPH)
+    out = asyncio.run(crawl.run_crawl(CFG, None, {"start_urls": ["https://example.com/"], "selectors": SEL}))
+    assert out["stats"]["crawled"] == 2  # apex seed follows the www link
+
+
+FRAG_GRAPH = {
+    "https://s.com/": '<html><body><a href="#x">x</a><a href="#y">y</a><a href="/p">p</a></body></html>',
+    "https://s.com/p": "<html><body><h1>P</h1></body></html>",
+}
+
+
+def test_crawl_strips_fragment_links(monkeypatch):
+    _patch(monkeypatch, graph=FRAG_GRAPH)
+    out = asyncio.run(crawl.run_crawl(CFG, None, {"start_urls": ["https://s.com/"]}))
+    # #x/#y fold onto the (already-seen) start URL, so only / and /p are fetched.
+    assert out["stats"]["crawled"] == 2
+
+
+def test_crawl_caps_concurrency_at_config(monkeypatch):
+    peak = {"cur": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake(cfg, payload, tier):
+        with lock:
+            peak["cur"] += 1
+            peak["max"] = max(peak["max"], peak["cur"])
+        time.sleep(0.02)
+        with lock:
+            peak["cur"] -= 1
+        return FakePage(payload["url"], "<html><body></body></html>")
+
+    monkeypatch.setattr(core, "fetch_raw", fake)
+    seeds = [f"https://site.com/s{i}" for i in range(12)]
+    # concurrency: 100 requested, but CFG.max_bulk_concurrency=3 is the ceiling.
+    out = asyncio.run(crawl.run_crawl(CFG, None, {"start_urls": seeds, "concurrency": 100}))
+    assert out["stats"]["crawled"] == 12
+    assert peak["max"] <= 3  # cap enforced (would be up to 12 unclamped)
+
+
+def test_crawl_tolerates_null_numeric_fields(monkeypatch):
+    _patch(monkeypatch)
+    out = asyncio.run(
+        crawl.run_crawl(
+            CFG,
+            None,
+            {"start_urls": ["https://site.com/"], "max_pages": None, "max_depth": None, "concurrency": None},
+        )
+    )
+    assert out["stats"]["crawled"] >= 1  # did not crash on int(None)
+
+
+def test_crawl_error_rows_included_in_sample(monkeypatch):
+    _patch(monkeypatch, raise_on="/b")
+    out = asyncio.run(
+        crawl.run_crawl(CFG, None, {"start_urls": ["https://site.com/"], "selectors": SEL, "max_depth": 2})
+    )
+    errs = [i for i in out["items"] if i.get("error")]
+    assert any(i["url"].endswith("/b") for i in errs)
+
+
+def test_crawl_include_html_returns_html(monkeypatch):
+    _patch(monkeypatch)
+    out = asyncio.run(
+        crawl.run_crawl(CFG, None, {"start_urls": ["https://site.com/"], "include_html": True, "max_depth": 0})
+    )
+    assert "<h1>Home</h1>" in out["items"][0]["html"]
+
+
+def test_crawl_one_bad_page_does_not_abort_crawl(monkeypatch):
+    # A selector/parse failure on one page must be captured per-URL, not sink the run.
+    def fake(cfg, payload, tier):
+        return FakePage(payload["url"], GRAPH[payload["url"]])
+
+    monkeypatch.setattr(core, "fetch_raw", fake)
+
+    real_serialize = core.serialize_page
+
+    def flaky_serialize(page, payload, include_html):
+        if page.url.endswith("/b"):
+            raise ValueError("bad selector on this page")
+        return real_serialize(page, payload, include_html)
+
+    monkeypatch.setattr(core, "serialize_page", flaky_serialize)
+    out = asyncio.run(
+        crawl.run_crawl(CFG, None, {"start_urls": ["https://site.com/"], "selectors": SEL, "max_depth": 2})
+    )
+    assert out["stats"]["crawled"] == 4  # crawl completed despite /b raising
+    assert out["stats"]["errors"] == 1

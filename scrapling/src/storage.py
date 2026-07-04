@@ -18,6 +18,7 @@ from pathlib import Path
 DEFAULT_PATH = "./data/scrapling/elements.db"
 
 _db_path = DEFAULT_PATH
+_ensured: str | None = None  # path whose parent dir we've already created
 
 
 def configure(path: str | None) -> str:
@@ -29,10 +30,14 @@ def configure(path: str | None) -> str:
 
 
 def db_path() -> str:
-    """Current adaptive DB path; makes the parent dir lazily (tests skip configure)."""
+    """Current adaptive DB path; makes the parent dir once (tests skip configure)."""
     _ensure_parent(_db_path)
     return _db_path
 
 
 def _ensure_parent(path: str) -> None:
+    global _ensured
+    if _ensured == path:
+        return
     Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    _ensured = path

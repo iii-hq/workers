@@ -15,7 +15,8 @@ _BOOL = {"type": "boolean"}
 _NUM = {"type": "number"}
 _STR_LIST = {"type": "array", "items": {"type": "string"}}
 # css/xpath/regex results: first-match string, all-matches array, or null.
-_RESULT = {"type": ["array", "string", "null"], "items": {"type": "string"}}
+# Array items may be null too — an `attr` miss inside an `all` query yields null.
+_RESULT = {"type": ["array", "string", "null"], "items": {"type": ["string", "null"]}}
 
 _SELECTOR_ITEM = {
     "type": "object",
@@ -107,7 +108,6 @@ _BROWSER_WAIT = {
     "timezone_id": _STR,
     "dns_over_https": _BOOL,
     "extra_flags": _STR_LIST,
-    "additional_args": _OBJECT,
     "max_pages": {"type": "integer"},
     "retries": {"type": "integer"},
     "retry_delay": _NUM,
@@ -317,6 +317,9 @@ _SESSION_OPEN_REQUEST = {
         "solve_cloudflare": _BOOL,
         "real_chrome": _BOOL,
         "timeout": _NUM,
+        # capture_xhr is a browser-session CONSTRUCTOR option — set it here, not
+        # per-fetch (Scrapling ignores it on session.fetch()).
+        "capture_xhr": {**_STR, "description": "regex; capture matching XHRs (browser sessions)"},
     },
 }
 _SESSION_OPEN_RESPONSE = {
@@ -329,13 +332,14 @@ _SESSION_FETCH_REQUEST = {
     "properties": {
         "session_id": _STR,
         "url": _STR,
+        # method/params/data/json apply to HTTP sessions; a browser session
+        # navigates GET and honors `headers` (mapped to the page's extra headers).
         "method": {"type": "string", "enum": ["get", "post", "put", "delete"]},
         "headers": _OBJECT,
         "params": _OBJECT,
         "data": _OBJECT,
         "json": _OBJECT,
         "wait_selector": _STR,
-        "capture_xhr": _STR,
         **_COMMON_OUT,
     },
     "required": ["session_id", "url"],

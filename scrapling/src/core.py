@@ -19,7 +19,10 @@ _MAX_FIND_ITEMS = 100
 
 # JSON-safe, useful kwargs forwarded to each Scrapling fetcher. Deliberately
 # excludes callbacks (page_action/page_setup), host paths (executable_path,
-# user_data_dir), and non-JSON objects (proxy_rotator, cert, selector_config).
+# user_data_dir, init_script), non-JSON objects (proxy_rotator, cert,
+# selector_config), and freeform browser-launch config (additional_args) that an
+# approver can't meaningfully vet. `extra_flags` (a list of Chromium CLI flags)
+# is the one bounded launch-arg escape hatch.
 _HTTP_GET_KEYS = frozenset(
     {
         "headers",
@@ -67,7 +70,6 @@ _BROWSER_COMMON = frozenset(
         "retries",
         "retry_delay",
         "extra_flags",
-        "additional_args",
         "max_pages",
     }
 )
@@ -244,14 +246,17 @@ def fetch_raw(cfg: dict[str, Any], payload: dict[str, Any], tier: str = "http"):
 
 
 def extract_links(page) -> list[str]:
-    """Absolute hrefs of every <a> on the page (resolved against the page URL)."""
+    """Absolute hrefs of every <a> on the page (resolved against the page URL),
+    with the #fragment stripped so `page#a`/`page#b` don't crawl as distinct pages."""
+    from urllib.parse import urldefrag
+
     out: list[str] = []
     for a in page.css("a"):
         href = a.attrib.get("href")
         if not href:
             continue
         try:
-            out.append(str(page.urljoin(href)))
+            out.append(urldefrag(str(page.urljoin(href)))[0])
         except Exception:  # noqa: BLE001 - skip un-joinable hrefs (mailto:, javascript:, …)
             continue
     return out
@@ -410,7 +415,12 @@ def _bounded(items: list, payload: dict[str, Any]) -> list:
     if payload.get("first"):
         return items[:1]
     limit = payload.get("limit")
-    ceiling = min(int(limit), _MAX_FIND_ITEMS) if limit else _MAX_FIND_ITEMS
+    if limit is None:
+        ceiling = _MAX_FIND_ITEMS
+    else:
+        # Clamp to [0, _MAX_FIND_ITEMS]: limit=0 means none; a negative limit must
+        # NOT slice from the end (items[:-1] would silently drop the last match).
+        ceiling = max(0, min(int(limit), _MAX_FIND_ITEMS))
     return items[:ceiling]
 
 

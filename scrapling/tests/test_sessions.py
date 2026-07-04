@@ -128,3 +128,66 @@ def test_list_and_close_all(patch_http):
     assert all(s["type"] == "http" and "idle_s" in s for s in listed)
     reg.close_all()
     assert reg.list()["sessions"] == []
+
+
+class FakeBrowserSession:
+    """Duck-types DynamicSession/StealthySession: fetch() records its kwargs."""
+
+    def __init__(self, **cfg):
+        self.cfg = cfg
+        self.fetch_kwargs = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        pass
+
+    def fetch(self, url, **kw):
+        self.fetch_kwargs = kw
+        return FakePage(url)
+
+
+def test_browser_session_maps_headers_to_extra_headers(monkeypatch):
+    # A browser session has no `headers` kwarg (only `extra_headers`); the caller's
+    # auth header must be forwarded, not silently dropped.
+    holder = {}
+
+    def factory(**cfg):
+        holder["s"] = FakeBrowserSession(**cfg)
+        return holder["s"]
+
+    monkeypatch.setattr("scrapling.fetchers.DynamicSession", factory)
+    reg = sessions.Registry()
+    sid = reg.open("dynamic", {})["session_id"]
+    reg.fetch(sid, {"url": "https://x.com", "headers": {"Authorization": "Bearer t"}})
+    assert holder["s"].fetch_kwargs.get("extra_headers") == {"Authorization": "Bearer t"}
+    reg.close(sid)
+
+
+def test_reservation_prevents_concurrent_over_commit(monkeypatch):
+    # TOCTOU guard: while one open() is mid-construct (slow browser build), a
+    # second open() must see the reservation and reject past the cap.
+    reg = sessions.Registry(max_sessions=1)
+    constructing = threading.Event()
+    finish = threading.Event()
+
+    def slow_construct(stype, config):
+        constructing.set()
+        finish.wait(3)
+        s = FakeHttpSession(**config)
+        return s, s.__enter__()
+
+    monkeypatch.setattr(sessions, "_construct", slow_construct)
+    result: dict = {}
+    t = threading.Thread(target=lambda: result.update(first=reg.open("http", {})))
+    t.start()
+    try:
+        assert constructing.wait(3)  # first has reserved a slot and is building
+        with pytest.raises(ValueError, match="session limit"):
+            reg.open("http", {})
+    finally:
+        finish.set()
+        t.join(3)
+    assert "session_id" in result["first"]
+    reg.close_all()

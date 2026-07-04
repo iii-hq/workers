@@ -87,8 +87,16 @@ def _do_fetch(entry: _Entry, payload: dict[str, Any]) -> dict[str, Any]:
         page = getattr(entry.entered, method)(url, **core._pick(payload, keys))
     else:
         allowed = core._STEALTHY_KEYS if entry.type == "stealthy" else core._DYNAMIC_KEYS
-        page = entry.obj.fetch(url, **core._pick(payload, allowed))
-    return core.serialize_page(page, payload, bool(payload.get("include_html", False)))
+        kwargs = core._pick(payload, allowed)
+        # Browser fetch takes `extra_headers`, not `headers` — map it so a
+        # caller's auth headers aren't silently dropped. (method/body/params are
+        # HTTP-session only; a browser navigates GET.)
+        if payload.get("headers") and "extra_headers" not in kwargs:
+            kwargs["extra_headers"] = payload["headers"]
+        page = entry.obj.fetch(url, **kwargs)
+    out = core.serialize_page(page, payload, bool(payload.get("include_html", False)))
+    entry.last_used = time.time()  # refresh on completion, not just fetch-start
+    return out
 
 
 def _teardown(entry: _Entry) -> None:
@@ -113,6 +121,7 @@ class Registry:
     def __init__(self, max_sessions: int = 8, idle_timeout: float | None = None):
         self._lock = threading.RLock()
         self._entries: dict[str, _Entry] = {}
+        self._pending = 0  # slots reserved by in-flight open()s (browser build is slow)
         self.max_sessions = max_sessions
         self.idle_timeout = idle_timeout
         self._stop = threading.Event()
@@ -120,24 +129,37 @@ class Registry:
 
     def open(self, stype: str, config: dict[str, Any]) -> dict[str, Any]:
         self._reap_idle()
+        # Reserve a slot BEFORE the (slow) browser build so concurrent opens
+        # can't all pass the cap check and over-commit past max_sessions.
         with self._lock:
-            if len(self._entries) >= self.max_sessions:
+            if len(self._entries) + self._pending >= self.max_sessions:
                 raise ValueError(f"session limit reached ({self.max_sessions}); close one first")
+            self._pending += 1
         sid = uuid.uuid4().hex
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scrapling-sess")
         try:
             obj, entered = executor.submit(_construct, stype, config).result()
         except BaseException:
             executor.shutdown(wait=False)
+            with self._lock:
+                self._pending -= 1
             raise
         entry = _Entry(sid, stype, obj, entered, executor)
         with self._lock:
+            self._pending -= 1
             self._entries[sid] = entry
         return {"session_id": sid, "type": stype}
 
     def fetch(self, sid: str, payload: dict[str, Any]) -> dict[str, Any]:
-        entry = self._require(sid)
-        return entry.executor.submit(_do_fetch, entry, payload).result()
+        # Submit UNDER the lock so a concurrent close()/reaper can't shut the
+        # executor down between lookup and submit (which would raise an opaque
+        # "cannot schedule new futures after shutdown").
+        with self._lock:
+            entry = self._entries.get(sid)
+            if entry is None:
+                raise ValueError(f"unknown session: {sid}")
+            future = entry.executor.submit(_do_fetch, entry, payload)
+        return future.result()
 
     def close(self, sid: str) -> dict[str, Any]:
         with self._lock:
@@ -168,9 +190,23 @@ class Registry:
     def close_all(self) -> None:
         self._stop.set()
         with self._lock:
-            ids = list(self._entries.keys())
-        for sid in ids:
-            self.close(sid)
+            entries = list(self._entries.values())
+            self._entries.clear()
+        # Tear down every session on its own thread concurrently, then join —
+        # N slow browser closes take ~max(30s), not ~sum, at SIGTERM.
+        futures = []
+        for e in entries:
+            try:
+                futures.append((e, e.executor.submit(_teardown, e)))
+            except Exception:  # noqa: BLE001 - executor already gone; just drop it
+                e.executor.shutdown(wait=False)
+        for e, fut in futures:
+            try:
+                fut.result(timeout=30)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                e.executor.shutdown(wait=False)
 
     def start_reaper(self) -> None:
         if self.idle_timeout and self._reaper is None:
@@ -190,13 +226,6 @@ class Registry:
             stale = [e.id for e in self._entries.values() if e.last_used < cutoff]
         for sid in stale:
             self.close(sid)
-
-    def _require(self, sid: str) -> _Entry:
-        with self._lock:
-            entry = self._entries.get(sid)
-        if entry is None:
-            raise ValueError(f"unknown session: {sid}")
-        return entry
 
 
 _registry: Registry | None = None

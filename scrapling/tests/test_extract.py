@@ -118,6 +118,17 @@ def test_find_requires_a_filter():
         core.op_find({"html": HTML})
 
 
+def test_find_limit_zero_returns_no_items_but_full_count():
+    out = core.op_find({"html": HTML, "tag": "a", "limit": 0})
+    assert out["items"] == []
+    assert out["count"] == 2  # count still reports the true total matched
+
+
+def test_find_negative_limit_clamped_to_zero_not_slice_from_end():
+    out = core.op_find({"html": HTML, "tag": "a", "limit": -1})
+    assert out["items"] == []  # NOT items[:-1] (which would drop just the last)
+
+
 def test_find_by_text_exact_and_partial():
     assert core.op_find_by_text({"html": HTML, "text": "Apple"})["count"] == 1
     partial = core.op_find_by_text({"html": HTML, "text": "Ap", "partial": True})

@@ -18,7 +18,10 @@ import {
 const MAX_ITEM_ROWS = 20
 
 function startCount(req: CrawlRequest): number {
-  return req.start_urls?.length ?? (req.url ? 1 : 0)
+  // ?? only guards null/undefined, so an empty start_urls array must fall
+  // through to the single `url` seed (the worker does the same).
+  if (req.start_urls && req.start_urls.length > 0) return req.start_urls.length
+  return req.url ? 1 : 0
 }
 
 function crawlChips(req: CrawlRequest) {
@@ -164,7 +167,12 @@ function valuePreview(v: unknown): string {
 export function CrawlPreview({ input }: { input: unknown }) {
   const req = safeParseRequest(crawlRequestSchema, input)
   if (!req) return null
-  const seeds = req.start_urls ?? (req.url ? [req.url] : [])
+  const seeds =
+    req.start_urls && req.start_urls.length > 0
+      ? req.start_urls
+      : req.url
+        ? [req.url]
+        : []
   return (
     <div className="border-b border-rule-2 bg-bg">
       <MetaRow>
