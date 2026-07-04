@@ -164,6 +164,20 @@ export function ConversationRow({
       <span className="font-mono text-[11px] text-ink-ghost tabular-nums shrink-0">
         {formatRelative(conversation.updatedAt)}
       </span>
+      {inTree ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            window.location.hash = `#/timeline/${encodeURIComponent(conversation.id)}`
+          }}
+          aria-label={`open timeline for ${conversation.title}`}
+          title="open family timeline"
+          className="opacity-0 group-hover:opacity-100 text-ink-faint hover:text-accent transition-opacity transition-colors font-mono text-[11px] leading-none px-1"
+        >
+          ⇅
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={(e) => {
