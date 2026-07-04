@@ -39,6 +39,18 @@ pub async fn handle(
     }
     let cfg = deps.cfg().await;
     crate::filesystem_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
+    // Family comm log: keyed by root session id, so this only matches when the
+    // deleted session IS a family root; child deletions no-op harmlessly.
+    if let Err(e) = crate::state::state_delete(
+        &deps.iii,
+        crate::comm::COMM_LOG_SCOPE,
+        &event.session_id,
+        cfg.session_timeout_ms,
+    )
+    .await
+    {
+        tracing::warn!(session_id = %event.session_id, error = %e, "comm log cleanup failed");
+    }
     // Durable complement: bindings registered before a harness restart are no
     // longer in the in-memory registry but still fire engine-side — sweep them
     // by their owner stamp so deleting a chat fully tears down its wiring.

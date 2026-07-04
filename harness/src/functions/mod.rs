@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod comm_history;
 pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
@@ -197,6 +198,15 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         crate::subscriptions::ON_SESSION_DELETED_ID,
         crate::subscriptions::ON_SESSION_DELETED_DESC,
         |d, r| async move { on_session_deleted::handle(&d, r).await },
+    );
+
+    // Internal comm-log reader for the console — registered, kept off the catalog.
+    register(
+        iii,
+        deps,
+        comm_history::COMM_HISTORY_ID,
+        comm_history::COMM_HISTORY_DESC,
+        |d, r| async move { comm_history::handle(&d, r).await },
     );
 
     // The single shared subscription fire handler — registered once, kept off
