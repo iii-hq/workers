@@ -124,7 +124,7 @@ async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
 
     let (message, origin) = notification_message(&meta, &event);
 
-    if let Err(e) = crate::functions::send::inject(
+    match crate::functions::send::inject(
         deps,
         &meta.session_id,
         message,
@@ -133,12 +133,72 @@ async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
     )
     .await
     {
-        tracing::warn!(
-            sub_id = %meta.subscription_id,
-            session_id = %meta.session_id,
-            error = %e,
-            "subscription notification injection failed"
-        );
+        Err(e) => {
+            tracing::warn!(
+                sub_id = %meta.subscription_id,
+                session_id = %meta.session_id,
+                error = %e,
+                "subscription notification injection failed"
+            );
+        }
+        Ok(_) => {
+            let cfg = deps.cfg().await;
+            let root = crate::state::get_turn(&deps.iii, &meta.session_id, cfg.session_timeout_ms)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| r.root().to_string())
+                .unwrap_or_else(|| meta.session_id.clone());
+            let trigger = crate::comm::CommTrigger {
+                registered_trigger_id: claim
+                    .trigger_id
+                    .clone()
+                    .or(Some(meta.subscription_id.clone())),
+                trigger_type: None,
+                label: meta.label.clone(),
+                action: "notify".to_string(),
+                child_session_id: None,
+            };
+            let to = crate::comm::CommEndpoint {
+                session_id: meta.session_id.clone(),
+                turn_id: None,
+            };
+            deps.comm
+                .emit(
+                    crate::comm::CommEvent {
+                        seq: 0,
+                        at: crate::comm::now_ms(),
+                        root_session_id: root.clone(),
+                        kind: crate::comm::CommKind::TriggerFire,
+                        from: None,
+                        to: Some(to.clone()),
+                        trigger: Some(trigger.clone()),
+                        summary: Some(crate::comm::snippet(&event)),
+                        r#ref: None,
+                    },
+                    cfg.session_timeout_ms,
+                )
+                .await;
+            deps.comm
+                .emit(
+                    crate::comm::CommEvent {
+                        seq: 0,
+                        at: crate::comm::now_ms(),
+                        root_session_id: root,
+                        kind: crate::comm::CommKind::Notify,
+                        from: None,
+                        to: Some(to),
+                        trigger: Some(trigger),
+                        summary: meta
+                            .label
+                            .clone()
+                            .or_else(|| Some(crate::comm::snippet(&event))),
+                        r#ref: None,
+                    },
+                    cfg.session_timeout_ms,
+                )
+                .await;
+        }
     }
 }
 

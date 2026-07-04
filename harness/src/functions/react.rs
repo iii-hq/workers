@@ -360,19 +360,74 @@ pub async fn handle(
         },
     };
 
-    match spec.join.clone() {
+    let res = match spec.join.clone() {
         None => {
             spawn_reaction(
                 deps,
                 single_event_task(&spec.task, &event),
                 &spec,
-                parent,
+                parent.clone(),
                 spawn_depth,
             )
-            .await
+            .await?
         }
-        Some(join) => join_edge(deps, event, &spec, &join, parent, spawn_depth).await,
+        Some(join) => {
+            join_edge(
+                deps,
+                event.clone(),
+                &spec,
+                &join,
+                parent.clone(),
+                spawn_depth,
+            )
+            .await?
+        }
+    };
+
+    // Comm visibility: record the fire (spawned or refused) under the family
+    // root when one is resolvable; skip silently otherwise.
+    let root = parent
+        .clone()
+        .or_else(|| res.child_session_id.clone())
+        .or_else(|| spec.owner_session_id.clone());
+    if let Some(root) = root {
+        let cfg = deps.cfg().await;
+        deps.comm
+            .emit(
+                crate::comm::CommEvent {
+                    seq: 0,
+                    at: crate::comm::now_ms(),
+                    root_session_id: root,
+                    kind: crate::comm::CommKind::TriggerFire,
+                    from: None,
+                    to: res
+                        .child_session_id
+                        .clone()
+                        .map(|sid| crate::comm::CommEndpoint {
+                            session_id: sid,
+                            turn_id: None,
+                        }),
+                    trigger: Some(crate::comm::CommTrigger {
+                        registered_trigger_id: spec.subscription_id.clone(),
+                        trigger_type: None,
+                        label: None,
+                        action: "react".to_string(),
+                        child_session_id: res.child_session_id.clone(),
+                    }),
+                    summary: res
+                        .note
+                        .clone()
+                        .or_else(|| Some(crate::comm::snippet(&json!(spec.task)))),
+                    r#ref: spec.join.as_ref().map(|j| crate::comm::CommRef {
+                        function_call_id: None,
+                        join_id: Some(j.id.clone()),
+                    }),
+                },
+                cfg.session_timeout_ms,
+            )
+            .await;
     }
+    Ok(res)
 }
 
 /// One predecessor of a join fired: record it durably, and spawn the downstream

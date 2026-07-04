@@ -273,6 +273,36 @@ async fn seed_child(
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
     crate::turn_loop::enqueue_step(&deps.iii, &child_session_id, &turn_id, 0).await?;
 
+    let task_summary = serde_json::to_value(&task)
+        .ok()
+        .map(|v| crate::comm::snippet(&v))
+        .filter(|s| !s.is_empty());
+    deps.comm
+        .emit(
+            crate::comm::CommEvent {
+                seq: 0,
+                at: crate::comm::now_ms(),
+                root_session_id: record.root().to_string(),
+                kind: crate::comm::CommKind::Spawn,
+                from: parent.map(|p| crate::comm::CommEndpoint {
+                    session_id: p.session_id.clone(),
+                    turn_id: Some(p.turn_id.clone()),
+                }),
+                to: Some(crate::comm::CommEndpoint {
+                    session_id: child_session_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                }),
+                trigger: None,
+                summary: task_summary,
+                r#ref: parent.map(|p| crate::comm::CommRef {
+                    function_call_id: Some(p.function_call_id.clone()),
+                    join_id: None,
+                }),
+            },
+            cfg.session_timeout_ms,
+        )
+        .await;
+
     Ok(ChildIds {
         session_id: child_session_id,
         turn_id,

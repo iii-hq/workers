@@ -74,6 +74,41 @@ pub async fn resolve(
                 cp.entry_id = Some(entry_id);
             }
 
+            if let Some(child_sid) = checkpoint.child_session_id.clone() {
+                deps.comm
+                    .emit(
+                        crate::comm::CommEvent {
+                            seq: 0,
+                            at: crate::comm::now_ms(),
+                            root_session_id: record.root().to_string(),
+                            kind: crate::comm::CommKind::Result,
+                            from: Some(crate::comm::CommEndpoint {
+                                session_id: child_sid,
+                                turn_id: checkpoint.child_turn_id.clone(),
+                            }),
+                            to: Some(crate::comm::CommEndpoint {
+                                session_id: record.session_id.clone(),
+                                turn_id: Some(record.turn_id.clone()),
+                            }),
+                            trigger: None,
+                            summary: Some(
+                                if req.is_error.unwrap_or(false) {
+                                    "error"
+                                } else {
+                                    "ok"
+                                }
+                                .to_string(),
+                            ),
+                            r#ref: Some(crate::comm::CommRef {
+                                function_call_id: Some(req.function_call_id.clone()),
+                                join_id: None,
+                            }),
+                        },
+                        cfg.session_timeout_ms,
+                    )
+                    .await;
+            }
+
             let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
             Ok(FunctionResolveResponse {
                 resolved: true,

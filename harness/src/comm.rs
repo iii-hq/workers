@@ -120,6 +120,16 @@ pub fn snippet(v: &Value) -> String {
     }
 }
 
+/// Millisecond epoch timestamp for `CommEvent.at` (same body as
+/// `events.rs`'s private `now_ms`; kept separate since that one stays private
+/// to its module).
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Binding config for `harness::comm` triggers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
