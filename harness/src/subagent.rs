@@ -139,6 +139,13 @@ async fn seed_child(
     };
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
+    // Family root for the comm log: inherit the parent's root; a parentless
+    // (react/trigger-fired) spawn anchors on the caller-resolved
+    // parent_session_id (react passes the resolved ROOT there already).
+    let root_session_id = match parent_record {
+        Some(p) => Some(p.root().to_string()),
+        None => req.parent_session_id.clone(),
+    };
     let requested_turns = req
         .options
         .as_ref()
@@ -158,15 +165,24 @@ async fn seed_child(
     // `parent_session_id` still writes a display-only link so the console nests
     // the child (no policy inheritance, no parent-call resolution).
     let linkage = match parent {
-        Some(p) => Some(json!({
-            "parent_session_id": p.session_id,
-            "parent_turn_id": p.turn_id,
-            "function_call_id": p.function_call_id,
-            "depth": depth,
-        })),
+        Some(p) => {
+            let mut link = json!({
+                "parent_session_id": p.session_id,
+                "parent_turn_id": p.turn_id,
+                "function_call_id": p.function_call_id,
+                "depth": depth,
+            });
+            if let Some(root) = &root_session_id {
+                link["root_session_id"] = json!(root);
+            }
+            Some(link)
+        }
         None => req.parent_session_id.as_ref().map(|psid| {
             json!({
                 "parent_session_id": psid,
+                // Parentless spawn: the supplied display parent IS the
+                // resolved root (react passes the resolved ROOT here already).
+                "root_session_id": psid,
                 "depth": depth,
             })
         }),
@@ -245,6 +261,7 @@ async fn seed_child(
                 .clone()
                 .filter(|p| p != &child_session_id),
         },
+        root_session_id: root_session_id.clone(),
         spawned_by_subscription_id: req.spawned_by_subscription_id.clone(),
         reactive_depth: req.reactive_depth,
         result: None,
@@ -309,6 +326,7 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
+            root_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
             result: None,

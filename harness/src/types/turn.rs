@@ -195,6 +195,11 @@ pub struct TurnRecord {
     /// react-spawned children too. Never set alongside `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_parent_session_id: Option<String>,
+    /// Root of this turn's session family — the `harness::comm` log key.
+    /// Absent on records written before comm events shipped and on
+    /// self-rooted turns; [`TurnRecord::root`] falls back to the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
     /// The subscription that react-spawned this turn; its own completion event
     /// is never delivered back to that subscription (self-edge loop breaker).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,6 +219,11 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
+    /// The family root (log key for `harness::comm`); self when unset.
+    pub fn root(&self) -> &str {
+        self.root_session_id.as_deref().unwrap_or(&self.session_id)
+    }
+
     /// Function_call ids still awaiting a result (`triggered` or `pending`).
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
@@ -255,7 +265,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn record() -> TurnRecord {
+    pub(super) fn record() -> TurnRecord {
         TurnRecord {
             turn_id: "t_1".into(),
             session_id: "s_1".into(),
@@ -281,6 +291,7 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
+            root_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
             result: None,
@@ -400,5 +411,30 @@ mod tests {
         no_scope.metadata = Some(json!({ "other": "/ignored" }));
         assert!(!existing.refresh_filesystem_root_from(&no_scope));
         assert_eq!(existing.filesystem_root(), Some("/new"));
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::tests::record;
+    use super::*;
+
+    // NOTE: the brief's minimal-JSON fixture (`options: { "output": {} }`)
+    // doesn't deserialize — `OutputContract` is an internally-tagged enum
+    // that requires a `type` key, so an empty `output` object fails with
+    // "missing field `type`". Falling back to the existing `record()` test
+    // fixture per the brief's own fallback note; the assertion under test is
+    // only `root()`'s fallback behavior, not deserialization.
+    fn minimal_record(session_id: &str, root: Option<&str>) -> TurnRecord {
+        let mut r = record();
+        r.session_id = session_id.to_string();
+        r.root_session_id = root.map(str::to_string);
+        r
+    }
+
+    #[test]
+    fn root_falls_back_to_self() {
+        assert_eq!(minimal_record("s_a", None).root(), "s_a");
+        assert_eq!(minimal_record("s_a", Some("s_root")).root(), "s_root");
     }
 }

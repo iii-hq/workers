@@ -25,6 +25,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
+use harness::comm::CommEvents;
 use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
 
     // Trigger types first: the handlers capture the subscriber sets.
     let events = TurnEvents::register(&iii);
+    let comm = CommEvents::register(&iii);
     let hooks = HookRegistry::register(&iii);
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
@@ -119,6 +121,7 @@ async fn main() -> Result<()> {
         cell.clone(),
         functions_cell.clone(),
         events,
+        comm,
         hooks,
     ));
 

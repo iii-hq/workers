@@ -313,6 +313,8 @@ async fn seed_new(
         calls: Default::default(),
         parent: None,
         display_parent_session_id: None,
+        // A `harness::send` turn is its own root; no parent to inherit from.
+        root_session_id: None,
         spawned_by_subscription_id: None,
         reactive_depth: None,
         result: None,

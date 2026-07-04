@@ -9,6 +9,7 @@ use iii_sdk::IIIClient;
 use crate::clients::{
     ContextClient, EngineClient, FunctionDescriptor, RouterClient, SessionClient,
 };
+use crate::comm::CommEvents;
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
 use crate::discovery::FunctionsCell;
@@ -23,6 +24,7 @@ pub struct Deps {
     pub config: ConfigCell,
     pub functions: FunctionsCell,
     pub events: TurnEvents,
+    pub comm: CommEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub subscriptions: Arc<SubscriptionRegistry>,
@@ -36,6 +38,7 @@ impl Deps {
         config: ConfigCell,
         functions: FunctionsCell,
         events: TurnEvents,
+        comm: CommEvents,
         hooks: HookRegistry,
     ) -> Self {
         Self {
@@ -43,6 +46,7 @@ impl Deps {
             config,
             functions,
             events,
+            comm,
             hooks,
             locks: SessionLocks::new(),
             subscriptions: Arc::new(SubscriptionRegistry::new()),
