@@ -99,3 +99,41 @@ export interface PendingResolvedEvent {
   session_metadata?: Record<string, unknown> | null
   resolved_at: number
 }
+
+/** One side of a `harness::comm` edge. */
+export interface CommEndpoint {
+  session_id: string
+  turn_id?: string
+}
+
+/** Trigger identity on notify / trigger_fire comm events. */
+export interface CommTriggerInfo {
+  registered_trigger_id?: string
+  trigger_type?: string
+  label?: string
+  action: 'notify' | 'react'
+  child_session_id?: string
+}
+
+/**
+ * `harness::comm` — one inter-agent communication edge, mirrored from
+ * `harness/src/comm.rs`. Also the element type of `harness::comm::history`.
+ */
+export interface CommEvent {
+  /** Monotonic per family log; 0 on a live event whose append failed. */
+  seq: number
+  at: number
+  root_session_id: string
+  kind: 'spawn' | 'result' | 'notify' | 'trigger_fire'
+  from?: CommEndpoint
+  to?: CommEndpoint
+  trigger?: CommTriggerInfo
+  summary?: string
+  ref?: { function_call_id?: string; join_id?: string }
+}
+
+/** `harness::comm::history` response. */
+export interface CommHistoryResponse {
+  events: CommEvent[]
+  truncated: boolean
+}
