@@ -42,6 +42,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
+import { SessionTriggersButton } from './SessionTriggersButton'
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -768,6 +769,7 @@ export function ChatView({
             messages={conversation.messages}
             contextWindow={contextWindow}
           />
+          <SessionTriggersButton sessionId={sessionId} />
           <ExportSessionButton
             conversation={conversation}
             onExported={(filename) =>
