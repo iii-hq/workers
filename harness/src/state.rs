@@ -67,6 +67,26 @@ pub(crate) async fn state_delete(
     .map_err(|e| HarnessError::State(format!("state::delete {scope}/{key}: {e}")))
 }
 
+/// `state::update` with ops (`merge` / `increment`); returns the post-update
+/// record from the engine's `new_value`.
+pub(crate) async fn state_update(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    ops: Vec<Value>,
+    timeout_ms: u64,
+) -> Result<Value, HarnessError> {
+    iii.trigger(TriggerRequest {
+        function_id: "state::update".into(),
+        payload: json!({ "scope": scope, "key": key, "ops": ops }),
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    })
+    .await
+    .map(|resp| resp.get("new_value").cloned().unwrap_or(Value::Null))
+    .map_err(|e| HarnessError::State(format!("state::update {scope}/{key}: {e}")))
+}
+
 /// Read the turn record for a session (`None` when absent or null).
 pub async fn get_turn(
     iii: &IIIClient,

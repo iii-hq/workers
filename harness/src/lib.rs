@@ -8,6 +8,7 @@
 //! so a crash resumes mid-turn.
 
 pub mod clients;
+pub mod comm;
 pub mod config;
 pub mod configuration;
 pub mod contract;
