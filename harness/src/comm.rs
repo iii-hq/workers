@@ -2,9 +2,19 @@
 //! trigger fire), fanned out live to bound subscribers and appended to a
 //! durable per-root-session log in iii-state (scope `harness::comm_log`).
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+
+use crate::error::HarnessError;
 
 pub const COMM: &str = "harness::comm";
 pub const COMM_LOG_SCOPE: &str = "harness::comm_log";
@@ -110,6 +120,223 @@ pub fn snippet(v: &Value) -> String {
     }
 }
 
+/// Binding config for `harness::comm` triggers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommBindingConfig {
+    /// Only deliver events for this session family.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CommBindingFilter {
+    root_session_id: Option<String>,
+}
+
+impl CommBindingFilter {
+    fn parse(raw: &Value) -> Result<Self, String> {
+        let raw = if raw.is_null() {
+            Value::Object(Default::default())
+        } else {
+            raw.clone()
+        };
+        let cfg: CommBindingConfig =
+            serde_json::from_value(raw).map_err(|e| format!("invalid comm config: {e}"))?;
+        Ok(Self {
+            root_session_id: cfg.root_session_id,
+        })
+    }
+
+    fn matches(&self, root_session_id: &str) -> bool {
+        match &self.root_session_id {
+            Some(r) => r == root_session_id,
+            None => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CommBinding {
+    function_id: String,
+    filter: CommBindingFilter,
+}
+
+#[derive(Clone, Default)]
+struct CommSubscriberSet {
+    inner: Arc<Mutex<HashMap<String, CommBinding>>>,
+}
+
+impl CommSubscriberSet {
+    fn add(&self, config: TriggerConfig) -> Result<(), String> {
+        let filter = CommBindingFilter::parse(&config.config)?;
+        self.lock().insert(
+            config.id.clone(),
+            CommBinding {
+                function_id: config.function_id,
+                filter,
+            },
+        );
+        Ok(())
+    }
+
+    fn remove(&self, id: &str) {
+        self.lock().remove(id);
+    }
+
+    fn snapshot(&self) -> Vec<CommBinding> {
+        self.lock().values().cloned().collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, CommBinding>> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+struct CommTriggerHandler {
+    set: CommSubscriberSet,
+}
+
+#[async_trait]
+impl TriggerHandler for CommTriggerHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        let id = config.id.clone();
+        let function_id = config.function_id.clone();
+        self.set.add(config).map_err(Error::Handler)?;
+        tracing::info!(trigger_type = COMM, %id, %function_id, "comm subscription registered");
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        self.set.remove(&config.id);
+        Ok(())
+    }
+}
+
+/// The comm-event emitter. Cloned into [`crate::deps::Deps`].
+#[derive(Clone)]
+pub struct CommEvents {
+    iii: Arc<IIIClient>,
+    subscribers: CommSubscriberSet,
+}
+
+impl CommEvents {
+    /// Register the `harness::comm` trigger type and return the emitter. Must
+    /// run before function registration (same ordering rule as `TurnEvents`).
+    pub fn register(iii: &Arc<IIIClient>) -> Self {
+        let subscribers = CommSubscriberSet::default();
+        let _ = iii.register_trigger_type(
+            RegisterTriggerType::new(
+                COMM,
+                "An inter-agent communication edge (spawn / result / notify / trigger fire).",
+                CommTriggerHandler {
+                    set: subscribers.clone(),
+                },
+            )
+            .trigger_request_format::<CommBindingConfig>(),
+        );
+        tracing::info!("registered harness::comm trigger type");
+        Self {
+            iii: iii.clone(),
+            subscribers,
+        }
+    }
+
+    /// Append to the family log (assigning `seq`) and fan out live. Never
+    /// fails the caller — comm visibility must not break the turn loop.
+    pub async fn emit(&self, mut event: CommEvent, timeout_ms: u64) {
+        match self.append(&mut event, timeout_ms).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, root = %event.root_session_id, "comm log append failed");
+                // Still fan out live (seq stays 0): live viewers beat no viewers.
+            }
+        }
+        let payload = match serde_json::to_value(&event) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "comm event serialize failed");
+                return;
+            }
+        };
+        for binding in self.subscribers.snapshot() {
+            if !binding.filter.matches(&event.root_session_id) {
+                continue;
+            }
+            let res = self
+                .iii
+                .trigger(TriggerRequest {
+                    function_id: binding.function_id.clone(),
+                    payload: payload.clone(),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                })
+                .await;
+            if let Err(e) = res {
+                tracing::warn!(function_id = %binding.function_id, error = %e, "comm fan-out failed");
+            }
+        }
+    }
+
+    /// Two-step durable append: atomically increment `seq`, then merge the
+    /// event under its unique seq key (unique keys make concurrent appends
+    /// from sibling sessions race-free). Prune every 128 appends.
+    async fn append(&self, event: &mut CommEvent, timeout_ms: u64) -> Result<(), HarnessError> {
+        let key = event.root_session_id.clone();
+        let rec = crate::state::state_update(
+            &self.iii,
+            COMM_LOG_SCOPE,
+            &key,
+            vec![json!({ "type": "increment", "path": "seq", "by": 1 })],
+            timeout_ms,
+        )
+        .await?;
+        let seq = rec.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        event.seq = seq;
+        let ev = serde_json::to_value(&*event)
+            .map_err(|e| HarnessError::State(format!("comm event serialize: {e}")))?;
+        let rec = crate::state::state_update(
+            &self.iii,
+            COMM_LOG_SCOPE,
+            &key,
+            vec![json!({ "type": "merge", "path": "events", "value": { seq.to_string(): ev } })],
+            timeout_ms,
+        )
+        .await?;
+        // ponytail: prune via whole-record rewrite; a concurrent append during
+        // the rare prune window can be lost. Move to engine-side list ops if
+        // that ever matters.
+        if seq % 128 == 0 {
+            let pruned = pruned_record(&rec, COMM_LOG_CAP);
+            crate::state::state_set(&self.iii, COMM_LOG_SCOPE, &key, pruned, timeout_ms).await?;
+        }
+        Ok(())
+    }
+}
+
+/// Rebuild the log record keeping only the newest `cap` events.
+fn pruned_record(record: &Value, cap: usize) -> Value {
+    let seq = record.get("seq").cloned().unwrap_or(json!(0));
+    let mut entries: Vec<(u64, Value)> = record
+        .get("events")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| k.parse::<u64>().ok().map(|n| (n, v.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort_by_key(|(n, _)| *n);
+    if entries.len() > cap {
+        entries.drain(..entries.len() - cap);
+    }
+    let events: serde_json::Map<String, Value> = entries
+        .into_iter()
+        .map(|(n, v)| (n.to_string(), v))
+        .collect();
+    json!({ "seq": seq, "events": events })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +415,30 @@ mod tests {
         assert!(s.chars().count() <= 160 + " …(truncated)".chars().count());
         assert!(s.ends_with("…(truncated)"));
         assert_eq!(snippet(&Value::Null), "");
+    }
+
+    #[test]
+    fn binding_filter_matches_root() {
+        let f = CommBindingFilter::parse(&json!({ "root_session_id": "s_root" })).unwrap();
+        assert!(f.matches("s_root"));
+        assert!(!f.matches("s_other"));
+        let all = CommBindingFilter::parse(&Value::Null).unwrap();
+        assert!(all.matches("s_anything"));
+        assert!(CommBindingFilter::parse(&json!({ "bogus": 1 })).is_err());
+    }
+
+    #[test]
+    fn prune_keeps_newest_cap() {
+        let mut map = serde_json::Map::new();
+        for i in 1..=600u64 {
+            map.insert(i.to_string(), ev(i));
+        }
+        let record = json!({ "seq": 600, "events": map });
+        let pruned = pruned_record(&record, 500);
+        let events = pruned.get("events").and_then(Value::as_object).unwrap();
+        assert_eq!(events.len(), 500);
+        assert!(events.contains_key("600"));
+        assert!(!events.contains_key("100"));
+        assert_eq!(pruned.get("seq").and_then(Value::as_u64), Some(600));
     }
 }
