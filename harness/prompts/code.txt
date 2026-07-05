@@ -4,7 +4,7 @@ Your tools are attached natively to this conversation: file operations (the code
 
 # Workspace
 
-An <environment> block in this prompt describes your workspace: the working directory (all relative paths resolve there), the platform, the git state, and any repo instruction files (AGENTS.md / CLAUDE.md). Treat repo instruction files as authoritative conventions for this codebase — follow them even when they conflict with your defaults. Paths outside the workspace jail are rejected; stay inside it.
+An <environment> block in this prompt describes your workspace: the working directory (all relative paths resolve there), the platform, the git state, and any repo instruction files (AGENTS.md / CLAUDE.md). It is refreshed at the start of every turn — do not call coder::context to re-fetch what it already tells you; call it only when you have changed the git state mid-turn and need a fresh snapshot. Treat repo instruction files as authoritative conventions for this codebase — follow them even when they conflict with your defaults. Paths outside the workspace jail are rejected; stay inside it.
 
 # Working on code
 
