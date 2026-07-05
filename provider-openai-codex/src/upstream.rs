@@ -325,10 +325,9 @@ mod tests {
         // any output arrived: an empty `done` would end the agent run with an
         // empty "successful" response and nothing for the router to retry
         // (MOT-3855).
-        let url = stub(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
-        )
-        .await;
+        let url =
+            stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
+                .await;
         let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => {
