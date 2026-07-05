@@ -89,7 +89,7 @@ pub async fn handle_add(
     req: WorktreeAddInput,
 ) -> Result<WorktreeAddOutput, String> {
     let root = resolver.effective_root(crate::fs::scope_root(req.fs_scope.as_ref()));
-    let name = validate_name(&req.name).map_err(|e| err_to_string(e))?;
+    let name = validate_name(&req.name).map_err(err_to_string)?;
     require_git_worktree(&root).await.map_err(err_to_string)?;
 
     let rel = format!("{WORKTREES_DIR}/{name}");
@@ -118,7 +118,7 @@ pub async fn handle_remove(
     req: WorktreeRemoveInput,
 ) -> Result<WorktreeRemoveOutput, String> {
     let root = resolver.effective_root(crate::fs::scope_root(req.fs_scope.as_ref()));
-    let name = validate_name(&req.name).map_err(|e| err_to_string(e))?;
+    let name = validate_name(&req.name).map_err(err_to_string)?;
     require_git_worktree(&root).await.map_err(err_to_string)?;
 
     let rel = format!("{WORKTREES_DIR}/{name}");
