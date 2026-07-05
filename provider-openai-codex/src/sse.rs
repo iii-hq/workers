@@ -54,6 +54,12 @@ impl PartialState {
     pub fn stop_reason(&self) -> StopReason {
         self.stop_reason
     }
+
+    /// Whether any output accumulated (text, thinking, or tool calls) —
+    /// distinguishes legitimate close-framing from a truncated/empty stream.
+    pub fn has_content(&self) -> bool {
+        !self.text.is_empty() || !self.thinking.is_empty() || !self.tool_calls.is_empty()
+    }
 }
 
 pub fn empty_assistant(model: &str) -> AssistantMessage {
@@ -336,7 +342,12 @@ pub fn handle_chunk(
                 message: build_final(state, model),
             });
         }
-        n if n.contains("failed")
+        // `error` is the Responses API's stream-fatal event: the message sits
+        // at TOP level (`{"type":"error","code":…,"message":…}`), unlike
+        // `response.failed`'s nested `response.error`. The body's message
+        // lookup covers both shapes.
+        n if n == "error"
+            || n.contains("failed")
             || n.contains("incomplete")
             || (n.contains(".error") && !n.contains("delta")) =>
         {
@@ -441,5 +452,28 @@ mod tests {
             }
             other => panic!("want error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn top_level_error_event_is_terminal_error() {
+        // The Responses API's stream-fatal signal: `{"type":"error"}` with the
+        // message at TOP level (no nested `error` object, no `response.`
+        // prefix). Swallowing it ends the run as an empty `done` or a
+        // ping-until-timeout "ended without a terminal frame" (MOT-3855).
+        let (_, events) = run(&[
+            json!({ "type": "response.output_text.delta", "delta": "par" }),
+            json!({ "type": "error", "code": "server_error", "message": "The model produced no output", "sequence_number": 7 }),
+        ]);
+        match events.last().unwrap() {
+            AssistantMessageEvent::Error { error } => {
+                assert_eq!(
+                    error.error_message.as_deref(),
+                    Some("The model produced no output")
+                );
+                assert_eq!(error.stop_reason, StopReason::Error);
+            }
+            other => panic!("want error, got {other:?}"),
+        }
+        assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
     }
 }

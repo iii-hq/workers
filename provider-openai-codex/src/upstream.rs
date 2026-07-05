@@ -155,12 +155,26 @@ async fn run_upstream(
             }
         }
     }
-    // Stream ended without [DONE] (connection close framing): still terminal.
-    let _ = tx
-        .send(AssistantMessageEvent::Done {
-            message: build_final(&state, &args.model),
-        })
-        .await;
+    // Stream ended without [DONE]. With output accumulated this is
+    // legitimate connection-close framing: still terminal. With NOTHING
+    // accumulated the stream was truncated (or spoke only unrecognized
+    // events) — an empty `done` would end the run with an empty "successful"
+    // response, so surface a retryable error instead (MOT-3855).
+    if state.has_content() {
+        let _ = tx
+            .send(AssistantMessageEvent::Done {
+                message: build_final(&state, &args.model),
+            })
+            .await;
+    } else {
+        let _ = tx
+            .send(synthetic_error_event(
+                "codex stream ended without output or a completion event",
+                &args.model,
+                ErrorKind::Transient,
+            ))
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -303,6 +317,26 @@ mod tests {
             }
             other => panic!("want done, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_stream_end_yields_transient_error_not_empty_done() {
+        // The backend cut the stream (or sent only unrecognized events) before
+        // any output arrived: an empty `done` would end the agent run with an
+        // empty "successful" response and nothing for the router to retry
+        // (MOT-3855).
+        let url = stub(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        match events.last() {
+            Some(AssistantMessageEvent::Error { error }) => {
+                assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+            }
+            other => panic!("want error, got {other:?}"),
+        }
+        assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
