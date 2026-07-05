@@ -1,0 +1,132 @@
+{
+  "description": "One-call workspace snapshot for seeding a coding session: the allowed roots (primary first), platform os/arch, bounded git state of the primary root (current branch, porcelain status capped at 50 entries, last 5 commits), and repo instruction files (AGENTS.md / CLAUDE.md at the primary root, capped at 16 KiB each). Read-only and never fails on a non-repo: `git` is null when the root is not a git work tree or the git binary is unavailable.",
+  "function_id": "coder::context",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "No caller-visible arguments — `coder::context` is a pure discovery call.",
+    "examples": [
+      {}
+    ],
+    "title": "ContextInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GitContext": {
+        "properties": {
+          "branch": {
+            "description": "Current branch name; `\"HEAD\"` when detached.",
+            "type": "string"
+          },
+          "recent_commits": {
+            "description": "Up to the last 5 commits, `git log --oneline` format.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "`git status --porcelain` lines, capped at 50 entries.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status_truncated": {
+            "description": "True when the status list was capped.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch",
+          "recent_commits",
+          "status",
+          "status_truncated"
+        ],
+        "type": "object"
+      },
+      "InstructionFile": {
+        "properties": {
+          "content": {
+            "description": "File content, capped at 16 KiB (char-boundary safe).",
+            "type": "string"
+          },
+          "path": {
+            "description": "Root-relative file name (e.g. \"AGENTS.md\").",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when `content` was capped.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "path",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "Platform": {
+        "properties": {
+          "arch": {
+            "description": "CPU architecture (`std::env::consts::ARCH`, e.g. \"aarch64\").",
+            "type": "string"
+          },
+          "os": {
+            "description": "Operating system (`std::env::consts::OS`, e.g. \"macos\", \"linux\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "arch",
+          "os"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "base_paths": {
+        "description": "Canonical absolute paths of all allowed roots, primary first.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "git": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GitContext"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Git state of the primary root; `null` when the root is not inside a git work tree or the `git` binary is unavailable."
+      },
+      "instruction_files": {
+        "description": "Repo instruction files (AGENTS.md, CLAUDE.md) found at the primary root, in probe order. Content is capped per file; `truncated` marks a capped entry.",
+        "items": {
+          "$ref": "#/definitions/InstructionFile"
+        },
+        "type": "array"
+      },
+      "platform": {
+        "$ref": "#/definitions/Platform"
+      },
+      "primary_root": {
+        "description": "The primary allowed root — relative paths in every `coder::*` call resolve against this directory.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "base_paths",
+      "instruction_files",
+      "platform",
+      "primary_root"
+    ],
+    "title": "ContextOutput",
+    "type": "object"
+  }
+}

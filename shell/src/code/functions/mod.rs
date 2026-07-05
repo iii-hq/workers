@@ -10,6 +10,7 @@
 //! `tests/code_golden_schemas.rs` snapshots each entry so ANY change to the
 //! agent-facing wire surface shows up as an explicit, reviewed diff.
 
+pub mod context;
 pub mod create_file;
 pub mod delete_file;
 pub mod info;
@@ -46,6 +47,15 @@ const INFO_DESC: &str = "Report the coder jail: canonical allowed roots (primary
      this FIRST when unsure where coder may read or write, or when a \
      path was rejected — paths outside every allowed root need the \
      shell worker's shell::fs::* instead.";
+
+const CONTEXT_ID: &str = "coder::context";
+const CONTEXT_DESC: &str = "One-call workspace snapshot for seeding a coding session: the \
+     allowed roots (primary first), platform os/arch, bounded git state \
+     of the primary root (current branch, porcelain status capped at 50 \
+     entries, last 5 commits), and repo instruction files (AGENTS.md / \
+     CLAUDE.md at the primary root, capped at 16 KiB each). Read-only \
+     and never fails on a non-repo: `git` is null when the root is not \
+     a git work tree or the git binary is unavailable.";
 
 const READ_FILE_ID: &str = "coder::read-file";
 const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (size/mtime/mode \
@@ -208,6 +218,7 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<info::InfoInput, info::InfoOutput>(INFO_ID, INFO_DESC),
+        spec::<context::ContextInput, context::ContextOutput>(CONTEXT_ID, CONTEXT_DESC),
         spec::<read_file::ReadFileInput, read_file::ReadFileOutput>(READ_FILE_ID, READ_FILE_DESC),
         spec::<search::SearchInput, search::SearchOutput>(SEARCH_ID, SEARCH_DESC),
         spec::<update_file::UpdateFileInput, update_file::UpdateFileOutput>(
@@ -239,6 +250,8 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     // `tests::register_all_count_matches_catalog`).
     let mut registered: usize = 0;
     register_info(iii, cells.clone());
+    registered += 1;
+    register_context(iii, cells.clone());
     registered += 1;
     register_read_file(iii, cells.clone());
     registered += 1;
@@ -278,6 +291,27 @@ fn register_info(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(INFO_DESC),
+    );
+}
+
+fn register_context(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        CONTEXT_ID,
+        RegisterFunction::new_async(move |req: context::ContextInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                context::handle(resolver, cfg, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(CONTEXT_DESC),
     );
 }
 

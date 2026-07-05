@@ -190,3 +190,83 @@ async fn regex_replace_e2e() {
         "baz bar baz\n"
     );
 }
+
+#[tokio::test]
+async fn str_replace_e2e_with_echo() {
+    let tmp = tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("a.rs"),
+        "fn hello() {\n    println!(\"hallo\");\n}\n",
+    )
+    .unwrap();
+    let (r, c) = make(tmp.path().to_path_buf(), vec![]);
+    let out = update_handle(
+        r,
+        c,
+        UpdateFileInput {
+            files: vec![UpdateFileSpec {
+                path: "a.rs".into(),
+                ops: vec![UpdateOp::StrReplace {
+                    old_str: "println!(\"hallo\")".into(),
+                    new_str: "println!(\"hello\")".into(),
+                    replace_all: false,
+                }],
+            }],
+            fs_scope: None,
+        },
+    )
+    .await
+    .unwrap();
+    let res = &out.results[0];
+    assert!(res.success, "{:?}", res.error);
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("a.rs")).unwrap(),
+        "fn hello() {\n    println!(\"hello\");\n}\n"
+    );
+    // Content ops echo their match site with the total replacement count.
+    assert_eq!(res.echoes.len(), 1);
+    assert_eq!(res.echoes[0].total_replacements, Some(1));
+    assert!(res.echoes[0].lines.iter().any(|l| l.contains("hello")));
+}
+
+#[tokio::test]
+async fn str_replace_ambiguity_failure_leaves_file_untouched() {
+    let tmp = tempdir().unwrap();
+    let original = "foo\nbar\nfoo\n";
+    std::fs::write(tmp.path().join("a.txt"), original).unwrap();
+    let (r, c) = make(tmp.path().to_path_buf(), vec![]);
+    let out = update_handle(
+        r,
+        c,
+        UpdateFileInput {
+            files: vec![UpdateFileSpec {
+                path: "a.txt".into(),
+                // The line op would succeed; the ambiguous str_replace must
+                // fail the WHOLE file with nothing written.
+                ops: vec![
+                    UpdateOp::Insert {
+                        at_line: 1,
+                        content: "header".into(),
+                    },
+                    UpdateOp::StrReplace {
+                        old_str: "foo".into(),
+                        new_str: "qux".into(),
+                        replace_all: false,
+                    },
+                ],
+            }],
+            fs_scope: None,
+        },
+    )
+    .await
+    .unwrap();
+    let res = &out.results[0];
+    assert!(!res.success);
+    let err = res.error.as_ref().unwrap();
+    assert_eq!(err.code, "C210");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        original,
+        "failed str_replace must leave the file byte-identical"
+    );
+}

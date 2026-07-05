@@ -1,4 +1,4 @@
-//! GOLDEN FAMILY A — wire-schema snapshots for all 9 `coder::*` functions
+//! GOLDEN FAMILY A — wire-schema snapshots for all 10 `coder::*` functions
 //! served by the shell worker.
 //!
 //! `shell::code::functions::catalog()` is the single source of truth for
@@ -35,15 +35,16 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 9 registered functions, in
+/// The catalog must cover exactly the 10 registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
-fn catalog_lists_all_nine_functions_in_registration_order() {
+fn catalog_lists_all_ten_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
         vec![
             "coder::info",
+            "coder::context",
             "coder::read-file",
             "coder::search",
             "coder::update-file",
@@ -195,22 +196,29 @@ fn search_example_round_trips() {
 }
 
 #[test]
-fn update_file_example_round_trips_with_three_op_kinds() {
+fn update_file_example_round_trips_with_four_op_kinds() {
     use shell::code::functions::update_file::{UpdateFileInput, UpdateOp};
     let input: UpdateFileInput = example_as("coder::update-file", 0);
     assert_eq!(input.files.len(), 1);
     let ops = &input.files[0].ops;
-    assert_eq!(ops.len(), 3);
-    assert!(matches!(ops[0], UpdateOp::Insert { at_line: 1, .. }));
+    assert_eq!(ops.len(), 4);
     assert!(matches!(
-        ops[1],
+        ops[0],
+        UpdateOp::StrReplace {
+            replace_all: false,
+            ..
+        }
+    ));
+    assert!(matches!(ops[1], UpdateOp::Insert { at_line: 1, .. }));
+    assert!(matches!(
+        ops[2],
         UpdateOp::UpdateLines {
             from_line: 5,
             to_line: 7,
             ..
         }
     ));
-    assert!(matches!(ops[2], UpdateOp::Replace { .. }));
+    assert!(matches!(ops[3], UpdateOp::Replace { .. }));
 }
 
 #[test]
