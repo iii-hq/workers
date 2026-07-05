@@ -1275,7 +1275,7 @@ fn join_lines(lines: &[String], ending: LineEnding, trailing: bool) -> Vec<u8> {
 }
 
 /// Write atomically via sibling temp file + rename.
-fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), CoderError> {
+pub(crate) fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), CoderError> {
     let parent = target
         .parent()
         .ok_or_else(|| CoderError::Io(format!("no parent for {}", target.display())))?;

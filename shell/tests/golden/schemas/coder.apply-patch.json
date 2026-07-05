@@ -1,0 +1,100 @@
+{
+  "description": "Apply a whole patch in the apply_patch (V4A) format: the exact '*** Begin Patch' … '*** End Patch' format you know, with '*** Add File: ', '*** Delete File: ', '*** Update File: ' (+ optional '*** Move to: ') hunks, '@@ ' context markers, and ' '/'+'/'-' change lines. All-or-nothing: every hunk is validated and computed before anything is written — a context mismatch fails the whole call with C210 and the guidance to re-read and regenerate; on success each file commits atomically and modified files return a bounded post-apply echo of the first changed region. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::apply-patch",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "patch": "*** Begin Patch\n*** Update File: src/calc.py\n@@ def add(a, b):\n-    return a - b\n+    return a + b\n*** End Patch"
+      }
+    ],
+    "properties": {
+      "patch": {
+        "description": "The full patch text in the apply_patch format: starts with `*** Begin Patch`, ends with `*** End Patch`, with one hunk per file (`*** Add File: `, `*** Delete File: `, or `*** Update File: ` with an optional `*** Move to: `). Paths are relative to the primary allowed root, or absolute inside any allowed root.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "patch"
+    ],
+    "title": "ApplyPatchInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PatchEcho": {
+        "properties": {
+          "from_line": {
+            "description": "1-based line number of the first echoed line, post-apply.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "from_line",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "PatchFileResult": {
+        "properties": {
+          "echo": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PatchEcho"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bounded post-apply snapshot of the first changed region (modified files only) — verify from this instead of re-reading the file."
+          },
+          "kind": {
+            "description": "What happened: \"added\" | \"modified\" | \"deleted\" | \"moved\".",
+            "type": "string"
+          },
+          "new_line_count": {
+            "description": "Line count after applying (absent for deletions).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Canonical absolute path of the affected file (the destination for a moved file).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "results": {
+        "description": "One entry per file hunk, in patch order. The whole patch applied — a failure anywhere returns an error with nothing written.",
+        "items": {
+          "$ref": "#/definitions/PatchFileResult"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "results"
+    ],
+    "title": "ApplyPatchOutput",
+    "type": "object"
+  }
+}

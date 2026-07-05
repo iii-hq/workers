@@ -10,6 +10,7 @@
 //! `tests/code_golden_schemas.rs` snapshots each entry so ANY change to the
 //! agent-facing wire surface shows up as an explicit, reviewed diff.
 
+pub mod apply_patch;
 pub mod context;
 pub mod create_file;
 pub mod delete_file;
@@ -121,6 +122,20 @@ const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits acro
      allowed root or absolute inside any allowed root (coder::info \
      lists them); for host paths outside the jail use shell::fs::*.";
 
+const APPLY_PATCH_ID: &str = "coder::apply-patch";
+const APPLY_PATCH_DESC: &str = "Apply a whole patch in the apply_patch (V4A) format: the exact \
+     '*** Begin Patch' … '*** End Patch' format you know, with \
+     '*** Add File: ', '*** Delete File: ', '*** Update File: ' (+ \
+     optional '*** Move to: ') hunks, '@@ ' context markers, and \
+     ' '/'+'/'-' change lines. All-or-nothing: every hunk is validated \
+     and computed before anything is written — a context mismatch fails \
+     the whole call with C210 and the guidance to re-read and regenerate; \
+     on success each file commits atomically and modified files return a \
+     bounded post-apply echo of the first changed region. Paths are \
+     relative to the primary allowed root or absolute inside any allowed \
+     root (coder::info lists them); for host paths outside the jail use \
+     shell::fs::*.";
+
 const CREATE_FILE_ID: &str = "coder::create-file";
 const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
      \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
@@ -225,6 +240,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             UPDATE_FILE_ID,
             UPDATE_FILE_DESC,
         ),
+        spec::<apply_patch::ApplyPatchInput, apply_patch::ApplyPatchOutput>(
+            APPLY_PATCH_ID,
+            APPLY_PATCH_DESC,
+        ),
         spec::<create_file::CreateFileInput, create_file::CreateFileOutput>(
             CREATE_FILE_ID,
             CREATE_FILE_DESC,
@@ -258,6 +277,8 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     register_search(iii, cells.clone());
     registered += 1;
     register_update_file(iii, cells.clone());
+    registered += 1;
+    register_apply_patch(iii, cells.clone());
     registered += 1;
     register_create_file(iii, cells.clone());
     registered += 1;
@@ -375,6 +396,27 @@ fn register_update_file(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(UPDATE_FILE_DESC),
+    );
+}
+
+fn register_apply_patch(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        APPLY_PATCH_ID,
+        RegisterFunction::new_async(move |req: apply_patch::ApplyPatchInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                apply_patch::handle(resolver, cfg, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(APPLY_PATCH_DESC),
     );
 }
 
