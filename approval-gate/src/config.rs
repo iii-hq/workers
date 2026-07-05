@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::permissions::{default_rule_specs, parse_rules_from_config, Permissions, RuleSpec};
+use crate::permissions::{parse_rules_from_config, Permissions, RuleSpec};
 use crate::types::PermissionMode;
 
 /// The shipped permission rules as a JSON array of shorthand strings — the
@@ -20,13 +20,7 @@ use crate::types::PermissionMode;
 /// [`crate::permissions::default_rule_specs`] so the in-memory defaults and
 /// the console-editable list never drift.
 pub fn default_rules_value() -> Vec<Value> {
-    default_rule_specs()
-        .into_iter()
-        .filter_map(|r| match r {
-            RuleSpec::Shorthand(s) => Some(Value::String(s)),
-            _ => None,
-        })
-        .collect()
+    crate::permissions::default_rules::default_rule_values()
 }
 
 fn default_rules() -> Vec<Value> {
@@ -50,8 +44,27 @@ fn rules_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema
         "type": "array",
         "description": "Permission rules for the gate hook (first match wins). Each entry is a string or object.\n\nString shorthands: bare id/glob → allow; prefix ! → deny; no match → hold.\n\nStructured objects: { \"function\": \"shell::*\", \"action\": \"allow\" | \"deny\", \"modes\": [\"auto\"] } — optional modes scope the rule to manual, auto, or full (omit for all modes). Use modes: [\"auto\"] on allow rules to seed the auto-mode trust list.\n\nExamples:\n• \"state::get\" — allow reads\n• \"shell::*\" — allow any shell worker call\n• \"!approval::*\" — deny the approval decision plane (shipped default)\n• { \"function\": \"web::fetch\", \"action\": \"allow\", \"modes\": [\"auto\"] } — auto-mode trust",
         "items": {
-            "type": "string",
-            "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+            "oneOf": [
+                {
+                    "type": "string",
+                    "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+                },
+                {
+                    "type": "object",
+                    "description": "Structured rule; optional modes scope it to session permission modes (auto-scoped allows also seed the auto-mode trust list).",
+                    "required": ["function", "action"],
+                    "properties": {
+                        "rule_id": { "type": "string" },
+                        "function": { "type": "string" },
+                        "action": { "type": "string", "enum": ["allow", "deny"] },
+                        "modes": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["manual", "auto", "full"] }
+                        },
+                        "args": { "type": "object" }
+                    }
+                }
+            ]
         },
         "default": default_rules_value(),
     }))
@@ -198,7 +211,15 @@ mod tests {
         let cfg = WorkerConfig::default();
         assert_eq!(cfg.default_mode, PermissionMode::Manual);
         assert!(!cfg.rules.is_empty());
-        assert!(cfg.auto_allow_seed().is_empty());
+        // The shipped defaults seed auto-mode trust for the read-only
+        // coder surface (and nothing else).
+        assert_eq!(
+            cfg.auto_allow_seed(),
+            crate::permissions::default_rules::READ_ONLY_CODER
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(cfg.grant_reask_limit, 3);
     }
 

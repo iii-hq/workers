@@ -2,7 +2,7 @@
 //! Rules live in the `approval-gate` configuration entry (`GateDefaults::rules`).
 
 mod compile;
-mod default_rules;
+pub mod default_rules;
 mod types;
 
 pub use compile::{
@@ -171,10 +171,7 @@ pub fn parse_rules_from_config(value: &Value) -> Vec<RuleSpec> {
 }
 
 pub fn default_rule_specs() -> Vec<RuleSpec> {
-    default_rules::default_rule_strings()
-        .into_iter()
-        .map(|s| RuleSpec::Shorthand(s.to_string()))
-        .collect()
+    parse_rules_from_config(&Value::Array(default_rules::default_rule_values()))
 }
 
 pub fn default_permissions() -> Permissions {
