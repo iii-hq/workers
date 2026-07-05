@@ -184,6 +184,12 @@ pub struct OpEcho {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct UpdateFileOutput {
     pub results: Vec<UpdateFileResult>,
+    /// Post-write check outcomes (configured `post_write_checks` whose
+    /// glob matched a successfully written file; each command runs once
+    /// per call). Read them — a failing check means the edit landed but
+    /// broke something. Empty when no checks are configured or matched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<crate::code::checks::CheckOutcome>,
 }
 
 /// Maximum lines echoed per op before elision kicks in (first 8 + last 8).
@@ -246,11 +252,18 @@ pub async fn handle(
             Err(e) => entries.push((spec, Err(e))),
         }
     }
-    let results = entries
+    let results: Vec<UpdateFileResult> = entries
         .into_iter()
         .map(|(spec, resolved)| update_one(&cfg, spec, resolved))
         .collect();
-    Ok(UpdateFileOutput { results })
+    let written: Vec<String> = results
+        .iter()
+        .filter(|r| r.success)
+        .map(|r| r.path.clone())
+        .collect();
+    let root = resolver.effective_root(scope_root);
+    let checks = crate::code::checks::run_post_write_checks(&cfg, &resolver, &root, &written).await;
+    Ok(UpdateFileOutput { results, checks })
 }
 
 fn update_one(

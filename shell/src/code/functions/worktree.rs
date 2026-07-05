@@ -5,7 +5,7 @@
 //! primary allowed root). Removal is clean-only: a dirty worktree is left
 //! in place and reported, never force-deleted.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,7 +88,7 @@ pub async fn handle_add(
     _cfg: Arc<CoderConfig>,
     req: WorktreeAddInput,
 ) -> Result<WorktreeAddOutput, String> {
-    let root = effective_root(&resolver, req.fs_scope.as_ref());
+    let root = resolver.effective_root(crate::fs::scope_root(req.fs_scope.as_ref()));
     let name = validate_name(&req.name).map_err(|e| err_to_string(e))?;
     require_git_worktree(&root).await.map_err(err_to_string)?;
 
@@ -117,7 +117,7 @@ pub async fn handle_remove(
     _cfg: Arc<CoderConfig>,
     req: WorktreeRemoveInput,
 ) -> Result<WorktreeRemoveOutput, String> {
-    let root = effective_root(&resolver, req.fs_scope.as_ref());
+    let root = resolver.effective_root(crate::fs::scope_root(req.fs_scope.as_ref()));
     let name = validate_name(&req.name).map_err(|e| err_to_string(e))?;
     require_git_worktree(&root).await.map_err(err_to_string)?;
 
@@ -178,14 +178,6 @@ pub async fn handle_remove(
         branch,
         branch_deleted,
     })
-}
-
-/// The effective root: the harness-stamped fs_scope root when present
-/// (canonicalized + confined by `session_root`), else the primary root.
-fn effective_root(resolver: &PathResolver, scope: Option<&crate::fs::FsScope>) -> PathBuf {
-    crate::fs::scope_root(scope)
-        .and_then(|r| resolver.session_root(r))
-        .unwrap_or_else(|| resolver.base_root().to_path_buf())
 }
 
 fn validate_name(name: &str) -> Result<&str, CoderError> {

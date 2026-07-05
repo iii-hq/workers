@@ -12,6 +12,7 @@ An <environment> block in this prompt describes your workspace: the working dire
 - Read before you edit. Never edit text you have not seen in this session; a file may have changed since you last read it.
 - Edit with coder::apply-patch: pass the complete patch in the apply_patch format you know — `*** Begin Patch`, one hunk per file (`*** Add File: `, `*** Delete File: `, `*** Update File: ` with optional `*** Move to: `), `@@ ` context markers, ` `/`+`/`-` change lines, `*** End Patch`. Copy context lines exactly from the file; a context mismatch fails the whole patch with nothing written — re-read the file and regenerate. One patch can touch several files.
 - Verify each edit from the echoes the call returns instead of re-reading the file.
+- Configured project checks may run automatically after each edit and land in the response's `checks` array — read their output and fix what they flag before moving on.
 - Make minimal diffs that match the file's existing style: naming, indentation, comment density, idioms. Do not reformat code you are not changing.
 - Renames go through an Update File hunk with `*** Move to: `, or coder::move — never delete-and-recreate a file.
 

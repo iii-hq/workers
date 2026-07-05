@@ -139,6 +139,16 @@ impl PathResolver {
         &self.roots_canon[0]
     }
 
+    /// The effective root for a call: the harness-stamped `scope_root`
+    /// (canonicalized + confined via [`Self::session_root`]) when present,
+    /// else the primary root. The shared convention for every call that
+    /// operates "at the workspace root" (context, worktrees, checks).
+    pub fn effective_root(&self, scope_root: Option<&str>) -> PathBuf {
+        scope_root
+            .and_then(|r| self.session_root(r))
+            .unwrap_or_else(|| self.base_root().to_path_buf())
+    }
+
     /// All canonical allowed roots, in configuration order.
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots_canon

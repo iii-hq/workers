@@ -50,6 +50,12 @@ pub struct ApplyPatchOutput {
     /// One entry per file hunk, in patch order. The whole patch applied —
     /// a failure anywhere returns an error with nothing written.
     pub results: Vec<PatchFileResult>,
+    /// Post-write check outcomes (configured `post_write_checks` whose
+    /// glob matched an affected file; each command runs once per call).
+    /// Read them — a failing check means the patch landed but broke
+    /// something. Empty when no checks are configured or matched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<crate::code::checks::CheckOutcome>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -98,11 +104,18 @@ pub async fn handle(
     req: ApplyPatchInput,
 ) -> Result<ApplyPatchOutput, String> {
     let scope_root = crate::fs::scope_root(req.fs_scope.as_ref()).map(str::to_string);
-    tokio::task::spawn_blocking(move || {
-        inner(&resolver, &cfg, scope_root.as_deref(), &req.patch).map_err(err_to_string)
+    let blocking_resolver = resolver.clone();
+    let blocking_cfg = cfg.clone();
+    let sr = scope_root.clone();
+    let mut out = tokio::task::spawn_blocking(move || {
+        inner(&blocking_resolver, &blocking_cfg, sr.as_deref(), &req.patch).map_err(err_to_string)
     })
     .await
-    .map_err(|e| format!("apply-patch task join failed: {e}"))?
+    .map_err(|e| format!("apply-patch task join failed: {e}"))??;
+    let written: Vec<String> = out.results.iter().map(|r| r.path.clone()).collect();
+    let root = resolver.effective_root(scope_root.as_deref());
+    out.checks = crate::code::checks::run_post_write_checks(&cfg, &resolver, &root, &written).await;
+    Ok(out)
 }
 
 fn inner(
@@ -243,7 +256,10 @@ fn inner(
             }
         }
     }
-    Ok(ApplyPatchOutput { results })
+    Ok(ApplyPatchOutput {
+        results,
+        checks: Vec::new(),
+    })
 }
 
 fn check_write_size(cfg: &CoderConfig, wire: &str, len: usize) -> Result<(), CoderError> {

@@ -69,6 +69,44 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "CheckOutcome": {
+        "description": "One executed check's outcome, attached to the write response.",
+        "properties": {
+          "command": {
+            "description": "The configured command, verbatim.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Timeout / spawn failure note; the edit itself already succeeded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "description": "Process exit code; absent when the check timed out or failed to spawn (see `error`).",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "description": "Merged stdout + stderr, capped at 4 KiB (char-boundary safe).",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when `output` was capped.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command",
+          "output",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "CreateFileResult": {
         "properties": {
           "bytes_written": {
@@ -122,6 +160,13 @@
       }
     },
     "properties": {
+      "checks": {
+        "description": "Post-write check outcomes (configured `post_write_checks` whose glob matched a successfully created file; each command runs once per call). Read them — a failing check means the file landed but broke something. Empty when no checks are configured or matched.",
+        "items": {
+          "$ref": "#/definitions/CheckOutcome"
+        },
+        "type": "array"
+      },
       "results": {
         "items": {
           "$ref": "#/definitions/CreateFileResult"

@@ -12,6 +12,7 @@ An <environment> block in this prompt describes your workspace: the working dire
 - Read before you edit. Never edit text you have not seen in this session; a file may have changed since you last read it.
 - Edit with coder::update-file's str_replace op: copy the exact existing text — including whitespace and indentation — as old_str, and supply the replacement as new_str. old_str must match exactly once; when it is ambiguous, include more surrounding lines, or set replace_all only for intentional bulk replacements. Use insert/update_lines for new blocks, and the regex replace op only for pattern rewrites across many sites.
 - Verify each edit from the echoes the call returns instead of re-reading the file.
+- Configured project checks may run automatically after each edit and land in the response's `checks` array — read their output and fix what they flag before moving on.
 - Make minimal diffs that match the file's existing style: naming, indentation, comment density, idioms. Do not reformat code you are not changing.
 - Renames and moves go through coder::move — never delete-and-recreate a file.
 

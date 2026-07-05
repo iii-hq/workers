@@ -97,15 +97,8 @@ pub async fn handle(
     _cfg: Arc<CoderConfig>,
     req: ContextInput,
 ) -> Result<ContextOutput, String> {
-    // The effective root is the call's fs_scope root when the harness
-    // stamped one (the turn's working directory) — the configured primary
-    // only when the call is unscoped. session_root canonicalizes and
-    // confines it to the allowed roots, exactly like resolve_in.
     let scope_root = crate::fs::scope_root(req.fs_scope.as_ref()).map(str::to_string);
-    let primary = scope_root
-        .as_deref()
-        .and_then(|r| resolver.session_root(r))
-        .unwrap_or_else(|| resolver.base_root().to_path_buf());
+    let primary = resolver.effective_root(scope_root.as_deref());
     let git = git_context(&primary).await;
     let resolver_for_files = resolver.clone();
     let files_scope = scope_root.clone();

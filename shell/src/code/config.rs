@@ -123,6 +123,39 @@ pub struct CoderConfig {
     /// `truncated: true` — it degrades, it never errors.
     #[serde(default = "default_search_response_budget_bytes")]
     pub search_response_budget_bytes: u64,
+
+    /// Report-only checks run after successful `coder::update-file` /
+    /// `coder::create-file` / `coder::apply-patch` writes. Each entry
+    /// whose glob matches a written file's root-relative path runs ONCE
+    /// per call (deduplicated by command), with the effective root as
+    /// cwd; the bounded output is attached to the response's `checks`
+    /// array for the caller to read. A failing check NEVER fails the
+    /// edit. Commands are operator-configured (this configuration entry,
+    /// not workspace files — a hostile repo must not choose them) and
+    /// should be read-only checks (lint/typecheck/test), not mutating
+    /// formatters: they run after the response echoes are built. Default
+    /// empty (no checks).
+    #[serde(default)]
+    pub post_write_checks: Vec<PostWriteCheck>,
+}
+
+/// One post-write check rule (see `post_write_checks`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize, JsonSchema)]
+pub struct PostWriteCheck {
+    /// Glob matched against the written file's root-relative path
+    /// (same convention as `default_exclude_globs`), e.g. `**/*.py`.
+    pub match_glob: String,
+    /// Command run via `/bin/sh -c` with the effective root as cwd,
+    /// e.g. `python3 -m py_compile $(git ls-files '*.py')` or
+    /// `cargo check --quiet`.
+    pub command: String,
+    /// Wall-clock cap in milliseconds. Default 30000.
+    #[serde(default = "default_check_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_check_timeout_ms() -> u64 {
+    30_000
 }
 
 fn default_default_exclude_globs() -> Vec<String> {
@@ -214,6 +247,7 @@ impl Default for CoderConfig {
             batch_read_budget_bytes: default_batch_read_budget_bytes(),
             max_output_bytes: default_max_output_bytes(),
             search_response_budget_bytes: default_search_response_budget_bytes(),
+            post_write_checks: Vec::new(),
         }
     }
 }
