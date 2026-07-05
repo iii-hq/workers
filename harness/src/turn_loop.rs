@@ -196,6 +196,11 @@ pub async fn run_step(
     )
     .await?;
 
+    // Code mode: append the workspace <environment> block (coder::context),
+    // fetched once per turn and cached on the record. Never blocks the step —
+    // an unavailable coder surface just logs and proceeds without the block.
+    let assembled = attach_env_context(deps, &mut record, &cfg, assembled).await;
+
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
@@ -1012,6 +1017,142 @@ async fn has_user_after_watermark(
 /// Build the model-ready context: read the latest compaction entry, reduce the
 /// candidate window to its tail, call `context::assemble` (persisting a new
 /// summary when it compacts), or fall back to raw history.
+/// Code mode's workspace grounding: fetch `coder::context` once per turn,
+/// render it as an `<environment>` block, cache it on the record (persisted
+/// by the step's pre-generate `put_turn`), and append it to the assembled
+/// system prompt. An empty cached string marks a failed fetch so the turn
+/// doesn't re-dial a missing coder surface on every step.
+async fn attach_env_context(
+    deps: &Deps,
+    record: &mut TurnRecord,
+    cfg: &crate::config::WorkerConfig,
+    mut assembled: Assembled,
+) -> Assembled {
+    if record.options.mode != Some(crate::prompt::Mode::Code) {
+        return assembled;
+    }
+    if record.env_context.is_none() {
+        record.env_context = Some(
+            fetch_env_context(deps, record, cfg)
+                .await
+                .unwrap_or_default(),
+        );
+    }
+    if let Some(env) = record.env_context.as_deref().filter(|s| !s.is_empty()) {
+        assembled.system_prompt = Some(match assembled.system_prompt.take() {
+            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{env}"),
+            _ => env.to_string(),
+        });
+    }
+    assembled
+}
+
+async fn fetch_env_context(
+    deps: &Deps,
+    record: &TurnRecord,
+    cfg: &crate::config::WorkerConfig,
+) -> Option<String> {
+    // Same trusted stamp as every outbound coder call: the block describes
+    // the workspace the turn is actually jailed to.
+    let grants =
+        crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+            .await
+            .unwrap_or_default();
+    let args = crate::filesystem_scope::inject(
+        "coder::context",
+        json!({}),
+        record.options.filesystem_root(),
+        &grants,
+    );
+    let engine = deps.engine().await;
+    match engine.dispatch("coder::context", args).await {
+        Ok(value) => Some(render_env_block(&value)),
+        Err(e) => {
+            tracing::warn!(
+                session_id = %record.session_id,
+                error = %e.message,
+                "coder::context unavailable; code-mode turn proceeds without an <environment> block"
+            );
+            None
+        }
+    }
+}
+
+/// Render `coder::context`'s response as the model-facing `<environment>`
+/// block plus one `<instructions>` block per repo instruction file. Parsed
+/// loosely from the wire JSON — the function id is the only contract.
+fn render_env_block(ctx: &Value) -> String {
+    let mut out = String::from("<environment>\n");
+    if let Some(root) = ctx.get("primary_root").and_then(Value::as_str) {
+        out.push_str(&format!("Working directory: {root}\n"));
+    }
+    if let Some(platform) = ctx.get("platform") {
+        let os = platform.get("os").and_then(Value::as_str).unwrap_or("?");
+        let arch = platform.get("arch").and_then(Value::as_str).unwrap_or("?");
+        out.push_str(&format!("Platform: {os} {arch}\n"));
+    }
+    match ctx.get("git") {
+        Some(git) if !git.is_null() => {
+            if let Some(branch) = git.get("branch").and_then(Value::as_str) {
+                out.push_str(&format!("Git branch: {branch}\n"));
+            }
+            let status: Vec<&str> = git
+                .get("status")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if status.is_empty() {
+                out.push_str("Git status: clean\n");
+            } else {
+                out.push_str("Git status:\n");
+                for line in &status {
+                    out.push_str(&format!("  {line}\n"));
+                }
+                if git
+                    .get("status_truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    out.push_str("  … (more entries truncated)\n");
+                }
+            }
+            let commits: Vec<&str> = git
+                .get("recent_commits")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if !commits.is_empty() {
+                out.push_str("Recent commits:\n");
+                for line in &commits {
+                    out.push_str(&format!("  {line}\n"));
+                }
+            }
+        }
+        _ => out.push_str("Git: not a repository\n"),
+    }
+    out.push_str("</environment>");
+    if let Some(files) = ctx.get("instruction_files").and_then(Value::as_array) {
+        for file in files {
+            let (Some(path), Some(content)) = (
+                file.get("path").and_then(Value::as_str),
+                file.get("content").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let truncated = file
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            out.push_str(&format!("\n<instructions file=\"{path}\">\n{content}"));
+            if truncated {
+                out.push_str("\n… (truncated — read the file for the rest)");
+            }
+            out.push_str("\n</instructions>");
+        }
+    }
+    out
+}
+
 async fn assemble_context(
     deps: &Deps,
     session: &SessionClient,
@@ -1412,6 +1553,64 @@ impl Clone for SessionStreamSink {
             entry_id: self.entry_id.clone(),
             turn_id: self.turn_id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod env_block_tests {
+    use super::render_env_block;
+    use serde_json::json;
+
+    #[test]
+    fn renders_full_workspace_snapshot() {
+        let ctx = json!({
+            "primary_root": "/work/repo",
+            "platform": { "os": "macos", "arch": "aarch64" },
+            "git": {
+                "branch": "main",
+                "status": [" M src/lib.rs"],
+                "status_truncated": false,
+                "recent_commits": ["abc123 initial"]
+            },
+            "instruction_files": [
+                { "path": "AGENTS.md", "content": "use tabs", "truncated": false }
+            ]
+        });
+        let out = render_env_block(&ctx);
+        assert!(out.starts_with("<environment>\n"));
+        assert!(out.contains("Working directory: /work/repo"));
+        assert!(out.contains("Platform: macos aarch64"));
+        assert!(out.contains("Git branch: main"));
+        assert!(out.contains(" M src/lib.rs"));
+        assert!(out.contains("abc123 initial"));
+        assert!(out.contains("<instructions file=\"AGENTS.md\">\nuse tabs\n</instructions>"));
+    }
+
+    #[test]
+    fn renders_clean_status_and_truncation_marker() {
+        let ctx = json!({
+            "primary_root": "/r",
+            "platform": { "os": "linux", "arch": "x86_64" },
+            "git": { "branch": "dev", "status": [], "status_truncated": false, "recent_commits": [] },
+            "instruction_files": [
+                { "path": "CLAUDE.md", "content": "rules", "truncated": true }
+            ]
+        });
+        let out = render_env_block(&ctx);
+        assert!(out.contains("Git status: clean"));
+        assert!(out.contains("… (truncated — read the file for the rest)"));
+    }
+
+    #[test]
+    fn non_repo_renders_without_git_or_instructions() {
+        let ctx = json!({
+            "primary_root": "/tmp/x",
+            "platform": { "os": "linux", "arch": "x86_64" },
+            "instruction_files": []
+        });
+        let out = render_env_block(&ctx);
+        assert!(out.contains("Git: not a repository"));
+        assert!(!out.contains("<instructions"));
     }
 }
 

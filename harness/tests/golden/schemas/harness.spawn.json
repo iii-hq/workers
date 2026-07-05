@@ -389,7 +389,8 @@
         "enum": [
           "plan",
           "ask",
-          "agent"
+          "agent",
+          "code"
         ],
         "type": "string"
       },

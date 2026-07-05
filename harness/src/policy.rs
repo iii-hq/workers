@@ -102,6 +102,28 @@ fn build_set(patterns: &[String]) -> GlobSet {
     builder.build().unwrap_or_else(|_| GlobSet::empty())
 }
 
+/// The default dispatch policy for code mode (harness.md § Exposure modes):
+/// the curated coding surface, natively exposed, applied when a code-mode
+/// send/spawn carries no explicit `functions` policy. Sub-agents still
+/// narrow through [`subset_policy`] — a code-mode child never escalates
+/// past its parent.
+pub fn code_mode_policy() -> FunctionPolicy {
+    FunctionPolicy {
+        allow: [
+            "coder::*",
+            "shell::exec",
+            "shell::exec_bg",
+            "shell::kill",
+            "shell::status",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+        deny: vec![],
+        expose: ExposeMode::Native,
+    }
+}
+
 /// The single `agent_trigger` schema attached by default — the model triggers
 /// any allowed function via `{ function, payload }`.
 pub fn agent_trigger_schema() -> AgentFunction {
@@ -245,6 +267,35 @@ mod tests {
         let p = CompiledPolicy::from(Some(&policy(&["*"], &["shell::*"])));
         assert!(p.allows("fs::read"));
         assert!(!p.allows("shell::run"));
+    }
+
+    #[test]
+    fn code_mode_policy_allows_the_coding_surface_only() {
+        let p = code_mode_policy();
+        assert_eq!(p.expose, ExposeMode::Native);
+        let c = CompiledPolicy::from(Some(&p));
+        for allowed in [
+            "coder::context",
+            "coder::read-file",
+            "coder::update-file",
+            "coder::search",
+            "shell::exec",
+            "shell::exec_bg",
+            "shell::kill",
+            "shell::status",
+        ] {
+            assert!(c.allows(allowed), "{allowed} must be allowed");
+        }
+        for denied in [
+            "engine::functions::list",
+            "harness::spawn",
+            "worker::add",
+            "shell::fs::rm",
+            "shell::list",
+            "state::set",
+        ] {
+            assert!(!c.allows(denied), "{denied} must be denied");
+        }
     }
 
     use crate::types::content::ContentBlock;

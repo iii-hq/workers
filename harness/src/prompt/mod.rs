@@ -32,8 +32,13 @@ pub struct SystemPromptOpts<'a> {
 }
 
 /// Build the canonical identity prompt for a provider, optionally prefixed with
-/// a mode paragraph.
+/// a mode paragraph. Code mode is the exception: it REPLACES the mesh identity
+/// with the coding identity — the mesh prompt documents an `agent_trigger`
+/// surface that does not exist under native exposure.
 pub fn build_system_prompt(opts: SystemPromptOpts<'_>) -> String {
+    if opts.mode == Some(Mode::Code) {
+        return variants::CODE.to_string();
+    }
     let identity = select_identity_prompt(opts.provider);
     match opts.mode {
         Some(mode) => format!("{}\n\n{}", mode::paragraph(mode), identity),

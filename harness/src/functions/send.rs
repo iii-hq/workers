@@ -237,6 +237,12 @@ pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, Har
 
 fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
+    // Code mode without an explicit policy gets the curated coding surface
+    // (natively exposed); an explicit caller policy always wins.
+    let functions = match (opts.mode, opts.functions) {
+        (Some(Mode::Code), None) => Some(crate::policy::code_mode_policy()),
+        (_, functions) => functions,
+    };
     TurnOptions {
         model: req.model.clone(),
         provider: req.provider.clone(),
@@ -250,7 +256,7 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
         thinking_level: opts.thinking_level,
         output: opts.output.unwrap_or_default(),
-        functions: opts.functions,
+        functions,
         metadata: opts.metadata,
         max_validation_retries: cfg.max_validation_retries,
     }
@@ -315,6 +321,7 @@ async fn seed_new(
         display_parent_session_id: None,
         spawned_by_subscription_id: None,
         reactive_depth: None,
+        env_context: None,
         result: None,
         result_error: None,
         validation_retries: 0,
@@ -367,6 +374,66 @@ mod tests {
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+    }
+
+    #[test]
+    fn build_options_code_mode_defaults_to_native_coding_policy() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "m".into(),
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                mode: Some(Mode::Code),
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req);
+        let functions = opts.functions.expect("code mode defaults a policy");
+        assert_eq!(
+            functions.expose,
+            crate::types::turn::ExposeMode::Native,
+            "code mode exposes tools natively"
+        );
+        let compiled = crate::policy::CompiledPolicy::from(Some(&functions));
+        assert!(compiled.allows("coder::update-file"));
+        assert!(compiled.allows("shell::exec"));
+        assert!(!compiled.allows("engine::functions::list"));
+        let prompt = opts.system_prompt.expect("built-in prompt");
+        assert!(prompt.contains("coding agent"));
+        assert!(!prompt.contains("NEVER invent function ids"));
+    }
+
+    #[test]
+    fn build_options_code_mode_explicit_policy_wins() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "m".into(),
+            provider: None,
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                mode: Some(Mode::Code),
+                functions: Some(FunctionPolicy {
+                    allow: vec!["coder::read-file".into()],
+                    deny: vec![],
+                    expose: crate::types::turn::ExposeMode::AgentTrigger,
+                }),
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req);
+        let functions = opts.functions.unwrap();
+        assert_eq!(functions.allow, vec!["coder::read-file".to_string()]);
+        assert_eq!(
+            functions.expose,
+            crate::types::turn::ExposeMode::AgentTrigger
+        );
     }
 
     #[test]

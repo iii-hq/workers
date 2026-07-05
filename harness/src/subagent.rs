@@ -128,7 +128,16 @@ async fn seed_child(
         .clone()
         .or_else(|| parent_record.and_then(|p| p.options.provider.clone()));
 
-    let requested_policy = req.options.as_ref().and_then(|o| o.functions.as_ref());
+    // Code mode without an explicit policy requests the curated coding
+    // surface; with a parent it still narrows through subset_policy below,
+    // so a code-mode child never escalates past its parent.
+    let code_default = (req.options.as_ref().and_then(|o| o.mode) == Some(prompt::Mode::Code))
+        .then(crate::policy::code_mode_policy);
+    let requested_policy = req
+        .options
+        .as_ref()
+        .and_then(|o| o.functions.as_ref())
+        .or(code_default.as_ref());
     let functions = match parent_record {
         Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested_policy),
         // Parentless (direct/CLI/trigger-fired) spawn: explicit options win;
@@ -247,6 +256,7 @@ async fn seed_child(
         },
         spawned_by_subscription_id: req.spawned_by_subscription_id.clone(),
         reactive_depth: req.reactive_depth,
+        env_context: None,
         result: None,
         result_error: None,
         validation_retries: 0,
@@ -311,6 +321,7 @@ mod tests {
             display_parent_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
+            env_context: None,
             result: None,
             result_error: None,
             validation_retries: 0,

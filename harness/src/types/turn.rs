@@ -203,6 +203,12 @@ pub struct TurnRecord {
     /// so `harness::react` can refuse chains past `MAX_REACTIVE_DEPTH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactive_depth: Option<u32>,
+    /// Rendered `<environment>` block for code mode, fetched from
+    /// `coder::context` at the turn's first generate step and reused for
+    /// every later step of the turn. Empty string = fetch failed (don't
+    /// retry within this turn); `None` = not fetched yet / not code mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +289,7 @@ mod tests {
             display_parent_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
+            env_context: None,
             result: None,
             result_error: None,
             validation_retries: 0,

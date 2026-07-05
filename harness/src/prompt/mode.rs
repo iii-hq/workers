@@ -11,6 +11,12 @@ pub enum Mode {
     Plan,
     Ask,
     Agent,
+    // Coding session: native tool exposure over the coder/shell surface.
+    // Unlike the other modes this REPLACES the mesh identity prompt with
+    // the coding identity (`prompts/code.txt`) — `paragraph` is unused.
+    // (Plain comment on purpose: a doc comment would split the wire
+    // schema's flat enum into a oneOf.)
+    Code,
 }
 
 pub fn paragraph(mode: Mode) -> &'static str {
@@ -27,5 +33,8 @@ pub fn paragraph(mode: Mode) -> &'static str {
         Mode::Agent => {
             "You are operating in agent mode: use `agent_trigger` autonomously to satisfy the request. Stop when you have a final answer or hit an irrecoverable error."
         }
+        // Never prepended: `build_system_prompt` returns the code identity
+        // outright for this mode. Kept exhaustive for the compiler.
+        Mode::Code => "",
     }
 }

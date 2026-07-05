@@ -383,3 +383,44 @@ fn extract_directory_ids(text: &str) -> Vec<String> {
     }
     ids
 }
+
+#[test]
+fn code_mode_replaces_mesh_identity() {
+    let out = build_system_prompt(SystemPromptOpts {
+        mode: Some(Mode::Code),
+        provider: "anthropic",
+    });
+    assert_eq!(out, variants::CODE);
+    assert!(out.contains("coding agent"));
+    // The mesh doctrine must NOT leak into code mode: native exposure has
+    // no agent_trigger wrapper and no discovery step.
+    assert!(!out.contains("NEVER invent function ids"));
+    assert!(!out.contains("engine::functions::list"));
+}
+
+#[test]
+fn code_mode_is_provider_agnostic() {
+    for provider in ["anthropic", "openai", "kimi", "unknown", ""] {
+        assert_eq!(
+            build_system_prompt(SystemPromptOpts {
+                mode: Some(Mode::Code),
+                provider,
+            }),
+            variants::CODE,
+            "provider {provider:?}"
+        );
+    }
+}
+
+#[test]
+fn code_mode_enrich_appends_caller_prompt() {
+    let out = resolve_system_prompt(
+        Some("project rules".into()),
+        SystemPromptStrategy::Enrich,
+        Some(Mode::Code),
+        Some("anthropic"),
+    )
+    .unwrap();
+    assert!(out.starts_with(variants::CODE));
+    assert!(out.ends_with("project rules"));
+}
