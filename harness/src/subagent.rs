@@ -332,8 +332,24 @@ async fn seed_child_with_root(
         None => session.create(None, linkage.as_ref()).await?,
     };
 
-    // The task is the child's opening user message.
-    let task = normalize_message(req.task.clone())?;
+    // The task is the child's opening user message. A worktree-isolated
+    // child gets an explicit commit instruction: its code prompt forbids
+    // commits, but committing to the worktree branch is exactly how its
+    // work reaches the parent (clean-only removal + `git merge wt/<name>`).
+    let mut task = normalize_message(req.task.clone())?;
+    if fs_root_override.is_some() {
+        if let AgentMessage::User(user) = &mut task {
+            user.content.push(ContentBlock::text(
+                "[isolation] You are working in a git worktree dedicated to \
+                 this task, on its own branch. When your work is complete and \
+                 verified, COMMIT it (git add -A && git commit -m \"<what you \
+                 did>\" via shell::exec) — this is the sanctioned exception to \
+                 the no-commit rule: your branch is how the work reaches the \
+                 agent that spawned you, and an uncommitted worktree cannot be \
+                 merged. Do not push.",
+            ));
+        }
+    }
     session
         .append(&child_session_id, &task, None, None, None)
         .await?;
