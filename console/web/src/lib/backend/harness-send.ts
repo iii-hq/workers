@@ -37,8 +37,12 @@ export type HarnessOutputContract =
   | { type: 'text' }
   | { type: 'json'; schema?: unknown }
 
-/** Operating mode — the harness prepends a short paragraph before the identity prompt. */
-export type HarnessSendMode = 'plan' | 'ask' | 'agent'
+/**
+ * Operating mode — the harness prepends a short paragraph before the identity
+ * prompt. `code` instead swaps in the coding identity and, when no explicit
+ * `functions` policy is sent, defaults to the native coding toolset.
+ */
+export type HarnessSendMode = 'plan' | 'ask' | 'agent' | 'code'
 
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {

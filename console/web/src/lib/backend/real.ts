@@ -211,7 +211,9 @@ async function* realStream(
       session: { metadata: { surface: 'console' } },
       options: {
         mode,
-        functions: functionPolicy,
+        // Code mode omits `functions` so the harness applies its curated
+        // native coding policy; other modes keep the gate-configured surface.
+        ...(mode === 'code' ? {} : { functions: functionPolicy }),
         ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
         metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
       },

@@ -1,4 +1,4 @@
-export type Mode = 'plan' | 'ask' | 'agent'
+export type Mode = 'plan' | 'ask' | 'agent' | 'code'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
 export const CATALOG_MODEL_KEY_SEP = '::' as const
@@ -15,6 +15,7 @@ export const MODES: { id: Mode; label: string }[] = [
   { id: 'plan', label: 'plan' },
   { id: 'ask', label: 'ask' },
   { id: 'agent', label: 'agent' },
+  { id: 'code', label: 'code' },
 ]
 
 export const DEFAULT_MODE: Mode = 'agent'
