@@ -87,3 +87,45 @@ async fn context_caps_oversized_instruction_file() {
     assert!(out.instruction_files[0].truncated);
     assert_eq!(out.instruction_files[0].content.len(), 16 * 1024);
 }
+
+#[tokio::test]
+async fn context_honors_fs_scope_root() {
+    let tmp = tempdir().unwrap();
+    let jail = tmp.path();
+    let proj = jail.join("proj");
+    std::fs::create_dir(&proj).unwrap();
+    git(&proj, &["init", "-b", "work"]);
+    std::fs::write(proj.join("AGENTS.md"), "scoped conventions\n").unwrap();
+    git(&proj, &["add", "."]);
+    git(&proj, &["commit", "-m", "scoped seed"]);
+
+    let (r, c) = make(jail.to_path_buf());
+    // Mirror the registration path: the harness stamps fs_scope and the
+    // wrapper widens the resolver with session_scoped before handling.
+    let scope = proj.to_string_lossy().to_string();
+    let scoped = r.session_scoped(Some(&scope), None);
+    let out = context_handle(
+        scoped,
+        c,
+        ContextInput {
+            fs_scope: Some(shell::fs::FsScope {
+                root: scope,
+                grants: vec![],
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        out.primary_root.ends_with("/proj"),
+        "effective root is the fs_scope root, got {}",
+        out.primary_root
+    );
+    let git_ctx = out.git.expect("scoped root is a git repo");
+    assert_eq!(git_ctx.branch, "work");
+    assert_eq!(out.instruction_files.len(), 1);
+    assert!(out.instruction_files[0]
+        .content
+        .contains("scoped conventions"));
+}

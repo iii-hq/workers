@@ -44,8 +44,10 @@ fn example_context_input() -> serde_json::Value {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ContextOutput {
-    /// The primary allowed root — relative paths in every `coder::*` call
-    /// resolve against this directory.
+    /// The effective root for this call — the session's working directory
+    /// when the call carries a filesystem scope, else the primary allowed
+    /// root. Relative paths in `coder::*` calls resolve against it, and the
+    /// git state and instruction files below describe it.
     pub primary_root: String,
     /// Canonical absolute paths of all allowed roots, primary first.
     pub base_paths: Vec<String>,
@@ -93,15 +95,25 @@ pub struct InstructionFile {
 pub async fn handle(
     resolver: Arc<PathResolver>,
     _cfg: Arc<CoderConfig>,
-    _req: ContextInput,
+    req: ContextInput,
 ) -> Result<ContextOutput, String> {
-    let primary = resolver.base_root().to_path_buf();
+    // The effective root is the call's fs_scope root when the harness
+    // stamped one (the turn's working directory) — the configured primary
+    // only when the call is unscoped. session_root canonicalizes and
+    // confines it to the allowed roots, exactly like resolve_in.
+    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref()).map(str::to_string);
+    let primary = scope_root
+        .as_deref()
+        .and_then(|r| resolver.session_root(r))
+        .unwrap_or_else(|| resolver.base_root().to_path_buf());
     let git = git_context(&primary).await;
     let resolver_for_files = resolver.clone();
-    let instruction_files =
-        tokio::task::spawn_blocking(move || read_instruction_files(&resolver_for_files))
-            .await
-            .map_err(|e| format!("context task join failed: {e}"))?;
+    let files_scope = scope_root.clone();
+    let instruction_files = tokio::task::spawn_blocking(move || {
+        read_instruction_files(&resolver_for_files, files_scope.as_deref())
+    })
+    .await
+    .map_err(|e| format!("context task join failed: {e}"))?;
 
     Ok(ContextOutput {
         primary_root: primary.display().to_string(),
@@ -164,11 +176,15 @@ async fn git_context(root: &Path) -> Option<GitContext> {
     })
 }
 
-fn read_instruction_files(resolver: &PathResolver) -> Vec<InstructionFile> {
+fn read_instruction_files(
+    resolver: &PathResolver,
+    scope_root: Option<&str>,
+) -> Vec<InstructionFile> {
     let mut out = Vec::new();
     for name in INSTRUCTION_FILE_NAMES {
-        // Resolve through the jail so non-accessible globs keep applying.
-        let Ok(abs) = resolver.resolve(name) else {
+        // Resolve through the jail (relative to the effective root) so
+        // non-accessible globs keep applying.
+        let Ok(abs) = resolver.resolve_opt(scope_root, name) else {
             continue;
         };
         if resolver.is_non_accessible(&abs) {

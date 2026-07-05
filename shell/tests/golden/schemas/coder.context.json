@@ -116,7 +116,7 @@
         "$ref": "#/definitions/Platform"
       },
       "primary_root": {
-        "description": "The primary allowed root — relative paths in every `coder::*` call resolve against this directory.",
+        "description": "The effective root for this call — the session's working directory when the call carries a filesystem scope, else the primary allowed root. Relative paths in `coder::*` calls resolve against it, and the git state and instruction files below describe it.",
         "type": "string"
       }
     },
