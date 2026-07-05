@@ -346,7 +346,9 @@ fn child_settlement(
                     .unwrap_or_else(|| "child turn failed".to_string()),
             ),
         )),
-        TurnStatus::Cancelled => Some(("cancelled", None, Some("child turn cancelled".to_string()))),
+        TurnStatus::Cancelled => {
+            Some(("cancelled", None, Some("child turn cancelled".to_string())))
+        }
         TurnStatus::Running | TurnStatus::AwaitingFunctions => None,
     }
 }
