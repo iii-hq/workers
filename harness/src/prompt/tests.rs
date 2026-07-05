@@ -399,8 +399,20 @@ fn code_mode_replaces_mesh_identity() {
 }
 
 #[test]
-fn code_mode_is_provider_agnostic() {
-    for provider in ["anthropic", "openai", "kimi", "unknown", ""] {
+fn code_mode_selects_identity_by_family() {
+    // GPT family (openai + openai-codex) gets the apply_patch discipline.
+    for provider in ["openai", "openai-codex"] {
+        assert_eq!(
+            build_system_prompt(SystemPromptOpts {
+                mode: Some(Mode::Code),
+                provider,
+            }),
+            variants::CODE_GPT,
+            "provider {provider:?}"
+        );
+    }
+    // Everyone else keeps the str_replace discipline.
+    for provider in ["anthropic", "kimi", "unknown", ""] {
         assert_eq!(
             build_system_prompt(SystemPromptOpts {
                 mode: Some(Mode::Code),
@@ -410,6 +422,16 @@ fn code_mode_is_provider_agnostic() {
             "provider {provider:?}"
         );
     }
+}
+
+#[test]
+fn both_code_identities_carry_the_delegation_section() {
+    for body in [variants::CODE, variants::CODE_GPT] {
+        assert!(body.contains("# Delegating"));
+        assert!(body.contains("isolation: \"worktree\""));
+    }
+    assert!(variants::CODE_GPT.contains("coder::apply-patch"));
+    assert!(variants::CODE.contains("str_replace"));
 }
 
 #[test]

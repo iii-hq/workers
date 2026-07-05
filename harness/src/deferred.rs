@@ -46,15 +46,33 @@ pub async fn resolve(
         "deliver" => {
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+            let mut content = req
+                .content
+                .clone()
+                .unwrap_or_else(|| vec![ContentBlock::text("")]);
+            let mut details = req.details.clone().unwrap_or(Value::Null);
+            // Worktree-isolated child: clean up (clean-only — dirty trees
+            // survive) and tell the parent where the child's work landed.
+            if let Some(wt) = &checkpoint.worktree {
+                let removal = crate::subagent::remove_child_worktree(deps, &cfg, &record, wt).await;
+                content.push(ContentBlock::text(worktree_note(wt, removal.as_ref())));
+                if let Value::Object(map) = &mut details {
+                    map.insert(
+                        "worktree".to_string(),
+                        json!({
+                            "path": wt.path,
+                            "branch": wt.branch,
+                            "removal": removal,
+                        }),
+                    );
+                }
+            }
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
                 function_id,
-                content: req
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| vec![ContentBlock::text("")]),
-                details: req.details.clone().unwrap_or(Value::Null),
+                content,
+                details,
                 is_error: req.is_error.unwrap_or(false),
                 timestamp: AgentMessage::now_ms(),
             });
@@ -264,6 +282,50 @@ async fn find_call_arguments(
 /// Resolve a parked parent call from a finishing child (harness.md §
 /// Sub-agents). `completed` delivers the child's result; `failed`/`cancelled`
 /// deliver an `is_error`.
+/// Human/model-facing summary of a worktree-isolated child's workspace
+/// disposition, appended to the parent's function result.
+fn worktree_note(wt: &crate::types::turn::WorktreeRef, removal: Option<&Value>) -> String {
+    let Some(v) = removal else {
+        return format!(
+            "[worktree] cleanup failed; the child's worktree may remain at \
+             {} (branch {})",
+            wt.path, wt.branch
+        );
+    };
+    let dirty = v.get("dirty").and_then(Value::as_bool).unwrap_or(false);
+    let removed = v.get("removed").and_then(Value::as_bool).unwrap_or(false);
+    let branch_deleted = v
+        .get("branch_deleted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if dirty {
+        format!(
+            "[worktree] the child left uncommitted changes at {} — inspect \
+             or commit them; the worktree was kept",
+            wt.path
+        )
+    } else if removed && branch_deleted {
+        format!(
+            "[worktree] the child made no unmerged commits; its worktree \
+             and branch {} were cleaned up",
+            wt.branch
+        )
+    } else if removed {
+        format!(
+            "[worktree] the child's commits are on branch {} — merge them \
+             with `git merge {}` at the repository root; the worktree was \
+             removed",
+            wt.branch, wt.branch
+        )
+    } else {
+        format!(
+            "[worktree] the child's worktree at {} was not removed (branch \
+             {})",
+            wt.path, wt.branch
+        )
+    }
+}
+
 pub async fn resolve_parent(
     deps: &Deps,
     parent: &crate::types::turn::ParentLink,
@@ -416,6 +478,7 @@ mod tests {
             } else {
                 None
             },
+            worktree: None,
             held_by: held_by.map(str::to_string),
             pending_timeout_ms: timeout_ms,
             pending_at: Some(pending_at),

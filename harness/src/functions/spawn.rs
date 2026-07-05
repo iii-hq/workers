@@ -40,6 +40,21 @@ pub struct SpawnOptions {
     /// Parent-side wait guard for this child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
+    /// Workspace isolation for the child. `worktree` gives it its own git
+    /// worktree (`.worktrees/<name>` on branch `wt/<name>` under the
+    /// parent's filesystem root) so parallel children never edit the same
+    /// tree; the parent merges `wt/<name>` when the child finishes.
+    /// Requires the parent turn to have a filesystem root inside a git
+    /// repository. Dispatch-path spawns only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<Isolation>,
+}
+
+/// Child workspace isolation modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    Worktree,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

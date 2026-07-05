@@ -56,7 +56,7 @@ fn short_uuid() -> String {
 }
 
 /// Keep ids filesystem/key safe: replace anything outside `[A-Za-z0-9_-]`.
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {

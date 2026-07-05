@@ -15,7 +15,7 @@ pub enum PromptFamily {
 pub fn prompt_family(provider: &str) -> PromptFamily {
     match provider {
         "anthropic" => PromptFamily::Anthropic,
-        "openai" => PromptFamily::Gpt,
+        "openai" | "openai-codex" => PromptFamily::Gpt,
         "kimi" => PromptFamily::Kimi,
         // No routed provider (router unreachable during provisioning): mirror the
         // router's seeded default_provider so the un-routed prompt matches what

@@ -482,6 +482,7 @@ pub async fn run_step(
                         held_by: Some(held_by),
                         child_session_id: None,
                         child_turn_id: None,
+                        worktree: None,
                     };
                     checkpoint_pending(&mut record, &call.id, call, &info);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -524,6 +525,7 @@ pub async fn run_step(
                     entry_id: None,
                     child_session_id: None,
                     child_turn_id: None,
+                    worktree: None,
                     held_by: None,
                     pending_timeout_ms: None,
                     pending_at: None,
@@ -569,6 +571,7 @@ pub async fn run_step(
                         held_by: Some(held_by),
                         child_session_id: None,
                         child_turn_id: None,
+                        worktree: None,
                     };
                     checkpoint_pending(&mut record, &call.id, call, &info);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -904,6 +907,7 @@ fn checkpoint_pending(
             entry_id: None,
             child_session_id: info.child_session_id.clone(),
             child_turn_id: info.child_turn_id.clone(),
+            worktree: info.worktree.clone(),
             held_by: info.held_by.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
@@ -923,6 +927,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             entry_id: Some(entry_id.to_string()),
             child_session_id: None,
             child_turn_id: None,
+            worktree: None,
             held_by: None,
             pending_timeout_ms: None,
             pending_at: None,

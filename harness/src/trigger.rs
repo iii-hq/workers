@@ -37,6 +37,8 @@ pub struct PendingInfo {
     pub held_by: Option<String>,
     pub child_session_id: Option<String>,
     pub child_turn_id: Option<String>,
+    /// The child's isolated worktree (spawn `isolation: "worktree"`).
+    pub worktree: Option<crate::types::turn::WorktreeRef>,
 }
 
 /// Run the trigger pipeline for one call. `function_id` is the unwrapped

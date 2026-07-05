@@ -115,6 +115,7 @@ pub fn code_mode_policy() -> FunctionPolicy {
             "shell::exec_bg",
             "shell::kill",
             "shell::status",
+            "harness::spawn",
         ]
         .into_iter()
         .map(String::from)
@@ -278,17 +279,20 @@ mod tests {
             "coder::context",
             "coder::read-file",
             "coder::update-file",
+            "coder::apply-patch",
+            "coder::worktree-add",
             "coder::search",
             "shell::exec",
             "shell::exec_bg",
             "shell::kill",
             "shell::status",
+            "harness::spawn",
         ] {
             assert!(c.allows(allowed), "{allowed} must be allowed");
         }
         for denied in [
             "engine::functions::list",
-            "harness::spawn",
+            "harness::send",
             "worker::add",
             "shell::fs::rm",
             "shell::list",

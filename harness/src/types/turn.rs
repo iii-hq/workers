@@ -137,6 +137,18 @@ pub enum CallState {
     Done,
 }
 
+/// A worktree-isolated child's workspace, recorded on the parent's call
+/// checkpoint so child completion can clean it up and report it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorktreeRef {
+    /// The `.worktrees/<name>` entry under the parent's filesystem root.
+    pub name: String,
+    /// Canonical absolute path of the worktree.
+    pub path: String,
+    /// The worktree's branch (`wt/<name>`).
+    pub branch: String,
+}
+
 /// One call's checkpoint on the turn record. `held_by` marks a `pre_trigger`
 /// hook hold; `child_*` marks a `harness::spawn` pending trigger.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -150,6 +162,10 @@ pub struct CallCheckpoint {
     pub child_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_turn_id: Option<String>,
+    /// Set when the child runs in an isolated git worktree
+    /// (`spawn options.isolation: "worktree"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -305,6 +321,7 @@ mod tests {
             entry_id: None,
             child_session_id: child.map(|s| s.to_string()),
             child_turn_id: child.map(|_| "t_child".to_string()),
+            worktree: None,
             held_by: None,
             pending_timeout_ms: None,
             pending_at: None,

@@ -72,14 +72,40 @@ pub async fn spawn_pending(
         ));
     }
 
+    // Worktree isolation: create the child's workspace BEFORE seeding it,
+    // so the child's very first step already runs jailed to it.
+    let worktree = match req.options.as_ref().and_then(|o| o.isolation) {
+        Some(crate::functions::spawn::Isolation::Worktree) => {
+            Some(create_child_worktree(deps, &cfg, parent, req.session_id.as_deref()).await?)
+        }
+        None => None,
+    };
+
     let parent_link = ParentLink {
         session_id: parent.session_id.clone(),
         turn_id: parent.turn_id.clone(),
         function_call_id: call_id.to_string(),
     };
-    let child = seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent))
-        .await
-        .map_err(|e| is_error(e.code(), e.to_string()))?;
+    let seeded = seed_child_with_root(
+        deps,
+        &cfg,
+        &req,
+        Some(&parent_link),
+        Some(parent),
+        worktree.as_ref().map(|w| w.path.as_str()),
+    )
+    .await;
+    let child = match seeded {
+        Ok(child) => child,
+        Err(e) => {
+            // Best-effort orphan cleanup: the worktree was created for a
+            // child that never came to exist.
+            if let Some(wt) = &worktree {
+                remove_child_worktree(deps, &cfg, parent, wt).await;
+            }
+            return Err(is_error(e.code(), e.to_string()));
+        }
+    };
 
     let pending_timeout_ms = req
         .options
@@ -92,7 +118,102 @@ pub async fn spawn_pending(
         held_by: None,
         child_session_id: Some(child.session_id),
         child_turn_id: Some(child.turn_id),
+        worktree,
     })
+}
+
+/// Create the isolated worktree for a spawn with `isolation: "worktree"`.
+/// The name derives from the caller-picked child session id (sanitized)
+/// or a fresh slug; the parent's filesystem root is the git repository.
+async fn create_child_worktree(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    parent: &TurnRecord,
+    child_session_id: Option<&str>,
+) -> Result<crate::types::turn::WorktreeRef, ResultData> {
+    let Some(root) = parent.options.filesystem_root().map(str::to_string) else {
+        return Err(is_error(
+            "harness/worktree_requires_fs_root",
+            "worktree isolation requires this turn to have a filesystem root \
+             (metadata.fs_scope.root) inside a git repository — spawn without \
+             isolation, or run in a session with a working directory"
+                .to_string(),
+        ));
+    };
+    let name = match child_session_id {
+        Some(id) => crate::ids::sanitize(id),
+        None => format!("child-{}", &crate::ids::new_session_id()[2..10]),
+    };
+    let grants =
+        crate::filesystem_grants::roots(&deps.iii, &parent.session_id, cfg.session_timeout_ms)
+            .await
+            .unwrap_or_default();
+    let args = crate::filesystem_scope::inject(
+        "coder::worktree-add",
+        json!({ "name": name }),
+        Some(&root),
+        &grants,
+    );
+    let engine = deps.engine().await;
+    match engine.dispatch("coder::worktree-add", args).await {
+        Ok(value) => {
+            let path = value.get("path").and_then(Value::as_str);
+            let branch = value.get("branch").and_then(Value::as_str);
+            match (path, branch) {
+                (Some(path), Some(branch)) => Ok(crate::types::turn::WorktreeRef {
+                    name,
+                    path: path.to_string(),
+                    branch: branch.to_string(),
+                }),
+                _ => Err(is_error(
+                    "harness/worktree_add_failed",
+                    format!("coder::worktree-add returned an unexpected shape: {value}"),
+                )),
+            }
+        }
+        Err(e) => Err(is_error(
+            "harness/worktree_add_failed",
+            format!(
+                "could not create the child's worktree: {} — spawn without \
+                 isolation, or fix the repository state",
+                e.message
+            ),
+        )),
+    }
+}
+
+/// Best-effort worktree removal (orphan cleanup / child completion).
+/// Failures are logged, never surfaced — the worktree is inert on disk.
+pub(crate) async fn remove_child_worktree(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    parent: &TurnRecord,
+    worktree: &crate::types::turn::WorktreeRef,
+) -> Option<Value> {
+    let root = parent.options.filesystem_root()?.to_string();
+    let grants =
+        crate::filesystem_grants::roots(&deps.iii, &parent.session_id, cfg.session_timeout_ms)
+            .await
+            .unwrap_or_default();
+    let args = crate::filesystem_scope::inject(
+        "coder::worktree-remove",
+        json!({ "name": worktree.name }),
+        Some(&root),
+        &grants,
+    );
+    let engine = deps.engine().await;
+    match engine.dispatch("coder::worktree-remove", args).await {
+        Ok(value) => Some(value),
+        Err(e) => {
+            tracing::warn!(
+                session_id = %parent.session_id,
+                worktree = %worktree.path,
+                error = %e.message,
+                "worktree cleanup failed; directory may remain"
+            );
+            None
+        }
+    }
 }
 
 /// Direct-call entry (a consumer starting a linked child). No parent linkage or
@@ -115,6 +236,19 @@ async fn seed_child(
     req: &SpawnRequest,
     parent: Option<&ParentLink>,
     parent_record: Option<&TurnRecord>,
+) -> Result<ChildIds, HarnessError> {
+    seed_child_with_root(deps, cfg, req, parent, parent_record, None).await
+}
+
+/// [`seed_child`] with an explicit filesystem root for the child (worktree
+/// isolation): the override replaces the inherited parent scope.
+async fn seed_child_with_root(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    req: &SpawnRequest,
+    parent: Option<&ParentLink>,
+    parent_record: Option<&TurnRecord>,
+    fs_root_override: Option<&str>,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
 
@@ -237,7 +371,10 @@ async fn seed_child(
                 .and_then(|o| o.output.clone())
                 .unwrap_or_default(),
             functions,
-            metadata: inherit_filesystem_scope(parent_record),
+            metadata: match fs_root_override {
+                Some(root) => Some(json!({ FS_SCOPE_KEY: { FS_SCOPE_ROOT_KEY: root } })),
+                None => inherit_filesystem_scope(parent_record),
+            },
             max_validation_retries: cfg.max_validation_retries,
         },
         calls: Default::default(),

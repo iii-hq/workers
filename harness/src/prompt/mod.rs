@@ -37,7 +37,10 @@ pub struct SystemPromptOpts<'a> {
 /// surface that does not exist under native exposure.
 pub fn build_system_prompt(opts: SystemPromptOpts<'_>) -> String {
     if opts.mode == Some(Mode::Code) {
-        return variants::CODE.to_string();
+        return match prompt_family(opts.provider) {
+            PromptFamily::Gpt => variants::CODE_GPT.to_string(),
+            _ => variants::CODE.to_string(),
+        };
     }
     let identity = select_identity_prompt(opts.provider);
     match opts.mode {

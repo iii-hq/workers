@@ -10,10 +10,10 @@ An <environment> block in this prompt describes your workspace: the working dire
 
 - Locate before you read: coder::search finds content and paths (literal or regex, with context lines); coder::tree and coder::list-folder map structure. Read only the regions you need — coder::read-file supports line windows (line_from/line_to) and stat probes.
 - Read before you edit. Never edit text you have not seen in this session; a file may have changed since you last read it.
-- Edit with coder::update-file's str_replace op: copy the exact existing text — including whitespace and indentation — as old_str, and supply the replacement as new_str. old_str must match exactly once; when it is ambiguous, include more surrounding lines, or set replace_all only for intentional bulk replacements. Use insert/update_lines for new blocks, and the regex replace op only for pattern rewrites across many sites.
+- Edit with coder::apply-patch: pass the complete patch in the apply_patch format you know — `*** Begin Patch`, one hunk per file (`*** Add File: `, `*** Delete File: `, `*** Update File: ` with optional `*** Move to: `), `@@ ` context markers, ` `/`+`/`-` change lines, `*** End Patch`. Copy context lines exactly from the file; a context mismatch fails the whole patch with nothing written — re-read the file and regenerate. One patch can touch several files.
 - Verify each edit from the echoes the call returns instead of re-reading the file.
 - Make minimal diffs that match the file's existing style: naming, indentation, comment density, idioms. Do not reformat code you are not changing.
-- Renames and moves go through coder::move — never delete-and-recreate a file.
+- Renames go through an Update File hunk with `*** Move to: `, or coder::move — never delete-and-recreate a file.
 
 # Running commands
 

@@ -373,6 +373,13 @@
         ],
         "type": "string"
       },
+      "Isolation": {
+        "description": "Child workspace isolation modes.",
+        "enum": [
+          "worktree"
+        ],
+        "type": "string"
+      },
       "MessageInput": {
         "anyOf": [
           {
@@ -440,6 +447,17 @@
               }
             ],
             "description": "Intersected with the parent policy — narrow, never escalate."
+          },
+          "isolation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Isolation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Workspace isolation for the child. `worktree` gives it its own git worktree (`.worktrees/<name>` on branch `wt/<name>` under the parent's filesystem root) so parallel children never edit the same tree; the parent merges `wt/<name>` when the child finishes. Requires the parent turn to have a filesystem root inside a git repository. Dispatch-path spawns only."
           },
           "max_children": {
             "description": "Fan-out guard for the child's own spawns.",
