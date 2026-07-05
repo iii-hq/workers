@@ -22,6 +22,7 @@ pub mod read_window;
 pub mod search;
 pub mod tree;
 pub mod update_file;
+pub mod worktree;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
@@ -136,6 +137,21 @@ const APPLY_PATCH_DESC: &str = "Apply a whole patch in the apply_patch (V4A) for
      root (coder::info lists them); for host paths outside the jail use \
      shell::fs::*.";
 
+const WORKTREE_ADD_ID: &str = "coder::worktree-add";
+const WORKTREE_ADD_DESC: &str = "Create an isolated git worktree at .worktrees/<name> under the \
+     effective root, on a new branch wt/<name> from the current HEAD. \
+     Used to give a sub-agent its own working copy so parallel edits \
+     never collide; the effective root must be inside a git work tree. \
+     Returns the worktree's canonical path and branch.";
+
+const WORKTREE_REMOVE_ID: &str = "coder::worktree-remove";
+const WORKTREE_REMOVE_DESC: &str =
+    "Remove the git worktree at .worktrees/<name> under the effective \
+     root. Clean-only: a worktree with uncommitted changes is left in \
+     place and reported dirty. The wt/<name> branch is deleted only \
+     when fully merged — unmerged work survives for the caller to \
+     merge (e.g. git merge wt/<name> via shell::exec).";
+
 const CREATE_FILE_ID: &str = "coder::create-file";
 const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
      \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
@@ -244,6 +260,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
             APPLY_PATCH_ID,
             APPLY_PATCH_DESC,
         ),
+        spec::<worktree::WorktreeAddInput, worktree::WorktreeAddOutput>(
+            WORKTREE_ADD_ID,
+            WORKTREE_ADD_DESC,
+        ),
+        spec::<worktree::WorktreeRemoveInput, worktree::WorktreeRemoveOutput>(
+            WORKTREE_REMOVE_ID,
+            WORKTREE_REMOVE_DESC,
+        ),
         spec::<create_file::CreateFileInput, create_file::CreateFileOutput>(
             CREATE_FILE_ID,
             CREATE_FILE_DESC,
@@ -279,6 +303,10 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     register_update_file(iii, cells.clone());
     registered += 1;
     register_apply_patch(iii, cells.clone());
+    registered += 1;
+    register_worktree_add(iii, cells.clone());
+    registered += 1;
+    register_worktree_remove(iii, cells.clone());
     registered += 1;
     register_create_file(iii, cells.clone());
     registered += 1;
@@ -417,6 +445,48 @@ fn register_apply_patch(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(APPLY_PATCH_DESC),
+    );
+}
+
+fn register_worktree_add(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        WORKTREE_ADD_ID,
+        RegisterFunction::new_async(move |req: worktree::WorktreeAddInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                worktree::handle_add(resolver, cfg, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(WORKTREE_ADD_DESC),
+    );
+}
+
+fn register_worktree_remove(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        WORKTREE_REMOVE_ID,
+        RegisterFunction::new_async(move |req: worktree::WorktreeRemoveInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                worktree::handle_remove(resolver, cfg, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(WORKTREE_REMOVE_DESC),
     );
 }
 

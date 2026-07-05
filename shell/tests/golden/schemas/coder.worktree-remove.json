@@ -1,0 +1,57 @@
+{
+  "description": "Remove the git worktree at .worktrees/<name> under the effective root. Clean-only: a worktree with uncommitted changes is left in place and reported dirty. The wt/<name> branch is deleted only when fully merged — unmerged work survives for the caller to merge (e.g. git merge wt/<name> via shell::exec).",
+  "function_id": "coder::worktree-remove",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "name": "fix-auth-bug-k4x2"
+      }
+    ],
+    "properties": {
+      "name": {
+        "description": "Name of the worktree to remove (the `.worktrees/<name>` entry).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "title": "WorktreeRemoveInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "branch": {
+        "description": "The worktree's branch (`wt/<name>`). Kept when it holds unmerged commits; deleted with the worktree only when fully merged.",
+        "type": "string"
+      },
+      "branch_deleted": {
+        "description": "True when `branch` was deleted along with the worktree.",
+        "type": "boolean"
+      },
+      "dirty": {
+        "description": "True when removal was refused because the worktree has uncommitted changes — inspect or commit them, the path is untouched.",
+        "type": "boolean"
+      },
+      "path": {
+        "description": "Canonical absolute path of the (former) worktree.",
+        "type": "string"
+      },
+      "removed": {
+        "description": "True when the worktree directory was removed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "branch",
+      "branch_deleted",
+      "dirty",
+      "path",
+      "removed"
+    ],
+    "title": "WorktreeRemoveOutput",
+    "type": "object"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "description": "Create an isolated git worktree at .worktrees/<name> under the effective root, on a new branch wt/<name> from the current HEAD. Used to give a sub-agent its own working copy so parallel edits never collide; the effective root must be inside a git work tree. Returns the worktree's canonical path and branch.",
+  "function_id": "coder::worktree-add",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "name": "fix-auth-bug-k4x2"
+      }
+    ],
+    "properties": {
+      "name": {
+        "description": "Worktree name — letters, digits, `-` and `_` only. The worktree is created at `.worktrees/<name>` under the effective root, on a new branch `wt/<name>` from the current HEAD.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "title": "WorktreeAddInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "branch": {
+        "description": "The branch the worktree is on (`wt/<name>`), from the root's HEAD.",
+        "type": "string"
+      },
+      "path": {
+        "description": "Canonical absolute path of the new worktree.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "branch",
+      "path"
+    ],
+    "title": "WorktreeAddOutput",
+    "type": "object"
+  }
+}
