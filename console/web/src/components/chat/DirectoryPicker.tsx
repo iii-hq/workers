@@ -350,10 +350,13 @@ export function DirectoryPicker({
 
   const pickWorktree = useCallback(
     (wt: WorktreeInfo) => {
+      // onPick handles claim bookkeeping; the working dir itself goes
+      // through the same live-worker validation as every other selection,
+      // so the stored path is the worker-echoed canonical one.
       worktrees?.onPick(wt)
-      setOpen(false)
+      void validateAndSelect(wt.path)
     },
-    [worktrees],
+    [worktrees, validateAndSelect],
   )
 
   const q = query.trim().toLowerCase()
@@ -499,7 +502,7 @@ export function DirectoryPicker({
           </div>
 
           {/* validation/error (shown in the projects view; browse has its own) */}
-          {view === 'projects' && error ? (
+          {view !== 'browse' && error ? (
             <div className="flex items-start gap-1.5 border-b border-rule-2 px-3 py-2 text-[11px] text-ink-faint">
               <AlertCircle size={12} className="mt-0.5 shrink-0" aria-hidden />
               <span>{error}</span>

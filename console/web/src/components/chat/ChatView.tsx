@@ -788,10 +788,12 @@ export function ChatView({
     ],
   )
 
-  // Picking a worktree sets the workingDir to its path AND claims it for
-  // this session. Release any previous console claim first — the registry
-  // holds one claim per session, so it must be released before it is
-  // overwritten. The claim RPC is best-effort: a takeover failure (W210)
+  // Picking a worktree claims it for this session; the working dir itself
+  // arrives through the picker's shell-validated selection flow
+  // (onWorkingDirChange with the worker-echoed canonical path), like every
+  // other selection. Release any previous console claim first — the
+  // registry holds one claim per session, so it must be released before it
+  // is overwritten. The claim RPC is best-effort: a takeover failure (W210)
   // surfaces as a notice while the dir change still applies.
   const handlePickWorktree = useCallback(
     (wt: WorktreeInfo) => {
@@ -807,10 +809,9 @@ export function ChatView({
           ),
         )
       })
-      handleWorkingDirChange(wt.path)
       setWorktreeRefresh((t) => t + 1)
     },
-    [conversation.id, handleWorkingDirChange, onAppendMessage],
+    [conversation.id, onAppendMessage],
   )
 
   return (
