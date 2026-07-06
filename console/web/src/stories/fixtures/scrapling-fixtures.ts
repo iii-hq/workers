@@ -210,7 +210,13 @@ export const scraplingScreenshot = base(
   'scrapling::screenshot',
   { url: 'https://example.com/', fetcher: 'dynamic', full_page: false },
   wrapHarness({
-    image_base64: SCREENSHOT_PNG,
+    content: [
+      { type: 'image', mime: 'image/png', data: SCREENSHOT_PNG },
+      {
+        type: 'text',
+        text: 'screenshot of https://example.com/ — 320x200px, 1 tile(s), 1 KB',
+      },
+    ],
     mime: 'image/png',
     url: 'https://example.com/',
   }),

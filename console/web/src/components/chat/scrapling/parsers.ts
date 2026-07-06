@@ -153,8 +153,16 @@ export const screenshotRequestSchema = z.object({
 })
 export type ScreenshotRequest = z.infer<typeof screenshotRequestSchema>
 
+/** Harness content blocks: image tiles + a trailing text caption. */
+const screenshotBlockSchema = z.object({
+  type: z.string(),
+  mime: z.string().optional(),
+  data: z.string().optional(),
+  text: z.string().optional(),
+})
+
 export const screenshotResponseSchema = z.object({
-  image_base64: z.string(),
+  content: z.array(screenshotBlockSchema),
   mime: z.string().optional(),
   url: z.string().optional(),
 })

@@ -130,16 +130,23 @@ describe('query response', () => {
 })
 
 describe('screenshot response', () => {
-  it('parses the base64 payload', () => {
+  it('parses image tiles + caption content blocks', () => {
     const parsed = safeParseResponse(
       screenshotResponseSchema,
       wrapHarness({
-        image_base64: 'aGk=',
+        content: [
+          { type: 'image', mime: 'image/png', data: 'aGk=' },
+          {
+            type: 'text',
+            text: 'screenshot of https://example.com — 320x200px, 1 tile(s), 1 KB',
+          },
+        ],
         mime: 'image/png',
         url: 'https://example.com',
       }),
     )
-    expect(parsed?.image_base64).toBe('aGk=')
+    expect(parsed?.content[0]?.data).toBe('aGk=')
+    expect(parsed?.content[1]?.text).toContain('1 tile(s)')
   })
 })
 
