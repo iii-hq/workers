@@ -1,8 +1,9 @@
 # CI (.github/scripts/validate_worker.py) requires name/language/deploy/manifest
 # and reads the release version from `manifest`. `deploy: bundle` ships a source
 # tarball built by .github/workflows/_bundle.yml. The engine's bundle validator
-# rejects scripts.install/setup and runtime.base_image and executes only
-# scripts.start, so dependency bootstrap lives in scripts.start.
+# rejects scripts.setup and non-preset runtime.base_image; scripts.install runs
+# once inside the sandbox (guarded by the /var/.iii-prepared marker), then
+# scripts.start runs every boot.
 iii: v1
 name: scrapling
 language: python
@@ -28,8 +29,7 @@ resources:
   cpus: 2
 
 scripts:
-  # First boot installs deps + browsers (`scrapling install` downloads the
-  # Camoufox/Chromium used by stealthy-fetch / dynamic-fetch / screenshot);
-  # later boots are fast because pip and the browser cache persist in the
-  # sandbox.
-  start: "pip install -e . && scrapling install && python -m src.main"
+  # Runs once (first boot): deps + browsers (`scrapling install` downloads the
+  # Camoufox/Chromium used by stealthy-fetch / dynamic-fetch / screenshot).
+  install: "pip install -e . && scrapling install"
+  start: "python -m src.main"

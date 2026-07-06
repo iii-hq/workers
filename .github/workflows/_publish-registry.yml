@@ -191,11 +191,19 @@ jobs:
               ls -la "$stage_dir"
 
               start_cmd=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["scripts"]["start"])' "$stage_dir/iii.worker.yaml")
+              install_cmd=$(python3 -c 'import sys, yaml; print((yaml.safe_load(open(sys.argv[1])).get("scripts") or {}).get("install") or "")' "$stage_dir/iii.worker.yaml")
 
               worker_log="worker-$WORKER.log"
               workspace_root="$PWD"
-              echo "Starting local worker with: (cd $stage_dir && $start_cmd)"
               pushd "$stage_dir" >/dev/null
+              # scripts.install runs once at first boot in the engine
+              # sandbox; mirror that here (synchronously, so failures
+              # fail the release loudly).
+              if [[ -n "$install_cmd" ]]; then
+                echo "Installing worker deps with: (cd $stage_dir && $install_cmd)"
+                sh -c "$install_cmd"
+              fi
+              echo "Starting local worker with: (cd $stage_dir && $start_cmd)"
               sh -c "$start_cmd" > "$workspace_root/$worker_log" 2>&1 &
               echo "$!" > "$workspace_root/worker.pid"
               popd >/dev/null
