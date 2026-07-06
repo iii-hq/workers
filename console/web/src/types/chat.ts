@@ -38,7 +38,7 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
   'xhigh',
 ]
 
-export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'off'
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'medium'
 
 export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
 

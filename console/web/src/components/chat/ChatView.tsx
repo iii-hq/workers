@@ -38,6 +38,7 @@ import {
   type ThoughtMessage,
   type UserMessage,
 } from '@/types/chat'
+import { CheckpointsDialog } from './CheckpointsDialog'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
@@ -196,6 +197,7 @@ export function ChatView({
 
   const filesystemGrants = useFilesystemGrants(sessionId)
   const [filesystemDialogOpen, setFilesystemDialogOpen] = useState(false)
+  const [checkpointsDialogOpen, setCheckpointsDialogOpen] = useState(false)
   const handleManageFilesystemAccess = useCallback(() => {
     setFilesystemDialogOpen(true)
   }, [])
@@ -841,16 +843,31 @@ export function ChatView({
                   no working directory — using default workspace
                 </span>
               )}
-              <button
-                type="button"
-                onClick={handleManageFilesystemAccess}
-                className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
-              >
-                filesystem access
-                {filesystemGrants.grants.length > 0
-                  ? ` · ${filesystemGrants.grants.length}`
-                  : ''}
-              </button>
+              <div className="ml-auto flex shrink-0 items-center gap-3">
+                <button
+                  type="button"
+                  disabled={!conversation.workingDir}
+                  title={
+                    conversation.workingDir
+                      ? undefined
+                      : 'set a working directory first'
+                  }
+                  onClick={() => setCheckpointsDialogOpen(true)}
+                  className="lowercase text-ink-ghost transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-ink-ghost"
+                >
+                  checkpoints
+                </button>
+                <button
+                  type="button"
+                  onClick={handleManageFilesystemAccess}
+                  className="lowercase text-ink-ghost hover:text-ink transition-colors"
+                >
+                  filesystem access
+                  {filesystemGrants.grants.length > 0
+                    ? ` · ${filesystemGrants.grants.length}`
+                    : ''}
+                </button>
+              </div>
             </div>
           ) : null}
           <Composer
@@ -887,16 +904,24 @@ export function ChatView({
       </footer>
 
       {workingDirEnabled ? (
-        <FilesystemAccessDialog
-          open={filesystemDialogOpen}
-          onOpenChange={setFilesystemDialogOpen}
-          workingDir={conversation.workingDir ?? null}
-          grants={filesystemGrants.grants}
-          grantsSupported={filesystemGrants.supported}
-          onRevoke={filesystemGrants.revoke}
-          onRefreshGrants={filesystemGrants.refresh}
-          sessionBusy={streamingIndicator}
-        />
+        <>
+          <FilesystemAccessDialog
+            open={filesystemDialogOpen}
+            onOpenChange={setFilesystemDialogOpen}
+            workingDir={conversation.workingDir ?? null}
+            grants={filesystemGrants.grants}
+            grantsSupported={filesystemGrants.supported}
+            onRevoke={filesystemGrants.revoke}
+            onRefreshGrants={filesystemGrants.refresh}
+            sessionBusy={streamingIndicator}
+          />
+          <CheckpointsDialog
+            open={checkpointsDialogOpen}
+            onOpenChange={setCheckpointsDialogOpen}
+            workingDir={conversation.workingDir ?? null}
+            sessionBusy={streamingIndicator}
+          />
+        </>
       ) : null}
     </section>
   )
