@@ -101,7 +101,7 @@ sandbox:
 
 ### Zero-config default
 
-With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): jailed to `/tmp`, env forwarded, open exec with a catastrophic-only denylist (kept in sync by a unit test). If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed.
+With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): jailed to `/tmp`, env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed.
 
 Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The denylist still applies on top of either backend.
 
