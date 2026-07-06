@@ -21,6 +21,11 @@ import { pathToDomId } from './path'
  *     structured strings whose grammar conflicts with `${…}` (typing a
  *     date and seeing a piece of it become a pill would be jarring).
  *
+ * `format: "textarea"` renders the same pill editor in multiline mode —
+ * for long-form prose values (system prompts, message templates) where a
+ * single-line input is unusable. Pills and `${VAR}` templating work
+ * exactly as in the single-line editor.
+ *
  * Single-value-enum strings hit `EnumField` via `FieldDispatch`, so we
  * don't need a code branch here.
  */
@@ -61,6 +66,7 @@ export function StringField(props: FieldProps) {
             value={current}
             onChange={onChange}
             placeholder={placeholder}
+            multiline={format === 'textarea'}
             aria-label={label}
           />
         ) : (

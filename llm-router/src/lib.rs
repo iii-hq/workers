@@ -12,6 +12,7 @@ pub mod routing;
 pub mod settings;
 pub mod state;
 pub mod surface;
+pub mod system_prompt;
 pub mod testkit;
 pub mod triggers;
 pub mod types;

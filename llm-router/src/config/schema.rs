@@ -40,10 +40,30 @@ pub fn validate_custom_schema(schema: &Value) -> Result<(), RouterError> {
     Ok(())
 }
 
+/// Router-owned prompt knob present on every slice — injected here (not in
+/// default_provider_schema) so providers with a custom config_schema get it
+/// too. Nullable on purpose: the console renders `["string","null"]` as a
+/// set/unset toggle and only shows the text input when set.
+fn with_prompt_fields(schema: &Value) -> Value {
+    let mut schema = schema.clone();
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        props.entry("system_prompt").or_insert(json!({
+            "type": ["string", "null"],
+            "format": "textarea", // console renders a multi-line editor
+            "description": "Override the provider-declared identity prompt; unset serves the provider's default."
+        }));
+    }
+    schema
+}
+
 /// Router-owned fields + per-provider slices. `null` is admitted because a
 /// freshly registered entry holds null until the operator first writes —
 /// the engine validates the existing value against the schema on re-register.
 pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value {
+    let provider_schemas: BTreeMap<&String, Value> = provider_schemas
+        .iter()
+        .map(|(id, schema)| (id, with_prompt_fields(schema)))
+        .collect();
     json!({
         "type": ["object", "null"],
         "additionalProperties": false,
@@ -101,6 +121,27 @@ mod tests {
         assert!(s["properties"]["providers"]["properties"]
             .get("anthropic")
             .is_some());
+    }
+
+    #[test]
+    fn compose_injects_prompt_field_into_every_slice_including_custom() {
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert("anthropic".to_string(), default_provider_schema(&json!({})));
+        providers.insert(
+            "custom".to_string(),
+            json!({ "type": "object", "properties": { "region": { "type": "string" } } }),
+        );
+        let s = compose_entry_schema(&providers);
+        for id in ["anthropic", "custom"] {
+            let slice = &s["properties"]["providers"]["properties"][id]["properties"];
+            // nullable so the console renders a set/unset toggle
+            assert_eq!(slice["system_prompt"]["type"], json!(["string", "null"]), "{id}");
+        }
+        // pre-existing fields survive
+        assert_eq!(
+            s["properties"]["providers"]["properties"]["custom"]["properties"]["region"]["type"],
+            "string"
+        );
     }
 
     #[test]

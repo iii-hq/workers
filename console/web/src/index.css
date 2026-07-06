@@ -318,6 +318,16 @@
   margin: 0;
 }
 
+/* Textarea mode (`format: "textarea"`): wrap instead of scroll sideways,
+   cap the height so a 20k-char prompt doesn't swallow the form. */
+.workers-tab .env-lexical-editor--multiline {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: visible;
+  overflow-y: auto;
+  max-height: 24rem;
+}
+
 .workers-tab .env-lexical-placeholder {
   pointer-events: none;
   position: absolute;
@@ -329,6 +339,11 @@
   user-select: none;
   font-family: var(--font-sans);
   font-size: 15px;
+}
+
+.workers-tab .env-lexical-placeholder--multiline {
+  align-items: flex-start;
+  padding-top: 7px;
 }
 
 /* iii-styled <details> rows: hide the native marker, rotate our own chevron */

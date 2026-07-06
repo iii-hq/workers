@@ -1,12 +1,16 @@
 use super::{
-    build_system_prompt, prompt_family, resolve_system_prompt, select_identity_prompt, variants,
-    Mode, PromptFamily, SystemPromptOpts, SystemPromptStrategy,
+    build_system_prompt, resolve_system_prompt, variants, Mode, SystemPromptOpts,
+    SystemPromptStrategy,
 };
+
+/// Stand-in for a router-served (provider-declared or operator-overridden)
+/// identity prompt.
+const IDENTITY: &str = "You are an iii agent worker. TEST-VOICE identity.";
 
 fn default_prompt() -> String {
     build_system_prompt(SystemPromptOpts {
         mode: None,
-        provider: "",
+        identity: None,
     })
 }
 
@@ -17,7 +21,7 @@ fn resolve_non_empty_override_returns_verbatim() {
             Some("custom".into()),
             SystemPromptStrategy::Override,
             Some(Mode::Plan),
-            Some("anthropic")
+            Some(IDENTITY)
         ),
         Some("custom".into())
     );
@@ -25,21 +29,23 @@ fn resolve_non_empty_override_returns_verbatim() {
 
 #[test]
 fn resolve_empty_override_falls_through_to_builtin() {
-    let out = resolve_system_prompt(
-        Some(String::new()),
-        SystemPromptStrategy::Override,
-        None,
-        Some("anthropic"),
-    )
-    .expect("built-in prompt");
+    let out = resolve_system_prompt(Some(String::new()), SystemPromptStrategy::Override, None, None)
+        .expect("built-in prompt");
     assert!(out.contains("You are an iii agent worker"));
 }
 
 #[test]
-fn resolve_missing_override_builds_builtin() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, None, Some("openai"))
+fn resolve_missing_override_uses_fetched_identity_verbatim() {
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, None, Some(IDENTITY))
         .expect("built-in prompt");
-    assert!(out.contains("## Autonomy and persistence"));
+    assert_eq!(out, IDENTITY);
+}
+
+#[test]
+fn resolve_absent_identity_falls_back_to_embedded_default() {
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, None)
+        .expect("built-in prompt");
+    assert_eq!(out, variants::DEFAULT);
 }
 
 #[test]
@@ -48,11 +54,11 @@ fn resolve_enrich_appends_custom_to_builtin() {
         Some("Speak only in haiku.".into()),
         SystemPromptStrategy::Enrich,
         None,
-        Some("anthropic"),
+        Some(IDENTITY),
     )
     .expect("enriched prompt");
     // Built-in identity is preserved...
-    assert!(out.contains("You are an iii agent worker"));
+    assert!(out.starts_with(IDENTITY));
     // ...and the caller prompt is appended after it.
     assert!(out.ends_with("Speak only in haiku."));
 }
@@ -63,12 +69,12 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
         Some(String::new()),
         SystemPromptStrategy::Enrich,
         None,
-        Some("anthropic"),
+        Some(IDENTITY),
     )
     .expect("built-in prompt");
     let built_in = build_system_prompt(SystemPromptOpts {
         mode: None,
-        provider: "anthropic",
+        identity: Some(IDENTITY),
     });
     assert_eq!(out, built_in);
 }
@@ -92,11 +98,10 @@ fn fn_pill_syntax() {
 fn mesh_model() {
     let out = default_prompt();
     assert!(out.contains("worker → engine → worker"));
-    assert!(out.contains("direct worker-to-worker traffic"));
-    assert!(out.contains("function id is the ONLY contract"));
-    assert!(out.contains("load-balance automatically"));
-    assert!(out.contains("Triggers are the engine's push channel"));
-    assert!(out.contains("NEVER poll"));
+    assert!(out.contains("Workers never talk to each other directly"));
+    assert!(out.contains("The function id is the only contract"));
+    assert!(out.contains("workers registering the same id load-balance"));
+    assert!(out.contains("register a trigger; do not poll"));
 }
 
 #[test]
@@ -117,20 +122,18 @@ fn registry_allowlist_invariant() {
 #[test]
 fn contract_before_call() {
     let out = default_prompt();
-    assert!(out.contains("BEFORE you call ANY function"));
+    assert!(out.contains("BEFORE you call"));
     assert!(out.contains("engine::functions::info"));
-    assert!(out.contains("THIS IS THE API REFERENCE"));
+    assert!(out.contains("The answer is the API reference"));
 }
 
 #[test]
 fn function_id_required_example() {
     let out = default_prompt();
-    assert!(out.contains("`function_id` argument is REQUIRED"));
     assert!(out.contains("{ function_id: \"shell::fs::ls\" }"));
-    assert!(out.contains("metadata ABOUT the info function"));
-    assert!(out.contains("never introspect them"));
+    assert!(out.contains("metadata about the info function"));
+    assert!(out.contains("Never use a function id from memory"));
     assert!(out.contains("missing field"));
-    assert!(out.contains("takes NO id"));
 }
 
 #[test]
@@ -146,11 +149,10 @@ fn payload_wrong_right_example() {
 #[test]
 fn error_driven_correction() {
     let out = default_prompt();
-    assert!(out.contains("NEVER resend the same `function` + `payload` unchanged"));
     assert!(out.contains("Resending an identical failed call is never the fix."));
     assert!(out.contains("invalid_arguments"));
     assert!(out.contains("function_not_found"));
-    assert!(out.contains("timeout or an infrastructure/transport error that REPEATS"));
+    assert!(out.contains("A timeout or transport error that repeats"));
 }
 
 #[test]
@@ -229,7 +231,7 @@ fn prompt_injection_defense() {
 fn mode_plan_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Plan),
-        provider: "",
+        identity: None,
     });
     assert!(out.contains("operating in plan mode"));
     assert!(out.find("operating in plan mode") < out.find("You are an iii agent worker"));
@@ -239,7 +241,7 @@ fn mode_plan_prepends_before_identity() {
 fn mode_ask_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
-        provider: "",
+        identity: None,
     });
     assert!(out.contains("operating in ask mode"));
     assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
@@ -249,10 +251,20 @@ fn mode_ask_prepends_before_identity() {
 fn mode_agent_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Agent),
-        provider: "",
+        identity: None,
     });
     assert!(out.contains("operating in agent mode"));
     assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
+}
+
+#[test]
+fn mode_prepends_before_a_fetched_identity_too() {
+    let out = build_system_prompt(SystemPromptOpts {
+        mode: Some(Mode::Plan),
+        identity: Some(IDENTITY),
+    });
+    assert!(out.starts_with("You are operating in plan mode"));
+    assert!(out.ends_with(IDENTITY));
 }
 
 #[test]
@@ -265,96 +277,38 @@ fn omitting_mode_starts_with_identity() {
 }
 
 #[test]
-fn prompt_family_routing() {
-    assert_eq!(prompt_family("anthropic"), PromptFamily::Anthropic);
-    assert_eq!(prompt_family("openai"), PromptFamily::Gpt);
-    assert_eq!(prompt_family("kimi"), PromptFamily::Kimi);
-    assert_eq!(prompt_family("lmstudio"), PromptFamily::Default);
-    assert_eq!(prompt_family(""), PromptFamily::Anthropic);
-    assert_eq!(prompt_family("some-new-provider"), PromptFamily::Default);
-}
-
-#[test]
-fn gpt_variant_voice() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: None,
-        provider: "openai",
-    });
-    assert!(out.contains("## Autonomy and persistence"));
-    assert!(out.contains("Persist until the task is fully handled end-to-end"));
-}
-
-#[test]
-fn kimi_variant_voice() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: None,
-        provider: "kimi",
-    });
-    assert!(out.contains("# Prompt and Tool Use"));
-    assert!(out.contains("MUST NOT invent function ids"));
-}
-
-#[test]
 fn default_variant_step_by_step() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: None,
-        provider: "lmstudio",
-    });
+    let out = default_prompt();
     assert!(out.contains("# The steps for every action"));
     assert!(out.contains("Step 1."));
 }
 
+/// Invariants shared by every identity prompt. Provider-declared variants pin
+/// their own copies in each provider worker; the harness pins the fallback.
 #[test]
-fn anthropic_variant_when_provider_absent() {
-    let out = default_prompt();
-    assert!(out.contains("IMPORTANT: NEVER invent function ids"));
-}
-
-#[test]
-fn variant_invariants_shared() {
-    for (provider, label) in [
-        ("anthropic", "anthropic"),
-        ("openai", "gpt"),
-        ("kimi", "kimi"),
-        ("lmstudio", "default"),
-    ] {
-        let out = select_identity_prompt(provider);
-        assert!(out.starts_with("You are an iii agent worker."), "{label}");
-        assert!(out.contains("agent_trigger"), "{label}");
+fn default_variant_invariants() {
+    let out = variants::DEFAULT;
+    assert!(out.starts_with("You are an iii agent worker."));
+    assert!(out.contains("agent_trigger"));
+    assert!(out.contains("directory::registry::workers::list"));
+    assert!(out.contains("coder::move"));
+    assert!(out.contains("the FIRST line of worker code"));
+    assert!(out.contains("email::send"));
+    assert!(out.contains("I am installing the \"email\" worker"));
+    assert!(out.contains("<example>"));
+    for id in extract_directory_ids(out) {
         assert!(
-            out.contains("directory::registry::workers::list"),
-            "{label}"
+            id.starts_with("directory::registry::workers::"),
+            "bad directory id {id}"
         );
-        assert!(out.contains("coder::move"), "{label}");
-        assert!(out.contains("the FIRST line of worker code"), "{label}");
-        assert!(out.contains("email::send"), "{label}");
-        assert!(
-            out.contains("I am installing the \"email\" worker"),
-            "{label}"
-        );
-        assert!(out.contains("<example>"), "{label}");
-        for id in extract_directory_ids(out) {
-            assert!(
-                id.starts_with("directory::registry::workers::"),
-                "{label}: bad directory id {id}"
-            );
-        }
     }
 }
 
 #[test]
 fn capability_ladder_ordering() {
-    for provider in ["anthropic", "openai", "kimi", "lmstudio"] {
-        let out = select_identity_prompt(provider);
-        assert!(
-            out.find("directory::registry::workers::list") < out.find("registerWorker"),
-            "{provider}"
-        );
-        assert!(
-            out.find("coder::") < out.find("registerWorker"),
-            "{provider}"
-        );
-    }
+    let out = variants::DEFAULT;
+    assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
+    assert!(out.find("coder::") < out.find("registerWorker"));
 }
 
 #[test]

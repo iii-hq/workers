@@ -150,15 +150,21 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 ## System prompt
 
-When `options.system_prompt` is omitted (or empty), the harness assembles the
-engine-grounded identity prompt at send time: four provider-specific variants
-(`anthropic`, `openai` → gpt, `kimi`, and a step-by-step default for local
-runtimes) selected from `provider`, plus an optional `mode` (`plan` | `ask` |
-`agent`) that prepends a short operating-mode paragraph. A non-empty
-`system_prompt` is combined with the default prompt per
-`options.system_prompt_strategy`: `override` (default) uses it verbatim, while
-`enrich` appends it to the default prompt. Prompt bodies live in
-[`prompts/`](prompts/) and are tested in [`src/prompt/tests.rs`](src/prompt/tests.rs).
+The identity prompt is assembled once at send/spawn time. The harness asks the
+llm-router for the effective per-provider prompt (`router::system_prompt::get`
+with the request's `provider`): provider workers declare their own identity
+prompt at registration, and operators can override it per provider by setting
+`system_prompt` in the `llm-router` configuration entry (unset = provider
+default). When the router serves nothing — router absent, unknown provider,
+or no declared prompt — the harness falls back to its embedded step-by-step
+default prompt ([`prompts/default.txt`](prompts/default.txt)).
+
+An optional `mode` (`plan` | `ask` | `agent`) prepends a short operating-mode
+paragraph. A non-empty `options.system_prompt` is combined with the built-in
+prompt per `options.system_prompt_strategy`: `enrich` (default) appends it to
+the built-in prompt, while `override` uses it verbatim. Assembly is tested in
+[`src/prompt/tests.rs`](src/prompt/tests.rs); provider-specific prompt bodies
+live in each provider worker (`provider-*/prompts/identity.txt`).
 
 ## Custom trigger types
 

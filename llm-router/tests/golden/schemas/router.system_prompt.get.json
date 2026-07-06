@@ -1,0 +1,38 @@
+{
+  "description": "Effective identity prompt for {provider?} (default_provider when omitted): operator override when set, else provider-declared; null when absent.",
+  "function_id": "router::system_prompt::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of the `router::system_prompt::get` iii function. Unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
+    "properties": {
+      "provider": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "SystemPromptGetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of `router::system_prompt::get`: the effective identity prompt for the resolved provider — operator override (config slice `system_prompt`, when set) → provider-declared → null. Null also when the provider is unknown or no provider resolves; callers treat null as \"use your own default prompt\".",
+    "properties": {
+      "provider": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "system_prompt": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "SystemPromptGetResponse",
+    "type": "object"
+  }
+}

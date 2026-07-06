@@ -117,6 +117,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::PROVIDER_LIST_DESC),
     );
     iii.register_function(
+        surface::SYSTEM_PROMPT_GET_ID,
+        RegisterFunction::new_async(crate::system_prompt::make_system_prompt_get(
+            iii.clone(),
+            registry.clone(),
+        ))
+        .description(surface::SYSTEM_PROMPT_GET_DESC),
+    );
+    iii.register_function(
         surface::ROUTE_ID,
         RegisterFunction::new_async(crate::routing::make_route(
             registry.clone(),

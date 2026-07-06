@@ -121,7 +121,13 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     let session = deps.session().await;
 
     // Freeze the per-send options before moving the message out of `req`.
-    let options = build_options(&cfg, &req);
+    // The provider identity prompt is fetched once here and frozen with them.
+    let identity = deps
+        .router()
+        .await
+        .system_prompt_get(req.provider.as_deref())
+        .await;
+    let options = build_options(&cfg, &req, identity.as_deref());
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
@@ -235,7 +241,7 @@ pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, Har
     }
 }
 
-fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
+fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     TurnOptions {
         model: req.model.clone(),
@@ -244,7 +250,7 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
             opts.system_prompt,
             opts.system_prompt_strategy,
             opts.mode,
-            req.provider.as_deref(),
+            identity,
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -363,10 +369,16 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        // Router-served identity used when present…
+        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
-        assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+        assert!(prompt.ends_with("You are an iii agent worker. VOICE."));
+        // …embedded default when the router serves none.
+        let opts = build_options(&cfg, &req, None);
+        let prompt = opts.system_prompt.expect("built-in prompt");
+        assert!(prompt.contains("operating in agent mode"));
+        assert!(prompt.contains("# The steps for every action"));
     }
 
     #[test]
@@ -386,7 +398,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -406,9 +418,9 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
         let prompt = opts.system_prompt.expect("enriched prompt");
-        assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+        assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
         assert!(prompt.ends_with("Speak only in haiku."));
     }
 }

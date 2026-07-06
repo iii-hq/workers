@@ -175,6 +175,10 @@ Consumer-facing:
 - `router::models::get` — Look up one model's capabilities by `(provider, id)`.
 - `router::models::supports` — Check whether a model supports a capability.
 - `router::provider::list` — Enumerate declared providers and their configured/available state.
+- `router::system_prompt::get` — Effective identity prompt for `{provider?}` (`default_provider`
+  when omitted): operator override (config slice `system_prompt`, when set) → provider-declared →
+  `null`; `null` also when the provider is unknown. Callers (the harness) fall back to their own
+  default prompt on `null`.
 
 Provider protocol (router side):
 
@@ -425,6 +429,29 @@ type ProviderListResponse = { providers: ProviderInfo[] };
 upstream health probes and cooldowns are out of MVP scope; an `available` provider can still fail a
 request with a typed error.
 
+### `router::system_prompt::get`
+
+The effective per-provider identity prompt. Provider workers author and declare their prompt
+(`ProviderDeclaration.system_prompt`); operators may override it by setting the nullable
+`system_prompt` in that provider's config slice (unset/null = serve the provider's default; the
+nullable type renders as a set/unset toggle in the console, showing the text input only when set).
+Reads the configuration entry live per request (same freshness contract as
+`router::provider::resolve`). Never errors — a prompt lookup must not take a turn down.
+
+- Invocation: **sync**
+
+```typescript
+type SystemPromptGetRequest = { provider?: string }; // omitted → the configured default_provider
+type SystemPromptGetResponse = {
+  provider?: string;       // the resolved provider id; absent when none resolves
+  system_prompt?: string;  // override → declared → absent (caller falls back to its default)
+};
+```
+
+The harness calls this once at turn creation and composes the result locally (mode paragraph +
+identity + caller prompt per `system_prompt_strategy`); `router::chat` remains a verbatim
+pass-through for `system_prompt`.
+
 ### `router::provider::register`
 
 Called by a provider worker at startup. The router merges the declaration's `config_schema` (or a
@@ -443,6 +470,8 @@ type ProviderDeclaration = {
   config_schema?: Record<string, unknown>; // custom JSON Schema; omit for the standard one
   supports_model_listing?: boolean;
   models?: Model[];                 // static catalog slice; reconciled at registration
+  system_prompt?: string;           // identity prompt tailored to this provider's model family,
+                                    // served via router::system_prompt::get
 };
 type ProviderRegisterResponse = { ok: true; id: string };
 ```
