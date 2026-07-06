@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
-use redis::{aio::ConnectionManager, AsyncCommands, Client};
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -48,20 +48,27 @@ pub struct KvStoreAdapter {
 
 impl KvStoreAdapter {
     pub fn new(config: Option<Value>) -> Self {
-        Self { storage: KvStore::new(config) }
+        Self {
+            storage: KvStore::new(config),
+        }
     }
 }
 
 #[async_trait]
 impl StateAdapter for KvStoreAdapter {
     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
-        Ok(self.storage.set(scope.to_string(), key.to_string(), value).await)
+        Ok(self
+            .storage
+            .set(scope.to_string(), key.to_string(), value)
+            .await)
     }
     async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
         Ok(self.storage.get(scope.to_string(), key.to_string()).await)
     }
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
-        self.storage.delete(scope.to_string(), key.to_string()).await;
+        self.storage
+            .delete(scope.to_string(), key.to_string())
+            .await;
         Ok(())
     }
     async fn update(
@@ -70,7 +77,10 @@ impl StateAdapter for KvStoreAdapter {
         key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<StreamUpdateResult> {
-        Ok(self.storage.update(scope.to_string(), key.to_string(), ops).await)
+        Ok(self
+            .storage
+            .update(scope.to_string(), key.to_string(), ops)
+            .await)
     }
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
         Ok(self.storage.list(scope.to_string()).await)
@@ -625,7 +635,10 @@ impl StateAdapter for RedisAdapter {
 
         let old_value = old_value_str.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
 
-        Ok(StreamSetResult { old_value, new_value: value })
+        Ok(StreamSetResult {
+            old_value,
+            new_value: value,
+        })
     }
 
     async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
@@ -678,8 +691,9 @@ impl StateAdapter for RedisAdapter {
                     let old_value = if values[1].is_empty() {
                         None
                     } else {
-                        serde_json::from_str(&values[1])
-                            .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e))?
+                        serde_json::from_str(&values[1]).map_err(|e| {
+                            anyhow::anyhow!("Failed to deserialize old value: {}", e)
+                        })?
                     };
 
                     let new_value = serde_json::from_str(&values[2])
@@ -693,7 +707,11 @@ impl StateAdapter for RedisAdapter {
                         Vec::new()
                     };
 
-                    Ok(StreamUpdateResult { old_value, new_value, errors })
+                    Ok(StreamUpdateResult {
+                        old_value,
+                        new_value,
+                        errors,
+                    })
                 } else {
                     Err(anyhow::anyhow!(
                         "Unexpected return value from update script: expected 3 or 4 values, got {}",
@@ -702,7 +720,9 @@ impl StateAdapter for RedisAdapter {
                 }
             }
             Err(e) => Err(anyhow::anyhow!("Redis atomic update script failed: {}", e)),
-            _ => Err(anyhow::anyhow!("Unexpected return value from update script")),
+            _ => Err(anyhow::anyhow!(
+                "Unexpected return value from update script"
+            )),
         }
     }
 
@@ -799,10 +819,19 @@ mod tests {
     #[tokio::test]
     async fn kv_adapter_set_get_delete_update_list_roundtrip() {
         let a = KvStoreAdapter::new(None);
-        a.set("s", "k", serde_json::json!({"count": 0})).await.unwrap();
-        assert_eq!(a.get("s", "k").await.unwrap(), Some(serde_json::json!({"count": 0})));
+        a.set("s", "k", serde_json::json!({"count": 0}))
+            .await
+            .unwrap();
+        assert_eq!(
+            a.get("s", "k").await.unwrap(),
+            Some(serde_json::json!({"count": 0}))
+        );
         let updated = a
-            .update("s", "k", vec![iii_helpers::stream::UpdateOp::increment("count", 2)])
+            .update(
+                "s",
+                "k",
+                vec![iii_helpers::stream::UpdateOp::increment("count", 2)],
+            )
             .await
             .unwrap();
         assert_eq!(updated.new_value["count"], 2);

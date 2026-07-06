@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::Value;
 
 use crate::structs::StateEventData;
-use crate::trigger::{matches, TriggerTable};
+use crate::trigger::{TriggerTable, matches};
 
 /// Abstracts `iii.trigger` so fan-out is unit-testable without an engine.
 #[async_trait::async_trait]
@@ -55,7 +55,12 @@ pub async fn fan_out(
         guard
             .values()
             .filter(|t| matches(&t.config, &event.scope, &event.key))
-            .map(|t| (t.function_id.clone(), t.config.condition_function_id.clone()))
+            .map(|t| {
+                (
+                    t.function_id.clone(),
+                    t.config.condition_function_id.clone(),
+                )
+            })
             .collect()
     };
     if matched.is_empty() {
@@ -96,8 +101,8 @@ mod tests {
     use crate::structs::{StateEventData, StateEventType};
     use crate::trigger::{StateTriggerEntry, StateTriggerSpec};
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
     struct RecordingInvoker {
@@ -108,10 +113,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Invoker for RecordingInvoker {
-        async fn call(&self, function_id: &str, payload: serde_json::Value)
-            -> Result<serde_json::Value, String> {
+        async fn call(
+            &self,
+            function_id: &str,
+            payload: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
             if function_id.starts_with("cond::") {
-                return Ok(self.condition_result.clone().unwrap_or(serde_json::Value::Null));
+                return Ok(self
+                    .condition_result
+                    .clone()
+                    .unwrap_or(serde_json::Value::Null));
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.last.lock().await = Some((function_id.to_string(), payload));
@@ -132,7 +143,10 @@ mod tests {
 
     fn table(entries: Vec<(&str, StateTriggerEntry)>) -> crate::trigger::TriggerTable {
         Arc::new(tokio::sync::RwLock::new(
-            entries.into_iter().map(|(id, e)| (id.to_string(), e)).collect::<HashMap<_, _>>(),
+            entries
+                .into_iter()
+                .map(|(id, e)| (id.to_string(), e))
+                .collect::<HashMap<_, _>>(),
         ))
     }
 
@@ -185,11 +199,19 @@ mod tests {
         let t = table(vec![("t1", entry(None, None, Some("cond::c")))]);
         fan_out(blocked.clone(), &t, true, event("s", "k")).await;
         settle().await;
-        assert_eq!(blocked.calls.load(Ordering::SeqCst), 0, "explicit false must block");
+        assert_eq!(
+            blocked.calls.load(Ordering::SeqCst),
+            0,
+            "explicit false must block"
+        );
 
         let passed = Arc::new(RecordingInvoker::default()); // condition returns Null
         fan_out(passed.clone(), &t, true, event("s", "k")).await;
         settle().await;
-        assert_eq!(passed.calls.load(Ordering::SeqCst), 1, "null/no-result must pass");
+        assert_eq!(
+            passed.calls.load(Ordering::SeqCst),
+            1,
+            "null/no-result must pass"
+        );
     }
 }

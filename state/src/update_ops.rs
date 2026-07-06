@@ -316,10 +316,7 @@ fn missing_decrement_value(by: i64) -> Value {
     }
 }
 
-pub fn apply_update_ops(
-    old_value: Option<Value>,
-    ops: &[UpdateOp],
-) -> (Value, Vec<UpdateOpError>) {
+pub fn apply_update_ops(old_value: Option<Value>, ops: &[UpdateOp]) -> (Value, Vec<UpdateOpError>) {
     let mut using_missing_default = old_value.is_none();
     let mut current = old_value.unwrap_or_else(|| Value::Object(Map::new()));
     let mut errors: Vec<UpdateOpError> = Vec::new();

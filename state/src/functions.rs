@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 
 use crate::adapters::StateAdapter;
 use crate::config::StateConfig;
-use crate::events::{fan_out, Invoker};
+use crate::events::{Invoker, fan_out};
 use crate::structs::{
     StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput, StateGetInput,
     StateListGroupsInput, StateListGroupsResult, StateSetInput, StateUpdateInput,
@@ -47,7 +47,14 @@ fn event(
     old_value: Option<Value>,
     new_value: Value,
 ) -> StateEventData {
-    StateEventData { message_type: "state".to_string(), event_type, scope, key, old_value, new_value }
+    StateEventData {
+        message_type: "state".to_string(),
+        event_type,
+        scope,
+        key,
+        old_value,
+        new_value,
+    }
 }
 
 pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
@@ -60,7 +67,9 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 let ctx = ctx.clone();
                 async move {
                     if let Some(limit) = ctx.snapshot().await.max_value_bytes {
-                        let size = serde_json::to_vec(&input.value).map(|b| b.len()).unwrap_or(0);
+                        let size = serde_json::to_vec(&input.value)
+                            .map(|b| b.len())
+                            .unwrap_or(0);
                         if size > limit {
                             return Err(Error::Handler(format!(
                                 "VALUE_TOO_LARGE: value of {size} bytes exceeds the configured \
@@ -72,14 +81,22 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         .adapter
                         .set(&input.scope, &input.key, input.value.clone())
                         .await
-                        .map_err(|e| Error::Handler(format!("SET_ERROR: Failed to set value: {e}")))?;
+                        .map_err(|e| {
+                            Error::Handler(format!("SET_ERROR: Failed to set value: {e}"))
+                        })?;
                     let et = if result.old_value.is_none() {
                         StateEventType::Created
                     } else {
                         StateEventType::Updated
                     };
-                    ctx.emit(event(et, input.scope, input.key, result.old_value.clone(),
-                        result.new_value.clone())).await;
+                    ctx.emit(event(
+                        et,
+                        input.scope,
+                        input.key,
+                        result.old_value.clone(),
+                        result.new_value.clone(),
+                    ))
+                    .await;
                     Ok(result)
                 }
             })
@@ -114,14 +131,29 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateDeleteInput| {
                 let ctx = ctx.clone();
                 async move {
-                    let old = ctx.adapter.get(&input.scope, &input.key).await.map_err(|e| {
-                        Error::Handler(format!("GET_ERROR: Failed to get value before delete: {e}"))
-                    })?;
-                    ctx.adapter.delete(&input.scope, &input.key).await.map_err(|e| {
-                        Error::Handler(format!("DELETE_ERROR: Failed to delete value: {e}"))
-                    })?;
-                    ctx.emit(event(StateEventType::Deleted, input.scope, input.key,
-                        old.clone(), Value::Null)).await;
+                    let old = ctx
+                        .adapter
+                        .get(&input.scope, &input.key)
+                        .await
+                        .map_err(|e| {
+                            Error::Handler(format!(
+                                "GET_ERROR: Failed to get value before delete: {e}"
+                            ))
+                        })?;
+                    ctx.adapter
+                        .delete(&input.scope, &input.key)
+                        .await
+                        .map_err(|e| {
+                            Error::Handler(format!("DELETE_ERROR: Failed to delete value: {e}"))
+                        })?;
+                    ctx.emit(event(
+                        StateEventType::Deleted,
+                        input.scope,
+                        input.key,
+                        old.clone(),
+                        Value::Null,
+                    ))
+                    .await;
                     Ok(old)
                 }
             })
@@ -141,14 +173,22 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         .adapter
                         .update(&input.scope, &input.key, input.ops)
                         .await
-                        .map_err(|e| Error::Handler(format!("UPDATE_ERROR: Failed to update value: {e}")))?;
+                        .map_err(|e| {
+                            Error::Handler(format!("UPDATE_ERROR: Failed to update value: {e}"))
+                        })?;
                     let et = if result.old_value.is_none() {
                         StateEventType::Created
                     } else {
                         StateEventType::Updated
                     };
-                    ctx.emit(event(et, input.scope, input.key, result.old_value.clone(),
-                        result.new_value.clone())).await;
+                    ctx.emit(event(
+                        et,
+                        input.scope,
+                        input.key,
+                        result.old_value.clone(),
+                        result.new_value.clone(),
+                    ))
+                    .await;
                     Ok(result)
                 }
             })

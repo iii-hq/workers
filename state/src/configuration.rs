@@ -27,7 +27,7 @@ use std::time::Duration;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::boot::ApplyLock;
 use crate::config::StateConfig;
@@ -138,7 +138,9 @@ pub fn register_config_trigger(
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
-        .description("Internal: reload state configuration from the authoritative store on change."),
+        .description(
+            "Internal: reload state configuration from the authoritative store on change.",
+        ),
     );
 
     iii.register_trigger(RegisterTriggerInput {
@@ -178,17 +180,16 @@ async fn on_config_change(iii: &IIIClient, ctx: &Arc<StateCtx>, apply_lock: &App
     *ctx.config.write().await = Arc::new(new.clone());
 
     // TASK-REBUILD: respawn the adapter's save loop on a cadence change.
-    if cadence_changed(&old, &new) {
-        if let Err(e) = ctx
+    if cadence_changed(&old, &new)
+        && let Err(e) = ctx
             .adapter
             .reconfigure(&json!({ "save_interval_ms": new.save_interval_ms }))
             .await
-        {
-            tracing::warn!(
-                error = %e,
-                "state: save_interval_ms reconfigure failed; cadence unchanged"
-            );
-        }
+    {
+        tracing::warn!(
+            error = %e,
+            "state: save_interval_ms reconfigure failed; cadence unchanged"
+        );
     }
 
     // RESTART-ONLY: an adapter swap needs a fresh worker process; the
@@ -257,7 +258,10 @@ mod tests {
         let b = cfg(json!({"save_interval_ms": 750}));
         assert!(cadence_changed(&a, &b));
         assert!(!cadence_changed(&a, &a));
-        assert!(!cadence_changed(&StateConfig::default(), &StateConfig::default()));
+        assert!(!cadence_changed(
+            &StateConfig::default(),
+            &StateConfig::default()
+        ));
     }
 
     #[test]
@@ -268,7 +272,8 @@ mod tests {
         assert!(!adapter_changed(&kv, &kv));
         // adapter-inner config change is also restart-tier (builtin parity:
         // `old.adapter != new.adapter` compares the whole entry).
-        let kv_file = cfg(json!({"adapter": {"name": "kv", "config": {"store_method": "file_based"}}}));
+        let kv_file =
+            cfg(json!({"adapter": {"name": "kv", "config": {"store_method": "file_based"}}}));
         assert!(adapter_changed(&kv, &kv_file));
     }
 }

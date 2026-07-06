@@ -38,15 +38,15 @@ pub type TriggerTable = Arc<RwLock<HashMap<String, StateTriggerEntry>>>;
 /// Scope/key pre-filter (port of state.rs `state_trigger_matches`): runs before
 /// any condition RPC, so a non-matching write costs nothing.
 pub fn matches(config: &StateTriggerSpec, event_scope: &str, event_key: &str) -> bool {
-    if let Some(scope) = &config.scope {
-        if scope != event_scope {
-            return false;
-        }
+    if let Some(scope) = &config.scope
+        && scope != event_scope
+    {
+        return false;
     }
-    if let Some(key) = &config.key {
-        if key != event_key {
-            return false;
-        }
+    if let Some(key) = &config.key
+        && key != event_key
+    {
+        return false;
     }
     true
 }
@@ -57,7 +57,9 @@ pub struct StateTriggerHandler {
 
 impl StateTriggerHandler {
     pub fn new() -> Self {
-        Self { triggers: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            triggers: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 }
 
@@ -75,7 +77,10 @@ impl TriggerHandler for StateTriggerHandler {
         // Builtin parity: duplicate id replaces silently (HashMap insert).
         self.triggers.write().await.insert(
             config.id,
-            StateTriggerEntry { config: spec, function_id: config.function_id },
+            StateTriggerEntry {
+                config: spec,
+                function_id: config.function_id,
+            },
         );
         Ok(())
     }
@@ -116,8 +121,12 @@ mod tests {
     #[tokio::test]
     async fn duplicate_id_replaces_silently_builtin_parity() {
         let h = StateTriggerHandler::new();
-        h.register_trigger(trigger_config("t1", serde_json::json!({"scope": "a"}))).await.unwrap();
-        h.register_trigger(trigger_config("t1", serde_json::json!({"scope": "b"}))).await.unwrap();
+        h.register_trigger(trigger_config("t1", serde_json::json!({"scope": "a"})))
+            .await
+            .unwrap();
+        h.register_trigger(trigger_config("t1", serde_json::json!({"scope": "b"})))
+            .await
+            .unwrap();
         let t = h.triggers.read().await;
         assert_eq!(t.len(), 1);
         assert_eq!(t["t1"].config.scope.as_deref(), Some("b"));
@@ -136,7 +145,9 @@ mod tests {
     #[tokio::test]
     async fn unregister_unknown_id_is_ok() {
         let h = StateTriggerHandler::new();
-        h.unregister_trigger(trigger_config("ghost", serde_json::Value::Null)).await.unwrap();
+        h.unregister_trigger(trigger_config("ghost", serde_json::Value::Null))
+            .await
+            .unwrap();
     }
 
     #[test]

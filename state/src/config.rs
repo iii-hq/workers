@@ -1,9 +1,9 @@
 //! Worker configuration. Port of the builtin's StateModuleConfig
 //! (engine/src/workers/state/config.rs) minus the `bridge` adapter branch.
 
+use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
 use schemars::schema::{InstanceType, Schema, SchemaObject};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -268,8 +268,14 @@ mod tests {
             .collect();
         names.sort_unstable();
         assert_eq!(names, vec!["kv", "redis"]);
-        assert_eq!(schema["properties"]["max_value_bytes"]["minimum"], json!(1.0));
-        assert_eq!(schema["properties"]["save_interval_ms"]["minimum"], json!(100.0));
+        assert_eq!(
+            schema["properties"]["max_value_bytes"]["minimum"],
+            json!(1.0)
+        );
+        assert_eq!(
+            schema["properties"]["save_interval_ms"]["minimum"],
+            json!(100.0)
+        );
         assert_eq!(schema["additionalProperties"], json!(false));
     }
 

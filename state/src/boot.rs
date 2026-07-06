@@ -7,12 +7,12 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterTriggerType};
 use tokio::sync::RwLock;
 
+use crate::TRIGGER_TYPE;
 use crate::adapters::{self, StateAdapter};
 use crate::config::StateConfig;
 use crate::events::{Invoker, SdkInvoker};
 use crate::functions::{self, ConfigCell, StateCtx};
 use crate::trigger::{StateTriggerHandler, StateTriggerSpec, TriggerTable};
-use crate::TRIGGER_TYPE;
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const BUILTIN_III_STATE_WORKER_ID: &str = "iii-state";
@@ -129,7 +129,9 @@ mod tests {
 
     #[test]
     fn empty_list_passes() {
-        assert!(!builtin_iii_state_active(&serde_json::json!({"workers": []})));
+        assert!(!builtin_iii_state_active(
+            &serde_json::json!({"workers": []})
+        ));
     }
 
     #[test]

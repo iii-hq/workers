@@ -7,9 +7,9 @@
 //! which returns `Result<Value, Error>`. `Value::Null` stands in for the
 //! engine's `None` ("condition function returned no result").
 
+use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
 use serde_json::Value;
 
 /// Evaluates a condition function against the provided data.
@@ -47,7 +47,7 @@ pub async fn check_condition(
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// Mirrors `check_condition`'s truthiness mapping without needing a live
     /// `IIIClient`: `null` (the "no result" case) and anything not exactly
