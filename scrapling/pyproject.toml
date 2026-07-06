@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # project is a self-dependency and breaks `pip install`. The iii worker name
 # (folder + iii.worker.yaml) is still `scrapling` — CI validates that, not this.
 name = "scrapling-worker"
-version = "0.2.1"
+version = "0.2.2"
 description = "Scrapling as an iii worker: HTTP / anti-bot / browser fetch + CSS/XPath/regex/adaptive extraction as scrapling::* functions."
 authors = [{ name = "iii" }]
 license = "Apache-2.0"
