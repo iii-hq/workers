@@ -9,4 +9,4 @@ description: Git worktree lifecycle for parallel agents — mint, claim, and tra
 dependencies:
   configuration: "^0.19.0"
   iii-state: "^0.19.0"
-  shell: "^0.6.1"
+  shell: "^0.7.0"

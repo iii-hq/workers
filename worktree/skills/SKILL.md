@@ -73,6 +73,8 @@ Landing never pushes to remotes; it moves local branches only.
   remove clean, unclaimed, expired worktrees (cron-bound, `{}` payload).
 - `worktree::land` — queue the rebase / test / fast-forward / cleanup
   pipeline; returns a `job_id` immediately.
+- `worktree::land-step` — internal queue consumer that executes land
+  phases; never call it directly (denied to agents).
 
 Errors carry stable `W###` codes; the ones worth branching on are `W210`
 (already claimed), `W220` (dirty), `W221` (unmerged work), `W401` (land
