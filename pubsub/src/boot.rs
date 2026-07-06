@@ -32,6 +32,13 @@ pub struct PubSubInput {
     pub data: Value,
 }
 
+/// Success result for `publish`.
+///
+/// This intentionally serializes as JSON `null` for builtin parity while still
+/// giving the SDK a concrete JsonSchema response type for registry publish.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PubSubPublishResponse;
+
 pub struct BootHandle {
     pub hub: Arc<Hub>,
     pub invoker: Arc<dyn Invoker>,
@@ -95,7 +102,7 @@ pub async fn start(iii: Arc<IIIClient>, config: PubSubConfig) -> anyhow::Result<
                     .await
                     .map_err(Error::Handler)?;
                 // Builtin returns Success(None) — a null result.
-                Ok::<_, Error>(Value::Null)
+                Ok::<_, Error>(PubSubPublishResponse)
             }
         })
         .description("Publishes an event"),
@@ -176,5 +183,15 @@ mod tests {
     #[test]
     fn missing_key_passes() {
         assert!(!builtin_iii_pubsub_active(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn publish_response_schema_is_typed_null() {
+        assert!(serde_json::to_value(PubSubPublishResponse)
+            .unwrap()
+            .is_null());
+
+        let schema = serde_json::to_value(schemars::schema_for!(PubSubPublishResponse)).unwrap();
+        assert_eq!(schema.get("type"), Some(&serde_json::json!("null")));
     }
 }
