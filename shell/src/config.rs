@@ -778,7 +778,7 @@ mod tests {
         for cmd in ["cargo", "git", "bash", "make", "node", "python3"] {
             assert!(
                 c.is_command_allowed(&[cmd.into()]).is_ok(),
-                "no allow policy must block {cmd}"
+                "no allow policy exists to block {cmd}"
             );
         }
         // The previously-blocked exec-escape (`env <cmd>`) is now permitted —
