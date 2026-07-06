@@ -93,14 +93,21 @@ impl Caller for RemoteCaller {
         timeout_ms: Option<u64>,
     ) -> Result<Value, BridgeError> {
         let client = self.cell.read().await.clone();
-        trigger(&client, function_id, payload, None, timeout_ms).await
+        trigger(&client, function_id, payload, None, timeout_ms, map_remote_error).await
     }
 
     async fn call_void(&self, function_id: &str, payload: Value) -> Result<(), BridgeError> {
         let client = self.cell.read().await.clone();
-        trigger(&client, function_id, payload, Some(TriggerAction::Void), None)
-            .await
-            .map(|_| ())
+        trigger(
+            &client,
+            function_id,
+            payload,
+            Some(TriggerAction::Void),
+            None,
+            map_remote_error,
+        )
+        .await
+        .map(|_| ())
     }
 }
 
@@ -118,13 +125,20 @@ impl Caller for LocalCaller {
         payload: Value,
         timeout_ms: Option<u64>,
     ) -> Result<Value, BridgeError> {
-        trigger(&self.iii, function_id, payload, None, timeout_ms).await
+        trigger(&self.iii, function_id, payload, None, timeout_ms, map_local_error).await
     }
 
     async fn call_void(&self, function_id: &str, payload: Value) -> Result<(), BridgeError> {
-        trigger(&self.iii, function_id, payload, Some(TriggerAction::Void), None)
-            .await
-            .map(|_| ())
+        trigger(
+            &self.iii,
+            function_id,
+            payload,
+            Some(TriggerAction::Void),
+            None,
+            map_local_error,
+        )
+        .await
+        .map(|_| ())
     }
 }
 
@@ -134,6 +148,7 @@ async fn trigger(
     payload: Value,
     action: Option<TriggerAction>,
     timeout_ms: Option<u64>,
+    map_err: fn(Error) -> BridgeError,
 ) -> Result<Value, BridgeError> {
     client
         .trigger(TriggerRequest {
@@ -143,12 +158,21 @@ async fn trigger(
             timeout_ms,
         })
         .await
-        .map_err(map_sdk_error)
+        .map_err(map_err)
 }
 
-/// Preserve real remote error bodies (the builtin's expose path forwarded the
-/// engine ErrorBody as-is, mod.rs:258-262); everything else becomes `bridge_error`.
-fn map_sdk_error(e: Error) -> BridgeError {
+/// Collapse every SDK error to `bridge_error`, matching the builtin's
+/// invoke/invoke_async/forward paths, which ALWAYS discard the real remote
+/// error body — including `Error::Remote` — behind a generic `bridge_error`
+/// (mod.rs:132-141, 179-186, 224-233).
+fn map_remote_error(e: Error) -> BridgeError {
+    BridgeError::bridge(e.to_string())
+}
+
+/// Preserve real remote error bodies (the builtin's expose path forwards the
+/// local function's `ErrorBody` untouched, mod.rs:256-263); everything else
+/// becomes `bridge_error`.
+fn map_local_error(e: Error) -> BridgeError {
     match e {
         Error::Remote {
             code,
@@ -223,7 +247,6 @@ pub async fn handle_expose(
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::Arc;
 
     /// Records the last call; returns a canned result or error.
     #[derive(Default)]
@@ -383,5 +406,50 @@ mod tests {
             iii_sdk::Error::Remote { code, .. } => assert_eq!(code, "bridge_error"),
             other => panic!("expected Error::Remote, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_remote_error_collapses_remote_error_to_bridge_error() {
+        let e = Error::Remote {
+            code: "validation_error".into(),
+            message: "bad input".into(),
+            stacktrace: Some("trace".into()),
+        };
+        let mapped = map_remote_error(e);
+        assert_eq!(
+            mapped.code, "bridge_error",
+            "builtin invoke/invoke_async/forward always collapse to bridge_error (mod.rs:132-141, 179-186, 224-233)"
+        );
+        assert_eq!(mapped.stacktrace, None);
+    }
+
+    #[test]
+    fn map_remote_error_collapses_non_remote_error_to_bridge_error() {
+        let mapped = map_remote_error(Error::Timeout);
+        assert_eq!(mapped.code, "bridge_error");
+        assert_eq!(mapped.stacktrace, None);
+    }
+
+    #[test]
+    fn map_local_error_preserves_remote_error_fields() {
+        let e = Error::Remote {
+            code: "validation_error".into(),
+            message: "bad input".into(),
+            stacktrace: Some("trace".into()),
+        };
+        let mapped = map_local_error(e);
+        assert_eq!(
+            mapped.code, "validation_error",
+            "builtin expose path forwards the local function's real error untouched (mod.rs:256-263)"
+        );
+        assert_eq!(mapped.message, "bad input");
+        assert_eq!(mapped.stacktrace.as_deref(), Some("trace"));
+    }
+
+    #[test]
+    fn map_local_error_collapses_non_remote_error_to_bridge_error() {
+        let mapped = map_local_error(Error::Timeout);
+        assert_eq!(mapped.code, "bridge_error");
+        assert_eq!(mapped.stacktrace, None);
     }
 }
