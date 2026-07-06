@@ -133,7 +133,30 @@ pub struct ProviderDeclaration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<Model>>, // static catalog slice; reconciled at registration
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>, // provider-authored identity prompt, served via router::system_prompt::get
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>, // self-reported; availability mapping only, never authorization
+}
+
+/// Input of the `router::system_prompt::get` iii function. Unknown fields
+/// (e.g. the engine-injected `_caller_worker_id`) are ignored.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SystemPromptGetRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>, // absent → the configured default_provider
+}
+
+/// Output of `router::system_prompt::get`: the effective identity prompt for
+/// the resolved provider — operator override (config slice `system_prompt`,
+/// when set) → provider-declared → null. Null also when the provider is
+/// unknown or no provider resolves; callers treat null as "use your own
+/// default prompt".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SystemPromptGetResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 /// registration_token: spec adaptation — the engine exposes no caller identity,

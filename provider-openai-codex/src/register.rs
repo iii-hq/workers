@@ -32,6 +32,9 @@ pub fn declaration() -> ProviderDeclaration {
         // Static, namespaced slice (the ChatGPT backend has no /v1/models).
         supports_model_listing: Some(false),
         models: Some(curated::static_models()),
+        // Identity prompt served to agents via router::system_prompt::get;
+        // operators can override or disable it in the llm-router config slice.
+        system_prompt: Some(include_str!("../prompts/identity.txt").to_string()),
         worker_id: Some("provider-openai-codex".into()),
     }
 }
@@ -144,4 +147,20 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
     tokio::spawn(declare_and_refresh(iii, http));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::declaration;
+
+    /// The declared identity prompt is the embedded prompts/identity.txt and
+    /// keeps the invariants the harness pins on its default prompt.
+    #[test]
+    fn declaration_ships_the_identity_prompt() {
+        let prompt = declaration().system_prompt.expect("declared prompt");
+        assert_eq!(prompt, include_str!("../prompts/identity.txt"));
+        assert!(prompt.starts_with("You are an iii agent worker."));
+        assert!(prompt.contains("agent_trigger"));
+        assert!(prompt.contains("## Autonomy and persistence"));
+    }
 }

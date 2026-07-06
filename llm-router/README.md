@@ -58,6 +58,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::models::get` | Fetch one model record (`null` when unknown). |
 | `router::models::supports` | Check one capability flag for one model. |
 | `router::provider::list` | Registered providers with `configured` / `available` status. |
+| `router::system_prompt::get` | Effective identity prompt for `{provider?}` (the configured `default_provider` when omitted): operator override when set → provider-declared → `null`. `null` also when the provider is unknown — callers fall back to their own default prompt. |
 
 Only the read surface is agent-callable (`router::models::list` / `get` /
 `supports`, `router::provider::list`); everything else is denied to in-run
@@ -88,7 +89,12 @@ from each registered provider's declaration:
 {
   "default_provider": "anthropic",
   "providers": {
-    "anthropic": { "api_key": "sk-…", "api_url": "https://api.anthropic.com/v1/messages", "max_tokens": 8192 }
+    "anthropic": {
+      "api_key": "sk-…",
+      "api_url": "https://api.anthropic.com/v1/messages",
+      "max_tokens": 8192,
+      "system_prompt": "optional override of the provider-declared identity prompt (unset = provider default)"
+    }
   },
   "routing_heuristics": [{ "pattern": "^gpt-", "provider": "openai" }],
   "settings": {
@@ -106,6 +112,11 @@ from each registered provider's declaration:
 | `idle_timeout_ms` | `120000` | Max silence between provider frames before the attempt is cut. |
 | `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame. |
 | `output_token_max` | `32000` | Ceiling on `max_output_tokens` forwarded to providers. |
+
+Per-provider slices additionally accept a nullable `system_prompt`: when set
+(non-empty), it overrides the provider-declared identity prompt served by
+`router::system_prompt::get`; unset/null serves the provider's default. Read
+live per request — no restart, no debounce.
 
 Pasting a key into a provider's slice is the whole onboarding flow: the
 router diffs the changed slice, debounces ~2 s, and kicks that provider's
@@ -187,6 +198,11 @@ A provider worker must:
 5. Map upstream failures to the shared `ErrorKind` taxonomy on its `error`
    frames. Transport retries (429 / 5xx / connect) are the router's job, not
    the provider's.
+
+Optionally, the declaration may carry a `system_prompt` — the identity prompt
+tailored to the provider's model family. The router stores it in the registry
+and serves it (unless the config slice sets an override) via
+`router::system_prompt::get`; the harness fetches it at turn creation.
 
 The first real provider implementing this protocol is
 [`provider-anthropic/`](../provider-anthropic/) — useful as a reference

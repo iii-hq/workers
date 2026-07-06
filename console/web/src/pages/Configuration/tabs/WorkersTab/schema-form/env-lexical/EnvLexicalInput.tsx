@@ -7,6 +7,7 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import {
+  $createLineBreakNode,
   $createParagraphNode,
   $createTextNode,
   $getRoot,
@@ -31,6 +32,13 @@ interface EnvLexicalInputProps {
   onChange: (next: string) => void
   placeholder?: string
   disabled?: boolean
+  /**
+   * Textarea mode for long-form values (`format: "textarea"`): Enter
+   * inserts a line break instead of being swallowed, text wraps, and the
+   * surface grows to several rows. Newlines round-trip as `\n` — the
+   * single paragraph gains `LineBreakNode`s, whose text content is `\n`.
+   */
+  multiline?: boolean
   /** Forwarded to the underlying content-editable surface. */
   'aria-label'?: string
 }
@@ -64,6 +72,7 @@ export function EnvLexicalInput({
   onChange,
   placeholder,
   disabled,
+  multiline,
   'aria-label': ariaLabel,
 }: EnvLexicalInputProps) {
   // Track the value we last emitted so we can detect external changes
@@ -95,9 +104,9 @@ export function EnvLexicalInput({
     <LexicalComposer initialConfig={initialConfig}>
       <div
         className={cn(
-          'relative w-full border border-rule bg-bg px-3 min-h-9 text-ink',
+          'relative w-full border border-rule bg-bg px-3 text-ink',
           'focus-within:border-ink transition-colors',
-          'flex items-center',
+          multiline ? 'min-h-36 flex items-start' : 'min-h-9 flex items-center',
           disabled && 'opacity-40 pointer-events-none',
         )}
       >
@@ -108,11 +117,19 @@ export function EnvLexicalInput({
               aria-label={ariaLabel}
               aria-placeholder={placeholder ?? ''}
               placeholder={
-                <div className="env-lexical-placeholder">
+                <div
+                  className={cn(
+                    'env-lexical-placeholder',
+                    multiline && 'env-lexical-placeholder--multiline',
+                  )}
+                >
                   {placeholder ?? ''}
                 </div>
               }
-              className="env-lexical-editor flex-1 py-[7px] outline-none"
+              className={cn(
+                'env-lexical-editor flex-1 py-[7px] outline-none',
+                multiline && 'env-lexical-editor--multiline',
+              )}
             />
           }
           ErrorBoundary={LexicalErrorBoundary}
@@ -120,7 +137,7 @@ export function EnvLexicalInput({
         <HistoryPlugin />
         <ClearEditorPlugin />
         <EnvPlaceholderTransformPlugin />
-        <SingleLinePlugin />
+        {!multiline && <SingleLinePlugin />}
         <EditablePlugin disabled={disabled} />
         <ChangePlugin
           onChange={(text) => {
@@ -216,6 +233,8 @@ function ExternalValueSyncPlugin({
  * One-shot initializer: clear the editor and rebuild a single paragraph
  * with text + env-placeholder pills based on the template string. Used
  * both at mount (via `initialConfig.editorState`) and on external resync.
+ * Newlines inside text segments become `LineBreakNode`s so multiline
+ * values render as lines and still round-trip to `\n` via getTextContent.
  */
 function seedEditorFromTemplate(editor: LexicalEditor, template: string) {
   const root = $getRoot()
@@ -223,9 +242,11 @@ function seedEditorFromTemplate(editor: LexicalEditor, template: string) {
   const paragraph = $createParagraphNode()
   for (const segment of parseTemplate(template)) {
     if (segment.kind === 'text') {
-      if (segment.text.length > 0) {
-        paragraph.append($createTextNode(segment.text))
-      }
+      const lines = segment.text.split('\n')
+      lines.forEach((line, i) => {
+        if (i > 0) paragraph.append($createLineBreakNode())
+        if (line.length > 0) paragraph.append($createTextNode(line))
+      })
     } else {
       paragraph.append(
         $createEnvPlaceholderNode(segment.variable, segment.defaultValue),

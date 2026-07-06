@@ -564,6 +564,84 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn system_prompt_get_resolves_declared_override_unset_and_default_provider() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, InitOptions::default());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    // a provider that declares an identity prompt (registry only; no stream fn needed)
+    let provider_iii = register_worker(&engine.url, InitOptions::default());
+    call(
+        &provider_iii,
+        "router::provider::register",
+        json!({ "id": "prompty", "system_prompt": "DECLARED IDENTITY" }),
+    )
+    .await
+    .expect("provider declared");
+
+    // declared prompt serves
+    let res = call(
+        &router_iii,
+        "router::system_prompt::get",
+        json!({ "provider": "prompty" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res["provider"], "prompty");
+    assert_eq!(res["system_prompt"], "DECLARED IDENTITY");
+
+    // unknown provider → resolved id, null prompt (caller falls back)
+    let res = call(
+        &router_iii,
+        "router::system_prompt::get",
+        json!({ "provider": "nope" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res["system_prompt"], Value::Null);
+
+    // operator override wins; default_provider resolves an absent provider
+    call(
+        &router_iii,
+        "configuration::set",
+        json!({ "id": "llm-router", "value": {
+            "default_provider": "prompty",
+            "providers": { "prompty": { "system_prompt": "OPERATOR OVERRIDE" } }
+        } }),
+    )
+    .await
+    .unwrap();
+    let res = call(&router_iii, "router::system_prompt::get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(res["provider"], "prompty");
+    assert_eq!(res["system_prompt"], "OPERATOR OVERRIDE");
+
+    // override unset (null, as the console's set/unset toggle writes) →
+    // back to the provider-declared default
+    call(
+        &router_iii,
+        "configuration::set",
+        json!({ "id": "llm-router", "value": {
+            "default_provider": "prompty",
+            "providers": { "prompty": { "system_prompt": null } }
+        } }),
+    )
+    .await
+    .unwrap();
+    let res = call(&router_iii, "router::system_prompt::get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(res["system_prompt"], "DECLARED IDENTITY");
+
+    provider_iii.shutdown();
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn registration_token_gates_takeover_resolve_and_reconcile() {
     let engine = engine_or_skip!();
 

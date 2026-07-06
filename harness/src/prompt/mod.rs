@@ -1,18 +1,19 @@
-//! System-prompt assembly: per-model identity prompts (prompt/*) plus optional
-//! mode paragraphs. Every variant is engine-grounded — the agent discovers
-//! capabilities from the live engine, installs registry workers when nothing
-//! fits, routes code-file work through `coder::*`, and fetches the iii.dev SDK
-//! reference before authoring workers.
+//! System-prompt assembly: a provider-served identity prompt (fetched from the
+//! llm-router at turn creation — providers declare it, operators may override
+//! or disable it in the llm-router config) with the embedded default prompt as
+//! fallback, plus optional mode paragraphs. The default is engine-grounded —
+//! the agent discovers capabilities from the live engine, installs registry
+//! workers when nothing fits, routes code-file work through `coder::*`, and
+//! fetches the iii.dev SDK reference before authoring workers.
 
-mod family;
 mod mode;
 mod variants;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use family::{identity_prompt, prompt_family, select_identity_prompt, PromptFamily};
 pub use mode::{paragraph, Mode};
+pub use variants::DEFAULT;
 
 /// How a caller-supplied system prompt combines with the built-in identity prompt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -28,13 +29,14 @@ pub enum SystemPromptStrategy {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemPromptOpts<'a> {
     pub mode: Option<Mode>,
-    pub provider: &'a str,
+    /// Router-served per-provider identity prompt; the embedded default when absent.
+    pub identity: Option<&'a str>,
 }
 
-/// Build the canonical identity prompt for a provider, optionally prefixed with
-/// a mode paragraph.
+/// Build the canonical identity prompt, optionally prefixed with a mode
+/// paragraph.
 pub fn build_system_prompt(opts: SystemPromptOpts<'_>) -> String {
-    let identity = select_identity_prompt(opts.provider);
+    let identity = opts.identity.unwrap_or(variants::DEFAULT);
     match opts.mode {
         Some(mode) => format!("{}\n\n{}", mode::paragraph(mode), identity),
         None => identity.to_string(),
@@ -49,14 +51,9 @@ pub fn resolve_system_prompt(
     override_prompt: Option<String>,
     strategy: SystemPromptStrategy,
     mode: Option<Mode>,
-    provider: Option<&str>,
+    identity: Option<&str>,
 ) -> Option<String> {
-    let built_in = || {
-        build_system_prompt(SystemPromptOpts {
-            mode,
-            provider: provider.unwrap_or(""),
-        })
-    };
+    let built_in = || build_system_prompt(SystemPromptOpts { mode, identity });
     let custom = override_prompt.as_deref().filter(|s| !s.is_empty());
     match (strategy, custom) {
         (SystemPromptStrategy::Override, Some(s)) => Some(s.to_string()),

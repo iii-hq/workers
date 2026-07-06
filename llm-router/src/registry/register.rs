@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::catalog::store::CatalogStore;
 use crate::config::entry::{register_entry, EntryWriteLock};
-use crate::config::schema::{default_provider_schema, validate_custom_schema};
+use crate::config::schema::{provider_entry_schema, validate_custom_schema};
 use crate::registry::store::RegistryStore;
 use crate::triggers::{self, RouterEvents};
 
@@ -89,12 +89,12 @@ pub fn make_provider_register(
                 let _guard = entry_lock.lock().await;
                 let mut provider_schemas = BTreeMap::new();
                 for rec in registry.list().await {
-                    let schema = rec.declaration.config_schema.clone().unwrap_or_else(|| {
-                        default_provider_schema(
-                            &serde_json::to_value(rec.declaration.defaults.clone())
-                                .unwrap_or(Value::Null),
-                        )
-                    });
+                    let schema = provider_entry_schema(
+                        rec.declaration.config_schema.as_ref(),
+                        &serde_json::to_value(rec.declaration.defaults.clone())
+                            .unwrap_or(Value::Null),
+                        rec.declaration.system_prompt.as_deref(),
+                    );
                     provider_schemas.insert(rec.declaration.id.clone(), schema);
                 }
                 register_entry(&iii, &provider_schemas).await?;

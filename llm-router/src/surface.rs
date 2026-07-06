@@ -17,7 +17,8 @@ use crate::types::router::{
     ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse,
     ProviderListRequest, ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
     ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
-    UpdateCredentialRequest, UpdateCredentialResponse,
+    SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
+    UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
@@ -51,6 +52,11 @@ pub const MODELS_SUPPORTS_DESC: &str =
 pub const PROVIDER_LIST_ID: &str = "router::provider::list";
 pub const PROVIDER_LIST_DESC: &str =
     "List registered providers with their configured/available status.";
+
+pub const SYSTEM_PROMPT_GET_ID: &str = "router::system_prompt::get";
+pub const SYSTEM_PROMPT_GET_DESC: &str =
+    "Effective identity prompt for {provider?} (default_provider when omitted): \
+     operator override when set, else provider-declared; null when absent.";
 
 pub const ROUTE_ID: &str = "router::route";
 pub const ROUTE_DESC: &str = "Read-only routing preview: resolve {model, provider?} to the chosen \
@@ -119,6 +125,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             MODELS_SUPPORTS_DESC,
         ),
         spec::<ProviderListRequest, ProviderListResponse>(PROVIDER_LIST_ID, PROVIDER_LIST_DESC),
+        spec::<SystemPromptGetRequest, SystemPromptGetResponse>(
+            SYSTEM_PROMPT_GET_ID,
+            SYSTEM_PROMPT_GET_DESC,
+        ),
         spec::<RouteRequest, RouteResponse>(ROUTE_ID, ROUTE_DESC),
         spec::<ProviderRegisterRequest, ProviderRegisterResponse>(
             PROVIDER_REGISTER_ID,

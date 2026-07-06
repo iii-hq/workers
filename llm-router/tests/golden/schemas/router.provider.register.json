@@ -200,6 +200,12 @@
           "null"
         ]
       },
+      "system_prompt": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "token": {
         "description": "Registration token proving ownership on re-register (omit on first declare).",
         "type": [
