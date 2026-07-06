@@ -33,6 +33,7 @@ on:
           - provider-anthropic
           - provider-openai
           - provider-xai
+          - pubsub
           - rbac-proxy
           - session-manager
           - slack
