@@ -190,7 +190,11 @@ mod tests {
         for id in ["anthropic", "custom"] {
             let slice = &s["properties"]["providers"]["properties"][id]["properties"];
             // nullable so the console renders a set/unset toggle
-            assert_eq!(slice["system_prompt"]["type"], json!(["string", "null"]), "{id}");
+            assert_eq!(
+                slice["system_prompt"]["type"],
+                json!(["string", "null"]),
+                "{id}"
+            );
         }
         // pre-existing fields survive
         assert_eq!(

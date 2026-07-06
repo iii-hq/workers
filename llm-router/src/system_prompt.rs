@@ -78,7 +78,10 @@ mod tests {
             );
         }
         assert_eq!(effective_prompt(&json!(null), "a", None), None);
-        assert_eq!(effective_prompt(&json!(null), "a", Some(String::new())), None);
+        assert_eq!(
+            effective_prompt(&json!(null), "a", Some(String::new())),
+            None
+        );
     }
 
     #[test]

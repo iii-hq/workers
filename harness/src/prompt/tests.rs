@@ -29,8 +29,13 @@ fn resolve_non_empty_override_returns_verbatim() {
 
 #[test]
 fn resolve_empty_override_falls_through_to_builtin() {
-    let out = resolve_system_prompt(Some(String::new()), SystemPromptStrategy::Override, None, None)
-        .expect("built-in prompt");
+    let out = resolve_system_prompt(
+        Some(String::new()),
+        SystemPromptStrategy::Override,
+        None,
+        None,
+    )
+    .expect("built-in prompt");
     assert!(out.contains("You are an iii agent worker"));
 }
 
