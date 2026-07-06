@@ -593,6 +593,71 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_reconfigure_reverts_to_boot_interval_when_cleared() {
+        let dir = temp_store_dir();
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 250
+        });
+        let kv_store = KvStore::new(Some(config));
+        assert_eq!(kv_store.default_interval, 250);
+
+        // Clearing the knob reverts to the boot cadence (250), NOT the global
+        // default; the loop stays alive.
+        kv_store.reconfigure(&serde_json::json!({}));
+        assert!(
+            kv_store
+                .save_loop_stop
+                .lock()
+                .expect("save_loop_stop mutex")
+                .is_some()
+        );
+        assert_eq!(kv_store.default_interval, 250);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_boot_interval_is_floored() {
+        let dir = temp_store_dir();
+        // A sub-floor value (e.g. hand-edited adapter config bypassing the
+        // schema) is clamped up so it cannot drive a tight save loop.
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 1
+        });
+        let kv_store = KvStore::new(Some(config));
+        assert_eq!(kv_store.default_interval, MIN_SAVE_INTERVAL_MS);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reconfigure_in_memory_is_noop() {
+        let kv_store = KvStore::new(None); // in-memory: no save loop
+        kv_store.reconfigure(&serde_json::json!({ "save_interval_ms": 100 }));
+        assert!(
+            kv_store
+                .save_loop_stop
+                .lock()
+                .expect("save_loop_stop mutex")
+                .is_none(),
+            "in-memory store must not spawn a save loop"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_kv_store_invalid_store_method() {
+        // when this happens it should default to in_memory
+        let config = serde_json::json!({
+            "store_method": "unknown_method"
+        });
+        let kv_store = KvStore::new(Some(config));
+        assert!(kv_store.store.read().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn loads_a_directory_written_by_the_builtin_format() {
         // A file persisted with persist_index_to_disk IS the builtin's format
         // (same rkyv KeyStorage + percent-encoded name); a fresh store must load it.
