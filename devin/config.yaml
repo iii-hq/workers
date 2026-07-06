@@ -26,9 +26,10 @@ devin_executable: ""
 
 # Extra arguments inserted before `--print --` on every devin::run invocation.
 # devin CLI modes: auto (read-only), accept-edits (also edits), dangerous (all).
-# Only `dangerous` auto-approves command execution, so an iii-context run needs
-# it to actually run `iii trigger`; auto is the safe default.
-cli_extra_args: ["--permission-mode", "auto"]
+# Defaults to dangerous: only it auto-approves command execution, so an iii-context
+# run can run `iii trigger` against the engine. Drop to accept-edits or auto to
+# restrict the local agent.
+cli_extra_args: ["--permission-mode", "dangerous"]
 
 # Stream AgentEvent frames here, grouped by session_id. The console and acp
 # worker both read this stream.

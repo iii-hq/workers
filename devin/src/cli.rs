@@ -1,12 +1,12 @@
-//! The `devin::run` turn: spawn the `devin` CLI in one-shot mode
-//! (`devin [extra args] -- "<prompt>"`), stream its stdout verbatim onto
-//! `devin::events`, mirror a terminal AgentEvent frame onto `agent::events` so
-//! the console renders the turn like any other agent worker, and persist a
-//! local session record.
+//! The `devin::run` turn: spawn the local Devin CLI (the SWE-1.6 coding agent)
+//! in non-interactive mode (`devin [extra args] --print -- "<prompt>"`), stream
+//! its stdout verbatim onto `devin::events`, mirror a terminal AgentEvent frame
+//! onto `agent::events` so the console renders the turn like any other agent
+//! worker, and record the Devin session id it prints.
 //!
-//! Unlike the local-loop agent CLIs, `devin` is a thin client to the Devin
-//! cloud, so its stdout is plain text rather than a structured event stream —
-//! we treat each line as text and do not translate a JSON protocol.
+//! `--print` output is plain text (not a structured event protocol), so we
+//! treat each line as text. When the CLI opens a session it prints
+//! `{"id":"devin-...","url":"..."}`, which we parse out to link the record.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -408,7 +408,7 @@ mod tests {
             argv,
             vec![
                 "--permission-mode".to_string(),
-                "auto".to_string(),
+                "dangerous".to_string(),
                 "--print".to_string(),
                 "--".to_string(),
                 "build a thing".to_string(),

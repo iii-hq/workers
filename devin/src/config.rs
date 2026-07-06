@@ -37,10 +37,11 @@ pub struct Config {
     pub devin_executable: String,
     /// Extra arguments inserted before `--print --` on every `devin::run`
     /// invocation. The devin CLI permission modes are `auto` (read-only tools),
-    /// `accept-edits` (also workspace edits), and `dangerous` (all tools). Only
-    /// `dangerous` auto-approves command execution, so it is the mode a headless
-    /// iii-context run needs to actually run `iii trigger`; `auto` is the safe
-    /// default. The prompt is always passed after `--`.
+    /// `accept-edits` (also workspace edits), and `dangerous` (all tools).
+    /// Defaults to `dangerous` because only it auto-approves command execution,
+    /// so a headless iii-context run can actually run `iii trigger` against the
+    /// engine (the point of the CLI surface). Drop to `accept-edits` or `auto`
+    /// to restrict the agent. The prompt is always passed after `--`.
     pub cli_extra_args: Vec<String>,
     /// Stream that carries the AgentEvent frames the console and acp worker
     /// render. Grouped by session_id.
@@ -64,7 +65,7 @@ impl Default for Config {
             base_url: "https://api.devin.ai/v1".to_string(),
             request_timeout_secs: 120,
             devin_executable: String::new(),
-            cli_extra_args: vec!["--permission-mode".to_string(), "auto".to_string()],
+            cli_extra_args: vec!["--permission-mode".to_string(), "dangerous".to_string()],
             events_stream: "agent::events".to_string(),
             raw_events_stream: "devin::events".to_string(),
             iii_context: true,

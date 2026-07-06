@@ -1,6 +1,6 @@
 # devin
 
-[Devin](https://docs.devin.ai) as an iii worker: the Devin coding agent exposed as functions and streams on the iii bus. Devin has two faces, and this worker exposes both. The local [`devin` CLI](https://docs.devin.ai/cli) drives one headless turn through `devin::run`, streaming its output onto the bus. The [Devin REST API](https://docs.devin.ai/api-reference/overview) drives the cloud agent: `devin::session::*` wrap the session lifecycle, and `devin::api` reaches any v3 endpoint the typed wrappers do not cover.
+[Devin](https://docs.devin.ai) as an iii worker: the Devin coding agent exposed as functions and streams on the iii bus. Devin has two distinct products and this worker exposes both. The local [Devin CLI](https://cli.devin.ai/docs) is a SWE-1.6 coding agent that runs on your machine; `devin::run` drives it headless and, with the iii runtime context, lets it discover and operate your engine on its own. The [Devin cloud](https://docs.devin.ai) agent runs in a VM, reached over the REST API: `devin::session::*` wrap the session lifecycle, `devin::pr-review::*` run reviews, and `devin::api` reaches any v1/v3 endpoint the typed wrappers do not cover.
 
 This worker is deliberately thin. It does not re-implement scheduling, sub-agents, or persistence that the engine already provides. Schedule a Devin session with the `cron` worker, fan Devin runs out with `harness::spawn`, and let the engine trace and persist every call. The worker's job is to put Devin on the bus, nothing more.
 
@@ -144,14 +144,16 @@ api_key: "${DEVIN_API_KEY}"       # env-expanded on load; empty disables the API
 org_id: "${DEVIN_ORG_ID}"         # empty = v1 personal mode; set = v3 org-scoped mode
 base_url: https://api.devin.ai/v1 # set to .../v3 alongside org_id for a service key
 request_timeout_secs: 120
-devin_executable: ""              # path to the devin CLI; empty = PATH
-cli_extra_args: []                # args inserted before `-- <prompt>`
-events_stream: agent::events      # AgentEvent frames
-raw_events_stream: devin::events  # verbatim CLI stdout
-iii_context: true                 # prepend iii runtime context to a CLI prompt
+devin_executable: ""                          # path to the devin CLI; empty = PATH
+cli_extra_args: ["--permission-mode", "dangerous"]  # before `--print --`; dangerous lets the agent run iii trigger
+events_stream: agent::events                  # AgentEvent frames
+raw_events_stream: devin::events              # verbatim CLI stdout
+iii_context: true                             # prepend iii runtime context to a CLI prompt
 ```
 
-`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review. `iii_context` defaults on, the same as the grok and codex workers, so a `devin::run` turn is prepended with the iii runtime context and the agent discovers engine functions through the `iii` CLI; the context is most useful when the CLI can reach the engine, and you can turn it off per turn with `iii_context: false`.
+`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review.
+
+`iii_context` defaults on: a `devin::run` turn is prepended with the iii runtime context so the local agent discovers and calls engine functions through the `iii` CLI (turn it off per turn with `iii_context: false`). `cli_extra_args` defaults to `--permission-mode dangerous`, which is the only devin CLI mode that auto-approves command execution, so a headless run can actually run `iii trigger` against the engine; the local agent then auto-approves all tools, so drop to `accept-edits` or `auto` to restrict it.
 
 ## Dependent workers
 
@@ -167,9 +169,9 @@ iii_context: true                 # prepend iii runtime context to a CLI prompt
 
 | Devin | iii |
 | --- | --- |
-| one local `devin -- "<prompt>"` turn | `devin::run` invocation |
+| one local `devin --print -- <prompt>` turn (SWE-1.6 agent) | `devin::run` invocation |
 | every CLI stdout line, verbatim | `devin::events` stream frame |
-| a Devin cloud session | `devin::session::create` / `::get` / `::list` / `::message` |
+| a Devin cloud session | `devin::session::create` / `::get` / `::message` |
 | a Devin PR review | `devin::pr-review::trigger` / `::status` |
 | any other v1/v3 endpoint | `devin::api` passthrough |
 | scheduling a run | `cron` worker trigger, not a worker feature |
