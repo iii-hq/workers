@@ -497,9 +497,11 @@ function denialToInvocation(
           ? 'Denied by user'
           : denial.status === 'denied'
             ? 'Denied'
-            : 'Invocation failed'
+            : 'Trigger failed'
   const message =
-    denial.reason ?? fallbackMessage ?? 'The sandbox call could not complete.'
+    denial.reason ??
+    fallbackMessage ??
+    'The sandbox trigger could not complete.'
   return {
     title,
     message,
@@ -520,7 +522,7 @@ function invocationFromFunctionError(
     return denialToInvocation(denial, envelope.message, detailText)
   }
   return {
-    title: 'Invocation failed',
+    title: 'Trigger failed',
     message: envelope.message,
     detailText,
   }

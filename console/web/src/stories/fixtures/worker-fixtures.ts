@@ -778,6 +778,109 @@ export const SCHEMA_EXAMPLES: SchemaExample[] = [
       max_list_limit: 500,
     },
   },
+  {
+    // Mirrors the shell worker's registered schema (a subset), with the
+    // real doc-comment descriptions from `shell/src/config.rs` and
+    // `shell/src/code/config.rs`. This is the stress case for description
+    // rendering: multi-line technical prose between nearly every control.
+    id: 'long-descriptions',
+    label: 'long descriptions · shell worker',
+    wide: true,
+    schema: {
+      type: 'object',
+      title: 'shell',
+      properties: {
+        allowed_env: {
+          type: 'array',
+          items: { type: 'string' },
+          default: ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM'],
+        },
+        allowlist: {
+          type: 'array',
+          items: { type: 'string' },
+          default: [],
+        },
+        denylist_patterns: {
+          type: 'array',
+          items: { type: 'string' },
+          default: [],
+          description:
+            'ADVISORY ONLY. Regular expressions matched against the whole command line (`argv.join(" ")`). A match rejects the exec, but this is a best-effort guardrail, NOT the security boundary — the sandbox backend is. Do not rely on it to contain untrusted input: regexes over a joined argv are trivially evadable (quoting, env indirection, alternate paths).',
+        },
+        fs: {
+          type: 'object',
+          properties: {
+            host_roots: {
+              type: 'array',
+              items: { type: 'string' },
+              default: [],
+              description:
+                'Allowed jail roots. The FIRST entry is the PRIMARY root: relative wire paths and a relative per-call `cwd`/`base_dir` resolve against it. Absolute paths are accepted when they canonicalize inside ANY listed root. Empty (and `host_root` unset) means unjailed — refused at boot unless `allow_unjailed` is true.',
+            },
+            allow_unjailed: {
+              type: 'boolean',
+              default: false,
+              description:
+                'Operator opt-in for running with `host_root: null`. When false (the default) the worker refuses to start unjailed — the entire host filesystem is reachable through `shell::fs::*` aside from the small denylist, which is rarely what the operator actually wants. Setting this to true is equivalent to acknowledging that fact (test harnesses, sandbox-only deployments).',
+            },
+          },
+        },
+        code: {
+          type: 'object',
+          description:
+            "The folded `code` surface (`coder::*`) config: glob protection (`non_accessible_globs`), noise excludes (`default_exclude_globs`), and per-file/response budgets. The code resolver's ROOTS are NOT taken from here — it uses `fs.host_roots` so there is a single jail config; any `base_path`/`base_paths` set under `code` is ignored.",
+          properties: {
+            base_path: {
+              type: ['string', 'null'],
+              default: null,
+              description:
+                'Legacy single-root form. Honored as a one-entry `base_paths` list. Setting BOTH `base_path` and `base_paths` is a startup error (checked at `PathResolver` construction).',
+            },
+            base_paths: {
+              type: 'array',
+              items: { type: 'string' },
+              default: [],
+              description:
+                'Root directories the worker operates inside. The FIRST entry is the primary root: relative wire paths resolve against it. Absolute wire paths are accepted when they canonicalize inside ANY listed root. When neither this nor `base_path` is set, the effective default is `["./", "/tmp"]` (resolved at `PathResolver` construction).',
+            },
+            non_accessible_globs: {
+              type: 'array',
+              items: { type: 'string' },
+              default: [],
+              description:
+                'Glob patterns matched against the path *relative to its containing root*. Matching files can be listed but not read/written/deleted/created.',
+            },
+            default_exclude_globs: {
+              type: 'array',
+              items: { type: 'string' },
+              default: [],
+              description:
+                'Noise-exclusion globs (matched against the path relative to its containing root, same convention as `non_accessible_globs`). `coder::tree` and `coder::search` suppress descent into matching directories and omit matching files; callers opt out per call with `use_default_excludes: false`. Unlike `non_accessible_globs` this only HIDES results — it grants no access protection.',
+            },
+            max_output_bytes: {
+              type: 'integer',
+              default: 131072,
+              description:
+                "Context budget for single-path FULL reads in `coder::read-file` (no `line_from`/`line_to`, `stat: false`), measured in BYTES OF RETURNED CONTENT after UTF-8 sanitization (numbered prefixes included) — the same accounting unit as `batch_read_budget_bytes`. A full read whose converted content would exceed this budget fails with a C213 that reports the file's size and line count and names the recovery paths (window, stat probe, or per-call `max_output_bytes` raise, clamped to `max_read_bytes`). Windowed reads and batch mode are NOT governed by this key.",
+            },
+          },
+        },
+      },
+    },
+    initial: {
+      allowed_env: ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM'],
+      allowlist: [],
+      denylist_patterns: ['rm\\s+-rf\\s+/', 'mkfs', 'shutdown'],
+      fs: { host_roots: ['/tmp'], allow_unjailed: false },
+      code: {
+        base_path: null,
+        base_paths: [],
+        non_accessible_globs: ['**/.env', '**/*.pem', '**/secrets/**'],
+        default_exclude_globs: ['**/.git/**', '**/node_modules/**'],
+        max_output_bytes: 131072,
+      },
+    },
+  },
 ]
 
 /* ------------------------------------------------------------------ */

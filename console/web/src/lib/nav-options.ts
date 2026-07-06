@@ -11,6 +11,7 @@ export function buildViewOptions(
 ): { value: View; label: string }[] {
   const options: { value: View; label: string }[] = [
     { value: 'traces', label: 'traces' },
+    { value: 'traces-v2', label: 'traces v2' },
     { value: 'workers', label: 'workers' },
   ]
   if (worktreeAvailable) {

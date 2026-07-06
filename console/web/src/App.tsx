@@ -22,6 +22,7 @@ import { buildViewOptions } from '@/lib/nav-options'
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { Traces } from '@/pages/Traces'
+import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import { Worktrees } from '@/pages/Worktrees'
 
@@ -92,6 +93,8 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
+            ) : view === 'traces-v2' ? (
+              <TracesV2 />
             ) : view === 'worktrees' ? (
               <Worktrees />
             ) : (

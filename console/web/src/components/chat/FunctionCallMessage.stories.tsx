@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
 import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
@@ -13,7 +14,6 @@ import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
 import { workflowFixtures } from '@/stories/fixtures/workflow-fixtures'
 import { worktreeFixtures } from '@/stories/fixtures/worktree-fixtures'
 import type { FunctionCallMessage as FCallType } from '@/types/chat'
-import { FunctionCallMessage } from './FunctionCallMessage'
 
 const fcallPendingSingle: FCallType = {
   id: 'f0a',
@@ -77,7 +77,7 @@ function FamilyGallery({ fixtures }: { fixtures: readonly FCallType[] }) {
             {fixture.functionId}
           </div>
           <div className="p-4">
-            <FunctionCallMessage message={fixture} defaultOpen />
+            <FunctionCallCard message={fixture} defaultOpen />
           </div>
         </div>
       ))}
@@ -87,12 +87,12 @@ function FamilyGallery({ fixtures }: { fixtures: readonly FCallType[] }) {
 
 const meta = {
   title: 'Chat/FunctionCallMessage',
-  component: FunctionCallMessage,
+  component: FunctionCallCard,
   parameters: { layout: 'padded' },
   // Default `message` so the render-only family galleries don't have to
   // declare it; the per-state stories below override it via their own args.
   args: { message: fcallDone },
-} satisfies Meta<typeof FunctionCallMessage>
+} satisfies Meta<typeof FunctionCallCard>
 
 export default meta
 type Story = StoryObj<typeof meta>
@@ -108,7 +108,7 @@ export const PendingMultiArg: Story = {
 }
 
 export const Running: Story = {
-  name: 'running',
+  name: 'triggering',
   args: { message: fcallRunning },
 }
 

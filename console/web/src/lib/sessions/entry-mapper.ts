@@ -40,15 +40,23 @@ function unwrapFunctionCall(
 ): {
   functionId: string
   input: unknown
+  unresolvedTarget?: boolean
 } {
-  if (
-    block.function_id === 'agent_trigger' &&
-    block.arguments &&
-    typeof block.arguments === 'object'
-  ) {
-    const args = block.arguments as { function?: unknown; payload?: unknown }
-    if (typeof args.function === 'string' && args.function.length > 0) {
-      return { functionId: args.function, input: args.payload ?? {} }
+  if (block.function_id === 'agent_trigger') {
+    if (block.arguments && typeof block.arguments === 'object') {
+      const args = block.arguments as { function?: unknown; payload?: unknown }
+      if (typeof args.function === 'string' && args.function.length > 0) {
+        return { functionId: args.function, input: args.payload ?? {} }
+      }
+    }
+    // The target is unknown while the wrapper's arguments are still
+    // streaming (providers degrade partial JSON to `{}`). Flag it so the UI
+    // can render a placeholder instead of the literal `agent_trigger`; the
+    // next snapshot self-corrects once the arguments finish streaming.
+    return {
+      functionId: block.function_id,
+      input: block.arguments,
+      unresolvedTarget: true,
     }
   }
   return { functionId: block.function_id, input: block.arguments }
@@ -201,12 +209,14 @@ function assistantSegments(
         })
         break
       case 'function_call': {
-        const { functionId, input } = unwrapFunctionCall(block)
+        const { functionId, input, unresolvedTarget } =
+          unwrapFunctionCall(block)
         const msg: FunctionCallMessage = {
           id,
           role: 'function-call',
           functionId,
           input,
+          unresolvedTarget,
           functionCallId: block.id,
           sessionId,
           createdAt: message.timestamp,
@@ -284,12 +294,15 @@ export function applyFcallPatch(
  *   end — appends only ever happen at the active leaf);
  * - absorbs transient state (and locally-created duplicate rows) by
  *   `functionCallId`;
- * - pairs `function_result` entries into their function-call row.
+ * - pairs `function_result` entries into their function-call row;
+ * - infers `running` for unpaired function calls while the session is
+ *   `working` (the real backend emits no execution start/end events, so
+ *   the transcript shape is the only in-flight signal).
  */
 export function applyEntryUpsert(
   messages: Message[],
   item: TranscriptItem,
-  opts?: { sessionId?: string; streaming?: boolean },
+  opts?: { sessionId?: string; streaming?: boolean; working?: boolean },
 ): Message[] {
   // function_result: fill the matching call row instead of inserting.
   if (item.message?.role === 'function_result') {
@@ -342,6 +355,23 @@ export function applyEntryUpsert(
     }
   })
 
+  // While the session is working, an unpaired call (no result yet, not held
+  // for approval) is in flight: surface the running state. Pairing a
+  // `function_result` flips it off; `clearTransientFlags` sweeps leftovers
+  // when the session leaves `working`.
+  if (opts?.working) {
+    segments = segments.map((segment) => {
+      if (
+        segment.role !== 'function-call' ||
+        segment.running ||
+        segment.pendingApproval ||
+        segment.output !== undefined
+      )
+        return segment
+      return { ...segment, running: true }
+    })
+  }
+
   // Preserve optimistic-only fields when replacing a user message in place.
   // Snapshot-derived attachments (collapsed `<attached-file>` blocks) win —
   // they are the durable truth; optimistic chips only fill the gap.
@@ -388,10 +418,26 @@ export function applyEntryUpsert(
 export function transcriptToMessages(
   items: TranscriptItem[],
   sessionId?: string,
+  opts?: { working?: boolean },
 ): Message[] {
+  // Only the last assistant entry can carry in-flight calls; unpaired calls
+  // in earlier entries are historical (interrupted turns) and must not
+  // pulse. Result entries folded after it clear the calls that completed.
+  let lastAssistantIdx = -1
+  if (opts?.working) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].message?.role === 'assistant') {
+        lastAssistantIdx = i
+        break
+      }
+    }
+  }
   let messages: Message[] = []
-  for (const item of items) {
-    messages = applyEntryUpsert(messages, item, { sessionId })
+  for (const [i, item] of items.entries()) {
+    messages = applyEntryUpsert(messages, item, {
+      sessionId,
+      working: i === lastAssistantIdx,
+    })
   }
   return messages
 }

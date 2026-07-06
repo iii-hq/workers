@@ -123,7 +123,29 @@ describe('translateTurnSource — approvals', () => {
       event: resolved,
     }
     expect(translateTurnSource(event)).toEqual([
-      { kind: 'fcall-approval-cleared', functionCallId: 'fc-1' },
+      { kind: 'fcall-approval-cleared', functionCallId: 'fc-1', running: true },
+    ])
+  })
+
+  it('does not flip a denied call to running on approval-resolved', () => {
+    const resolved: PendingResolvedEvent = {
+      function_call_id: 'fc-1',
+      function_id: 'shell::fs::write',
+      session_id: 'sess-a',
+      turn_id: 't-1',
+      outcome: 'deny',
+      resolved_at: 5,
+    }
+    const event: TurnSourceEvent = {
+      kind: 'approval-resolved',
+      event: resolved,
+    }
+    expect(translateTurnSource(event)).toEqual([
+      {
+        kind: 'fcall-approval-cleared',
+        functionCallId: 'fc-1',
+        running: false,
+      },
     ])
   })
 })

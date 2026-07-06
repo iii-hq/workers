@@ -38,7 +38,19 @@ import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
 
-interface FunctionCallMessageProps {
+/**
+ * FunctionCallCard — the canonical rendering of one iii function call:
+ * collapsible header (status dot, ƒ id, duration), request/response panes,
+ * per-family tool views, and the optional approval bar.
+ *
+ * Location-agnostic by design: it is props-only (no chat store, no session
+ * context). Chat renders it from live session messages; TracesV2 renders it
+ * in the span info tab by synthesizing a `FunctionCallMessage` from an OTel
+ * span (`pages/TracesV2/lib/functionCallFromSpan.ts`); any other surface can
+ * do the same — `FunctionCallMessage` (types/chat.ts) is a plain data shape
+ * whose base is just `{ id, createdAt }`.
+ */
+interface FunctionCallCardProps {
   message: FunctionCallMessageType
   defaultOpen?: boolean
   /**
@@ -170,7 +182,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
-export function FunctionCallMessage({
+export function FunctionCallCard({
   message,
   defaultOpen,
   onApprove,
@@ -180,7 +192,7 @@ export function FunctionCallMessage({
   onManageFilesystemAccess,
   workingDir,
   embedded,
-}: FunctionCallMessageProps) {
+}: FunctionCallCardProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
   const filesystemAccess = pending ? message.filesystemAccess : undefined
@@ -219,10 +231,14 @@ export function FunctionCallMessage({
       StateToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
-  const showRequestPaneAbove =
-    !(pending && customPreview) &&
-    !(running && hasCustomTerminal) &&
-    !(!pending && !running)
+  // The top request pane renders only while the call is in flight and no
+  // richer view covers it; the settled (done) branch below renders its own
+  // request/response panes, so showing it there would duplicate the pane.
+  const showRequestPaneAbove = pending
+    ? !customPreview
+    : running
+      ? !hasCustomTerminal
+      : false
 
   const runResolve = async (kind: 'approve' | 'deny' | 'always_allow') => {
     const handler =
@@ -253,7 +269,10 @@ export function FunctionCallMessage({
 
   return (
     <div
-      className={cn(!embedded && 'border border-rule bg-bg')}
+      className={cn(
+        'function-call-surface',
+        !embedded && 'border border-rule bg-bg',
+      )}
       data-message-id={message.id}
     >
       <button
@@ -273,16 +292,16 @@ export function FunctionCallMessage({
                 <span>
                   {filesystemAccess
                     ? 'needs filesystem access to run'
-                    : 'permission to run'}
+                    : 'permission to trigger'}
                 </span>{' '}
               </>
-            ) : running ? (
-              <>running </>
-            ) : (
-              <>ran </>
-            )}
+            ) : null}
             <span className="text-accent italic font-semibold">ƒ</span>{' '}
-            <FunctionIdLabel functionId={message.functionId} />
+            {running && message.unresolvedTarget ? (
+              <span className="text-ink-faint">…</span>
+            ) : (
+              <FunctionIdLabel functionId={message.functionId} />
+            )}
             {!pending && !running && typeof message.durationMs === 'number' ? (
               <span className="text-ink-faint">
                 {' '}

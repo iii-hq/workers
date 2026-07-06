@@ -56,9 +56,11 @@ export function normalizeSpanAttributes(
  * group-by/`SessionDetailPanel` path.
  */
 export function mapSpanToListItem(span: StoredSpan): TraceListItem {
+  // A live (pending) span from the engine: still running, end sentinel 0.
+  const pending = !!span.pending || span.end_time_unix_nano === 0
   const startTime = toMs(span.start_time_unix_nano)
-  const endTime = toMs(span.end_time_unix_nano)
-  const duration = endTime - startTime
+  const endTime = pending ? undefined : toMs(span.end_time_unix_nano)
+  const duration = endTime === undefined ? undefined : endTime - startTime
   const attrs = normalizeSpanAttributes(span.attributes)
 
   const functionId = (attrs['faas.invoked_name'] || attrs.function_id) as
@@ -71,7 +73,12 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
     rootOperation: span.name,
     functionId,
     topic,
-    status: span.status.toLowerCase() === 'error' ? 'error' : 'ok',
+    status:
+      span.status.toLowerCase() === 'error'
+        ? 'error'
+        : pending
+          ? 'pending'
+          : 'ok',
     startTime,
     endTime,
     duration,

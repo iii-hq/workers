@@ -378,7 +378,7 @@ export function Traces() {
                   <EmptyState
                     icon={GitBranch}
                     title="no traces recorded"
-                    description="traces appear here when functions execute. fire a request to your engine and refresh."
+                    description="traces appear here when functions are triggered. fire a request to your engine and refresh."
                   />
                 </div>
               ) : (

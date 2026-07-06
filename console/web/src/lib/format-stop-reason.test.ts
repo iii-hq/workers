@@ -25,9 +25,9 @@ describe('formatStopReason', () => {
     )
   })
 
-  it('function_call: returns the tool-call paused notice', () => {
+  it('function_call: returns the trigger-paused notice', () => {
     expect(formatStopReason('function_call')).toBe(
-      'response paused for tool call.',
+      'response paused for function trigger.',
     )
   })
 })

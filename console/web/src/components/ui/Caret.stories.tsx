@@ -13,7 +13,7 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   render: () => (
     <div className="font-mono text-[14px] text-ink leading-[1.7]">
-      running engine::echo
+      triggering engine::echo
       <Caret className="ml-1" />
     </div>
   ),

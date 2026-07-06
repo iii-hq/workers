@@ -17,9 +17,13 @@
     "build-storybook": "storybook build"
   },
   "dependencies": {
+    "@fontsource/chivo-mono": "^5.2.8",
+    "@fontsource/geist": "^5.2.8",
+    "@fontsource/geist-mono": "^5.2.8",
     "@lexical/react": "^0.44.0",
     "@pierre/diffs": "^1.2.7",
     "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.19",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-tabs": "^1.1.13",
