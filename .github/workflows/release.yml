@@ -32,6 +32,7 @@ on:
       - 'slack/v*'
       - 'telegram-bot/v*'
       - 'shell/v*'
+      - 'state/v*'
       - 'storage/v*'
       - 'web/v*'
       - 'worktree/v*'
