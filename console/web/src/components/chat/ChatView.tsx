@@ -1036,6 +1036,7 @@ export function ChatView({
             open={checkpointsDialogOpen}
             onOpenChange={setCheckpointsDialogOpen}
             workingDir={conversation.workingDir ?? null}
+            sessionId={conversation.id}
             sessionBusy={streamingIndicator}
           />
         </>

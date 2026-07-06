@@ -52,8 +52,14 @@ function defaultTrigger(): TriggerFn {
 function fsScope(
   root: string,
   turnId?: string,
-): { root: string; grants: string[]; turn_id?: string } {
-  return { root, grants: [], ...(turnId ? { turn_id: turnId } : {}) }
+  sessionId?: string,
+): { root: string; grants: string[]; turn_id?: string; session_id?: string } {
+  return {
+    root,
+    grants: [],
+    ...(turnId ? { turn_id: turnId } : {}),
+    ...(sessionId ? { session_id: sessionId } : {}),
+  }
 }
 
 /**
@@ -123,6 +129,8 @@ export async function undoCheckpoint(
   opts: {
     turnId?: string
     steps?: number
+    /** Conversation attribution for the undo's own journal record. */
+    sessionId?: string
     /** Test override for the journal attribution stamp. */
     stampTurnId?: string
     trigger?: TriggerFn
@@ -132,7 +140,11 @@ export async function undoCheckpoint(
   const raw = (await call(UNDO_FUNCTION_ID, {
     ...(opts.turnId ? { turn_id: opts.turnId } : {}),
     ...(opts.steps ? { steps: opts.steps } : {}),
-    fs_scope: fsScope(root, opts.stampTurnId ?? consoleUndoTurnId()),
+    fs_scope: fsScope(
+      root,
+      opts.stampTurnId ?? consoleUndoTurnId(),
+      opts.sessionId,
+    ),
   })) as { undone?: unknown[] } | null
   return Array.isArray(raw?.undone)
     ? raw.undone.map(coerceUndo).filter((r): r is UndoRecord => r !== null)

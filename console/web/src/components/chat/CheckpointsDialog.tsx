@@ -18,6 +18,8 @@ interface CheckpointsDialogProps {
   onOpenChange: (open: boolean) => void
   /** The conversation's session workspace — journal root for `coder::*`. */
   workingDir?: string | null
+  /** Filters the shared per-root journal down to this conversation's records. */
+  sessionId: string
   /** Warns that undoing while a turn runs may fight the agent's writes. */
   sessionBusy?: boolean
 }
@@ -65,6 +67,7 @@ export function CheckpointsDialog({
   open,
   onOpenChange,
   workingDir,
+  sessionId,
   sessionBusy,
 }: CheckpointsDialogProps) {
   const [state, setState] = useState<LoadState>({ status: 'idle' })
@@ -76,9 +79,12 @@ export function CheckpointsDialog({
     setState({ status: 'loading' })
     try {
       const res = await listCheckpoints(workingDir)
+      // The journal is per-root and shared across every session using this
+      // directory; only this conversation's records belong in the dialog.
+      const mine = res.records.filter((r) => r.sessionId === sessionId)
       setState({
         status: 'ready',
-        groups: groupCheckpoints(res.records),
+        groups: groupCheckpoints(mine),
         truncated: res.truncated,
       })
     } catch (err) {
@@ -87,7 +93,7 @@ export function CheckpointsDialog({
         message: err instanceof Error ? err.message : String(err),
       })
     }
-  }, [workingDir])
+  }, [workingDir, sessionId])
 
   useEffect(() => {
     if (!open) return
@@ -101,12 +107,11 @@ export function CheckpointsDialog({
       setUndoingKey(group.key)
       setSummary(null)
       try {
-        const undone = await undoCheckpoint(
-          workingDir,
-          // Turn-less records can only be targeted by count, and only the
-          // newest is offered (steps: 1) — see canUndo in render.
-          group.turnId ? { turnId: group.turnId } : { steps: 1 },
-        )
+        if (!group.turnId) return
+        const undone = await undoCheckpoint(workingDir, {
+          turnId: group.turnId,
+          sessionId,
+        })
         setSummary(formatUndoSummary(undone, group.isRevert))
         await load()
       } catch (err) {
@@ -117,7 +122,7 @@ export function CheckpointsDialog({
         setUndoingKey(null)
       }
     },
-    [workingDir, load],
+    [workingDir, sessionId, load],
   )
 
   return (
@@ -184,12 +189,14 @@ export function renderBody(state: LoadState, h: BodyHandlers) {
 
   return (
     <>
-      {state.groups.map((group, index) => (
+      {state.groups.map((group) => (
         <GroupRow
           key={group.key}
           group={group}
-          // Turn-less records are only reversible when newest (steps: 1).
-          canUndo={Boolean(group.turnId) || index === 0}
+          // Session-filtered view: undo targets a turn. A rare record
+          // without one (external tooling) is listed but not actionable —
+          // a global steps-undo could hit another session's newest record.
+          canUndo={Boolean(group.turnId)}
           busy={h.undoingKey !== null}
           inFlight={h.undoingKey === group.key}
           onUndo={h.onUndo}
@@ -257,7 +264,7 @@ export function GroupRow({
           title={
             canUndo
               ? undefined
-              : 'only the most recent change can be undone without a turn id'
+              : 'this record has no turn attribution — undo it from the CLI'
           }
           onClick={() => onUndo(group)}
           className="shrink-0 lowercase text-ink-faint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"

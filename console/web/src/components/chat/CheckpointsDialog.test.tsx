@@ -62,7 +62,7 @@ describe('GroupRow', () => {
     })
     const btn = buttonOf(el)
     expect(btn.disabled).toBe(true)
-    expect(btn.title).toMatch(/turn id/)
+    expect(btn.title).toMatch(/turn attribution/)
   })
 })
 
