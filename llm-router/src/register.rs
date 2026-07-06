@@ -25,7 +25,7 @@ use crate::chat::complete::make_complete;
 use crate::chat::inflight::InflightMap;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
-use crate::config::schema::default_provider_schema;
+use crate::config::schema::provider_entry_schema;
 use crate::registry::availability::make_provider_list;
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
@@ -205,11 +205,11 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // 6. (re)register the entry from the restored registry, then read settings
     let mut provider_schemas = BTreeMap::new();
     for rec in registry.list().await {
-        let schema = rec.declaration.config_schema.clone().unwrap_or_else(|| {
-            default_provider_schema(
-                &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
-            )
-        });
+        let schema = provider_entry_schema(
+            rec.declaration.config_schema.as_ref(),
+            &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
+            rec.declaration.system_prompt.as_deref(),
+        );
         provider_schemas.insert(rec.declaration.id.clone(), schema);
     }
     register_entry(&iii, &provider_schemas).await?;

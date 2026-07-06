@@ -40,18 +40,56 @@ pub fn validate_custom_schema(schema: &Value) -> Result<(), RouterError> {
     Ok(())
 }
 
-/// Router-owned prompt knob present on every slice — injected here (not in
-/// default_provider_schema) so providers with a custom config_schema get it
-/// too. Nullable on purpose: the console renders `["string","null"]` as a
-/// set/unset toggle and only shows the text input when set.
+/// The per-slice `system_prompt` knob. Nullable on purpose: the console
+/// renders `["string","null"]` as a set/unset toggle and only shows the
+/// editor when set. `format: "textarea"` picks the multi-line pill editor.
+/// When a provider declared a prompt, it rides in `default` so the console
+/// pre-fills the editor with it (an editable starting point) the first time
+/// an operator flips the field to "set".
+pub fn system_prompt_schema(default: Option<&str>) -> Value {
+    let mut schema = json!({
+        "type": ["string", "null"],
+        "format": "textarea",
+        "description": "Override the provider-declared identity prompt; unset serves the provider's default."
+    });
+    if let Some(d) = default {
+        schema["default"] = json!(d);
+    }
+    schema
+}
+
+/// Build one provider's config slice schema: its custom `config_schema` (or
+/// the default `{api_key, api_url, max_tokens}`) plus the `system_prompt`
+/// knob carrying the provider-declared prompt as its default.
+pub fn provider_entry_schema(
+    config_schema: Option<&Value>,
+    defaults: &Value,
+    declared_prompt: Option<&str>,
+) -> Value {
+    let mut schema = config_schema
+        .cloned()
+        .unwrap_or_else(|| default_provider_schema(defaults));
+    if declared_prompt.is_some() {
+        if let Some(Value::Object(props)) = schema.get_mut("properties") {
+            props.insert(
+                "system_prompt".to_string(),
+                system_prompt_schema(declared_prompt),
+            );
+        }
+    }
+    schema
+}
+
+/// Injects the `system_prompt` knob into every slice that doesn't already
+/// carry it — providers with a custom `config_schema` (and providers that
+/// declared no prompt) get it here; `provider_entry_schema` pre-seeds it for
+/// providers that declared one, so `or_insert` preserves that default.
 fn with_prompt_fields(schema: &Value) -> Value {
     let mut schema = schema.clone();
     if let Some(Value::Object(props)) = schema.get_mut("properties") {
-        props.entry("system_prompt").or_insert(json!({
-            "type": ["string", "null"],
-            "format": "textarea", // console renders a multi-line editor
-            "description": "Override the provider-declared identity prompt; unset serves the provider's default."
-        }));
+        props
+            .entry("system_prompt")
+            .or_insert_with(|| system_prompt_schema(None));
     }
     schema
 }
@@ -121,6 +159,23 @@ mod tests {
         assert!(s["properties"]["providers"]["properties"]
             .get("anthropic")
             .is_some());
+    }
+
+    #[test]
+    fn provider_entry_schema_carries_declared_prompt_as_default() {
+        // declared prompt → system_prompt.default so the console pre-fills it
+        let s = provider_entry_schema(None, &json!({}), Some("DECLARED"));
+        let sp = &s["properties"]["system_prompt"];
+        assert_eq!(sp["type"], json!(["string", "null"]));
+        assert_eq!(sp["format"], "textarea");
+        assert_eq!(sp["default"], "DECLARED");
+        // no declared prompt → compose still adds the knob, without a default
+        let s = provider_entry_schema(None, &json!({}), None);
+        assert!(s["properties"].get("system_prompt").is_none());
+        let composed = with_prompt_fields(&s);
+        assert!(composed["properties"]["system_prompt"]
+            .get("default")
+            .is_none());
     }
 
     #[test]

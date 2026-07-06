@@ -1,5 +1,7 @@
+import { useRef } from 'react'
 import { ModeToggle } from '@/components/ui/ModeToggle'
 import { cn } from '@/lib/utils'
+import type { JsonValue } from '../api'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { FieldShell } from './FieldShell'
 import { pathToDomId } from './path'
@@ -15,12 +17,15 @@ const MODE_OPTIONS: { value: Mode; label: string }[] = [
 /**
  * Wrapper for schemas declared as `type: ["X", "null"]`. Renders a small
  * set/unset toggle on top of the inner field; when "unset" is selected,
- * the value is forced to `null` and the inner field disappears so the
- * operator isn't editing a control whose value is being ignored.
+ * the saved value is forced to `null` and the inner field disappears so
+ * the operator isn't editing a control whose value is being ignored.
  *
- * When the operator flips back to "set", we seed the inner field with
- * the schema-provided default (or a type-appropriate zero) so they don't
- * land on `null` and bounce back to the unset state on the next render.
+ * Flipping to "unset" does NOT discard what was typed: we stash the last
+ * set value in a ref and restore it when the operator flips back to "set",
+ * so toggling the mode is non-destructive. The first "set" (nothing
+ * stashed) seeds the schema default — for a provider `system_prompt`
+ * that's the provider-declared prompt, giving the operator an editable
+ * starting point instead of a blank box.
  */
 export function NullableField(props: FieldProps) {
   const { label, schema, value, onChange, required } = props
@@ -29,13 +34,19 @@ export function NullableField(props: FieldProps) {
   const innerSchema = withoutNull(schema)
   const mode: Mode = value === null || value === undefined ? 'unset' : 'set'
 
+  // Remember the last non-null value so unset→set round-trips the draft.
+  // Kept current on every render while set, so it captures live edits.
+  const lastSetRef = useRef<JsonValue | undefined>(undefined)
+  if (mode === 'set') lastSetRef.current = value
+
   function handleModeChange(next: Mode) {
     if (next === 'unset') {
       onChange(null)
     } else {
-      // Seed with the schema default (or type-appropriate zero) so the
-      // inner field has something to render once it appears.
-      onChange(schemaDefault(innerSchema))
+      // Restore the stashed draft; first time (nothing stashed) fall back
+      // to the schema default (the provider-declared prompt for a slice's
+      // system_prompt) or a type-appropriate zero.
+      onChange(lastSetRef.current ?? schemaDefault(innerSchema))
     }
   }
 
