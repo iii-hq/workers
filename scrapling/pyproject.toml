@@ -16,6 +16,7 @@ dependencies = [
     "iii-sdk==0.20.0",
     "scrapling[fetchers]==0.4.9",
     "markdownify",  # scrapling's HTML→Markdown backend (only in its [shell]/[ai] extras)
+    "pillow",  # screenshot downscale/tiling so images fit model input limits
     "pyyaml",
 ]
 

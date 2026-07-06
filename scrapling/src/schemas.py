@@ -152,9 +152,28 @@ _SCREENSHOT_REQUEST = {
     },
     "required": ["url"],
 }
+# Harness content blocks: image tiles + a trailing text caption. The harness
+# forwards `content` verbatim so the model sees images, never base64 text.
 _SCREENSHOT_RESPONSE = {
     "type": "object",
-    "properties": {"image_base64": _STR, "mime": _STR, "url": _STR},
+    "properties": {
+        "content": {
+            "type": "array",
+            "description": "image blocks (one per tile, width<=1024/height<=1536) + a text caption",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["image", "text"]},
+                    "mime": _STR,
+                    "data": {**_STR, "description": "base64 image bytes (image blocks)"},
+                    "text": _STR,
+                },
+                "required": ["type"],
+            },
+        },
+        "mime": _STR,
+        "url": _STR,
+    },
 }
 
 # Smart Element Tracking (adaptive relocation). `adaptive_domain` keys the saved
@@ -445,7 +464,7 @@ FUNCTIONS: list[dict[str, Any]] = [
     {
         "id": "scrapling::screenshot",
         "handler": "screenshot",
-        "description": "Capture a page screenshot (base64) via a browser fetcher (dynamic or stealthy).",
+        "description": "Capture a page screenshot as image content blocks via a browser fetcher (dynamic or stealthy).",
         "request": _SCREENSHOT_REQUEST,
         "response": _SCREENSHOT_RESPONSE,
     },

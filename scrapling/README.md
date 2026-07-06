@@ -23,7 +23,7 @@ The worker is a `deploy: image` Python worker. The image build runs
 | `scrapling::fetch` | HTTP get/post/put/delete (curl_cffi, TLS impersonation) |
 | `scrapling::stealthy-fetch` | Camoufox stealth browser — Cloudflare/Turnstile bypass, WebRTC/canvas hardening |
 | `scrapling::dynamic-fetch` | Playwright/Chromium — JS render, waits, XHR capture, CDP |
-| `scrapling::screenshot` | Page screenshot (base64) via a browser fetcher |
+| `scrapling::screenshot` | Page screenshot (image content blocks) via a browser fetcher |
 | `scrapling::extract` | Parse HTML with a declarative selector list |
 | `scrapling::css` | One CSS query over provided HTML |
 | `scrapling::xpath` | One XPath query over provided HTML |

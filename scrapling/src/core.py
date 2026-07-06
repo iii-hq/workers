@@ -11,6 +11,7 @@ The `handlers` module wraps these in `asyncio.to_thread` and adds bulk/config.
 from __future__ import annotations
 
 import base64
+import io
 import re
 from typing import Any
 
@@ -274,6 +275,33 @@ def do_dynamic(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     return serialize_page(fetch_raw(cfg, payload, "dynamic"), payload, _include_html(cfg, payload))
 
 
+# Screenshot tiling: keep each image within model-friendly bounds.
+_TILE_MAX_WIDTH = 1024
+_TILE_MAX_HEIGHT = 1536
+# ponytail: cap 6 tiles; paginate/scroll-capture if full-page fidelity matters
+_TILE_MAX_COUNT = 6
+
+
+def tile_screenshot(data: bytes, image_type: str) -> tuple[list[bytes], int, int, bool]:
+    """Downscale to width<=1024 (aspect kept), split vertically into <=1536px
+    tiles, cap at 6. Returns (tiles, final_width, final_height, truncated)."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(data))
+    if img.width > _TILE_MAX_WIDTH:
+        img = img.resize((_TILE_MAX_WIDTH, max(1, round(img.height * _TILE_MAX_WIDTH / img.width))))
+    tiles: list[bytes] = []
+    truncated = False
+    for top in range(0, img.height, _TILE_MAX_HEIGHT):
+        if len(tiles) == _TILE_MAX_COUNT:
+            truncated = True
+            break
+        buf = io.BytesIO()
+        img.crop((0, top, img.width, min(top + _TILE_MAX_HEIGHT, img.height))).save(buf, format=image_type.upper())
+        tiles.append(buf.getvalue())
+    return tiles, img.width, img.height, truncated
+
+
 def do_screenshot(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     fetcher = payload.get("fetcher", "dynamic")
     image_type = payload.get("format", "png")
@@ -297,11 +325,20 @@ def do_screenshot(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any
 
     if "bytes" not in captured:
         raise RuntimeError("screenshot capture failed")
-    return {
-        "image_base64": base64.b64encode(captured["bytes"]).decode("ascii"),
-        "mime": f"image/{image_type}",
-        "url": captured.get("url", payload["url"]),
-    }
+    url = captured.get("url", payload["url"])
+    mime = f"image/{image_type}"
+    tiles, width, height, truncated = tile_screenshot(captured["bytes"], image_type)
+    kb = max(1, round(sum(len(t) for t in tiles) / 1024))
+    caption = f"screenshot of {url} — {width}x{height}px, {len(tiles)} tile(s), {kb} KB"
+    if truncated:
+        caption += f" (truncated: page taller than {_TILE_MAX_COUNT} tiles)"
+    # `content` blocks are picked up verbatim by the harness so the images reach
+    # the model as images — never rendered as base64 text into the prompt.
+    content: list[dict[str, Any]] = [
+        {"type": "image", "mime": mime, "data": base64.b64encode(t).decode("ascii")} for t in tiles
+    ]
+    content.append({"type": "text", "text": caption})
+    return {"content": content, "url": url, "mime": mime}
 
 
 def _browser_kwargs(cfg: dict[str, Any], payload: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any]:

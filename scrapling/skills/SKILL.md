@@ -59,7 +59,7 @@ Fetches return `{status, url, headers, cookies, encoding}` plus `extracted` (whe
   `block_webrtc`, `wait_selector`, `selectors`, bulk.
 - `scrapling::dynamic-fetch` — Playwright fetch; `network_idle`, `wait_selector`,
   `real_chrome`, `cdp_url`, `capture_xhr`, `selectors`, bulk.
-- `scrapling::screenshot` — page image (base64); `fetcher`, `full_page`, `format`.
+- `scrapling::screenshot` — page as image content blocks; `fetcher`, `full_page`, `format`.
 - `scrapling::extract` — parse `html` with a `selectors` list → named map.
 - `scrapling::css` — one CSS query over `html`; `first?`, `attr?`.
 - `scrapling::xpath` — one XPath query over `html`; `first?`, `attr?`.
