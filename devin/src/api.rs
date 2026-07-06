@@ -4,10 +4,11 @@
 //! next request. `request` is the generic transport that backs both the typed
 //! wrappers and the `devin::api` passthrough.
 //!
-//! Devin v3 endpoints are scoped under `organizations/{org_id}` (or, for code
-//! scans, `enterprise/...`), so `org_id` is a required path segment for the
-//! typed wrappers, not a header. The passthrough takes a full relative path, so
-//! a caller can address any scope directly.
+//! Devin has two API shapes. Personal tokens use the flat v1 API; service keys
+//! use the v3 API scoped under `organizations/{org_id}` (code scans under
+//! `enterprise/...`). The session wrappers pick the shape from whether `org_id`
+//! is set; pr-review and code-scan are v3-only. The passthrough takes a full
+//! relative path, so a caller can address any scope directly.
 
 use std::time::Duration;
 
@@ -104,21 +105,61 @@ fn org_scoped(cfg: &Config, suffix: &str) -> Result<String> {
     Ok(format!("organizations/{}/{}", cfg.org_id, suffix))
 }
 
-// Sessions — POST/GET /v3/organizations/{org_id}/sessions[/{id}[/messages]].
+// Sessions. Devin exposes two API shapes. Personal tokens use the flat v1 API
+// (`sessions`, `session/{id}`, `session/{id}/message`); service keys use the
+// v3 API scoped under `organizations/{org_id}`. The path shape is driven by
+// whether `org_id` is set, so `base_url` should be set to match (v1 vs v3).
+
+fn sessions_collection(cfg: &Config) -> String {
+    if cfg.org_id.is_empty() {
+        "sessions".to_string()
+    } else {
+        format!("organizations/{}/sessions", cfg.org_id)
+    }
+}
+
+fn session_item(cfg: &Config, id: &str) -> String {
+    if cfg.org_id.is_empty() {
+        format!("session/{id}")
+    } else {
+        format!("organizations/{}/sessions/{}", cfg.org_id, id)
+    }
+}
+
+fn session_message_path(cfg: &Config, id: &str) -> String {
+    if cfg.org_id.is_empty() {
+        format!("session/{id}/message")
+    } else {
+        format!("organizations/{}/sessions/{}/messages", cfg.org_id, id)
+    }
+}
 
 pub async fn create_session(http: &Client, cfg: &Config, body: &Value) -> Result<Value> {
-    let path = org_scoped(cfg, "sessions")?;
-    request(http, cfg, "POST", &path, None, Some(body)).await
+    request(
+        http,
+        cfg,
+        "POST",
+        &sessions_collection(cfg),
+        None,
+        Some(body),
+    )
+    .await
 }
 
 pub async fn get_session(http: &Client, cfg: &Config, session_id: &str) -> Result<Value> {
-    let path = org_scoped(cfg, &format!("sessions/{session_id}"))?;
-    request(http, cfg, "GET", &path, None, None).await
+    request(http, cfg, "GET", &session_item(cfg, session_id), None, None).await
 }
 
 pub async fn list_sessions(http: &Client, cfg: &Config, query: &Value) -> Result<Value> {
-    let path = org_scoped(cfg, "sessions")?;
-    request(http, cfg, "GET", &path, Some(query), None).await
+    request(
+        http,
+        cfg,
+        "GET",
+        &sessions_collection(cfg),
+        Some(query),
+        None,
+    )
+    .await
 }
 
 pub async fn send_message(
@@ -127,8 +168,15 @@ pub async fn send_message(
     session_id: &str,
     body: &Value,
 ) -> Result<Value> {
-    let path = org_scoped(cfg, &format!("sessions/{session_id}/messages"))?;
-    request(http, cfg, "POST", &path, None, Some(body)).await
+    request(
+        http,
+        cfg,
+        "POST",
+        &session_message_path(cfg, session_id),
+        None,
+        Some(body),
+    )
+    .await
 }
 
 // PR reviews — POST/GET /v3/organizations/{org_id}/pr-reviews.

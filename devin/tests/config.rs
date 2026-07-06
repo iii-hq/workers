@@ -7,9 +7,11 @@ use devin::functions::types::{
 use serde_json::json;
 
 #[test]
-fn default_config_targets_v3() {
+fn default_config_targets_v1_personal_mode() {
     let cfg = Config::default();
-    assert_eq!(cfg.base_url, "https://api.devin.ai/v3");
+    // Default is the flat v1 API (personal tokens); org_id empty selects it.
+    assert_eq!(cfg.base_url, "https://api.devin.ai/v1");
+    assert_eq!(cfg.org_id, "");
     assert_eq!(cfg.request_timeout_secs, 120);
     assert!(!cfg.iii_context);
     assert_eq!(cfg.devin_bin(), "devin");
@@ -19,6 +21,24 @@ fn default_config_targets_v3() {
 fn config_schema_serializes() {
     let schema = Config::json_schema();
     assert!(schema.is_object());
+}
+
+#[test]
+fn load_expands_env_and_unset_org_is_empty() {
+    std::env::set_var("DEVIN_TEST_KEY_XYZ", "secret123");
+    std::env::remove_var("DEVIN_TEST_ORG_XYZ");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.yaml");
+    std::fs::write(
+        &path,
+        "api_key: \"${DEVIN_TEST_KEY_XYZ}\"\norg_id: \"${DEVIN_TEST_ORG_XYZ}\"\n",
+    )
+    .unwrap();
+    let cfg = Config::load(path.to_str().unwrap()).unwrap();
+    assert_eq!(cfg.api_key, "secret123");
+    // An unset org var expands to empty, which selects the v1 (personal) mode.
+    assert_eq!(cfg.org_id, "");
+    std::env::remove_var("DEVIN_TEST_KEY_XYZ");
 }
 
 #[test]

@@ -26,11 +26,13 @@ From zero to a Devin cloud session over the bus:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-export DEVIN_API_KEY=cog_...
-export DEVIN_ORG_ID=org_...   # required for the organization-scoped cloud endpoints
+export DEVIN_API_KEY=...       # personal token (v1) or service key (cog_..., v3)
+# service-key users only: also `export DEVIN_ORG_ID=org_...` and set base_url to v3
 iii worker add devin
 iii   # starts the engine + worker
 ```
+
+The API has two shapes and the worker picks one from your config. A **personal token** uses the flat v1 API and is the default (leave `org_id` empty, `base_url` stays `.../v1`). A **service key** (`cog_...`) uses the v3 API scoped to an organization: set `org_id` and `base_url` to `https://api.devin.ai/v3`. The `devin::pr-review::*` and `devin::code-scan::*` functions are v3/enterprise features.
 
 Start a cloud session and read it back:
 
@@ -62,11 +64,11 @@ iii trigger devin::run --timeout-ms 600000 \
 Reach any endpoint the typed wrappers do not cover:
 
 ```bash
-# GET an arbitrary v3 path (paths are relative to the /v3 base and org-scoped)
-iii trigger devin::api --json '{"method":"GET","path":"organizations/org_.../sessions","query":{"limit":5}}'
+# paths are relative to base_url. v1 (personal token) uses flat paths:
+iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit":5}}'
 
-# POST with a body
-iii trigger devin::api --json '{"method":"POST","path":"organizations/org_.../sessions","body":{"prompt":"..."}}'
+# v3 (service key) paths are org-scoped:
+iii trigger devin::api --json '{"method":"GET","path":"organizations/org_.../sessions"}'
 ```
 
 Ask the engine for any function's contract:
@@ -98,7 +100,7 @@ The CLI surface drives the local `devin` binary. The cloud surface calls the Dev
 
 `devin::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), the same input contract as the claude-code and grok workers, so the acp worker can drive it with `--brain-fn devin::run`.
 
-`devin::session::create` accepts `prompt` plus the documented `POST /organizations/{org_id}/sessions` fields (`title`, `tags`, `devin_mode`, `repos`, `attachment_urls`, `playbook_id`, `knowledge_ids`, `secret_ids`, `max_acu_limit`, `resumable`, `bypass_approval`); each is omitted from the body when not supplied. All `devin::session::*` and `devin::pr-review::*` functions are scoped to the configured `org_id`.
+`devin::session::create` accepts `prompt` plus the union of the v1 and v3 create fields (`title`, `tags`, `playbook_id`, `knowledge_ids`, `secret_ids`, `max_acu_limit`; v3 `devin_mode`, `repos`, `attachment_urls`, `resumable`, `bypass_approval`; v1 `snapshot_id`, `unlisted`, `idempotent`); each is omitted from the body when not supplied, so populate the ones your token's API version accepts. `devin::session::*` follow the v1 flat paths by default and switch to v3 org-scoped paths when `org_id` is set.
 
 ### PR review and code scan
 
@@ -117,9 +119,9 @@ The CLI surface drives the local `devin` binary. The cloud surface calls the Dev
 Managed by the `configuration` worker; `config.yaml` is the seed installed on first registration and the live value hot-reloads.
 
 ```yaml
-api_key: "${DEVIN_API_KEY}"       # env-expanded by the configuration worker
-org_id: "${DEVIN_ORG_ID}"         # required path segment for org-scoped endpoints
-base_url: https://api.devin.ai/v3
+api_key: "${DEVIN_API_KEY}"       # env-expanded on load; empty disables the API surface
+org_id: "${DEVIN_ORG_ID}"         # empty = v1 personal mode; set = v3 org-scoped mode
+base_url: https://api.devin.ai/v1 # set to .../v3 alongside org_id for a service key
 request_timeout_secs: 120
 devin_executable: ""              # path to the devin CLI; empty = PATH
 cli_extra_args: []                # args inserted before `-- <prompt>`
@@ -128,7 +130,7 @@ raw_events_stream: devin::events  # verbatim CLI stdout
 iii_context: false                # prepend iii runtime context to a CLI prompt
 ```
 
-`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` so the configuration worker expands them from the environment; neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` is a required path segment for the organization-scoped v3 endpoints (`devin::session::*`, `devin::pr-review::*`, and code-scan remediation); those functions return a clear "org_id not configured" error when it is unset. `iii_context` defaults off because Devin normally runs in its own cloud VM without the `iii` CLI on PATH; enable it only when the CLI runs locally against a reachable engine.
+`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review and code-scan remediation. `iii_context` defaults off because Devin normally runs in its own cloud VM without the `iii` CLI on PATH; enable it only when the CLI runs locally against a reachable engine.
 
 ## Dependent workers
 

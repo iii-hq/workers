@@ -49,9 +49,10 @@ pub struct ApiRequest {
     pub body: Option<Value>,
 }
 
-/// Create a Devin cloud session. `prompt` (or a user `messages` entry) is
-/// required; every other field maps to a documented `POST /organizations/{org_id}/sessions`
-/// field and is omitted from the body when absent.
+/// Create a Devin session. `prompt` (or a user `messages` entry) is required.
+/// The remaining fields are the union of the v1 (`POST /v1/sessions`) and v3
+/// (`POST /v3/organizations/{org_id}/sessions`) bodies; each is omitted when
+/// absent, so populate the ones your token's API version accepts.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SessionCreateRequest {
@@ -61,12 +62,8 @@ pub struct SessionCreateRequest {
     pub messages: Option<Vec<Message>>,
     /// Human-readable session title.
     pub title: Option<String>,
-    /// Agent mode: normal, fast, lite, ultra, or fusion.
-    pub devin_mode: Option<String>,
-    /// Repository identifiers to attach to the session.
-    pub repos: Option<Vec<String>>,
-    /// File attachment URLs.
-    pub attachment_urls: Option<Vec<String>>,
+    /// Tags to apply to the session.
+    pub tags: Option<Vec<String>>,
     /// Playbook id to run.
     pub playbook_id: Option<String>,
     /// Knowledge ids to attach to the session.
@@ -75,12 +72,22 @@ pub struct SessionCreateRequest {
     pub secret_ids: Option<Vec<String>>,
     /// Cap the session's ACU consumption.
     pub max_acu_limit: Option<u64>,
-    /// Preserve VM state so the session can be resumed (default true).
+    /// (v3) Agent mode: normal, fast, lite, ultra, or fusion.
+    pub devin_mode: Option<String>,
+    /// (v3) Repository identifiers to attach to the session.
+    pub repos: Option<Vec<String>>,
+    /// (v3) File attachment URLs.
+    pub attachment_urls: Option<Vec<String>>,
+    /// (v3) Preserve VM state so the session can be resumed (default true).
     pub resumable: Option<bool>,
-    /// Skip approval workflows for this session.
+    /// (v3) Skip approval workflows for this session.
     pub bypass_approval: Option<bool>,
-    /// Tags to apply to the session.
-    pub tags: Option<Vec<String>>,
+    /// (v1) Machine snapshot id to start the session from.
+    pub snapshot_id: Option<String>,
+    /// (v1) Create the session as unlisted.
+    pub unlisted: Option<bool>,
+    /// (v1) Reuse an existing matching session instead of creating a duplicate.
+    pub idempotent: Option<bool>,
 }
 
 impl SessionCreateRequest {
@@ -118,6 +125,15 @@ impl SessionCreateRequest {
         }
         if let Some(v) = self.bypass_approval {
             m.insert("bypass_approval".into(), json!(v));
+        }
+        if let Some(v) = &self.snapshot_id {
+            m.insert("snapshot_id".into(), json!(v));
+        }
+        if let Some(v) = self.unlisted {
+            m.insert("unlisted".into(), json!(v));
+        }
+        if let Some(v) = self.idempotent {
+            m.insert("idempotent".into(), json!(v));
         }
         if let Some(v) = &self.tags {
             m.insert("tags".into(), json!(v));
