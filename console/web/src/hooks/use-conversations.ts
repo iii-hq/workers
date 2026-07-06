@@ -472,7 +472,9 @@ export function useConversations(
       const next = prev.map((c) => {
         if (c.model && valid.has(c.model)) return c
         changed = true
-        return { ...c, model: fallback, updatedAt: Date.now() }
+        // Bookkeeping, not activity: bumping updatedAt here re-sorted every
+        // stale-model conversation to the top labeled "now" on each refresh.
+        return { ...c, model: fallback }
       })
       return changed ? next : prev
     })
