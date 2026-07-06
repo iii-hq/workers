@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name = "iii-state"
+version = "0.1.0"
+edition = "2021"
+description = "State worker for iii — key-value state with reactive change triggers (state trigger type, state::* functions)"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "iii_state"
+path = "src/lib.rs"
+
+[[bin]]
+name = "state"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.20.0"
+# UpdateOp / StreamSetResult / StreamUpdateResult / UpdateOpError / MergePath —
+# the exact types the builtin used; pinned to the version iii-sdk resolves.
+iii-helpers = "=0.20.0"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+schemars = "0.8"
+# Store port (engine/src/builtins/kv.rs): insertion-ordered scope maps + the
+# byte-identical rkyv on-disk format.
+indexmap = { version = "2", features = ["serde"] }
+rkyv = "0.8"
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+[dev-dependencies]
+serial_test = "3"
+uuid = { version = "1", features = ["v4"] }

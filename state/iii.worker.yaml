@@ -1,0 +1,15 @@
+iii: v1
+name: state
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: state
+description: Distributed key-value state management with reactive change triggers — registers the `state` trigger type and the `state::*` functions.
+config:
+  adapter:
+    name: kv
+    config:
+      store_method: file_based
+      file_path: ./data/state_store.db
+dependencies:
+  configuration: "^0.19.0"
