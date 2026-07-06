@@ -97,10 +97,13 @@ pub struct CronSlot {
 
 impl CronSlot {
     pub fn rebind(&self, iii: &IIIClient, schedule: &str) {
+        // `expression` is the binding key the cron trigger type consumes
+        // (engine built-in and the standalone cron worker alike), matching
+        // how the harness binds its own sweep.
         let new = match iii.register_trigger(RegisterTriggerInput {
             trigger_type: "cron".to_string(),
             function_id: "worktree::prune".to_string(),
-            config: json!({ "schedule": schedule }),
+            config: json!({ "expression": schedule }),
             metadata: None,
         }) {
             Ok(trigger) => {

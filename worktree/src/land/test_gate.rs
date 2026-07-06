@@ -1,7 +1,8 @@
 //! The land test gate. The worker never execs arbitrary commands itself;
-//! production delegates to `shell::exec` with the worktree as both `cwd`
-//! and `base_dir`, so the shell worker's allowlist, denylist, and jail
-//! apply. Behind a trait so the land machine is testable in-process.
+//! production delegates to `shell::exec` with the worktree as `cwd` and as
+//! the `fs_scope` root, so the shell worker's allowlist, denylist, jail,
+//! and scope enforcement apply. Behind a trait so the land machine is
+//! testable in-process.
 
 use std::sync::Arc;
 
@@ -29,8 +30,10 @@ pub trait TestRunner: Send + Sync {
     ) -> Result<TestOutcome, WError>;
 }
 
-/// Production gate: `shell::exec` with `cwd` and `base_dir` pinned to the
-/// worktree. A jail rejection (`S215`) means `worktree_root` is not inside
+/// Production gate: `shell::exec` with `cwd` and the `fs_scope` root pinned
+/// to the worktree (this worker calls shell directly as a trusted peer, so
+/// it stamps its own scope — the same shape the harness stamps for agent
+/// calls). A jail rejection (`S215`) means `worktree_root` is not inside
 /// the shell worker's `fs.host_roots`; surface that misconfiguration
 /// explicitly instead of a generic failure.
 pub struct ShellExecRunner {
@@ -60,7 +63,7 @@ impl TestRunner for ShellExecRunner {
                 payload: json!({
                     "command": cmd,
                     "cwd": worktree_path,
-                    "base_dir": worktree_path,
+                    "fs_scope": { "root": worktree_path, "grants": [] },
                     "timeout_ms": timeout_ms,
                 }),
                 action: None,

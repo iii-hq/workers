@@ -133,6 +133,29 @@ async fn main() -> Result<()> {
     });
     functions::register_all(&iii, &deps);
 
+    // Best-effort HTTP exposure for the read-only surface. The `http`
+    // trigger type may be absent (no http worker installed); a failed
+    // registration warns and the worker keeps serving the bus.
+    let http_routes = [
+        ("worktree::list", "worktree/list"),
+        ("worktree::get", "worktree/get"),
+        ("worktree::status", "worktree/status"),
+        ("worktree::validate", "worktree/validate"),
+    ];
+    for (function_id, api_path) in &http_routes {
+        match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: function_id.to_string(),
+            config: serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
+            metadata: None,
+        }) {
+            Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
+            Err(e) => {
+                tracing::warn!(error = %e, function_id, "http trigger registration failed")
+            }
+        }
+    }
+
     let cron = CronSlot::default();
     if let Err(e) = configuration::register_config_trigger(&iii, cell, cron.clone()) {
         tracing::warn!(error = %e, "failed to bind the configuration trigger");

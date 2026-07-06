@@ -107,6 +107,29 @@ async fn call(client: &iii_sdk::IIIClient, function_id: &str, payload: Value) ->
     .unwrap_or_else(|e| panic!("{function_id} failed: {e}"))
 }
 
+/// Worker boot is not instant (connect retry backoff plus the configuration
+/// register/fetch round-trips), so wait for the surface to register instead
+/// of racing it with a fixed sleep.
+async fn wait_until_registered(client: &iii_sdk::IIIClient) {
+    for _ in 0..40 {
+        let listed = client
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::list".into(),
+                payload: Value::Object(Default::default()),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        if let Ok(v) = listed {
+            if v.to_string().contains("worktree::create") {
+                return;
+            }
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+    panic!("worktree::create never registered with the engine");
+}
+
 #[tokio::test]
 async fn end_to_end_lifecycle_via_iii_sdk() {
     let Some(_h) = boot().await else {
@@ -126,6 +149,7 @@ async fn end_to_end_lifecycle_via_iii_sdk() {
 
     let client = register_worker(ENGINE_WS, InitOptions::default());
     sleep(Duration::from_millis(500)).await;
+    wait_until_registered(&client).await;
 
     let created = call(
         &client,
