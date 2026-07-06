@@ -40,6 +40,16 @@ pub struct SpawnOptions {
     /// Parent-side wait guard for this child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
+    /// Absolute filesystem root for the child turn (e.g. an isolated
+    /// `worktree::create` checkout). Written to the child record's
+    /// `metadata.fs_scope.root`, so the harness stamps the child's scoped
+    /// shell/coder calls exactly as it does for the parent. Override wins:
+    /// when set it replaces the inherited parent scope for this child; when
+    /// absent the child inherits its direct parent's root unchanged.
+    /// Grandchildren never inherit this value transitively — each spawn
+    /// states its own root or inherits from its own direct parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
