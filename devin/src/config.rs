@@ -48,9 +48,9 @@ pub struct Config {
     pub raw_events_stream: String,
     /// Prepend the iii runtime context to the first prompt of a `devin::run`
     /// session so the agent discovers and calls engine functions through the
-    /// `iii` CLI. Devin normally runs in its own cloud VM without the `iii` CLI
-    /// on PATH, so this defaults off; enable it only when the CLI runs locally
-    /// against a reachable engine.
+    /// `iii` CLI, the same as the grok and codex workers. Defaults on for
+    /// parity; the context is most useful when the CLI can reach the engine.
+    /// Turn it off per turn with `iii_context: false` or globally here.
     pub iii_context: bool,
 }
 
@@ -65,7 +65,7 @@ impl Default for Config {
             cli_extra_args: Vec::new(),
             events_stream: "agent::events".to_string(),
             raw_events_stream: "devin::events".to_string(),
-            iii_context: false,
+            iii_context: true,
         }
     }
 }

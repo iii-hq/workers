@@ -13,7 +13,7 @@ fn default_config_targets_v1_personal_mode() {
     assert_eq!(cfg.base_url, "https://api.devin.ai/v1");
     assert_eq!(cfg.org_id, "");
     assert_eq!(cfg.request_timeout_secs, 120);
-    assert!(!cfg.iii_context);
+    assert!(cfg.iii_context);
     assert_eq!(cfg.devin_bin(), "devin");
 }
 

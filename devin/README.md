@@ -127,10 +127,10 @@ devin_executable: ""              # path to the devin CLI; empty = PATH
 cli_extra_args: []                # args inserted before `-- <prompt>`
 events_stream: agent::events      # AgentEvent frames
 raw_events_stream: devin::events  # verbatim CLI stdout
-iii_context: false                # prepend iii runtime context to a CLI prompt
+iii_context: true                 # prepend iii runtime context to a CLI prompt
 ```
 
-`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review and code-scan remediation. `iii_context` defaults off because Devin normally runs in its own cloud VM without the `iii` CLI on PATH; enable it only when the CLI runs locally against a reachable engine.
+`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review and code-scan remediation. `iii_context` defaults on, the same as the grok and codex workers, so a `devin::run` turn is prepended with the iii runtime context and the agent discovers engine functions through the `iii` CLI; the context is most useful when the CLI can reach the engine, and you can turn it off per turn with `iii_context: false`.
 
 ## Dependent workers
 

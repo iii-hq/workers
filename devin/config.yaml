@@ -35,7 +35,7 @@ events_stream: agent::events
 # Raw devin CLI stdout lines mirrored verbatim here, grouped by session_id.
 raw_events_stream: devin::events
 
-# Prepend the iii runtime context to a devin::run prompt. Devin normally runs in
-# its own cloud VM without the iii CLI on PATH, so this defaults off; enable it
-# only when the CLI runs locally against a reachable engine.
-iii_context: false
+# Prepend the iii runtime context to a devin::run prompt so the agent discovers
+# engine functions through the iii CLI, the same as the grok and codex workers.
+# Defaults on for parity; override per turn with the iii_context payload field.
+iii_context: true

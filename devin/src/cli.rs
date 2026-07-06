@@ -80,12 +80,24 @@ pub async fn stop(session_id: &str) -> bool {
     }
 }
 
-/// Build the CLI argv: configured extra args, then `--`, then the prompt.
+/// Build the CLI argv: configured extra args, then `--`, then the prompt. The
+/// `devin -- "<prompt>"` form is the documented prompt-automation invocation.
 fn build_args(prompt: &str, cfg: &Config) -> Vec<String> {
     let mut a: Vec<String> = cfg.cli_extra_args.clone();
     a.push("--".into());
     a.push(prompt.to_string());
     a
+}
+
+/// Compose the prompt for a turn: prepend the iii runtime context on the first
+/// turn of a session when the context is enabled, so the agent discovers engine
+/// functions through the iii CLI. Resumed turns already carry it in history.
+pub fn compose_prompt(prompt: &str, want_ctx: bool, is_first_turn: bool) -> String {
+    if want_ctx && is_first_turn {
+        format!("{III_CONTEXT_PROMPT}\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    }
 }
 
 /// Run one `devin::run` turn and return the result map.
@@ -126,11 +138,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     };
 
     let want_ctx = req.iii_context.unwrap_or(cfg.iii_context);
-    let full_prompt = if want_ctx && prior.is_none() {
-        format!("{III_CONTEXT_PROMPT}\n\n{prompt}")
-    } else {
-        prompt
-    };
+    let full_prompt = compose_prompt(&prompt, want_ctx, prior.is_none());
     let cwd = req.cwd.clone().unwrap_or_default();
     let argv = build_args(&full_prompt, &cfg);
 
@@ -335,4 +343,34 @@ fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> tokio::task::Joi
         }
         String::from_utf8_lossy(&tail).into_owned()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iii_context_prepended_on_first_turn() {
+        let out = compose_prompt("do X", true, true);
+        assert!(out.starts_with(III_CONTEXT_PROMPT));
+        assert!(out.trim_end().ends_with("do X"));
+        assert!(out.contains("iii runtime"));
+    }
+
+    #[test]
+    fn iii_context_absent_when_disabled() {
+        assert_eq!(compose_prompt("do X", false, true), "do X");
+    }
+
+    #[test]
+    fn iii_context_not_repeated_on_resume() {
+        assert_eq!(compose_prompt("do X", true, false), "do X");
+    }
+
+    #[test]
+    fn cli_argv_uses_documented_double_dash_form() {
+        let cfg = Config::default();
+        let argv = build_args("build a thing", &cfg);
+        assert_eq!(argv, vec!["--".to_string(), "build a thing".to_string()]);
+    }
 }
