@@ -734,10 +734,7 @@ type SendRequest = {
     metadata?: Record<string, unknown>; // -> SessionMeta.metadata (the tenancy hook)
   };
   options?: {
-    system_prompt?: string;       // combined with the built-in identity prompt per system_prompt_strategy;
-                                  // the identity prompt is fetched once at turn creation from
-                                  // router::system_prompt::get (provider-declared, operator-overridable),
-                                  // falling back to the harness's embedded default prompt
+    system_prompt?: string;
     max_turns?: number;           // default 16
     thinking_level?: ThinkingLevel;
     output?: OutputContract;      // the turn's deliverable; default { type: "text" } (see Output contract)
