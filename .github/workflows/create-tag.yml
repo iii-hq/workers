@@ -41,6 +41,7 @@ on:
           - shell
           - worktree
           - storage
+          - scrapling
           - web
       bump:
         description: 'Version bump (none = release the manifest version as-is, e.g. when a merged PR already set it)'

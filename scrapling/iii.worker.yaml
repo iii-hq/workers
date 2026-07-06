@@ -1,0 +1,32 @@
+# CI (.github/scripts/validate_worker.py) requires name/language/deploy/manifest
+# and reads the release version from `manifest`. The engine accepts iii/deploy/
+# manifest as publish metadata and ignores them at add/start time, so one file
+# satisfies both validators. The image is still built from runtime.base_image +
+# scripts.install (no Dockerfile); CI does not validate the runtime/scripts block.
+iii: v1
+name: scrapling
+language: python
+deploy: image
+manifest: pyproject.toml
+description: >-
+  Scrapling as an iii worker — scrapling::* functions run HTTP / anti-bot /
+  browser fetches, CSS/XPath/regex/adaptive extraction, persistent sessions,
+  and a declarative crawl over the iii bus.
+
+env:
+  III_URL: "ws://localhost:49134"
+
+# base_image + scripts.install build the image (supersedes the deprecated
+# runtime.language + Dockerfile). `scrapling install` downloads the
+# Camoufox/Chromium browsers used by stealthy-fetch / dynamic-fetch / screenshot.
+runtime:
+  base_image: docker.io/iiidev/python:latest
+
+# Browsers (Camoufox / Chromium) + long-lived sessions are RAM-hungry.
+resources:
+  memory: 4096
+  cpus: 2
+
+scripts:
+  install: "pip install -e . && scrapling install"
+  start: "python -m src.main"

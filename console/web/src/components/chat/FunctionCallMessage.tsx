@@ -14,6 +14,10 @@ import {
   SandboxFunctionIdLabel,
   SandboxToolView,
 } from '@/components/chat/sandbox'
+import {
+  ScraplingFunctionIdLabel,
+  ScraplingToolView,
+} from '@/components/chat/scrapling'
 import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
 import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
@@ -145,6 +149,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (SandboxToolView.isSandboxFunction(functionId)) {
     return <SandboxFunctionIdLabel functionId={functionId} />
   }
+  if (ScraplingToolView.isScraplingFunction(functionId)) {
+    return <ScraplingFunctionIdLabel functionId={functionId} />
+  }
   if (ShellToolView.isShellFunction(functionId)) {
     return <ShellFunctionIdLabel functionId={functionId} />
   }
@@ -191,6 +198,7 @@ export function FunctionCallMessage({
     WorkerToolView.tryRenderPreview(message) ??
     WebToolView.tryRenderPreview(message) ??
     CoderToolView.tryRenderPreview(message) ??
+    ScraplingToolView.tryRenderPreview(message) ??
     ShellToolView.tryRenderPreview(message) ??
     WorkflowToolView.tryRenderPreview(message) ??
     RouterToolView.tryRenderPreview(message) ??
@@ -203,6 +211,7 @@ export function FunctionCallMessage({
       WorkerToolView.tryRender(message) ??
       WebToolView.tryRender(message) ??
       CoderToolView.tryRender(message) ??
+      ScraplingToolView.tryRender(message) ??
       ShellToolView.tryRender(message) ??
       WorkflowToolView.tryRender(message) ??
       RouterToolView.tryRender(message) ??

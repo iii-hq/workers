@@ -1,0 +1,21 @@
+# Agent permissions for the scrapling worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# The pure parsers operate only on caller-provided HTML (no network) and are
+# safe for an agent to call without approval. The fetch functions make outbound
+# requests to arbitrary URLs (an SSRF surface), so they stay at the
+# needs_approval default — flip them to allow here if your deployment wants
+# agents to fetch freely.
+version: 1
+
+rules:
+  - scrapling::extract
+  - scrapling::css
+  - scrapling::xpath
+  - scrapling::regex
+  - scrapling::find-similar
+  - scrapling::find
+  - scrapling::find-by-text
+  - scrapling::find-by-regex
+  - scrapling::describe
+  - scrapling::to-markdown

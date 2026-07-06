@@ -60,6 +60,25 @@ fn function_call_output(call_id: &str, output: String) -> Value {
     json!({ "type": "function_call_output", "call_id": call_id, "output": output })
 }
 
+/// `function_call_output.output` is a flat string, so Image blocks inside a
+/// FunctionResult are hoisted into one synthetic user message emitted after
+/// the contiguous run of tool outputs (never between a function_call and its
+/// output, and never splitting sibling tool rows).
+fn flush_result_images(out: &mut Vec<Value>, buf: &mut Vec<(String, Vec<Value>)>) {
+    if buf.is_empty() {
+        return;
+    }
+    let mut parts = Vec::new();
+    for (call_id, images) in buf.drain(..) {
+        parts.push(json!({
+            "type": "input_text",
+            "text": format!("[image result of tool call {call_id}]")
+        }));
+        parts.extend(images);
+    }
+    out.push(json!({ "role": "user", "content": parts }));
+}
+
 /// Latest-wins dedup for a `function_call_output` with the same `call_id`.
 fn upsert_output(out: &mut Vec<Value>, row: Value) {
     let id = row.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -99,12 +118,16 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
         })
         .collect();
 
+    // call_id -> hoisted input_image parts, flushed when a result run ends.
+    let mut image_buf: Vec<(String, Vec<Value>)> = Vec::new();
     for m in messages {
         match m {
             AgentMessage::User(u) => {
+                flush_result_images(&mut out, &mut image_buf);
                 out.push(json!({ "role": "user", "content": user_content_parts(&u.content) }));
             }
             AgentMessage::Assistant(a) => {
+                flush_result_images(&mut out, &mut image_buf);
                 let text = text_of(&a.content);
                 if !text.is_empty() {
                     out.push(json!({
@@ -142,10 +165,39 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                     &mut out,
                     function_call_output(&r.function_call_id, format_function_result_content(r)),
                 );
+                let images: Vec<Value> = r
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentBlock::Image { mime, data } => Some(json!({
+                            "type": "input_image",
+                            "image_url": format!("data:{mime};base64,{data}")
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                // Latest-wins per call_id, mirroring upsert_output.
+                // ponytail: a duplicate replayed after its images were
+                // flushed re-emits them; cross-flush dedup would need a
+                // seen-id set.
+                let existing = image_buf
+                    .iter()
+                    .position(|(id, _)| id == &r.function_call_id);
+                match existing {
+                    Some(i) if images.is_empty() => {
+                        image_buf.remove(i);
+                    }
+                    Some(i) => image_buf[i].1 = images,
+                    None if !images.is_empty() => {
+                        image_buf.push((r.function_call_id.clone(), images));
+                    }
+                    None => {}
+                }
             }
             AgentMessage::Custom(_) => {}
         }
     }
+    flush_result_images(&mut out, &mut image_buf);
     out
 }
 
@@ -180,15 +232,24 @@ mod tests {
         })
     }
     fn result(id: &str, text: &str, details: Value) -> AgentMessage {
+        result_blocks(id, vec![ContentBlock::Text { text: text.into() }], details)
+    }
+    fn result_blocks(id: &str, content: Vec<ContentBlock>, details: Value) -> AgentMessage {
         AgentMessage::FunctionResult(FunctionResultMessage {
             role: FunctionResultRoleTag::FunctionResult,
             function_call_id: id.into(),
             function_id: "shell::exec".into(),
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content,
             details,
             is_error: false,
             timestamp: 3,
         })
+    }
+    fn image(data: &str) -> ContentBlock {
+        ContentBlock::Image {
+            mime: "image/png".into(),
+            data: data.into(),
+        }
     }
     fn call(id: &str) -> ContentBlock {
         ContentBlock::FunctionCall {
@@ -259,6 +320,85 @@ mod tests {
         assert_eq!(wire[0]["type"], "function_call");
         assert_eq!(wire[1]["type"], "function_call_output");
         assert!(wire[1]["output"].as_str().unwrap().contains("interrupted"));
+    }
+
+    #[test]
+    fn result_images_hoisted_into_user_message_after_output() {
+        // Incident class: base64 screenshots inside a FunctionResult were
+        // silently dropped (output is a flat string), so the model never saw
+        // them. Images must reach the model as a synthetic user item that
+        // never lands between a function_call and its output.
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1")]),
+                result_blocks(
+                    "t1",
+                    vec![ContentBlock::Text { text: "ok".into() }, image("AAAA")],
+                    json!({}),
+                ),
+                user(vec![ContentBlock::Text {
+                    text: "next".into(),
+                }]),
+            ],
+            "",
+        );
+        assert_eq!(wire[0]["type"], "function_call");
+        assert_eq!(wire[1]["type"], "function_call_output");
+        assert_eq!(wire[1]["output"], "ok", "output stays a flat text string");
+        assert_eq!(wire[2]["role"], "user", "hoisted images, got: {wire:?}");
+        assert_eq!(
+            wire[2]["content"][0]["text"],
+            "[image result of tool call t1]"
+        );
+        assert_eq!(wire[2]["content"][1]["type"], "input_image");
+        assert_eq!(
+            wire[2]["content"][1]["image_url"],
+            "data:image/png;base64,AAAA"
+        );
+        assert_eq!(wire[3]["content"][0]["text"], "next");
+    }
+
+    #[test]
+    fn sibling_result_images_flush_as_one_user_message_at_end() {
+        // Sibling tool rows must stay contiguous; images from a run of
+        // results flush as ONE user item, including at end-of-transcript.
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1"), call("t2")]),
+                result_blocks("t1", vec![image("AAAA")], json!({})),
+                result_blocks("t2", vec![image("BBBB")], json!({})),
+            ],
+            "",
+        );
+        assert_eq!(wire[2]["type"], "function_call_output");
+        assert_eq!(wire[3]["type"], "function_call_output");
+        assert_eq!(wire[4]["role"], "user");
+        let parts = wire[4]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 4, "text+image per call, got: {wire:?}");
+        assert_eq!(parts[0]["text"], "[image result of tool call t1]");
+        assert_eq!(parts[1]["image_url"], "data:image/png;base64,AAAA");
+        assert_eq!(parts[2]["text"], "[image result of tool call t2]");
+        assert_eq!(parts[3]["image_url"], "data:image/png;base64,BBBB");
+        assert_eq!(wire.len(), 5);
+    }
+
+    #[test]
+    fn duplicate_result_images_latest_wins_before_flush() {
+        // Deferred-resolve replay upserts the tool row latest-wins; buffered
+        // images must follow the same rule.
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1")]),
+                result_blocks("t1", vec![image("OLD1")], json!({})),
+                result_blocks("t1", vec![image("NEW1")], json!({})),
+            ],
+            "",
+        );
+        assert_eq!(wire[2]["role"], "user");
+        let parts = wire[2]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1]["image_url"], "data:image/png;base64,NEW1");
+        assert_eq!(wire.len(), 3);
     }
 
     #[test]

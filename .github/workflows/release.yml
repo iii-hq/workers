@@ -34,6 +34,7 @@ on:
       - 'telegram-bot/v*'
       - 'shell/v*'
       - 'storage/v*'
+      - 'scrapling/v*'
       - 'web/v*'
       - 'worktree/v*'
   workflow_dispatch:
