@@ -2,8 +2,8 @@
 name: shell
 tags: shell, exec, filesystem, jobs, sandbox
 description: >-
-  Run Unix commands and structured filesystem ops from the iii engine: allowlisted
-  exec, background jobs, and a host-jailed fs (ls/stat/mkdir/rm/chmod/mv/grep/sed/
+  Run Unix commands and structured filesystem ops from the iii engine: exec,
+  background jobs, and a host-jailed fs (ls/stat/mkdir/rm/chmod/mv/grep/sed/
   read/write), all forwardable into a sandbox microVM.
 ---
 
@@ -11,13 +11,13 @@ description: >-
 
 The shell worker is the single door every agent uses to touch the OS: run a
 build, call a CLI, read a file, list a directory. Routing it all through
-`shell::*` and `shell::fs::*` keeps allowlists, denylists, timeouts, output
+`shell::*` and `shell::fs::*` keeps a denylist, timeouts, output
 caps, and a host-root jail in one enforceable place. Both surfaces take an
 optional `target` field that forwards the call into a live `iii-sandbox`
-microVM, so one allowlist policy gates host and sandbox execution alike.
+microVM, so the same denylist gates host and sandbox execution alike.
 
 Host-targeted `shell::exec` is not an isolation boundary. The denylist is a
-regex tripwire on `argv.join(" ")`, and an allowlisted interpreter (`sh`,
+regex tripwire on `argv.join(" ")`, and any interpreter (`sh`,
 `node`, `python3`) can construct any forbidden token at runtime to bypass it.
 Run untrusted input with `target: { kind: "sandbox", sandbox_id }`. Prefer the
 `shell::fs::*` backends over `exec`-ing `ls`/`stat`/`grep`/`rg`: they stay
@@ -46,7 +46,7 @@ agents, pair with the `skills` worker.
 ## Boundaries
 
 - Host `shell::exec` is not a security sandbox: the denylist is bypassable by
-  any allowlisted interpreter. Run untrusted commands with `target: sandbox`
+  any interpreter. Run untrusted commands with `target: sandbox`
   (needs `iii-sandbox`).
 - `shell::fs::*` is jailed to `cfg.fs.host_roots` and refuses denylisted paths;
   paths must be absolute and symlinks are never followed.
@@ -62,13 +62,13 @@ agents, pair with the `skills` worker.
 
 ## Functions
 
-- `shell::exec`: run an allowlisted command in the foreground and return its
+- `shell::exec`: run a command in the foreground and return its
   stdout, stderr, exit code, and timing; blocks until exit or timeout. Sandbox
   execution is fully valid (`target: { kind: "sandbox", sandbox_id }`); only the
   host-only override fields — `stdin` (string piped to the program's stdin, then
   EOF), plus `cwd`/`env` — are rejected with `S210` when supplied on a sandbox
   target, because the sandbox exec protocol does not forward them.
-- `shell::exec_bg`: spawn an allowlisted command as a background job and return
+- `shell::exec_bg`: spawn a command as a background job and return
   a `job_id` immediately. Host-targeted jobs run until they exit or `shell::kill`
   terminates them — unbounded by default, capped only when the operator sets a
   positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway
