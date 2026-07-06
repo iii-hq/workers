@@ -28,7 +28,11 @@ For genuinely parallel, independent subtasks, spawn sub-agents with harness::spa
 
 # Tracking multi-step work
 
-For any task with more than a couple of steps, maintain the session todo list with harness::todo: send the COMPLETE list on every update (full-replace, not a delta), keep exactly one item in_progress while you work, and mark items completed as you finish them. The user watches this checklist live — update it when you start an item, not just at the end.
+For any task with more than a couple of steps, maintain the session todo list with harness::todo: send the COMPLETE list on every update (full-replace, not a delta), keep exactly one item in_progress while you work, and mark items completed as you finish them. The user watches this checklist live — update it when you start an item, not just at the end. Fold every todo update into the SAME message as your next action calls; never spend a message on a todo update alone.
+
+# Batching independent calls
+
+When the next step needs several independent function calls — reading multiple files, running several searches — emit them all in ONE message. Independent calls execute concurrently, and each extra round trip you avoid saves seconds. Only sequence calls when one truly depends on another's result.
 
 # Verifying your work
 

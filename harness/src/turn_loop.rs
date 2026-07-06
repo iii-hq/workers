@@ -64,6 +64,24 @@ pub async fn enqueue_step(
     .map_err(|e| HarnessError::Dependency(format!("enqueue harness::turn: {e}")))
 }
 
+/// Batch-mates that may execute concurrently: the read-only coder surface
+/// plus harness bookkeeping. Mutations, shell execution, and everything
+/// unknown stay sequential so an order-dependent batch keeps its order.
+const PARALLEL_SAFE: &[&str] = &[
+    "coder::read-file",
+    "coder::search",
+    "coder::tree",
+    "coder::list-folder",
+    "coder::context",
+    "coder::checkpoints",
+    "harness::todo",
+    "harness::status",
+];
+
+fn parallel_safe(function_id: &str) -> bool {
+    PARALLEL_SAFE.contains(&function_id)
+}
+
 fn origin(turn_id: &str) -> Value {
     json!({ "turn_id": turn_id })
 }
@@ -389,6 +407,9 @@ pub async fn run_step(
             crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
                 .await?;
         let filesystem_root = record.options.filesystem_root().map(str::to_string);
+        // (call, effective args, pre-hook annotations) for calls that passed
+        // policy + pre_trigger and will actually invoke.
+        let mut ready: Vec<(&policy::PlannedCall, serde_json::Value, _)> = Vec::new();
         for call in trigger_calls.iter().copied() {
             // Per-call checkpoint: skip done/pending, recover an interrupted
             // trigger.
@@ -518,7 +539,9 @@ pub async fn run_step(
                 continue;
             }
 
-            // Checkpoint triggered before invoking the (at-most-once) target.
+            // Checkpoint triggered before invoking the (at-most-once) target;
+            // the ready list defers the actual invoke so a run of read-only
+            // calls can execute concurrently (phase 2 below).
             record.calls.insert(
                 call.id.clone(),
                 CallCheckpoint {
@@ -533,20 +556,44 @@ pub async fn run_step(
                     pending_at: None,
                 },
             );
-            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+            ready.push((call, eff_args, pre_ann));
+        }
 
-            // Single invocation chokepoint: subscription control calls are
-            // intercepted (trusted session injected); everything else invokes the
-            // target. Then the post_trigger chain runs over the result.
-            let raw = crate::functions::subscribe::invoke(
-                deps,
-                &engine,
-                &policy,
-                &call.function_id,
-                &eff_args,
-                &record.session_id,
-            )
-            .await;
+        // One durable write covers every Triggered checkpoint — all of them
+        // land before ANY invoke, so at-most-once recovery still holds.
+        if !ready.is_empty() {
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+        }
+
+        // Phase 2 — invoke. Consecutive parallel-safe calls (read-only surface
+        // + bookkeeping) run concurrently; everything else runs sequentially in
+        // content order, so a batch like [build, test] keeps its order.
+        let mut raws = Vec::with_capacity(ready.len());
+        let mut i = 0;
+        while i < ready.len() {
+            let mut j = i + 1;
+            if parallel_safe(&ready[i].0.function_id) {
+                while j < ready.len() && parallel_safe(&ready[j].0.function_id) {
+                    j += 1;
+                }
+            }
+            let futs = ready[i..j].iter().map(|(call, eff_args, _)| {
+                crate::functions::subscribe::invoke(
+                    deps,
+                    &engine,
+                    &policy,
+                    &call.function_id,
+                    eff_args,
+                    &record.session_id,
+                )
+            });
+            raws.extend(futures::future::join_all(futs).await);
+            i = j;
+        }
+
+        // Phase 3 — results, in content order: post_trigger chain, transcript
+        // append, done checkpoint. Unchanged semantics from the sequential loop.
+        for ((call, eff_args, pre_ann), raw) in ready.into_iter().zip(raws) {
             let post_outcome = deps
                 .hooks
                 .run_post_trigger(

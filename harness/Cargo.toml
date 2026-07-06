@@ -29,6 +29,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+# join_all for the concurrent read-only dispatch runs in turn_loop.
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # Must stay on the same schemars major as iii-sdk so the derived
 # `JsonSchema` impls satisfy `RegisterFunction::new_async`.
 schemars = "0.8"
