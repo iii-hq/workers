@@ -697,7 +697,10 @@ mod tests {
         c.compile_denylist().unwrap();
 
         let in_jail = root.join("mytool").to_string_lossy().to_string();
-        assert!(c.is_command_allowed(&[in_jail]).is_ok(), "own build output runs");
+        assert!(
+            c.is_command_allowed(&[in_jail]).is_ok(),
+            "own build output runs"
+        );
         assert!(c.is_command_allowed(&["/bin/ls".into()]).is_ok());
         assert!(c.is_command_allowed(&["ls".into()]).is_ok());
 
@@ -717,7 +720,11 @@ mod tests {
             .is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
             .is_ok());
         let err = c
-            .is_command_allowed(&["tar".into(), "--checkpoint-action=exec=sh".into(), "x".into()])
+            .is_command_allowed(&[
+                "tar".into(),
+                "--checkpoint-action=exec=sh".into(),
+                "x".into(),
+            ])
             .expect_err("dangerous form must trip the denylist");
         assert!(err.contains("denylist"), "got: {err}");
     }
