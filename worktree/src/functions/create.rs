@@ -65,8 +65,44 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
             format!("repo_path is not a directory: {}", repo.display()),
         ));
     }
+    // Gate on the canonicalized path so symlink spellings cannot dodge the
+    // allowlist. Checked at create only: narrowing the list later never
+    // breaks existing worktrees.
+    let canonical_repo = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
+    if !cfg.gates.repo_allowed(&canonical_repo.to_string_lossy()) {
+        return Err(WError::new(
+            codes::REPO_NOT_ALLOWED,
+            format!(
+                "repository {} is not allowed by configuration; add it to \
+                 gates.repos to enable",
+                canonical_repo.display()
+            ),
+        ));
+    }
+
     let repo_key = ops::git_common_dir(&repo, t).await?;
     let _guard = deps.locks.guard(&repo_key).await;
+
+    // Budget check under the repo lock so concurrent creates serialize
+    // against the same count. Orphaned records are not live worktrees.
+    if cfg.gates.max_worktrees_per_repo > 0 {
+        let live = state::list_records(deps.state.as_ref())
+            .await?
+            .iter()
+            .filter(|r| r.repo_key == repo_key && r.lifecycle != Lifecycle::Orphaned)
+            .count() as u32;
+        if live >= cfg.gates.max_worktrees_per_repo {
+            return Err(WError::new(
+                codes::WORKTREE_BUDGET_EXCEEDED,
+                format!(
+                    "repository {} already has {live} live worktree(s), the \
+                     configured budget; raise gates.max_worktrees_per_repo to \
+                     allow more",
+                    canonical_repo.display()
+                ),
+            ));
+        }
+    }
 
     if req.pr.is_some() && (req.base_ref.is_some() || req.branch.is_some()) {
         return Err(WError::new(

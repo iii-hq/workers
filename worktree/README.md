@@ -93,6 +93,8 @@ gates:
   allow_land: true                  # worktree::land
   allow_prune: true                 # worktree::prune (including the cron sweep)
   land_targets: ["*"]               # globs; pin to ["main"] to allow only mainline lands
+  repos: ["*"]                      # globs over canonical repo paths worktrees may branch from
+  max_worktrees_per_repo: 0         # live-worktree budget per repo at create time; 0 = unlimited
 ```
 
 ### Copy-ignored provisioning
@@ -130,6 +132,12 @@ message names the exact key to flip, e.g. `worktree::remove is disabled by
 configuration; set gates.allow_remove: true to enable`. Force is the one
 gate that ships closed: takeovers, forced removals, and land restarts are
 opt-in.
+
+Creation is gated too: `gates.repos` pins which repositories worktrees may
+branch from (globs over the canonicalized path, `W503` otherwise), and
+`gates.max_worktrees_per_repo` caps live worktrees per repository at create
+time (`W504` names the current count; orphaned records do not count, and
+narrowing either gate later never breaks existing worktrees).
 
 Gates constrain this worker's own surface only. Restricting what an agent
 can run in a shell (`rm`, `git branch -D`, ...) is the shell worker's

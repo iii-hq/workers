@@ -62,6 +62,10 @@ pub mod codes {
     pub const FORCE_DISABLED: &str = "W501";
     /// The land target branch is not allowed by gates.land_targets.
     pub const LAND_TARGET_NOT_ALLOWED: &str = "W502";
+    /// The repository is not allowed by gates.repos.
+    pub const REPO_NOT_ALLOWED: &str = "W503";
+    /// The repository already holds gates.max_worktrees_per_repo live worktrees.
+    pub const WORKTREE_BUDGET_EXCEEDED: &str = "W504";
 }
 
 /// One structured worker error: stable code + human-readable message.

@@ -125,6 +125,15 @@ pub struct GatesConfig {
     /// characters); pin to `["main"]` to allow only mainline lands.
     #[serde(default = "default_land_targets")]
     pub land_targets: Vec<String>,
+    /// Repositories `worktree::create` may branch from. Glob list over the
+    /// canonicalized repository path; checked at create only, so existing
+    /// worktrees keep working when the list narrows later.
+    #[serde(default = "default_match_all")]
+    pub repos: Vec<String>,
+    /// Live (non-orphaned) worktrees allowed per repository at create time;
+    /// 0 = unlimited.
+    #[serde(default)]
+    pub max_worktrees_per_repo: u32,
 }
 
 fn default_true() -> bool {
@@ -132,6 +141,10 @@ fn default_true() -> bool {
 }
 
 fn default_land_targets() -> Vec<String> {
+    default_match_all()
+}
+
+fn default_match_all() -> Vec<String> {
     vec!["*".to_string()]
 }
 
@@ -144,6 +157,8 @@ impl Default for GatesConfig {
             allow_land: true,
             allow_prune: true,
             land_targets: default_land_targets(),
+            repos: default_match_all(),
+            max_worktrees_per_repo: 0,
         }
     }
 }
@@ -152,6 +167,12 @@ impl GatesConfig {
     /// True when `target` matches any of the `land_targets` globs.
     pub fn land_target_allowed(&self, target: &str) -> bool {
         self.land_targets.iter().any(|g| glob_match(g, target))
+    }
+
+    /// True when the canonicalized repository path matches any of the
+    /// `repos` globs.
+    pub fn repo_allowed(&self, repo_path: &str) -> bool {
+        self.repos.iter().any(|g| glob_match(g, repo_path))
     }
 }
 
