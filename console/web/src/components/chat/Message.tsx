@@ -89,6 +89,8 @@ export function Message({
     case 'system':
       return message.kind === 'compaction' ? (
         <CompactionMarker message={message} />
+      ) : message.kind === 'todo' ? (
+        <TodoCard message={message} />
       ) : (
         <SystemNotice message={message} />
       )
@@ -111,6 +113,60 @@ function SystemNotice({ message }: { message: SystemMessageType }) {
       )}
     >
       {message.content}
+    </article>
+  )
+}
+
+/** The harness::todo checklist — the latest todo entry is the live list. */
+function TodoCard({ message }: { message: SystemMessageType }) {
+  const items = message.todoItems ?? []
+  if (items.length === 0) return null
+  const done = items.filter((i) => i.status === 'completed').length
+  return (
+    <article className="my-2 border border-rule rounded-md px-3 py-2">
+      <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint mb-1.5 flex items-center gap-2">
+        <span>tasks</span>
+        <span className="text-ink-ghost">·</span>
+        <span className="tabular-nums">
+          {done}/{items.length}
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {items.map((item) => (
+          <li
+            key={`${item.status}:${item.text}`}
+            className="flex items-start gap-2 text-[13px] leading-snug"
+          >
+            <span
+              aria-hidden="true"
+              className={
+                item.status === 'completed'
+                  ? 'text-ok'
+                  : item.status === 'in_progress'
+                    ? 'text-warn'
+                    : 'text-ink-ghost'
+              }
+            >
+              {item.status === 'completed'
+                ? '◼'
+                : item.status === 'in_progress'
+                  ? '▸'
+                  : '◻'}
+            </span>
+            <span
+              className={
+                item.status === 'completed'
+                  ? 'text-ink-faint line-through'
+                  : item.status === 'in_progress'
+                    ? 'text-ink'
+                    : 'text-ink-faint'
+              }
+            >
+              {item.text}
+            </span>
+          </li>
+        ))}
+      </ul>
     </article>
   )
 }

@@ -7,6 +7,7 @@
 //! of the agent-facing surface.
 
 use crate::functions::react::REACT_ID;
+use crate::functions::todo::{TodoRequest, TodoResponse, TODO_ID};
 use crate::functions::{
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
@@ -64,6 +65,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
+        spec::<TodoRequest, TodoResponse>(TODO_ID),
         spec::<ReactEvent, ReactResult>(REACT_ID),
     ]
 }

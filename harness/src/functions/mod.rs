@@ -14,6 +14,7 @@ pub mod status;
 pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
+pub mod todo;
 pub mod turn;
 
 use std::future::Future;
@@ -156,6 +157,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
     });
+    register(
+        iii,
+        deps,
+        todo::TODO_ID,
+        todo::TODO_DESC,
+        |d, r| async move { todo::handle(&d, r).await },
+    );
 
     // Internal filesystem grant controls — registered for trusted callers, kept
     // off the model-facing catalog.

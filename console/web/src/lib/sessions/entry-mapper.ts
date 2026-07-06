@@ -131,6 +131,9 @@ export function entrySegments(
     if (item.custom.custom_type === COMPACTION_CUSTOM_TYPE) {
       return [compactionMarker(item.entry_id, item.custom.data, Date.now())]
     }
+    if (item.custom.custom_type === 'todo') {
+      return [todoCard(item.entry_id, item.custom.data)]
+    }
     return []
   }
   const message = item.message
@@ -169,6 +172,26 @@ export function entrySegments(
       }
       return [msg]
     }
+  }
+}
+
+/** `custom_type: "todo"` — the harness::todo checklist (latest wins). */
+function todoCard(entryId: string, data: unknown): Message {
+  const items = Array.isArray((data as { items?: unknown })?.items)
+    ? ((data as { items: unknown[] }).items.filter(
+        (i): i is { text: string; status: string } =>
+          typeof (i as { text?: unknown })?.text === 'string' &&
+          typeof (i as { status?: unknown })?.status === 'string',
+      ) as { text: string; status: 'pending' | 'in_progress' | 'completed' }[])
+    : []
+  return {
+    id: entryId,
+    role: 'system',
+    kind: 'todo',
+    content: `todo: ${items.length} items`,
+    tone: 'info',
+    todoItems: items,
+    createdAt: Date.now(),
   }
 }
 

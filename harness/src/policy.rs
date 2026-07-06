@@ -116,6 +116,7 @@ pub fn code_mode_policy() -> FunctionPolicy {
             "shell::kill",
             "shell::status",
             "harness::spawn",
+            "harness::todo",
         ]
         .into_iter()
         .map(String::from)
@@ -287,6 +288,7 @@ mod tests {
             "shell::kill",
             "shell::status",
             "harness::spawn",
+            "harness::todo",
         ] {
             assert!(c.allows(allowed), "{allowed} must be allowed");
         }

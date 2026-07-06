@@ -94,6 +94,18 @@ pub async fn put_turn(
     state_set(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await
 }
 
+/// Persist an arbitrary value under a harness-owned scope (e.g. the
+/// session todo list).
+pub async fn put_scoped(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    value: &serde_json::Value,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    state_set(iii, scope, key, value.clone(), timeout_ms).await
+}
+
 pub async fn delete_turn(
     iii: &IIIClient,
     session_id: &str,

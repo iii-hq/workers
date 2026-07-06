@@ -1,0 +1,73 @@
+{
+  "function_id": "harness::todo",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TodoItem": {
+        "properties": {
+          "status": {
+            "$ref": "#/definitions/TodoStatus"
+          },
+          "text": {
+            "description": "The task, imperative and specific (≤ 500 chars).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "text"
+        ],
+        "type": "object"
+      },
+      "TodoStatus": {
+        "enum": [
+          "pending",
+          "in_progress",
+          "completed"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "items": {
+        "description": "The complete list (replaces the previous one; empty clears it).",
+        "items": {
+          "$ref": "#/definitions/TodoItem"
+        },
+        "type": "array"
+      },
+      "session_id": {
+        "description": "The session whose list to replace. Callers inside a turn omit it — the harness injects the calling session.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "title": "TodoRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "count": {
+        "description": "Items stored (after validation).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "count",
+      "ok"
+    ],
+    "title": "TodoResponse",
+    "type": "object"
+  }
+}

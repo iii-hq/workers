@@ -140,6 +140,18 @@ pub async fn invoke(
     match function_id {
         REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id).await,
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
+        // The todo list is per-session state: the CALLING session is
+        // authoritative, never a model-supplied id.
+        crate::functions::todo::TODO_ID => {
+            let mut args = arguments.clone();
+            if let Value::Object(map) = &mut args {
+                map.insert(
+                    "session_id".to_string(),
+                    Value::String(session_id.to_string()),
+                );
+            }
+            trigger::invoke_target(engine, policy, crate::functions::todo::TODO_ID, &args).await
+        }
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
 }

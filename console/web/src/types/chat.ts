@@ -112,9 +112,17 @@ export interface SystemMessage extends BaseMessage {
   role: 'system'
   content: string
   tone?: 'info' | 'warn' | 'error'
-  kind?: 'notice' | 'compaction'
+  kind?: 'notice' | 'compaction' | 'todo'
   summaryText?: string
   tokensBefore?: number
+  /** `kind: 'todo'` — the session task list (latest entry wins). */
+  todoItems?: TodoItem[]
+}
+
+/** One `harness::todo` checklist item. */
+export interface TodoItem {
+  text: string
+  status: 'pending' | 'in_progress' | 'completed'
 }
 
 export type Message =
