@@ -1,7 +1,8 @@
 # CI (.github/scripts/validate_worker.py) requires name/language/deploy/manifest
-# and reads the release version from `manifest`. The image is still built from
-# runtime.base_image + scripts.install (no Dockerfile); CI does not validate the
-# runtime/scripts block, so both coexist.
+# and reads the release version from `manifest`. The engine accepts iii/deploy/
+# manifest as publish metadata and ignores them at add/start time, so one file
+# satisfies both validators. The image is still built from runtime.base_image +
+# scripts.install (no Dockerfile); CI does not validate the runtime/scripts block.
 iii: v1
 name: scrapling
 language: python
