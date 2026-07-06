@@ -18,7 +18,15 @@ fn is_scoped_function(function_id: &str) -> bool {
 }
 
 /// Stamp the trusted filesystem scope onto a scoped call's arguments.
-pub fn inject(function_id: &str, args: Value, root: Option<&str>, grants: &[String]) -> Value {
+/// `origin` carries the issuing (session_id, turn_id) so the shell's write
+/// journal can attribute mutations and support undo-by-turn.
+pub fn inject(
+    function_id: &str,
+    args: Value,
+    root: Option<&str>,
+    grants: &[String],
+    origin: Option<(&str, &str)>,
+) -> Value {
     if !is_scoped_function(function_id) {
         return args;
     }
@@ -27,13 +35,15 @@ pub fn inject(function_id: &str, args: Value, root: Option<&str>, grants: &[Stri
     };
 
     if let Some(root) = root {
-        map.insert(
-            FS_SCOPE_FIELD.to_string(),
-            json!({
-                "root": root,
-                "grants": grants,
-            }),
-        );
+        let mut scope = json!({
+            "root": root,
+            "grants": grants,
+        });
+        if let Some((session_id, turn_id)) = origin {
+            scope["session_id"] = json!(session_id);
+            scope["turn_id"] = json!(turn_id);
+        }
+        map.insert(FS_SCOPE_FIELD.to_string(), scope);
     } else {
         map.remove(FS_SCOPE_FIELD);
     }
@@ -53,6 +63,7 @@ mod tests {
             json!({ "command": "ls" }),
             Some("/work/session-7"),
             &[],
+            None,
         );
         assert_eq!(
             out,
@@ -67,6 +78,7 @@ mod tests {
             json!({ "path": "src/main.rs" }),
             Some("/work/session-7"),
             &[],
+            None,
         );
         assert_eq!(
             out,
@@ -81,6 +93,7 @@ mod tests {
             json!({ "command": "ls", "fs_scope": { "root": "/etc", "grants": ["/model"] } }),
             Some("/work/session-7"),
             &[],
+            None,
         );
         assert_eq!(
             out,
@@ -96,6 +109,7 @@ mod tests {
             json!({ "command": "ls", "fs_scope": { "root": "/etc", "grants": ["/model"] } }),
             Some("/work/session-7"),
             &grants,
+            None,
         );
         assert_eq!(
             out,
@@ -106,7 +120,7 @@ mod tests {
     #[test]
     fn strips_caller_supplied_fs_scope_when_root_absent() {
         let args = json!({ "command": "ls", "fs_scope": { "root": "/etc", "grants": ["/model"] } });
-        let out = inject("shell::exec", args, None, &[]);
+        let out = inject("shell::exec", args, None, &[], None);
         assert_eq!(out, json!({ "command": "ls" }));
     }
 
@@ -118,6 +132,7 @@ mod tests {
             args.clone(),
             Some("/work/session-7"),
             &["/approved".to_string()],
+            None,
         );
         assert_eq!(out, args);
     }
@@ -130,6 +145,7 @@ mod tests {
             args.clone(),
             Some("/work/session-7"),
             &["/approved".to_string()],
+            None,
         );
         assert_eq!(out, args);
     }
@@ -137,7 +153,13 @@ mod tests {
     #[test]
     fn passthrough_when_args_not_an_object() {
         let args = json!(["ls", "-la"]);
-        let out = inject("shell::exec", args.clone(), Some("/work/session-7"), &[]);
+        let out = inject(
+            "shell::exec",
+            args.clone(),
+            Some("/work/session-7"),
+            &[],
+            None,
+        );
         assert_eq!(out, args);
 
         let scalar = json!("raw");
@@ -146,6 +168,7 @@ mod tests {
             scalar.clone(),
             Some("/work/session-7"),
             &[],
+            None,
         );
         assert_eq!(out, scalar);
     }

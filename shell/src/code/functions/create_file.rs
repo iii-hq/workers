@@ -113,16 +113,28 @@ pub async fn handle(
             Err(e) => entries.push((spec, Err(e))),
         }
     }
+    let mut journal_entries = Vec::new();
     let results: Vec<CreateFileResult> = entries
         .into_iter()
-        .map(|(spec, resolved)| create_one(&cfg, spec, resolved))
+        .map(|(spec, resolved)| {
+            let (result, journal) = create_one(&cfg, spec, resolved);
+            journal_entries.extend(journal);
+            result
+        })
         .collect();
+    let root = resolver.effective_root(scope_root);
+    crate::code::journal::record(
+        &cfg,
+        &root,
+        req.fs_scope.as_ref(),
+        "coder::create-file",
+        journal_entries,
+    );
     let written: Vec<String> = results
         .iter()
         .filter(|r| r.success)
         .map(|r| r.path.clone())
         .collect();
-    let root = resolver.effective_root(scope_root);
     let checks = crate::code::checks::run_post_write_checks(&cfg, &resolver, &root, &written).await;
     Ok(CreateFileOutput { results, checks })
 }
@@ -131,7 +143,7 @@ fn create_one(
     cfg: &CoderConfig,
     spec: CreateFileSpec,
     resolved: Result<std::path::PathBuf, CoderError>,
-) -> CreateFileResult {
+) -> (CreateFileResult, Option<crate::code::journal::EntryInput>) {
     // Resolve up front: from here on every filesystem operation uses ONLY
     // the resolver-returned path (never re-derived from the raw request),
     // and the result echoes that canonical absolute path. When resolution
@@ -139,28 +151,48 @@ fn create_one(
     let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
-            return CreateFileResult {
-                path: spec.path,
-                success: false,
-                bytes_written: 0,
-                error: Some((&e).into()),
-            }
+            return (
+                CreateFileResult {
+                    path: spec.path,
+                    success: false,
+                    bytes_written: 0,
+                    error: Some((&e).into()),
+                },
+                None,
+            )
         }
     };
     let wire_path = abs.display().to_string();
+    // Before-image for the journal: the overwritten content, or None for a
+    // brand-new file (undo then deletes it). Captured before the write.
+    let before = if abs.exists() {
+        std::fs::read(&abs).ok()
+    } else {
+        None
+    };
     match try_create_one(cfg, &abs, spec) {
-        Ok(bytes) => CreateFileResult {
-            path: wire_path,
-            success: true,
-            bytes_written: bytes,
-            error: None,
-        },
-        Err(e) => CreateFileResult {
-            path: wire_path,
-            success: false,
-            bytes_written: 0,
-            error: Some((&e).into()),
-        },
+        Ok(bytes) => (
+            CreateFileResult {
+                path: wire_path,
+                success: true,
+                bytes_written: bytes,
+                error: None,
+            },
+            Some(crate::code::journal::EntryInput {
+                path: abs,
+                before,
+                skipped: false,
+            }),
+        ),
+        Err(e) => (
+            CreateFileResult {
+                path: wire_path,
+                success: false,
+                bytes_written: 0,
+                error: Some((&e).into()),
+            },
+            None,
+        ),
     }
 }
 

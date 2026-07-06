@@ -220,6 +220,7 @@ mod tests {
             batch_read_budget_bytes: 23,
             max_output_bytes: 31,
             post_write_checks: Vec::new(),
+            journal: Default::default(),
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
 

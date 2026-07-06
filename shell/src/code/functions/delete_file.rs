@@ -61,6 +61,7 @@ pub struct DeleteFileResult {
 
 pub async fn handle(
     resolver: Arc<PathResolver>,
+    cfg: Arc<crate::code::config::CoderConfig>,
     req: DeleteFileInput,
 ) -> Result<DeleteFileOutput, String> {
     if req.paths.is_empty() {
@@ -77,10 +78,23 @@ pub async fn handle(
             Err(e) => entries.push((p, Err(e))),
         }
     }
+    let mut journal_entries = Vec::new();
     let results = entries
         .into_iter()
-        .map(|(p, resolved)| delete_one(&resolver, scope_root, &p, req.recursive, resolved))
+        .map(|(p, resolved)| {
+            let (result, journal) = delete_one(&resolver, scope_root, &p, req.recursive, resolved);
+            journal_entries.extend(journal);
+            result
+        })
         .collect();
+    let root = resolver.effective_root(scope_root);
+    crate::code::journal::record(
+        &cfg,
+        &root,
+        req.fs_scope.as_ref(),
+        "coder::delete-file",
+        journal_entries,
+    );
     Ok(DeleteFileOutput { results })
 }
 
@@ -90,7 +104,7 @@ fn delete_one(
     rel: &str,
     recursive: bool,
     resolved: Result<std::path::PathBuf, CoderError>,
-) -> DeleteFileResult {
+) -> (DeleteFileResult, Option<crate::code::journal::EntryInput>) {
     // Resolve up front: deletion operates ONLY on the resolver-returned
     // path, and the result echoes that canonical absolute path. When
     // resolution fails there is no canonical path, so the caller's input
@@ -98,28 +112,52 @@ fn delete_one(
     let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
-            return DeleteFileResult {
-                path: rel.to_string(),
-                success: false,
-                removed: false,
-                error: Some((&e).into()),
-            }
+            return (
+                DeleteFileResult {
+                    path: rel.to_string(),
+                    success: false,
+                    removed: false,
+                    error: Some((&e).into()),
+                },
+                None,
+            )
         }
     };
     let wire_path = abs.display().to_string();
+    // Journal before-image: file contents pre-delete; a directory tree
+    // cannot be snapshotted — journal it as a skipped (unrecoverable) gap.
+    let journal_input = match std::fs::symlink_metadata(&abs) {
+        Ok(md) if md.is_file() => Some(crate::code::journal::EntryInput {
+            path: abs.clone(),
+            before: std::fs::read(&abs).ok(),
+            skipped: false,
+        }),
+        Ok(md) if md.is_dir() => Some(crate::code::journal::EntryInput {
+            path: abs.clone(),
+            before: None,
+            skipped: true,
+        }),
+        _ => None,
+    };
     match try_delete_one(resolver, scope_root, &abs, recursive) {
-        Ok(removed) => DeleteFileResult {
-            path: wire_path,
-            success: true,
-            removed,
-            error: None,
-        },
-        Err(e) => DeleteFileResult {
-            path: wire_path,
-            success: false,
-            removed: false,
-            error: Some((&e).into()),
-        },
+        Ok(removed) => (
+            DeleteFileResult {
+                path: wire_path,
+                success: true,
+                removed,
+                error: None,
+            },
+            if removed { journal_input } else { None },
+        ),
+        Err(e) => (
+            DeleteFileResult {
+                path: wire_path,
+                success: false,
+                removed: false,
+                error: Some((&e).into()),
+            },
+            None,
+        ),
     }
 }
 
@@ -201,7 +239,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn setup() -> (tempfile::TempDir, Arc<PathResolver>) {
+    fn setup() -> (
+        tempfile::TempDir,
+        Arc<PathResolver>,
+        Arc<crate::code::config::CoderConfig>,
+    ) {
         let tmp = tempdir().unwrap();
         let cfg = Arc::new(crate::code::config::CoderConfig {
             base_paths: vec![tmp.path().to_path_buf()],
@@ -209,15 +251,16 @@ mod tests {
             ..crate::code::config::CoderConfig::default()
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
-        (tmp, resolver)
+        (tmp, resolver, cfg)
     }
 
     #[tokio::test]
     async fn deletes_file() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
@@ -233,9 +276,10 @@ mod tests {
 
     #[tokio::test]
     async fn missing_path_is_idempotent_success() {
-        let (_tmp, r) = setup();
+        let (_tmp, r, c) = setup();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
@@ -250,10 +294,11 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_non_accessible() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         std::fs::write(tmp.path().join(".env"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec![".env".into()],
                 recursive: false,
@@ -269,11 +314,12 @@ mod tests {
 
     #[tokio::test]
     async fn directory_without_recursive_rejected() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         std::fs::create_dir(tmp.path().join("d")).unwrap();
         std::fs::write(tmp.path().join("d/x"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: false,
@@ -287,11 +333,12 @@ mod tests {
 
     #[tokio::test]
     async fn directory_with_recursive_succeeds() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         std::fs::create_dir(tmp.path().join("d")).unwrap();
         std::fs::write(tmp.path().join("d/x"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
@@ -306,11 +353,12 @@ mod tests {
 
     #[tokio::test]
     async fn recursive_refuses_when_subtree_has_non_accessible() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         std::fs::create_dir(tmp.path().join("d")).unwrap();
         std::fs::write(tmp.path().join("d/.env"), "secret").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
@@ -330,11 +378,12 @@ mod tests {
     // appear — the child ".env" must be invisible to the caller.
     #[tokio::test]
     async fn recursive_blocked_error_does_not_leak_child_path() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         std::fs::create_dir(tmp.path().join("secrets")).unwrap();
         std::fs::write(tmp.path().join("secrets/.env"), "API_KEY=secret").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["secrets".into()],
                 recursive: true,
@@ -364,9 +413,10 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_to_delete_base_root() {
-        let (_tmp, r) = setup();
+        let (_tmp, r, c) = setup();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
@@ -384,18 +434,21 @@ mod tests {
     // refused (C210) — otherwise a recursive delete wipes the active project.
     #[tokio::test]
     async fn refuses_to_delete_session_dir_via_dot() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         let session = tmp.path().join("project");
         std::fs::create_dir(&session).unwrap();
         std::fs::write(session.join("keep.txt"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             },
         )
@@ -411,18 +464,21 @@ mod tests {
     // absolute path rather than ".".
     #[tokio::test]
     async fn refuses_to_delete_session_dir_via_absolute_path() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         let session = tmp.path().join("project");
         std::fs::create_dir(&session).unwrap();
         let abs = session.to_string_lossy().into_owned();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec![abs.clone()],
                 recursive: true,
                 fs_scope: Some(crate::fs::FsScope {
                     root: abs,
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             },
         )
@@ -437,18 +493,21 @@ mod tests {
     // still deletes normally.
     #[tokio::test]
     async fn deletes_file_inside_session_dir() {
-        let (tmp, r) = setup();
+        let (tmp, r, c) = setup();
         let session = tmp.path().join("project");
         std::fs::create_dir(&session).unwrap();
         std::fs::write(session.join("a.txt"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             },
         )

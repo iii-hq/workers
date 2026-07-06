@@ -124,6 +124,13 @@ pub struct CoderConfig {
     #[serde(default = "default_search_response_budget_bytes")]
     pub search_response_budget_bytes: u64,
 
+    /// Write-journal settings for `coder::undo` / `coder::checkpoints`:
+    /// every mutating coder call records bounded before-images keyed by
+    /// the effective root, enabling per-step and per-turn revert. Set
+    /// `max_records: 0` to disable journaling entirely.
+    #[serde(default)]
+    pub journal: JournalConfig,
+
     /// Report-only checks run after successful `coder::update-file` /
     /// `coder::create-file` / `coder::apply-patch` writes. Each entry
     /// whose glob matches a written file's root-relative path runs ONCE
@@ -137,6 +144,43 @@ pub struct CoderConfig {
     /// empty (no checks).
     #[serde(default)]
     pub post_write_checks: Vec<PostWriteCheck>,
+}
+
+/// Write-journal knobs (see `journal`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize, JsonSchema)]
+pub struct JournalConfig {
+    /// Journal directory (per-root subdirectories are created inside it).
+    /// Relative paths resolve against the worker's working directory.
+    #[serde(default = "default_journal_dir")]
+    pub dir: String,
+    /// Total on-disk budget per root before oldest-first eviction.
+    /// Default 64 MiB.
+    #[serde(default = "default_journal_max_bytes")]
+    pub max_bytes: u64,
+    /// Record-count budget per root before oldest-first eviction.
+    /// Default 500; 0 disables journaling.
+    #[serde(default = "default_journal_max_records")]
+    pub max_records: u32,
+}
+
+impl Default for JournalConfig {
+    fn default() -> Self {
+        Self {
+            dir: default_journal_dir(),
+            max_bytes: default_journal_max_bytes(),
+            max_records: default_journal_max_records(),
+        }
+    }
+}
+
+fn default_journal_dir() -> String {
+    "./data/coder-journal".to_string()
+}
+fn default_journal_max_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_journal_max_records() -> u32 {
+    500
 }
 
 /// One post-write check rule (see `post_write_checks`).
@@ -248,6 +292,7 @@ impl Default for CoderConfig {
             max_output_bytes: default_max_output_bytes(),
             search_response_budget_bytes: default_search_response_budget_bytes(),
             post_write_checks: Vec::new(),
+            journal: JournalConfig::default(),
         }
     }
 }

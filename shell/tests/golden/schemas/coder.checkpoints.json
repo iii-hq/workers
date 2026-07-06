@@ -1,0 +1,99 @@
+{
+  "description": "List this workspace's write-journal records (newest first, default 50): seq, timestamp, mutating function, the session/turn that issued it, and the affected files — the picker surface for coder::undo ({ steps } by recency, { turn_id } by turn).",
+  "function_id": "coder::checkpoints",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {}
+    ],
+    "properties": {
+      "limit": {
+        "default": null,
+        "description": "Maximum records returned (newest first). Default 50.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "title": "CheckpointsInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CheckpointMeta": {
+        "properties": {
+          "files": {
+            "description": "Affected file paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "function_id": {
+            "description": "The mutation (e.g. \"coder::apply-patch\", \"coder::undo\").",
+            "type": "string"
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skipped": {
+            "description": "Count of unrecoverable entries in this record (oversized images, directory operations).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "ts": {
+            "description": "Unix millis when the mutation was journaled.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "files",
+          "function_id",
+          "seq",
+          "skipped",
+          "ts"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "records": {
+        "description": "Journal records, newest first.",
+        "items": {
+          "$ref": "#/definitions/CheckpointMeta"
+        },
+        "type": "array"
+      },
+      "truncated": {
+        "description": "True when older records exist beyond `limit`.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "records",
+      "truncated"
+    ],
+    "title": "CheckpointsOutput",
+    "type": "object"
+  }
+}

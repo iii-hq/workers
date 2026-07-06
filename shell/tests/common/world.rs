@@ -281,11 +281,15 @@ async fn call_direct(
         }
         "coder::delete-file" => {
             let input = decode_payload(payload)?;
-            serialize_result(delete_file::handle(surface.resolver.clone(), input).await)
+            serialize_result(
+                delete_file::handle(surface.resolver.clone(), surface.cfg.clone(), input).await,
+            )
         }
         "coder::move" => {
             let input = decode_payload(payload)?;
-            serialize_result(move_file::handle(surface.resolver.clone(), input).await)
+            serialize_result(
+                move_file::handle(surface.resolver.clone(), surface.cfg.clone(), input).await,
+            )
         }
         "coder::list-folder" => {
             let input = decode_payload(payload)?;

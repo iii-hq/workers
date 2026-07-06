@@ -2252,6 +2252,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.display().to_string(),
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -2264,6 +2266,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.display().to_string(),
                     grants: vec![granted.display().to_string()],
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -3991,6 +3995,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4022,6 +4028,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4053,6 +4061,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4086,6 +4096,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4120,6 +4132,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: selected.join("project").to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4144,6 +4158,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: selected.to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4161,6 +4177,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: "../../etc".into(),
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await
@@ -4183,6 +4201,8 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    session_id: None,
+                    turn_id: None,
                 }),
             })
             .await

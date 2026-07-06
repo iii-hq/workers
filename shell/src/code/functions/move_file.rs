@@ -110,6 +110,7 @@ pub struct MoveFileResult {
 
 pub async fn handle(
     resolver: Arc<PathResolver>,
+    cfg: Arc<crate::code::config::CoderConfig>,
     req: MoveFileInput,
 ) -> Result<MoveFileOutput, String> {
     if req.files.is_empty() {
@@ -128,9 +129,20 @@ pub async fn handle(
         }
     }
     let mut results = Vec::with_capacity(req.files.len());
+    let mut journal_entries = Vec::new();
     for spec in req.files {
-        results.push(move_one(&resolver, scope_root, spec));
+        let (result, journal) = move_one(&resolver, scope_root, spec);
+        journal_entries.extend(journal);
+        results.push(result);
     }
+    let root = resolver.effective_root(scope_root);
+    crate::code::journal::record(
+        &cfg,
+        &root,
+        req.fs_scope.as_ref(),
+        "coder::move",
+        journal_entries,
+    );
     Ok(MoveFileOutput { results })
 }
 
@@ -149,18 +161,21 @@ fn move_one(
     resolver: &PathResolver,
     scope_root: Option<&str>,
     spec: MoveFileSpec,
-) -> MoveFileResult {
+) -> (MoveFileResult, Vec<crate::code::journal::EntryInput>) {
     // Resolve source.
     let abs_from = match resolver.require_writable_opt(scope_root, &spec.from) {
         Ok(p) => p,
         Err(e) => {
-            return MoveFileResult {
-                from: spec.from,
-                to: spec.to,
-                success: false,
-                moved: false,
-                error: Some((&e).into()),
-            }
+            return (
+                MoveFileResult {
+                    from: spec.from,
+                    to: spec.to,
+                    success: false,
+                    moved: false,
+                    error: Some((&e).into()),
+                },
+                Vec::new(),
+            )
         }
     };
 
@@ -168,13 +183,16 @@ fn move_one(
     let abs_to = match resolver.require_writable_opt(scope_root, &spec.to) {
         Ok(p) => p,
         Err(e) => {
-            return MoveFileResult {
-                from: abs_from.display().to_string(),
-                to: spec.to,
-                success: false,
-                moved: false,
-                error: Some((&e).into()),
-            }
+            return (
+                MoveFileResult {
+                    from: abs_from.display().to_string(),
+                    to: spec.to,
+                    success: false,
+                    moved: false,
+                    error: Some((&e).into()),
+                },
+                Vec::new(),
+            )
         }
     };
 
@@ -187,18 +205,55 @@ fn move_one(
     // is a no-op success: moved=false, no error.
     if abs_from == abs_to {
         let wire = abs_from.display().to_string();
-        return MoveFileResult {
-            from: wire.clone(),
-            to: wire,
-            success: true,
-            moved: false,
-            error: None,
-        };
+        return (
+            MoveFileResult {
+                from: wire.clone(),
+                to: wire,
+                success: true,
+                moved: false,
+                error: None,
+            },
+            Vec::new(),
+        );
     }
 
     let wire_from = abs_from.display().to_string();
     let wire_to = abs_to.display().to_string();
 
+    // Journal before-images pre-move: a moved FILE restores fully (source
+    // rewritten, destination reverted/removed); a moved DIRECTORY cannot be
+    // snapshotted — both sides journal as skipped gaps.
+    let journal = match std::fs::symlink_metadata(&abs_from) {
+        Ok(md) if md.is_file() => vec![
+            crate::code::journal::EntryInput {
+                path: abs_from.clone(),
+                before: std::fs::read(&abs_from).ok(),
+                skipped: false,
+            },
+            crate::code::journal::EntryInput {
+                path: abs_to.clone(),
+                before: if abs_to.exists() {
+                    std::fs::read(&abs_to).ok()
+                } else {
+                    None
+                },
+                skipped: false,
+            },
+        ],
+        Ok(md) if md.is_dir() => vec![
+            crate::code::journal::EntryInput {
+                path: abs_from.clone(),
+                before: None,
+                skipped: true,
+            },
+            crate::code::journal::EntryInput {
+                path: abs_to.clone(),
+                before: None,
+                skipped: true,
+            },
+        ],
+        _ => Vec::new(),
+    };
     match try_move_one(
         resolver,
         &abs_from,
@@ -208,20 +263,26 @@ fn move_one(
         spec.overwrite,
         spec.parents,
     ) {
-        Ok(()) => MoveFileResult {
-            from: wire_from,
-            to: wire_to,
-            success: true,
-            moved: true,
-            error: None,
-        },
-        Err(e) => MoveFileResult {
-            from: wire_from,
-            to: wire_to,
-            success: false,
-            moved: false,
-            error: Some((&e).into()),
-        },
+        Ok(()) => (
+            MoveFileResult {
+                from: wire_from,
+                to: wire_to,
+                success: true,
+                moved: true,
+                error: None,
+            },
+            journal,
+        ),
+        Err(e) => (
+            MoveFileResult {
+                from: wire_from,
+                to: wire_to,
+                success: false,
+                moved: false,
+                error: Some((&e).into()),
+            },
+            Vec::new(),
+        ),
     }
 }
 
@@ -396,7 +457,11 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
 
-    fn setup_single() -> (tempfile::TempDir, Arc<PathResolver>) {
+    fn setup_single() -> (
+        tempfile::TempDir,
+        Arc<PathResolver>,
+        Arc<crate::code::config::CoderConfig>,
+    ) {
         let tmp = tempdir().unwrap();
         let cfg = Arc::new(crate::code::config::CoderConfig {
             base_paths: vec![tmp.path().to_path_buf()],
@@ -404,10 +469,15 @@ mod tests {
             ..crate::code::config::CoderConfig::default()
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
-        (tmp, resolver)
+        (tmp, resolver, cfg)
     }
 
-    fn setup_two_roots() -> (tempfile::TempDir, tempfile::TempDir, Arc<PathResolver>) {
+    fn setup_two_roots() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Arc<PathResolver>,
+        Arc<crate::code::config::CoderConfig>,
+    ) {
         let tmp0 = tempdir().unwrap();
         let tmp1 = tempdir().unwrap();
         let cfg = Arc::new(crate::code::config::CoderConfig {
@@ -416,7 +486,7 @@ mod tests {
             ..crate::code::config::CoderConfig::default()
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
-        (tmp0, tmp1, resolver)
+        (tmp0, tmp1, resolver, cfg)
     }
 
     // ------------------------------------------------------------------
@@ -424,10 +494,11 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn same_root_rename_file() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "a.txt".into(),
@@ -461,11 +532,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn same_root_rename_directory() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::create_dir(tmp.path().join("src_dir")).unwrap();
         std::fs::write(tmp.path().join("src_dir/file.txt"), "content").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "src_dir".into(),
@@ -490,11 +562,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn self_move_is_noop_success_with_content_intact() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("a.txt"), "precious").unwrap();
         for overwrite in [false, true] {
             let out = handle(
                 r.clone(),
+                c.clone(),
                 MoveFileInput {
                     files: vec![MoveFileSpec {
                         from: "a.txt".into(),
@@ -545,6 +618,7 @@ mod tests {
         let to_abs = std::fs::canonicalize(&nested).unwrap().join("file.txt");
         let out = handle(
             r,
+            cfg.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "sub/file.txt".into(),
@@ -572,11 +646,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn cross_root_file_copy_and_delete() {
-        let (tmp0, tmp1, r) = setup_two_roots();
+        let (tmp0, tmp1, r, c) = setup_two_roots();
         std::fs::write(tmp0.path().join("src.txt"), "cross-root content").unwrap();
         let dst_abs = tmp1.path().join("dst.txt");
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "src.txt".into(),
@@ -620,7 +695,7 @@ mod tests {
             return;
         }
 
-        let (tmp0, tmp1, r) = setup_two_roots();
+        let (tmp0, tmp1, r, c) = setup_two_roots();
         // Write source file under a parent directory we can make read-only.
         std::fs::create_dir(tmp0.path().join("locked")).unwrap();
         std::fs::write(tmp0.path().join("locked/src.txt"), "rollback test").unwrap();
@@ -638,6 +713,7 @@ mod tests {
 
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: src_abs.display().to_string(),
@@ -677,11 +753,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn overwrite_false_dst_exists_c217() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("src.txt"), "new").unwrap();
         std::fs::write(tmp.path().join("dst.txt"), "old").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "src.txt".into(),
@@ -715,11 +792,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn overwrite_true_replaces_existing() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("src.txt"), "new-content").unwrap();
         std::fs::write(tmp.path().join("dst.txt"), "old-content").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "src.txt".into(),
@@ -745,9 +823,10 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn missing_src_c211() {
-        let (_tmp, r) = setup_single();
+        let (_tmp, r, c) = setup_single();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "no-such-file.txt".into(),
@@ -781,11 +860,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn glob_denied_src_c211_identical_suffix_to_missing() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join(".env"), "secret").unwrap();
         // Both resolve + deny and stat failure yield C211; suffix must match.
         let out_denied = handle(
             r.clone(),
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: ".env".into(),
@@ -800,6 +880,7 @@ mod tests {
         .unwrap();
         let out_missing = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "definitely-missing.txt".into(),
@@ -840,10 +921,11 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn glob_denied_dst_c211() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("src.txt"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "src.txt".into(),
@@ -867,9 +949,10 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn move_root_rejected_c210() {
-        let (_tmp, r) = setup_single();
+        let (_tmp, r, c) = setup_single();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: ".".into(),
@@ -891,12 +974,13 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn cross_root_dir_rejected_c210() {
-        let (tmp0, tmp1, r) = setup_two_roots();
+        let (tmp0, tmp1, r, c) = setup_two_roots();
         std::fs::create_dir(tmp0.path().join("mydir")).unwrap();
         std::fs::write(tmp0.path().join("mydir/f.txt"), "x").unwrap();
         let dst_abs = tmp1.path().join("mydir");
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "mydir".into(),
@@ -927,13 +1011,14 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn rejected_cross_root_dir_move_leaves_dst_tree_absent() {
-        let (tmp0, tmp1, r) = setup_two_roots();
+        let (tmp0, tmp1, r, c) = setup_two_roots();
         std::fs::create_dir(tmp0.path().join("mydir")).unwrap();
         std::fs::write(tmp0.path().join("mydir/f.txt"), "x").unwrap();
         // Destination nested under parents that don't exist yet.
         let dst_abs = tmp1.path().join("a/b/mydir");
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "mydir".into(),
@@ -963,7 +1048,7 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn dst_is_directory_src_is_file_prescriptive_c210() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("src.txt"), "x").unwrap();
         std::fs::create_dir(tmp.path().join("destdir")).unwrap();
         // Both overwrite=false AND overwrite=true must get the same
@@ -971,6 +1056,7 @@ mod tests {
         for overwrite in [false, true] {
             let out = handle(
                 r.clone(),
+                c.clone(),
                 MoveFileInput {
                     files: vec![MoveFileSpec {
                         from: "src.txt".into(),
@@ -1008,10 +1094,11 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn parents_false_missing_parent_errors() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("src.txt"), "x").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "src.txt".into(),
@@ -1037,11 +1124,12 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn batch_order_preserved() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("a.txt"), "A").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "B").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![
                     MoveFileSpec {
@@ -1075,10 +1163,11 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn jail_escape_aborts_batch_with_top_level_c215() {
-        let (_tmp, r) = setup_single();
+        let (_tmp, r, c) = setup_single();
         // A path that escapes the jail will fail resolution (C215).
         let err = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![MoveFileSpec {
                     from: "/etc/passwd".into(),
@@ -1102,10 +1191,11 @@ mod tests {
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn batch_continues_after_failure() {
-        let (tmp, r) = setup_single();
+        let (tmp, r, c) = setup_single();
         std::fs::write(tmp.path().join("good.txt"), "ok").unwrap();
         let out = handle(
             r,
+            c.clone(),
             MoveFileInput {
                 files: vec![
                     // First entry: missing source → C211.

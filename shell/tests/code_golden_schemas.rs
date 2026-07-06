@@ -1,4 +1,4 @@
-//! GOLDEN FAMILY A — wire-schema snapshots for all 13 `coder::*` functions
+//! GOLDEN FAMILY A — wire-schema snapshots for all 15 `coder::*` functions
 //! served by the shell worker.
 //!
 //! `shell::code::functions::catalog()` is the single source of truth for
@@ -35,10 +35,10 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 13 registered functions, in
+/// The catalog must cover exactly the 15 registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
-fn catalog_lists_all_thirteen_functions_in_registration_order() {
+fn catalog_lists_all_fifteen_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
@@ -51,6 +51,8 @@ fn catalog_lists_all_thirteen_functions_in_registration_order() {
             "coder::apply-patch",
             "coder::worktree-add",
             "coder::worktree-remove",
+            "coder::undo",
+            "coder::checkpoints",
             "coder::create-file",
             "coder::delete-file",
             "coder::list-folder",

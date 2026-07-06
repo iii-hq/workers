@@ -264,6 +264,7 @@ async fn error_message_formats_match_golden() {
         std::fs::write(jail.root0.join("blocked-dir/nested/.env"), "s").unwrap();
         let out = delete_file::handle(
             jail.resolver.clone(),
+            jail.cfg.clone(),
             delete_file::DeleteFileInput {
                 paths: vec!["blocked-dir".into()],
                 recursive: true,
@@ -438,6 +439,7 @@ async fn error_message_formats_match_golden() {
         std::fs::write(jail.root0.join("move-dst.txt"), "dst").unwrap();
         let out = move_file::handle(
             jail.resolver.clone(),
+            jail.cfg.clone(),
             move_file::MoveFileInput {
                 files: vec![move_file::MoveFileSpec {
                     from: "move-src.txt".into(),
@@ -468,6 +470,7 @@ async fn error_message_formats_match_golden() {
         let dst_abs = jail.root1.join("cross-dir");
         let out = move_file::handle(
             jail.resolver.clone(),
+            jail.cfg.clone(),
             move_file::MoveFileInput {
                 files: vec![move_file::MoveFileSpec {
                     from: "cross-dir".into(),
@@ -497,6 +500,7 @@ async fn error_message_formats_match_golden() {
         std::fs::create_dir_all(jail.root0.join("move-dst-dir")).unwrap();
         let out = move_file::handle(
             jail.resolver.clone(),
+            jail.cfg.clone(),
             move_file::MoveFileInput {
                 files: vec![move_file::MoveFileSpec {
                     from: "move-dir-src.txt".into(),
@@ -569,6 +573,7 @@ async fn error_message_formats_match_golden() {
     {
         let out = move_file::handle(
             jail.resolver.clone(),
+            jail.cfg.clone(),
             move_file::MoveFileInput {
                 files: vec![move_file::MoveFileSpec {
                     from: "no-such-move-src.txt".into(),

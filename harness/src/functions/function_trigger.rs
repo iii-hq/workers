@@ -106,11 +106,15 @@ pub async fn handle(
         .as_ref()
         .and_then(|rec| rec.options.filesystem_root())
         .map(str::to_string);
+    let origin = record
+        .as_ref()
+        .map(|rec| (rec.session_id.clone(), rec.turn_id.clone()));
     let mut arguments = crate::filesystem_scope::inject(
         &req.call.function_id,
         req.call.arguments.clone(),
         filesystem_root.as_deref(),
         &session_grants,
+        origin.as_ref().map(|(s, t)| (s.as_str(), t.as_str())),
     );
     if let Some(rec) = &record {
         match deps
@@ -130,6 +134,7 @@ pub async fn handle(
                     a,
                     filesystem_root.as_deref(),
                     &session_grants,
+                    origin.as_ref().map(|(s, t)| (s.as_str(), t.as_str())),
                 );
             }
             PreTriggerOutcome::Deny(reason) => {
@@ -163,6 +168,7 @@ pub async fn handle(
         arguments,
         filesystem_root.as_deref(),
         &session_grants,
+        origin.as_ref().map(|(s, t)| (s.as_str(), t.as_str())),
     );
 
     // Single invocation chokepoint: subscription control calls are intercepted

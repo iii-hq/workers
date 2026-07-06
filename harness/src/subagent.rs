@@ -153,6 +153,7 @@ async fn create_child_worktree(
         json!({ "name": name }),
         Some(&root),
         &grants,
+        Some((&parent.session_id, &parent.turn_id)),
     );
     let engine = deps.engine().await;
     match engine.dispatch("coder::worktree-add", args).await {
@@ -200,6 +201,7 @@ pub(crate) async fn remove_child_worktree(
         json!({ "name": worktree.name }),
         Some(&root),
         &grants,
+        Some((&parent.session_id, &parent.turn_id)),
     );
     let engine = deps.engine().await;
     match engine.dispatch("coder::worktree-remove", args).await {

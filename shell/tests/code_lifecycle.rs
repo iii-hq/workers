@@ -216,9 +216,13 @@ async fn full_lifecycle_via_handlers() {
 
     // 8. delete-file removes the file.
     let del = wire(
-        delete_file::handle(s.resolver.clone(), input(json!({ "paths": ["hello.txt"] })))
-            .await
-            .expect("delete-file"),
+        delete_file::handle(
+            s.resolver.clone(),
+            s.cfg.clone(),
+            input(json!({ "paths": ["hello.txt"] })),
+        )
+        .await
+        .expect("delete-file"),
     );
     assert_eq!(del["results"][0]["success"], true);
     assert_eq!(del["results"][0]["removed"], true);

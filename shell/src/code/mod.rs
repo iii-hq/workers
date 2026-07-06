@@ -18,6 +18,7 @@ pub mod checks;
 pub mod config;
 pub mod error;
 pub mod functions;
+pub mod journal;
 pub mod patch;
 pub mod path;
 pub mod state;

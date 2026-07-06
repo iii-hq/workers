@@ -252,16 +252,28 @@ pub async fn handle(
             Err(e) => entries.push((spec, Err(e))),
         }
     }
+    let mut journal_entries = Vec::new();
     let results: Vec<UpdateFileResult> = entries
         .into_iter()
-        .map(|(spec, resolved)| update_one(&cfg, spec, resolved))
+        .map(|(spec, resolved)| {
+            let (result, journal) = update_one(&cfg, spec, resolved);
+            journal_entries.extend(journal);
+            result
+        })
         .collect();
+    let root = resolver.effective_root(scope_root);
+    crate::code::journal::record(
+        &cfg,
+        &root,
+        req.fs_scope.as_ref(),
+        "coder::update-file",
+        journal_entries,
+    );
     let written: Vec<String> = results
         .iter()
         .filter(|r| r.success)
         .map(|r| r.path.clone())
         .collect();
-    let root = resolver.effective_root(scope_root);
     let checks = crate::code::checks::run_post_write_checks(&cfg, &resolver, &root, &written).await;
     Ok(UpdateFileOutput { results, checks })
 }
@@ -270,7 +282,7 @@ fn update_one(
     cfg: &CoderConfig,
     spec: UpdateFileSpec,
     resolved: Result<std::path::PathBuf, CoderError>,
-) -> UpdateFileResult {
+) -> (UpdateFileResult, Option<crate::code::journal::EntryInput>) {
     // Resolve up front: the edit pipeline operates ONLY on the
     // resolver-returned path, and the result echoes that canonical
     // absolute path. When resolution fails there is no canonical path,
@@ -278,37 +290,50 @@ fn update_one(
     let abs = match resolved {
         Ok(abs) => abs,
         Err(e) => {
-            return UpdateFileResult {
-                path: spec.path,
+            return (
+                UpdateFileResult {
+                    path: spec.path,
+                    success: false,
+                    applied: 0,
+                    new_line_count: 0,
+                    echoes: vec![],
+                    echoes_truncated: false,
+                    error: Some((&e).into()),
+                },
+                None,
+            )
+        }
+    };
+    let wire_path = abs.display().to_string();
+    match try_update_one(cfg, &abs, spec) {
+        Ok((applied, new_line_count, echoes, echoes_truncated, before)) => (
+            UpdateFileResult {
+                path: wire_path,
+                success: true,
+                applied,
+                new_line_count,
+                echoes,
+                echoes_truncated,
+                error: None,
+            },
+            Some(crate::code::journal::EntryInput {
+                path: abs,
+                before: Some(before),
+                skipped: false,
+            }),
+        ),
+        Err(e) => (
+            UpdateFileResult {
+                path: wire_path,
                 success: false,
                 applied: 0,
                 new_line_count: 0,
                 echoes: vec![],
                 echoes_truncated: false,
                 error: Some((&e).into()),
-            }
-        }
-    };
-    let wire_path = abs.display().to_string();
-    match try_update_one(cfg, &abs, spec) {
-        Ok((applied, new_line_count, echoes, echoes_truncated)) => UpdateFileResult {
-            path: wire_path,
-            success: true,
-            applied,
-            new_line_count,
-            echoes,
-            echoes_truncated,
-            error: None,
-        },
-        Err(e) => UpdateFileResult {
-            path: wire_path,
-            success: false,
-            applied: 0,
-            new_line_count: 0,
-            echoes: vec![],
-            echoes_truncated: false,
-            error: Some((&e).into()),
-        },
+            },
+            None,
+        ),
     }
 }
 
@@ -323,7 +348,7 @@ fn try_update_one(
     cfg: &CoderConfig,
     abs: &Path,
     spec: UpdateFileSpec,
-) -> Result<(u32, u64, Vec<OpEcho>, bool), CoderError> {
+) -> Result<(u32, u64, Vec<OpEcho>, bool, Vec<u8>), CoderError> {
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -388,6 +413,7 @@ fn try_update_one(
         final_lines.len() as u64,
         echoes,
         echoes_truncated,
+        bytes,
     ))
 }
 

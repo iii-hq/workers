@@ -1,0 +1,101 @@
+{
+  "description": "Revert journaled coder writes in this workspace: the last N records ({ steps }, default 1) or everything a specific turn changed ({ turn_id } — coder::checkpoints lists them). Restores run newest first through the live jail; files that did not exist before a write are removed, others are rewritten to their before-image. The undo journals its own pre-undo state first, so running coder::undo again REDOES the change. Unrecoverable gaps (oversized before-images, directory deletes/moves) are reported in `skipped`, never silently ignored.",
+  "function_id": "coder::undo",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "steps": 1
+      }
+    ],
+    "properties": {
+      "steps": {
+        "default": null,
+        "description": "Undo the last N journaled records (default 1). Mutually exclusive with `turn_id`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "default": null,
+        "description": "Undo every journaled record this turn produced (see `coder::checkpoints` for turn ids). Mutually exclusive with `steps`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "UndoInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "UndoneRecord": {
+        "properties": {
+          "function_id": {
+            "description": "The mutation this record captured (e.g. \"coder::update-file\").",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Files removed (they did not exist before the journaled write).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restored": {
+            "description": "Files rewritten to their journaled before-image.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "skipped": {
+            "description": "Unrecoverable gaps: oversized before-images, directory operations, or paths the live jail rejected — inspect these manually.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "function_id",
+          "removed",
+          "restored",
+          "seq",
+          "skipped"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "undone": {
+        "description": "Undone records, newest first. The undo itself was journaled before any restore, so `coder::undo { steps: 1 }` again redoes the change.",
+        "items": {
+          "$ref": "#/definitions/UndoneRecord"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "undone"
+    ],
+    "title": "UndoOutput",
+    "type": "object"
+  }
+}

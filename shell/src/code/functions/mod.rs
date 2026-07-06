@@ -11,6 +11,7 @@
 //! agent-facing wire surface shows up as an explicit, reviewed diff.
 
 pub mod apply_patch;
+pub mod checkpoints;
 pub mod context;
 pub mod create_file;
 pub mod delete_file;
@@ -21,6 +22,7 @@ pub mod read_file;
 pub mod read_window;
 pub mod search;
 pub mod tree;
+pub mod undo;
 pub mod update_file;
 pub mod worktree;
 
@@ -136,6 +138,23 @@ const APPLY_PATCH_DESC: &str = "Apply a whole patch in the apply_patch (V4A) for
      relative to the primary allowed root or absolute inside any allowed \
      root (coder::info lists them); for host paths outside the jail use \
      shell::fs::*.";
+
+const UNDO_ID: &str = "coder::undo";
+const UNDO_DESC: &str = "Revert journaled coder writes in this workspace: the last N records \
+     ({ steps }, default 1) or everything a specific turn changed \
+     ({ turn_id } — coder::checkpoints lists them). Restores run newest \
+     first through the live jail; files that did not exist before a \
+     write are removed, others are rewritten to their before-image. \
+     The undo journals its own pre-undo state first, so running \
+     coder::undo again REDOES the change. Unrecoverable gaps (oversized \
+     before-images, directory deletes/moves) are reported in `skipped`, \
+     never silently ignored.";
+
+const CHECKPOINTS_ID: &str = "coder::checkpoints";
+const CHECKPOINTS_DESC: &str = "List this workspace's write-journal records (newest first, \
+     default 50): seq, timestamp, mutating function, the session/turn \
+     that issued it, and the affected files — the picker surface for \
+     coder::undo ({ steps } by recency, { turn_id } by turn).";
 
 const WORKTREE_ADD_ID: &str = "coder::worktree-add";
 const WORKTREE_ADD_DESC: &str = "Create an isolated git worktree at .worktrees/<name> under the \
@@ -268,6 +287,11 @@ pub fn catalog() -> Vec<FunctionSpec> {
             WORKTREE_REMOVE_ID,
             WORKTREE_REMOVE_DESC,
         ),
+        spec::<undo::UndoInput, undo::UndoOutput>(UNDO_ID, UNDO_DESC),
+        spec::<checkpoints::CheckpointsInput, checkpoints::CheckpointsOutput>(
+            CHECKPOINTS_ID,
+            CHECKPOINTS_DESC,
+        ),
         spec::<create_file::CreateFileInput, create_file::CreateFileOutput>(
             CREATE_FILE_ID,
             CREATE_FILE_DESC,
@@ -307,6 +331,10 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     register_worktree_add(iii, cells.clone());
     registered += 1;
     register_worktree_remove(iii, cells.clone());
+    registered += 1;
+    register_undo(iii, cells.clone());
+    registered += 1;
+    register_checkpoints(iii, cells.clone());
     registered += 1;
     register_create_file(iii, cells.clone());
     registered += 1;
@@ -490,6 +518,46 @@ fn register_worktree_remove(iii: &IIIClient, cells: CodeCells) {
     );
 }
 
+fn register_undo(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        UNDO_ID,
+        RegisterFunction::new_async(move |req: undo::UndoInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                undo::handle(resolver, cfg, req).await.map_err(Error::from)
+            }
+        })
+        .description(UNDO_DESC),
+    );
+}
+
+fn register_checkpoints(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        CHECKPOINTS_ID,
+        RegisterFunction::new_async(move |req: checkpoints::CheckpointsInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                checkpoints::handle(resolver, cfg, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(CHECKPOINTS_DESC),
+    );
+}
+
 fn register_create_file(iii: &IIIClient, cells: CodeCells) {
     iii.register_function(
         CREATE_FILE_ID,
@@ -522,7 +590,8 @@ fn register_delete_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_root(req.fs_scope.as_ref()),
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
-                delete_file::handle(resolver, req)
+                let cfg = cells.config.read().await.clone();
+                delete_file::handle(resolver, cfg, req)
                     .await
                     .map_err(Error::from)
             }
@@ -582,7 +651,10 @@ fn register_move_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_root(req.fs_scope.as_ref()),
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
-                move_file::handle(resolver, req).await.map_err(Error::from)
+                let cfg = cells.config.read().await.clone();
+                move_file::handle(resolver, cfg, req)
+                    .await
+                    .map_err(Error::from)
             }
         })
         .description(MOVE_FILE_DESC),

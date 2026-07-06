@@ -89,12 +89,14 @@ enum PlannedWrite {
     },
     Delete {
         abs: PathBuf,
+        before: Vec<u8>,
     },
     Update {
         abs: PathBuf,
         move_to: Option<PathBuf>,
         new_contents: String,
         first_change: Option<(u64, u64)>,
+        before: Vec<u8>,
     },
 }
 
@@ -107,23 +109,33 @@ pub async fn handle(
     let blocking_resolver = resolver.clone();
     let blocking_cfg = cfg.clone();
     let sr = scope_root.clone();
-    let mut out = tokio::task::spawn_blocking(move || {
+    let fs_scope = req.fs_scope.clone();
+    let (mut out, journal) = tokio::task::spawn_blocking(move || {
         inner(&blocking_resolver, &blocking_cfg, sr.as_deref(), &req.patch).map_err(err_to_string)
     })
     .await
     .map_err(|e| format!("apply-patch task join failed: {e}"))??;
-    let written: Vec<String> = out.results.iter().map(|r| r.path.clone()).collect();
     let root = resolver.effective_root(scope_root.as_deref());
+    crate::code::journal::record(
+        &cfg,
+        &root,
+        fs_scope.as_ref(),
+        "coder::apply-patch",
+        journal,
+    );
+    let written: Vec<String> = out.results.iter().map(|r| r.path.clone()).collect();
     out.checks = crate::code::checks::run_post_write_checks(&cfg, &resolver, &root, &written).await;
     Ok(out)
 }
+
+type JournalInputs = Vec<crate::code::journal::EntryInput>;
 
 fn inner(
     resolver: &PathResolver,
     cfg: &CoderConfig,
     scope_root: Option<&str>,
     patch_text: &str,
-) -> Result<ApplyPatchOutput, CoderError> {
+) -> Result<(ApplyPatchOutput, JournalInputs), CoderError> {
     let hunks = patch::parse_patch(patch_text)
         .map_err(|e| CoderError::BadInput(format!("invalid patch: {e}")))?;
     if hunks.is_empty() {
@@ -162,7 +174,8 @@ fn inner(
                         "delete file target is not a regular file: {wire}"
                     )));
                 }
-                planned.push(PlannedWrite::Delete { abs });
+                let before = std::fs::read(&abs).map_err(|e| CoderError::io_for_path(e, &wire))?;
+                planned.push(PlannedWrite::Delete { abs, before });
             }
             Hunk::UpdateFile {
                 path,
@@ -172,7 +185,7 @@ fn inner(
                 let wire = path.display().to_string();
                 let abs = resolver.require_writable_opt(scope_root, &wire)?;
                 let bytes = std::fs::read(&abs).map_err(|e| CoderError::io_for_path(e, &wire))?;
-                let original = String::from_utf8_lossy(&bytes);
+                let original = String::from_utf8_lossy(&bytes).into_owned();
                 let applied = patch::derive_new_contents_from_chunks(&original, &wire, chunks)
                     .map_err(|e| CoderError::BadInput(e.0))?;
                 check_write_size(cfg, &wire, applied.new_contents.len())?;
@@ -194,6 +207,7 @@ fn inner(
                     move_to,
                     new_contents: applied.new_contents,
                     first_change: applied.first_change,
+                    before: bytes,
                 });
             }
         }
@@ -201,9 +215,15 @@ fn inner(
 
     // Write phase: every plan entry validated — apply in patch order.
     let mut results = Vec::with_capacity(planned.len());
+    let mut journal: JournalInputs = Vec::new();
     for write in &planned {
         match write {
             PlannedWrite::Add { abs, contents } => {
+                journal.push(crate::code::journal::EntryInput {
+                    path: abs.clone(),
+                    before: None,
+                    skipped: false,
+                });
                 if let Some(parent) = abs.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| CoderError::io_for_path(e, &abs.display().to_string()))?;
@@ -216,7 +236,12 @@ fn inner(
                     echo: None,
                 });
             }
-            PlannedWrite::Delete { abs } => {
+            PlannedWrite::Delete { abs, before } => {
+                journal.push(crate::code::journal::EntryInput {
+                    path: abs.clone(),
+                    before: Some(before.clone()),
+                    skipped: false,
+                });
                 std::fs::remove_file(abs)
                     .map_err(|e| CoderError::io_for_path(e, &abs.display().to_string()))?;
                 results.push(PatchFileResult {
@@ -231,7 +256,22 @@ fn inner(
                 move_to,
                 new_contents,
                 first_change,
+                before,
             } => {
+                journal.push(crate::code::journal::EntryInput {
+                    path: abs.clone(),
+                    before: Some(before.clone()),
+                    skipped: false,
+                });
+                if move_to.is_some() {
+                    // Destination existence was rejected at plan time, so
+                    // its before-state is always absent.
+                    journal.push(crate::code::journal::EntryInput {
+                        path: move_to.clone().expect("move_to checked above"),
+                        before: None,
+                        skipped: false,
+                    });
+                }
                 let target: &Path = move_to.as_deref().unwrap_or(abs.as_path());
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)
@@ -256,10 +296,13 @@ fn inner(
             }
         }
     }
-    Ok(ApplyPatchOutput {
-        results,
-        checks: Vec::new(),
-    })
+    Ok((
+        ApplyPatchOutput {
+            results,
+            checks: Vec::new(),
+        },
+        journal,
+    ))
 }
 
 fn check_write_size(cfg: &CoderConfig, wire: &str, len: usize) -> Result<(), CoderError> {

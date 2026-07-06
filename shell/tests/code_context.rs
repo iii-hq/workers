@@ -111,6 +111,8 @@ async fn context_honors_fs_scope_root() {
             fs_scope: Some(shell::fs::FsScope {
                 root: scope,
                 grants: vec![],
+                session_id: None,
+                turn_id: None,
             }),
         },
     )

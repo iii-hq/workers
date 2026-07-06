@@ -169,6 +169,8 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root.clone(),
                 grants: Vec::new(),
+                session_id: None,
+                turn_id: None,
             }),
             ..ReadFileInput::default()
         },
@@ -179,7 +181,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
 
     let create_err = create_handle(
         r.clone(),
-        c,
+        c.clone(),
         CreateFileInput {
             files: vec![CreateFileSpec {
                 path: "../created-outside.txt".into(),
@@ -191,6 +193,8 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root.clone(),
                 grants: Vec::new(),
+                session_id: None,
+                turn_id: None,
             }),
         },
     )
@@ -204,12 +208,15 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
 
     let delete_err = delete_handle(
         r,
+        c.clone(),
         DeleteFileInput {
             paths: vec!["../sibling.txt".into()],
             recursive: false,
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root,
                 grants: Vec::new(),
+                session_id: None,
+                turn_id: None,
             }),
         },
     )

@@ -432,6 +432,7 @@ pub async fn run_step(
                 call.arguments.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
+                Some((&record.session_id, &record.turn_id)),
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -453,6 +454,7 @@ pub async fn run_step(
                         arguments,
                         filesystem_root.as_deref(),
                         &session_grants,
+                        Some((&record.session_id, &record.turn_id)),
                     );
                     (arguments, annotations)
                 }
@@ -1068,6 +1070,7 @@ async fn fetch_env_context(
         json!({}),
         record.options.filesystem_root(),
         &grants,
+        Some((&record.session_id, &record.turn_id)),
     );
     let engine = deps.engine().await;
     match engine.dispatch("coder::context", args).await {

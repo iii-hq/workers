@@ -21,6 +21,12 @@ pub struct FsScope {
     pub root: String,
     #[serde(default)]
     pub grants: Vec<String>,
+    /// Session that issued the call (harness-stamped; journal attribution).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Turn that issued the call (harness-stamped; enables undo-by-turn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 impl FsScope {
