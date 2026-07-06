@@ -109,6 +109,7 @@ async fn main() -> Result<()> {
     // Subscribe to configuration:updated so the remote client, forward table,
     // and expose table reload live on a config change (see configuration).
     configuration::register_config_trigger(&iii, &boot)
+        .await
         .map_err(anyhow::Error::msg)
         .context("binding configuration trigger")?;
 

@@ -106,6 +106,7 @@ async fn forward_add_remove_readd_via_config_set() {
         .expect("register bridge configuration schema");
     set_bridge_config(&worker_local, base_value.clone()).await;
     configuration::register_config_trigger(&worker_local, &boot)
+        .await
         .expect("bind configuration trigger");
 
     // 1. ADD the forward via configuration::set -> it becomes callable.

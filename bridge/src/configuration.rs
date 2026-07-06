@@ -37,7 +37,10 @@
 //! would look "new", get re-registered, and panic the reload task.
 //! [`crate::boot::BootHandle::local_registered`] tracks every id registered
 //! on the local client (seeded at boot with `bridge.invoke` /
-//! `bridge.invoke_async` and the boot forwards);
+//! `bridge.invoke_async` and the boot forwards; [`register_config_trigger`]
+//! inserts [`CONFIG_FN_ID`] itself at the point it registers it, so a
+//! `forward` entry that happens to name `bridge::on-config-change` is
+//! correctly recognized as already-registered);
 //! [`crate::boot::BootHandle::remote_registered`] tracks the ids registered
 //! on the CURRENT remote-client generation and is reset when a `url` change
 //! swaps in a fresh client. A re-added entry needs no re-registration: the
@@ -169,7 +172,7 @@ impl ReloadCtx {
 /// the trigger payload and re-fetches the authoritative value (the bus
 /// function is discoverable, so a caller-supplied payload must not be trusted
 /// to repoint config).
-pub fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) -> Result<(), Error> {
+pub async fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) -> Result<(), Error> {
     let ctx = ReloadCtx::from_boot(boot);
     let engine = iii.clone();
     iii.register_function(
@@ -186,6 +189,13 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) -> Resul
             "Internal: reload bridge configuration from the authoritative store on change.",
         ),
     );
+    // Keep `local_registered` truthful the instant the id is registered: a
+    // `forward` entry naming `bridge::on-config-change` must be recognized as
+    // already-registered, or the next reload panics on a duplicate id (F1).
+    boot.local_registered
+        .write()
+        .await
+        .insert(CONFIG_FN_ID.to_string());
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "configuration".to_string(),
@@ -210,11 +220,17 @@ fn url_changed(current: &BridgeConfig, next: &BridgeConfig, env_url: Option<Stri
 /// functions still need registering. A previously-registered name (even one
 /// removed from the current tables) is NOT returned: the SDK panics on a
 /// duplicate `register_function` id, and the table swap alone revives it.
+/// Deduplicated: two `next` entries sharing a name (e.g. two `forward`
+/// entries with the same `local_function`) must yield only ONE addition —
+/// the caller still gates each individual `register_function` call on the
+/// registered-set itself, so a repeated name never registers twice.
 fn added_keys(
     ever_registered: &HashSet<String>,
     next: impl Iterator<Item = String>,
 ) -> Vec<String> {
-    next.filter(|k| !ever_registered.contains(k)).collect()
+    let mut seen = HashSet::new();
+    next.filter(|k| !ever_registered.contains(k) && seen.insert(k.clone()))
+        .collect()
 }
 
 /// Reset a per-generation registered set when a `url` change swaps in a fresh
@@ -313,46 +329,55 @@ async fn on_config_change(iii: &Arc<IIIClient>, ctx: &ReloadCtx) {
         tracing::info!("bridge remote client reconnected after configuration change");
     } else if !added_exposes.is_empty() {
         // 5b. URL unchanged: register only the never-registered expose
-        // entries on the current remote client.
+        // entries on the current remote client. The id is inserted into the
+        // set AT registration time (not extended after the loop): this both
+        // gates a repeated `remote_name()` within `next.expose` against a
+        // duplicate `register_function` call, and — if `register_expose_
+        // function` were ever to panic mid-loop — leaves the set truthful
+        // instead of permanently wedging the next reload attempt.
         let client = ctx.remote.read().await.clone();
+        let mut registered = ctx.remote_registered.write().await;
         for e in next
             .expose
             .iter()
             .filter(|e| added_exposes.contains(&e.remote_name().to_string()))
         {
-            boot::register_expose_function(
-                &client,
-                iii.clone(),
-                ctx.exposes.clone(),
-                e.remote_name(),
-            );
+            if registered.insert(e.remote_name().to_string()) {
+                boot::register_expose_function(
+                    &client,
+                    iii.clone(),
+                    ctx.exposes.clone(),
+                    e.remote_name(),
+                );
+            }
         }
-        ctx.remote_registered
-            .write()
-            .await
-            .extend(added_exposes.iter().cloned());
     }
 
     // 6. Forwards: register only the never-registered local proxy functions.
     // Existing ids keep their handler — it reads the table per call, so a
-    // changed remote_function/timeout_ms took effect at step 4.
-    for f in next
-        .forward
-        .iter()
-        .filter(|f| added_forwards.contains(&f.local_function))
+    // changed remote_function/timeout_ms took effect at step 4. The id is
+    // inserted into the set AT registration time (not extended after the
+    // loop) for the same reason as step 5b: gates a repeated `local_function`
+    // within `next.forward` and keeps the set truthful across a mid-loop
+    // panic.
     {
-        boot::register_forward_function(
-            iii,
-            ctx.remote.clone(),
-            ctx.forwards.clone(),
-            &f.local_function,
-            &f.remote_function,
-        );
+        let mut registered = ctx.local_registered.write().await;
+        for f in next
+            .forward
+            .iter()
+            .filter(|f| added_forwards.contains(&f.local_function))
+        {
+            if registered.insert(f.local_function.clone()) {
+                boot::register_forward_function(
+                    iii,
+                    ctx.remote.clone(),
+                    ctx.forwards.clone(),
+                    &f.local_function,
+                    &f.remote_function,
+                );
+            }
+        }
     }
-    ctx.local_registered
-        .write()
-        .await
-        .extend(added_forwards.iter().cloned());
 
     // 7. Publish the new config snapshot last — the observable "reload done".
     *ctx.cell.write().await = Arc::new(next.normalized());
@@ -445,6 +470,34 @@ mod tests {
             added_keys(&ever, v3.into_iter()).is_empty(),
             "re-added name must not be re-registered"
         );
+    }
+
+    /// F1 regression: `register_config_trigger` inserts `CONFIG_FN_ID` into
+    /// `local_registered` at the point it registers the function — so a
+    /// `forward` entry that happens to name `bridge::on-config-change` must
+    /// yield NO addition, or the next reload panics on a duplicate id.
+    #[test]
+    fn added_keys_skips_config_fn_id_seeded_at_registration() {
+        let ever = set(&[CONFIG_FN_ID, "bridge.invoke", "bridge.invoke_async"]);
+        let next = vec![CONFIG_FN_ID.to_string()];
+        assert!(
+            added_keys(&ever, next.into_iter()).is_empty(),
+            "a forward named the config-change function id must not be re-registered"
+        );
+    }
+
+    /// F2 regression: two `next` entries sharing a name (e.g. two `forward`
+    /// entries with the same `local_function`, or two `expose` entries with
+    /// the same `remote_name()`) must produce a single addition — otherwise
+    /// both survive the "never registered" filter and the second
+    /// `register_function` call panics on the duplicate id.
+    #[test]
+    fn added_keys_dedups_repeated_names_in_next() {
+        let ever = set(&[]);
+        let next = vec!["dup".to_string(), "dup".to_string(), "other".to_string()];
+        let mut got = added_keys(&ever, next.into_iter());
+        got.sort();
+        assert_eq!(got, vec!["dup".to_string(), "other".to_string()]);
     }
 
     /// A url swap replaces the remote client, so the per-generation set is
