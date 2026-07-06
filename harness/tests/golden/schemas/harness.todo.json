@@ -9,7 +9,7 @@
             "$ref": "#/definitions/TodoStatus"
           },
           "text": {
-            "description": "The task, imperative and specific (≤ 500 chars).",
+            "description": "The task, imperative and specific (≤ 500 chars). `content` is accepted as an alias — models trained on TodoWrite-shaped tools send it.",
             "type": "string"
           }
         },
@@ -30,7 +30,7 @@
     },
     "properties": {
       "items": {
-        "description": "The complete list (replaces the previous one; empty clears it).",
+        "description": "The complete list (replaces the previous one; empty clears it). `todos` is accepted as an alias for the same reason as `content`.",
         "items": {
           "$ref": "#/definitions/TodoItem"
         },

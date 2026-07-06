@@ -36,7 +36,10 @@ pub enum TodoStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TodoItem {
-    /// The task, imperative and specific (≤ 500 chars).
+    /// The task, imperative and specific (≤ 500 chars). `content` is
+    /// accepted as an alias — models trained on TodoWrite-shaped tools
+    /// send it.
+    #[serde(alias = "content")]
     pub text: String,
     pub status: TodoStatus,
 }
@@ -48,6 +51,8 @@ pub struct TodoRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// The complete list (replaces the previous one; empty clears it).
+    /// `todos` is accepted as an alias for the same reason as `content`.
+    #[serde(alias = "todos")]
     pub items: Vec<TodoItem>,
 }
 
@@ -179,5 +184,19 @@ mod tests {
     #[test]
     fn empty_list_clears_without_error() {
         assert!(validate(&[]).is_ok());
+    }
+
+    #[test]
+    fn todowrite_shaped_payload_deserializes() {
+        // gpt-5.4 emits the TodoWrite field names it was trained on.
+        let req: TodoRequest = serde_json::from_value(serde_json::json!({
+            "todos": [
+                { "content": "fix the bug", "status": "in_progress", "activeForm": "Fixing" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(req.items.len(), 1);
+        assert_eq!(req.items[0].text, "fix the bug");
+        assert_eq!(req.items[0].status, TodoStatus::InProgress);
     }
 }
