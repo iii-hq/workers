@@ -339,6 +339,7 @@
   user-select: none;
   font-family: var(--font-sans);
   font-size: 15px;
+  overflow: hidden; /* never let a long placeholder spill past the box */
 }
 
 .workers-tab .env-lexical-placeholder--multiline {

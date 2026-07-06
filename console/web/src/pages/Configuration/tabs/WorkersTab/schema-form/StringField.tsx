@@ -46,8 +46,13 @@ export function StringField(props: FieldProps) {
   const description =
     typeof schema.description === 'string' ? schema.description : undefined
   const format = typeof schema.format === 'string' ? schema.format : undefined
+  // In textarea mode the schema default is the editor's seed-on-set value
+  // (a full prompt), never a placeholder hint — showing it as a placeholder
+  // when the field is cleared would spill a multi-KB string out of the box.
   const placeholder =
-    typeof schema.default === 'string' ? schema.default : undefined
+    format !== 'textarea' && typeof schema.default === 'string'
+      ? schema.default
+      : undefined
   const useLexical = !format || !NON_TEMPLATED_FORMATS.has(format)
 
   return (
