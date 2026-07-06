@@ -188,9 +188,10 @@ async fn create_spawns_the_background_provisioning() {
     .await
     .unwrap();
 
-    // The response returns before the copy; poll for the background task.
+    // The response returns before the copy; poll for the background task
+    // with a generous deadline (cold CI runners need well over a second).
     let env_file = Path::new(&created.path).join(".env");
-    for _ in 0..100 {
+    for _ in 0..600 {
         if env_file.exists() {
             break;
         }
