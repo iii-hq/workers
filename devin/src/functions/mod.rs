@@ -14,11 +14,11 @@ use serde_json::{json, Value};
 use crate::api;
 use crate::cli;
 use crate::configuration::ConfigCell;
-use crate::state::{list_sessions, load_session};
+use crate::state::{list_sessions, load_session, mark_error};
 use types::{
     extract_create_prompt, ApiRequest, CodeScanFindingsRequest, CodeScanMetricsRequest,
     CodeScanRemediateRequest, PrReviewStatusRequest, PrReviewTriggerRequest, RunRequest,
-    SessionCreateRequest, SessionIdRequest, SessionListRequest, SessionMessageRequest,
+    SessionCreateRequest, SessionIdRequest, SessionMessageRequest,
 };
 
 fn schema_value<T: schemars::JsonSchema>() -> Value {
@@ -42,13 +42,13 @@ fn err_value(e: impl std::fmt::Display) -> Value {
 
 pub fn register_all(iii: &IIIClient, cell: ConfigCell, http: Client) {
     register_run(iii, &cell);
+    register_start(iii, &cell);
     register_stop(iii);
     register_status(iii);
-    register_runs_list(iii);
+    register_sessions_list(iii);
     register_api(iii, &cell, &http);
     register_session_create(iii, &cell, &http);
     register_session_get(iii, &cell, &http);
-    register_session_list(iii, &cell, &http);
     register_session_message(iii, &cell, &http);
     register_pr_review_trigger(iii, &cell, &http);
     register_pr_review_status(iii, &cell, &http);
@@ -77,6 +77,7 @@ fn register_run(iii: &IIIClient, cell: &ConfigCell) {
             "properties": {
                 "session_id": { "type": "string" },
                 "devin_session_id": { "type": ["string", "null"] },
+                "url": { "type": ["string", "null"] },
                 "result": { "type": "string" },
                 "stop_reason": { "type": "string" },
                 "is_error": { "type": "boolean" },
@@ -88,7 +89,60 @@ fn register_run(iii: &IIIClient, cell: &ConfigCell) {
         .description(
             "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` \
              array; streams raw CLI stdout onto devin::events, terminal AgentEvent frames onto \
-             agent::events, and returns {session_id, result, stop_reason, is_error}.",
+             agent::events, and returns {session_id, devin_session_id, url, result, stop_reason, \
+             is_error}.",
+        ),
+    );
+}
+
+// devin::start — fire-and-forget; progress on the streams.
+fn register_start(iii: &IIIClient, cell: &ConfigCell) {
+    let iii_h = iii.clone();
+    let cell_h = cell.clone();
+    iii.register_function(
+        "devin::start",
+        RegisterFunction::new_async(move |req: RunRequest| {
+            let iii_h = iii_h.clone();
+            let cell_h = cell_h.clone();
+            async move {
+                let session_id = req
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let mut started = req;
+                started.session_id = Some(session_id.clone());
+                let bg_iii = iii_h.clone();
+                let bg_id = session_id.clone();
+                let cfg = { cell_h.read().await.clone() };
+                // Supervise the run: run() persists terminal state itself, but
+                // if the task panics that never happens, so the supervisor marks
+                // the session error so it can't stay stuck in `working`.
+                tokio::spawn(async move {
+                    let run_iii = bg_iii.clone();
+                    let inner = tokio::spawn(cli::run(run_iii, cfg, started));
+                    match inner.await {
+                        Ok(res) => {
+                            if res.get("is_error").and_then(Value::as_bool) == Some(true) {
+                                mark_error(&bg_iii, &bg_id).await;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(session_id = %bg_id, error = %e, "devin::start task panicked");
+                            mark_error(&bg_iii, &bg_id).await;
+                        }
+                    }
+                });
+                Ok::<Value, Error>(json!({ "session_id": session_id, "started": true }))
+            }
+        })
+        .request_format(schema_value::<RunRequest>())
+        .response_format(json!({
+            "type": "object",
+            "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
+        }))
+        .description(
+            "Start a Devin CLI turn and return immediately; watch devin::events / agent::events \
+             (group_id = session_id) for progress and turn_end.",
         ),
     );
 }
@@ -148,11 +202,11 @@ fn register_status(iii: &IIIClient) {
     );
 }
 
-// devin::runs::list — every local CLI run this worker has recorded.
-fn register_runs_list(iii: &IIIClient) {
+// devin::sessions::list — every run this worker has recorded (family surface).
+fn register_sessions_list(iii: &IIIClient) {
     let iii_h = iii.clone();
     iii.register_function(
-        "devin::runs::list",
+        "devin::sessions::list",
         RegisterFunction::new_async(move |_req: Value| {
             let iii_h = iii_h.clone();
             async move {
@@ -165,7 +219,11 @@ fn register_runs_list(iii: &IIIClient) {
             "type": "object",
             "properties": { "sessions": { "type": "array", "items": { "type": "object" } } },
         }))
-        .description("List every local devin::run session this worker has recorded."),
+        .description(
+            "List every devin::run / devin::start session this worker has recorded, each linked \
+             to its Devin session id. For all Devin cloud sessions org-wide, use devin::api \
+             {method: GET, path: sessions}.",
+        ),
     );
 }
 
@@ -258,30 +316,6 @@ fn register_session_get(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
         .request_format(schema_value::<SessionIdRequest>())
         .response_format(passthrough_schema())
         .description("Fetch one Devin cloud session (status, messages, output) by session id."),
-    );
-}
-
-// devin::session::list — list Devin cloud sessions.
-fn register_session_list(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
-    let cell_h = cell.clone();
-    let http_h = http.clone();
-    iii.register_function(
-        "devin::session::list",
-        RegisterFunction::new_async(move |req: SessionListRequest| {
-            let cell_h = cell_h.clone();
-            let http_h = http_h.clone();
-            async move {
-                let cfg = { cell_h.read().await.clone() };
-                let query = req.to_query();
-                Ok::<Value, Error>(match api::list_sessions(&http_h, &cfg, &query).await {
-                    Ok(v) => v,
-                    Err(e) => err_value(e),
-                })
-            }
-        })
-        .request_format(schema_value::<SessionListRequest>())
-        .response_format(passthrough_schema())
-        .description("List Devin cloud sessions with optional limit, offset, and tag filters."),
     );
 }
 

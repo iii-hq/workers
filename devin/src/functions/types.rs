@@ -142,36 +142,6 @@ impl SessionCreateRequest {
     }
 }
 
-/// List Devin cloud sessions.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[serde(default)]
-pub struct SessionListRequest {
-    /// Maximum number of sessions to return.
-    pub limit: Option<u64>,
-    /// Pagination offset.
-    pub offset: Option<u64>,
-    /// Filter by tags.
-    pub tags: Option<Vec<String>>,
-}
-
-impl SessionListRequest {
-    pub fn to_query(&self) -> Value {
-        let mut m = Map::new();
-        if let Some(v) = self.limit {
-            m.insert("limit".into(), json!(v));
-        }
-        if let Some(v) = self.offset {
-            m.insert("offset".into(), json!(v));
-        }
-        if let Some(v) = &self.tags {
-            if !v.is_empty() {
-                m.insert("tags".into(), json!(v.join(",")));
-            }
-        }
-        Value::Object(m)
-    }
-}
-
 /// Send a follow-up message to a running Devin session.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SessionMessageRequest {

@@ -100,6 +100,26 @@ pub fn compose_prompt(prompt: &str, want_ctx: bool, is_first_turn: bool) -> Stri
     }
 }
 
+/// Pull the Devin session id and url out of the CLI's stdout. When `devin` opens
+/// a session it prints `{"id":"devin-...","url":"..."}`; we scan from the last
+/// line back for that object so the record links to the real Devin session and
+/// the caller can address it via `devin::session::*`.
+fn parse_session_ref(text: &str) -> (Option<String>, Option<String>) {
+    for line in text.lines().rev() {
+        let t = line.trim();
+        if t.starts_with('{') {
+            if let Ok(v) = serde_json::from_str::<Value>(t) {
+                let id = v.get("id").and_then(Value::as_str).map(String::from);
+                let url = v.get("url").and_then(Value::as_str).map(String::from);
+                if id.is_some() || url.is_some() {
+                    return (id, url);
+                }
+            }
+        }
+    }
+    (None, None)
+}
+
 /// Run one `devin::run` turn and return the result map.
 pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     let session_id = req
@@ -200,6 +220,14 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         }
     }
 
+    // Link the record to the Devin session the CLI opened (it prints its id on
+    // stdout), so devin::status / devin::sessions::list point at the real
+    // session and the caller can fetch its cloud detail via devin::session::get.
+    let (parsed_id, session_url) = parse_session_ref(&outcome.result_text);
+    if record.devin_session_id.is_none() {
+        record.devin_session_id = parsed_id;
+    }
+
     record.status = if outcome.is_error {
         Status::Error
     } else {
@@ -234,6 +262,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     json!({
         "session_id": session_id,
         "devin_session_id": record.devin_session_id,
+        "url": session_url,
         "result": outcome.result_text,
         "stop_reason": outcome.stop_reason,
         "is_error": outcome.is_error,
@@ -372,5 +401,18 @@ mod tests {
         let cfg = Config::default();
         let argv = build_args("build a thing", &cfg);
         assert_eq!(argv, vec!["--".to_string(), "build a thing".to_string()]);
+    }
+
+    #[test]
+    fn parses_devin_session_ref_from_stdout() {
+        let text = "starting...\n{\"id\":\"devin-abc123\",\"url\":\"https://app.devin.ai/sessions/abc123\"}";
+        let (id, url) = parse_session_ref(text);
+        assert_eq!(id, Some("devin-abc123".to_string()));
+        assert_eq!(
+            url,
+            Some("https://app.devin.ai/sessions/abc123".to_string())
+        );
+        let (n1, n2) = parse_session_ref("no json here");
+        assert!(n1.is_none() && n2.is_none());
     }
 }

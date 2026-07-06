@@ -50,7 +50,7 @@ iii trigger devin::session::message \
   --json '{"session_id":"devin-...","message":"Also add a test for it"}'
 
 # list recent sessions
-iii trigger devin::session::list --json '{"limit":10}'
+iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit":10}}'
 ```
 
 Run the local CLI as one turn and stream it onto the bus:
@@ -79,26 +79,28 @@ iii trigger devin::session::create --help
 
 ## Functions
 
-The CLI surface drives the local `devin` binary. The cloud surface calls the Devin REST API.
+The worker follows the same base surface as the grok, codex, claude-code, and opencode agent workers (`run` / `start` / `stop` / `status` / `sessions::list` / `events`), then adds the functions unique to Devin's cloud (session lifecycle, PR review, code scan, and a passthrough).
 
 | Function | Surface | Purpose |
 | --- | --- | --- |
 | `devin::run` | CLI | Run one local CLI turn, wait, return the result |
+| `devin::start` | CLI | Start a turn and return immediately; progress on the streams |
 | `devin::stop` | CLI | Interrupt a live CLI run |
-| `devin::status` | CLI | Local run state: live flag, status, turn count |
-| `devin::runs::list` | CLI | Every local CLI run this worker has recorded |
+| `devin::status` | CLI | A recorded run's state: live flag, status, linked Devin session id |
+| `devin::sessions::list` | CLI | Every run this worker has recorded (each linked to its Devin session) |
 | `devin::session::create` | Cloud | Start a Devin cloud session from a prompt |
 | `devin::session::get` | Cloud | Fetch one session (status, messages, output) |
-| `devin::session::list` | Cloud | List cloud sessions with limit/offset/tag filters |
 | `devin::session::message` | Cloud | Send a follow-up message to a running session |
 | `devin::pr-review::trigger` | Cloud | Start a Devin review for a pull/merge request |
 | `devin::pr-review::status` | Cloud | Latest Devin review for a pull/merge request |
 | `devin::code-scan::findings` | Cloud | List enterprise code scan findings (enterprise-gated) |
 | `devin::code-scan::metrics` | Cloud | Enterprise code scan metrics (enterprise-gated) |
 | `devin::code-scan::remediate` | Cloud | Launch a session to fix a finding (enterprise-gated) |
-| `devin::api` | Cloud | Raw authenticated call to any v3 endpoint |
+| `devin::api` | Cloud | Raw authenticated call to any v1/v3 endpoint |
 
-`devin::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), the same input contract as the claude-code and grok workers, so the acp worker can drive it with `--brain-fn devin::run`.
+To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: sessions}` (v1) or `{path: organizations/{org_id}/sessions}` (v3); `devin::sessions::list` is scoped to the runs this worker made, matching the family convention.
+
+`devin::run` / `devin::start` accept either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), the same input contract as the claude-code and grok workers, so the acp worker can drive it with `--brain-fn devin::run`.
 
 `devin::session::create` accepts `prompt` plus the union of the v1 and v3 create fields (`title`, `tags`, `playbook_id`, `knowledge_ids`, `secret_ids`, `max_acu_limit`; v3 `devin_mode`, `repos`, `attachment_urls`, `resumable`, `bypass_approval`; v1 `snapshot_id`, `unlisted`, `idempotent`); each is omitted from the body when not supplied, so populate the ones your token's API version accepts. `devin::session::*` follow the v1 flat paths by default and switch to v3 org-scoped paths when `org_id` is set.
 
@@ -140,7 +142,7 @@ iii_context: true                 # prepend iii runtime context to a CLI prompt
 
 ## Permissions
 
-`devin::run`, `devin::session::create`, `devin::session::message`, and `devin::api` drive or mutate a Devin agent and spend ACUs, so they stay at the `needs_approval` default; an agent invoking them without human approval is a privilege escalation. The read-only introspection functions (`devin::status`, `devin::runs::list`, `devin::session::get`, `devin::session::list`) and `devin::stop` are allow-listed in `iii-permissions.yaml`.
+`devin::run`, `devin::start`, `devin::session::create`, `devin::session::message`, and `devin::api` drive or mutate a Devin agent and spend ACUs, so they stay at the `needs_approval` default; an agent invoking them without human approval is a privilege escalation. The read-only introspection functions (`devin::status`, `devin::sessions::list`, `devin::session::get`, `devin::pr-review::status`, `devin::code-scan::findings`/`metrics`) and `devin::stop` are allow-listed in `iii-permissions.yaml`.
 
 ## How it maps
 

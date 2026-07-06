@@ -45,8 +45,8 @@ bolting it onto this one.
 ## Boundaries
 
 - The cloud surface spends ACUs and mutates real Devin state. `devin::session::create`,
-  `devin::session::message`, `devin::api`, and `devin::run` stay at the
-  `needs_approval` default; only read-only reads and `devin::stop` are
+  `devin::session::message`, `devin::api`, `devin::run`, and `devin::start` stay
+  at the `needs_approval` default; only read-only reads and `devin::stop` are
   allow-listed.
 - Cloud functions return JSON directly and do not stream. Poll
   `devin::session::get` for progress, or schedule the poll with `cron`; do not
@@ -63,7 +63,6 @@ bolting it onto this one.
   `messages` array) plus `title`, `tags`, `playbook_id`, `snapshot_id`,
   `idempotent`, `max_acu_limit`, `secret_ids`, `knowledge_ids`, `unlisted`.
 - `devin::session::get` — fetch one session by id (status, messages, output).
-- `devin::session::list` — list sessions with `limit`, `offset`, `tags`.
 - `devin::session::message` — send a follow-up `message` to a running session.
 - `devin::pr-review::trigger` — start a Devin review for a `pr_url`.
 - `devin::pr-review::status` — latest review for a `pr_url` (optional `commit_sha`).
@@ -75,7 +74,11 @@ bolting it onto this one.
   `{ method, path, query?, body? }`.
 - `devin::run` — run one local CLI turn and wait; accepts `prompt` (or a
   `messages` array), `cwd`, and `iii_context`; returns
-  `{session_id, result, stop_reason, is_error, num_turns}`.
+  `{session_id, devin_session_id, url, result, stop_reason, is_error}`.
+- `devin::start` — same payload, returns `{session_id, started}` immediately;
+  progress arrives on the streams.
 - `devin::stop` — interrupt the live CLI run for a session.
-- `devin::status` — point-in-time view of a local run: live flag, status, turns.
-- `devin::runs::list` — every local CLI run this worker has recorded.
+- `devin::status` — point-in-time view of a recorded run: live flag, status,
+  linked Devin session id.
+- `devin::sessions::list` — every run this worker has recorded (each linked to
+  its Devin session). For all cloud sessions org-wide, use `devin::api`.

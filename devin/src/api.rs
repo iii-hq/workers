@@ -150,18 +150,6 @@ pub async fn get_session(http: &Client, cfg: &Config, session_id: &str) -> Resul
     request(http, cfg, "GET", &session_item(cfg, session_id), None, None).await
 }
 
-pub async fn list_sessions(http: &Client, cfg: &Config, query: &Value) -> Result<Value> {
-    request(
-        http,
-        cfg,
-        "GET",
-        &sessions_collection(cfg),
-        Some(query),
-        None,
-    )
-    .await
-}
-
 pub async fn send_message(
     http: &Client,
     cfg: &Config,

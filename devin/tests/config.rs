@@ -1,9 +1,7 @@
 //! Unit tests for the pure request/config helpers — no engine required.
 
 use devin::config::Config;
-use devin::functions::types::{
-    extract_prompt, Message, RunRequest, SessionCreateRequest, SessionListRequest,
-};
+use devin::functions::types::{extract_prompt, Message, RunRequest, SessionCreateRequest};
 use serde_json::json;
 
 #[test]
@@ -61,19 +59,6 @@ fn create_body_includes_prompt_and_only_present_fields() {
     assert!(body.get("playbook_id").is_none());
     assert!(body.get("max_acu_limit").is_none());
     assert!(body.get("bypass_approval").is_none());
-}
-
-#[test]
-fn list_query_omits_absent_fields() {
-    let req = SessionListRequest {
-        limit: Some(10),
-        tags: Some(vec!["a".into(), "b".into()]),
-        ..Default::default()
-    };
-    let q = req.to_query();
-    assert_eq!(q["limit"], json!(10));
-    assert_eq!(q["tags"], json!("a,b"));
-    assert!(q.get("offset").is_none());
 }
 
 #[test]
