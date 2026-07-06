@@ -40,7 +40,7 @@ export const EDGE_CASES: TestCase[] = [
     async run({ call, expectError }) {
       await expectError(
         () => call('shell::exec', { command: '/_no_such_bin_at_all_' }),
-        'os error 2', // ADJUST after first run: pin a stable substring of the actual spawn error
+        'os error 2', // verified against a live engine run
       );
     },
   },
