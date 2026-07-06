@@ -1,12 +1,12 @@
 # CI (.github/scripts/validate_worker.py) requires name/language/deploy/manifest
-# and reads the release version from `manifest`. The engine accepts iii/deploy/
-# manifest as publish metadata and ignores them at add/start time, so one file
-# satisfies both validators. The image is still built from runtime.base_image +
-# scripts.install (no Dockerfile); CI does not validate the runtime/scripts block.
+# and reads the release version from `manifest`. `deploy: bundle` ships a source
+# tarball built by .github/workflows/_bundle.yml. The engine's bundle validator
+# rejects scripts.install/setup and runtime.base_image and executes only
+# scripts.start, so dependency bootstrap lives in scripts.start.
 iii: v1
 name: scrapling
 language: python
-deploy: image
+deploy: bundle
 manifest: pyproject.toml
 description: >-
   Scrapling as an iii worker — scrapling::* functions run HTTP / anti-bot /
@@ -16,9 +16,9 @@ description: >-
 env:
   III_URL: "ws://localhost:49134"
 
-# base_image + scripts.install build the image (supersedes the deprecated
-# runtime.language + Dockerfile). `scrapling install` downloads the
-# Camoufox/Chromium browsers used by stealthy-fetch / dynamic-fetch / screenshot.
+# Must name an engine-preset image ref verbatim: bundle workers may not pull
+# arbitrary base images, and this is how a non-node bundle picks its rootfs
+# (runtime.kind is deprecated).
 runtime:
   base_image: docker.io/iiidev/python:latest
 
@@ -28,5 +28,8 @@ resources:
   cpus: 2
 
 scripts:
-  install: "pip install -e . && scrapling install"
-  start: "python -m src.main"
+  # First boot installs deps + browsers (`scrapling install` downloads the
+  # Camoufox/Chromium used by stealthy-fetch / dynamic-fetch / screenshot);
+  # later boots are fast because pip and the browser cache persist in the
+  # sandbox.
+  start: "pip install -e . && scrapling install && python -m src.main"

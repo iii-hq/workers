@@ -114,16 +114,26 @@ jobs:
           cp "$WORKER/iii.worker.yaml"       "$stage/iii.worker.yaml"
           echo "STAGE_DIR=$stage" >> "$GITHUB_ENV"
 
-      # ── Python bundle path (TODO) ────────────────────────────────────
-      # When the first Python worker with `deploy: bundle` lands, choose
-      # a single-file packaging tool (PEP 723 / shiv / pex / PyOxidizer)
-      # and produce the same `index.mjs`-equivalent entrypoint + per-tool
-      # `iii.worker.yaml` in $STAGE_DIR. Until then, fail loudly.
-      - name: Python bundle (unsupported)
+      # ── Python bundle path ───────────────────────────────────────────
+      # Python workers ship as a source bundle (src/ + pyproject.toml +
+      # iii.worker.yaml). The engine's bundle validator executes only
+      # `scripts.start` (scripts.install/setup are rejected, and
+      # runtime.base_image must name an engine-preset ref like
+      # docker.io/iiidev/python:latest), so the manifest's start command
+      # self-bootstraps (e.g. "pip install -e . && python -m src.main").
+      # Native deps and browsers can't be vendored per-arch into one
+      # archive anyway — install-at-start sidesteps that.
+      - name: Stage Python artefact
         if: inputs.language == 'python'
+        env:
+          WORKER: ${{ inputs.worker }}
         run: |
-          echo "::error::Python bundle path is not implemented yet"
-          exit 1
+          set -euo pipefail
+          stage="$RUNNER_TEMP/bundle-stage"
+          mkdir -p "$stage"
+          rsync -a --exclude tests --exclude '.git*' --exclude README.md \
+            "$WORKER/" "$stage/"
+          echo "STAGE_DIR=$stage" >> "$GITHUB_ENV"
 
       - name: Unsupported language
         if: inputs.language != 'node' && inputs.language != 'javascript' && inputs.language != 'python'
@@ -135,11 +145,13 @@ jobs:
 
       - name: Verify staged artefact
         env:
-          WORKER: ${{ inputs.worker }}
+          LANGUAGE: ${{ inputs.language }}
         run: |
           set -euo pipefail
           ls -la "$STAGE_DIR"
-          for required in index.mjs iii.worker.yaml; do
+          entry=index.mjs
+          if [[ "$LANGUAGE" == "python" ]]; then entry=pyproject.toml; fi
+          for required in "$entry" iii.worker.yaml; do
             if [[ ! -f "$STAGE_DIR/$required" ]]; then
               echo "::error::staged bundle missing $required"
               exit 1
@@ -159,8 +171,8 @@ jobs:
 
           # `tar -C` so the archive contents are rooted at the staged
           # files, not at `$STAGE_DIR`. The resulting archive expands
-          # straight to `index.mjs` + `iii.worker.yaml`.
-          tar -C "$STAGE_DIR" -czf "$archive" index.mjs iii.worker.yaml
+          # straight to the staged entrypoint + `iii.worker.yaml`.
+          tar -C "$STAGE_DIR" -czf "$archive" .
 
           digest=$(sha256sum "$archive" | awk '{print $1}')
           printf '%s  %s\n' "$digest" "${WORKER}.tar.gz" > "$checksum"
