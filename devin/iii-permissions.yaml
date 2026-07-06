@@ -1,0 +1,22 @@
+# Agent permissions for the devin worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# devin::run drives a full Devin coding agent, devin::session::create /
+# ::message spawn or steer a Devin cloud session (spending ACUs), and devin::api
+# can call any mutating endpoint. An agent invoking those without human approval
+# is a privilege escalation, so they are NOT allow-listed and stay at the
+# needs_approval default. Read-only introspection and stopping a run are safe to
+# allow.
+version: 1
+
+rules:
+  # internal config-reload callback — bus-internal, never agent-callable
+  - '!devin::on-config-change'
+  - devin::status
+  - devin::runs::list
+  - devin::stop
+  - devin::session::get
+  - devin::session::list
+  - devin::pr-review::status
+  - devin::code-scan::findings
+  - devin::code-scan::metrics

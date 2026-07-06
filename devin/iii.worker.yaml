@@ -1,0 +1,7 @@
+iii: v1
+name: devin
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: devin
+description: Devin CLI + API as an iii worker; devin::run drives the local devin CLI for headless turns and streams AgentEvent frames onto agent::events, devin::session::* wrap the Devin cloud session lifecycle, and devin::api reaches any Devin v3 endpoint.
