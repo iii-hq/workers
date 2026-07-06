@@ -6,12 +6,10 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 
-use crate::clients::{
-    ContextClient, EngineClient, FunctionDescriptor, RouterClient, SessionClient,
-};
+use crate::clients::{ContextClient, EngineClient, RouterClient, SessionClient};
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
-use crate::discovery::FunctionsCell;
+use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
 use crate::locks::SessionLocks;
@@ -57,7 +55,8 @@ impl Deps {
 
     /// The current cached function-registry snapshot (cheap `Arc` clone). Kept
     /// live by the `engine::functions-available` trigger; see [`crate::discovery`].
-    pub async fn functions(&self) -> Arc<Vec<FunctionDescriptor>> {
+    /// Carries both the callable set (`.functions`) and its `.generation`.
+    pub async fn functions(&self) -> Arc<FunctionsSnapshot> {
         self.functions.read().await.clone()
     }
 

@@ -209,6 +209,11 @@ pub struct TurnRecord {
     /// so `harness::react` can refuse chains past `MAX_REACTIVE_DEPTH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactive_depth: Option<u32>,
+    /// Function-registry generation this session last acknowledged; a mismatch
+    /// at generate time appends a registry-change notice so session-cached
+    /// contracts get re-fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub functions_generation: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -289,6 +294,7 @@ mod tests {
             display_parent_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
+            functions_generation: None,
             result: None,
             result_error: None,
             validation_retries: 0,

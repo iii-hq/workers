@@ -126,10 +126,16 @@ fn registry_allowlist_invariant() {
 
 #[test]
 fn contract_before_call() {
-    let out = default_prompt();
-    assert!(out.contains("BEFORE you call"));
+    // Session-lifetime contract reuse: fetch once before a function's FIRST
+    // use this session, then reuse; batch several ids via `function_ids`.
+    // Wrap-proof: prompts hard-wrap prose, so compare on one line.
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("BEFORE the FIRST call"));
     assert!(out.contains("engine::functions::info"));
     assert!(out.contains("The answer is the API reference"));
+    assert!(out.contains("stays valid"));
+    assert!(out.contains("function_ids"));
+    assert!(!out.contains("fetch the API spec again"));
 }
 
 #[test]

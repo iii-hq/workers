@@ -186,7 +186,7 @@ pub async fn run_step(
     let watermark = entries.last().map(|e| e.entry_id.clone());
 
     // Assemble the model-ready context (+ compaction persistence).
-    let assembled = assemble_context(
+    let mut assembled = assemble_context(
         deps,
         &session,
         &record,
@@ -195,6 +195,19 @@ pub async fn run_step(
         prev_watermark.as_deref(),
     )
     .await?;
+
+    // Registry-change notice: if the function registry changed since this
+    // session last acknowledged its generation, tell the model its cached
+    // contracts may be stale. First sighting stamps silently. Persisted by the
+    // pre-generate put_turn below.
+    let current_generation = deps.functions().await.generation;
+    if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
+        assembled.system_prompt = Some(match assembled.system_prompt.take() {
+            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
+            _ => notice,
+        });
+    }
+    record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -1332,6 +1345,21 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     patched
 }
 
+/// The single-line notice appended to the system prompt when the registry
+/// changed under a session that had already acknowledged an earlier generation.
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+
+/// Decide the registry-change notice for a step. `None` when the record already
+/// matches the live generation, or is being stamped for the first time; `Some`
+/// only when the registry changed under a session that acknowledged an earlier
+/// generation. The caller stamps `functions_generation = current` regardless.
+fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+    match record_gen {
+        Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
+        _ => None,
+    }
+}
+
 /// Build the invocation-schema surface attached to the generate request
 /// (harness.md § Exposure modes). Default: the single `agent_trigger` schema.
 /// Native: expand the allow globs against the registry and attach one schema
@@ -1349,7 +1377,7 @@ async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::mode
             let policy = CompiledPolicy::from(record.options.functions.as_ref());
             let snapshot = deps.functions().await;
             let mut tools = Vec::new();
-            for descriptor in snapshot.iter() {
+            for descriptor in snapshot.functions.iter() {
                 if !policy.allows(&descriptor.function_id) {
                     continue;
                 }
@@ -1419,6 +1447,16 @@ impl Clone for SessionStreamSink {
 mod tests {
     use super::cancel_requested;
     use crate::types::event::StopReason;
+
+    #[test]
+    fn registry_notice_stamps_silently_then_fires_on_mismatch() {
+        // First sighting (None): stamp, no notice.
+        assert!(super::registry_notice(None, 7).is_none());
+        // Acknowledged generation still current: no notice.
+        assert!(super::registry_notice(Some(7), 7).is_none());
+        // Registry moved on: notice fires.
+        assert!(super::registry_notice(Some(6), 7).is_some());
+    }
 
     #[test]
     fn policy_aid_names_the_narrowed_surface_and_skips_wildcards() {

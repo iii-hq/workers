@@ -104,6 +104,30 @@ impl EngineClient {
         }
         descriptor_of(&resp)
     }
+
+    /// Read several descriptors in ONE `engine::functions::info` call
+    /// (`function_ids` batch). `None` when the engine predates batch support
+    /// (the caller falls back to per-id [`Self::functions_info`]); unknown ids
+    /// come back as marker entries and are simply skipped by `descriptor_of`
+    /// parsing (no `request_schema`/`parameters` on them is fine — hydration
+    /// keeps such descriptors schema-less).
+    pub async fn functions_info_batch(
+        &self,
+        function_ids: &[String],
+    ) -> Option<Vec<FunctionDescriptor>> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::info".into(),
+                payload: json!({ "function_ids": function_ids }),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
+        let items = resp.get("functions").and_then(Value::as_array)?;
+        Some(items.iter().filter_map(descriptor_of).collect())
+    }
 }
 
 fn parse_dispatch_error_message(raw: &str) -> DispatchError {
