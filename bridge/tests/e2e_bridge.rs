@@ -80,6 +80,7 @@ forward:
     assert!(res.is_null(), "NoResult parity: invoke_async returns null");
 
     boot.shutdown().await;
+    worker_local.shutdown_async().await;
 }
 
 #[tokio::test]
@@ -124,4 +125,5 @@ async fn bridge_invoke_bad_input_surfaces_deserialization_error() {
     );
 
     boot.shutdown().await;
+    worker_local.shutdown_async().await;
 }
