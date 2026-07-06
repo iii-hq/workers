@@ -38,6 +38,7 @@ on:
           - slack
           - telegram-bot
           - shell
+          - worktree
           - storage
           - web
       bump:
