@@ -94,7 +94,12 @@ pub fn filter_entries(
             if absolute.starts_with(worktree_root) {
                 return false;
             }
-            let abs_str = absolute.to_string_lossy();
+            // Canonicalize before comparing against the registered list:
+            // git reports canonical worktree paths while `repo` may be a
+            // symlinked spelling (macOS /var vs /private/var), and a miss
+            // here silently disables the nested-worktree exclusion.
+            let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+            let abs_str = canonical.to_string_lossy();
             if registered_worktrees
                 .iter()
                 .any(|wt| wt.starts_with(abs_str.as_ref()) || abs_str.starts_with(wt.as_str()))
@@ -232,8 +237,18 @@ pub fn spawn_copy_ignored(
     timeout_ms: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // The listing includes the primary checkout itself; excluding it
+        // would exclude every repository entry, so drop it (canonical
+        // compare: git reports canonical paths, callers may not).
+        let repo_canon = tokio::fs::canonicalize(&repo)
+            .await
+            .unwrap_or_else(|_| repo.clone());
         let registered = match crate::git::ops::worktree_list(&repo, timeout_ms).await {
-            Ok(entries) => entries.into_iter().map(|e| e.path).collect::<Vec<_>>(),
+            Ok(entries) => entries
+                .into_iter()
+                .map(|e| e.path)
+                .filter(|p| Path::new(p) != repo_canon)
+                .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         };
         match copy_ignored(
