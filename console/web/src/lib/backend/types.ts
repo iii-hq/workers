@@ -48,6 +48,12 @@ export type StreamEvent =
        */
       kind: 'fcall-approval-cleared'
       functionCallId: string
+      /**
+       * True when the approval was allowed: the released call is now
+       * executing, so the card flips to the running state until its result
+       * pairs in from the transcript.
+       */
+      running?: boolean
     }
   | { kind: 'assistant-token'; token: string }
   | { kind: 'assistant-end' }

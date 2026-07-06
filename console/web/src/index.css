@@ -1,15 +1,27 @@
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
+@import "@fontsource/chivo-mono/400.css";
+@import "@fontsource/chivo-mono/500.css";
+@import "@fontsource/chivo-mono/600.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "@fontsource/geist-mono/600.css";
 @import "tailwindcss";
 
 @theme {
   --font-sans:
-    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+    "Geist", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono:
     "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
+  --font-geist-mono:
+    "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 
   --color-bg: #f2f0ed;
-  --color-panel: #e9e6e2;
+  --color-panel: lab(98.26% 0 0);
   --color-paper-2: #ebe8e3;
 
   --color-ink: #0a0a0a;
@@ -32,6 +44,8 @@
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
   --color-ok: #356f3d;
 
+  --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
+
   --radius-none: 0px;
   --radius-full: 9999px;
 
@@ -43,8 +57,8 @@
 }
 
 [data-theme="dark"] {
-  --color-bg: #111110;
-  --color-panel: #1a1916;
+  --color-bg: #030303;
+  --color-panel: #0a0a0a;
   --color-paper-2: #1f1e1c;
   --color-ink: #f2f0ed;
   --color-ink-faint: #a8a49e;
@@ -52,11 +66,16 @@
   --color-rule: #2a2926;
   --color-rule-2: #1f1e1c;
   --color-accent: #3ea8ff;
-  --color-accent-fg: #111110;
+  --color-accent-fg: #030303;
   --color-ok: #5fae6a;
 }
 
 @layer base {
+  :root {
+    --foreground: var(--color-ink);
+    --tw-ring-color: color-mix(in oklab, var(--foreground) 5%, transparent);
+  }
+
   html,
   body,
   #root {
@@ -72,11 +91,8 @@
   body {
     background-color: var(--color-bg);
     color: var(--color-ink);
-    font-feature-settings:
-      "liga" 0,
-      "clig" 0,
-      "calt" 0,
-      "dlig" 0;
+    font-size: 14px;
+    line-height: 20px;
   }
 
   ::selection {
@@ -107,6 +123,65 @@
     color: var(--color-ink-faint);
     font-family: inherit;
   }
+
+  .font-mono,
+  pre,
+  code {
+    font-feature-settings:
+      "liga" 0,
+      "clig" 0,
+      "calt" 0,
+      "dlig" 0;
+  }
+}
+
+/* Configuration uses Geist for UI chrome; Chivo Mono only on code surfaces. */
+.configuration-surface {
+  font-family: var(--font-sans);
+}
+
+.configuration-surface .font-mono {
+  font-family: var(--font-sans);
+}
+
+.configuration-surface pre,
+.configuration-surface pre.font-mono,
+.configuration-surface code,
+.configuration-surface [data-keep-mono],
+.configuration-surface [data-keep-mono] .font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Chat uses Geist for UI chrome; Chivo Mono only on code/terminal surfaces. */
+.chat-surface {
+  font-family: var(--font-sans);
+}
+
+.chat-surface .font-mono {
+  font-family: var(--font-sans);
+}
+
+.chat-surface pre,
+.chat-surface pre.font-mono,
+.chat-surface code,
+.chat-surface [data-keep-mono],
+.chat-surface [data-keep-mono] .font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Function-call cards use Geist Mono throughout (overrides chat-surface sans remap). */
+.function-call-surface,
+.function-call-surface .font-mono,
+.function-call-surface pre,
+.function-call-surface code,
+.chat-surface .function-call-surface,
+.chat-surface .function-call-surface .font-mono,
+.chat-surface .function-call-surface pre,
+.chat-surface .function-call-surface pre.font-mono,
+.chat-surface .function-call-surface code,
+.chat-surface .function-call-surface [data-keep-mono],
+.chat-surface .function-call-surface [data-keep-mono] .font-mono {
+  font-family: var(--font-geist-mono);
 }
 
 @keyframes pulse-dot {
@@ -232,6 +307,28 @@
 
 @utility skeleton-pulse {
   animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+/* live-timeline span entrance — bars materialize instead of popping in */
+@keyframes timeline-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(3px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@utility timeline-enter {
+  animation: timeline-enter 240ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-enter {
+    animation: none;
+  }
 }
 
 @keyframes trace-flash {

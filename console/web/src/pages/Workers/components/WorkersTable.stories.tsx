@@ -6,10 +6,7 @@ import {
   WORKERS_FIXTURE_ROWS,
 } from '../fixtures/workers-fixtures'
 import type { WorkerRow } from '../types'
-import {
-  filterWorkerRows,
-  type WorkersFilterState,
-} from '../types'
+import { filterWorkerRows, type WorkersFilterState } from '../types'
 import { WorkersFilters } from './WorkersFilters'
 import { WorkersTable } from './WorkersTable'
 
@@ -44,16 +41,10 @@ function WorkersHarness({
             onFilterChange={(next) =>
               setFilters((cur) => ({ ...cur, ...next }))
             }
-            onClear={() =>
-              setFilters({ search: '', tag: null, runtime: null })
-            }
+            onClear={() => setFilters({ search: '', tag: null, runtime: null })}
           />
         ) : null}
-        <WorkersTable
-          rows={filtered}
-          isLoading={isLoading}
-          onStop={onStop}
-        />
+        <WorkersTable rows={filtered} isLoading={isLoading} onStop={onStop} />
       </div>
     </TooltipProvider>
   )
@@ -107,8 +98,6 @@ export const StopEnabled: Story = {
 
 export const StandaloneNoStop: Story = {
   args: {
-    rows: WORKERS_FIXTURE_ROWS.filter(
-      (r) => r.managementKind === 'standalone',
-    ),
+    rows: WORKERS_FIXTURE_ROWS.filter((r) => r.managementKind === 'standalone'),
   },
 }

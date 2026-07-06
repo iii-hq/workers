@@ -1,3 +1,4 @@
+import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
 import { Markdown } from '@/lib/markdown'
@@ -9,7 +10,6 @@ import type {
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { AttachmentChip } from './AttachmentChip'
-import { FunctionCallMessage } from './FunctionCallMessage'
 import { ThoughtMessage } from './ThoughtMessage'
 
 interface MessageProps {
@@ -53,7 +53,7 @@ export function Message({
           onAlwaysAllow(sessionId, functionCallId, message.functionId)
       }
       return (
-        <FunctionCallMessage
+        <FunctionCallCard
           message={message}
           onApprove={onApprove}
           onDeny={onDeny}

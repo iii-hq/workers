@@ -172,9 +172,13 @@ export function toWaterfallData(
   // foot-guns for traces with many spans.
   let minStart = Number.POSITIVE_INFINITY
   let maxEnd = Number.NEGATIVE_INFINITY
+  // Live (pending) spans have an end sentinel of 0 — treat them as
+  // running "now" so the window isn't dragged to epoch 0.
+  const now = Date.now()
   for (const s of traceSpans) {
     const start = toMs(s.start_time_unix_nano)
-    const end = toMs(s.end_time_unix_nano)
+    const pending = !!s.pending || s.end_time_unix_nano === 0
+    const end = pending ? now : toMs(s.end_time_unix_nano)
     if (start < minStart) minStart = start
     if (end > maxEnd) maxEnd = end
   }
@@ -301,9 +305,12 @@ export function treeToWaterfallData(
   // cap for traces with many spans.
   let minStart = Number.POSITIVE_INFINITY
   let maxEnd = Number.NEGATIVE_INFINITY
+  // See the pending note in toWaterfallData above.
+  const now = Date.now()
   for (const { span } of flatSpans) {
     const start = toMs(span.start_time_unix_nano)
-    const end = toMs(span.end_time_unix_nano)
+    const pending = !!span.pending || span.end_time_unix_nano === 0
+    const end = pending ? now : toMs(span.end_time_unix_nano)
     if (start < minStart) minStart = start
     if (end > maxEnd) maxEnd = end
   }

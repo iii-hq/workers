@@ -452,6 +452,9 @@ export function ChatView({
               if (clearedId) {
                 onPatchMessage(conversationId, clearedId, {
                   pendingApproval: false,
+                  // Allowed calls execute now; their result pairs in from
+                  // the transcript and flips running back off.
+                  ...(event.running ? { running: true } : {}),
                 })
               }
               break

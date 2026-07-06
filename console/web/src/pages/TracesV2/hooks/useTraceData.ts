@@ -1,0 +1,242 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { getIiiClient } from '@/lib/iii-client'
+import {
+  isAppendableTraceList,
+  mergeTraceListSpans,
+  startTraceListStream,
+} from '@/lib/traces-stream'
+import {
+  fetchTraces,
+  type TracesFilterParams,
+  type TracesResponse,
+} from '../api/traces'
+import {
+  dedupeToTraceRoots,
+  fingerprintTraceList,
+  mapSpanToListItem,
+} from '../lib/traceListItem'
+
+const DEFAULT_TRACE_LIMIT = 500
+
+export interface TraceListItem {
+  traceId: string
+  rootOperation: string
+  functionId?: string
+  topic?: string
+  status: 'ok' | 'error' | 'pending'
+  startTime: number
+  endTime?: number
+  duration?: number
+  spanCount: number
+  services: string[]
+}
+
+export interface UseTraceDataOptions {
+  filterParams: TracesFilterParams
+  showSystem: boolean
+  debouncedSearch: string
+  isPaused: boolean
+}
+
+export interface UseTraceDataReturn {
+  traceGroups: TraceListItem[]
+  newTraceIds: Set<string>
+  setNewTraceIds: React.Dispatch<React.SetStateAction<Set<string>>>
+  hasOtelConfigured: boolean
+  isQueryLoading: boolean
+  refetch: () => void
+  isHoveredRef: React.RefObject<boolean>
+  flushPendingTraces: () => void
+}
+
+export function useTraceData({
+  filterParams,
+  showSystem,
+  debouncedSearch,
+  isPaused,
+}: UseTraceDataOptions): UseTraceDataReturn {
+  const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
+  const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
+  const [newTraceIds, setNewTraceIds] = useState<Set<string>>(new Set())
+
+  const fingerprintRef = useRef<string>('')
+  const prevTraceIdsRef = useRef<Set<string>>(new Set())
+
+  const isHoveredRef = useRef(false)
+  const pendingTracesRef = useRef<TraceListItem[] | null>(null)
+
+  const {
+    data: tracesData,
+    isLoading: isQueryLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ['traces', filterParams, showSystem, debouncedSearch],
+    queryFn: () =>
+      fetchTraces({
+        ...filterParams,
+        ...(debouncedSearch && !filterParams.name
+          ? { name: debouncedSearch, search_all_spans: true }
+          : {}),
+        offset: 0,
+        limit: DEFAULT_TRACE_LIMIT,
+        include_internal: showSystem,
+      }),
+    // This query is the one-time SEED read. Live updates arrive by APPEND over
+    // the engine `iii:devtools:trace-rows` stream (see the stream effect
+    // below), which merges new rows straight into this cache — no polling
+    // interval. Reconnect / tab-visible re-seed once to self-heal dropped
+    // frames; manual Refresh re-reads on demand.
+    refetchInterval: false,
+    staleTime: 1000,
+  })
+
+  useEffect(() => {
+    if (!tracesData) return
+
+    if (tracesData.spans && tracesData.spans.length > 0) {
+      // Search uses `search_all_spans`, which returns every span of each
+      // matching trace; collapse to one row per trace so the flat list stays
+      // trace-per-row (no-op for the non-search roots-only response).
+      const traces: TraceListItem[] = dedupeToTraceRoots(tracesData.spans).map(
+        mapSpanToListItem,
+      )
+
+      traces.sort((a, b) => b.startTime - a.startTime)
+
+      const fingerprint = fingerprintTraceList(traces)
+      if (fingerprint === fingerprintRef.current) return
+      fingerprintRef.current = fingerprint
+
+      const currentIds = new Set(traces.map((t) => t.traceId))
+      if (prevTraceIdsRef.current.size > 0) {
+        const freshIds = new Set<string>()
+        for (const id of currentIds) {
+          if (!prevTraceIdsRef.current.has(id)) freshIds.add(id)
+        }
+        if (freshIds.size > 0) setNewTraceIds(freshIds)
+      }
+      prevTraceIdsRef.current = currentIds
+
+      if (isHoveredRef.current) {
+        pendingTracesRef.current = traces
+        return
+      }
+
+      setTraceListItems(traces)
+      setHasOtelConfigured(true)
+    } else {
+      setTraceListItems([])
+      setHasOtelConfigured(false)
+    }
+  }, [tracesData])
+
+  // ── Live append over the engine `trace-rows` stream ──────────────────────
+  // The engine pushes new root rows as spans close. The UNFILTERED list merges
+  // them directly into the seed query's cache (pure append, no refetch); a
+  // filtered/searched list — and the group-by aggregate, which can't be
+  // appended — refetches on activity instead (the engine already coalesces to
+  // ~one push per window, so this is not a poll). Pause / tab-hidden freeze it;
+  // reconnect and tab-visible re-seed once to recover anything dropped while
+  // away. Subscribes once for the hook's lifetime (params are read via refs).
+  const qc = useQueryClient()
+  const mergeKeyRef = useRef<{ key: unknown[]; unfiltered: boolean }>({
+    key: [],
+    unfiltered: false,
+  })
+  mergeKeyRef.current = {
+    key: ['traces', filterParams, showSystem, debouncedSearch],
+    unfiltered: isAppendableTraceList(filterParams, debouncedSearch),
+  }
+  const isPausedRef = useRef(isPaused)
+  useEffect(() => {
+    isPausedRef.current = isPaused
+  }, [isPaused])
+
+  useEffect(() => {
+    let stop: (() => void) | undefined
+    let disposed = false
+
+    const isHidden = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    const reseed = () => {
+      qc.invalidateQueries({ queryKey: ['traces'] })
+      qc.invalidateQueries({ queryKey: ['traceGroups'] })
+    }
+
+    void (async () => {
+      const client = await getIiiClient()
+      if (disposed) return
+
+      const offStream = startTraceListStream(client, (spans) => {
+        if (isPausedRef.current || isHidden()) return
+        const { key, unfiltered } = mergeKeyRef.current
+        if (unfiltered) {
+          qc.setQueryData<TracesResponse>(key, (old) => {
+            const merged = mergeTraceListSpans(
+              old?.spans ?? [],
+              spans,
+              DEFAULT_TRACE_LIMIT,
+            )
+            return {
+              spans: merged,
+              total: merged.length,
+              offset: 0,
+              limit: DEFAULT_TRACE_LIMIT,
+            }
+          })
+        } else {
+          qc.invalidateQueries({ queryKey: ['traces'] })
+        }
+        // The group-by aggregate can't be appended; refetch it on activity.
+        qc.invalidateQueries({ queryKey: ['traceGroups'] })
+      })
+
+      const offConn = client.addConnectionStateListener((state) => {
+        if (state === 'connected' && !isPausedRef.current) reseed()
+      })
+
+      let offVisibility: (() => void) | undefined
+      if (typeof document !== 'undefined') {
+        const onVisible = () => {
+          if (document.visibilityState === 'visible' && !isPausedRef.current) {
+            reseed()
+          }
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        offVisibility = () =>
+          document.removeEventListener('visibilitychange', onVisible)
+      }
+
+      stop = () => {
+        offStream()
+        offConn()
+        offVisibility?.()
+      }
+    })()
+
+    return () => {
+      disposed = true
+      stop?.()
+    }
+  }, [qc])
+
+  const flushPendingTraces = () => {
+    if (pendingTracesRef.current) {
+      setTraceListItems(pendingTracesRef.current)
+      setHasOtelConfigured(true)
+      pendingTracesRef.current = null
+    }
+  }
+
+  return {
+    traceGroups,
+    newTraceIds,
+    setNewTraceIds,
+    hasOtelConfigured,
+    isQueryLoading,
+    refetch,
+    isHoveredRef,
+    flushPendingTraces,
+  }
+}

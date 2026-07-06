@@ -1,3 +1,6 @@
+import '@fontsource/geist/400.css'
+import '@fontsource/geist/500.css'
+import '@fontsource/geist/600.css'
 import { addons } from 'storybook/manager-api'
 import { create } from 'storybook/theming'
 import brandImageLight from '../src/icons/iii-ink.svg'
@@ -21,7 +24,7 @@ export const lightTheme = create({
   inputBg: '#f2f0ed',
   inputBorder: '#d8d5d0',
   inputTextColor: '#0a0a0a',
-  fontBase: '"Chivo", ui-monospace, monospace',
+  fontBase: '"Geist", ui-sans-serif, system-ui, sans-serif',
 })
 
 /** iii Schematic dark ramp — matches index.css `[data-theme="dark"]`. */
@@ -30,19 +33,19 @@ export const darkTheme = create({
   brandTitle: 'iii console',
   brandImage: brandImageDark,
   brandTarget: '_self',
-  appBg: '#111110',
-  appContentBg: '#111110',
+  appBg: '#030303',
+  appContentBg: '#030303',
   appBorderColor: '#2a2926',
-  barBg: '#1a1916',
+  barBg: '#0a0a0a',
   barTextColor: '#f2f0ed',
   barSelectedColor: '#3ea8ff',
   colorPrimary: '#3ea8ff',
   colorSecondary: '#a8a49e',
   textColor: '#f2f0ed',
-  inputBg: '#111110',
+  inputBg: '#030303',
   inputBorder: '#2a2926',
   inputTextColor: '#f2f0ed',
-  fontBase: '"Chivo Mono", ui-monospace, monospace',
+  fontBase: '"Geist", ui-sans-serif, system-ui, sans-serif',
 })
 
 addons.setConfig({ theme: darkTheme })

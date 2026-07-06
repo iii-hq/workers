@@ -42,6 +42,8 @@ export interface StoredSpan {
   flags?: number
   service_name?: string
   resource?: Record<string, unknown>
+  /** In-flight live snapshot: still running, end_time_unix_nano is 0. */
+  pending?: boolean
 }
 
 export interface TracesResponse {
@@ -86,6 +88,8 @@ export interface SpanTreeNode {
   flags?: number
   service_name?: string
   resource?: Record<string, unknown>
+  /** In-flight live snapshot: still running, end_time_unix_nano is 0. */
+  pending?: boolean
   children: SpanTreeNode[]
 }
 

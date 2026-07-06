@@ -6,13 +6,22 @@
  *
  * The label is rendered as a small uppercased eyebrow label so it stays
  * visually distinct from the schema's `title`, which the section header
- * uses for object groups. Description (when present) lives directly under
- * the control as small ink-faint helper text so the operator can scan
- * down the form without bouncing back up between the label and the input.
+ * uses for object groups. The schema description is surfaced through a
+ * `?` tooltip next to the label instead of inline text: the registered
+ * schemas carry multi-line technical prose, and rendering it under every
+ * control detached labels from their inputs and made long forms
+ * unscannable. Assistive tech still gets the full text via an sr-only
+ * paragraph wired to the control with `aria-describedby`.
  */
 
 import type { ReactNode } from 'react'
 import { useId } from 'react'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import { wt } from '../typography'
 
@@ -72,16 +81,14 @@ export function FieldShell({
               [required]
             </span>
           ) : null}
+          {showDescription ? <FieldHelp description={description} /> : null}
         </div>
       )}
       <div aria-describedby={showDescription ? descriptionId : undefined}>
         {children(controlId)}
       </div>
       {showDescription ? (
-        <p
-          id={descriptionId}
-          className={cn(wt.caption, 'text-ink-faint leading-relaxed')}
-        >
+        <p id={descriptionId} className="sr-only">
           {description}
         </p>
       ) : null}
@@ -91,6 +98,43 @@ export function FieldShell({
         </p>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * `?` glyph that reveals a schema description in a tooltip on hover or
+ * keyboard focus. Wraps its own TooltipProvider so it works in any mount
+ * (Storybook has no app-root provider). `normal-case` overrides the
+ * lowercase default of `TooltipContent` — descriptions are prose, not
+ * console chrome.
+ */
+export function FieldHelp({ description }: { description: string }) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="field help"
+            className={cn(
+              wt.micro,
+              'inline-flex h-4 w-4 items-center justify-center border border-rule',
+              'text-ink-ghost hover:text-ink hover:border-ink transition-colors',
+              'align-middle select-none',
+            )}
+          >
+            ?
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          align="start"
+          className="normal-case max-w-[420px] text-left leading-relaxed text-ink-faint"
+        >
+          {description}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 

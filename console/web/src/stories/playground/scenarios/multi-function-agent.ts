@@ -6,13 +6,13 @@ import {
 } from './helpers'
 
 const THOUGHT = `multi-step agent: i'll list workers, then inspect the
-healthiest one, then echo a probe through it. each function call is sequential
+healthiest one, then echo a probe through it. each function trigger is sequential
 so the chat surface needs to reset its fcall pointer between calls.`
 
 const BODY = `## probe complete
 
-ran three functions end-to-end: listed workers, inspected \`worker-7\` (least
-loaded), and echoed a probe through it. all three calls returned cleanly,
+triggered three functions end-to-end: listed workers, inspected \`worker-7\` (least
+loaded), and echoed a probe through it. all three triggers returned cleanly,
 so the dispatch path is healthy.
 
 \`\`\`text

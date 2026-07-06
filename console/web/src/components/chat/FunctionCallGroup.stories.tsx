@@ -78,7 +78,7 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const InFlight: Story = {
-  name: 'in-flight (3 functions, 2nd running)',
+  name: 'in-flight (3 functions, 2nd triggering)',
   args: { messages: groupInFlight },
 }
 

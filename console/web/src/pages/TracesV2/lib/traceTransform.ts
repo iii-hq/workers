@@ -1,0 +1,397 @@
+/**
+ * Span transformation utilities for visualization
+ * Converts StoredSpan[] to visualization-ready format with computed depth, positioning
+ */
+
+import type { SpanTreeNode, StoredSpan } from '../api/traces'
+
+/**
+ * Visualization-ready span with computed positioning
+ */
+export interface VisualizationSpan {
+  name: string
+  span_id: string
+  parent_span_id?: string
+  trace_id: string
+  duration_ms: number
+  status: 'ok' | 'error' | 'unset'
+  depth: number
+  start_percent: number
+  width_percent: number
+  attributes: Record<string, unknown>
+  events: StoredSpan['events']
+  links: StoredSpan['links']
+  kind?: string
+  service_name?: string
+  instrumentation_scope_name?: string
+  instrumentation_scope_version?: string
+  flags?: number
+  /** Still running (live snapshot): duration_ms is elapsed-so-far. */
+  pending: boolean
+}
+
+/**
+ * A live (in-flight) span snapshot. The engine marks these `pending: true`
+ * with an end sentinel of 0; treat a bare zero end the same way so a
+ * malformed span renders as "running" rather than with a negative duration.
+ */
+export function isPendingSpan(span: {
+  pending?: boolean
+  end_time_unix_nano: number
+}): boolean {
+  return !!span.pending || span.end_time_unix_nano === 0
+}
+
+/**
+ * Merge one streamed/seeded span into the by-span_id accumulator.
+ * Last write wins, with one guard: a late-delivered pending snapshot must
+ * never overwrite the final span already stored under the same id (engine
+ * storage never regresses final→pending; a stale frame can).
+ */
+export function mergeDetailSpan(
+  spans: Map<string, StoredSpan>,
+  span: StoredSpan,
+): void {
+  const prev = spans.get(span.span_id)
+  if (prev && !isPendingSpan(prev) && isPendingSpan(span)) return
+  spans.set(span.span_id, span)
+}
+
+/**
+ * Waterfall visualization data
+ */
+export interface WaterfallData {
+  spans: VisualizationSpan[]
+  total_duration_ms: number
+  span_count: number
+}
+
+/**
+ * Calculate span depth in the tree.
+ *
+ * Iterative on purpose: for a deeply nested trace (e.g. an 8000-span
+ * long-running workflow where each span is a child of the previous
+ * one), a recursive parent walk blows the V8 call stack at ~5-15k
+ * frames. The previous recursive `getDepth(span)` would throw
+ * `RangeError: Maximum call stack size exceeded` and the React render
+ * that called it would crash, leaving the user staring at "loading…".
+ */
+function calculateDepths(spans: StoredSpan[]): Map<string, number> {
+  const depths = new Map<string, number>()
+  const spanMap = new Map(spans.map((s) => [s.span_id, s]))
+
+  for (const seed of spans) {
+    if (depths.has(seed.span_id)) continue
+    // Walk up to a span with a known depth (or a root), pushing each
+    // unvisited ancestor. Then resolve depths in reverse on the way
+    // back down. Cycle guard via `visiting` prevents infinite loops if
+    // the engine ever returns a malformed parent chain.
+    const chain: StoredSpan[] = []
+    const visiting = new Set<string>()
+    let cursor: StoredSpan | undefined = seed
+    while (
+      cursor !== undefined &&
+      !depths.has(cursor.span_id) &&
+      !visiting.has(cursor.span_id)
+    ) {
+      visiting.add(cursor.span_id)
+      chain.push(cursor)
+      const parentId: string | undefined = cursor.parent_span_id
+      cursor = parentId !== undefined ? spanMap.get(parentId) : undefined
+    }
+    // Base depth: 0 if we hit a root (no parent in the set or a cycle).
+    let base =
+      cursor !== undefined && depths.has(cursor.span_id)
+        ? (depths.get(cursor.span_id) ?? 0)
+        : -1
+    for (let i = chain.length - 1; i >= 0; i--) {
+      base += 1
+      depths.set(chain[i].span_id, base)
+    }
+  }
+
+  return depths
+}
+
+/**
+ * Threshold for detecting nanosecond timestamps (Jan 1, 2100 in milliseconds)
+ */
+const NANO_THRESHOLD = 4102444800000
+
+/**
+ * Convert timestamp to milliseconds
+ * Auto-detects nanosecond vs millisecond timestamps
+ */
+export function toMs(timestamp: number): number {
+  if (!Number.isFinite(timestamp)) return 0
+  return timestamp > NANO_THRESHOLD ? timestamp / 1_000_000 : timestamp
+}
+
+/**
+ * Calculate duration in milliseconds between two timestamps
+ * Handles both nanosecond and millisecond timestamps
+ */
+export function calculateDurationMs(
+  startTime: number,
+  endTime: number,
+): number {
+  const startMs = toMs(startTime)
+  const endMs = toMs(endTime)
+  const duration = endMs - startMs
+  return Number.isFinite(duration) && duration >= 0 ? duration : 0
+}
+
+/**
+ * Get span status from status string
+ */
+function getSpanStatus(status: StoredSpan['status']): 'ok' | 'error' | 'unset' {
+  if (!status) return 'unset'
+  const lower = status.toLowerCase()
+  if (lower === 'error' || lower === '2') return 'error'
+  if (lower === 'ok' || lower === '1') return 'ok'
+  if (lower === 'unset' || lower === '0') return 'unset'
+  return 'unset'
+}
+
+/**
+ * Convert attributes from array-of-tuples to Record.
+ * Handles both `[["key","val"], ...]` (engine format) and already-converted Records.
+ */
+function attributesToRecord(
+  attributes: Array<[string, unknown]> | Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!attributes) return Object.create(null) as Record<string, unknown>
+
+  const record: Record<string, unknown> = Object.create(null)
+
+  if (!Array.isArray(attributes)) {
+    for (const [key, value] of Object.entries(attributes)) {
+      record[key] = value
+    }
+    return record
+  }
+
+  for (const item of attributes) {
+    if (Array.isArray(item) && item.length >= 2) {
+      record[String(item[0])] = item[1]
+    }
+  }
+  return record
+}
+
+/**
+ * Transform raw spans for a specific trace into WaterfallData
+ * @param spans - All spans (will be filtered by traceId)
+ * @param traceId - Trace ID to filter spans
+ * @returns WaterfallData with computed positions and depths
+ */
+export function toWaterfallData(
+  spans: StoredSpan[],
+  traceId: string,
+): WaterfallData | null {
+  const traceSpans = spans.filter((s) => s.trace_id === traceId)
+
+  if (traceSpans.length === 0) {
+    return null
+  }
+
+  // One "now" per transform: pending spans measure elapsed-so-far against
+  // it and extend the live trace window so their bars visibly grow.
+  const now = Date.now()
+
+  // Calculate trace boundaries (in milliseconds). Reduce-based instead
+  // of `Math.min(...arr)` because spread arguments hit a hard cap
+  // (~65-125k items in V8) and the spread itself uses stack — both
+  // foot-guns for traces with many spans.
+  let minStart = Number.POSITIVE_INFINITY
+  let maxEnd = Number.NEGATIVE_INFINITY
+  for (const s of traceSpans) {
+    const start = toMs(s.start_time_unix_nano)
+    const end = isPendingSpan(s) ? now : toMs(s.end_time_unix_nano)
+    if (start < minStart) minStart = start
+    if (end > maxEnd) maxEnd = end
+  }
+  const totalDurationMs = maxEnd - minStart
+
+  // Calculate depths
+  const depths = calculateDepths(traceSpans)
+  const spanMap = new Map(traceSpans.map((s) => [s.span_id, s]))
+
+  // Convert to VisualizationSpan format with percentages
+  const visualSpans: VisualizationSpan[] = traceSpans.map((storedSpan) => {
+    const pending = isPendingSpan(storedSpan)
+    const durationMs = pending
+      ? Math.max(0, now - toMs(storedSpan.start_time_unix_nano))
+      : calculateDurationMs(
+          storedSpan.start_time_unix_nano,
+          storedSpan.end_time_unix_nano,
+        )
+    const startOffset = toMs(storedSpan.start_time_unix_nano) - minStart
+    const startPercent =
+      totalDurationMs > 0 ? (startOffset / totalDurationMs) * 100 : 0
+    const widthPercent =
+      totalDurationMs > 0 ? (durationMs / totalDurationMs) * 100 : 100
+
+    return {
+      name: storedSpan.name,
+      span_id: storedSpan.span_id,
+      parent_span_id: storedSpan.parent_span_id,
+      trace_id: storedSpan.trace_id,
+      duration_ms: durationMs,
+      status: getSpanStatus(storedSpan.status),
+      depth: depths.get(storedSpan.span_id) || 0,
+      start_percent: startPercent,
+      width_percent: widthPercent,
+      attributes: attributesToRecord(storedSpan.attributes),
+      events: (storedSpan.events || []).map((e) => ({
+        ...e,
+        attributes: attributesToRecord(e.attributes),
+      })),
+      links: storedSpan.links || [],
+      kind: storedSpan.kind,
+      service_name:
+        storedSpan.service_name ||
+        (storedSpan.resource?.['service.name'] as string) ||
+        undefined,
+      instrumentation_scope_name: undefined,
+      instrumentation_scope_version: undefined,
+      flags: storedSpan.flags,
+      pending,
+    }
+  })
+
+  // Sort by start time, then by depth
+  visualSpans.sort((a, b) => {
+    const aStart = toMs(spanMap.get(a.span_id)?.start_time_unix_nano ?? 0)
+    const bStart = toMs(spanMap.get(b.span_id)?.start_time_unix_nano ?? 0)
+    if (aStart !== bStart) return aStart - bStart
+    return a.depth - b.depth
+  })
+
+  return {
+    spans: visualSpans,
+    total_duration_ms: totalDurationMs,
+    span_count: visualSpans.length,
+  }
+}
+
+/**
+ * Flatten a SpanTreeNode tree into a flat list of StoredSpan-like objects
+ * Depth is computed naturally from tree nesting level
+ */
+/**
+ * Flatten a span tree into a depth-tagged list, in DFS order.
+ *
+ * Iterative on purpose: an 8000-span trace with a deep parent chain
+ * (long-running workflow, recursive crawl, RAG pipeline with nested
+ * tool calls) would blow the V8 call stack via the previous
+ * `result.push(...flattenTree(children, depth+1))` recursion. The
+ * spread itself was a second hazard — `arr.push(...big)` fails with
+ * "Maximum call stack size exceeded" once the spread argument count
+ * exceeds the engine's argument limit (~65-125k in V8).
+ */
+function flattenTree(
+  nodes: SpanTreeNode[],
+): Array<{ span: SpanTreeNode; depth: number }> {
+  const result: Array<{ span: SpanTreeNode; depth: number }> = []
+  // Use an explicit stack of (node, depth) frames. Push children in
+  // reverse so the first child is popped first, preserving DFS order.
+  const stack: Array<{ node: SpanTreeNode; depth: number }> = []
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    stack.push({ node: nodes[i], depth: 0 })
+  }
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop() as { node: SpanTreeNode; depth: number }
+    result.push({ span: node, depth })
+    const children = node.children
+    if (children && children.length > 0) {
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push({ node: children[i], depth: depth + 1 })
+      }
+    }
+  }
+  return result
+}
+
+/**
+ * Transform a trace tree response into WaterfallData
+ * Uses the tree structure to compute depth naturally instead of calculating from parent references
+ * @param roots - Root span tree nodes from the trace tree API
+ * @returns WaterfallData with computed positions and depths
+ */
+export function treeToWaterfallData(
+  roots: SpanTreeNode[],
+): WaterfallData | null {
+  if (!roots || roots.length === 0) {
+    return null
+  }
+
+  // Flatten the tree with depth information
+  const flatSpans = flattenTree(roots)
+
+  if (flatSpans.length === 0) {
+    return null
+  }
+
+  // One "now" per transform (see toWaterfallData).
+  const now = Date.now()
+
+  // Calculate trace boundaries (in milliseconds). Reduce-based for the
+  // same reason as `toWaterfallData` above: avoid the spread argument
+  // cap for traces with many spans.
+  let minStart = Number.POSITIVE_INFINITY
+  let maxEnd = Number.NEGATIVE_INFINITY
+  for (const { span } of flatSpans) {
+    const start = toMs(span.start_time_unix_nano)
+    const end = isPendingSpan(span) ? now : toMs(span.end_time_unix_nano)
+    if (start < minStart) minStart = start
+    if (end > maxEnd) maxEnd = end
+  }
+  const totalDurationMs = maxEnd - minStart
+
+  // Convert to VisualizationSpan format
+  const visualSpans: VisualizationSpan[] = flatSpans.map(({ span, depth }) => {
+    const pending = isPendingSpan(span)
+    const durationMs = pending
+      ? Math.max(0, now - toMs(span.start_time_unix_nano))
+      : calculateDurationMs(span.start_time_unix_nano, span.end_time_unix_nano)
+    const startOffset = toMs(span.start_time_unix_nano) - minStart
+    const startPercent =
+      totalDurationMs > 0 ? (startOffset / totalDurationMs) * 100 : 0
+    const widthPercent =
+      totalDurationMs > 0 ? (durationMs / totalDurationMs) * 100 : 100
+
+    return {
+      name: span.name,
+      span_id: span.span_id,
+      parent_span_id: span.parent_span_id,
+      trace_id: span.trace_id,
+      duration_ms: durationMs,
+      status: getSpanStatus(span.status),
+      depth,
+      start_percent: startPercent,
+      width_percent: widthPercent,
+      attributes: attributesToRecord(span.attributes || []),
+      events: (span.events || []).map((e) => ({
+        ...e,
+        attributes: attributesToRecord(e.attributes),
+      })),
+      links: span.links || [],
+      kind: span.kind,
+      service_name:
+        span.service_name ||
+        (span.resource?.['service.name'] as string) ||
+        undefined,
+      instrumentation_scope_name: undefined,
+      instrumentation_scope_version: undefined,
+      flags: span.flags,
+      pending,
+    }
+  })
+
+  return {
+    spans: visualSpans,
+    total_duration_ms: totalDurationMs,
+    span_count: visualSpans.length,
+  }
+}

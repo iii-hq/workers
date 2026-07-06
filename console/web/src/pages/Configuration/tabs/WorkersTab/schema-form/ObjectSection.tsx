@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils'
 import type { JsonSchema, JsonValue } from '../api'
 import { wt } from '../typography'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
+import { FieldHelp } from './FieldShell'
 
 /**
  * Renders `type: object` schemas with a `properties` map as a titled
@@ -85,15 +86,11 @@ export function ObjectSection(props: FieldProps) {
 
   return (
     <section className="space-y-2">
-      <header>
+      <header className="flex items-baseline gap-2">
         <h3 className={cn(wt.body, 'text-ink lowercase tracking-[-0.01em]')}>
           {title}
         </h3>
-        {description ? (
-          <p className={cn(wt.caption, 'text-ink-faint mt-0.5')}>
-            {description}
-          </p>
-        ) : null}
+        {description ? <FieldHelp description={description} /> : null}
       </header>
       <div className="border-l border-rule pl-4 space-y-5">{children}</div>
     </section>

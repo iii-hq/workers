@@ -8,6 +8,7 @@ export interface CatalogModelRow {
   provider: string
   display_name: string
   context_window?: number
+  supports_thinking?: boolean
 }
 
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
@@ -30,8 +31,10 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
       typeof o.context_window === 'number' && o.context_window > 0
         ? o.context_window
         : undefined
+    const supports_thinking =
+      typeof o.supports_thinking === 'boolean' ? o.supports_thinking : undefined
     if (!id || !provider) continue
-    out.push({ id, provider, display_name, context_window })
+    out.push({ id, provider, display_name, context_window, supports_thinking })
   }
   return out
 }
@@ -46,6 +49,7 @@ export function catalogRowsToModelOptions(
     id: makeCatalogModelKey(m.provider, m.id),
     label: m.display_name.toLowerCase(),
     contextWindow: m.context_window,
+    supportsThinking: m.supports_thinking === true,
   }))
 }
 

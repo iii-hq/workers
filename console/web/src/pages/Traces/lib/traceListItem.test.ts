@@ -177,6 +177,21 @@ describe('mapSpanToListItem — basic shape', () => {
   it('always emits spanCount = 1', () => {
     expect(mapSpanToListItem(makeSpan()).spanCount).toBe(1)
   })
+
+  it('maps a live (pending) span to a running row with no end/duration', () => {
+    const out = mapSpanToListItem(
+      makeSpan({ pending: true, end_time_unix_nano: 0, status: 'unset' }),
+    )
+    expect(out.status).toBe('pending')
+    expect(out.endTime).toBeUndefined()
+    expect(out.duration).toBeUndefined()
+  })
+
+  it('treats a bare zero end sentinel as pending too', () => {
+    const out = mapSpanToListItem(makeSpan({ end_time_unix_nano: 0 }))
+    expect(out.status).toBe('pending')
+    expect(out.duration).toBeUndefined()
+  })
 })
 
 describe('mapSpanToListItem — status normalization', () => {

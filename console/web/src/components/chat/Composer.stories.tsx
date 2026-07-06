@@ -6,13 +6,24 @@ import { STATIC_FUNCTIONS } from '@/lib/functions'
 import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
 
 const STORY_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'openai::gpt-5', label: 'gpt-5', contextWindow: 400_000 },
+  {
+    id: 'openai::gpt-5',
+    label: 'gpt-5',
+    contextWindow: 400_000,
+    supportsThinking: true,
+  },
   {
     id: 'anthropic::claude-opus-4-7',
     label: 'claude opus 4.7',
     contextWindow: 1_000_000,
+    supportsThinking: true,
   },
-  { id: 'openai::gpt-5-mini', label: 'gpt-5 mini', contextWindow: 400_000 },
+  {
+    id: 'openai::gpt-5-mini',
+    label: 'gpt-5 mini',
+    contextWindow: 400_000,
+    supportsThinking: true,
+  },
 ]
 
 import { Composer } from './Composer'

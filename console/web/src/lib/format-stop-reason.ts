@@ -21,6 +21,6 @@ export function formatStopReason(reason: StopReason, message?: string): string {
     case 'aborted':
       return 'response aborted before completion.'
     case 'function_call':
-      return 'response paused for tool call.'
+      return 'response paused for function trigger.'
   }
 }

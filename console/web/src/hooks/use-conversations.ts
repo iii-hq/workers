@@ -382,7 +382,7 @@ export function useConversations(
                 message: event.message,
                 custom: event.custom,
               },
-              { sessionId },
+              { sessionId, working: c.status === 'working' },
             ),
             updatedAt: event.timestamp,
           }))
@@ -397,7 +397,11 @@ export function useConversations(
             messages: applyEntryUpsert(
               c.messages,
               { entry_id: event.entry_id, message: event.message },
-              { sessionId, streaming: c.status === 'working' },
+              {
+                sessionId,
+                streaming: c.status === 'working',
+                working: c.status === 'working',
+              },
             ),
             updatedAt: event.timestamp,
           }))
@@ -425,7 +429,9 @@ export function useConversations(
       .then((items) => {
         if (cancelled) return
         patchConversation(sessionId, (c) => {
-          let messages = transcriptToMessages(items, sessionId)
+          let messages = transcriptToMessages(items, sessionId, {
+            working: c.status === 'working',
+          })
           // Re-apply anything the live feed already reconciled on top.
           for (const m of c.messages) {
             if (!messages.some((existing) => existing.id === m.id)) {

@@ -180,7 +180,7 @@ export function ConsoleSettingsTab({
                   <button
                     type="button"
                     onClick={() => setAllowlistOpen(true)}
-                    className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
+                    className="font-sans text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
                   >
                     manage
                     {allowlist.length > 0 ? ` (${allowlist.length})` : ''}
@@ -214,7 +214,7 @@ export function ConsoleSettingsTab({
               <button
                 type="button"
                 onClick={() => setAllowlistOpen(false)}
-                className="font-mono text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
+                className="font-sans text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
               >
                 done
               </button>
@@ -231,7 +231,7 @@ export function ConsoleSettingsTab({
             control={
               <a
                 href={HARNESS_CONFIG_HASH}
-                className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
+                className="font-sans text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
               >
                 open provider settings
               </a>
@@ -263,11 +263,11 @@ interface SectionProps {
 function Section({ title, description, children }: SectionProps) {
   return (
     <section className="mt-10 first:mt-0">
-      <h2 className="font-mono text-[12px] text-ink lowercase tracking-[0.06em] mb-1">
+      <h2 className="font-sans text-[14px] text-ink capitalize tracking-[0.06em] mb-1">
         {title}
       </h2>
       {description ? (
-        <p className="font-mono text-[11px] text-ink-faint mb-3">
+        <p className="font-sans text-[12px] text-ink-faint mb-3">
           {description}
         </p>
       ) : null}
@@ -290,10 +290,10 @@ interface RowProps {
 function Row({ label, control, meta }: RowProps) {
   return (
     <div className="flex items-center gap-4 py-3 border-b border-rule last:border-b-0">
-      <span className="font-mono text-[13px] text-ink w-24 shrink-0 truncate">
+      <span className="font-sans text-[13px] text-ink w-24 shrink-0 truncate">
         {label}
       </span>
-      <span className="flex-1 min-w-0 font-mono text-[11px] text-ink-faint truncate">
+      <span className="flex-1 min-w-0 font-sans text-[11px] text-ink-faint truncate">
         {meta}
       </span>
       <span className="shrink-0">{control}</span>

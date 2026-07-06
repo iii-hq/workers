@@ -51,11 +51,13 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
 
     case 'approval-resolved':
       // The released call's result (or deny error) arrives via the session
-      // transcript; here we only clear the pending prompt on its card.
+      // transcript; here we clear the pending prompt on its card and, when
+      // allowed, flip it to running while the released call executes.
       return [
         {
           kind: 'fcall-approval-cleared',
           functionCallId: event.event.function_call_id,
+          running: event.event.outcome === 'allow',
         },
       ]
 

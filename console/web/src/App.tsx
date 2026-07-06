@@ -21,6 +21,7 @@ import {
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { Traces } from '@/pages/Traces'
+import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 
 /* The component spec sheet and the streaming-scenario playground now live in
@@ -28,6 +29,7 @@ import { Workers } from '@/pages/Workers'
    single `traces` entry alongside the configuration gear. */
 const VIEW_OPTIONS: { value: View; label: string }[] = [
   { value: 'traces', label: 'traces' },
+  { value: 'traces-v2', label: 'traces v2' },
   { value: 'workers', label: 'workers' },
 ]
 
@@ -98,6 +100,8 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
+            ) : view === 'traces-v2' ? (
+              <TracesV2 />
             ) : (
               <Traces />
             )}

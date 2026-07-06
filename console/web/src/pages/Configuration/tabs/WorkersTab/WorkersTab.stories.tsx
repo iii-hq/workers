@@ -104,8 +104,8 @@ function WorkerConfigHarness() {
   }
 
   return (
-    <div className="border border-rule bg-bg h-full">
-      <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="border border-rule bg-bg h-full configuration-surface font-sans">
+      <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-sans text-[11px] uppercase tracking-[0.06em] text-ink-faint">
         master-detail · mock fixtures
       </div>
       <div className="workers-tab flex h-full min-h-0">
