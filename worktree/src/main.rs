@@ -136,13 +136,13 @@ async fn main() -> Result<()> {
     // Best-effort HTTP exposure for the read-only surface. The `http`
     // trigger type may be absent (no http worker installed); a failed
     // registration warns and the worker keeps serving the bus.
-    let http_routes = [
-        ("worktree::list", "worktree/list"),
-        ("worktree::get", "worktree/get"),
-        ("worktree::status", "worktree/status"),
-        ("worktree::validate", "worktree/validate"),
-    ];
-    for (function_id, api_path) in &http_routes {
+    for function_id in [
+        "worktree::list",
+        "worktree::get",
+        "worktree::status",
+        "worktree::validate",
+    ] {
+        let api_path = function_id.replace("::", "/");
         match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
             trigger_type: "http".to_string(),
             function_id: function_id.to_string(),

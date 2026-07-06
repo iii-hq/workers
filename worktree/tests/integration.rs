@@ -148,7 +148,6 @@ async fn end_to_end_lifecycle_via_iii_sdk() {
     git(&repo, &["commit", "-m", "initial"]);
 
     let client = register_worker(ENGINE_WS, InitOptions::default());
-    sleep(Duration::from_millis(500)).await;
     wait_until_registered(&client).await;
 
     let created = call(

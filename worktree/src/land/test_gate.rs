@@ -32,10 +32,9 @@ pub trait TestRunner: Send + Sync {
 
 /// Production gate: `shell::exec` with `cwd` and the `fs_scope` root pinned
 /// to the worktree (this worker calls shell directly as a trusted peer, so
-/// it stamps its own scope — the same shape the harness stamps for agent
-/// calls). A jail rejection (`S215`) means `worktree_root` is not inside
-/// the shell worker's `fs.host_roots`; surface that misconfiguration
-/// explicitly instead of a generic failure.
+/// it stamps its own scope). A jail rejection (`S215`) means `worktree_root`
+/// is not inside the shell worker's `fs.host_roots`; surface that
+/// misconfiguration explicitly instead of a generic failure.
 pub struct ShellExecRunner {
     iii: Arc<IIIClient>,
 }
