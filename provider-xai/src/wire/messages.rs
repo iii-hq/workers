@@ -71,6 +71,28 @@ fn tool_row(tool_call_id: &str, content: String) -> Value {
     json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
 }
 
+/// Hoisted result images: tool rows are text-only on Chat Completions, so
+/// images inside FunctionResults are buffered per call and emitted as ONE
+/// synthetic user message when the contiguous run of tool rows ends (never
+/// between an assistant `tool_calls` row and its tool rows, never between
+/// sibling tool rows).
+fn flush_result_images(out: &mut Vec<Value>, buf: &mut Vec<(String, Vec<(String, String)>)>) {
+    if buf.is_empty() {
+        return;
+    }
+    let mut parts = Vec::new();
+    for (id, images) in buf.drain(..) {
+        parts.push(json!({ "type": "text", "text": format!("[image result of tool call {id}]") }));
+        for (mime, data) in images {
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime};base64,{data}") }
+            }));
+        }
+    }
+    out.push(json!({ "role": "user", "content": parts }));
+}
+
 /// Latest-wins dedup: replace an existing `role:"tool"` row with the same id
 /// (strict gateways reject duplicates; lenient ones silently overwrite).
 fn upsert_tool_row(out: &mut Vec<Value>, row: Value) {
@@ -109,12 +131,18 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
         })
         .collect();
 
+    // (call_id, [(mime, data)]) buffered from result content, flushed as a
+    // synthetic user message once the contiguous result run ends.
+    let mut pending_images: Vec<(String, Vec<(String, String)>)> = Vec::new();
+
     for m in messages {
         match m {
             AgentMessage::User(u) => {
+                flush_result_images(&mut out, &mut pending_images);
                 out.push(json!({ "role": "user", "content": user_content_to_wire(&u.content) }));
             }
             AgentMessage::Assistant(a) => {
+                flush_result_images(&mut out, &mut pending_images);
                 let text = a
                     .content
                     .iter()
@@ -166,8 +194,34 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                 }
             }
             AgentMessage::FunctionResult(r) => {
-                // Images inside results are dropped: Chat Completions tool
-                // messages accept text content only.
+                // Chat Completions tool messages accept text content only:
+                // the tool row stays flat text (prompt-cache-stable), images
+                // are hoisted into a synthetic user message at flush time.
+                let images: Vec<(String, String)> = r
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentBlock::Image { mime, data } => Some((mime.clone(), data.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                // Latest-wins among not-yet-flushed buffers, mirroring
+                // upsert_tool_row. ponytail: a duplicate replayed after its
+                // images were flushed re-emits them; cross-flush dedup would
+                // need a seen-id set.
+                let existing = pending_images
+                    .iter()
+                    .position(|(id, _)| id == &r.function_call_id);
+                match existing {
+                    Some(i) if images.is_empty() => {
+                        pending_images.remove(i);
+                    }
+                    Some(i) => pending_images[i].1 = images,
+                    None if !images.is_empty() => {
+                        pending_images.push((r.function_call_id.clone(), images));
+                    }
+                    None => {}
+                }
                 upsert_tool_row(
                     &mut out,
                     tool_row(&r.function_call_id, format_function_result_content(r)),
@@ -177,6 +231,7 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
             AgentMessage::Custom(_) => {}
         }
     }
+    flush_result_images(&mut out, &mut pending_images);
     out
 }
 
@@ -218,6 +273,23 @@ mod tests {
             function_id: "shell::exec".into(),
             content: vec![ContentBlock::Text { text: text.into() }],
             details,
+            is_error: false,
+            timestamp: 3,
+        })
+    }
+    fn image_result(id: &str, text: &str, data: &str) -> AgentMessage {
+        AgentMessage::FunctionResult(FunctionResultMessage {
+            role: FunctionResultRoleTag::FunctionResult,
+            function_call_id: id.into(),
+            function_id: "shell::exec".into(),
+            content: vec![
+                ContentBlock::Text { text: text.into() },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: data.into(),
+                },
+            ],
+            details: json!({}),
             is_error: false,
             timestamp: 3,
         })
@@ -377,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_blocks_and_result_images_are_dropped() {
+    fn thinking_blocks_are_dropped_and_result_images_hoisted() {
         let wire = to_wire_messages(
             &[assistant(vec![
                 ContentBlock::Thinking {
@@ -393,25 +465,67 @@ mod tests {
         assert_eq!(wire[0]["content"], "answer");
         assert!(wire[0].get("tool_calls").is_none());
 
-        let msg = AgentMessage::FunctionResult(FunctionResultMessage {
-            role: FunctionResultRoleTag::FunctionResult,
-            function_call_id: "t1".into(),
-            function_id: "web::fetch".into(),
-            content: vec![
-                ContentBlock::Text {
-                    text: "page".into(),
-                },
-                ContentBlock::Image {
-                    mime: "image/png".into(),
-                    data: "QUJD".into(),
-                },
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1")]),
+                image_result("t1", "page", "QUJD"),
             ],
-            details: json!({}),
-            is_error: false,
-            timestamp: 3,
-        });
-        let wire = to_wire_messages(&[assistant(vec![call("t1")]), msg], "");
-        assert_eq!(wire[1]["content"], "page", "tool content is text-only");
+            "",
+        );
+        assert_eq!(wire[1]["content"], "page", "tool content stays text-only");
+        assert_eq!(wire[2]["role"], "user", "images hoisted, got: {wire:?}");
+        let parts = wire[2]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "[image result of tool call t1]");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn hoisted_images_flush_after_the_contiguous_result_run() {
+        // The synthetic user message must never split sibling tool rows or
+        // separate them from their assistant tool_calls row.
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1"), call("t2")]),
+                image_result("t1", "shot", "QUJD"),
+                result("t2", "ok", json!({})),
+                user(vec![ContentBlock::Text {
+                    text: "next".into(),
+                }]),
+            ],
+            "",
+        );
+        let roles: Vec<&str> = wire.iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(
+            roles,
+            ["assistant", "tool", "tool", "user", "user"],
+            "got: {wire:?}"
+        );
+        assert_eq!(
+            wire[3]["content"][0]["text"],
+            "[image result of tool call t1]"
+        );
+        assert_eq!(wire[4]["content"], "next");
+    }
+
+    #[test]
+    fn duplicate_result_images_dedup_latest_wins_before_flush() {
+        let wire = to_wire_messages(
+            &[
+                assistant(vec![call("t1")]),
+                image_result("t1", "first", "QQ=="),
+                image_result("t1", "second", "Qg=="),
+            ],
+            "",
+        );
+        assert_eq!(wire[1]["content"], "second");
+        let user_rows: Vec<&Value> = wire.iter().filter(|r| r["role"] == "user").collect();
+        assert_eq!(user_rows.len(), 1, "one synthetic user message: {wire:?}");
+        assert_eq!(
+            user_rows[0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,Qg=="
+        );
     }
 
     #[test]
