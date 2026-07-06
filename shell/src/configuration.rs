@@ -540,7 +540,7 @@ mod tests {
     fn removed_host_root_config_is_rejected_with_hint() {
         // The removed single-root key must fail closed before serde ignores it
         // and before runtime validation reports only "host_roots is unset".
-        let yaml = "allowlist: []\nfs:\n  host_root: /tmp/legacy-root\n";
+        let yaml = "fs:\n  host_root: /tmp/legacy-root\n";
         let err = ShellConfig::from_yaml(yaml).expect_err("the 0.6.x alias must be rejected");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("fs.host_roots"), "{err}");

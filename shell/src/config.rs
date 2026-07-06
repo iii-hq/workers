@@ -136,15 +136,30 @@ fn default_job_retention_secs() -> u64 {
 struct RemovedKey {
     old: &'static str,
     new: Option<&'static str>,
+    /// Version that removed the key — rendered per-hit so 0.7.0 and 0.8.0
+    /// removals can share one error message.
+    since: &'static str,
 }
 const fn renamed(old: &'static str, new: &'static str) -> RemovedKey {
     RemovedKey {
         old,
         new: Some(new),
+        since: "0.7.0",
     }
 }
 const fn deleted(old: &'static str) -> RemovedKey {
-    RemovedKey { old, new: None }
+    RemovedKey {
+        old,
+        new: None,
+        since: "0.7.0",
+    }
+}
+const fn deleted_in(old: &'static str, since: &'static str) -> RemovedKey {
+    RemovedKey {
+        old,
+        new: None,
+        since,
+    }
 }
 
 /// Top-level keys removed in 0.7.0.
@@ -178,6 +193,11 @@ const REMOVED_ENV_KEYS: &[RemovedKey] = &[
 /// not silently tolerated forever.
 const REMOVED_CODE_KEYS: &[RemovedKey] = &[deleted("base_path"), deleted("base_paths")];
 
+/// Exec-policy keys removed in 0.8.0: the shell is deny-only; command
+/// allow/ask policy lives in the approval-gate (see
+/// tech-specs/2026-06-agentic/shell-deny-only-policy.md).
+const REMOVED_EXEC_KEYS: &[RemovedKey] = &[deleted_in("allowlist", "0.8.0")];
+
 const CONFIGURATION_SET_HINT: &str =
     "If this is the stored value, rewrite it via configuration::set (id: shell).";
 
@@ -198,8 +218,14 @@ fn scan_removed(
         if obj.contains_key(key.old) {
             hit = true;
             match key.new {
-                Some(new) => hits.push(format!("`{prefix}{}` -> `{new}`", key.old)),
-                None => hits.push(format!("`{prefix}{}` (removed, no replacement)", key.old)),
+                Some(new) => hits.push(format!(
+                    "`{prefix}{}` -> `{new}` (removed in {})",
+                    key.old, key.since
+                )),
+                None => hits.push(format!(
+                    "`{prefix}{}` (removed in {}, no replacement)",
+                    key.old, key.since
+                )),
             }
         }
     }
@@ -242,6 +268,8 @@ fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
         .and_then(serde_json::Value::as_object)
         .is_some_and(|code| scan_removed(code, "code.", REMOVED_CODE_KEYS, &mut hits));
 
+    let exec_hit = scan_removed(obj, "", REMOVED_EXEC_KEYS, &mut hits);
+
     if hits.is_empty() {
         return Ok(());
     }
@@ -257,9 +285,15 @@ fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
     if code_hit {
         remedies.push("Delete `code.base_path`/`code.base_paths` — the code resolver's roots always come from `fs.host_roots`.");
     }
+    if exec_hit {
+        remedies.push(
+            "Delete `allowlist` — the shell worker is deny-only (denylist_patterns); \
+             command allow/ask policy lives in the approval-gate.",
+        );
+    }
 
     Err(format!(
-        "config keys removed in 0.7.0: {}. {} {CONFIGURATION_SET_HINT}",
+        "removed config keys: {}. {} {CONFIGURATION_SET_HINT}",
         hits.join(", "),
         remedies.join(" "),
     ))
@@ -922,7 +956,7 @@ mod tests {
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("`inherit_env` -> `env.inherit`"), "{err}");
         assert!(
-            err.contains("`migrated_from_coder` (removed, no replacement)"),
+            err.contains("`migrated_from_coder` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
     }
@@ -940,7 +974,7 @@ mod tests {
         let err = ShellConfig::from_json(&v).expect_err("removed marker rejects");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(
-            err.contains("`migrated_from_coder` (removed, no replacement)"),
+            err.contains("`migrated_from_coder` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
         assert!(err.contains("configuration::set"), "{err}");
@@ -959,11 +993,11 @@ mod tests {
         let err = ShellConfig::from_json(&v).expect_err("removed code keys reject");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(
-            err.contains("`code.base_path` (removed, no replacement)"),
+            err.contains("`code.base_path` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
         assert!(
-            err.contains("`code.base_paths` (removed, no replacement)"),
+            err.contains("`code.base_paths` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
         assert!(err.contains("configuration::set"), "{err}");
@@ -1210,6 +1244,26 @@ sandbox:
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("fs.host_roots"), "{err}");
         assert!(err.contains("configuration::set"), "{err}");
+    }
+
+    /// `allowlist` was removed in 0.8.0 (deny-only shell — allow/ask policy
+    /// lives in the approval-gate). A seed or stored value still carrying it,
+    /// even the inert `allowlist: []` the old seed wrote, must fail closed
+    /// with a migration hint, through BOTH funnels.
+    #[test]
+    fn from_yaml_rejects_removed_allowlist_with_hint() {
+        let err = ShellConfig::from_yaml("allowlist: []\n").expect_err("removed key rejects");
+        assert!(err.contains("`allowlist`"), "{err}");
+        assert!(err.contains("removed in 0.8.0"), "{err}");
+        assert!(err.contains("approval-gate"), "{err}");
+    }
+
+    #[test]
+    fn from_json_rejects_removed_allowlist_with_hint() {
+        let err = ShellConfig::from_json(&serde_json::json!({ "allowlist": ["ls"] }))
+            .expect_err("removed key rejects via the stored-value funnel");
+        assert!(err.contains("`allowlist`"), "{err}");
+        assert!(err.contains("removed in 0.8.0"), "{err}");
     }
 
     /// Both a top-level removed env key AND the nested `fs.host_root` present

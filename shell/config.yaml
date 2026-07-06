@@ -34,7 +34,6 @@ env:
 # sandbox: the security boundary is the fs jail (fs.host_roots) plus the
 # optional sandbox backend, NOT this list. To re-scope exec to deny-by-default,
 # list the permitted argv[0] basenames here (a non-empty list flips the gate).
-allowlist: []
 # Advisory tripwire ONLY (regex over argv.join(" ")), trivially evadable via an
 # interpreter — NOT a security boundary. With an open allowlist the old
 # sub-execution escapes (find -exec, sed -i, node/python -c, npm run, env <cmd>)
