@@ -53,28 +53,62 @@ pub fn clip(s: &str) -> String {
     }
 }
 
+/// Coder write functions whose arguments must reach approval UIs intact —
+/// a clipped patch or content op can't render as a diff preview. Secret-key
+/// redaction still applies; `FULL_PAYLOAD_BUDGET_BYTES` guards notification
+/// channels against unbounded records.
+const FULL_PAYLOAD_FUNCTIONS: [&str; 5] = [
+    "coder::update-file",
+    "coder::create-file",
+    "coder::apply-patch",
+    "coder::move-file",
+    "coder::delete-file",
+];
+
+pub const FULL_PAYLOAD_BUDGET_BYTES: usize = 64 * 1024;
+
+/// Function-aware excerpt: coder writes keep their payload unclipped (up to
+/// the budget) so approval cards can show real diffs; everything else gets
+/// the classic clipped excerpt.
+pub fn redact_for(function_id: &str, value: &Value) -> Value {
+    if FULL_PAYLOAD_FUNCTIONS.contains(&function_id) {
+        let full = redact_at(value, 0, false);
+        let within_budget = serde_json::to_string(&full)
+            .map(|s| s.len() <= FULL_PAYLOAD_BUDGET_BYTES)
+            .unwrap_or(false);
+        if within_budget {
+            return full;
+        }
+    }
+    redact(value)
+}
+
 /// Walk the value tree, redacting secret-keyed values and clipping long
 /// strings. Returns a brand-new tree.
 pub fn redact(value: &Value) -> Value {
-    redact_at(value, 0)
+    redact_at(value, 0, true)
 }
 
-fn redact_at(value: &Value, depth: usize) -> Value {
+fn redact_at(value: &Value, depth: usize, clip_strings: bool) -> Value {
     match value {
-        Value::String(s) => Value::String(clip(s)),
+        Value::String(s) if clip_strings => Value::String(clip(s)),
+        Value::String(s) => Value::String(s.clone()),
         Value::Array(_) | Value::Object(_) if depth >= MAX_REDACT_DEPTH => {
             Value::String(MAX_DEPTH_SENTINEL.to_string())
         }
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|v| redact_at(v, depth + 1)).collect())
-        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| redact_at(v, depth + 1, clip_strings))
+                .collect(),
+        ),
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(k, v)| {
                     let redacted = if is_secret_key(k) {
                         Value::String(REDACTED.to_string())
                     } else {
-                        redact_at(v, depth + 1)
+                        redact_at(v, depth + 1, clip_strings)
                     };
                     (k.clone(), redacted)
                 })
@@ -159,6 +193,39 @@ mod tests {
         }
         assert_eq!(out, json!("<max-depth>"));
         assert_eq!(depth, MAX_REDACT_DEPTH);
+    }
+
+    #[test]
+    fn coder_writes_keep_payload_unclipped() {
+        let patch = "x".repeat(5000);
+        let out = redact_for("coder::apply-patch", &json!({ "patch": patch }));
+        assert_eq!(out["patch"].as_str().unwrap().len(), 5000);
+        // Secrets still redact in full mode.
+        let out = redact_for(
+            "coder::create-file",
+            &json!({ "content": "c".repeat(400), "api_key": "sk" }),
+        );
+        assert_eq!(out["api_key"], json!("<redacted>"));
+        assert_eq!(out["content"].as_str().unwrap().len(), 400);
+    }
+
+    #[test]
+    fn non_coder_functions_still_clip() {
+        let out = redact_for("shell::exec", &json!({ "cmd": "y".repeat(300) }));
+        assert_eq!(
+            out["cmd"].as_str().unwrap().chars().count(),
+            ARGS_EXCERPT_LEN_CAP + 1
+        );
+    }
+
+    #[test]
+    fn full_payload_budget_falls_back_to_clipping() {
+        let huge = "z".repeat(FULL_PAYLOAD_BUDGET_BYTES + 1024);
+        let out = redact_for("coder::apply-patch", &json!({ "patch": huge }));
+        assert_eq!(
+            out["patch"].as_str().unwrap().chars().count(),
+            ARGS_EXCERPT_LEN_CAP + 1
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::denial::{gate_unavailable_envelope, human_only_denial, permissions_de
 use crate::error::ApprovalError;
 use crate::pending;
 use crate::permissions::Decision;
-use crate::redact::redact;
+use crate::redact::redact_for;
 use crate::session;
 use crate::settings;
 use crate::types::{
@@ -125,7 +125,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
         turn_id: input.turn_id.clone(),
         function_call_id: call.id.clone(),
         function_id: call.function_id.clone(),
-        arguments_excerpt: redact(&call.arguments),
+        arguments_excerpt: redact_for(&call.function_id, &call.arguments),
         pending_at,
         session_title,
         session_description,
