@@ -21,10 +21,7 @@ export { unwrapEnvelope }
 /* Synthetic + namespaced harness tools. `submit_result` is the
    output-contract fallback the harness injects into a turn;
    `harness::spawn` is the sub-agent pending trigger. */
-export const HARNESS_FUNCTION_IDS = [
-  'submit_result',
-  'harness::spawn',
-] as const
+export const HARNESS_FUNCTION_IDS = ['submit_result', 'harness::spawn'] as const
 export type HarnessFunctionId = (typeof HARNESS_FUNCTION_IDS)[number]
 
 const HARNESS_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(

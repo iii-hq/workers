@@ -1,0 +1,46 @@
+{
+  "function_id": "worktree::release",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "force": {
+        "default": false,
+        "description": "Release even when another session holds the claim.",
+        "type": "boolean"
+      },
+      "session_id": {
+        "description": "The releasing session (must hold the claim unless force is set).",
+        "type": "string"
+      },
+      "worktree_id": {
+        "description": "The worktree to release.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "worktree_id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "released": {
+        "description": "True when the worktree is now unclaimed.",
+        "type": "boolean"
+      },
+      "worktree_id": {
+        "description": "The released worktree.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "released",
+      "worktree_id"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

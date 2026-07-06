@@ -16,9 +16,7 @@ use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{
-    ParentLink, TurnOptions, TurnRecord, TurnStatus, FS_SCOPE_KEY, FS_SCOPE_ROOT_KEY,
-};
+use crate::types::turn::{fs_scope_metadata, ParentLink, TurnOptions, TurnRecord, TurnStatus};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -228,7 +226,12 @@ async fn seed_child(
                 .and_then(|o| o.output.clone())
                 .unwrap_or_default(),
             functions,
-            metadata: inherit_filesystem_scope(parent_record),
+            metadata: child_filesystem_scope(
+                req.options
+                    .as_ref()
+                    .and_then(|o| o.filesystem_root.as_deref()),
+                parent_record,
+            )?,
             max_validation_retries: cfg.max_validation_retries,
         },
         calls: Default::default(),
@@ -267,7 +270,27 @@ async fn seed_child(
 /// of the parent metadata belongs to the parent's turn and must not leak.
 fn inherit_filesystem_scope(parent: Option<&TurnRecord>) -> Option<Value> {
     let root = parent.and_then(|p| p.options.filesystem_root())?;
-    Some(json!({ FS_SCOPE_KEY: { FS_SCOPE_ROOT_KEY: root } }))
+    Some(fs_scope_metadata(root))
+}
+
+/// The child's `metadata.fs_scope`: an explicit spawn `filesystem_root`
+/// wins; absent, the parent's scope is inherited unchanged. The explicit
+/// value is deliberately not validated against any jail — the shell
+/// worker's roots and the approval gate on `harness::spawn` remain the
+/// security boundary.
+fn child_filesystem_scope(
+    explicit_root: Option<&str>,
+    parent: Option<&TurnRecord>,
+) -> Result<Option<Value>, HarnessError> {
+    let Some(root) = explicit_root else {
+        return Ok(inherit_filesystem_scope(parent));
+    };
+    if !std::path::Path::new(root).is_absolute() {
+        return Err(HarnessError::InvalidRequest(format!(
+            "spawn filesystem_root must be an absolute path, got {root:?}"
+        )));
+    }
+    Ok(Some(fs_scope_metadata(root)))
 }
 
 fn is_error(code: &str, message: String) -> ResultData {
@@ -342,5 +365,42 @@ mod tests {
         assert_eq!(inherit_filesystem_scope(Some(&unscoped)), None);
         let bare = parent_record(None);
         assert_eq!(inherit_filesystem_scope(Some(&bare)), None);
+    }
+
+    #[test]
+    fn explicit_filesystem_root_overrides_the_parent_scope() {
+        let parent = parent_record(Some(json!({
+            "fs_scope": { "root": "/work/project" },
+        })));
+        assert_eq!(
+            child_filesystem_scope(Some("/work/project/.wt/wt_1"), Some(&parent)).unwrap(),
+            Some(json!({ "fs_scope": { "root": "/work/project/.wt/wt_1" } }))
+        );
+        // Without a parent the explicit root still applies.
+        assert_eq!(
+            child_filesystem_scope(Some("/elsewhere"), None).unwrap(),
+            Some(json!({ "fs_scope": { "root": "/elsewhere" } }))
+        );
+    }
+
+    #[test]
+    fn absent_filesystem_root_keeps_the_inheritance_behavior() {
+        let parent = parent_record(Some(json!({
+            "fs_scope": { "root": "/work/project" },
+        })));
+        assert_eq!(
+            child_filesystem_scope(None, Some(&parent)).unwrap(),
+            inherit_filesystem_scope(Some(&parent)),
+        );
+        // Metadata stays None when neither side scopes, so the record's wire
+        // shape is unchanged (skip_serializing_if keeps it absent).
+        assert_eq!(child_filesystem_scope(None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn relative_filesystem_root_is_rejected() {
+        let err = child_filesystem_scope(Some("relative/dir"), None).unwrap_err();
+        assert_eq!(err.code(), "harness/invalid_request");
+        assert!(err.to_string().contains("absolute path"));
     }
 }

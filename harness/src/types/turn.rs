@@ -15,6 +15,12 @@ use crate::types::output::OutputContract;
 pub const FS_SCOPE_KEY: &str = "fs_scope";
 pub const FS_SCOPE_ROOT_KEY: &str = "root";
 
+/// Standalone `{ fs_scope: { root } }` metadata value — the shape
+/// [`TurnOptions::filesystem_root`] reads back.
+pub fn fs_scope_metadata(root: &str) -> Value {
+    serde_json::json!({ FS_SCOPE_KEY: { FS_SCOPE_ROOT_KEY: root } })
+}
+
 /// The coarse, harness-internal turn lifecycle (harness.md § API Reference).
 /// Finer-grained than the session's `status`, which the loop derives from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

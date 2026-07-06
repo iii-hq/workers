@@ -15,7 +15,7 @@ import {
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
-import { DirectoryPicker } from './DirectoryPicker'
+import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
@@ -54,6 +54,8 @@ interface ComposerProps {
    * picker (e.g. an embedded/read-only surface).
    */
   workingDirLocked?: boolean
+  /** Worktrees tab in the picker (real backend + worktree worker only). */
+  worktreePicker?: WorktreePickerOptions
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
   onWorkingDirChange?: (next: string) => void
@@ -85,6 +87,7 @@ export function Composer({
   showWorkingDir,
   workingDir,
   workingDirLocked,
+  worktreePicker,
   onModeChange,
   onModelChange,
   onWorkingDirChange,
@@ -169,6 +172,7 @@ export function Composer({
             onChange={onWorkingDirChange}
             locked={workingDirLocked}
             disabled={inputDisabled}
+            worktrees={worktreePicker}
           />
         ) : null}
         {showPermissionMode ? (

@@ -1,7 +1,7 @@
 import {
-  type WorkerPresence,
   isWorkerPresent,
   useWorkerPresence,
+  type WorkerPresence,
 } from './use-worker-presence'
 
 /**

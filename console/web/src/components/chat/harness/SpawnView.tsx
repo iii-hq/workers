@@ -82,15 +82,7 @@ export function SpawnPreview({ input }: { input: unknown }) {
 
 /* ---------------- pieces ---------------- */
 
-function KvChip({
-  k,
-  v,
-  warn,
-}: {
-  k: string
-  v: ReactNode
-  warn?: boolean
-}) {
+function KvChip({ k, v, warn }: { k: string; v: ReactNode; warn?: boolean }) {
   return (
     <Chip className={cn(warn && 'border-warn/40')}>
       <span

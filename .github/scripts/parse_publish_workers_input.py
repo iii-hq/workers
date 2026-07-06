@@ -23,6 +23,7 @@ ALLOWED_WORKERS: tuple[str, ...] = (
     "shell",
     "storage",
     "web",
+    "worktree",
 )
 
 _ALLOWED_SET = frozenset(ALLOWED_WORKERS)

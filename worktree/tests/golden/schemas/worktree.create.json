@@ -1,0 +1,86 @@
+{
+  "function_id": "worktree::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "base_ref": {
+        "default": null,
+        "description": "Ref to base the worktree on. Defaults to `HEAD`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "branch": {
+        "default": null,
+        "description": "Branch to create. Defaults to `<branch_prefix><worktree_id>`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "repo_path": {
+        "description": "Absolute path of the repository to branch from.",
+        "type": "string"
+      },
+      "session_id": {
+        "default": null,
+        "description": "Session to auto-claim the worktree for.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "repo_path"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "base_ref": {
+        "description": "The ref the worktree was based on.",
+        "type": "string"
+      },
+      "base_sha": {
+        "description": "The commit `base_ref` resolved to.",
+        "type": "string"
+      },
+      "branch": {
+        "description": "The branch checked out in the worktree.",
+        "type": "string"
+      },
+      "created_at": {
+        "description": "Creation time, ms since epoch.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "path": {
+        "description": "Absolute path of the new worktree; hand this to an agent as its working directory.",
+        "type": "string"
+      },
+      "repo_key": {
+        "description": "Canonical per-repo key (FIFO group for lands).",
+        "type": "string"
+      },
+      "worktree_id": {
+        "description": "Stable id, `wt_<12hex>`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "base_ref",
+      "base_sha",
+      "branch",
+      "created_at",
+      "path",
+      "repo_key",
+      "worktree_id"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

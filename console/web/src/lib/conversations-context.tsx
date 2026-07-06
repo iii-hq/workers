@@ -6,20 +6,24 @@ import {
   useState,
 } from 'react'
 import {
-  type ConversationsApi,
-  useConversations,
-} from '@/hooks/use-conversations'
-import {
   isApprovalGateAvailable,
   useApprovalGateStatus,
 } from '@/hooks/use-approval-gate-status'
+import {
+  type ConversationsApi,
+  useConversations,
+} from '@/hooks/use-conversations'
 import {
   type HarnessStatus,
   isHarnessAvailable,
   useHarnessStatus,
 } from '@/hooks/use-harness-status'
-import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
+import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
+import {
+  isWorktreeAvailable,
+  useWorktreeStatus,
+} from '@/hooks/use-worktree-status'
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import {
@@ -64,6 +68,13 @@ interface ConversationsContextValue extends ConversationsApi {
    * exist. Only meaningful on the real backend.
    */
   shellAvailable: boolean
+  /**
+   * Whether the optional `worktree` worker is connected. Gates the picker's
+   * worktrees tab, the working-directory worktree badge, claim/release, and
+   * the landed / land-blocked live events. Only meaningful on the real
+   * backend.
+   */
+  worktreeAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -89,6 +100,9 @@ export function ConversationsProvider({
     useApprovalGateStatus(backend.id === 'real'),
   )
   const shellAvailable = isShellAvailable(useShellStatus(backend.id === 'real'))
+  const worktreeAvailable = isWorktreeAvailable(
+    useWorktreeStatus(backend.id === 'real'),
+  )
   const {
     modelOptions,
     catalogKeys,
@@ -135,6 +149,7 @@ export function ConversationsProvider({
     harnessStatus,
     approvalGateAvailable,
     shellAvailable,
+    worktreeAvailable,
   }
 
   return (

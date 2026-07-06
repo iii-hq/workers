@@ -5,7 +5,6 @@ import { wt } from '../typography'
 import { EnumField } from './EnumField'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
-import { pathToDomId } from './path'
 import {
   discriminator,
   hasRenderableProps,
@@ -14,6 +13,7 @@ import {
   nullableUnionInner,
   stripProperty,
 } from './oneof-shape'
+import { pathToDomId } from './path'
 import { resolveSchema } from './ref-resolver'
 import {
   isSingleStringEnumVariant,
@@ -128,9 +128,7 @@ export function OneOfField(props: FieldProps) {
               value={currentDisc}
               // Reset to a fresh branch carrying only the discriminator; the
               // previous branch's config does not apply to the new one.
-              onChange={(next) =>
-                onChange({ [disc.key]: next } as JsonValue)
-              }
+              onChange={(next) => onChange({ [disc.key]: next } as JsonValue)}
               options={options}
               aria-label={label}
               placeholder="select…"

@@ -1,0 +1,59 @@
+{
+  "function_id": "worktree::land",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "force_restart": {
+        "default": false,
+        "description": "Abort a conflicted rebase left by a previous land and start over.",
+        "type": "boolean"
+      },
+      "keep": {
+        "default": false,
+        "description": "Keep the worktree and branch after a successful land.",
+        "type": "boolean"
+      },
+      "target_branch": {
+        "description": "The branch to fast-forward with the worktree's commits.",
+        "type": "string"
+      },
+      "test_cmd": {
+        "default": null,
+        "description": "Optional test command run in the worktree via `shell::exec` before merging (the test gate).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "worktree_id": {
+        "description": "The worktree to land.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "target_branch",
+      "worktree_id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "job_id": {
+        "description": "The queued land job.",
+        "type": "string"
+      },
+      "queued": {
+        "description": "True when the job was enqueued.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "job_id",
+      "queued"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}
