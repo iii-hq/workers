@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "clap",
  "futures",
