@@ -116,13 +116,12 @@ jobs:
 
       # ── Python bundle path ───────────────────────────────────────────
       # Python workers ship as a source bundle (src/ + pyproject.toml +
-      # iii.worker.yaml). The engine's bundle validator executes only
-      # `scripts.start` (scripts.install/setup are rejected, and
-      # runtime.base_image must name an engine-preset ref like
-      # docker.io/iiidev/python:latest), so the manifest's start command
-      # self-bootstraps (e.g. "pip install -e . && python -m src.main").
-      # Native deps and browsers can't be vendored per-arch into one
-      # archive anyway — install-at-start sidesteps that.
+      # iii.worker.yaml). The engine runs `scripts.install` once inside
+      # the sandbox (prepared-marker guarded) and `scripts.start` every
+      # boot; scripts.setup is rejected and runtime.base_image must name
+      # an engine-preset ref like docker.io/iiidev/python:latest. Native
+      # deps and browsers can't be vendored per-arch into one archive
+      # anyway — install-in-sandbox sidesteps that.
       - name: Stage Python artefact
         if: inputs.language == 'python'
         env:
