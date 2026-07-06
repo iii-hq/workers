@@ -5,7 +5,6 @@ import { wt } from '../typography'
 import { EnumField } from './EnumField'
 import { FieldDispatch, type FieldProps } from './FieldDispatch'
 import { errorForField, FieldShell } from './FieldShell'
-import { pathToDomId } from './path'
 import {
   discriminator,
   hasRenderableProps,
@@ -14,6 +13,7 @@ import {
   nullableUnionInner,
   stripProperty,
 } from './oneof-shape'
+import { pathToDomId } from './path'
 import { resolveSchema } from './ref-resolver'
 import {
   isSingleStringEnumVariant,

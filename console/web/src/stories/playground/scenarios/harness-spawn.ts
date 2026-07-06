@@ -2,7 +2,12 @@ import {
   spawnDepthError,
   spawnTextDone,
 } from '@/stories/fixtures/harness-fixtures'
-import { makeBackend, streamAssistant, streamFcall, streamThought } from './helpers'
+import {
+  makeBackend,
+  streamAssistant,
+  streamFcall,
+  streamThought,
+} from './helpers'
 
 /**
  * A gated `harness::spawn` (approve → child running → markdown result),

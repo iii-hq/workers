@@ -55,7 +55,9 @@ interface FunctionCallMessageProps {
    * When set alongside `message.filesystemAccess`, replaces the standard
    * approve/deny/always row with `FilesystemAccessPrompt`.
    */
-  onResolveFilesystemAccess?: (action: FilesystemAccessAction) => void | Promise<void>
+  onResolveFilesystemAccess?: (
+    action: FilesystemAccessAction,
+  ) => void | Promise<void>
   /** Opens the filesystem-access management dialog (§5 of the spec). */
   onManageFilesystemAccess?: () => void
   /** Conversation's session workspace — shown as "always allowed" context. */
