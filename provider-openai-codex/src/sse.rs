@@ -22,6 +22,9 @@ struct PartialToolCall {
     id: String,
     function_id: String,
     args_json: String,
+    /// Freeform custom-tool call: `args_json` holds RAW text (the V4A
+    /// patch), not JSON — materialized as `{ "patch": <text> }`.
+    raw_input: bool,
 }
 
 pub struct PartialState {
@@ -95,7 +98,10 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
         if tc.function_id.is_empty() {
             continue;
         }
-        let arguments = if tc.args_json.is_empty() {
+        let arguments = if tc.raw_input {
+            // Freeform custom tool (apply_patch): the buffer IS the patch.
+            serde_json::json!({ "patch": tc.args_json })
+        } else if tc.args_json.is_empty() {
             serde_json::json!({})
         } else {
             serde_json::from_str(&tc.args_json).unwrap_or(Value::Null)
@@ -258,7 +264,8 @@ pub fn handle_chunk(
             let Some(item) = chunk.get("item").or_else(|| chunk.get("output_item")) else {
                 return events;
             };
-            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+            let item_type = item.get("type").and_then(Value::as_str);
+            if item_type == Some("function_call") || item_type == Some("custom_tool_call") {
                 let id = item
                     .get("call_id")
                     .or_else(|| item.get("id"))
@@ -270,10 +277,22 @@ pub fn handle_chunk(
                     .and_then(Value::as_str)
                     .map(decode_tool_name)
                     .unwrap_or_default();
+                let raw_input = item_type == Some("custom_tool_call");
+                // A custom_tool_call item may arrive with its full input
+                // attached (no delta stream) — seed the buffer from it.
+                let args_json = if raw_input {
+                    item.get("input")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    String::new()
+                };
                 state.tool_calls.push(PartialToolCall {
                     id,
                     function_id: fname,
-                    args_json: String::new(),
+                    args_json,
+                    raw_input,
                 });
                 close_open_block(state, model, &mut events);
                 state.open_block = Some(OpenBlock::Call);
@@ -305,6 +324,27 @@ pub fn handle_chunk(
                 partial: build_partial(state, model),
                 delta,
             });
+        }
+        n if n.contains("custom_tool_call_input.delta") => {
+            let delta = str_delta(chunk);
+            if delta.is_empty() {
+                return events;
+            }
+            if let Some(last) = state.tool_calls.last_mut() {
+                last.args_json.push_str(&delta);
+            }
+            events.push(AssistantMessageEvent::FunctioncallDelta {
+                partial: build_partial(state, model),
+                delta,
+            });
+        }
+        n if n.contains("custom_tool_call_input.done") => {
+            // Authoritative full input: replace whatever the deltas built.
+            if let Some(input) = chunk.get("input").and_then(Value::as_str) {
+                if let Some(last) = state.tool_calls.last_mut() {
+                    last.args_json = input.to_string();
+                }
+            }
         }
         n if n.contains("function_call_arguments.delta") => {
             let delta = chunk
@@ -427,6 +467,58 @@ mod tests {
                     assert_eq!(id, "c1");
                     assert_eq!(function_id, "shell::exec");
                     assert_eq!(arguments["cmd"], "ls");
+                }
+                other => panic!("want function_call, got {other:?}"),
+            },
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_tool_call_streams_raw_patch_text() {
+        let (_, events) = run(&[
+            json!({ "type": "response.output_item.added", "item": { "type": "custom_tool_call", "call_id": "c7", "name": "apply_patch" } }),
+            json!({ "type": "response.custom_tool_call_input.delta", "delta": "*** Begin Patch\n*** Update File: a.py\n" }),
+            json!({ "type": "response.custom_tool_call_input.delta", "delta": "@@\n-x = 1\n+x = 2\n*** End Patch" }),
+            json!({ "type": "response.completed" }),
+        ]);
+        match events.last().unwrap() {
+            AssistantMessageEvent::Done { message } => match &message.content[0] {
+                ContentBlock::FunctionCall {
+                    id,
+                    function_id,
+                    arguments,
+                } => {
+                    assert_eq!(id, "c7");
+                    assert_eq!(
+                        function_id, "coder::apply-patch",
+                        "alias decodes to the bus id"
+                    );
+                    let patch = arguments["patch"].as_str().unwrap();
+                    assert!(patch.starts_with("*** Begin Patch"));
+                    assert!(patch.ends_with("*** End Patch"));
+                    assert!(
+                        patch.contains("+x = 2"),
+                        "raw text, no JSON escaping applied"
+                    );
+                }
+                other => panic!("want function_call, got {other:?}"),
+            },
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_tool_call_done_input_is_authoritative() {
+        let (_, events) = run(&[
+            json!({ "type": "response.output_item.added", "item": { "type": "custom_tool_call", "call_id": "c8", "name": "apply_patch", "input": "partial" } }),
+            json!({ "type": "response.custom_tool_call_input.done", "input": "*** Begin Patch\n*** End Patch" }),
+            json!({ "type": "response.completed" }),
+        ]);
+        match events.last().unwrap() {
+            AssistantMessageEvent::Done { message } => match &message.content[0] {
+                ContentBlock::FunctionCall { arguments, .. } => {
+                    assert_eq!(arguments["patch"], "*** Begin Patch\n*** End Patch");
                 }
                 other => panic!("want function_call, got {other:?}"),
             },

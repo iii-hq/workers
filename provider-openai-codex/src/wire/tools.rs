@@ -9,6 +9,16 @@ pub fn functions_to_wire(tools: &[AgentFunction]) -> Vec<Value> {
     tools
         .iter()
         .map(|t| {
+            // The V4A patch tool goes out as a FREEFORM custom tool named
+            // exactly `apply_patch`: its input is the raw patch text codex
+            // models are trained to emit — no JSON escaping of the patch.
+            if t.name == crate::wire::names::APPLY_PATCH_FN {
+                return json!({
+                    "type": "custom",
+                    "name": crate::wire::names::APPLY_PATCH_WIRE,
+                    "description": t.description,
+                });
+            }
             json!({
                 "type": "function",
                 "name": encode_tool_name(&t.name),
@@ -46,5 +56,23 @@ mod tests {
     #[test]
     fn empty_input_yields_empty_array() {
         assert!(functions_to_wire(&[]).is_empty());
+    }
+
+    #[test]
+    fn apply_patch_goes_out_as_freeform_custom_tool() {
+        let tools = vec![AgentFunction {
+            name: "coder::apply-patch".into(),
+            description: "Apply a V4A patch".into(),
+            parameters: json!({ "type": "object" }),
+            label: None,
+            execution_mode: None,
+        }];
+        let wire = functions_to_wire(&tools);
+        assert_eq!(wire[0]["type"], "custom");
+        assert_eq!(wire[0]["name"], "apply_patch");
+        assert!(
+            wire[0].get("parameters").is_none(),
+            "custom tools carry no JSON schema"
+        );
     }
 }

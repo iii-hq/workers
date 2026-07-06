@@ -257,10 +257,16 @@ async fn seed_child_with_root(
         .clone()
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| HarnessError::InvalidRequest("spawn requires a model".into()))?;
-    let provider = req
+    let provider = match req
         .provider
         .clone()
-        .or_else(|| parent_record.and_then(|p| p.options.provider.clone()));
+        .or_else(|| parent_record.and_then(|p| p.options.provider.clone()))
+    {
+        Some(p) => Some(p),
+        // No caller/parent provider: resolve from the router catalog so the
+        // child's prompt family matches where the model actually routes.
+        None => crate::functions::send::resolve_provider(deps, &model).await,
+    };
 
     // Code mode without an explicit policy requests the curated coding
     // surface; with a parent it still narrows through subset_policy below,

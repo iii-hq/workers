@@ -121,7 +121,13 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     let session = deps.session().await;
 
     // Freeze the per-send options before moving the message out of `req`.
-    let options = build_options(&cfg, &req);
+    // A send that omits `provider` resolves it from the router's model
+    // catalog first, so prompt-family selection and routing agree.
+    let provider = match req.provider.clone() {
+        Some(p) => Some(p),
+        None => resolve_provider(deps, &req.model).await,
+    };
+    let options = build_options(&cfg, &req, provider);
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
@@ -235,7 +241,27 @@ pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, Har
     }
 }
 
-fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
+/// Resolve the provider for a send that omitted it, via the router's model
+/// catalog — prompt-family selection and routing then agree. `None` when the
+/// router is unreachable or the model is unknown (the prompt family then
+/// falls back to the seeded default, mirroring the un-routed mesh prompt).
+pub(crate) async fn resolve_provider(deps: &Deps, model: &str) -> Option<String> {
+    let provider = deps
+        .router()
+        .await
+        .models_get(None, model)
+        .await
+        .map(|m| m.provider);
+    if provider.is_none() {
+        tracing::warn!(
+            model,
+            "provider not resolvable from the router catalog; prompt family falls back to the default"
+        );
+    }
+    provider
+}
+
+fn build_options(cfg: &WorkerConfig, req: &SendRequest, provider: Option<String>) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     // Code mode without an explicit policy gets the curated coding surface
     // (natively exposed); an explicit caller policy always wins.
@@ -245,12 +271,12 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest) -> TurnOptions {
     };
     TurnOptions {
         model: req.model.clone(),
-        provider: req.provider.clone(),
+        provider: provider.clone(),
         system_prompt: prompt::resolve_system_prompt(
             opts.system_prompt,
             opts.system_prompt_strategy,
             opts.mode,
-            req.provider.as_deref(),
+            provider.as_deref(),
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -370,7 +396,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, req.provider.clone());
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
@@ -391,7 +417,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, req.provider.clone());
         let functions = opts.functions.expect("code mode defaults a policy");
         assert_eq!(
             functions.expose,
@@ -405,6 +431,33 @@ mod tests {
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("coding agent"));
         assert!(!prompt.contains("NEVER invent function ids"));
+    }
+
+    #[test]
+    fn build_options_code_mode_uses_resolved_provider_for_family() {
+        // The caller omitted `provider`; start() resolves it from the router
+        // catalog and passes it here — the GPT family must get the
+        // apply_patch code identity.
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "codex/gpt-5.4".into(),
+            provider: None,
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                mode: Some(Mode::Code),
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req, Some("openai-codex".into()));
+        assert_eq!(opts.provider.as_deref(), Some("openai-codex"));
+        let prompt = opts.system_prompt.expect("built-in prompt");
+        assert!(
+            prompt.contains("coder::apply-patch"),
+            "GPT family gets the apply_patch discipline"
+        );
     }
 
     #[test]
@@ -427,7 +480,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, req.provider.clone());
         let functions = opts.functions.unwrap();
         assert_eq!(functions.allow, vec!["coder::read-file".to_string()]);
         assert_eq!(
@@ -453,7 +506,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, req.provider.clone());
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -473,7 +526,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req);
+        let opts = build_options(&cfg, &req, req.provider.clone());
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
         assert!(prompt.ends_with("Speak only in haiku."));
