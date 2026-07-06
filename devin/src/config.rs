@@ -16,10 +16,14 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
-    /// Devin API bearer token. Seed as `${DEVIN_API_KEY}` so the configuration
-    /// worker expands it from the environment; empty disables the API surface
-    /// (`devin::session::*` and `devin::api`) while the CLI surface still works
-    /// if the local `devin` binary is already authenticated.
+    /// Devin API bearer token for the cloud surface. Accepts a personal token
+    /// (`apk_...`, which uses the flat v1 API) or an organization service key
+    /// (`cog_...`, which uses the v3 API with `org_id` set and `base_url`
+    /// pointed at v3). This is separate from the devin CLI's own login
+    /// (`devin auth login`), which the CLI surface uses. Seed as
+    /// `${DEVIN_API_KEY}` so the configuration worker expands it from the
+    /// environment; empty disables the API surface (`devin::session::*` and
+    /// `devin::api`) while the CLI surface still works if the CLI is logged in.
     pub api_key: String,
     /// Devin organization id. Leave empty for a personal token: the session
     /// functions then use the flat v1 API (`sessions`, `session/{id}`). Set it

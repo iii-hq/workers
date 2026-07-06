@@ -2,16 +2,17 @@
 # registration; the live value is authoritative thereafter. The engine URL is
 # bootstrap and lives on the --url flag, not here.
 
-# Devin API bearer token. Referenced as ${DEVIN_API_KEY} so the configuration
-# worker env-expands it from the environment; the secret never lives in the repo.
-# Empty disables devin::session::* and devin::api (the CLI surface still works if
-# the local devin binary is already authenticated).
+# Devin API bearer token for the cloud surface. A personal token (apk_..., uses
+# the flat v1 API) or an organization service key (cog_..., uses v3 with org_id
+# set and base_url pointed at v3). Separate from the devin CLI's own login
+# (`devin auth login`). Referenced as ${DEVIN_API_KEY} so the configuration worker
+# env-expands it; empty disables devin::session::* and devin::api.
 api_key: "${DEVIN_API_KEY}"
 
 # Devin organization id, env-expanded from ${DEVIN_ORG_ID}. Required for the
-# organization-scoped v3 endpoints (sessions, pr-reviews, code-scan remediation):
-# it is a path segment, e.g. /v3/organizations/{org_id}/sessions. Leave the env
-# var unset only if you use the CLI and passthrough surfaces exclusively.
+# organization-scoped v3 endpoints (sessions, pr-reviews): it is a path segment,
+# e.g. /v3/organizations/{org_id}/sessions. Leave the env var unset only if you
+# use the CLI and passthrough surfaces exclusively (personal token / v1).
 org_id: "${DEVIN_ORG_ID}"
 
 # Base URL for the Devin REST API. Default is the v1 endpoint, which personal
