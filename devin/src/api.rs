@@ -5,10 +5,10 @@
 //! wrappers and the `devin::api` passthrough.
 //!
 //! Devin has two API shapes. Personal tokens use the flat v1 API; service keys
-//! use the v3 API scoped under `organizations/{org_id}` (code scans under
-//! `enterprise/...`). The session wrappers pick the shape from whether `org_id`
-//! is set; pr-review and code-scan are v3-only. The passthrough takes a full
-//! relative path, so a caller can address any scope directly.
+//! use the v3 API scoped under `organizations/{org_id}`. The session wrappers
+//! pick the shape from whether `org_id` is set; pr-review is v3-only. The
+//! passthrough takes a full relative path, so a caller can address any scope
+//! (including code scan and other v3 surfaces) directly.
 
 use std::time::Duration;
 
@@ -177,49 +177,4 @@ pub async fn pr_review_trigger(http: &Client, cfg: &Config, body: &Value) -> Res
 pub async fn pr_review_status(http: &Client, cfg: &Config, query: &Value) -> Result<Value> {
     let path = org_scoped(cfg, "pr-reviews")?;
     request(http, cfg, "GET", &path, Some(query), None).await
-}
-
-// Code scans (enterprise-gated). Findings and metrics are scoped to the token's
-// enterprise; remediate is additionally org-scoped and identifies a finding.
-
-pub async fn code_scan_findings(http: &Client, cfg: &Config, query: &Value) -> Result<Value> {
-    request(
-        http,
-        cfg,
-        "GET",
-        "enterprise/code-scans/findings",
-        Some(query),
-        None,
-    )
-    .await
-}
-
-pub async fn code_scan_metrics(http: &Client, cfg: &Config, query: &Value) -> Result<Value> {
-    request(
-        http,
-        cfg,
-        "GET",
-        "enterprise/code-scans/metrics",
-        Some(query),
-        None,
-    )
-    .await
-}
-
-pub async fn code_scan_remediate(
-    http: &Client,
-    cfg: &Config,
-    scan_id: &str,
-    finding_id: &str,
-) -> Result<Value> {
-    if cfg.org_id.is_empty() {
-        return Err(anyhow!(
-            "org_id is not configured; it is a required path segment for code-scan remediation"
-        ));
-    }
-    let path = format!(
-        "enterprise/organizations/{}/code-scans/{}/findings/{}/remediate",
-        cfg.org_id, scan_id, finding_id
-    );
-    request(http, cfg, "POST", &path, None, None).await
 }

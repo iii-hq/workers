@@ -34,7 +34,7 @@ iii worker add devin
 iii   # starts the engine + worker
 ```
 
-The API has two shapes and the worker picks one from your config. A **personal token** uses the flat v1 API and is the default (leave `org_id` empty, `base_url` stays `.../v1`). A **service key** (`cog_...`) uses the v3 API scoped to an organization: set `org_id` and `base_url` to `https://api.devin.ai/v3`. The `devin::pr-review::*` and `devin::code-scan::*` functions are v3/enterprise features.
+The API has two shapes and the worker picks one from your config. A **personal token** uses the flat v1 API and is the default (leave `org_id` empty, `base_url` stays `.../v1`). A **service key** (`cog_...`) uses the v3 API scoped to an organization: set `org_id` and `base_url` to `https://api.devin.ai/v3`. The `devin::pr-review::*` functions are v3 features.
 
 Start a cloud session and read it back:
 
@@ -81,7 +81,7 @@ iii trigger devin::session::create --help
 
 ## Functions
 
-The worker follows the same base surface as the grok, codex, claude-code, and opencode agent workers (`run` / `start` / `stop` / `status` / `sessions::list` / `events`), then adds the functions unique to Devin's cloud (session lifecycle, PR review, code scan, and a passthrough).
+The worker follows the same base surface as the grok, codex, claude-code, and opencode agent workers (`run` / `start` / `stop` / `status` / `sessions::list` / `events`), then adds the functions unique to Devin's cloud (session lifecycle, PR review, and a passthrough for the rest).
 
 | Function | Surface | Purpose |
 | --- | --- | --- |
@@ -95,9 +95,6 @@ The worker follows the same base surface as the grok, codex, claude-code, and op
 | `devin::session::message` | Cloud | Send a follow-up message to a running session |
 | `devin::pr-review::trigger` | Cloud | Start a Devin review for a pull/merge request |
 | `devin::pr-review::status` | Cloud | Latest Devin review for a pull/merge request |
-| `devin::code-scan::findings` | Cloud | List enterprise code scan findings (enterprise-gated) |
-| `devin::code-scan::metrics` | Cloud | Enterprise code scan metrics (enterprise-gated) |
-| `devin::code-scan::remediate` | Cloud | Launch a session to fix a finding (enterprise-gated) |
 | `devin::api` | Cloud | Raw authenticated call to any v1/v3 endpoint |
 
 To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: sessions}` (v1) or `{path: organizations/{org_id}/sessions}` (v3); `devin::sessions::list` is scoped to the runs this worker made, matching the family convention.
@@ -106,9 +103,9 @@ To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: s
 
 `devin::session::create` accepts `prompt` plus the union of the v1 and v3 create fields (`title`, `tags`, `playbook_id`, `knowledge_ids`, `secret_ids`, `max_acu_limit`; v3 `devin_mode`, `repos`, `attachment_urls`, `resumable`, `bypass_approval`; v1 `snapshot_id`, `unlisted`, `idempotent`); each is omitted from the body when not supplied, so populate the ones your token's API version accepts. `devin::session::*` follow the v1 flat paths by default and switch to v3 org-scoped paths when `org_id` is set.
 
-### PR review and code scan
+### PR review
 
-`devin::pr-review::trigger` starts a Devin review for a `pr_url`; `devin::pr-review::status` returns the latest review for that PR. `devin::code-scan::{findings,metrics,remediate}` cover Devin's enterprise code scanning: list and measure findings, then launch a remediation session that opens a fix PR. Code scanning is enterprise-gated, so those three return the API's authorization error on a key without the enterprise permission.
+`devin::pr-review::trigger` starts a Devin review for a `pr_url`; `devin::pr-review::status` returns the latest review for that PR. Bind a GitHub PR-opened trigger to `devin::pr-review::trigger` for automatic reviews. Devin's other cloud surfaces (knowledge, playbooks, secrets, repos, code scan, org admin) are reachable through `devin::api` when a token has access to them.
 
 ### The passthrough
 
@@ -134,7 +131,7 @@ raw_events_stream: devin::events  # verbatim CLI stdout
 iii_context: true                 # prepend iii runtime context to a CLI prompt
 ```
 
-`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review and code-scan remediation. `iii_context` defaults on, the same as the grok and codex workers, so a `devin::run` turn is prepended with the iii runtime context and the agent discovers engine functions through the `iii` CLI; the context is most useful when the CLI can reach the engine, and you can turn it off per turn with `iii_context: false`.
+`api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review. `iii_context` defaults on, the same as the grok and codex workers, so a `devin::run` turn is prepended with the iii runtime context and the agent discovers engine functions through the `iii` CLI; the context is most useful when the CLI can reach the engine, and you can turn it off per turn with `iii_context: false`.
 
 ## Dependent workers
 
@@ -144,7 +141,7 @@ iii_context: true                 # prepend iii runtime context to a CLI prompt
 
 ## Permissions
 
-`devin::run`, `devin::start`, `devin::session::create`, `devin::session::message`, and `devin::api` drive or mutate a Devin agent and spend ACUs, so they stay at the `needs_approval` default; an agent invoking them without human approval is a privilege escalation. The read-only introspection functions (`devin::status`, `devin::sessions::list`, `devin::session::get`, `devin::pr-review::status`, `devin::code-scan::findings`/`metrics`) and `devin::stop` are allow-listed in `iii-permissions.yaml`.
+`devin::run`, `devin::start`, `devin::session::create`, `devin::session::message`, and `devin::api` drive or mutate a Devin agent and spend ACUs, so they stay at the `needs_approval` default; an agent invoking them without human approval is a privilege escalation. The read-only introspection functions (`devin::status`, `devin::sessions::list`, `devin::session::get`, `devin::pr-review::status`) and `devin::stop` are allow-listed in `iii-permissions.yaml`.
 
 ## How it maps
 
@@ -154,7 +151,6 @@ iii_context: true                 # prepend iii runtime context to a CLI prompt
 | every CLI stdout line, verbatim | `devin::events` stream frame |
 | a Devin cloud session | `devin::session::create` / `::get` / `::list` / `::message` |
 | a Devin PR review | `devin::pr-review::trigger` / `::status` |
-| enterprise code scanning | `devin::code-scan::findings` / `::metrics` / `::remediate` |
-| any other v3 endpoint | `devin::api` passthrough |
+| any other v1/v3 endpoint | `devin::api` passthrough |
 | scheduling a run | `cron` worker trigger, not a worker feature |
 | fanning runs out | `harness::spawn`, not a worker feature |

@@ -16,8 +16,7 @@ use crate::cli;
 use crate::configuration::ConfigCell;
 use crate::state::{list_sessions, load_session, mark_error};
 use types::{
-    extract_create_prompt, ApiRequest, CodeScanFindingsRequest, CodeScanMetricsRequest,
-    CodeScanRemediateRequest, PrReviewStatusRequest, PrReviewTriggerRequest, RunRequest,
+    extract_create_prompt, ApiRequest, PrReviewStatusRequest, PrReviewTriggerRequest, RunRequest,
     SessionCreateRequest, SessionIdRequest, SessionMessageRequest,
 };
 
@@ -52,9 +51,6 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell, http: Client) {
     register_session_message(iii, &cell, &http);
     register_pr_review_trigger(iii, &cell, &http);
     register_pr_review_status(iii, &cell, &http);
-    register_code_scan_findings(iii, &cell, &http);
-    register_code_scan_metrics(iii, &cell, &http);
-    register_code_scan_remediate(iii, &cell, &http);
 }
 
 // devin::run — drive the local devin CLI and wait for the result.
@@ -390,86 +386,5 @@ fn register_pr_review_status(iii: &IIIClient, cell: &ConfigCell, http: &Client) 
         .request_format(schema_value::<PrReviewStatusRequest>())
         .response_format(passthrough_schema())
         .description("Get the latest Devin review status for a pull/merge request."),
-    );
-}
-
-// devin::code-scan::findings — list enterprise code scan findings.
-fn register_code_scan_findings(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
-    let cell_h = cell.clone();
-    let http_h = http.clone();
-    iii.register_function(
-        "devin::code-scan::findings",
-        RegisterFunction::new_async(move |req: CodeScanFindingsRequest| {
-            let cell_h = cell_h.clone();
-            let http_h = http_h.clone();
-            async move {
-                let cfg = { cell_h.read().await.clone() };
-                let query = req.to_query();
-                Ok::<Value, Error>(match api::code_scan_findings(&http_h, &cfg, &query).await {
-                    Ok(v) => v,
-                    Err(e) => err_value(e),
-                })
-            }
-        })
-        .request_format(schema_value::<CodeScanFindingsRequest>())
-        .response_format(passthrough_schema())
-        .description(
-            "List enterprise code scan findings (enterprise-gated). Filter by severity, status, \
-             scan_id, repo_name, org_ids; paginate with after/first.",
-        ),
-    );
-}
-
-// devin::code-scan::metrics — enterprise code scan metrics.
-fn register_code_scan_metrics(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
-    let cell_h = cell.clone();
-    let http_h = http.clone();
-    iii.register_function(
-        "devin::code-scan::metrics",
-        RegisterFunction::new_async(move |req: CodeScanMetricsRequest| {
-            let cell_h = cell_h.clone();
-            let http_h = http_h.clone();
-            async move {
-                let cfg = { cell_h.read().await.clone() };
-                let query = req.to_query();
-                Ok::<Value, Error>(match api::code_scan_metrics(&http_h, &cfg, &query).await {
-                    Ok(v) => v,
-                    Err(e) => err_value(e),
-                })
-            }
-        })
-        .request_format(schema_value::<CodeScanMetricsRequest>())
-        .response_format(passthrough_schema())
-        .description("Get metrics for enterprise code scans (enterprise-gated)."),
-    );
-}
-
-// devin::code-scan::remediate — launch a session to fix a finding.
-fn register_code_scan_remediate(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
-    let cell_h = cell.clone();
-    let http_h = http.clone();
-    iii.register_function(
-        "devin::code-scan::remediate",
-        RegisterFunction::new_async(move |req: CodeScanRemediateRequest| {
-            let cell_h = cell_h.clone();
-            let http_h = http_h.clone();
-            async move {
-                let cfg = { cell_h.read().await.clone() };
-                Ok::<Value, Error>(
-                    match api::code_scan_remediate(&http_h, &cfg, &req.scan_id, &req.finding_id)
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(e) => err_value(e),
-                    },
-                )
-            }
-        })
-        .request_format(schema_value::<CodeScanRemediateRequest>())
-        .response_format(passthrough_schema())
-        .description(
-            "Launch a Devin session to remediate a code scan finding (enterprise-gated); \
-             opens a PR with the fix.",
-        ),
     );
 }

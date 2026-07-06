@@ -33,11 +33,9 @@ bolting it onto this one.
   `devin::stop`.
 - Review a pull request with Devin: `devin::pr-review::trigger` with a `pr_url`,
   then `devin::pr-review::status` to read the latest verdict.
-- Work enterprise code scan findings (enterprise-gated): list with
-  `devin::code-scan::findings`, measure with `devin::code-scan::metrics`, and
-  open a fix PR with `devin::code-scan::remediate`.
 - Reach any other Devin capability with no typed wrapper (knowledge, playbooks,
-  secrets, repos, org admin): `devin::api` with `{ method, path, query?, body? }`.
+  secrets, repos, code scan, org admin): `devin::api` with
+  `{ method, path, query?, body? }`.
 - Schedule or fan out: bind a `cron` trigger to `devin::session::create` instead
   of a polling loop, or spawn multiple runs with `harness::spawn`. The worker
   does not re-implement scheduling or sub-agents.
@@ -66,11 +64,7 @@ bolting it onto this one.
 - `devin::session::message` — send a follow-up `message` to a running session.
 - `devin::pr-review::trigger` — start a Devin review for a `pr_url`.
 - `devin::pr-review::status` — latest review for a `pr_url` (optional `commit_sha`).
-- `devin::code-scan::findings` — list enterprise findings; filter by severity,
-  status, scan_id, repo_name, org_ids; paginate with after/first.
-- `devin::code-scan::metrics` — enterprise code scan metrics.
-- `devin::code-scan::remediate` — launch a fix session for a `{scan_id, finding_id}`.
-- `devin::api` — raw authenticated call to any v3 endpoint:
+- `devin::api` — raw authenticated call to any v1/v3 endpoint:
   `{ method, path, query?, body? }`.
 - `devin::run` — run one local CLI turn and wait; accepts `prompt` (or a
   `messages` array), `cwd`, and `iii_context`; returns

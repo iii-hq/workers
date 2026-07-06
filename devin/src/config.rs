@@ -25,8 +25,7 @@ pub struct Config {
     /// functions then use the flat v1 API (`sessions`, `session/{id}`). Set it
     /// for a service key: the session functions switch to the v3 org-scoped
     /// shape (`organizations/{org_id}/sessions`), and it becomes the required
-    /// path segment for pr-review and code-scan remediation. Set `base_url` to
-    /// match (v1 vs v3).
+    /// path segment for pr-review. Set `base_url` to match (v1 vs v3).
     pub org_id: String,
     /// Base URL for the Devin REST API. Default is the v1 endpoint, which
     /// personal tokens use; set it to `https://api.devin.ai/v3` alongside

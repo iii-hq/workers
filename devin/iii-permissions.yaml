@@ -17,5 +17,3 @@ rules:
   - devin::stop
   - devin::session::get
   - devin::pr-review::status
-  - devin::code-scan::findings
-  - devin::code-scan::metrics
