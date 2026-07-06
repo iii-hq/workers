@@ -278,10 +278,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Recorded call: (function_id, payload, timeout_ms, is_void_call)
+    type RecordedCall = (String, Value, Option<u64>, bool);
+
     /// Records the last call; returns a canned result or error.
     #[derive(Default)]
     struct FakeCaller {
-        last: tokio::sync::Mutex<Option<(String, Value, Option<u64>, bool)>>, // (fn, payload, timeout, void)
+        last: tokio::sync::Mutex<Option<RecordedCall>>, // (fn, payload, timeout, void)
         fail_with: Option<BridgeError>,
     }
 
