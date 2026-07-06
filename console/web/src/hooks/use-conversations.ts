@@ -151,6 +151,58 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
   }
 }
 
+export function applyCatalogModelFallback(
+  conversations: Conversation[],
+  validModels: ReadonlySet<string>,
+  fallbackModel: ModelId,
+): Conversation[] {
+  let changed = false
+  const next = conversations.map((c) => {
+    if (c.model && validModels.has(c.model)) return c
+    changed = true
+    return { ...c, model: fallbackModel }
+  })
+  return changed ? next : conversations
+}
+
+export function mergeConversationMeta(
+  existing: Conversation | undefined,
+  meta: SessionMeta,
+): Conversation {
+  const mapped = conversationFromMeta(meta)
+  if (!existing || existing.draft) return mapped
+  return {
+    ...mapped,
+    messages: existing.messages,
+    hydrated: existing.hydrated,
+  }
+}
+
+export function appendMessageToConversation(
+  c: Conversation,
+  message: Message,
+  now = Date.now(),
+): Conversation {
+  const messages = [...c.messages, message]
+  const next: Conversation = {
+    ...c,
+    messages,
+    updatedAt: now,
+  }
+  if (message.role === 'user') {
+    next.status = 'working'
+    next.statusReason = undefined
+  }
+  if (
+    !c.titleManual &&
+    message.role === 'user' &&
+    c.messages.every((m) => m.role !== 'user')
+  ) {
+    next.title = deriveTitle(message.content)
+  }
+  return next
+}
+
 export interface ConversationsApi {
   conversations: Conversation[]
   activeId: string | null
@@ -217,17 +269,9 @@ export function useConversations(
         setConversations((prev) => {
           const drafts = prev.filter((c) => c.draft)
           const byId = new Map(prev.map((c) => [c.id, c]))
-          const listed = metas.map((meta) => {
-            const existing = byId.get(meta.session_id)
-            const mapped = conversationFromMeta(meta)
-            if (!existing || existing.draft) return mapped
-            // Keep already-reconciled transcript state across re-lists.
-            return {
-              ...mapped,
-              messages: existing.messages,
-              hydrated: existing.hydrated,
-            }
-          })
+          const listed = metas.map((meta) =>
+            mergeConversationMeta(byId.get(meta.session_id), meta),
+          )
           const listedIds = new Set(listed.map((c) => c.id))
           return [...drafts.filter((c) => !listedIds.has(c.id)), ...listed]
         })
@@ -285,18 +329,9 @@ export function useConversations(
           void getSession(event.session_id)
             .then((meta) => {
               if (cancelled || !meta) return
-              const md = meta.metadata ?? {}
-              const parentId =
-                typeof md.parent_session_id === 'string'
-                  ? md.parent_session_id
-                  : undefined
-              if (!parentId) return
-              const depth = typeof md.depth === 'number' ? md.depth : undefined
-              patchConversation(event.session_id, (c) => ({
-                ...c,
-                parentId,
-                depth,
-              }))
+              patchConversation(event.session_id, (c) =>
+                mergeConversationMeta(c, meta),
+              )
             })
             .catch(() => {})
         },
@@ -468,13 +503,7 @@ export function useConversations(
     const valid = new Set(keys)
     const fallback = keys[0]
     setConversations((prev) => {
-      let changed = false
-      const next = prev.map((c) => {
-        if (c.model && valid.has(c.model)) return c
-        changed = true
-        return { ...c, model: fallback, updatedAt: Date.now() }
-      })
-      return changed ? next : prev
+      return applyCatalogModelFallback(prev, valid, fallback)
     })
     const lastModel = loadLastModel()
     if (lastModel && !valid.has(lastModel)) {
@@ -603,22 +632,7 @@ export function useConversations(
 
   const appendMessage = useCallback(
     (id: string, message: Message) =>
-      patchConversation(id, (c) => {
-        const messages = [...c.messages, message]
-        const next: Conversation = {
-          ...c,
-          messages,
-          updatedAt: Date.now(),
-        }
-        if (
-          !c.titleManual &&
-          message.role === 'user' &&
-          c.messages.every((m) => m.role !== 'user')
-        ) {
-          next.title = deriveTitle(message.content)
-        }
-        return next
-      }),
+      patchConversation(id, (c) => appendMessageToConversation(c, message)),
     [patchConversation],
   )
 
@@ -654,18 +668,18 @@ export function useConversations(
           ? deriveTitle(titleHint)
           : conv.title
       try {
-        await ensureSessionApi({
+        const resp = await ensureSessionApi({
           session_id: id,
           title,
           metadata: metadataFor(conv),
         })
         patchConversation(id, (c) => ({
-          ...c,
+          ...mergeConversationMeta(
+            { ...c, draft: false, hydrated: true },
+            resp.meta,
+          ),
           draft: false,
           hydrated: true,
-          title,
-          status: 'idle',
-          updatedAt: Date.now(),
         }))
       } catch (err) {
         if (import.meta.env.DEV) {
