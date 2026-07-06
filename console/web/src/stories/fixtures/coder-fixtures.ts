@@ -1124,6 +1124,219 @@ export const coderInfo = base(
   }),
 )
 
+/* ---------------- apply-patch ---------------- */
+
+/** V4A patch: rename + edit, new file, deletion — one hunk per file. */
+const APPLY_PATCH_V4A = [
+  '*** Begin Patch',
+  '*** Update File: workers/demo/src/index.ts',
+  '*** Move to: workers/demo/src/main.ts',
+  '@@ iii.registerFunction(',
+  "-  'demo::add',",
+  "+  'demo::sum',",
+  '   async (payload: { a: number; b: number }) => {',
+  '*** Add File: workers/demo/src/lib/log.ts',
+  '+export function log(msg: string): void {',
+  "+  process.stdout.write(msg + '\\n')",
+  '+}',
+  '*** Delete File: workers/demo/src/adapters.ts',
+  '*** End Patch',
+  '',
+].join('\n')
+
+/** Mixed-kind patch with per-file results, one echo, and passing checks. */
+export const coderApplyPatch = base(
+  'coder-apply-patch',
+  'coder::apply-patch',
+  { patch: APPLY_PATCH_V4A },
+  wrapHarness({
+    results: [
+      {
+        path: '/work/workers/demo/src/main.ts',
+        kind: 'moved',
+        new_line_count: 26,
+        echo: { from_line: 6, lines: ["  'demo::sum',"] },
+      },
+      {
+        path: '/work/workers/demo/src/lib/log.ts',
+        kind: 'added',
+        new_line_count: 3,
+      },
+      { path: '/work/workers/demo/src/adapters.ts', kind: 'deleted' },
+    ],
+    checks: [
+      {
+        command: 'pnpm exec tsc --noEmit',
+        exit_code: 0,
+        output: '',
+        truncated: false,
+      },
+    ],
+  }),
+)
+
+export const coderApplyPatchPending = base(
+  'coder-apply-patch-pending',
+  'coder::apply-patch',
+  { patch: APPLY_PATCH_V4A },
+  undefined,
+  { pendingApproval: true },
+)
+
+/* ---------------- checks ---------------- */
+
+/** Post-write checks in all three badge states: green exit 0, red
+ *  non-zero with output, amber error (timeout) with truncated output. */
+export const coderUpdateWithChecks = base(
+  'coder-update-checks',
+  'coder::update-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        ops: [
+          {
+            op: 'insert',
+            at_line: 1,
+            content: "import type { Logger } from 'iii-sdk'\n",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    results: [
+      {
+        path: '/work/workers/demo/src/index.ts',
+        success: true,
+        applied: 1,
+        new_line_count: 27,
+        echoes: [
+          {
+            op_index: 0,
+            from_line: 1,
+            lines: [
+              "import type { Logger } from 'iii-sdk'",
+              "import { registerWorker } from 'iii-sdk'",
+              '',
+            ],
+          },
+        ],
+        echoes_truncated: false,
+      },
+    ],
+    checks: [
+      {
+        command: 'pnpm exec biome check src/',
+        exit_code: 0,
+        output: 'Checked 14 files in 62ms. No fixes applied.\n',
+        truncated: false,
+      },
+      {
+        command: 'pnpm exec tsc --noEmit',
+        exit_code: 2,
+        output:
+          "src/index.ts(1,15): error TS6133: 'Logger' is declared but its value is never read.\n",
+        truncated: false,
+      },
+      {
+        command: 'pnpm test',
+        output: ' RUN  v3.1.4 /work/workers/demo\n',
+        truncated: true,
+        error: 'timed out after 120s',
+      },
+    ],
+  },
+)
+
+/* ---------------- context ---------------- */
+
+/** Workspace card: git repo with dirty entries + one instruction file. */
+export const coderContext = base(
+  'coder-context',
+  'coder::context',
+  {},
+  wrapHarness({
+    primary_root: '/work',
+    base_paths: ['/work', '/tmp/coder-cache'],
+    platform: { os: 'linux', arch: 'aarch64' },
+    git: {
+      branch: 'feat/worktrees',
+      status: [' M workers/demo/src/index.ts', '?? workers/demo/src/lib/'],
+      status_truncated: false,
+      recent_commits: [
+        '936ba3be fix(provider): surface stream-fatal error events',
+        '5ddd788d chore(harness): bump to v1.1.5',
+      ],
+    },
+    instruction_files: [
+      {
+        path: 'CLAUDE.md',
+        content:
+          '# Project notes\n\n- Use pnpm, never npm.\n- Conventional commits.\n',
+        truncated: false,
+      },
+      {
+        path: 'workers/demo/CLAUDE.md',
+        content: '# demo worker\n\nRun with III_ENGINE_URL set.\n',
+        truncated: true,
+      },
+    ],
+  }),
+)
+
+/** Non-repo workspace — git absent on the wire. */
+export const coderContextNoGit = base(
+  'coder-context-no-git',
+  'coder::context',
+  {},
+  {
+    primary_root: '/tmp/scratch',
+    base_paths: ['/tmp/scratch'],
+    platform: { os: 'darwin', arch: 'arm64' },
+    instruction_files: [],
+  },
+)
+
+/* ---------------- worktree-add / worktree-remove ---------------- */
+
+export const coderWorktreeAdd = base(
+  'coder-worktree-add',
+  'coder::worktree-add',
+  { name: 'fix-timeouts' },
+  wrapHarness({
+    path: '/work/.worktrees/fix-timeouts',
+    branch: 'worktree-fix-timeouts',
+  }),
+)
+
+export const coderWorktreeRemoveClean = base(
+  'coder-worktree-remove',
+  'coder::worktree-remove',
+  { name: 'fix-timeouts' },
+  {
+    removed: true,
+    dirty: false,
+    path: '/work/.worktrees/fix-timeouts',
+    branch: 'worktree-fix-timeouts',
+    branch_deleted: true,
+  },
+)
+
+/** Refused: uncommitted work keeps the worktree (and its branch) alive. */
+export const coderWorktreeRemoveDirty = base(
+  'coder-worktree-remove-dirty',
+  'coder::worktree-remove',
+  { name: 'spike-quic' },
+  wrapHarness({
+    removed: false,
+    dirty: true,
+    path: '/work/.worktrees/spike-quic',
+    branch: 'worktree-spike-quic',
+    branch_deleted: false,
+  }),
+)
+
 /* ---------------- top-level error ---------------- */
 
 export const coderGateError = base(
@@ -1179,5 +1392,13 @@ export const coderFixtures = [
   coderTreeSnapshot,
   coderListFolderPage,
   coderInfo,
+  coderApplyPatch,
+  coderApplyPatchPending,
+  coderUpdateWithChecks,
+  coderContext,
+  coderContextNoGit,
+  coderWorktreeAdd,
+  coderWorktreeRemoveClean,
+  coderWorktreeRemoveDirty,
   coderGateError,
 ] as const

@@ -29,6 +29,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
+import { ChecksList } from './ChecksView'
 import {
   formatUpdateOp,
   type OpEcho,
@@ -623,6 +624,8 @@ export function UpdateFileView({
       ) : (
         <OpSummaryTable req={req} />
       )}
+
+      {showEchoes ? <ChecksList checks={resp?.checks} /> : null}
     </div>
   )
 }

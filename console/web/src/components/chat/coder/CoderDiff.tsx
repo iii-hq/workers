@@ -33,6 +33,31 @@ export function CoderNewFilePreview({
   )
 }
 
+/** Two-sided text diff for apply-patch Update hunks: old side is the
+    hunk's context+`-` lines, new side its context+`+` lines. `newPath`
+    diverges from `oldPath` only on `*** Move to:` hunks. */
+export function CoderTextDiff({
+  oldPath,
+  newPath,
+  oldContent,
+  newContent,
+}: {
+  oldPath: string
+  newPath: string
+  oldContent: string
+  newContent: string
+}) {
+  const options = usePierreDiffOptions()
+  const oldFile: FileContents = { name: oldPath, contents: oldContent }
+  const newFile: FileContents = { name: newPath, contents: newContent }
+
+  return (
+    <div className="border-b border-rule-2 last:border-b-0">
+      <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
+    </div>
+  )
+}
+
 /** Overwrite: previous content is not on the wire — show new body only. */
 export function CoderOverwritePreview({
   path,

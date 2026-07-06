@@ -11,6 +11,9 @@
  *   workers/coder/src/functions/tree.rs         -> TreeInput/Output
  *   workers/coder/src/functions/list_folder.rs  -> ListFolderInput/Output
  *   workers/coder/src/functions/info.rs         -> InfoInput/Output
+ *   workers/coder/src/functions/apply_patch.rs  -> ApplyPatchInput/Output
+ *   workers/coder/src/functions/context.rs      -> ContextInput/Output
+ *   workers/coder/src/functions/worktree.rs     -> WorktreeAdd/RemoveInput/Output
  *
  * Schemas are non-strict so additive wire fields don't break the UI.
  * Every response-side Rust `Option<T>` carries `skip_serializing_if =
@@ -39,6 +42,10 @@ export const CODER_FUNCTION_IDS = [
   'coder::tree',
   'coder::list-folder',
   'coder::info',
+  'coder::apply-patch',
+  'coder::context',
+  'coder::worktree-add',
+  'coder::worktree-remove',
 ] as const
 export type CoderFunctionId = (typeof CODER_FUNCTION_IDS)[number]
 
@@ -56,6 +63,7 @@ export const CODER_MUTATE_FUNCTION_IDS = [
   'coder::update-file',
   'coder::delete-file',
   'coder::move',
+  'coder::apply-patch',
 ] as const
 export type CoderMutateFunctionId = (typeof CODER_MUTATE_FUNCTION_IDS)[number]
 
@@ -84,6 +92,22 @@ export type WireError = z.infer<typeof wireErrorSchema>
 /** `list_folder.rs::EntryKind` / `tree.rs::NodeKind` — drives icons. */
 export const entryKindSchema = z.enum(['file', 'dir', 'symlink', 'other'])
 export type EntryKind = z.infer<typeof entryKindSchema>
+
+/**
+ * Post-write check run — shared by create-file, update-file and
+ * apply-patch responses. `error` set (e.g. a timeout) means the command
+ * never produced a trustworthy exit code; treat it as its own state,
+ * not as a failure exit.
+ */
+export const checkResultSchema = z.object({
+  command: z.string(),
+  /** Omitted when the check errored before exiting. */
+  exit_code: z.number().nullish(),
+  output: z.string(),
+  truncated: z.boolean(),
+  error: z.string().nullish(),
+})
+export type CheckResult = z.infer<typeof checkResultSchema>
 
 /* ---------------- info ---------------- */
 
@@ -154,6 +178,8 @@ export type CreateFileResult = z.infer<typeof createFileResultSchema>
 
 export const createFileResponseSchema = z.object({
   results: z.array(createFileResultSchema),
+  /** Post-write check runs; absent on older wires. */
+  checks: z.array(checkResultSchema).nullish(),
 })
 export type CreateFileResponse = z.infer<typeof createFileResponseSchema>
 
@@ -247,6 +273,8 @@ export type UpdateFileResult = z.infer<typeof updateFileResultSchema>
 
 export const updateFileResponseSchema = z.object({
   results: z.array(updateFileResultSchema),
+  /** Post-write check runs; absent on older wires. */
+  checks: z.array(checkResultSchema).nullish(),
 })
 export type UpdateFileResponse = z.infer<typeof updateFileResponseSchema>
 
@@ -526,6 +554,115 @@ export const listFolderResponseSchema = z.object({
   has_more: z.boolean(),
 })
 export type ListFolderResponse = z.infer<typeof listFolderResponseSchema>
+
+/* ---------------- apply-patch ---------------- */
+
+/** V4A patch text: `*** Begin Patch` … `*** End Patch` with per-file
+    Add/Delete/Update hunks. Parsed for rendering in ApplyPatchView. */
+export const applyPatchRequestSchema = z.object({
+  patch: z.string(),
+})
+export type ApplyPatchRequest = z.infer<typeof applyPatchRequestSchema>
+
+export const patchResultKindSchema = z.enum([
+  'added',
+  'modified',
+  'deleted',
+  'moved',
+])
+export type PatchResultKind = z.infer<typeof patchResultKindSchema>
+
+/** Bounded post-apply snapshot, like update-file's OpEcho (no op_index —
+    apply-patch is one hunk per file). */
+export const patchEchoSchema = z.object({
+  /** 1-based first echoed line, AFTER the patch applied. */
+  from_line: z.number(),
+  lines: z.array(z.string()),
+})
+export type PatchEcho = z.infer<typeof patchEchoSchema>
+
+export const applyPatchResultSchema = z.object({
+  /** Canonical absolute; the destination path for moved files. */
+  path: z.string(),
+  kind: patchResultKindSchema,
+  /** Absent for deleted files. */
+  new_line_count: z.number().nullish(),
+  echo: patchEchoSchema.nullish(),
+})
+export type ApplyPatchResult = z.infer<typeof applyPatchResultSchema>
+
+export const applyPatchResponseSchema = z.object({
+  /** One entry per file hunk, in patch order. */
+  results: z.array(applyPatchResultSchema),
+  /** Post-write check runs; absent on older wires. */
+  checks: z.array(checkResultSchema).nullish(),
+})
+export type ApplyPatchResponse = z.infer<typeof applyPatchResponseSchema>
+
+/* ---------------- context ---------------- */
+
+/** `context.rs::ContextInput` — pure discovery call, zero arguments. */
+export const contextRequestSchema = z.object({})
+export type ContextRequest = z.infer<typeof contextRequestSchema>
+
+export const contextGitSchema = z.object({
+  branch: z.string(),
+  /** Porcelain status lines — length is the dirty-entry count. */
+  status: z.array(z.string()),
+  status_truncated: z.boolean(),
+  recent_commits: z.array(z.string()),
+})
+export type ContextGit = z.infer<typeof contextGitSchema>
+
+export const instructionFileSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  truncated: z.boolean(),
+})
+export type InstructionFile = z.infer<typeof instructionFileSchema>
+
+export const contextResponseSchema = z.object({
+  primary_root: z.string(),
+  base_paths: z.array(z.string()),
+  platform: z.object({
+    os: z.string(),
+    arch: z.string(),
+  }),
+  /** Absent when the primary root is not a git repository. */
+  git: contextGitSchema.nullish(),
+  instruction_files: z.array(instructionFileSchema),
+})
+export type ContextResponse = z.infer<typeof contextResponseSchema>
+
+/* ---------------- worktree-add / worktree-remove ---------------- */
+
+export const worktreeAddRequestSchema = z.object({
+  name: z.string(),
+})
+export type WorktreeAddRequest = z.infer<typeof worktreeAddRequestSchema>
+
+export const worktreeAddResponseSchema = z.object({
+  path: z.string(),
+  branch: z.string(),
+})
+export type WorktreeAddResponse = z.infer<typeof worktreeAddResponseSchema>
+
+export const worktreeRemoveRequestSchema = z.object({
+  name: z.string(),
+})
+export type WorktreeRemoveRequest = z.infer<typeof worktreeRemoveRequestSchema>
+
+export const worktreeRemoveResponseSchema = z.object({
+  /** False + dirty = refused: uncommitted work kept in place. */
+  removed: z.boolean(),
+  dirty: z.boolean(),
+  path: z.string(),
+  branch: z.string(),
+  branch_deleted: z.boolean(),
+})
+export type WorktreeRemoveResponse = z.infer<
+  typeof worktreeRemoveResponseSchema
+>
 
 /* ---------------- formatting helpers ---------------- */
 

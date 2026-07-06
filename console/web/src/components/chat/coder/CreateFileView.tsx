@@ -15,6 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
+import { ChecksList } from './ChecksView'
 import { CoderNewFilePreview, CoderOverwritePreview } from './CoderDiff'
 import {
   createFileRequestSchema,
@@ -130,6 +131,8 @@ export function CreateFileView({
           />
         )
       })}
+
+      <ChecksList checks={resp?.checks} />
     </div>
   )
 }

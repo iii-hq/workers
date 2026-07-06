@@ -1,6 +1,8 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
+import { ApplyPatchPreview, ApplyPatchView } from './ApplyPatchView'
+import { ContextView } from './ContextView'
 import { CreateFilePreview, CreateFileView } from './CreateFileView'
 import { DeleteFilePreview, DeleteFileView } from './DeleteFileView'
 import { InfoView } from './InfoView'
@@ -15,6 +17,7 @@ import { ReadFileView } from './ReadFileView'
 import { SearchView } from './SearchView'
 import { TreeView } from './TreeView'
 import { UpdateFilePreview, UpdateFileView } from './UpdateFileView'
+import { WorktreeAddView, WorktreeRemoveView } from './WorktreeView'
 
 export function CoderFunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('coder::')) {
@@ -63,6 +66,16 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
       return <ListFolderView input={input} output={output} running={running} />
     case 'coder::info':
       return <InfoView input={input} output={output} running={running} />
+    case 'coder::apply-patch':
+      return <ApplyPatchView input={input} output={output} running={running} />
+    case 'coder::context':
+      return <ContextView input={input} output={output} running={running} />
+    case 'coder::worktree-add':
+      return <WorktreeAddView input={input} output={output} running={running} />
+    case 'coder::worktree-remove':
+      return (
+        <WorktreeRemoveView input={input} output={output} running={running} />
+      )
     default:
       return null
   }
@@ -85,6 +98,8 @@ function tryRenderPreview(
       return <DeleteFilePreview input={input} />
     case 'coder::move':
       return <MovePreview input={input} />
+    case 'coder::apply-patch':
+      return <ApplyPatchPreview input={input} />
     default:
       return null
   }

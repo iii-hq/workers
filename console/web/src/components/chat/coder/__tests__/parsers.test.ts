@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyPatchRequestSchema,
+  applyPatchResponseSchema,
   CODER_FUNCTION_IDS,
   CODER_MUTATE_FUNCTION_IDS,
+  checkResultSchema,
   contentMatchSchema,
+  contextRequestSchema,
+  contextResponseSchema,
   createFileRequestSchema,
   createFileResponseSchema,
   deleteFileRequestSchema,
@@ -31,6 +36,10 @@ import {
   updateFileResponseSchema,
   updateOpReplaceSchema,
   wireErrorSchema,
+  worktreeAddRequestSchema,
+  worktreeAddResponseSchema,
+  worktreeRemoveRequestSchema,
+  worktreeRemoveResponseSchema,
 } from '../parsers'
 
 function wrap<T>(details: T) {
@@ -46,7 +55,7 @@ describe('isCoderFunction', () => {
     for (const id of CODER_FUNCTION_IDS) {
       expect(isCoderFunction(id)).toBe(true)
     }
-    expect(CODER_FUNCTION_IDS).toHaveLength(9)
+    expect(CODER_FUNCTION_IDS).toHaveLength(13)
   })
 
   it('rejects same-prefix non-members and other families', () => {
@@ -61,11 +70,14 @@ describe('isCoderMutateFunction', () => {
       expect(isCoderMutateFunction(id)).toBe(true)
     }
     expect(isCoderMutateFunction('coder::move')).toBe(true)
+    expect(isCoderMutateFunction('coder::apply-patch')).toBe(true)
   })
 
   it('rejects read-only coder ids and other families', () => {
     expect(isCoderMutateFunction('coder::read-file')).toBe(false)
     expect(isCoderMutateFunction('coder::search')).toBe(false)
+    expect(isCoderMutateFunction('coder::context')).toBe(false)
+    expect(isCoderMutateFunction('coder::worktree-add')).toBe(false)
     expect(isCoderMutateFunction('sandbox::exec')).toBe(false)
   })
 })
@@ -314,6 +326,26 @@ describe('updateFileResponseSchema', () => {
     })
     expect(r?.results[0]?.echoes).toEqual([])
     expect(r?.results[0]?.error?.code).toBe('C210')
+  })
+
+  it('parses top-level checks alongside the results', () => {
+    const r = safeParseResponse(updateFileResponseSchema, {
+      results: [
+        {
+          path: '/work/src/lib.rs',
+          success: true,
+          applied: 1,
+          new_line_count: 10,
+          echoes: [],
+          echoes_truncated: false,
+        },
+      ],
+      checks: [
+        { command: 'cargo check', exit_code: 0, output: '', truncated: false },
+      ],
+    })
+    expect(r?.checks).toHaveLength(1)
+    expect(r?.checks?.[0]?.exit_code).toBe(0)
   })
 
   it('rejects results missing the always-present echoes fields', () => {
@@ -759,6 +791,161 @@ describe('listFolderResponseSchema', () => {
         has_more: false,
       }),
     ).toBeNull()
+  })
+})
+
+describe('checkResultSchema', () => {
+  it('parses an errored check with the exit code omitted', () => {
+    const r = checkResultSchema.safeParse({
+      command: 'cargo test',
+      output: '',
+      truncated: true,
+      error: 'timed out after 120s',
+    })
+    expect(r.success).toBe(true)
+    if (r.success) {
+      expect(r.data.exit_code).toBeUndefined()
+      expect(r.data.error).toBe('timed out after 120s')
+    }
+  })
+
+  it('rejects a check missing the command', () => {
+    expect(
+      checkResultSchema.safeParse({ output: '', truncated: false }).success,
+    ).toBe(false)
+  })
+})
+
+describe('applyPatchRequestSchema / applyPatchResponseSchema', () => {
+  it('accepts the opaque patch string request', () => {
+    const r = safeParseRequest(applyPatchRequestSchema, {
+      patch: '*** Begin Patch\n*** Delete File: old.rs\n*** End Patch\n',
+    })
+    expect(r?.patch).toContain('*** Delete File: old.rs')
+  })
+
+  it('rejects a request without patch text', () => {
+    expect(safeParseRequest(applyPatchRequestSchema, {})).toBeNull()
+  })
+
+  it('parses a wrapped mixed-kind response with echo and checks', () => {
+    const r = safeParseResponse(
+      applyPatchResponseSchema,
+      wrap({
+        results: [
+          {
+            path: '/work/src/main.rs',
+            kind: 'moved',
+            new_line_count: 30,
+            echo: { from_line: 9, lines: ["  'demo::sum',"] },
+          },
+          { path: '/work/src/lib/log.rs', kind: 'added', new_line_count: 3 },
+          { path: '/work/src/adapters.rs', kind: 'deleted' },
+        ],
+        checks: [
+          {
+            command: 'cargo check',
+            exit_code: 101,
+            output: 'error[E0425]: cannot find value `vm`\n',
+            truncated: false,
+          },
+        ],
+      }),
+    )
+    expect(r?.results).toHaveLength(3)
+    expect(r?.results[0]?.kind).toBe('moved')
+    expect(r?.results[0]?.echo?.from_line).toBe(9)
+    // Deleted files carry no line count or echo.
+    expect(r?.results[2]?.new_line_count).toBeUndefined()
+    expect(r?.results[2]?.echo).toBeUndefined()
+    expect(r?.checks?.[0]?.exit_code).toBe(101)
+  })
+
+  it('rejects a result with an unknown kind', () => {
+    expect(
+      safeParseResponse(applyPatchResponseSchema, {
+        results: [{ path: '/work/a.rs', kind: 'renamed' }],
+      }),
+    ).toBeNull()
+  })
+})
+
+describe('contextRequestSchema / contextResponseSchema', () => {
+  it('accepts an empty discovery request (null coerced to {})', () => {
+    expect(safeParseRequest(contextRequestSchema, undefined)).toEqual({})
+  })
+
+  it('parses a wrapped full workspace payload', () => {
+    const r = safeParseResponse(
+      contextResponseSchema,
+      wrap({
+        primary_root: '/work',
+        base_paths: ['/work', '/tmp/coder-cache'],
+        platform: { os: 'linux', arch: 'aarch64' },
+        git: {
+          branch: 'feat/worktrees',
+          status: [' M src/main.rs', '?? src/lib/'],
+          status_truncated: false,
+          recent_commits: ['936ba3be fix: surface stream-fatal errors'],
+        },
+        instruction_files: [
+          { path: 'CLAUDE.md', content: '# Project notes\n', truncated: false },
+        ],
+      }),
+    )
+    expect(r?.primary_root).toBe('/work')
+    expect(r?.git?.branch).toBe('feat/worktrees')
+    expect(r?.git?.status).toHaveLength(2)
+    expect(r?.instruction_files[0]?.path).toBe('CLAUDE.md')
+  })
+
+  it('tolerates an absent git block (not a repository)', () => {
+    const r = safeParseResponse(contextResponseSchema, {
+      primary_root: '/work',
+      base_paths: ['/work'],
+      platform: { os: 'darwin', arch: 'arm64' },
+      instruction_files: [],
+    })
+    expect(r?.git).toBeUndefined()
+  })
+})
+
+describe('worktree schemas', () => {
+  it('parses add: name in, path + branch out', () => {
+    const req = safeParseRequest(worktreeAddRequestSchema, {
+      name: 'fix-timeouts',
+    })
+    expect(req?.name).toBe('fix-timeouts')
+    const r = safeParseResponse(
+      worktreeAddResponseSchema,
+      wrap({
+        path: '/work/.worktrees/fix-timeouts',
+        branch: 'worktree-fix-timeouts',
+      }),
+    )
+    expect(r?.path).toBe('/work/.worktrees/fix-timeouts')
+    expect(r?.branch).toBe('worktree-fix-timeouts')
+  })
+
+  it('rejects an add request without a name', () => {
+    expect(safeParseRequest(worktreeAddRequestSchema, {})).toBeNull()
+  })
+
+  it('parses remove: kept-dirty refusal with the branch intact', () => {
+    const req = safeParseRequest(worktreeRemoveRequestSchema, {
+      name: 'fix-timeouts',
+    })
+    expect(req?.name).toBe('fix-timeouts')
+    const r = safeParseResponse(worktreeRemoveResponseSchema, {
+      removed: false,
+      dirty: true,
+      path: '/work/.worktrees/fix-timeouts',
+      branch: 'worktree-fix-timeouts',
+      branch_deleted: false,
+    })
+    expect(r?.removed).toBe(false)
+    expect(r?.dirty).toBe(true)
+    expect(r?.branch_deleted).toBe(false)
   })
 })
 
