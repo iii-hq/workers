@@ -30,6 +30,22 @@ type LoadState =
 
 const basename = (p: string): string => p.split('/').pop() || p
 
+/** Time for today's records; date + time once a record is from another day. */
+export function formatRecordTime(ts: number, now = new Date()): string {
+  const d = new Date(ts)
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  const time = d.toLocaleTimeString()
+  if (sameDay) return time
+  const date = d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
+  return `${date} ${time}`
+}
+
 function formatUndoSummary(undone: UndoRecord[], wasRevert: boolean): string {
   if (undone.length === 0) return 'nothing to undo.'
   const restored = undone.reduce((n, u) => n + u.restored.length, 0)
@@ -210,7 +226,7 @@ export function GroupRow({
               className="font-mono text-[11px] text-ink"
               title={new Date(group.ts).toLocaleString()}
             >
-              {new Date(group.ts).toLocaleTimeString()}
+              {formatRecordTime(group.ts)}
             </span>
             {group.isRevert ? (
               <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-accent">

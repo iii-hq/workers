@@ -49,9 +49,20 @@ function defaultTrigger(): TriggerFn {
 }
 
 /** The coder undo/checkpoint functions take the full fs_scope shape. */
-function fsScope(root: string): { root: string; grants: string[] } {
-  return { root, grants: [] }
+function fsScope(
+  root: string,
+  turnId?: string,
+): { root: string; grants: string[]; turn_id?: string } {
+  return { root, grants: [], ...(turnId ? { turn_id: turnId } : {}) }
 }
+
+/**
+ * Attribution stamp for dialog-initiated undos: the shell journals the undo
+ * under this id, so the resulting revert record can itself be targeted by
+ * turn (= redo works on every revert row, not just the newest).
+ */
+const consoleUndoTurnId = (): string =>
+  `console-undo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 const strArray = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
@@ -109,13 +120,19 @@ export async function listCheckpoints(
  */
 export async function undoCheckpoint(
   root: string,
-  opts: { turnId?: string; steps?: number; trigger?: TriggerFn },
+  opts: {
+    turnId?: string
+    steps?: number
+    /** Test override for the journal attribution stamp. */
+    stampTurnId?: string
+    trigger?: TriggerFn
+  },
 ): Promise<UndoRecord[]> {
   const call = opts.trigger ?? defaultTrigger()
   const raw = (await call(UNDO_FUNCTION_ID, {
     ...(opts.turnId ? { turn_id: opts.turnId } : {}),
     ...(opts.steps ? { steps: opts.steps } : {}),
-    fs_scope: fsScope(root),
+    fs_scope: fsScope(root, opts.stampTurnId ?? consoleUndoTurnId()),
   })) as { undone?: unknown[] } | null
   return Array.isArray(raw?.undone)
     ? raw.undone.map(coerceUndo).filter((r): r is UndoRecord => r !== null)

@@ -70,10 +70,14 @@ describe('undoCheckpoint', () => {
         },
       ],
     })
-    const out = await undoCheckpoint('/w', { turnId: 't1', trigger })
+    const out = await undoCheckpoint('/w', {
+      turnId: 't1',
+      stampTurnId: 'console-undo-test',
+      trigger,
+    })
     expect(trigger).toHaveBeenCalledWith(UNDO_FUNCTION_ID, {
       turn_id: 't1',
-      fs_scope: { root: '/w', grants: [] },
+      fs_scope: { root: '/w', grants: [], turn_id: 'console-undo-test' },
     })
     expect(out).toHaveLength(1)
     expect(out[0].restored).toEqual(['/w/a.rs'])
@@ -81,10 +85,14 @@ describe('undoCheckpoint', () => {
 
   it('reverses by step count when no turn_id (no turn_id key sent)', async () => {
     const trigger = vi.fn().mockResolvedValue({ undone: [] })
-    await undoCheckpoint('/w', { steps: 1, trigger })
+    await undoCheckpoint('/w', {
+      steps: 1,
+      stampTurnId: 'console-undo-test',
+      trigger,
+    })
     expect(trigger).toHaveBeenCalledWith(UNDO_FUNCTION_ID, {
       steps: 1,
-      fs_scope: { root: '/w', grants: [] },
+      fs_scope: { root: '/w', grants: [], turn_id: 'console-undo-test' },
     })
   })
 })
