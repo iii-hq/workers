@@ -35,6 +35,7 @@ on:
       - 'storage/v*'
       - 'scrapling/v*'
       - 'web/v*'
+      - 'worktree/v*'
   workflow_dispatch:
     inputs:
       tag:

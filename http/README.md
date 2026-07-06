@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        trigger_type: "http".to_string(),
         function_id: "orders::get".into(),
         config: json!({ "api_path": "/orders/:id", "http_method": "GET" }),
         metadata: None,

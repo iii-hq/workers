@@ -29,7 +29,9 @@ interface UseFilesystemGrantsResult {
  * auto-fetching on every session change, since the grants group is normally
  * hidden until the user opens the management dialog.
  */
-export function useFilesystemGrants(sessionId: string): UseFilesystemGrantsResult {
+export function useFilesystemGrants(
+  sessionId: string,
+): UseFilesystemGrantsResult {
   const [grants, setGrants] = useState<string[]>([])
   const [supported, setSupported] = useState(true)
   const [loaded, setLoaded] = useState(false)

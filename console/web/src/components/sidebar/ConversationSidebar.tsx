@@ -1,12 +1,14 @@
 import { PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import {
   clampSidebarWidth,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from '@/hooks/use-sidebar-width'
+import { filterConversations } from '@/lib/conversation-filter'
 import {
   buildConversationTree,
   flattenConversationTree,
@@ -84,14 +86,24 @@ export function ConversationSidebar({
     })
   }, [])
 
-  const rows = useMemo(
-    () =>
-      flattenConversationTree(
-        buildConversationTree(conversations),
-        collapsedNodes,
-      ),
-    [conversations, collapsedNodes],
-  )
+  const [query, setQuery] = useState('')
+
+  const rows = useMemo(() => {
+    const q = query.trim()
+    if (q) {
+      /* Flat matches while searching: a matched child under an unmatched
+         parent has no tree context to render, so no indent/caret. */
+      return filterConversations(conversations, q).map((conversation) => ({
+        conversation,
+        depth: 0,
+        hasChildren: false,
+      }))
+    }
+    return flattenConversationTree(
+      buildConversationTree(conversations),
+      collapsedNodes,
+    )
+  }, [conversations, collapsedNodes, query])
 
   /* Drag-resize, lifted from ChatDock: anchored left, drag right = wider.
      Only active when a width setter is wired. */
@@ -192,16 +204,29 @@ export function ConversationSidebar({
           ) : null}
         </div>
 
-        <div className="px-3 py-2">
+        <div className="px-3 py-2 space-y-2">
           <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
             conversations
           </div>
+          <Input
+            type="search"
+            value={query}
+            onChange={setQuery}
+            placeholder="search"
+            aria-label="search conversations"
+            className="h-7 text-[12px]"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQuery('')
+            }}
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto divide-y divide-rule-2">
           {rows.length === 0 ? (
             <div className="px-3 py-6 font-mono text-[12px] text-ink-ghost lowercase">
-              no conversations yet. start one above.
+              {query.trim()
+                ? 'no matches.'
+                : 'no conversations yet. start one above.'}
             </div>
           ) : (
             rows.map(({ conversation: c, depth, hasChildren }) => (

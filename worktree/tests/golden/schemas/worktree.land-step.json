@@ -1,0 +1,46 @@
+{
+  "function_id": "worktree::land-step",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "job_id": {
+        "description": "The job to advance.",
+        "type": "string"
+      },
+      "repo_key": {
+        "default": "",
+        "description": "FIFO group key; consumed by the engine's queue config, echoed here.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "done": {
+        "description": "True when the job reached a terminal state (landed or blocked).",
+        "type": "boolean"
+      },
+      "job_id": {
+        "description": "The advanced job.",
+        "type": "string"
+      },
+      "phase_completed": {
+        "description": "The last phase this invocation completed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "done",
+      "job_id",
+      "phase_completed"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

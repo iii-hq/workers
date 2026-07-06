@@ -1,4 +1,3 @@
-import { getIiiClient } from '@/lib/iii-client'
 import {
   type WorkerInfoResponse,
   type WorkersListResponse,
@@ -10,6 +9,7 @@ import {
   type WorkerListResponse,
   workerListResponseSchema,
 } from '@/components/chat/worker/parsers'
+import { getIiiClient } from '@/lib/iii-client'
 import type { ConfigurationSchemaView } from '@/pages/Configuration/tabs/WorkersTab/api'
 import { listConfigurations } from '@/pages/Configuration/tabs/WorkersTab/api'
 
@@ -44,7 +44,9 @@ export async function fetchSupervisorWorkersList(): Promise<WorkerListResponse> 
   return parsed.success ? parsed.data : { workers: [] }
 }
 
-export async function fetchConfigurationIds(): Promise<ConfigurationSchemaView[]> {
+export async function fetchConfigurationIds(): Promise<
+  ConfigurationSchemaView[]
+> {
   return listConfigurations()
 }
 
@@ -76,9 +78,8 @@ export async function mapWithConcurrency<T, R>(
     }
   }
 
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    () => worker(),
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () =>
+    worker(),
   )
   await Promise.all(workers)
   return results

@@ -52,6 +52,50 @@ pub const REACT_DESC: &str =
      events and callbacks: bind it via engine::register_trigger with the sub-agent spec in \
      `metadata`.";
 
+/// Fired-event payload of a reactive subscription: arbitrary JSON produced by
+/// the originating trigger, then appended to the spawned sub-agent task.
+///
+/// The handler keeps a lossless `serde_json::Value` payload internally because
+/// trigger events are not always objects. This wrapper exists so registration
+/// publishes a real schema instead of `AnyValue`, which the registry publish
+/// gate rejects.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct ReactEvent(pub Value);
+
+impl JsonSchema for ReactEvent {
+    fn schema_name() -> String {
+        "ReactEvent".to_string()
+    }
+
+    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(
+                vec![
+                    InstanceType::Null,
+                    InstanceType::Boolean,
+                    InstanceType::Number,
+                    InstanceType::String,
+                    InstanceType::Array,
+                    InstanceType::Object,
+                ]
+                .into(),
+            ),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Arbitrary fired-event payload from the subscribed trigger; appended to the \
+                     spawned sub-agent task."
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 /// iii-state scope holding join accumulator records (one key per `join.id`).
 const JOIN_SCOPE: &str = "harness::react_join";
 

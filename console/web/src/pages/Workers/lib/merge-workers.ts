@@ -25,9 +25,7 @@ function configIdSet(configurations: ConfigurationSchemaView[]): Set<string> {
   return ids
 }
 
-function supervisorMap(
-  entries: WorkerEntry[],
-): Map<string, WorkerEntry> {
+function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
   const map = new Map<string, WorkerEntry>()
   for (const entry of entries) {
     map.set(entry.name, entry)
@@ -81,7 +79,10 @@ function engineRowToWorkerRow(
   summary: WorkerSummary,
   configIds: Set<string>,
   supervisors: Map<string, WorkerEntry>,
-  infoByName: Map<string, { pid?: number; internal: boolean; tag?: string | null }>,
+  infoByName: Map<
+    string,
+    { pid?: number; internal: boolean; tag?: string | null }
+  >,
 ): WorkerRow {
   const name = summary.name ?? summary.id
   const info = infoByName.get(name)

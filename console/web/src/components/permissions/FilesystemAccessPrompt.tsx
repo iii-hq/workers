@@ -36,7 +36,9 @@ export function FilesystemAccessPrompt({
   onManage,
   disabled,
 }: FilesystemAccessPromptProps) {
-  const [submitting, setSubmitting] = useState<FilesystemAccessAction | null>(null)
+  const [submitting, setSubmitting] = useState<FilesystemAccessAction | null>(
+    null,
+  )
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -138,9 +140,7 @@ export function FilesystemAccessPrompt({
           </DialogTitle>
           <DialogDescription className="mt-3 text-ink">
             this adds{' '}
-            <code className="px-1 bg-paper-2 text-accent">
-              {requestedRoot}
-            </code>{' '}
+            <code className="px-1 bg-paper-2 text-accent">{requestedRoot}</code>{' '}
             to the permanent allowed folders (shell fs.host_roots) for every
             conversation.
           </DialogDescription>

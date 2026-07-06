@@ -1,9 +1,8 @@
 import { Search, X } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
 import { cn } from '@/lib/utils'
-import type { WorkersFilterState } from '../types'
+import type { WorkerRow, WorkersFilterState } from '../types'
 import { distinctRuntimes, distinctTags } from '../types'
-import type { WorkerRow } from '../types'
 
 interface WorkersFiltersProps {
   rows: WorkerRow[]

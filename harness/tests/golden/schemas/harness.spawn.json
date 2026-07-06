@@ -429,6 +429,13 @@
       },
       "SpawnOptions": {
         "properties": {
+          "filesystem_root": {
+            "description": "Absolute filesystem root for the child turn (e.g. an isolated `worktree::create` checkout), written to the child's `metadata.fs_scope.root`. When set it overrides the inherited scope for this child; when absent the child inherits its direct parent's root unchanged.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "functions": {
             "anyOf": [
               {
