@@ -52,6 +52,15 @@ BINARY_NAME_EXCEPTIONS = frozenset({
     "acp",  # editors launch the `iii-acp` binary by name (ACP subprocess)
 })
 
+# The engine's bundle validator (iii-worker/src/cli/bundle_download.rs) only
+# accepts runtime.base_image values that name a sandbox-catalog preset ref
+# verbatim (sandbox_daemon/catalog.rs PRESETS); that's how a non-node bundle
+# picks its rootfs now that runtime.kind is deprecated.
+BUNDLE_PRESET_IMAGES = frozenset({
+    "docker.io/iiidev/python:latest",
+    "docker.io/iiidev/node:latest",
+})
+
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
@@ -120,6 +129,24 @@ def main(argv: list[str] | None = None) -> int:
                     f"worker name {worker!r} for binary deploys: `iii worker add` "
                     f"extracts the release archive by worker name and would fail "
                     f"with \"Binary '{worker}' not found in archive\""
+                )
+        # Mirror the engine's bundle-manifest validator
+        # (iii-worker/src/cli/bundle_download.rs): it executes only
+        # scripts.start and rejects install/setup/base_image at install
+        # time. Catch that at PR time instead of at the user's install.
+        if m.deploy == "bundle":
+            scripts = m.raw.get("scripts") or {}
+            if str(scripts.get("setup") or "").strip():
+                hard(f"{worker}/iii.worker.yaml: bundle workers must not declare scripts.setup (engine rejects it)")
+            if str(scripts.get("install") or "").strip():
+                hard(f"{worker}/iii.worker.yaml: bundle workers must not declare scripts.install (engine rejects it)")
+            if not str(scripts.get("start") or "").strip():
+                hard(f"{worker}/iii.worker.yaml: bundle workers must declare a non-empty scripts.start")
+            base_image = (m.raw.get("runtime") or {}).get("base_image")
+            if base_image is not None and base_image not in BUNDLE_PRESET_IMAGES:
+                hard(
+                    f"{worker}/iii.worker.yaml: bundle runtime.base_image must be one of "
+                    f"{sorted(BUNDLE_PRESET_IMAGES)} (engine rejects anything else)"
                 )
 
     # 3. Manifest version >= base
