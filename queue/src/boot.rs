@@ -67,12 +67,16 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
         );
     }
 
-    let adapter_config = config
+    // An absent `adapter` / `adapter.config` means builtin defaults; Null does
+    // not deserialize into the struct, so only parse an actual object.
+    let builtin = match config
         .adapter
         .as_ref()
         .and_then(|adapter| adapter.config.clone())
-        .unwrap_or(serde_json::Value::Null);
-    let builtin = serde_json::from_value::<BuiltinAdapterConfig>(adapter_config)?;
+    {
+        Some(value) if !value.is_null() => serde_json::from_value::<BuiltinAdapterConfig>(value)?,
+        _ => BuiltinAdapterConfig::default(),
+    };
 
     let store_method = builtin.store_method.as_deref().unwrap_or(adapter_name);
     match store_method {
@@ -180,6 +184,25 @@ mod tests {
     #[test]
     fn no_match_when_workers_missing() {
         assert!(!builtin_iii_queue_active(&json!({})));
+    }
+
+    #[tokio::test]
+    async fn build_store_defaults_to_in_memory_without_adapter() {
+        let config = QueueConfig::default();
+        let store = build_store(&config).await.unwrap();
+        store.enqueue("demo", json!({"ok": true})).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn build_store_accepts_adapter_without_config() {
+        let config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "builtin".to_string(),
+                config: None,
+            }),
+        };
+        let store = build_store(&config).await.unwrap();
+        store.enqueue("demo", json!({"ok": true})).await.unwrap();
     }
 
     #[tokio::test]

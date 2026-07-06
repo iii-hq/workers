@@ -132,13 +132,17 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     let fires = Arc::new(AtomicUsize::new(0));
     let fail = Arc::new(AtomicBool::new(false));
     let function_id = format!("queue.e2e.{}", Uuid::new_v4());
+    // Unique queue name: the engine re-delivers previously registered
+    // durable:subscriber triggers on boot, so a fixed name races against
+    // leftover consumers from earlier local runs.
+    let queue_name = format!("e2e-demo-{}", Uuid::new_v4());
     register_counting_function(&iii, &function_id, fires.clone(), fail.clone());
-    register_subscriber(&iii, &function_id, "demo");
+    register_subscriber(&iii, &function_id, &queue_name);
 
     trigger(
         &iii,
         PUBLISH_FN_ID,
-        json!({"queue": "demo", "data": {"hello": "world"}}),
+        json!({"queue": queue_name, "data": {"hello": "world"}}),
     )
     .await;
     wait_for_fires(&fires, 1).await;
@@ -147,14 +151,14 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     trigger(
         &iii,
         PUBLISH_FN_ID,
-        json!({"queue": "demo", "data": {"should": "dlq"}}),
+        json!({"queue": queue_name, "data": {"should": "dlq"}}),
     )
     .await;
-    let messages = wait_for_dlq(&iii, "demo").await;
+    let messages = wait_for_dlq(&iii, &queue_name).await;
     assert_eq!(messages.len(), 1);
 
     fail.store(false, Ordering::SeqCst);
-    trigger(&iii, REDRIVE_FN_ID, json!({"queue": "demo"})).await;
+    trigger(&iii, REDRIVE_FN_ID, json!({"queue": queue_name})).await;
     wait_for_fires(&fires, 3).await;
 
     boot.shutdown().await;
@@ -174,10 +178,11 @@ async fn file_based_pending_message_survives_worker_restart_connect_or_skip() {
         .await
         .expect("queue worker should boot");
 
+    let queue_name = format!("e2e-restart-{}", Uuid::new_v4());
     trigger(
         &iii,
         PUBLISH_FN_ID,
-        json!({"queue": "restart", "data": {"survives": true}}),
+        json!({"queue": queue_name, "data": {"survives": true}}),
     )
     .await;
     boot.shutdown().await;
@@ -194,7 +199,7 @@ async fn file_based_pending_message_survives_worker_restart_connect_or_skip() {
     let fail = Arc::new(AtomicBool::new(false));
     let function_id = format!("queue.restart.{}", Uuid::new_v4());
     register_counting_function(&iii, &function_id, fires.clone(), fail);
-    register_subscriber(&iii, &function_id, "restart");
+    register_subscriber(&iii, &function_id, &queue_name);
     wait_for_fires(&fires, 1).await;
 
     boot.shutdown().await;

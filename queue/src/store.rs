@@ -415,7 +415,7 @@ async fn redrive_dlq(shared: &SharedStore, topic: &str) -> u64 {
         data.queues
             .entry(topic.to_string())
             .or_default()
-            .extend(jobs.into_iter());
+            .extend(jobs);
         let depth = data.queues.get(topic).map_or(0, |q| q.len() as u64);
         let stats = data.stats.entry(topic.to_string()).or_default();
         stats.depth = depth;
