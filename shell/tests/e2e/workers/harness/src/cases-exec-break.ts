@@ -164,16 +164,16 @@ export const EXEC_BREAK_CASES: TestCase[] = [
     },
   },
   {
-    name: 'exec_unlisted_command_with_extra_fields_still_rejected',
+    name: 'exec_denylisted_command_with_extra_fields_still_rejected',
     async run({ call, expectError }) {
       await expectError(
         () => call('shell::exec', {
-          command: 'nmap',
-          args: ['-v'],
+          command: 'echo',
+          args: ['harness_denylist_marker'],
           unknown_field: 'ignored',
           another_extra: 42,
         }),
-        'allowlist',
+        'denylist',
       );
     },
   },

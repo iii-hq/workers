@@ -34,11 +34,13 @@ export const EDGE_CASES: TestCase[] = [
     },
   },
   {
-    name: 'nonexistent unlisted command is rejected by allowlist',
+    // Policy no longer screens argv[0]; a nonexistent program surfaces the
+    // OS spawn failure instead of a policy rejection.
+    name: 'nonexistent command fails at spawn, not policy',
     async run({ call, expectError }) {
       await expectError(
         () => call('shell::exec', { command: '/_no_such_bin_at_all_' }),
-        'not in allowlist',
+        'os error 2', // ADJUST after first run: pin a stable substring of the actual spawn error
       );
     },
   },

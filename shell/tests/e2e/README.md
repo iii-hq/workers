@@ -2,7 +2,7 @@
 
 Self-asserting smoke harness for the `shell` worker. Validates all 5 iii
 functions (`shell::exec`, `shell::exec_bg`, `shell::kill`, `shell::status`,
-`shell::list`), every safety guardrail (allowlist, denylist, timeout, output
+`shell::list`), every safety guardrail (denylist, timeout, output
 truncation, env scrubbing), and the background-job lifecycle in one command.
 
 Modeled on `database/tests/e2e/`.
