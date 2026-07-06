@@ -798,18 +798,25 @@ export function ChatView({
   const handlePickWorktree = useCallback(
     (wt: WorktreeInfo) => {
       const id = conversation.id
-      void releaseConsoleClaimIfAny(id, { keepPath: wt.path })
-      recordConsoleClaim(id, { worktreeId: wt.worktree_id, path: wt.path })
-      void claimWorktree(wt.worktree_id, id).catch((err) => {
-        onAppendMessage(
-          id,
-          makeSystemNotice(
-            `could not claim worktree ${wt.branch} — ${err instanceof Error ? err.message : String(err)}`,
-            'warn',
-          ),
-        )
-      })
-      setWorktreeRefresh((t) => t + 1)
+      void (async () => {
+        // Strict release -> record -> claim: overwriting the local record
+        // before the release settles would make the release read the NEW
+        // claim (keepPath matches) and leak the previous one server-side.
+        await releaseConsoleClaimIfAny(id, { keepPath: wt.path })
+        recordConsoleClaim(id, { worktreeId: wt.worktree_id, path: wt.path })
+        try {
+          await claimWorktree(wt.worktree_id, id)
+        } catch (err) {
+          onAppendMessage(
+            id,
+            makeSystemNotice(
+              `could not claim worktree ${wt.branch} — ${err instanceof Error ? err.message : String(err)}`,
+              'warn',
+            ),
+          )
+        }
+        setWorktreeRefresh((t) => t + 1)
+      })()
     },
     [conversation.id, onAppendMessage],
   )
