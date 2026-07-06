@@ -55,6 +55,10 @@ iii trigger devin::session::message \
 iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit":10}}'
 ```
 
+A session created through `devin::session::create` is a real Devin cloud session, tagged and running in the Devin app:
+
+![A Devin cloud session opened via devin::session::create, replying in the Devin app](assets/session-reply.png)
+
 Run the local CLI as one turn and stream it onto the bus:
 
 ```bash
@@ -101,6 +105,18 @@ To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: s
 
 `devin::run` / `devin::start` accept either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), the same input contract as the claude-code and grok workers, so the acp worker can drive it with `--brain-fn devin::run`.
 
+Because the CLI agent runs locally with the iii runtime context, a plain question makes Devin discover and operate your engine on its own, no commands spelled out:
+
+```bash
+iii trigger devin::run --json '{"prompt":"What workers are connected to this iii engine and what does each do?","cwd":"/tmp"}' | jq -r '.result'
+```
+
+![Devin answering a plain question by discovering the live iii mesh through the iii CLI](assets/iii-discovery.png)
+
+Or ask it to map the whole engine by capability area, and it groups what it finds itself:
+
+![Devin grouping the engine's backend capabilities by area, discovered live](assets/capabilities.png)
+
 `devin::session::create` accepts `prompt` plus the union of the v1 and v3 create fields (`title`, `tags`, `playbook_id`, `knowledge_ids`, `secret_ids`, `max_acu_limit`; v3 `devin_mode`, `repos`, `attachment_urls`, `resumable`, `bypass_approval`; v1 `snapshot_id`, `unlisted`, `idempotent`); each is omitted from the body when not supplied, so populate the ones your token's API version accepts. `devin::session::*` follow the v1 flat paths by default and switch to v3 org-scoped paths when `org_id` is set.
 
 ### PR review
@@ -111,9 +127,13 @@ To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: s
 
 `devin::api` is the escape hatch for the full v3 surface (roughly 250 endpoints: knowledge, playbooks, secrets, repos, PR review, code scan, org and usage admin). It takes `{ method, path, query?, body? }`, adds the bearer token and organization header, and returns the parsed response. Reach for it whenever a capability is not one of the typed wrappers above; graduate a wrapper only when a call proves common.
 
-### Streams
+### Streams and observability
 
 `devin::run` mirrors every stdout line from the CLI verbatim onto `devin::events` (group_id = session_id) and emits a terminal AgentEvent frame onto `agent::events`, so the iii console renders a Devin CLI turn like any other agent worker. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
+
+Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii trigger` calls a `devin::run` agent makes on its own.
+
+![Every devin::run call traced in the iii console, with input prompt and output result](assets/traces.png)
 
 ## Configuration
 

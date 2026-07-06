@@ -25,8 +25,9 @@ request_timeout_secs: 120
 devin_executable: ""
 
 # Extra arguments inserted before `--print --` on every devin::run invocation.
-# --permission-mode auto auto-approves read-only tools so a headless run does not
-# block; raise to accept-edits, smart, or dangerous for more autonomy.
+# devin CLI modes: auto (read-only), accept-edits (also edits), dangerous (all).
+# Only `dangerous` auto-approves command execution, so an iii-context run needs
+# it to actually run `iii trigger`; auto is the safe default.
 cli_extra_args: ["--permission-mode", "auto"]
 
 # Stream AgentEvent frames here, grouped by session_id. The console and acp

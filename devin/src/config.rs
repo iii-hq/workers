@@ -36,10 +36,11 @@ pub struct Config {
     /// Path to the `devin` CLI binary. Empty = resolve `devin` on PATH.
     pub devin_executable: String,
     /// Extra arguments inserted before `--print --` on every `devin::run`
-    /// invocation. Defaults to `--permission-mode auto` (auto-approves
-    /// read-only tools so a headless run does not block on approvals); raise to
-    /// `accept-edits`, `smart`, or `dangerous` for more autonomy. The prompt is
-    /// always passed after `--`.
+    /// invocation. The devin CLI permission modes are `auto` (read-only tools),
+    /// `accept-edits` (also workspace edits), and `dangerous` (all tools). Only
+    /// `dangerous` auto-approves command execution, so it is the mode a headless
+    /// iii-context run needs to actually run `iii trigger`; `auto` is the safe
+    /// default. The prompt is always passed after `--`.
     pub cli_extra_args: Vec<String>,
     /// Stream that carries the AgentEvent frames the console and acp worker
     /// render. Grouped by session_id.
