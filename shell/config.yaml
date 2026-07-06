@@ -27,18 +27,15 @@ env:
     - LANG
     - LC_ALL
     - TERM
-# PERMISSIVE DEFAULT: an EMPTY allowlist means every command is allowed
-# (cargo, git, bash, make, node, python3, …). This is deliberate — a coding
-# agent needs arbitrary build/test/VCS tooling, and a half-open list is
-# defeated the moment any shell/interpreter is on it. This worker is NOT a
-# sandbox: the security boundary is the fs jail (fs.host_roots) plus the
-# optional sandbox backend, NOT this list. To re-scope exec to deny-by-default,
-# list the permitted argv[0] basenames here (a non-empty list flips the gate).
+# DENY-ONLY POLICY: the shell has no command allowlist — every command runs
+# unless it trips the denylist below. This is deliberate: a coding agent
+# needs arbitrary build/test/VCS tooling, and allow/ask policy (which
+# commands need a human) lives in the approval-gate, not here. This worker
+# is NOT a sandbox: the security boundary is the fs jail (fs.host_roots)
+# plus the optional sandbox backend.
 # Advisory tripwire ONLY (regex over argv.join(" ")), trivially evadable via an
-# interpreter — NOT a security boundary. With an open allowlist the old
-# sub-execution escapes (find -exec, sed -i, node/python -c, npm run, env <cmd>)
-# are pure dev friction with no security value, so they were dropped; only
-# catastrophic, host-wrecking patterns are kept to catch honest mistakes.
+# interpreter — NOT a security boundary. Only catastrophic, host-wrecking
+# patterns are kept to catch honest mistakes.
 #
 # Command-SHAPED patterns (mkfs/dd/shutdown/reboot) are anchored to argv[0],
 # case-insensitive, tolerating an optional sudo/doas/nohup/timeout wrapper (or

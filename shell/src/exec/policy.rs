@@ -2,7 +2,7 @@
 //!
 //! These two optional request fields let an agent scope a single command to a
 //! directory and set specific environment values WITHOUT wrapping everything in
-//! `sh -lc` (which would defeat the argv allowlist). The whole point of this
+//! `sh -lc` (which would blur what the argv actually was). The whole point of this
 //! module is the gating: untrusted LLM input must never escape the fs jail via
 //! `cwd`, nor hijack the child's execution environment via `env`.
 //!
@@ -31,25 +31,25 @@ use crate::target::Target;
 /// Environment keys that an agent may NEVER set per-call, regardless of
 /// `env.allow`. Setting any of these can hijack which binary the child
 /// actually executes or which shared libraries it loads — turning a benign
-/// allowlisted `command` into arbitrary code execution. The denylist is a
+/// `command` into arbitrary code execution. The denylist is a
 /// HARD boundary: it wins over `env.allow` so an operator's typo can't open
 /// a privesc hole.
 ///
-/// - `PATH` / `IFS`: change which binary an allowlisted name resolves to / how
+/// - `PATH` / `IFS`: change which binary a bare name resolves to / how
 ///   the shell re-tokenizes the command line.
 /// - `LD_*` (glibc) and `DYLD_*` (macOS dyld): preload / library-path
 ///   injection — load attacker-controlled code into the child at startup.
 /// - `GCONV_PATH` and other glibc lookup paths: code-load vectors (e.g. the
 ///   `GCONV_PATH` chain in CVE-2021-4034) that point libc at attacker files.
 /// - `HOME`: not a loader vector, but redirecting it lets an agent point a
-///   config-reading allowlisted program (git/ssh/curl/python) at a jail-planted
-///   config; the worker still forwards its own `HOME` when allowlisted, callers
+///   config-reading program (git/ssh/curl/python) at a jail-planted
+///   config; the worker still forwards its own `HOME` when `env.allow` lists it, callers
 ///   just cannot override it per call.
 /// - `BASH_ENV` / `ENV` / `PYTHONSTARTUP` / `PERL5OPT` / `RUBYOPT` /
 ///   `NODE_OPTIONS`: startup-file / option-injection vectors honored by
 ///   sh/bash/python/perl/ruby/node at process start — a non-interactive
 ///   interpreter sources or applies them before running anything, so pointing
-///   them at a jail-planted file/option turns an allowlisted interpreter into
+///   them at a jail-planted file/option turns an interpreter into
 ///   arbitrary code execution (same exec-hijack class as the loader vars).
 pub const DANGEROUS_ENV_KEYS: &[&str] = &[
     "PATH",

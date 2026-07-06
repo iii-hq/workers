@@ -89,7 +89,7 @@ fn deserialize_timeout_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>
 /// from the description.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecRequest {
-    /// Program name (matched against the allowlist by basename or exact path).
+    /// Program name (bare, PATH-resolved) or a path to an executable.
     /// Must be a string — split arguments into `args`, do not pass argv as
     /// an array here.
     #[serde(deserialize_with = "deserialize_command")]

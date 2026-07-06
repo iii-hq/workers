@@ -641,7 +641,7 @@ impl ShellConfig {
     /// top-level/`fs`/`env` walk per funnel. The config itself still
     /// deserializes from the ORIGINAL TEXT, not the bridged Value:
     /// `serde_yaml::from_value` self-tags plain scalars (an unquoted `false`
-    /// in `allowlist` becomes `Bool` and can no longer deserialize into
+    /// in `denylist_patterns` becomes `Bool` and can no longer deserialize into
     /// `String`), while `from_str` drives parsing by the target type.
     /// Double-parsing a config-sized string is free.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
@@ -778,11 +778,11 @@ mod tests {
         for cmd in ["cargo", "git", "bash", "make", "node", "python3"] {
             assert!(
                 c.is_command_allowed(&[cmd.into()]).is_ok(),
-                "open allowlist must permit {cmd}"
+                "no allow policy must block {cmd}"
             );
         }
         // The previously-blocked exec-escape (`env <cmd>`) is now permitted —
-        // the open allowlist is the point of this standard.
+        // there is no allow policy to reject it, only the denylist can.
         assert!(c.is_command_allowed(&["env".into(), "nmap".into()]).is_ok());
         // The catastrophic denylist is still a live tripwire.
         let err = c

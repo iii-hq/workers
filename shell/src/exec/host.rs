@@ -28,7 +28,7 @@ pub fn parse_argv(command: &str, args: Option<&Vec<String>>) -> Result<Vec<Strin
 /// `cwd`/`env` (see `crate::exec::policy`): when both are `None` (the common
 /// case) this is byte-for-byte the prior behaviour. Per-call values are applied
 /// AFTER the config-derived defaults so an override wins for that one key /
-/// directory; the argv itself is unchanged (the allowlist/denylist already ran
+/// directory; the argv itself is unchanged (the denylist already ran
 /// in the handler).
 pub fn build_command(
     argv: &[String],

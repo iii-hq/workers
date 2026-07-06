@@ -177,7 +177,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Shell",
-        "description": "Command allowlist/denylist, timeout & output caps, and the fs jail.",
+        "description": "Command denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
     });
     let candidate: Option<ShellConfig> = match seed {
@@ -424,7 +424,7 @@ where
 async fn on_config_change(state: &AppState) -> Result<(), String> {
     // SECURITY: do not trust the event payload. `shell::on-config-change` is a
     // registered (callable) function, so a direct caller could forge `new_value`
-    // to hot-swap the security policy (allowlist, fs jail, sandbox toggle),
+    // to hot-swap the security policy (denylist, fs jail, sandbox toggle),
     // bypassing configuration::set authorization. Always re-read the authoritative
     // value from the configuration worker and apply that — a spurious direct call
     // can at most trigger a reload of the already-stored config.
