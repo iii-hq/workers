@@ -41,13 +41,10 @@ pub struct SpawnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
     /// Absolute filesystem root for the child turn (e.g. an isolated
-    /// `worktree::create` checkout). Written to the child record's
-    /// `metadata.fs_scope.root`, so the harness stamps the child's scoped
-    /// shell/coder calls exactly as it does for the parent. Override wins:
-    /// when set it replaces the inherited parent scope for this child; when
-    /// absent the child inherits its direct parent's root unchanged.
-    /// Grandchildren never inherit this value transitively — each spawn
-    /// states its own root or inherits from its own direct parent.
+    /// `worktree::create` checkout), written to the child's
+    /// `metadata.fs_scope.root`. When set it overrides the inherited scope
+    /// for this child; when absent the child inherits its direct parent's
+    /// root unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem_root: Option<String>,
 }

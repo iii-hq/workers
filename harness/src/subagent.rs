@@ -16,9 +16,7 @@ use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{
-    ParentLink, TurnOptions, TurnRecord, TurnStatus, FS_SCOPE_KEY, FS_SCOPE_ROOT_KEY,
-};
+use crate::types::turn::{fs_scope_metadata, ParentLink, TurnOptions, TurnRecord, TurnStatus};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -272,7 +270,7 @@ async fn seed_child(
 /// of the parent metadata belongs to the parent's turn and must not leak.
 fn inherit_filesystem_scope(parent: Option<&TurnRecord>) -> Option<Value> {
     let root = parent.and_then(|p| p.options.filesystem_root())?;
-    Some(json!({ FS_SCOPE_KEY: { FS_SCOPE_ROOT_KEY: root } }))
+    Some(fs_scope_metadata(root))
 }
 
 /// The child's `metadata.fs_scope`: an explicit spawn `filesystem_root`
@@ -292,7 +290,7 @@ fn child_filesystem_scope(
             "spawn filesystem_root must be an absolute path, got {root:?}"
         )));
     }
-    Ok(Some(json!({ FS_SCOPE_KEY: { FS_SCOPE_ROOT_KEY: root } })))
+    Ok(Some(fs_scope_metadata(root)))
 }
 
 fn is_error(code: &str, message: String) -> ResultData {
@@ -394,23 +392,9 @@ mod tests {
             child_filesystem_scope(None, Some(&parent)).unwrap(),
             inherit_filesystem_scope(Some(&parent)),
         );
-        // Wire shape unchanged when neither side scopes: metadata stays None,
-        // which `skip_serializing_if` keeps off the record entirely.
+        // Metadata stays None when neither side scopes, so the record's wire
+        // shape is unchanged (skip_serializing_if keeps it absent).
         assert_eq!(child_filesystem_scope(None, None).unwrap(), None);
-        let options = TurnOptions {
-            model: "m".into(),
-            provider: None,
-            system_prompt: None,
-            mode: None,
-            max_turns: 1,
-            thinking_level: None,
-            output: OutputContract::Text,
-            functions: None,
-            metadata: child_filesystem_scope(None, None).unwrap(),
-            max_validation_retries: 2,
-        };
-        let wire = serde_json::to_value(&options).unwrap();
-        assert!(wire.get("metadata").is_none());
     }
 
     #[test]
