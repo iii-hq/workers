@@ -1,6 +1,6 @@
 # shell
 
-Run allowlisted Unix commands, background jobs, and structured filesystem operations from the iii engine, on the host or forwarded into a sandbox microVM.
+Run Unix commands, background jobs, and structured filesystem operations from the iii engine, on the host or forwarded into a sandbox microVM.
 
 ## Install
 
@@ -72,15 +72,13 @@ env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
   allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; gates per-call `env` (dangerous keys never settable)
 
-# exec gate. argv[0] is matched by basename or exact path; an empty
-# allowlist means OPEN — the shipped default, so any command runs.
+# Command policy is deny-only: allow/ask policy lives in the approval-gate.
 # denylist_patterns are advisory regex over argv.join(" "), a tripwire for
 # catastrophic mistakes only, NOT a security boundary. Command-shaped
 # patterns are anchored to argv[0] (tolerating a sudo/doas/nohup/env/timeout
 # wrapper) so `grep -rn shutdown src/` is not rejected but `sudo shutdown -h
 # now` still is; argument-shaped ones (rm -rf /) stay unanchored. See the
 # shipped config.yaml for the full patterns.
-allowlist: []
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
   - "^(\\S*/)?mkfs"
@@ -105,11 +103,11 @@ sandbox:
 
 With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): jailed to `/tmp`, env forwarded, open exec with a catastrophic-only denylist (kept in sync by a unit test). If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed.
 
-Host `shell::exec` is not a security boundary: any allowlisted interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The allowlist and denylist still apply on top of either backend.
+Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The denylist still applies on top of either backend.
 
 ### Per-call `cwd`, `env`, and `stdin` (host target)
 
-`shell::exec` and `shell::exec_bg` each accept optional fields so an agent can scope a single command to a directory, set specific env values, and feed it standard input without wrapping everything in `sh -lc` (which would defeat the argv allowlist):
+`shell::exec` and `shell::exec_bg` each accept optional fields so an agent can scope a single command to a directory, set specific env values, and feed it standard input without wrapping everything in `sh -lc` (which would blur what the argv actually was):
 
 - **`cwd`** (string): the working directory for this one call. It is confined to the fs jail **exactly** like `shell::fs::*` paths — jail-relative when `fs.host_roots` is set (else absolute), canonicalized, and required to resolve inside a jail root and miss `denylist_paths`. A `cwd` that escapes the jail returns `S215`; one that doesn't exist or isn't a directory returns `S211`/`S210`. Omit it to use the configured `working_dir` (unchanged default).
 - **`env`** (object of string→string): per-call environment values. A key may be set **only** if the operator already listed it in `env.allow`, and **never** for an exec-hijacking key — `PATH`, `IFS`, `HOME`, every `LD_*`/`DYLD_*` variant, and other loader/lookup-path and interpreter startup-file keys (`GCONV_PATH`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `NODE_OPTIONS`, …) are on a hardcoded denylist that **wins over** `env.allow`. Note that `HOME` ships in the default `env.allow` for the worker's own forwarded env but is **not** settable per-call. Supplying a key that is not in `env.allow`, or any dangerous key, rejects the **whole call** with `S210` (the offending key is named and the permitted keys are listed); the env is never silently dropped. A permitted per-call value overrides the value that would otherwise be forwarded for that key. So an agent can do `NODE_ENV=test` only if the operator put `NODE_ENV` in `env.allow`, and can never inject `PATH`, `HOME`, or `LD_PRELOAD`.
@@ -138,8 +136,8 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 
 | Function | Purpose |
 |---|---|
-| `shell::exec` | Run an allowlisted command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (jail-confined), `env` (gated by `env.allow` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
-| `shell::exec_bg` | Spawn an allowlisted command as a background job; returns `{ job_id, argv }` immediately. Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
+| `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (jail-confined), `env` (gated by `env.allow` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
+| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
 | `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
 | `shell::kill` | Terminate a running background job by `job_id`. Sandbox jobs cannot be hard-killed: the record flips to `killed` but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`). |
@@ -190,7 +188,7 @@ When the `configuration` worker pushes an updated config, the shell worker swaps
 
 ## Errors
 
-Returned error bodies carry a stable `code` field. Allowlist and denylist rejections come back as a plain message (`command '<x>' not in allowlist`, `command matches denylist: <pattern>`) rather than an S-code.
+Returned error bodies carry a stable `code` field. Denylist rejections come back as a plain message (`command matches denylist: <pattern>`) rather than an S-code.
 
 | Code | Meaning |
 |---|---|
@@ -300,7 +298,6 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
 ## Troubleshooting
 
 - **`fs.host_roots is empty ... refusing to start unjailed`**: set `fs.host_roots` to at least one directory, or set `fs.allow_unjailed: true`.
-- **`command '<x>' not in allowlist`**: the basename of `argv[0]` is not in a non-empty `allowlist`. Add it, or empty the list to allow anything.
 - **`S215 path escapes the fs jail roots` on a path inside the jail**: a symlink in the path resolves outside the jail. Resolve it yourself, or move the target inside a jail root.
 - **`S300` on a sandbox target**: the host cannot boot microVMs. Sandbox execution requires Apple Silicon or `/dev/kvm`.
 - **Worker never connects**: the engine is not running or not bound on the configured `--url`. Start the engine first; the default WebSocket port is 49134.

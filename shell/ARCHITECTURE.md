@@ -62,7 +62,6 @@ deliberately more permissive for dev use: `env.inherit true`, jailed to `/tmp`,
 | `working_dir` | `null` | pins cwd for spawned commands when set |
 | `env.inherit` | `false` | forward the worker's FULL env to children; when `false`, only `env.allow` keys are forwarded |
 | `env.allow` | `[PATH, HOME, LANG, LC_ALL, TERM]` | dual role: forwarding allowlist when `env.inherit` is false, AND the per-call `env` settable gate (minus the hardcoded dangerous keys, which are never settable) |
-| `allowlist` | `[]` (open) | command basename allowlist; empty = open |
 | `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |
 | `job_retention_secs` | `3600` | finished jobs evicted by a background reaper (interval `min(30s, retention/2)`) — the primary prune path; prune-on-`shell::list` remains as a harmless secondary trigger |
@@ -78,7 +77,9 @@ deliberately more permissive for dev use: `env.inherit true`, jailed to `/tmp`,
 
 The host backend's path-validation gate is check-then-use: there is a TOCTOU window between validation and the `std::fs::*` call. Validation walks to the longest existing ancestor, canonicalizes that (resolving symlinks in the existing portion), and lexically collapses the non-existent tail before the jail-root containment check — so a symlink whose target escapes the jail cannot slip through the lexical fallback. The worker is intended for trusted caller pipelines; for untrusted input, use the sandbox backend.
 
-Host-targeted calls run with the shell worker's OS permissions. The denylist is regex over `argv.join(" ")` and only catches honest typos — a caller invoking an allowlisted shell or interpreter (`sh`, `node`, `python`, …) can bypass it by construction. The actual security boundary is `target: { kind: "sandbox", sandbox_id }`.
+Host-targeted calls run with the shell worker's OS permissions. The denylist is regex over `argv.join(" ")` and only catches honest typos — a caller invoking a shell or interpreter (`sh`, `node`, `python`, …) can bypass it by construction. The actual security boundary is `target: { kind: "sandbox", sandbox_id }`.
+
+Command policy is deny-only: the shell never decides which commands are *allowed* — that (ask/allow) layer is the approval-gate's; the shell only refuses catastrophic patterns.
 
 ## Streaming wire shapes
 
@@ -147,7 +148,6 @@ let bytes = reader.read_all().await?;
 | Symptom | Cause | Fix |
 |---|---|---|
 | `fs.host_roots is empty and fs.allow_unjailed is false — refusing to start unjailed` | Default config no longer permits running unjailed. | Set `fs.host_roots` to at least one directory, OR set `fs.allow_unjailed: true`. |
-| `command 'xyz' not in allowlist` | `allowlist` is non-empty and doesn't include the binary's basename. | Add it to `allowlist`, or empty the list to allow anything. |
 | Worker never connects to engine | Engine isn't running or isn't bound on the URL the worker is configured for. | Start the engine first; check `--url` matches. The default WS port is 49134. |
 | Engine started but doesn't see the worker | Binary isn't symlinked at `~/.iii/workers/shell`. | `ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell` |
 | `S215 path escapes the fs jail roots` on a path inside the jail | A symlink in the path resolves outside the jail. | Resolve the symlink yourself, or move the target inside a jail root. |
@@ -161,7 +161,7 @@ let bytes = reader.read_all().await?;
 ## What this is NOT
 
 - **Not a PTY.** Interactive shells, TUIs, password prompts all break.
-- **Not an isolation boundary itself.** Host-targeted calls run with the shell worker's OS permissions. For process isolation, set `target: { kind: "sandbox", sandbox_id }` — that path forwards through `iii-sandbox`'s microVM. The allowlist + denylist still apply on top of either backend.
+- **Not an isolation boundary itself.** Host-targeted calls run with the shell worker's OS permissions. For process isolation, set `target: { kind: "sandbox", sandbox_id }` — that path forwards through `iii-sandbox`'s microVM. The denylist still applies on top of either backend.
 - **Not a streaming surface for `exec`.** Foreground `shell::exec` returns once the process exits and stdout/stderr are captured whole. Live streaming is `shell::exec_stream` (deferred).
 - **Not per-caller-isolated.** The JOBS registry is a process-wide singleton. `shell::list` redacts argv/stdout/stderr to limit blast radius; full records are cap-gated by `job_id`.
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0
+
+Deny-only command policy: the shell no longer carries a command allowlist.
+Allow/ask policy (which commands need a human) lives in the approval-gate;
+the shell's only command policy is the catastrophic-pattern denylist, and
+the fs jail + sandbox backend remain the security boundary.
+
+### Breaking
+- **`allowlist` is removed.** Any config still carrying the key — including
+  the inert `allowlist: []` written by older seeds — is rejected at parse
+  with a migration hint. Rewrite the stored value via `configuration::set`
+  (id: `shell`) without the key. There is no replacement: to gate commands,
+  add approval-gate rules.
+- **The planted-binary guard is removed with it.** Command paths (including
+  files inside the writable fs jail, e.g. your own build output) now
+  execute. The guard existed solely to prevent allowlist bypass; with no
+  allowlist, running a planted file grants nothing `sh -c` doesn't already
+  grant.
+
 ## 0.7.0
 
 Environment-variable DX overhaul: one consolidated `env` config block, a
