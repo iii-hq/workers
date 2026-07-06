@@ -286,6 +286,29 @@ impl RouterClient {
         serde_json::from_value::<Model>(model).ok()
     }
 
+    /// The provider owning `id`, scanned from the router's full catalog —
+    /// `router::models::get` needs a provider hint, so a provider-less
+    /// lookup goes through `router::models::list`. `None` when the router
+    /// is absent or no catalog entry matches.
+    pub async fn models_find_provider(&self, id: &str) -> Option<String> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::models::list".into(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
+        resp.get("models")?
+            .as_array()?
+            .iter()
+            .find(|m| m.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|m| m.get("provider").and_then(Value::as_str))
+            .map(str::to_string)
+    }
+
     /// Whether `model` supports a capability (false when the router is absent
     /// or the model is unknown — the caller falls back).
     pub async fn models_supports(&self, provider: &str, id: &str, capability: &str) -> bool {

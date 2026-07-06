@@ -246,12 +246,7 @@ pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, Har
 /// router is unreachable or the model is unknown (the prompt family then
 /// falls back to the seeded default, mirroring the un-routed mesh prompt).
 pub(crate) async fn resolve_provider(deps: &Deps, model: &str) -> Option<String> {
-    let provider = deps
-        .router()
-        .await
-        .models_get(None, model)
-        .await
-        .map(|m| m.provider);
+    let provider = deps.router().await.models_find_provider(model).await;
     if provider.is_none() {
         tracing::warn!(
             model,
