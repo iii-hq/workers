@@ -10,7 +10,9 @@ This worker is deliberately thin. It does not re-implement scheduling, sub-agent
 iii worker add devin
 ```
 
-For the API surface (`devin::session::*`, `devin::api`), set `DEVIN_API_KEY` in the worker environment. Get a key from the [Devin settings page](https://app.devin.ai/settings/api-keys). For the CLI surface (`devin::run`), install the [`devin` CLI](https://docs.devin.ai/cli) on the host and authenticate it with `devin auth`.
+For the API surface (`devin::session::*`, `devin::api`), set `DEVIN_API_KEY` in the worker environment. Get a key from the [Devin settings page](https://app.devin.ai/settings/api-keys).
+
+For the CLI surface (`devin::run` / `devin::start`), install the local [Devin CLI](https://cli.devin.ai/docs) (`brew install --cask devin-cli`, or `curl -fsSL https://cli.devin.ai/install.sh | bash`) and run `devin auth login`. This is the local coding agent (SWE-1.6), distinct from the Devin cloud the API targets: the worker drives it in non-interactive `--print` mode, so the agent runs on the host, works with the local files under `cwd`, and returns its reply in `result`. Because it runs locally, an `iii_context` turn can reach the engine at `localhost` with no exposure.
 
 ## Skills
 

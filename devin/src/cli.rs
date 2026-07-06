@@ -80,10 +80,13 @@ pub async fn stop(session_id: &str) -> bool {
     }
 }
 
-/// Build the CLI argv: configured extra args, then `--`, then the prompt. The
-/// `devin -- "<prompt>"` form is the documented prompt-automation invocation.
+/// Build the CLI argv for a headless run: configured extra args, then
+/// `--print` (the CLI's non-interactive "print response and exit" mode), then
+/// `--`, then the prompt. The bare `-- <prompt>` form starts an interactive
+/// session and needs a TTY; `--print` is the scriptable mode a worker uses.
 fn build_args(prompt: &str, cfg: &Config) -> Vec<String> {
     let mut a: Vec<String> = cfg.cli_extra_args.clone();
+    a.push("--print".into());
     a.push("--".into());
     a.push(prompt.to_string());
     a
@@ -397,10 +400,20 @@ mod tests {
     }
 
     #[test]
-    fn cli_argv_uses_documented_double_dash_form() {
+    fn cli_argv_uses_print_mode() {
         let cfg = Config::default();
         let argv = build_args("build a thing", &cfg);
-        assert_eq!(argv, vec!["--".to_string(), "build a thing".to_string()]);
+        // default permission mode, then --print (non-interactive), then -- prompt
+        assert_eq!(
+            argv,
+            vec![
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+                "--print".to_string(),
+                "--".to_string(),
+                "build a thing".to_string(),
+            ]
+        );
     }
 
     #[test]

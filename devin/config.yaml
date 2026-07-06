@@ -24,9 +24,10 @@ request_timeout_secs: 120
 # Path to the devin CLI binary. Empty = the `devin` binary on PATH.
 devin_executable: ""
 
-# Extra arguments inserted before the `-- <prompt>` separator on every
-# devin::run invocation (e.g. a headless or workspace flag your CLI needs).
-cli_extra_args: []
+# Extra arguments inserted before `--print --` on every devin::run invocation.
+# --permission-mode auto auto-approves read-only tools so a headless run does not
+# block; raise to accept-edits, smart, or dangerous for more autonomy.
+cli_extra_args: ["--permission-mode", "auto"]
 
 # Stream AgentEvent frames here, grouped by session_id. The console and acp
 # worker both read this stream.

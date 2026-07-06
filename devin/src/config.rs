@@ -36,9 +36,11 @@ pub struct Config {
     pub request_timeout_secs: u64,
     /// Path to the `devin` CLI binary. Empty = resolve `devin` on PATH.
     pub devin_executable: String,
-    /// Extra arguments inserted before the `-- <prompt>` separator on every
-    /// `devin::run` invocation (e.g. a workspace flag). The prompt is always
-    /// passed after `--`.
+    /// Extra arguments inserted before `--print --` on every `devin::run`
+    /// invocation. Defaults to `--permission-mode auto` (auto-approves
+    /// read-only tools so a headless run does not block on approvals); raise to
+    /// `accept-edits`, `smart`, or `dangerous` for more autonomy. The prompt is
+    /// always passed after `--`.
     pub cli_extra_args: Vec<String>,
     /// Stream that carries the AgentEvent frames the console and acp worker
     /// render. Grouped by session_id.
@@ -62,7 +64,7 @@ impl Default for Config {
             base_url: "https://api.devin.ai/v1".to_string(),
             request_timeout_secs: 120,
             devin_executable: String::new(),
-            cli_extra_args: Vec::new(),
+            cli_extra_args: vec!["--permission-mode".to_string(), "auto".to_string()],
             events_stream: "agent::events".to_string(),
             raw_events_stream: "devin::events".to_string(),
             iii_context: true,
