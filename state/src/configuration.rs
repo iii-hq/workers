@@ -9,13 +9,13 @@
 //!
 //! - **LIVE** — swapping the config cell alone applies `triggers_enabled` and
 //!   `max_value_bytes`: the `state::*` function handlers read a fresh
-//!   snapshot per call (see [`crate::functions::StateCtx::snapshot`]).
+//!   snapshot per call (see `StateCtx::snapshot`).
 //! - **TASK-REBUILD** — a `save_interval_ms` change respawns the adapter's
 //!   save loop via [`crate::adapters::StateAdapter::reconfigure`].
 //! - **RESTART-ONLY** — an `adapter` change is logged and only takes effect
 //!   at the next worker start (the persisted entry is read at boot).
 //!
-//! [`on_config_change`] is serialized end-to-end by an `ApplyLock`: the SDK
+//! `on_config_change` is serialized end-to-end by an `ApplyLock`: the SDK
 //! dispatches each function invocation via `tokio::spawn`, so overlapping
 //! `configuration:updated` events could otherwise interleave their
 //! [`crate::functions::ConfigCell`] mutations. Mirrors the engine's

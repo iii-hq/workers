@@ -124,6 +124,7 @@ externalized builtin. A formal benchmark was waived by project decision
 | Events | `state:created`/`updated`/`deleted`, payload `{type:"state", event_type, scope, key, old_value, new_value}` | same |
 | Trigger config | `{scope?, key?, condition_function_id?}`; only explicit `false` blocks | same |
 | Duplicate trigger id | silent replace | same |
+| Trigger `metadata` | forwarded to handlers via call_with_metadata | not forwarded (iii-sdk 0.20 TriggerRequest has no metadata field; same limitation as the http worker) |
 | Store adapters | kv (in_memory/file_based), redis, bridge | kv, redis (bridge not ported — see docs/adr/0001) |
 | kv on-disk format | rkyv `.bin` per scope | identical — builtin data loads as-is |
 | `save_interval_ms` | default 5000ms, floor 100ms, hot-retune | same |

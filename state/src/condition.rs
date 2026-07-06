@@ -1,11 +1,13 @@
-//! Per-route conditional execution: a `condition_function_id` gate that runs
-//! after global middleware and before per-route middleware/handler.
+//! Per-trigger-binding conditional gate: a `condition_function_id` that runs
+//! before a state change-event is fanned out to its bound handler.
 //!
-//! Ported from the in-engine `iii-http` `check_condition` (`condition.rs`),
-//! adapted to this worker's invocation: instead of `engine.call` returning
-//! `Result<Option<Value>, ErrorBody>`, this worker uses `IIIClient::trigger`,
-//! which returns `Result<Value, Error>`. `Value::Null` stands in for the
-//! engine's `None` ("condition function returned no result").
+//! The scope/key pre-filter on a trigger binding runs first; if it passes,
+//! `check_condition` decides whether the event actually reaches the handler.
+//! Only an explicit `false` return blocks delivery -- `null`/no result passes,
+//! and an invocation error skips the binding (and is logged) rather than
+//! blocking it. This worker uses `IIIClient::trigger`, which returns
+//! `Result<Value, Error>`; `Value::Null` stands in for "condition function
+//! returned no result".
 
 use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
@@ -53,7 +55,7 @@ mod tests {
     /// `IIIClient`: `null` (the "no result" case) and anything not exactly
     /// `false` pass; `false` blocks. The full call path (including the
     /// `IIIClient::trigger` round-trip and the timeout/error arms) is covered
-    /// by the `e2e_condition` integration tests against a running engine.
+    /// by `condition_false_blocks_null_passes` in `tests/e2e_state.rs`.
     fn maps(value: Value) -> bool {
         if value.is_null() {
             true

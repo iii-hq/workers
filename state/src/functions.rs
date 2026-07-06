@@ -1,5 +1,5 @@
 //! The six `state::*` service functions, SDK-registered. Ids, inputs, outputs,
-//! and descriptions are byte-parity with the builtin's #[function] macros
+//! and descriptions are byte-parity with the builtin's `#[function]` macros
 //! (state.rs:569-761). Error codes become message prefixes (SDK handlers carry
 //! a message, not a coded body) — documented in the README parity table.
 
