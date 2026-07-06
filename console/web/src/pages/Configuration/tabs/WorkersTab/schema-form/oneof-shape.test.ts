@@ -142,10 +142,7 @@ describe('mergeNullable', () => {
   })
 
   it('adds null to a non-enum branch type so it routes to NullableField', () => {
-    const merged = mergeNullable(
-      {},
-      { type: 'object', properties: { x: {} } },
-    )
+    const merged = mergeNullable({}, { type: 'object', properties: { x: {} } })
     expect(merged.type).toEqual(['object', 'null'])
     expect(merged.properties).toEqual({ x: {} })
   })
@@ -167,9 +164,9 @@ describe('stripProperty', () => {
     expect(stripped.required).toEqual([])
     expect(stripped.title).toBeUndefined()
     // Original schema is untouched.
-    expect(
-      Object.keys(adapterVariants[0].properties as object),
-    ).toContain('name')
+    expect(Object.keys(adapterVariants[0].properties as object)).toContain(
+      'name',
+    )
   })
 })
 

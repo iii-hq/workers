@@ -22,9 +22,7 @@ export function Workers() {
     stopWorker,
   } = useWorkersLive()
 
-  const countLabel = isLoading
-    ? '…'
-    : String(allRows.length)
+  const countLabel = isLoading ? '…' : String(allRows.length)
 
   return (
     <TooltipProvider>

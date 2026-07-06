@@ -15,6 +15,8 @@ import {
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
+import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
+import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
 import type { CompactResult } from '@/lib/backend/types'
@@ -23,6 +25,19 @@ import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
+import {
+  consoleClaimFor,
+  recordConsoleClaim,
+  releaseConsoleClaimIfAny,
+} from '@/lib/worktree-claims'
+import {
+  claimWorktree,
+  formatLandBlockedNotice,
+  formatLandedNotice,
+  type WorktreeInfo,
+  type WorktreeLandBlockedEvent,
+  type WorktreeLandedEvent,
+} from '@/lib/worktrees'
 import {
   type AssistantMessage,
   type Conversation,
@@ -43,6 +58,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
+import { WorktreeBadge } from './WorktreeBadge'
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -184,6 +200,13 @@ export function ChatView({
   const workingDirEnabled =
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.shellAvailable : false)
+
+  // The worktrees tab, the working-directory badge, claim/release, and the
+  // landed / land-blocked live events all require the optional `worktree`
+  // worker; gate the whole surface on its presence like shell above.
+  const worktreeEnabled =
+    backend.id === 'real' &&
+    (conversationsCtx ? conversationsCtx.worktreeAvailable : false)
 
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
@@ -693,6 +716,54 @@ export function ChatView({
   const headerPad = isDock ? 'px-4' : 'px-9'
   const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
 
+  // Resolve the working directory to its managed worktree (badge), and keep
+  // it fresh across landed / land-blocked events.
+  const [worktreeRefresh, setWorktreeRefresh] = useState(0)
+  const worktreeInfo = useWorktreeBinding(
+    conversation.workingDir ?? null,
+    worktreeEnabled && workingDirEnabled,
+    worktreeRefresh,
+  )
+  const worktreeInfoRef = useRef<WorktreeInfo | null>(worktreeInfo)
+  worktreeInfoRef.current = worktreeInfo
+
+  // Only surface events for the worktree this conversation points at (badge)
+  // or claimed through this console flow — never every land on the bus.
+  const eventConcernsConversation = useCallback(
+    (worktreeId: string) =>
+      worktreeInfoRef.current?.worktree_id === worktreeId ||
+      consoleClaimFor(conversation.id)?.worktreeId === worktreeId,
+    [conversation.id],
+  )
+
+  const handleLanded = useCallback(
+    (evt: WorktreeLandedEvent) => {
+      if (!eventConcernsConversation(evt.worktree_id)) return
+      const content = formatLandedNotice(evt)
+      onAppendMessage(conversation.id, makeSystemNotice(content))
+      announcer.announce(content)
+      setWorktreeRefresh((t) => t + 1)
+    },
+    [conversation.id, eventConcernsConversation, onAppendMessage, announcer],
+  )
+
+  const handleLandBlocked = useCallback(
+    (evt: WorktreeLandBlockedEvent) => {
+      if (!eventConcernsConversation(evt.worktree_id)) return
+      const content = formatLandBlockedNotice(evt)
+      onAppendMessage(conversation.id, makeSystemNotice(content, 'warn'))
+      announcer.announceAssertive(content)
+      setWorktreeRefresh((t) => t + 1)
+    },
+    [conversation.id, eventConcernsConversation, onAppendMessage, announcer],
+  )
+
+  useWorktreeEvents({
+    enabled: worktreeEnabled,
+    onLanded: handleLanded,
+    onLandBlocked: handleLandBlocked,
+  })
+
   // Re-scope the working directory. Allowed mid-conversation (no irreversible
   // lock); a change after the chat has started drops a visible marker so the
   // directory the agent operates in is never silently swapped.
@@ -717,6 +788,39 @@ export function ChatView({
       onUpdateWorkingDir,
       onAppendMessage,
     ],
+  )
+
+  // Picking a worktree claims it for this session; the working dir itself
+  // arrives through the picker's shell-validated selection flow
+  // (onWorkingDirChange with the worker-echoed canonical path), like every
+  // other selection. Release any previous console claim first — the
+  // registry holds one claim per session, so it must be released before it
+  // is overwritten. The claim RPC is best-effort: a takeover failure (W210)
+  // surfaces as a notice while the dir change still applies.
+  const handlePickWorktree = useCallback(
+    (wt: WorktreeInfo) => {
+      const id = conversation.id
+      void (async () => {
+        // Strict release -> record -> claim: overwriting the local record
+        // before the release settles would make the release read the NEW
+        // claim (keepPath matches) and leak the previous one server-side.
+        await releaseConsoleClaimIfAny(id, { keepPath: wt.path })
+        recordConsoleClaim(id, { worktreeId: wt.worktree_id, path: wt.path })
+        try {
+          await claimWorktree(wt.worktree_id, id)
+        } catch (err) {
+          onAppendMessage(
+            id,
+            makeSystemNotice(
+              `could not claim worktree ${wt.branch} — ${err instanceof Error ? err.message : String(err)}`,
+              'warn',
+            ),
+          )
+        }
+        setWorktreeRefresh((t) => t + 1)
+      })()
+    },
+    [conversation.id, onAppendMessage],
   )
 
   return (
@@ -827,21 +931,29 @@ export function ChatView({
         <div className="mx-auto max-w-[760px]">
           {workingDirEnabled ? (
             <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
-              <Folder size={12} className="shrink-0" aria-hidden />
-              {conversation.workingDir ? (
-                <span
-                  // dir=rtl keeps the trailing (most-distinguishing) path
-                  // segment visible when truncated in the narrow dock.
-                  dir="rtl"
-                  className="truncate text-left font-mono"
-                  title={conversation.workingDir}
-                >
-                  {conversation.workingDir}
-                </span>
+              {worktreeInfo ? (
+                // Managed worktree: branch + id + dirty/ahead + lifecycle
+                // replace the raw path chip (path stays as the tooltip).
+                <WorktreeBadge worktree={worktreeInfo} className="min-w-0" />
               ) : (
-                <span className="lowercase text-ink-ghost">
-                  no working directory — using default workspace
-                </span>
+                <>
+                  <Folder size={12} className="shrink-0" aria-hidden />
+                  {conversation.workingDir ? (
+                    <span
+                      // dir=rtl keeps the trailing (most-distinguishing) path
+                      // segment visible when truncated in the narrow dock.
+                      dir="rtl"
+                      className="truncate text-left font-mono"
+                      title={conversation.workingDir}
+                    >
+                      {conversation.workingDir}
+                    </span>
+                  ) : (
+                    <span className="lowercase text-ink-ghost">
+                      no working directory — using default workspace
+                    </span>
+                  )}
+                </>
               )}
               <div className="ml-auto flex shrink-0 items-center gap-3">
                 <button
@@ -887,6 +999,11 @@ export function ChatView({
             workingDir={conversation.workingDir ?? null}
             workingDirLocked={false}
             onWorkingDirChange={handleWorkingDirChange}
+            worktreePicker={
+              worktreeEnabled
+                ? { enabled: true, onPick: handlePickWorktree }
+                : undefined
+            }
             onPermissionModeChange={(next) =>
               void approvalSettings.setMode(next)
             }

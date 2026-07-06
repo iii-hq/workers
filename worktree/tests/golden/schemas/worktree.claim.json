@@ -1,0 +1,58 @@
+{
+  "function_id": "worktree::claim",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "force": {
+        "default": false,
+        "description": "Take the claim even when another session holds it.",
+        "type": "boolean"
+      },
+      "session_id": {
+        "description": "The claiming session.",
+        "type": "string"
+      },
+      "worktree_id": {
+        "description": "The worktree to claim.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "worktree_id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "claimed": {
+        "description": "True when the claim is now held by `session_id`.",
+        "type": "boolean"
+      },
+      "previous_session_id": {
+        "description": "The session that held the claim before, when taken over with force.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "description": "The claiming session.",
+        "type": "string"
+      },
+      "worktree_id": {
+        "description": "The claimed worktree.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "claimed",
+      "session_id",
+      "worktree_id"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

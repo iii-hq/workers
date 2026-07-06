@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
 // only routed views left are `traces` and `configuration`.
-export type View = 'configuration' | 'traces' | 'workers'
+export type View = 'configuration' | 'traces' | 'workers' | 'worktrees'
 
 /**
  * Sub-tab inside the Configuration page. URL-driven so deep links and the
@@ -30,6 +30,9 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/workers') {
     return 'workers'
   }
+  if (hash === '#/worktrees') {
+    return 'worktrees'
+  }
   if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
     return 'configuration'
   }
@@ -48,6 +51,8 @@ function hashFor(view: View): string {
       return '#/traces'
     case 'workers':
       return '#/workers'
+    case 'worktrees':
+      return '#/worktrees'
     case 'configuration':
       return '#/configuration'
   }

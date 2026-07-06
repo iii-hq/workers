@@ -45,9 +45,17 @@ pub struct SpawnOptions {
     /// parent's filesystem root) so parallel children never edit the same
     /// tree; the parent merges `wt/<name>` when the child finishes.
     /// Requires the parent turn to have a filesystem root inside a git
-    /// repository. Dispatch-path spawns only.
+    /// repository. Dispatch-path spawns only. Mutually exclusive with
+    /// `filesystem_root`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<Isolation>,
+    /// Absolute filesystem root for the child turn (e.g. an isolated
+    /// `worktree::create` checkout), written to the child's
+    /// `metadata.fs_scope.root`. When set it overrides the inherited scope
+    /// for this child; when absent the child inherits its direct parent's
+    /// root unchanged. Mutually exclusive with `isolation`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem_root: Option<String>,
 }
 
 /// Child workspace isolation modes.

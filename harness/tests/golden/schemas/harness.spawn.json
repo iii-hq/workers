@@ -437,6 +437,13 @@
       },
       "SpawnOptions": {
         "properties": {
+          "filesystem_root": {
+            "description": "Absolute filesystem root for the child turn (e.g. an isolated `worktree::create` checkout), written to the child's `metadata.fs_scope.root`. When set it overrides the inherited scope for this child; when absent the child inherits its direct parent's root unchanged. Mutually exclusive with `isolation`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "functions": {
             "anyOf": [
               {
@@ -457,7 +464,7 @@
                 "type": "null"
               }
             ],
-            "description": "Workspace isolation for the child. `worktree` gives it its own git worktree (`.worktrees/<name>` on branch `wt/<name>` under the parent's filesystem root) so parallel children never edit the same tree; the parent merges `wt/<name>` when the child finishes. Requires the parent turn to have a filesystem root inside a git repository. Dispatch-path spawns only."
+            "description": "Workspace isolation for the child. `worktree` gives it its own git worktree (`.worktrees/<name>` on branch `wt/<name>` under the parent's filesystem root) so parallel children never edit the same tree; the parent merges `wt/<name>` when the child finishes. Requires the parent turn to have a filesystem root inside a git repository. Dispatch-path spawns only. Mutually exclusive with `filesystem_root`."
           },
           "max_children": {
             "description": "Fan-out guard for the child's own spawns.",

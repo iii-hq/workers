@@ -1,0 +1,46 @@
+{
+  "function_id": "worktree::remove",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "delete_branch": {
+        "default": false,
+        "description": "Also delete the worktree's branch.",
+        "type": "boolean"
+      },
+      "force": {
+        "default": false,
+        "description": "Remove even when dirty or carrying unmerged commits.",
+        "type": "boolean"
+      },
+      "worktree_id": {
+        "description": "The worktree to remove.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "worktree_id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "branch_deleted": {
+        "description": "True when the branch was deleted too.",
+        "type": "boolean"
+      },
+      "removed": {
+        "description": "True when the worktree (and its record) are gone.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "branch_deleted",
+      "removed"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

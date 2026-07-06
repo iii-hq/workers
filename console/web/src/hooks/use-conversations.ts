@@ -52,6 +52,7 @@ import {
   saveLastModel,
   saveRecentProject,
 } from '@/lib/storage'
+import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
   type Conversation,
   DEFAULT_MODE,
@@ -537,6 +538,9 @@ export function useConversations(
       setConversations((list) => list.filter((c) => c.id !== id))
       revisionsRef.current.delete(id)
       setActiveId((current) => (current === id ? null : current))
+      // Closing the conversation orphans any worktree claim this console
+      // flow made for it; release best-effort (no-op for other claims).
+      void releaseConsoleClaimIfAny(id)
       if (!serverEnabled || !conv || conv.draft) return
       void deleteSession(id).catch((err) => {
         if (import.meta.env.DEV)
@@ -587,6 +591,10 @@ export function useConversations(
         updatedAt: Date.now(),
       }))
       saveRecentProject(dir)
+      // Moving the working directory away from a console-claimed worktree
+      // releases the claim (keepPath guards the pick-this-worktree flow,
+      // which records the claim before updating the dir).
+      void releaseConsoleClaimIfAny(id, { keepPath: dir })
       const conv = conversations.find((c) => c.id === id)
       if (conv) writeMeta({ ...conv, workingDir: dir })
     },

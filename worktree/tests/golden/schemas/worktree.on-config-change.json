@@ -1,0 +1,33 @@
+{
+  "function_id": "worktree::on-config-change",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Internal `worktree::on-config-change` trigger payload. The handler re-fetches the authoritative configuration and ignores this payload, so a direct call can never inject config.",
+    "properties": {
+      "id": {
+        "default": null,
+        "description": "Configuration id that changed (advisory; the handler re-fetches).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "OnConfigChangeEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Ack returned by the internal `worktree::on-config-change` handler.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "OnConfigChangeResponse",
+    "type": "object"
+  }
+}

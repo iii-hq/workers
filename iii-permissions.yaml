@@ -121,6 +121,13 @@ rules:
   - '!telegram-bot::on-turn-completed'
   - '!telegram-bot::on-pending-created'
   - '!telegram-bot::on-pending-resolved'
+  # worktree: internal hot-reload hook plus the queue-bound land step. The
+  # step executor trusts its persisted job record; agents must go through
+  # worktree::land, which validates ownership and enqueues. Mutating ops
+  # (create/claim/release/remove/prune/land) stay at the needs_approval
+  # default, like the coder write paths.
+  - '!worktree::on-config-change'
+  - '!worktree::land-step'
   # slack: deny operator-only ingress, internal bindings, and config reload.
   - '!slack::events'
   - '!slack::interactions'
@@ -160,6 +167,12 @@ rules:
   # search-before-build ladder starts here. worker::add stays approval-gated.
   - directory::registry::workers::list
   - directory::registry::workers::info
+  # Read-only worktree registry surface; mutating worktree ops stay
+  # approval-gated (see the deny block above).
+  - worktree::list
+  - worktree::get
+  - worktree::status
+  - worktree::validate
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info
