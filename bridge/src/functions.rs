@@ -93,7 +93,15 @@ impl Caller for RemoteCaller {
         timeout_ms: Option<u64>,
     ) -> Result<Value, BridgeError> {
         let client = self.cell.read().await.clone();
-        trigger(&client, function_id, payload, None, timeout_ms, map_remote_error).await
+        trigger(
+            &client,
+            function_id,
+            payload,
+            None,
+            timeout_ms,
+            map_remote_error,
+        )
+        .await
     }
 
     async fn call_void(&self, function_id: &str, payload: Value) -> Result<(), BridgeError> {
@@ -125,7 +133,15 @@ impl Caller for LocalCaller {
         payload: Value,
         timeout_ms: Option<u64>,
     ) -> Result<Value, BridgeError> {
-        trigger(&self.iii, function_id, payload, None, timeout_ms, map_local_error).await
+        trigger(
+            &self.iii,
+            function_id,
+            payload,
+            None,
+            timeout_ms,
+            map_local_error,
+        )
+        .await
     }
 
     async fn call_void(&self, function_id: &str, payload: Value) -> Result<(), BridgeError> {
@@ -199,7 +215,9 @@ fn parse_invoke(input: Value) -> Result<InvokeInput, BridgeError> {
 pub async fn handle_invoke(remote: &dyn Caller, input: Value) -> Result<Value, BridgeError> {
     let invoke = parse_invoke(input)?;
     let timeout = invoke.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-    remote.call(&invoke.function_id, invoke.data, Some(timeout)).await
+    remote
+        .call(&invoke.function_id, invoke.data, Some(timeout))
+        .await
 }
 
 /// `bridge.invoke_async` — fire-and-forget. The builtin returns
@@ -218,13 +236,20 @@ pub async fn handle_forward(
     local_function: &str,
     input: Value,
 ) -> Result<Value, BridgeError> {
-    let entry = forwards.read().await.get(local_function).cloned().ok_or_else(|| {
-        BridgeError::bridge(format!(
-            "forward '{local_function}' was removed from the bridge config"
-        ))
-    })?;
+    let entry = forwards
+        .read()
+        .await
+        .get(local_function)
+        .cloned()
+        .ok_or_else(|| {
+            BridgeError::bridge(format!(
+                "forward '{local_function}' was removed from the bridge config"
+            ))
+        })?;
     let timeout = entry.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-    remote.call(&entry.remote_function, input, Some(timeout)).await
+    remote
+        .call(&entry.remote_function, input, Some(timeout))
+        .await
 }
 
 /// An `expose` function (registered on the REMOTE engine) — call the local
@@ -235,11 +260,16 @@ pub async fn handle_expose(
     remote_name: &str,
     input: Value,
 ) -> Result<Value, BridgeError> {
-    let entry = exposes.read().await.get(remote_name).cloned().ok_or_else(|| {
-        BridgeError::bridge(format!(
-            "exposed function '{remote_name}' was removed from the bridge config"
-        ))
-    })?;
+    let entry = exposes
+        .read()
+        .await
+        .get(remote_name)
+        .cloned()
+        .ok_or_else(|| {
+            BridgeError::bridge(format!(
+                "exposed function '{remote_name}' was removed from the bridge config"
+            ))
+        })?;
     local.call(&entry.local_function, input, None).await
 }
 
@@ -263,7 +293,8 @@ mod tests {
             payload: Value,
             timeout_ms: Option<u64>,
         ) -> Result<Value, BridgeError> {
-            *self.last.lock().await = Some((function_id.into(), payload.clone(), timeout_ms, false));
+            *self.last.lock().await =
+                Some((function_id.into(), payload.clone(), timeout_ms, false));
             match &self.fail_with {
                 Some(e) => Err(e.clone()),
                 None => Ok(json!({"echo": payload})),
@@ -336,7 +367,10 @@ mod tests {
             .unwrap();
         let (_, payload, timeout, _) = c.last.lock().await.clone().unwrap();
         assert_eq!(timeout, Some(1500));
-        assert!(payload.is_null(), "data defaults like the builtin's #[serde(default)]");
+        assert!(
+            payload.is_null(),
+            "data defaults like the builtin's #[serde(default)]"
+        );
     }
 
     #[tokio::test]
@@ -363,7 +397,9 @@ mod tests {
     async fn forward_routes_to_remote_function_with_entry_timeout() {
         let c = FakeCaller::default();
         let t = forwards(&[("f.local", "f.remote", Some(5000))]);
-        handle_forward(&c, &t, "f.local", json!({"v": 1})).await.unwrap();
+        handle_forward(&c, &t, "f.local", json!({"v": 1}))
+            .await
+            .unwrap();
         let (id, _, timeout, _) = c.last.lock().await.clone().unwrap();
         assert_eq!(id, "f.remote");
         assert_eq!(timeout, Some(5000));
@@ -373,7 +409,9 @@ mod tests {
     async fn forward_removed_entry_is_bridge_error() {
         let c = FakeCaller::default();
         let t = forwards(&[]);
-        let err = handle_forward(&c, &t, "f.local", json!(1)).await.unwrap_err();
+        let err = handle_forward(&c, &t, "f.local", json!(1))
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "bridge_error");
         assert!(err.message.contains("removed"));
     }
@@ -382,7 +420,9 @@ mod tests {
     async fn expose_calls_local_function_and_preserves_remote_error() {
         let ok = FakeCaller::default();
         let t = exposes(&[("remote.echo", "local.echo")]);
-        handle_expose(&ok, &t, "remote.echo", json!({"x": 1})).await.unwrap();
+        handle_expose(&ok, &t, "remote.echo", json!({"x": 1}))
+            .await
+            .unwrap();
         let (id, ..) = ok.last.lock().await.clone().unwrap();
         assert_eq!(id, "local.echo");
 
@@ -394,8 +434,13 @@ mod tests {
             }),
             ..Default::default()
         };
-        let err = handle_expose(&failing, &t, "remote.echo", json!(1)).await.unwrap_err();
-        assert_eq!(err.code, "custom_code", "builtin forwards the real error code");
+        let err = handle_expose(&failing, &t, "remote.echo", json!(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code, "custom_code",
+            "builtin forwards the real error code"
+        );
         assert_eq!(err.stacktrace.as_deref(), Some("st"));
     }
 

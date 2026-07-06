@@ -15,9 +15,7 @@ use tokio::sync::RwLock;
 
 use crate::config::BridgeConfig;
 use crate::configuration::{ApplyLock, ConfigCell};
-use crate::functions::{
-    self, ExposeTable, ForwardTable, LocalCaller, RemoteCaller, RemoteCell,
-};
+use crate::functions::{self, ExposeTable, ForwardTable, LocalCaller, RemoteCaller, RemoteCell};
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const BUILTIN_III_BRIDGE_WORKER_ID: &str = "iii-bridge";
@@ -236,7 +234,9 @@ mod tests {
 
     #[test]
     fn empty_list_passes() {
-        assert!(!builtin_iii_bridge_active(&serde_json::json!({"workers": []})));
+        assert!(!builtin_iii_bridge_active(
+            &serde_json::json!({"workers": []})
+        ));
     }
 
     #[test]

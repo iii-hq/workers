@@ -34,7 +34,9 @@ impl ExposeEntry {
     /// The name registered on the remote engine — defaults to the local name
     /// (builtin parity, mod.rs:245-248).
     pub fn remote_name(&self) -> &str {
-        self.remote_function.as_deref().unwrap_or(&self.local_function)
+        self.remote_function
+            .as_deref()
+            .unwrap_or(&self.local_function)
     }
 }
 
@@ -90,7 +92,11 @@ mod tests {
         .unwrap();
         assert_eq!(c.url.as_deref(), Some("ws://remote:49134"));
         assert_eq!(c.expose[0].local_function, "a.b");
-        assert_eq!(c.expose[0].remote_name(), "a.b", "expose name defaults to local_function");
+        assert_eq!(
+            c.expose[0].remote_name(),
+            "a.b",
+            "expose name defaults to local_function"
+        );
         assert_eq!(c.forward[0].remote_function, "f.remote");
         assert_eq!(c.forward[0].timeout_ms, Some(5000));
     }
@@ -106,8 +112,14 @@ mod tests {
     fn url_fallback_chain_matches_builtin() {
         let with_url: BridgeConfig = serde_yaml::from_str("{url: 'ws://cfg:1'}").unwrap();
         let without: BridgeConfig = BridgeConfig::default();
-        assert_eq!(with_url.effective_url_with(Some("ws://env:2".into())), "ws://cfg:1");
-        assert_eq!(without.effective_url_with(Some("ws://env:2".into())), "ws://env:2");
+        assert_eq!(
+            with_url.effective_url_with(Some("ws://env:2".into())),
+            "ws://cfg:1"
+        );
+        assert_eq!(
+            without.effective_url_with(Some("ws://env:2".into())),
+            "ws://env:2"
+        );
         assert_eq!(without.effective_url_with(None), "ws://0.0.0.0:49134");
     }
 
