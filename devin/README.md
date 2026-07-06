@@ -55,9 +55,13 @@ iii trigger devin::session::message \
 iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit":10}}'
 ```
 
-A session created through `devin::session::create` is a real Devin cloud session, tagged and running in the Devin app:
+`devin::session::create` returns a real Devin cloud session over the bus (session id, url, tags):
 
-![A Devin cloud session opened via devin::session::create, replying in the Devin app](assets/session-reply.png)
+![devin::session::create returning a real Devin cloud session id and url over the iii bus](assets/session-create.png)
+
+The same session runs in the Devin app and replies:
+
+![The Devin cloud session opened via devin::session::create, replying in the Devin app](assets/session-reply.png)
 
 Run the local CLI as one turn and stream it onto the bus:
 
