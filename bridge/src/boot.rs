@@ -6,6 +6,7 @@
 //! mod.rs:84): an unreachable remote does not fail boot — calls fail until
 //! the connection is up, exactly like the builtin behaved.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -20,11 +21,24 @@ use crate::functions::{self, ExposeTable, ForwardTable, LocalCaller, RemoteCalle
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const BUILTIN_III_BRIDGE_WORKER_ID: &str = "iii-bridge";
 
+/// Function ids EVER registered on a client. The SDK panics on a duplicate
+/// `register_function` id and has no unregister, so hot-reload must decide
+/// "still needs registering?" against this set, never against the current
+/// tables (a removed-then-re-added entry is absent from the tables but still
+/// registered). See `configuration::on_config_change`.
+pub type RegisteredIds = Arc<RwLock<HashSet<String>>>;
+
 pub struct BootHandle {
     pub remote: RemoteCell,
     pub forwards: ForwardTable,
     pub exposes: ExposeTable,
     pub config: ConfigCell,
+    /// Ids ever registered on the LOCAL client: `bridge.invoke`,
+    /// `bridge.invoke_async`, and every forward's local function.
+    pub local_registered: RegisteredIds,
+    /// Ids ever registered on the CURRENT remote-client generation (expose
+    /// names). Reset when a `url` change swaps in a fresh client.
+    pub remote_registered: RegisteredIds,
     pub apply_lock: ApplyLock,
 }
 
@@ -77,11 +91,29 @@ pub async fn start(iii: Arc<IIIClient>, config: BridgeConfig) -> anyhow::Result<
         }
     }
 
+    // Seed the ever-registered sets with exactly what boot registered above.
+    let local_registered: RegisteredIds = Arc::new(RwLock::new(
+        [functions::INVOKE_FN, functions::INVOKE_ASYNC_FN]
+            .into_iter()
+            .map(str::to_string)
+            .chain(config.forward.iter().map(|f| f.local_function.clone()))
+            .collect(),
+    ));
+    let remote_registered: RegisteredIds = Arc::new(RwLock::new(
+        config
+            .expose
+            .iter()
+            .map(|e| e.remote_name().to_string())
+            .collect(),
+    ));
+
     Ok(BootHandle {
         remote,
         forwards,
         exposes,
         config: Arc::new(RwLock::new(Arc::new(config.normalized()))),
+        local_registered,
+        remote_registered,
         apply_lock: Arc::new(tokio::sync::Mutex::new(())),
     })
 }

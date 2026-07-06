@@ -15,17 +15,33 @@
 //!   on it, swaps it into the shared [`crate::functions::RemoteCell`], then
 //!   gracefully shuts the old client down. Connect-new-before-drop-old mirrors
 //!   `http`'s bind-new-before-stop-old rebind.
-//! - An **unchanged `url`** registers only the newly-added `expose` entries on
-//!   the current remote client.
-//! - Newly-added `forward` entries get their local proxy function registered;
-//!   existing ones keep their handler (it reads the [`crate::functions::ForwardTable`]
-//!   per call, so an edited `remote_function`/`timeout_ms` takes effect once
-//!   the table is replaced below).
-//! - Both tables are then replaced wholesale with the new config's entries.
-//!   The SDK has no unregister, so a REMOVED entry is not un-registered — its
-//!   handler keeps running but the table lookup fails, and the handler
-//!   returns a `bridge_error` (see `functions::handle_forward` /
-//!   `functions::handle_expose`).
+//! - An **unchanged `url`** registers only the `expose` entries never before
+//!   registered on the current remote client.
+//! - `forward` entries never before registered on the local client get their
+//!   local proxy function registered; existing ones keep their handler (it
+//!   reads the [`crate::functions::ForwardTable`] per call, so an edited
+//!   `remote_function`/`timeout_ms` takes effect once the table is replaced).
+//! - Both tables are replaced wholesale with the new config's entries BEFORE
+//!   any registration, so a just-added entry finds its table row the instant
+//!   its function becomes routable. The SDK has no unregister, so a REMOVED
+//!   entry is not un-registered — its handler keeps running but the table
+//!   lookup fails, and the handler returns a `bridge_error` (see
+//!   `functions::handle_forward` / `functions::handle_expose`).
+//!
+//! ## Ever-registered id sets (remove -> re-add safety)
+//!
+//! The SDK PANICS on a duplicate `register_function` id and has no
+//! unregister, so "does this entry still need registering?" must be answered
+//! against the ids EVER registered on a client — not against the current
+//! tables. Otherwise an entry removed in one update and re-added in the next
+//! would look "new", get re-registered, and panic the reload task.
+//! [`crate::boot::BootHandle::local_registered`] tracks every id registered
+//! on the local client (seeded at boot with `bridge.invoke` /
+//! `bridge.invoke_async` and the boot forwards);
+//! [`crate::boot::BootHandle::remote_registered`] tracks the ids registered
+//! on the CURRENT remote-client generation and is reset when a `url` change
+//! swaps in a fresh client. A re-added entry needs no re-registration: the
+//! table swap alone revives it, because handlers do per-call table lookups.
 //!
 //! [`on_config_change`] is serialized end-to-end by an [`ApplyLock`]: the SDK
 //! dispatches each function invocation via `tokio::spawn`, so overlapping
@@ -34,7 +50,7 @@
 //! Mirrors the engine's `apply_lock` (`api_core.rs`) and `http`'s
 //! [`ApplyLock`] (`http/src/configuration.rs`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,7 +60,7 @@ use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use crate::boot;
+use crate::boot::{self, BootHandle, RegisteredIds};
 use crate::config::BridgeConfig;
 use crate::functions::{ExposeTable, ForwardTable, RemoteCell};
 
@@ -122,36 +138,47 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
+/// The clonable slice of [`BootHandle`] state a reload run mutates.
+#[derive(Clone)]
+struct ReloadCtx {
+    cell: ConfigCell,
+    remote: RemoteCell,
+    forwards: ForwardTable,
+    exposes: ExposeTable,
+    local_registered: RegisteredIds,
+    remote_registered: RegisteredIds,
+    apply_lock: ApplyLock,
+}
+
+impl ReloadCtx {
+    fn from_boot(boot: &BootHandle) -> Self {
+        Self {
+            cell: boot.config.clone(),
+            remote: boot.remote.clone(),
+            forwards: boot.forwards.clone(),
+            exposes: boot.exposes.clone(),
+            local_registered: boot.local_registered.clone(),
+            remote_registered: boot.remote_registered.clone(),
+            apply_lock: boot.apply_lock.clone(),
+        }
+    }
+}
+
 /// Register `bridge::on-config-change` and subscribe it to
 /// `configuration:updated` events for the `bridge` entry. The handler ignores
 /// the trigger payload and re-fetches the authoritative value (the bus
 /// function is discoverable, so a caller-supplied payload must not be trusted
 /// to repoint config).
-pub fn register_config_trigger(
-    iii: &Arc<IIIClient>,
-    cell: ConfigCell,
-    remote: RemoteCell,
-    forwards: ForwardTable,
-    exposes: ExposeTable,
-    apply_lock: ApplyLock,
-) -> Result<(), Error> {
-    let cell_for_fn = cell.clone();
-    let remote_for_fn = remote.clone();
-    let forwards_for_fn = forwards.clone();
-    let exposes_for_fn = exposes.clone();
-    let apply_lock_for_fn = apply_lock.clone();
+pub fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) -> Result<(), Error> {
+    let ctx = ReloadCtx::from_boot(boot);
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
-            let cell = cell_for_fn.clone();
-            let remote = remote_for_fn.clone();
-            let forwards = forwards_for_fn.clone();
-            let exposes = exposes_for_fn.clone();
-            let apply_lock = apply_lock_for_fn.clone();
+            let ctx = ctx.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell, &remote, &forwards, &exposes, &apply_lock).await;
+                on_config_change(&engine, &ctx).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -179,28 +206,33 @@ fn url_changed(current: &BridgeConfig, next: &BridgeConfig, env_url: Option<Stri
     current.effective_url_with(env_url.clone()) != next.effective_url_with(env_url)
 }
 
-/// Names present in `next` but not in `old` — the entries whose functions
-/// still need registering (the SDK has no unregister, so removals are handled
-/// by the table lookup failing in the handler instead).
-fn added_keys<V>(old: &HashMap<String, V>, next: impl Iterator<Item = String>) -> Vec<String> {
-    next.filter(|k| !old.contains_key(k)).collect()
+/// Names in `next` never registered on the client — the only entries whose
+/// functions still need registering. A previously-registered name (even one
+/// removed from the current tables) is NOT returned: the SDK panics on a
+/// duplicate `register_function` id, and the table swap alone revives it.
+fn added_keys(
+    ever_registered: &HashSet<String>,
+    next: impl Iterator<Item = String>,
+) -> Vec<String> {
+    next.filter(|k| !ever_registered.contains(k)).collect()
 }
 
-async fn on_config_change(
-    iii: &Arc<IIIClient>,
-    cell: &ConfigCell,
-    remote: &RemoteCell,
-    forwards: &ForwardTable,
-    exposes: &ExposeTable,
-    apply_lock: &ApplyLock,
-) {
-    // Serialize the whole re-fetch -> connect/register -> swap-cell/table
-    // sequence: the SDK dispatches each invocation via `tokio::spawn`, so two
-    // `configuration:updated` events can run this function concurrently.
+/// Reset a per-generation registered set when a `url` change swaps in a fresh
+/// remote client: the new client starts with zero registrations, so the set
+/// is reseeded with exactly the names registered on it.
+fn reset_generation(ever_registered: &mut HashSet<String>, names: impl Iterator<Item = String>) {
+    ever_registered.clear();
+    ever_registered.extend(names);
+}
+
+async fn on_config_change(iii: &Arc<IIIClient>, ctx: &ReloadCtx) {
+    // Serialize the whole re-fetch -> swap-table -> connect/register -> swap-
+    // cell sequence: the SDK dispatches each invocation via `tokio::spawn`, so
+    // two `configuration:updated` events can run this function concurrently.
     // Without this, overlapping edits could interleave their remote/table/
     // cell mutations. Held for the whole function body; `on_config_change` is
     // the only acquirer, so this never nests.
-    let _guard = apply_lock.lock().await;
+    let _guard = ctx.apply_lock.lock().await;
 
     // 1. Fetch the authoritative value; never trust the trigger payload.
     let next = match fetch_config(iii).await {
@@ -212,85 +244,33 @@ async fn on_config_change(
     };
 
     // 2. Snapshot the current config and compute env_url once for this run.
-    let current = cell.read().await.clone();
+    let current = ctx.cell.read().await.clone();
     let env_url = std::env::var("III_URL").ok();
+    let url_did_change = url_changed(&current, &next, env_url.clone());
 
-    if url_changed(&current, &next, env_url) {
-        // 3. URL changed: connect the new client first (background-connecting,
-        // cannot fail synchronously), register EVERY expose entry on it, then
-        // swap it into the cell and shut the old client down.
-        let new_client = Arc::new(register_worker(
-            &next.effective_url(),
-            InitOptions::default(),
-        ));
-        for e in &next.expose {
-            boot::register_expose_function(
-                &new_client,
-                iii.clone(),
-                exposes.clone(),
-                e.remote_name(),
-            );
-        }
-        let old_client = {
-            let mut guard = remote.write().await;
-            std::mem::replace(&mut *guard, new_client)
-        };
-        old_client.shutdown_async().await;
-        tracing::info!("bridge remote client reconnected after configuration change");
-    } else {
-        // 4. URL unchanged: register only the newly-added expose entries on
-        // the current remote client.
-        let added = {
-            let exposes_read = exposes.read().await;
-            added_keys(
-                &exposes_read,
-                next.expose.iter().map(|e| e.remote_name().to_string()),
-            )
-        };
-        if !added.is_empty() {
-            let client = remote.read().await.clone();
-            for e in next
-                .expose
-                .iter()
-                .filter(|e| added.contains(&e.remote_name().to_string()))
-            {
-                boot::register_expose_function(
-                    &client,
-                    iii.clone(),
-                    exposes.clone(),
-                    e.remote_name(),
-                );
-            }
-        }
-    }
-
-    // 5. Forwards: register only the newly-added local proxy functions.
-    // Existing ids keep their handler — it reads the table per call, so a
-    // changed remote_function/timeout_ms takes effect via step 6.
+    // 3. Compute additions against the EVER-registered id sets (never the
+    // tables): a removed-then-re-added name must not be re-registered — the
+    // SDK panics on duplicate ids — and needs none, the table swap below
+    // revives its still-running handler.
     let added_forwards = {
-        let forwards_read = forwards.read().await;
+        let ever = ctx.local_registered.read().await;
+        added_keys(&ever, next.forward.iter().map(|f| f.local_function.clone()))
+    };
+    let added_exposes = if url_did_change {
+        Vec::new() // a fresh client gets EVERY expose entry registered below
+    } else {
+        let ever = ctx.remote_registered.read().await;
         added_keys(
-            &forwards_read,
-            next.forward.iter().map(|f| f.local_function.clone()),
+            &ever,
+            next.expose.iter().map(|e| e.remote_name().to_string()),
         )
     };
-    for f in next
-        .forward
-        .iter()
-        .filter(|f| added_forwards.contains(&f.local_function))
-    {
-        boot::register_forward_function(
-            iii,
-            remote.clone(),
-            forwards.clone(),
-            &f.local_function,
-            &f.remote_function,
-        );
-    }
 
-    // 6. Replace both table contents wholesale (removed entries now fail
-    // their lookup with a bridge_error — the documented SDK-no-unregister
-    // limitation), then publish the new config snapshot.
+    // 4. Replace both table contents wholesale FIRST: removed entries start
+    // failing their lookup with a bridge_error (the documented SDK-no-
+    // unregister limitation), re-added entries revive, and a just-added entry
+    // finds its row the instant its function registers (no registered-before-
+    // table window).
     let new_forwards: HashMap<String, crate::config::ForwardEntry> = next
         .forward
         .iter()
@@ -301,9 +281,81 @@ async fn on_config_change(
         .iter()
         .map(|e| (e.remote_name().to_string(), e.clone()))
         .collect();
-    *forwards.write().await = new_forwards;
-    *exposes.write().await = new_exposes;
-    *cell.write().await = Arc::new(next.normalized());
+    *ctx.forwards.write().await = new_forwards;
+    *ctx.exposes.write().await = new_exposes;
+
+    if url_did_change {
+        // 5a. URL changed: connect the new client first (background-
+        // connecting, cannot fail synchronously), register EVERY expose entry
+        // on it, reseed the per-generation registered set, then swap it into
+        // the cell and shut the old client down.
+        let new_client = Arc::new(register_worker(
+            &next.effective_url_with(env_url),
+            InitOptions::default(),
+        ));
+        for e in &next.expose {
+            boot::register_expose_function(
+                &new_client,
+                iii.clone(),
+                ctx.exposes.clone(),
+                e.remote_name(),
+            );
+        }
+        reset_generation(
+            &mut *ctx.remote_registered.write().await,
+            next.expose.iter().map(|e| e.remote_name().to_string()),
+        );
+        let old_client = {
+            let mut guard = ctx.remote.write().await;
+            std::mem::replace(&mut *guard, new_client)
+        };
+        old_client.shutdown_async().await;
+        tracing::info!("bridge remote client reconnected after configuration change");
+    } else if !added_exposes.is_empty() {
+        // 5b. URL unchanged: register only the never-registered expose
+        // entries on the current remote client.
+        let client = ctx.remote.read().await.clone();
+        for e in next
+            .expose
+            .iter()
+            .filter(|e| added_exposes.contains(&e.remote_name().to_string()))
+        {
+            boot::register_expose_function(
+                &client,
+                iii.clone(),
+                ctx.exposes.clone(),
+                e.remote_name(),
+            );
+        }
+        ctx.remote_registered
+            .write()
+            .await
+            .extend(added_exposes.iter().cloned());
+    }
+
+    // 6. Forwards: register only the never-registered local proxy functions.
+    // Existing ids keep their handler — it reads the table per call, so a
+    // changed remote_function/timeout_ms took effect at step 4.
+    for f in next
+        .forward
+        .iter()
+        .filter(|f| added_forwards.contains(&f.local_function))
+    {
+        boot::register_forward_function(
+            iii,
+            ctx.remote.clone(),
+            ctx.forwards.clone(),
+            &f.local_function,
+            &f.remote_function,
+        );
+    }
+    ctx.local_registered
+        .write()
+        .await
+        .extend(added_forwards.iter().cloned());
+
+    // 7. Publish the new config snapshot last — the observable "reload done".
+    *ctx.cell.write().await = Arc::new(next.normalized());
 }
 
 async fn trigger_with_retry(
@@ -351,10 +403,13 @@ pub struct ConfigChangeRequest {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn cfg(yaml: &str) -> BridgeConfig {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    fn set(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
@@ -371,10 +426,42 @@ mod tests {
     }
 
     #[test]
-    fn added_keys_returns_only_new_names() {
-        let mut old = HashMap::new();
-        old.insert("kept".to_string(), ());
+    fn added_keys_returns_only_never_registered_names() {
+        let ever = set(&["kept"]);
         let next = vec!["kept".to_string(), "new".to_string()];
-        assert_eq!(added_keys(&old, next.into_iter()), vec!["new".to_string()]);
+        assert_eq!(added_keys(&ever, next.into_iter()), vec!["new".to_string()]);
+    }
+
+    /// Remove -> re-add regression (F1): a name EVER registered — even one no
+    /// longer in the current tables — must yield NO addition, because the SDK
+    /// panics on duplicate registration; the table swap alone revives it.
+    #[test]
+    fn added_keys_skips_removed_then_readded_name() {
+        // v1 registered "fwd"; v2 removed it (tables no longer contain it,
+        // but the ever-registered set still does); v3 re-adds it.
+        let ever = set(&["fwd", "bridge.invoke", "bridge.invoke_async"]);
+        let v3 = vec!["fwd".to_string()];
+        assert!(
+            added_keys(&ever, v3.into_iter()).is_empty(),
+            "re-added name must not be re-registered"
+        );
+    }
+
+    /// A url swap replaces the remote client, so the per-generation set is
+    /// reseeded: names from the old generation are forgotten (the new client
+    /// never saw them) and exactly the new registrations are tracked.
+    #[test]
+    fn reset_generation_reseeds_registered_set_on_url_swap() {
+        let mut ever = set(&["old.expose", "kept.expose"]);
+        reset_generation(
+            &mut ever,
+            vec!["kept.expose".to_string(), "new.expose".to_string()].into_iter(),
+        );
+        assert_eq!(ever, set(&["kept.expose", "new.expose"]));
+        // "old.expose" re-added on the NEXT generation counts as new again.
+        assert_eq!(
+            added_keys(&ever, vec!["old.expose".to_string()].into_iter()),
+            vec!["old.expose".to_string()]
+        );
     }
 }

@@ -180,8 +180,16 @@ async fn trigger(
 /// Collapse every SDK error to `bridge_error`, matching the builtin's
 /// invoke/invoke_async/forward paths, which ALWAYS discard the real remote
 /// error body — including `Error::Remote` — behind a generic `bridge_error`
-/// (mod.rs:132-141, 179-186, 224-233).
+/// (mod.rs:132-141, 179-186, 224-233). The real code/message is logged
+/// operator-side first (builtin parity: mod.rs:135,180,226), since the caller
+/// only ever sees the collapsed error.
 fn map_remote_error(e: Error) -> BridgeError {
+    match &e {
+        Error::Remote { code, message, .. } => {
+            tracing::error!(code = %code, message = %message, "bridge remote call failed");
+        }
+        other => tracing::error!(error = %other, "bridge remote call failed"),
+    }
     BridgeError::bridge(e.to_string())
 }
 

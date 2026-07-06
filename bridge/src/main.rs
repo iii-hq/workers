@@ -108,16 +108,9 @@ async fn main() -> Result<()> {
 
     // Subscribe to configuration:updated so the remote client, forward table,
     // and expose table reload live on a config change (see configuration).
-    configuration::register_config_trigger(
-        &iii,
-        boot.config.clone(),
-        boot.remote.clone(),
-        boot.forwards.clone(),
-        boot.exposes.clone(),
-        boot.apply_lock.clone(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("binding configuration trigger")?;
+    configuration::register_config_trigger(&iii, &boot)
+        .map_err(anyhow::Error::msg)
+        .context("binding configuration trigger")?;
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-bridge shutting down");
