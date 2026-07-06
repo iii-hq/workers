@@ -131,4 +131,4 @@ externalized builtin. A formal benchmark was waived by project decision
 | Error codes | coded `ErrorBody` (`SET_ERROR`, ...) | code as message prefix (SDK handler errors carry a message) |
 | Durability | store dies with the ENGINE process | store dies with the WORKER process (ADR 0001; file_based/redis unchanged) |
 | Latency | in-process µs | engine⇄worker WS round-trip (low ms) — formal benchmark waived by project decision 2026-07-06 |
-| Telemetry (`track_state_*`) | engine-internal counters | none (see NOT in plan) |
+| Telemetry (`track_state_*`) | engine-internal counters | none — out of scope for this migration; lands with the shared worker observability story |
