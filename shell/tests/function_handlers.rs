@@ -20,9 +20,9 @@ async fn seed(handle: JobHandle) -> String {
     }
 }
 
-fn cfg_with_allow(allow: &[&str]) -> Arc<ShellConfig> {
+fn cfg_with_deny(deny: &[&str]) -> Arc<ShellConfig> {
     let mut c = ShellConfig {
-        allowlist: allow.iter().map(|s| s.to_string()).collect(),
+        denylist_patterns: deny.iter().map(|s| s.to_string()).collect(),
         max_timeout_ms: 5000,
         default_timeout_ms: 1500,
         max_output_bytes: 4096,
@@ -61,8 +61,8 @@ fn parse_err<T: serde::de::DeserializeOwned>(v: Value) -> String {
 }
 
 #[tokio::test]
-async fn exec_handler_runs_allowlisted_command() {
-    let cfg = cfg_with_allow(&["echo"]);
+async fn exec_handler_runs_command() {
+    let cfg = cfg_with_deny(&[]);
     let r = resp(
         functions::exec::handle(
             cfg,
@@ -105,24 +105,24 @@ fn exec_request_rejects_array_command_with_helpful_error() {
 }
 
 #[tokio::test]
-async fn exec_handler_rejects_unlisted_command() {
-    let cfg = cfg_with_allow(&["echo"]);
+async fn exec_handler_denylist_rejection_is_plain_string_handler_error() {
+    let cfg = cfg_with_deny(&["harness_deny_probe"]);
     let err = functions::exec::handle(
         cfg,
         fresh_iii(),
-        typed::<ExecRequest>(json!({"command": "nmap", "args": ["-v"]})),
+        typed::<ExecRequest>(json!({"command": "echo", "args": ["harness_deny_probe"]})),
     )
     .await
     .unwrap_err();
-    // Allowlist rejections are intentionally plain-string (no S-code): they
+    // Denylist rejections are intentionally plain-string (no S-code): they
     // flow through `From<String>` to `Error::Handler`, which the engine maps
-    // to `code: "invocation_failed"` with the violation in the message — NOT a
-    // Remote S-code. Assert that contract so the split stays explicit.
+    // to `code: "invocation_failed"` with the violation in the message — NOT
+    // a Remote S-code. Assert that contract so the split stays explicit.
     assert!(
         matches!(err, iii_sdk::errors::Error::Handler(_)),
-        "allowlist rejection must be the plain-string Handler path, got {err:?}"
+        "denylist rejection must be the plain-string Handler path, got {err:?}"
     );
-    assert!(err.to_string().contains("allowlist"), "got: {err}");
+    assert!(err.to_string().contains("denylist"), "got: {err}");
 }
 
 /// `args[i]` validation is per-index; a non-string element must be rejected
@@ -148,7 +148,7 @@ fn exec_request_silently_drops_negative_or_float_timeout() {
 
 #[tokio::test]
 async fn exec_handler_returns_truncated_flag_at_max_output_bytes() {
-    let cfg = cfg_with_allow(&["sh"]);
+    let cfg = cfg_with_deny(&[]);
     let r = resp(
         functions::exec::handle(
             cfg,
@@ -168,7 +168,7 @@ async fn exec_handler_returns_truncated_flag_at_max_output_bytes() {
 
 #[tokio::test]
 async fn exec_bg_handler_spawns_returns_job_id_and_argv() {
-    let cfg = cfg_with_allow(&["sleep"]);
+    let cfg = cfg_with_deny(&[]);
     let r = resp(
         functions::exec_bg::handle(
             cfg,
@@ -326,11 +326,7 @@ async fn list_handler_returns_jobs_array_and_count() {
         host_pid: None,
     })
     .await;
-    let r = resp(
-        functions::list::handle(cfg_with_allow(&["sleep"]))
-            .await
-            .unwrap(),
-    );
+    let r = resp(functions::list::handle(cfg_with_deny(&[])).await.unwrap());
     let jobs_arr = r["jobs"].as_array().unwrap();
     assert!(
         jobs_arr.iter().any(|j| j["id"] == id),
