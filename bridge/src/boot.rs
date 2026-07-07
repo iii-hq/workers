@@ -11,12 +11,13 @@ use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{register_worker, Error, IIIClient, InitOptions, RegisterFunction};
-use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::config::BridgeConfig;
 use crate::configuration::{ApplyLock, ConfigCell};
-use crate::functions::{self, ExposeTable, ForwardTable, LocalCaller, RemoteCaller, RemoteCell};
+use crate::functions::{
+    self, ExposeTable, ForwardTable, LocalCaller, RawValue, RemoteCaller, RemoteCell,
+};
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const BUILTIN_III_BRIDGE_WORKER_ID: &str = "iii-bridge";
@@ -120,38 +121,55 @@ pub async fn start(iii: Arc<IIIClient>, config: BridgeConfig) -> anyhow::Result<
 
 /// `bridge.invoke` + `bridge.invoke_async` on the local engine — exact
 /// function ids and descriptions from the builtin (mod.rs:96-191).
+///
+/// Both use `new_async_with_bad_request` with the typed [`functions::
+/// InvokeInput`]: the SDK auto-extracts a real request schema instead of the
+/// permissive `AnyValue` a `Value` closure param would emit, while
+/// [`functions::invoke_bad_request`] keeps owning the `deserialization_error`
+/// / "Failed to parse invoke input: {err}" contract for malformed payloads.
 pub fn register_bridge_functions(iii: &Arc<IIIClient>, remote: RemoteCell) {
     let caller = Arc::new(RemoteCaller { cell: remote });
     {
         let caller = caller.clone();
         iii.register_function(
             functions::INVOKE_FN,
-            RegisterFunction::new_async(move |input: Value| {
-                let caller = caller.clone();
-                async move {
-                    functions::handle_invoke(caller.as_ref(), input)
-                        .await
-                        .map_err(Error::from)
-                }
-            })
+            RegisterFunction::new_async_with_bad_request(
+                move |req: functions::InvokeInput| {
+                    let caller = caller.clone();
+                    async move {
+                        functions::handle_invoke_typed(caller.as_ref(), req)
+                            .await
+                            .map_err(Error::from)
+                    }
+                },
+                functions::invoke_bad_request,
+            )
             .description("Invoke a function on the remote III instance"),
         );
     }
     iii.register_function(
         functions::INVOKE_ASYNC_FN,
-        RegisterFunction::new_async(move |input: Value| {
-            let caller = caller.clone();
-            async move {
-                functions::handle_invoke_async(caller.as_ref(), input)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
+        RegisterFunction::new_async_with_bad_request(
+            move |req: functions::InvokeInput| {
+                let caller = caller.clone();
+                async move {
+                    functions::handle_invoke_async_typed(caller.as_ref(), req)
+                        .await
+                        .map_err(Error::from)
+                }
+            },
+            functions::invoke_bad_request,
+        )
         .description("Fire-and-forget invoke on the remote III instance"),
     );
 }
 
 /// One local proxy function per `forward` entry (mod.rs:193-237).
+///
+/// Request and response are [`RawValue`]: a `forward` entry's shape is
+/// whatever the user-configured remote function expects/returns, so the only
+/// schema that can be published here is the permissive-but-typed union —
+/// `#[serde(transparent)]` means deserialization can never fail.
 pub fn register_forward_function(
     iii: &Arc<IIIClient>,
     remote: RemoteCell,
@@ -163,13 +181,14 @@ pub fn register_forward_function(
     let local = local_function.to_string();
     iii.register_function(
         local_function,
-        RegisterFunction::new_async(move |input: Value| {
+        RegisterFunction::new_async(move |input: RawValue| {
             let caller = caller.clone();
             let local = local.clone();
             let forwards = forwards.clone();
             async move {
-                functions::handle_forward(caller.as_ref(), &forwards, &local, input)
+                functions::handle_forward(caller.as_ref(), &forwards, &local, input.into())
                     .await
+                    .map(RawValue)
                     .map_err(Error::from)
             }
         })
@@ -179,6 +198,10 @@ pub fn register_forward_function(
 
 /// One function per `expose` entry, registered ON THE REMOTE engine and
 /// backed by a local call (mod.rs:240-270).
+///
+/// Request and response are [`RawValue`] for the same reason as
+/// [`register_forward_function`]: an `expose` entry's shape is whatever the
+/// user-configured local function expects/returns.
 pub fn register_expose_function(
     remote_client: &Arc<IIIClient>,
     iii: Arc<IIIClient>,
@@ -189,13 +212,14 @@ pub fn register_expose_function(
     let name = remote_name.to_string();
     remote_client.register_function(
         remote_name,
-        RegisterFunction::new_async(move |input: Value| {
+        RegisterFunction::new_async(move |input: RawValue| {
             let local = local.clone();
             let name = name.clone();
             let exposes = exposes.clone();
             async move {
-                functions::handle_expose(local.as_ref(), &exposes, &name, input)
+                functions::handle_expose(local.as_ref(), &exposes, &name, input.into())
                     .await
+                    .map(RawValue)
                     .map_err(Error::from)
             }
         }),
