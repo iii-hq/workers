@@ -37,6 +37,7 @@ on:
           - provider-xai
           - provider-zai
           - pubsub
+          - queue
           - rbac-proxy
           - session-manager
           - slack

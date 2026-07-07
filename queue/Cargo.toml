@@ -1,0 +1,51 @@
+[workspace]
+
+[package]
+name = "iii-queue"
+version = "0.1.0"
+edition = "2021"
+description = "Durable queue worker for iii - durable:subscriber trigger type and queue service functions"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "iii_queue"
+path = "src/lib.rs"
+
+[[bin]]
+name = "queue"
+path = "src/main.rs"
+
+[features]
+default = ["rabbitmq"]
+rabbitmq = ["dep:lapin"]
+# In-process test-only transport (`adapters::memory::MemoryAdapter`),
+# registered under the adapter name "memory". Off in normal builds; turned on
+# for this crate's own test targets via the dev-dependency self-reference
+# below (mirrors `engine/Cargo.toml:168-171`).
+test-adapters = []
+
+[dependencies]
+iii-sdk = "=0.20.0"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
+redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
+lapin = { version = "3", optional = true }
+
+[dev-dependencies]
+serial_test = "3"
+# Self-dependency trick: turns on `test-adapters` for this crate's own test
+# targets (the `memory` adapter the config hot-swap tests swap to) without
+# enabling it for a normal build. Mirrors `engine/Cargo.toml:168-171`.
+iii-queue = { path = ".", features = ["test-adapters"] }

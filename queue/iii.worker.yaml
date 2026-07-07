@@ -1,0 +1,37 @@
+iii: v1
+name: queue
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: queue
+description: Durable function queues - registers the `durable:subscriber` trigger type and the queue/DLQ service functions.
+# `config` seeds the `configuration` worker's `queue` entry on first boot;
+# runtime edits after that go through the configuration worker, not this
+# file. `adapter.name` selects the transport. See README.md for the full
+# config key reference per adapter. Alternatives to the default below:
+#
+#   adapter:                      # redis: pub/sub only, no DLQ
+#     name: redis
+#     config:
+#       redis_url: redis://localhost:6379
+#
+#   adapter:                      # rabbitmq: full retry/DLQ/priority/fifo
+#     name: rabbitmq
+#     config:
+#       amqp_url: amqp://localhost:5672
+#       max_attempts: 3
+#       prefetch_count: 10
+#       queue_mode: standard       # or fifo
+#       priority_field: priority
+#
+#   adapter:                      # builtin: file-backed, survives restarts
+#     name: builtin
+#     config:
+#       store_method: file_based
+#       file_path: ./data/queue
+#       save_interval_ms: 5000
+config:
+  adapter:
+    name: builtin
+dependencies:
+  configuration: "^0.19.0"
