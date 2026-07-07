@@ -30,6 +30,29 @@ pub struct FilesystemGrantsResponse {
     pub roots: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct FilesystemInfoRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FilesystemInfoResponse {
+    /// Working-directory root stamped onto the first turn of a session whose
+    /// send carries no explicit `fs_scope.root`; `null` when defaulting is
+    /// disabled (`default_filesystem_root: "off"`) or the cwd is unreadable.
+    pub default_root: Option<String>,
+}
+
+/// The resolved default working directory — the value a console pre-fills the
+/// picker with so the folder a new chat will be scoped to is visible up front.
+pub async fn info(
+    deps: &Deps,
+    _req: FilesystemInfoRequest,
+) -> Result<FilesystemInfoResponse, HarnessError> {
+    let cfg = deps.cfg().await;
+    Ok(FilesystemInfoResponse {
+        default_root: cfg.resolved_default_filesystem_root(),
+    })
+}
+
 pub async fn grant(
     deps: &Deps,
     req: FilesystemGrantRequest,

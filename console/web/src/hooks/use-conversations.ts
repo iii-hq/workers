@@ -90,10 +90,11 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
-    // No silent pre-fill: a new chat starts with NO working dir so the user
-    // makes an explicit, visible choice (the picker opens to recent projects).
-    // Silently inheriting the last-used dir is exactly what made a chat operate
-    // in the wrong directory without the user choosing it.
+    // Drafts start with no working dir; ChatView pre-fills the stack's
+    // default folder (harness::filesystem::info, validated against the live
+    // shell) once known — always visible in the picker chip. What stays
+    // forbidden is silently inheriting the LAST-USED dir: that is what once
+    // made a chat operate in the wrong directory without the user choosing it.
     workingDir: null,
     messages: [],
     status: 'idle',
@@ -215,6 +216,13 @@ export interface ConversationsApi {
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; only meaningful while the chat is a draft. */
   setWorkingDir: (id: string, dir: string) => void
+  /**
+   * Seed a draft's working dir with the stack default: patches state only
+   * while the chat is still a draft with no dir (an explicit pick or a
+   * materialised session wins), and deliberately skips the recent-projects
+   * list and the re-scope transcript notice — it is a default, not a choice.
+   */
+  prefillWorkingDir: (id: string, dir: string) => void
   appendMessage: (id: string, message: Message) => void
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
   compactConversation: (id: string, marker: Message) => void
@@ -636,6 +644,15 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const prefillWorkingDir = useCallback(
+    (id: string, dir: string) => {
+      patchConversation(id, (c) =>
+        c.draft && c.workingDir == null ? { ...c, workingDir: dir } : c,
+      )
+    },
+    [patchConversation],
+  )
+
   const appendMessage = useCallback(
     (id: string, message: Message) =>
       patchConversation(id, (c) => appendMessageToConversation(c, message)),
@@ -708,6 +725,7 @@ export function useConversations(
     setModel,
     setMode,
     setWorkingDir,
+    prefillWorkingDir,
     appendMessage,
     updateMessage,
     compactConversation,

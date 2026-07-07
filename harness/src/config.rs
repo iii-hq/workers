@@ -81,6 +81,17 @@ pub struct WorkerConfig {
     /// deny-all.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
+
+    /// Working-directory root stamped onto the FIRST turn of a session whose
+    /// send carries no `metadata.fs_scope.root`. Absent/null → the harness
+    /// process's working directory at boot (the local stack launches every
+    /// worker from the user's project folder, so that cwd IS the current
+    /// folder); the literal string `"off"` → never default (sessions stay
+    /// unscoped unless the caller supplies a root); any other value → that
+    /// path. Explicit roots on the send always win, and existing sessions are
+    /// never retroactively scoped.
+    #[serde(default)]
+    pub default_filesystem_root: Option<String>,
 }
 
 impl WorkerConfig {
@@ -134,6 +145,36 @@ impl WorkerConfig {
             sweep_expression: self.sweep_expression.clone(),
         }
     }
+
+    /// The effective default working-directory root for new sessions (see
+    /// [`WorkerConfig::default_filesystem_root`]): the configured path, the
+    /// boot-time process cwd when unset, or `None` when set to `"off"`.
+    pub fn resolved_default_filesystem_root(&self) -> Option<String> {
+        match self.default_filesystem_root.as_deref() {
+            Some("off") => None,
+            Some(path) => Some(path.to_string()),
+            None => boot_cwd().map(str::to_string),
+        }
+    }
+}
+
+/// The process working directory captured once at first use (workers never
+/// chdir), canonicalized so it matches the paths the shell worker echoes.
+fn boot_cwd() -> Option<&'static str> {
+    static BOOT_CWD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BOOT_CWD
+        .get_or_init(|| {
+            let cwd = match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot read process cwd; no default filesystem root");
+                    return None;
+                }
+            };
+            let canon = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+            Some(canon.to_string_lossy().into_owned())
+        })
+        .as_deref()
 }
 
 /// Signature of the structurally-bound config (see
@@ -264,6 +305,7 @@ impl Default for WorkerConfig {
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
+            default_filesystem_root: None,
         }
     }
 }
