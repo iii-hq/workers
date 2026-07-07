@@ -324,6 +324,11 @@ async fn handle(
     match resp.map(|v| v.get("id").and_then(Value::as_str).map(str::to_string)) {
         Ok(Some(trigger_id)) => {
             if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
+                // Documented race, not a failure: a `once` fire claimed the
+                // slot inside the bind window, so the subscription already
+                // delivered — only the orphan engine binding is left to clean
+                // up. `Ok` is deliberate; erroring here would invite a
+                // duplicate re-registration of work that already ran.
                 unregister_engine_trigger(deps, &trigger_id).await;
             }
         }
@@ -547,6 +552,10 @@ async fn handle_react(
             "__subscription_id".to_string(),
             Value::String(sub_id.clone()),
         );
+        // Harness stamps are never caller-supplied. The other stamps overwrite
+        // unconditionally; `__once` is conditional, so a smuggled value would
+        // make the binding retire while the response echoes standing.
+        m.remove("__once");
         if once {
             m.insert("__once".to_string(), Value::Bool(true));
         }
@@ -570,6 +579,11 @@ async fn handle_react(
     match resp.map(|v| v.get("id").and_then(Value::as_str).map(str::to_string)) {
         Ok(Some(trigger_id)) => {
             if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
+                // Documented race, not a failure: a `once` fire claimed the
+                // slot inside the bind window, so the subscription already
+                // delivered — only the orphan engine binding is left to clean
+                // up. `Ok` is deliberate; erroring here would invite a
+                // duplicate re-registration of work that already ran.
                 unregister_engine_trigger(deps, &trigger_id).await;
             }
         }
