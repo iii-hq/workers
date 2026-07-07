@@ -77,8 +77,11 @@ attributable to a turn. One `harness::turn` step does:
    [`harness::turn_started`](#trigger-types-emitted) (first step of a turn), then run the
    `pre_turn` [hook chain](#hooks) — a `deny` ends the turn (`failed`, with the hook's reason)
    before any model spend.
-2. Load active path: `session::messages` with `include_custom: true` (custom entries carry the
-   compaction record, below).
+2. Drain the message queue: append any [queued messages](#concurrency--steering) (messages that
+   arrived while the previous step streamed) to the transcript in arrival order — each under its
+   stored deterministic entry id, so a redelivered drain is a no-op — then load the active path:
+   `session::messages` with `include_custom: true` (custom entries carry the compaction record,
+   below).
 3. Assemble context: read the latest compaction entry (if any) on the active path, reduce the
    candidate window to it, and call `context::assemble` with `previous_summary` set (see
    [Compaction persistence](#compaction-persistence)); skipped if `context-manager` absent -> raw
@@ -116,8 +119,10 @@ attributable to a turn. One `harness::turn` step does:
    later (see [Deferred trigger](#deferred-trigger-pending-function-results)). With no pending
    calls, re-enqueue `harness::turn` to let the model react.
 6. Else, steering check: re-read `session::messages` for user-role entries after the turn record's
-   `watermark_entry_id` (see [Concurrency & steering](#concurrency--steering)); if present, continue
-   with another generate step. Otherwise finalise: resolve the turn `result` per the
+   `watermark_entry_id`, and check the message queue for model-visible (non-custom) rows (see
+   [Concurrency & steering](#concurrency--steering)); if either has entries, continue
+   with another generate step (whose drain delivers all queued messages).
+   Otherwise finalise: resolve the turn `result` per the
    [output contract](#output-contract) (a schema-bearing contract with no valid result yet nudges
    instead, bounded), mark the turn `completed`, `session::set-status done`, emit
    [`harness::turn_completed`](#trigger-types-emitted), and — for a sub-agent turn — resolve the
@@ -203,16 +208,30 @@ One turn per session, enforced at the entry point:
   turn only if no record exists or the existing record is terminal (`completed` / `cancelled` /
   `failed`). Two concurrent sends create exactly one turn — the loser of the CAS takes the merge
   path.
-- **Merge path.** If a turn is already `running` / `awaiting_functions`, `harness::send` only
-  appends the user message and returns the running turn's id with `merged: true`. The running loop's
-  steering check folds the message in. A merged send never changes the running turn's `model`,
-  `system_prompt`, or `functions` policy — per-send options are stored on the turn record when the
-  turn is created and apply unchanged until it ends.
-  **Merge double-check.** The append races the loop's completion: the steering check (step 6) may
-  read before the append and complete after it, which would strand the message until the next send.
-  So after appending, the merge path re-reads the turn record — if the turn went terminal in that
-  window, it re-runs the CAS and starts a fresh turn for the appended message. A merged send is
-  never silently dropped.
+- **Merge path.** If a turn is already `running` / `awaiting_functions`, `harness::send` folds the
+  message into it and returns the running turn's id with `merged: true` — no second turn starts. A
+  merged send never changes the running turn's `model`, `system_prompt`, or `functions` policy —
+  per-send options are stored on the turn record when the turn is created and apply unchanged until
+  it ends. How the message is folded depends on the turn's status:
+  - **`running` → message queue.** A `running` step may be mid-stream, so the message is **not**
+    appended — it parks as one row in the [`harness_queue` state scope](#state) (a blind write
+    under a fresh unique key; the send stays lock-free and fast) and the response carries
+    `queued: true`. The loop drains the queue at the start of its next step: every queued message
+    appends to the transcript in arrival order, **after** the streamed reply — the model receives
+    everything that arrived during the stream at once. Queued user-role messages steer (the check
+    is position-independent — no watermark subtleties); a custom-only queue does **not** steer
+    (custom content never reaches the model, and a re-generate over an assistant-tailed context is
+    a provider prefill rejection) — its rows are delivered to the transcript by the finalise drain
+    instead.
+  - **`awaiting_functions` → append.** Nothing is streaming while a turn is parked on pending
+    calls; the message appends to the transcript immediately and folds in when the turn resumes
+    (its entries sit after the watermark).
+  **Merge double-check.** The enqueue/append races the loop's completion, which would strand the
+  message until the next send. So after writing, the merge path re-reads the turn record — if the
+  turn went terminal in that window, it re-runs the CAS and starts a fresh turn (a fresh turn's
+  step-0 drain delivers any queued rows). A row enqueued after the loop's *last* queue check is
+  appended by the finalise drain — visible in the transcript, picked up by the next turn. A merged
+  send is never silently dropped.
 - **Steering watermark.** The turn record stores `watermark_entry_id` — the active-path leaf
   observed when the latest generate step assembled its context. The steering check (loop step 6)
   asks `session::messages` for user-role entries **after the watermark**; if any exist it continues
@@ -703,8 +722,8 @@ type TurnStatus =
 
 Accept an incoming message, ensure the session, append the user message, and enqueue the first turn
 step. Returns before the turn runs. If a turn is already running for the session, the message is
-appended and folded into it instead — no second turn starts (see
-[Concurrency & steering](#concurrency--steering)).
+folded into it instead — queued while a step streams (`queued: true`), appended otherwise — and no
+second turn starts (see [Concurrency & steering](#concurrency--steering)).
 
 **Idempotency.** Webhook sources redeliver (Telegram updates, Slack retries). When
 `idempotency_key` is set, the user entry id derives from it (the duplicate append is a no-op) and
@@ -756,6 +775,8 @@ type SendResponse = {
   turn_id: string;     // the new turn — or the running turn when merged
   accepted: true;
   merged?: boolean;    // true when folded into an in-flight turn (steering)
+  queued?: boolean;    // true when parked in the message queue while a step streams;
+                       // lands in the transcript when the stream ends
   deduplicated?: boolean; // true when idempotency_key matched an earlier send
 };
 ```
@@ -969,6 +990,14 @@ type StatusResponse = {
     session_id: string;
     turn_id: string;
   }>;
+  queued?: Array<{                    // messages parked while a step streams, in arrival order
+    id: string;
+    session_id: string;
+    message: AgentMessage;
+    entry_id: string;                 // transcript entry id the drain appends under
+    origin?: Record<string, unknown>;
+    queued_at: number;
+  }>;
   result?: unknown;                   // output-contract result (terminal turns)
   result_error?: string;
 } | null;                          // null for unknown sessions
@@ -982,6 +1011,7 @@ type StatusResponse = {
 |---|---|---|---|
 | `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, per-send options (incl. output contract), per-call checkpoints `(`triggered` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). |
 | `harness_idem` | `<idempotency_key>` | `{ session_id, turn_id, entry_id, ts }` | `harness::send` webhook dedupe (TTL ~24h). |
+| `harness_queue` | `<session_id>:<id>` | `{ id, session_id, message, entry_id, origin?, queued_at }` | One row per message that arrived while a step streamed (see [Concurrency & steering](#concurrency--steering)); drained into the transcript at the next step (or by the finalise drain). Rows live only as long as one turn. |
 
 Transcript truth lives in [session-manager](session-manager.md); the harness keeps only loop
 bookkeeping. Neither scope expires on its own: `harness_idem` rows are TTL-bound by contract, and a
