@@ -46,6 +46,10 @@ export interface StoredSpan {
    *  Replaced by the final span (same span_id) when it closes. Only
    *  serialized when true. */
   pending?: boolean
+  /** Trace-level tags (`iii.tag.*` + session/message identity attributes)
+   *  merged from every span of the trace by `engine::traces::list`. Only
+   *  present on list rows; live-streamed rows don't carry it. */
+  trace_tags?: Record<string, string>
 }
 
 export interface TracesResponse {
@@ -57,6 +61,9 @@ export interface TracesResponse {
 
 export interface TracesFilterParams {
   trace_id?: string
+  /** Fetch a specific set of traces (grouped-view member expansion).
+   *  Ignored when `trace_id` is set. */
+  trace_ids?: string[]
   service_name?: string
   name?: string
   status?: 'ok' | 'error' | 'unset'
@@ -67,6 +74,10 @@ export interface TracesFilterParams {
   start_time?: number
   end_time?: number
   attributes?: [string, string][]
+  /** Exclude rows whose OWN attributes match any [key, value] pair (the
+   *  engine-side arm of hidden functions; the flat list filters
+   *  client-side instead to keep the live-append path). */
+  exclude_attributes?: [string, string][]
   sort_by?: 'start_time' | 'duration' | 'service_name'
   sort_order?: 'asc' | 'desc'
   offset?: number
@@ -104,10 +115,15 @@ export interface TracesGroupByParams {
   since_ms?: number
   limit?: number
   include_internal?: boolean
+  /** Attribute whose value becomes each group's human-readable `label`
+   *  (e.g. group by `iii.session.id`, label by `iii.session.name`). */
+  label_attribute?: string
 }
 
 export interface TraceGroup {
   value: string
+  /** Resolved from `label_attribute` when requested and present. */
+  label?: string | null
   trace_ids: string[]
   span_count: number
   first_seen_ms: number

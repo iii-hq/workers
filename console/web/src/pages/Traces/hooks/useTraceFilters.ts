@@ -4,7 +4,7 @@ import type { GroupByOption } from '../lib/groupTraces'
 import { buildFilterParams, countActiveFilters } from '../lib/traceFilters'
 
 export interface TraceFilterState {
-  serviceName?: string
+  workerName?: string
   operationName?: string
   status?: 'ok' | 'error' | 'unset' | null
   minDurationMs?: number | null
@@ -25,7 +25,7 @@ export interface TraceFilterState {
 }
 
 const defaultFilters: TraceFilterState = {
-  serviceName: undefined,
+  workerName: undefined,
   operationName: undefined,
   status: null,
   minDurationMs: null,
@@ -44,7 +44,7 @@ const defaultFilters: TraceFilterState = {
  * Hook for managing trace filter state with server-side pagination.
  *
  * Features:
- * - 300ms debouncing for text inputs (serviceName, operationName)
+ * - 300ms debouncing for text inputs (workerName, operationName)
  * - Automatic page reset when filters change
  * - Type-safe API parameter conversion (camelCase → snake_case)
  * - Range validation (auto-swaps min/max if invalid)
@@ -59,7 +59,7 @@ const defaultFilters: TraceFilterState = {
  * @example
  * const { filters, updateFilter, getApiParams } = useTraceFilters()
  *
- * updateFilter('serviceName', 'api-gateway')
+ * updateFilter('workerName', 'api-gateway')
  * updateFilter('minDurationMs', 100)
  *
  * const apiParams = getApiParams()
@@ -67,14 +67,14 @@ const defaultFilters: TraceFilterState = {
  */
 export function useTraceFilters() {
   const [filters, setFilters] = useState<TraceFilterState>(defaultFilters)
-  const [debouncedServiceName, setDebouncedServiceName] = useState<
+  const [debouncedWorkerName, setDebouncedWorkerName] = useState<
     string | undefined
   >(undefined)
   const [debouncedOperationName, setDebouncedOperationName] = useState<
     string | undefined
   >(undefined)
 
-  const serviceNameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const workerNameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const operationNameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   )
@@ -86,7 +86,7 @@ export function useTraceFilters() {
 
   useEffect(() => {
     return () => {
-      if (serviceNameTimerRef.current) clearTimeout(serviceNameTimerRef.current)
+      if (workerNameTimerRef.current) clearTimeout(workerNameTimerRef.current)
       if (operationNameTimerRef.current)
         clearTimeout(operationNameTimerRef.current)
     }
@@ -107,13 +107,12 @@ export function useTraceFilters() {
       })
 
       // Handle debouncing for text inputs
-      if (key === 'serviceName') {
-        if (serviceNameTimerRef.current)
-          clearTimeout(serviceNameTimerRef.current)
+      if (key === 'workerName') {
+        if (workerNameTimerRef.current) clearTimeout(workerNameTimerRef.current)
         const timer = setTimeout(() => {
-          setDebouncedServiceName(value as string | undefined)
+          setDebouncedWorkerName(value as string | undefined)
         }, 300)
-        serviceNameTimerRef.current = timer
+        workerNameTimerRef.current = timer
       }
 
       if (key === 'operationName') {
@@ -130,9 +129,9 @@ export function useTraceFilters() {
 
   const resetFilters = useCallback(() => {
     setFilters(defaultFilters)
-    setDebouncedServiceName(undefined)
+    setDebouncedWorkerName(undefined)
     setDebouncedOperationName(undefined)
-    if (serviceNameTimerRef.current) clearTimeout(serviceNameTimerRef.current)
+    if (workerNameTimerRef.current) clearTimeout(workerNameTimerRef.current)
     if (operationNameTimerRef.current)
       clearTimeout(operationNameTimerRef.current)
   }, [])
@@ -196,7 +195,7 @@ export function useTraceFilters() {
 
   return {
     filters,
-    debouncedServiceName,
+    debouncedWorkerName,
     debouncedOperationName,
     updateFilter,
     resetFilters,

@@ -765,8 +765,6 @@ dependencies = [
 [[package]]
 name = "iii-helpers"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09daa7c14a9e4c1f7077c4a181918d207e3f05cdfea8b2d7781bbeb80caf4c5d"
 dependencies = [
  "futures-util",
  "opentelemetry",

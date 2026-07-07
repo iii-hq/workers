@@ -29,7 +29,7 @@ export interface TraceListItem {
   endTime?: number
   duration?: number
   spanCount: number
-  services: string[]
+  workers: string[]
 }
 
 export interface UseTraceDataOptions {

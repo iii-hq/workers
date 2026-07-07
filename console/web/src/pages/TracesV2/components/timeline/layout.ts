@@ -46,7 +46,7 @@ export interface TimelineSpan {
   color?: string
   status?: 'ok' | 'error' | 'pending' | 'unset'
   label?: string
-  /** hover-card subtitle (service name, trace id, …) */
+  /** hover-card subtitle (worker name, trace id, …) */
   meta?: string
 }
 

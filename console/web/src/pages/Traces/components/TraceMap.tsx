@@ -27,19 +27,19 @@ interface TraceMapProps {
   selectedSpanId?: string
 }
 
-interface ServiceStats {
+interface WorkerStats {
   name: string
   spanCount: number
   totalDuration: number
   errorCount: number
 }
 
-interface ServiceNodeData extends Record<string, unknown> {
-  stats: ServiceStats
+interface WorkerNodeData extends Record<string, unknown> {
+  stats: WorkerStats
   isSelected: boolean
 }
 
-interface ServiceEdgeData extends Record<string, unknown> {
+interface WorkerEdgeData extends Record<string, unknown> {
   callCount: number
   totalDuration: number
   hasError: boolean
@@ -47,7 +47,7 @@ interface ServiceEdgeData extends Record<string, unknown> {
 
 const NODE_WIDTH = 220
 
-function ServiceNode({ data }: NodeProps<Node<ServiceNodeData>>) {
+function WorkerNode({ data }: NodeProps<Node<WorkerNodeData>>) {
   const { stats, isSelected } = data
   const hasError = stats.errorCount > 0
   const tone = hasError ? 'alert' : 'accent'
@@ -102,14 +102,14 @@ function ServiceNode({ data }: NodeProps<Node<ServiceNodeData>>) {
   )
 }
 
-function ServiceEdge({
+function WorkerEdge({
   sourceX,
   sourceY,
   targetX,
   targetY,
   data,
   markerEnd,
-}: EdgeProps<Edge<ServiceEdgeData>>) {
+}: EdgeProps<Edge<WorkerEdgeData>>) {
   const [edgePath, labelX, labelY] = getSimpleBezierPath({
     sourceX,
     sourceY,
@@ -152,19 +152,19 @@ function ServiceEdge({
   )
 }
 
-const nodeTypes = { service: ServiceNode }
-const edgeTypes = { service: ServiceEdge }
+const nodeTypes = { worker: WorkerNode }
+const edgeTypes = { worker: WorkerEdge }
 
-interface ServiceGraph {
-  nodes: Node<ServiceNodeData>[]
-  edges: Edge<ServiceEdgeData>[]
+interface WorkerGraph {
+  nodes: Node<WorkerNodeData>[]
+  edges: Edge<WorkerEdgeData>[]
 }
 
-function buildServiceGraph(
+function buildWorkerGraph(
   data: WaterfallData,
   selectedSpanId: string | undefined,
-): ServiceGraph {
-  const serviceMap = new Map<string, ServiceStats>()
+): WorkerGraph {
+  const workerMap = new Map<string, WorkerStats>()
   const edgeMap = new Map<
     string,
     {
@@ -177,15 +177,15 @@ function buildServiceGraph(
   >()
 
   for (const span of data.spans) {
-    const service = span.service_name || span.name.split('.')[0] || 'unknown'
-    const existing = serviceMap.get(service) ?? {
-      name: service,
+    const worker = span.service_name || span.name.split('.')[0] || 'unknown'
+    const existing = workerMap.get(worker) ?? {
+      name: worker,
       spanCount: 0,
       totalDuration: 0,
       errorCount: 0,
     }
-    serviceMap.set(service, {
-      name: service,
+    workerMap.set(worker, {
+      name: worker,
       spanCount: existing.spanCount + 1,
       totalDuration: existing.totalDuration + (span.duration_ms || 0),
       errorCount: existing.errorCount + (span.status === 'error' ? 1 : 0),
@@ -218,8 +218,8 @@ function buildServiceGraph(
     })
   }
 
-  const serviceNames = Array.from(serviceMap.keys())
-  const selectedService = selectedSpanId
+  const workerNames = Array.from(workerMap.keys())
+  const selectedWorker = selectedSpanId
     ? (() => {
         const span = spanById.get(selectedSpanId)
         if (!span) return undefined
@@ -228,17 +228,17 @@ function buildServiceGraph(
     : undefined
 
   // Radial layout — stable, deterministic, schematic-friendly.
-  const nodeCount = Math.max(1, serviceNames.length)
+  const nodeCount = Math.max(1, workerNames.length)
   const centerX = 0
   const centerY = 0
   const radius = nodeCount === 1 ? 0 : Math.max(180, 90 + nodeCount * 36)
 
-  const nodes: Node<ServiceNodeData>[] = serviceNames.map((name, index) => {
-    const stats = serviceMap.get(name)
+  const nodes: Node<WorkerNodeData>[] = workerNames.map((name, index) => {
+    const stats = workerMap.get(name)
     if (!stats) {
       return {
         id: name,
-        type: 'service',
+        type: 'worker',
         position: { x: 0, y: 0 },
         data: {
           stats: {
@@ -254,24 +254,24 @@ function buildServiceGraph(
     const angle = (index / nodeCount) * 2 * Math.PI - Math.PI / 2
     return {
       id: name,
-      type: 'service',
+      type: 'worker',
       position: {
         x: centerX + radius * Math.cos(angle) - NODE_WIDTH / 2,
         y: centerY + radius * Math.sin(angle),
       },
       data: {
         stats,
-        isSelected: selectedService === name,
+        isSelected: selectedWorker === name,
       },
     }
   })
 
-  const edges: Edge<ServiceEdgeData>[] = Array.from(edgeMap.values()).map(
+  const edges: Edge<WorkerEdgeData>[] = Array.from(edgeMap.values()).map(
     (edge) => ({
       id: `${edge.from}->${edge.to}`,
       source: edge.from,
       target: edge.to,
-      type: 'service',
+      type: 'worker',
       data: {
         callCount: edge.callCount,
         totalDuration: edge.totalDuration,
@@ -287,22 +287,22 @@ function TraceMapInner({ data, onSpanClick, selectedSpanId }: TraceMapProps) {
   const { fitView } = useReactFlow()
 
   const { nodes, edges } = useMemo(
-    () => buildServiceGraph(data, selectedSpanId),
+    () => buildWorkerGraph(data, selectedSpanId),
     [data, selectedSpanId],
   )
 
   const handleNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
       const span = data.spans.find((s) => {
-        const service = s.service_name || s.name.split('.')[0] || 'unknown'
-        return service === node.id
+        const worker = s.service_name || s.name.split('.')[0] || 'unknown'
+        return worker === node.id
       })
       if (span) onSpanClick(span)
     },
     [data.spans, onSpanClick],
   )
 
-  const serviceCount = nodes.length
+  const workerCount = nodes.length
   const connectionCount = edges.length
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refit when graph shape changes
@@ -312,14 +312,14 @@ function TraceMapInner({ data, onSpanClick, selectedSpanId }: TraceMapProps) {
       fitView({ padding: 0.2, duration: 0 })
     })
     return () => cancelAnimationFrame(id)
-  }, [fitView, serviceCount, connectionCount])
+  }, [fitView, workerCount, connectionCount])
 
   return (
     <div className="flex flex-col h-full bg-bg">
       <div className="flex items-center justify-between px-4 py-2 border-b border-rule bg-panel flex-shrink-0">
         <div className="flex items-center gap-3 font-mono text-[11px] text-ink-faint tabular-nums lowercase">
           <span>
-            {serviceCount} service{serviceCount !== 1 ? 's' : ''}
+            {workerCount} worker{workerCount !== 1 ? 's' : ''}
           </span>
           <span className="text-ink-ghost">•</span>
           <span>
@@ -327,7 +327,7 @@ function TraceMapInner({ data, onSpanClick, selectedSpanId }: TraceMapProps) {
           </span>
         </div>
         <span className="font-mono text-[11px] text-ink-faint lowercase">
-          click a node to view service details
+          click a node to view worker details
         </span>
       </div>
 

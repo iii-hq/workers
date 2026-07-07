@@ -22,7 +22,6 @@ import { cn } from '@/lib/utils'
 import { fetchTraces, type StoredSpan, type TraceGroup } from './api/traces'
 import { FlameGraph } from './components/FlameGraph'
 import { FlowView } from './components/FlowView'
-import { ServiceBreakdown } from './components/ServiceBreakdown'
 import { SessionDetailPanel } from './components/SessionDetailPanel'
 import { SpanPanel } from './components/SpanPanel'
 import { TraceFilters } from './components/TraceFilters'
@@ -32,6 +31,7 @@ import { TraceListRow } from './components/TraceListRow'
 import { TraceMap } from './components/TraceMap'
 import { ViewSwitcher, type ViewType } from './components/ViewSwitcher'
 import { WaterfallChart } from './components/WaterfallChart'
+import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useResizablePanels } from './hooks/useResizablePanels'
 import { useTraceData } from './hooks/useTraceData'
 import { useTraceFilters } from './hooks/useTraceFilters'
@@ -556,7 +556,7 @@ export function Traces() {
                           </div>
                           {activeView !== 'flow' && (
                             <div className="border-t border-rule flex-shrink-0">
-                              <ServiceBreakdown data={waterfallData} />
+                              <WorkerBreakdown data={waterfallData} />
                             </div>
                           )}
                         </>

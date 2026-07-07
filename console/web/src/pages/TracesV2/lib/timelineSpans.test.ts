@@ -19,7 +19,7 @@ function row(overrides: Partial<TraceListItem> = {}): TraceListItem {
     endTime: 100_040,
     duration: 40,
     spanCount: 1,
-    services: ['engine'],
+    workers: ['engine'],
     ...overrides,
   }
 }

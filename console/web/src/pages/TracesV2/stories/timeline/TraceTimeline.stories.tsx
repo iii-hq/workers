@@ -140,7 +140,7 @@ type Story = StoryObj<typeof meta>
 /** The rich agent trace: a 4-deep cascade fanning into 3 leaf spans. */
 export const RichTrace: Story = {}
 
-/** Two quick spans across two services — a root and one child. */
+/** Two quick spans across two workers — a root and one child. */
 export const SimpleTrace: Story = {
   args: { data: WATERFALL_SIMPLE },
 }
@@ -177,15 +177,48 @@ export const Selectable: Story = {
 }
 
 /**
- * The floating funnel expands on hover into the span filter menu: groups
- * ranked busiest-first (db.write's 24 calls top the list), checking one
- * hides its spans and their subtrees, and the window never rescales. Here
- * spans group by operation name; the traces page groups by owning
- * function id (`traceSpanGroupKey`).
+ * The floating funnel expands on hover into the filter menu: a workers
+ * section plus span groups ranked busiest-first (db.write's 24 calls top
+ * the list); checking an entry hides its spans and their subtrees, and
+ * the window never rescales. Here spans group by operation name and the
+ * selection is story-local; the traces page groups by owning function id
+ * (`traceSpanGroupKey`) and shares a console-config-persisted selection
+ * across the detail views (`useSpanFilterSelection`).
  */
 export const WithSpanFilterMenu: Story = {
   args: {
     data: WATERFALL_DEEP,
     spanGroupKey: (span) => span.name,
+  },
+  render: function WithSpanFilterMenuStory(args) {
+    const [hiddenGroups, setHiddenGroups] = useState<ReadonlySet<string>>(
+      () => new Set(),
+    )
+    const [hiddenWorkers, setHiddenWorkers] = useState<ReadonlySet<string>>(
+      () => new Set(),
+    )
+    const toggle =
+      (set: (updater: (prev: ReadonlySet<string>) => Set<string>) => void) =>
+      (key: string) =>
+        set((prev) => {
+          const next = new Set(prev)
+          if (!next.delete(key)) next.add(key)
+          return next
+        })
+    return (
+      <TraceTimeline
+        {...args}
+        spanFilter={{
+          hiddenGroups,
+          hiddenWorkers,
+          toggleGroup: toggle(setHiddenGroups),
+          toggleWorker: toggle(setHiddenWorkers),
+          clear: () => {
+            setHiddenGroups(new Set())
+            setHiddenWorkers(new Set())
+          },
+        }}
+      />
+    )
   },
 }

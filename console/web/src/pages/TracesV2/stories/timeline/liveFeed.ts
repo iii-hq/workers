@@ -41,7 +41,7 @@ interface SimState {
 export const ALL_KINDS = ['zap', 'sparkle', 'flame', 'lambda'] as const
 
 // Colors come from the production path: each label hashes into
-// `SERVICE_PALETTE` via `getServiceColor`, exactly like real trace data.
+// `WORKER_PALETTE` via `getWorkerColor`, exactly like real trace data.
 export const LABELS = [
   'ingest',
   'route',

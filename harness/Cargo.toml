@@ -42,3 +42,8 @@ jsonschema = { version = "0.18", default-features = false }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+
+# TEMPORARY local-verification patch (do not commit): build against the
+# workspace iii-helpers so the new baggage allowlist is active locally.
+[patch.crates-io]
+iii-helpers = { path = "../../iii/sdk/packages/rust/helpers" }

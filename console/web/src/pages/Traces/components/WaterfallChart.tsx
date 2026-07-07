@@ -423,7 +423,7 @@ export function WaterfallChart({
   }, [])
 
   // Engine routing spans (`handle_invocation X`, `call X` on the `iii`
-  // service) are hidden by default; toggling reveals them in their
+  // worker) are hidden by default; toggling reveals them in their
   // always-merged form (one row per handle/call pair, marked with `+1`).
   // The persisted hook is shared with the flame-graph view so the
   // preference survives view swaps.

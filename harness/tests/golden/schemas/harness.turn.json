@@ -4,6 +4,13 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "description": "The enqueued `harness::turn` step payload.",
     "properties": {
+      "message_preview": {
+        "description": "Preview carried from the turn record so the step can stamp the `iii.tag.message` baggage before any state read.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       },

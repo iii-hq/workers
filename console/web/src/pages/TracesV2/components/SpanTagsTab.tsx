@@ -20,7 +20,7 @@ const NAMESPACE_LABELS: Record<string, string> = {
   thread: 'thread',
   code: 'code',
   otel: 'opentelemetry',
-  service: 'service',
+  service: 'worker',
   telemetry: 'telemetry',
   process: 'process',
   os: 'os',

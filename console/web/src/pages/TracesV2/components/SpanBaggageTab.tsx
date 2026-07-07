@@ -28,7 +28,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
         <EmptyState
           icon={Package}
           title="no baggage context"
-          description="w3c baggage propagates key-value pairs across service boundaries. none was attached to this span."
+          description="w3c baggage propagates key-value pairs across worker boundaries. none was attached to this span."
         />
       </div>
     )

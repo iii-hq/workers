@@ -4,7 +4,7 @@
  * left, system/pause/refresh actions on the right).
  *
  * Every story is a stateful harness: the sim feed from ./liveFeed is
- * converted to `TraceListItem`s (one bar per trace, chromatic service
+ * converted to `TraceListItem`s (one bar per trace, chromatic worker
  * colors — exactly what production data looks like), pause actually
  * freezes the rows (the track parks at the last span once everything
  * completes), and clicking a bar selects it — in the app that opens the
@@ -40,7 +40,7 @@ function toTraceListItems(spans: readonly TimelineSpan[]): TraceListItem[] {
     endTime: s.endTime ?? undefined,
     duration: s.endTime != null ? s.endTime - s.startTime : undefined,
     spanCount: 1,
-    services: [`worker-${s.label ?? 'sim'}`],
+    workers: [`worker-${s.label ?? 'sim'}`],
   }))
 }
 
@@ -109,7 +109,7 @@ function ProductionShapeHarness({ scenario }: { scenario: Scenario }) {
           endTime: s.startTime + 40,
           duration: 40,
           spanCount: 1,
-          services: [`worker-${s.label ?? 'sim'}`],
+          workers: [`worker-${s.label ?? 'sim'}`],
         }),
       ),
     [spans],

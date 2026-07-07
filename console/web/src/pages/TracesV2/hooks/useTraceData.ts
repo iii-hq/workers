@@ -4,6 +4,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import {
   isAppendableTraceList,
   mergeTraceListSpans,
+  startTraceActivityFeed,
   startTraceListStream,
 } from '@/lib/traces-stream'
 import {
@@ -19,6 +20,13 @@ import {
 
 const DEFAULT_TRACE_LIMIT = 500
 
+/** Coalesce window for the trace-tags refresh: batches the trace ids that
+ *  arrived from the rows stream / activity feed into one `trace_ids` read. */
+const TAG_REFRESH_DEBOUNCE_MS = 1000
+/** Ids per refresh read. Overflow is dropped, not queued — a still-active
+ *  trace re-enters via its next activity window. */
+const TAG_REFRESH_MAX_IDS = 100
+
 export interface TraceListItem {
   traceId: string
   rootOperation: string
@@ -29,7 +37,12 @@ export interface TraceListItem {
   endTime?: number
   duration?: number
   spanCount: number
-  services: string[]
+  workers: string[]
+  /** Root/row span attributes, normalized to a flat object. */
+  attributes?: Record<string, unknown>
+  /** Trace-level tags merged by `engine::traces::list` (absent on
+   *  live-streamed rows until the next seed read). */
+  traceTags?: Record<string, string>
 }
 
 export interface UseTraceDataOptions {
@@ -37,6 +50,13 @@ export interface UseTraceDataOptions {
   showSystem: boolean
   debouncedSearch: string
   isPaused: boolean
+  /**
+   * Root functions to drop from the list (exact `function_id` /
+   * `faas.invoked_name` match on the row). Applied client-side over both
+   * the seed read and streamed rows, so toggling is instant and the
+   * live-append cache path stays intact.
+   */
+  hiddenFunctions?: string[]
 }
 
 export interface UseTraceDataReturn {
@@ -55,6 +75,7 @@ export function useTraceData({
   showSystem,
   debouncedSearch,
   isPaused,
+  hiddenFunctions,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
   const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
@@ -91,6 +112,7 @@ export function useTraceData({
     staleTime: 1000,
   })
 
+  const hiddenKey = hiddenFunctions?.join(',') ?? ''
   useEffect(() => {
     if (!tracesData) return
 
@@ -98,9 +120,18 @@ export function useTraceData({
       // Search uses `search_all_spans`, which returns every span of each
       // matching trace; collapse to one row per trace so the flat list stays
       // trace-per-row (no-op for the non-search roots-only response).
-      const traces: TraceListItem[] = dedupeToTraceRoots(tracesData.spans).map(
+      let traces: TraceListItem[] = dedupeToTraceRoots(tracesData.spans).map(
         mapSpanToListItem,
       )
+
+      // Hidden functions: root-match only, applied after mapping so both the
+      // seed read and streamed cache merges pass through the same gate.
+      const hidden = hiddenKey ? hiddenKey.split(',') : []
+      if (hidden.length > 0) {
+        traces = traces.filter(
+          (t) => !(t.functionId && hidden.includes(t.functionId)),
+        )
+      }
 
       traces.sort((a, b) => b.startTime - a.startTime)
 
@@ -129,7 +160,7 @@ export function useTraceData({
       setTraceListItems([])
       setHasOtelConfigured(false)
     }
-  }, [tracesData])
+  }, [tracesData, hiddenKey])
 
   // ── Live append over the engine `trace-rows` stream ──────────────────────
   // The engine pushes new root rows as spans close. The UNFILTERED list merges
@@ -140,13 +171,19 @@ export function useTraceData({
   // reconnect and tab-visible re-seed once to recover anything dropped while
   // away. Subscribes once for the hook's lifetime (params are read via refs).
   const qc = useQueryClient()
-  const mergeKeyRef = useRef<{ key: unknown[]; unfiltered: boolean }>({
+  const mergeKeyRef = useRef<{
+    key: unknown[]
+    unfiltered: boolean
+    includeInternal: boolean
+  }>({
     key: [],
     unfiltered: false,
+    includeInternal: false,
   })
   mergeKeyRef.current = {
     key: ['traces', filterParams, showSystem, debouncedSearch],
     unfiltered: isAppendableTraceList(filterParams, debouncedSearch),
+    includeInternal: showSystem,
   }
   const isPausedRef = useRef(isPaused)
   useEffect(() => {
@@ -162,6 +199,78 @@ export function useTraceData({
     const reseed = () => {
       qc.invalidateQueries({ queryKey: ['traces'] })
       qc.invalidateQueries({ queryKey: ['traceGroups'] })
+      qc.invalidateQueries({ queryKey: ['traceGroupMembers'] })
+    }
+
+    // ── Trace-tags refresh ────────────────────────────────────────────────
+    // Streamed rows arrive WITHOUT `trace_tags` (only `traces::list` merges
+    // them), and a row's tags can change after it exists — the tag-bearing
+    // span (e.g. the harness turn step carrying `iii.session.name`) closes
+    // well after the root row was pushed. Both funnel into one debounced
+    // `trace_ids` read whose `trace_tags` are merged back into the cache; a
+    // filtered list can't be patched row-wise, so it refetches instead.
+    const pendingTagIds = new Set<string>()
+    let tagFlushTimer: ReturnType<typeof setTimeout> | undefined
+
+    const tagsEqual = (
+      a: Record<string, string> | undefined,
+      b: Record<string, string> | undefined,
+    ): boolean => {
+      const ea = Object.entries(a ?? {})
+      const eb = b ?? {}
+      return (
+        ea.length === Object.keys(eb).length &&
+        ea.every(([k, v]) => eb[k] === v)
+      )
+    }
+
+    const flushTagRefresh = async () => {
+      const ids = [...pendingTagIds].slice(0, TAG_REFRESH_MAX_IDS)
+      pendingTagIds.clear()
+      if (ids.length === 0 || isPausedRef.current || isHidden()) return
+      const { key, unfiltered, includeInternal } = mergeKeyRef.current
+      if (!unfiltered) {
+        // Row-wise patching is only sound for the append cache; a filtered
+        // list re-evaluates its filters (tags may move rows in/out of it).
+        qc.invalidateQueries({ queryKey: ['traces'] })
+        return
+      }
+      try {
+        const res = await fetchTraces({
+          trace_ids: ids,
+          include_internal: includeInternal,
+          limit: ids.length,
+        })
+        if (disposed) return
+        const tagsByTrace = new Map(
+          res.spans
+            .filter((s) => s.trace_tags)
+            .map((s) => [s.trace_id, s.trace_tags]),
+        )
+        if (tagsByTrace.size === 0) return
+        qc.setQueryData<TracesResponse>(key, (old) => {
+          if (!old) return old
+          let changed = false
+          const spans = old.spans.map((s) => {
+            const tags = tagsByTrace.get(s.trace_id)
+            if (!tags || tagsEqual(tags, s.trace_tags)) return s
+            changed = true
+            return { ...s, trace_tags: tags }
+          })
+          return changed ? { ...old, spans } : old
+        })
+      } catch {
+        // Transient read failure — the next activity window retries.
+      }
+    }
+
+    const scheduleTagRefresh = (ids: ReadonlyArray<string>) => {
+      for (const id of ids) pendingTagIds.add(id)
+      if (pendingTagIds.size === 0 || tagFlushTimer !== undefined) return
+      tagFlushTimer = setTimeout(() => {
+        tagFlushTimer = undefined
+        void flushTagRefresh()
+      }, TAG_REFRESH_DEBOUNCE_MS)
     }
 
     void (async () => {
@@ -185,11 +294,28 @@ export function useTraceData({
               limit: DEFAULT_TRACE_LIMIT,
             }
           })
+          // The appended rows carry no tags yet; fetch them once the trace's
+          // spans settle. (The filtered branch refetches, which re-reads tags.)
+          scheduleTagRefresh(spans.map((s) => s.trace_id))
         } else {
           qc.invalidateQueries({ queryKey: ['traces'] })
         }
-        // The group-by aggregate can't be appended; refetch it on activity.
+        // The group-by aggregate (and any expanded group's member list)
+        // can't be appended; refetch them on activity.
         qc.invalidateQueries({ queryKey: ['traceGroups'] })
+        qc.invalidateQueries({ queryKey: ['traceGroupMembers'] })
+      })
+
+      // Span activity on traces we already list = their merged tags may have
+      // just changed (late tag-bearing span, renamed session). Only known
+      // rows schedule — activity for traces outside the list is noise here.
+      const offActivity = startTraceActivityFeed(client, (traceIds) => {
+        if (isPausedRef.current || isHidden()) return
+        const cached = qc.getQueryData<TracesResponse>(mergeKeyRef.current.key)
+        if (!cached || cached.spans.length === 0) return
+        const known = new Set(cached.spans.map((s) => s.trace_id))
+        const relevant = traceIds.filter((id) => known.has(id))
+        if (relevant.length > 0) scheduleTagRefresh(relevant)
       })
 
       const offConn = client.addConnectionStateListener((state) => {
@@ -210,8 +336,13 @@ export function useTraceData({
 
       stop = () => {
         offStream()
+        offActivity()
         offConn()
         offVisibility?.()
+        if (tagFlushTimer !== undefined) {
+          clearTimeout(tagFlushTimer)
+          tagFlushTimer = undefined
+        }
       }
     })()
 

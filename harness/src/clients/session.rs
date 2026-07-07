@@ -52,6 +52,18 @@ impl SessionClient {
             .map_err(|e| HarnessError::Dependency(format!("{function_id}: {e}")))
     }
 
+    /// Best-effort session title from `session::get` — `None` when the
+    /// session is unknown, untitled, or the call fails. Trace display
+    /// metadata must never fail or delay a step, so errors are swallowed.
+    pub async fn title(&self, session_id: &str) -> Option<String> {
+        let resp = self
+            .call("session::get", json!({ "session_id": session_id }))
+            .await
+            .ok()?;
+        let title = resp.get("meta")?.get("title")?.as_str()?.trim().to_string();
+        (!title.is_empty()).then_some(title)
+    }
+
     /// Idempotently ensure a session exists, applying `metadata` on creation.
     pub async fn ensure(
         &self,

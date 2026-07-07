@@ -67,18 +67,18 @@ describe('formatSpanLabel', () => {
     )
   })
 
-  it('strips the service-name dot prefix when it appears AFTER the verb strip', () => {
-    // Real-world case: span name is `call billing.charge`, service is
+  it('strips the worker-name dot prefix when it appears AFTER the verb strip', () => {
+    // Real-world case: span name is `call billing.charge`, worker is
     // `billing`. We strip the `call ` first, then strip `billing.` to
     // produce just `charge`. The verb strip must happen first because
-    // the service prefix doesn't appear at the start of the original
+    // the worker prefix doesn't appear at the start of the original
     // name.
     expect(
       formatSpanLabel({ name: 'call billing.charge', service_name: 'billing' }),
     ).toBe('charge')
   })
 
-  it('does NOT strip a service-name prefix that is just a substring (only leading)', () => {
+  it('does NOT strip a worker-name prefix that is just a substring (only leading)', () => {
     expect(formatSpanLabel({ name: 'fooBar', service_name: 'foo' })).toBe(
       'fooBar',
     )
@@ -134,7 +134,7 @@ describe('isEngineRoutingSpan', () => {
 
   it('still matches when service_name is overridden (e.g. by OTEL_SERVICE_NAME)', () => {
     // Regression guard for the "hide engine routing" toggle going dark
-    // in deployments that override the engine's default service name.
+    // in deployments that override the engine's default worker name.
     expect(
       isEngineRoutingSpan({
         name: 'handle_invocation fn-foo',
@@ -152,7 +152,7 @@ describe('isEngineRoutingSpan', () => {
   })
 
   it('does NOT match a worker `call X` span without a function_id attribute', () => {
-    // The harness SDK emits `call <fn>` (service `harness`) for its own
+    // The harness SDK emits `call <fn>` (worker `harness`) for its own
     // outbound calls — it must NOT be treated as engine routing, or hiding
     // engine routing would sweep up legitimate harness spans.
     expect(

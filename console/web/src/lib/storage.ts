@@ -65,6 +65,30 @@ export function saveDefaultAllowlist(list: string[]): void {
   }
 }
 
+const TRACES_ACTIVE_VIEW_KEY = 'iii-traces-active-view'
+
+/**
+ * Per-browser pointer to the active traces view. The views themselves are
+ * server-side (`console` configuration entry); only the selection is local
+ * so two tabs can look at different views without fighting.
+ */
+export function loadActiveTracesViewId(): string | null {
+  try {
+    return localStorage.getItem(TRACES_ACTIVE_VIEW_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function saveActiveTracesViewId(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(TRACES_ACTIVE_VIEW_KEY, id)
+    else localStorage.removeItem(TRACES_ACTIVE_VIEW_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
 export function loadActiveId(): string | null {
   try {
     return localStorage.getItem(ACTIVE_KEY)

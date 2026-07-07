@@ -8,7 +8,7 @@ import {
   classifySpanType,
   formatDuration,
   formatRelative,
-  getServiceName,
+  getWorkerName,
 } from './traceUtils'
 
 function makeSpan(
@@ -144,27 +144,27 @@ describe('classifySpanType', () => {
   })
 })
 
-describe('getServiceName', () => {
+describe('getWorkerName', () => {
   it('returns service_name when present', () => {
-    expect(getServiceName({ service_name: 'billing', name: 'charge' })).toBe(
+    expect(getWorkerName({ service_name: 'billing', name: 'charge' })).toBe(
       'billing',
     )
   })
 
   it('falls back to the first dot-separated segment of name when service_name is missing', () => {
     expect(
-      getServiceName({ service_name: undefined, name: 'billing.charge' }),
+      getWorkerName({ service_name: undefined, name: 'billing.charge' }),
     ).toBe('billing')
   })
 
   it('returns the whole name when service_name is missing AND name has no dot', () => {
-    expect(getServiceName({ service_name: undefined, name: 'flat-name' })).toBe(
+    expect(getWorkerName({ service_name: undefined, name: 'flat-name' })).toBe(
       'flat-name',
     )
   })
 
   it('returns the whole name when service_name is empty string (falsy)', () => {
-    expect(getServiceName({ service_name: '', name: 'billing.charge' })).toBe(
+    expect(getWorkerName({ service_name: '', name: 'billing.charge' })).toBe(
       'billing',
     )
   })

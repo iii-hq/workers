@@ -27,9 +27,9 @@ import type {
 import type { TraceActivityMap } from '../hooks/useTraceActivity'
 import type { TraceListItem } from '../hooks/useTraceData'
 import { formatSpanLabel } from './spanLabel'
-import { getServiceColor } from './traceColors'
+import { getWorkerColor } from './traceColors'
 import type { VisualizationSpan, WaterfallData } from './traceTransform'
-import { getServiceName } from './traceUtils'
+import { getWorkerName } from './traceUtils'
 
 /**
  * Icon vocabulary:
@@ -122,7 +122,7 @@ export function traceListToTimelineSpans(
       status: running && item.status !== 'error' ? 'pending' : item.status,
       kind: kindForListItem(item),
       label: item.functionId ?? item.topic ?? item.rootOperation,
-      meta: `${item.services.join(', ')} · ${item.traceId.slice(0, 8)}`,
+      meta: `${item.workers.join(', ')} · ${item.traceId.slice(0, 8)}`,
     })
   }
   return spans
@@ -159,11 +159,11 @@ export function waterfallToTimelineSpans(
       endTime: start + span.duration_ms,
       status: span.pending && span.status !== 'error' ? 'pending' : span.status,
       kind: kindForOtelSpan(span),
-      color: getServiceColor(getServiceName(span)),
+      color: getWorkerColor(getWorkerName(span)),
       // Verb prefixes (`execute `, `call `, ...) are stripped for display —
       // the bar/hover label reads as the function, not the SDK span name.
       label: formatSpanLabel(span),
-      meta: getServiceName(span),
+      meta: getWorkerName(span),
     }
   })
   return { spans, totalDurationMs: total, byId }

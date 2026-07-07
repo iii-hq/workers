@@ -34,7 +34,7 @@ export interface FlattenOptions {
   /** Span IDs the user has expanded. Collapsed nodes hide their subtree. */
   expandedIds: Set<string>
   /** When true, engine routing spans (`handle_invocation X`, `call X` on the
-   *  `iii` service) are skipped during render and their children render at
+   *  `iii` worker) are skipped during render and their children render at
    *  the parent's depth instead. */
   hideEngineRouting: boolean
   /** When true, a `handle_invocation X` parent with a single `call X` child

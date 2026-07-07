@@ -1,15 +1,15 @@
 import { ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { getServiceColor } from '../lib/traceColors'
+import { getWorkerColor } from '../lib/traceColors'
 import type { WaterfallData } from '../lib/traceTransform'
-import { formatDuration, getServiceName } from '../lib/traceUtils'
+import { formatDuration, getWorkerName } from '../lib/traceUtils'
 
-interface ServiceBreakdownProps {
+interface WorkerBreakdownProps {
   data: WaterfallData
 }
 
-interface ServiceStats {
+interface WorkerStats {
   name: string
   color: string
   spanCount: number
@@ -25,21 +25,21 @@ function calculatePercentile(values: number[], percentile: number): number {
   return sorted[Math.max(0, index)]
 }
 
-export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
+export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
   const [isExpanded, setIsExpanded] = useState(true)
 
-  const { serviceStats, percentiles } = useMemo(() => {
-    const statsMap = new Map<string, ServiceStats>()
+  const { workerStats, percentiles } = useMemo(() => {
+    const statsMap = new Map<string, WorkerStats>()
     const durations: number[] = []
 
     for (const span of data.spans) {
-      const serviceName = getServiceName(span)
+      const workerName = getWorkerName(span)
       if (Number.isFinite(span.duration_ms)) durations.push(span.duration_ms)
 
-      if (!statsMap.has(serviceName)) {
-        statsMap.set(serviceName, {
-          name: serviceName,
-          color: getServiceColor(serviceName),
+      if (!statsMap.has(workerName)) {
+        statsMap.set(workerName, {
+          name: workerName,
+          color: getWorkerColor(workerName),
           spanCount: 0,
           totalDuration: 0,
           errorCount: 0,
@@ -47,7 +47,7 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
         })
       }
 
-      const stats = statsMap.get(serviceName)
+      const stats = statsMap.get(workerName)
       if (stats) {
         stats.spanCount++
         stats.totalDuration += Number.isFinite(span.duration_ms)
@@ -62,7 +62,7 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
       stats.percentage = (stats.totalDuration / totalDuration) * 100
     }
 
-    const serviceStats = Array.from(statsMap.values()).sort(
+    const workerStats = Array.from(statsMap.values()).sort(
       (a, b) => b.totalDuration - a.totalDuration,
     )
 
@@ -73,7 +73,7 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
       max: durations.length > 0 ? Math.max(...durations) : 0,
     }
 
-    return { serviceStats, percentiles }
+    return { workerStats, percentiles }
   }, [data])
 
   return (
@@ -82,7 +82,7 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-bg transition-colors text-left"
-        aria-label="toggle services section"
+        aria-label="toggle workers section"
         aria-expanded={isExpanded}
       >
         <ChevronRight
@@ -92,7 +92,7 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
           )}
         />
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
-          services
+          workers
         </span>
 
         <div className="flex items-center gap-3 ml-auto font-mono text-[11px] text-ink-faint tabular-nums">
@@ -113,26 +113,26 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
 
       {isExpanded && (
         <div className="px-4 pb-3 flex flex-col gap-2.5">
-          {serviceStats.map((service) => (
-            <div key={service.name} className="group">
+          {workerStats.map((worker) => (
+            <div key={worker.name} className="group">
               <div className="flex items-center gap-2 mb-1">
                 <span
                   aria-hidden
                   className="w-2 h-2 flex-shrink-0"
-                  style={{ backgroundColor: service.color }}
+                  style={{ backgroundColor: worker.color }}
                 />
                 <span className="font-mono text-[12px] text-ink truncate flex-1 lowercase">
-                  {service.name}
+                  {worker.name}
                 </span>
                 <span className="font-mono text-[11px] text-ink-faint tabular-nums">
-                  {service.spanCount} span{service.spanCount !== 1 ? 's' : ''}
+                  {worker.spanCount} span{worker.spanCount !== 1 ? 's' : ''}
                 </span>
                 <span className="font-mono text-[11px] text-ink tabular-nums w-16 text-right">
-                  {formatDuration(service.totalDuration)}
+                  {formatDuration(worker.totalDuration)}
                 </span>
-                {service.errorCount > 0 && (
+                {worker.errorCount > 0 && (
                   <span className="font-mono text-[11px] text-alert font-semibold tabular-nums">
-                    {service.errorCount} err
+                    {worker.errorCount} err
                   </span>
                 )}
               </div>
@@ -140,8 +140,8 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
                 <div
                   className="h-full transition-all duration-300"
                   style={{
-                    width: `${Math.max(2, service.percentage)}%`,
-                    backgroundColor: service.color,
+                    width: `${Math.max(2, worker.percentage)}%`,
+                    backgroundColor: worker.color,
                   }}
                 />
               </div>

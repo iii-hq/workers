@@ -81,7 +81,7 @@ export function TraceListRow({
         </span>
         <span className="flex items-center gap-1">
           <Zap className="w-2.5 h-2.5" />
-          {trace.services.join(', ')}
+          {trace.workers.join(', ')}
         </span>
         <span className="ml-auto tabular-nums">
           {formatTime(trace.startTime)}

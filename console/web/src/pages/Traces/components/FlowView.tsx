@@ -21,7 +21,7 @@ import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   classifySpanType,
   formatDuration,
-  getServiceName,
+  getWorkerName,
 } from '../lib/traceUtils'
 
 interface FlowViewProps {
@@ -84,7 +84,7 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
         </span>
       </div>
       <div className="px-2 py-1.5 flex items-center gap-2 font-mono text-[11px] text-ink-faint tabular-nums">
-        <span className="lowercase truncate">{getServiceName(span)}</span>
+        <span className="lowercase truncate">{getWorkerName(span)}</span>
         <span className="ml-auto">{formatDuration(span.duration_ms)}</span>
       </div>
       <Handle
