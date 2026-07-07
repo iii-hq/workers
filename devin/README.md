@@ -57,11 +57,11 @@ iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit
 
 `devin::session::create` returns a real Devin cloud session over the bus (session id, url, tags):
 
-![devin::session::create returning a real Devin cloud session id and url over the iii bus](assets/session-create.png)
+![devin::session::create returning a real Devin cloud session id and url over the iii bus](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/session-create.png)
 
 The same session runs in the Devin app and replies:
 
-![The Devin cloud session opened via devin::session::create, replying in the Devin app](assets/session-reply.png)
+![The Devin cloud session opened via devin::session::create, replying in the Devin app](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/session-reply.png)
 
 Run the local CLI as one turn and stream it onto the bus:
 
@@ -115,11 +115,11 @@ Because the CLI agent runs locally with the iii runtime context, a plain questio
 iii trigger devin::run --json '{"prompt":"What workers are connected to this iii engine and what does each do?","cwd":"/tmp"}' | jq -r '.result'
 ```
 
-![Devin answering a plain question by discovering the live iii mesh through the iii CLI](assets/iii-discovery.png)
+![Devin answering a plain question by discovering the live iii mesh through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/iii-discovery.png)
 
 Or ask it to map the whole engine by capability area, and it groups what it finds itself:
 
-![Devin grouping the engine's backend capabilities by area, discovered live](assets/capabilities.png)
+![Devin grouping the engine's backend capabilities by area, discovered live](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/capabilities.png)
 
 `devin::session::create` accepts `prompt` plus the union of the v1 and v3 create fields (`title`, `tags`, `playbook_id`, `knowledge_ids`, `secret_ids`, `max_acu_limit`; v3 `devin_mode`, `repos`, `attachment_urls`, `resumable`, `bypass_approval`; v1 `snapshot_id`, `unlisted`, `idempotent`); each is omitted from the body when not supplied, so populate the ones your token's API version accepts. `devin::session::*` follow the v1 flat paths by default and switch to v3 org-scoped paths when `org_id` is set.
 
@@ -137,7 +137,7 @@ Or ask it to map the whole engine by capability area, and it groups what it find
 
 Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii trigger` calls a `devin::run` agent makes on its own.
 
-![Every devin::run call traced in the iii console, with input prompt and output result](assets/traces.png)
+![Every devin::run call traced in the iii console, with input prompt and output result](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/traces.png)
 
 ## Configuration
 
