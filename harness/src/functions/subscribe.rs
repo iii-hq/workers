@@ -213,12 +213,7 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
 /// Only an EXPLICIT `true` opts in: applying the notify path's per-type
 /// default would flip every standing watcher to one-shot.
 fn react_once(req: &SubscribeRequest) -> bool {
-    req.once == Some(true)
-        && req
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("join"))
-            .is_none()
+    req.once == Some(true) && req.metadata.as_ref().and_then(|m| m.get("join")).is_none()
 }
 
 async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
@@ -734,7 +729,8 @@ mod tests {
         };
         let join2 = json!({ "id": "J", "expect": ["a", "b"], "key": "a" });
         // The live miswire: one parent-filtered binding for a 2-key join.
-        let note = parent_filter_join_advisory(&mk(json!({ "parent_session_id": "s_p" }), join2.clone()));
+        let note =
+            parent_filter_join_advisory(&mk(json!({ "parent_session_id": "s_p" }), join2.clone()));
         assert!(note.as_deref().unwrap_or("").contains("starves"));
         // session_id narrows to one child: fine.
         assert!(parent_filter_join_advisory(&mk(

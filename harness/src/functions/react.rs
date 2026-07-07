@@ -615,7 +615,9 @@ fn resolve_engine_binding(deps: &Deps, id: &str) -> Option<String> {
 /// Best-effort — a failed unregister only risks an extra fire, never the spawn.
 async fn once_unregister(deps: &Deps, spec: &ReactSpec) {
     let Some(id) = spec.subscription_id.as_deref() else {
-        tracing::warn!("harness::react: once-binding fired without a subscription id; cannot auto-unregister");
+        tracing::warn!(
+            "harness::react: once-binding fired without a subscription id; cannot auto-unregister"
+        );
         return;
     };
     match resolve_engine_binding(deps, id) {

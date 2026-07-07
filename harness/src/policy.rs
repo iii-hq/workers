@@ -344,7 +344,10 @@ mod tests {
             arguments: json!({ "function": "state::set", "payload": "{\"key\":\"a\",\"value\":{\"x\":1}}}" }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
-        assert_eq!(calls[0].arguments, json!({ "key": "a", "value": { "x": 1 } }));
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "key": "a", "value": { "x": 1 } })
+        );
     }
 
     #[test]
