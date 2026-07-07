@@ -7,11 +7,7 @@
 
 workers:
   - name: iii-queue
-    config:
-      adapter:
-        name: builtin
+    # 'iii-queue': value now lives in the configuration worker at ./config/iii-queue.yaml. Edit at runtime via 'iii config set iii-queue' (or 'configuration::set'); this block is no longer read.
 
   - name: iii-state
-    config:
-      adapter:
-        name: file_based
+    # 'iii-state': value now lives in the configuration worker at ./config/iii-state.yaml. Edit at runtime via 'iii config set iii-state' (or 'configuration::set'); this block is no longer read.
