@@ -1,8 +1,13 @@
 //! Durable subscriber trigger handling.
+//!
+//! The handler itself no longer owns any consumer loop or store access --
+//! `register_trigger`/`unregister_trigger` translate a `TriggerConfig` into
+//! [`crate::adapter::QueueAdapter::subscribe`]/`unsubscribe` calls against the
+//! (possibly hot-swapped) [`SwappableAdapter`]. All delivery, retry, and DLQ
+//! behavior lives in the adapter (e.g. [`crate::adapters::builtin::BuiltinAdapter`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
@@ -13,14 +18,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
-use crate::store::QueueStore;
+use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::subscriber_config::SubscriberQueueConfig;
-
-pub const DEFAULT_MAX_RETRIES: u32 = 3;
-pub const DEFAULT_BACKOFF_MS: u64 = 1000;
-const IDLE_POLL_MS: u64 = 50;
 
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
@@ -80,41 +80,48 @@ pub struct RegisteredSubscriber {
     pub spec: SubscriberSpec,
 }
 
-struct Consumer {
-    registration: RegisteredSubscriber,
-    handle: JoinHandle<()>,
+/// Merge the spec's legacy top-level `max_retries`/`backoff_ms` into its
+/// `queue_config`. Precedence: explicit top-level field wins, then whatever
+/// `queue_config` already carries, then the adapter's own defaults (3
+/// retries / 1000ms backoff) when both are absent -- the adapter applies
+/// those defaults itself when the returned fields are `None`.
+fn merged_queue_config(spec: &SubscriberSpec) -> SubscriberQueueConfig {
+    let mut config = spec.queue_config.clone().unwrap_or_default();
+    if let Some(max_retries) = spec.max_retries {
+        config.max_retries = Some(max_retries);
+    }
+    if let Some(backoff_ms) = spec.backoff_ms {
+        config.backoff_delay_ms = Some(backoff_ms);
+    }
+    config
 }
 
 #[derive(Clone)]
 pub struct QueueTriggerHandler {
-    store: Arc<dyn QueueStore>,
-    invoker: Arc<dyn Invoker>,
-    consumers: Arc<Mutex<HashMap<String, Consumer>>>,
+    adapter: Arc<SwappableAdapter>,
+    registrations: Arc<Mutex<HashMap<String, RegisteredSubscriber>>>,
 }
 
 impl QueueTriggerHandler {
-    pub fn new(store: Arc<dyn QueueStore>, invoker: Arc<dyn Invoker>) -> Self {
+    pub fn new(adapter: Arc<SwappableAdapter>) -> Self {
         Self {
-            store,
-            invoker,
-            consumers: Arc::new(Mutex::new(HashMap::new())),
+            adapter,
+            registrations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    /// Snapshot of every currently registered subscriber -- consumed by the
+    /// configuration hot-swap path to re-subscribe against the newly built
+    /// adapter after a transport swap.
     pub async fn registrations(&self) -> Vec<RegisteredSubscriber> {
-        self.consumers
-            .lock()
-            .await
-            .values()
-            .map(|consumer| consumer.registration.clone())
-            .collect()
+        self.registrations.lock().await.values().cloned().collect()
     }
 
+    /// Clears every tracked registration and tears down the current
+    /// adapter's active consumers.
     pub async fn shutdown(&self) {
-        let consumers = self.consumers.lock().await.drain().collect::<Vec<_>>();
-        for (_, consumer) in consumers {
-            consumer.handle.abort();
-        }
+        self.registrations.lock().await.clear();
+        self.adapter.shutdown().await;
     }
 
     pub async fn register_subscriber(
@@ -125,27 +132,39 @@ impl QueueTriggerHandler {
             return Err("queue is required for durable:subscriber trigger".to_string());
         }
 
-        let mut consumers = self.consumers.lock().await;
-        if consumers.contains_key(&registration.trigger_id) {
+        let mut registrations = self.registrations.lock().await;
+        if registrations.contains_key(&registration.trigger_id) {
             return Err(format!(
                 "durable:subscriber trigger '{}' is already registered",
                 registration.trigger_id
             ));
         }
 
-        let handle = spawn_consumer_loop(
-            self.store.clone(),
-            self.invoker.clone(),
-            registration.clone(),
-        );
-        consumers.insert(
-            registration.trigger_id.clone(),
-            Consumer {
-                registration,
-                handle,
-            },
-        );
+        let queue_config = merged_queue_config(&registration.spec);
+        self.adapter
+            .subscribe(
+                &registration.spec.queue,
+                &registration.trigger_id,
+                &registration.function_id,
+                registration.spec.condition_function_id.clone(),
+                Some(queue_config),
+            )
+            .await;
+
+        registrations.insert(registration.trigger_id.clone(), registration);
         Ok(())
+    }
+
+    /// Unregister by bare trigger id -- the queue/topic name is recovered
+    /// from the stored registration, since an unregister `TriggerConfig`
+    /// carries only the id.
+    pub async fn unregister(&self, trigger_id: &str) {
+        let registration = self.registrations.lock().await.remove(trigger_id);
+        if let Some(registration) = registration {
+            self.adapter
+                .unsubscribe(&registration.spec.queue, trigger_id)
+                .await;
+        }
     }
 }
 
@@ -164,98 +183,113 @@ impl TriggerHandler for QueueTriggerHandler {
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        if let Some(consumer) = self.consumers.lock().await.remove(&config.id) {
-            consumer.handle.abort();
-        }
+        self.unregister(&config.id).await;
         Ok(())
     }
-}
-
-fn spawn_consumer_loop(
-    store: Arc<dyn QueueStore>,
-    invoker: Arc<dyn Invoker>,
-    registration: RegisteredSubscriber,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let queue = registration.spec.queue.clone();
-        let max_retries = effective_max_retries(&registration.spec);
-        let backoff_ms = effective_backoff_ms(&registration.spec);
-
-        loop {
-            let Some(job) = store.dequeue(&queue).await else {
-                tokio::time::sleep(Duration::from_millis(IDLE_POLL_MS)).await;
-                continue;
-            };
-
-            if let Some(condition_id) = registration.spec.condition_function_id.as_deref() {
-                match invoker.call(condition_id, job.payload.clone()).await {
-                    Ok(Some(Value::Bool(false))) => {
-                        store.ack(&queue, &job.id).await;
-                        continue;
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        store.nack(&queue, job, max_retries, backoff_ms).await;
-                        continue;
-                    }
-                }
-            }
-
-            match invoker
-                .call(&registration.function_id, job.payload.clone())
-                .await
-            {
-                Ok(_) => store.ack(&queue, &job.id).await,
-                Err(_) => store.nack(&queue, job, max_retries, backoff_ms).await,
-            }
-        }
-    })
-}
-
-fn effective_max_retries(spec: &SubscriberSpec) -> u32 {
-    spec.max_retries
-        .or_else(|| spec.queue_config.as_ref().and_then(|c| c.max_retries))
-        .unwrap_or(DEFAULT_MAX_RETRIES)
-}
-
-fn effective_backoff_ms(spec: &SubscriberSpec) -> u64 {
-    spec.backoff_ms
-        .or_else(|| spec.queue_config.as_ref().and_then(|c| c.backoff_delay_ms))
-        .unwrap_or(DEFAULT_BACKOFF_MS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{InMemoryStore, QueueStore};
+    use crate::adapter::TopicInfo;
+    use crate::store::TopicStats;
     use serde_json::json;
-    use std::future::Future;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tokio::time::{sleep, Duration, Instant};
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Call {
+        Subscribe {
+            topic: String,
+            id: String,
+            function_id: String,
+            condition_function_id: Option<String>,
+            queue_config: Option<SubscriberQueueConfig>,
+        },
+        Unsubscribe {
+            topic: String,
+            id: String,
+        },
+    }
 
     #[derive(Default)]
-    struct FakeInvoker {
-        calls: Mutex<Vec<(String, Value)>>,
-        fail_backend: AtomicBool,
-        condition_value: Mutex<Option<Value>>,
+    struct MockAdapter {
+        calls: StdMutex<Vec<Call>>,
+    }
+
+    impl MockAdapter {
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
-    impl Invoker for FakeInvoker {
-        async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
-            self.calls
-                .lock()
-                .await
-                .push((function_id.to_string(), payload));
-            if function_id == "condition" {
-                return Ok(self.condition_value.lock().await.clone());
-            }
-            if self.fail_backend.load(Ordering::SeqCst) {
-                Err("backend failed".to_string())
-            } else {
-                Ok(Some(json!({"ok": true})))
-            }
+    impl QueueAdapter for MockAdapter {
+        async fn enqueue(
+            &self,
+            _topic: &str,
+            _data: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) {
         }
+
+        async fn subscribe(
+            &self,
+            topic: &str,
+            id: &str,
+            function_id: &str,
+            condition_function_id: Option<String>,
+            queue_config: Option<SubscriberQueueConfig>,
+        ) {
+            self.calls.lock().unwrap().push(Call::Subscribe {
+                topic: topic.to_string(),
+                id: id.to_string(),
+                function_id: function_id.to_string(),
+                condition_function_id,
+                queue_config,
+            });
+        }
+
+        async fn unsubscribe(&self, topic: &str, id: &str) {
+            self.calls.lock().unwrap().push(Call::Unsubscribe {
+                topic: topic.to_string(),
+                id: id.to_string(),
+            });
+        }
+
+        async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+
+        async fn redrive_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn discard_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+
+        async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
+            Ok(vec![])
+        }
+
+        async fn topic_stats(&self, _topic: &str) -> anyhow::Result<TopicStats> {
+            Ok(TopicStats::default())
+        }
+
+        async fn shutdown(&self) {}
     }
 
     fn trigger_config(id: &str, function_id: &str, config: Value) -> TriggerConfig {
@@ -267,30 +301,16 @@ mod tests {
         }
     }
 
-    async fn wait_until<F, Fut>(mut pred: F)
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = bool>,
-    {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if pred().await {
-                return;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
-        assert!(pred().await, "condition did not become true before timeout");
+    fn handler_with_mock() -> (QueueTriggerHandler, Arc<MockAdapter>) {
+        let mock = Arc::new(MockAdapter::default());
+        let adapter: Arc<dyn QueueAdapter> = mock.clone();
+        let handler = QueueTriggerHandler::new(Arc::new(SwappableAdapter::new(adapter)));
+        (handler, mock)
     }
 
     #[tokio::test]
-    async fn register_spawns_loop_and_acks_on_success() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        let handler = QueueTriggerHandler::new(store.clone(), invoker.clone());
-        store
-            .enqueue("demo", json!({"hello": "world"}))
-            .await
-            .unwrap();
+    async fn register_calls_adapter_subscribe_with_merged_config() {
+        let (handler, mock) = handler_with_mock();
 
         handler
             .register_trigger(trigger_config(
@@ -301,105 +321,25 @@ mod tests {
             .await
             .unwrap();
 
-        wait_until(|| {
-            let invoker = invoker.clone();
-            async move { invoker.calls.lock().await.len() == 1 }
-        })
-        .await;
-        assert_eq!(store.topic_stats("demo").await.delivered, 1);
-        assert!(store.dequeue("demo").await.is_none());
-        handler.shutdown().await;
+        assert_eq!(
+            mock.calls(),
+            vec![Call::Subscribe {
+                topic: "demo".to_string(),
+                id: "t1".to_string(),
+                function_id: "backend".to_string(),
+                condition_function_id: None,
+                queue_config: Some(SubscriberQueueConfig {
+                    max_retries: Some(2),
+                    backoff_delay_ms: Some(1),
+                    ..Default::default()
+                }),
+            }]
+        );
     }
 
     #[tokio::test]
-    async fn failed_invocation_nacks_until_dlq() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        invoker.fail_backend.store(true, Ordering::SeqCst);
-        let handler = QueueTriggerHandler::new(store.clone(), invoker.clone());
-        store
-            .enqueue("demo", json!({"hello": "world"}))
-            .await
-            .unwrap();
-
-        handler
-            .register_trigger(trigger_config(
-                "t1",
-                "backend",
-                json!({"queue": "demo", "max_retries": 1, "backoff_ms": 1}),
-            ))
-            .await
-            .unwrap();
-
-        wait_until(|| {
-            let invoker = invoker.clone();
-            async move { !invoker.calls.lock().await.is_empty() }
-        })
-        .await;
-        wait_until(|| {
-            let store = store.clone();
-            async move { !store.dlq_messages("demo", 10).await.is_empty() }
-        })
-        .await;
-        assert_eq!(store.topic_stats("demo").await.failed, 1);
-        handler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn register_rejects_empty_queue() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        let handler = QueueTriggerHandler::new(store, invoker);
-        let err = handler
-            .register_trigger(trigger_config("t1", "backend", json!({"queue": ""})))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("queue"));
-    }
-
-    #[tokio::test]
-    async fn duplicate_trigger_id_is_rejected() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        let handler = QueueTriggerHandler::new(store, invoker);
-        let cfg = trigger_config("t1", "backend", json!({"queue": "demo"}));
-        handler.register_trigger(cfg.clone()).await.unwrap();
-        let err = handler.register_trigger(cfg).await.unwrap_err();
-        assert!(err.to_string().contains("already registered"));
-        handler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn unregister_by_id_stops_consumption() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        let handler = QueueTriggerHandler::new(store.clone(), invoker.clone());
-        handler
-            .register_trigger(trigger_config("t1", "backend", json!({"queue": "demo"})))
-            .await
-            .unwrap();
-        handler
-            .unregister_trigger(trigger_config("t1", "", Value::Null))
-            .await
-            .unwrap();
-        store
-            .enqueue("demo", json!({"after": "stop"}))
-            .await
-            .unwrap();
-        sleep(Duration::from_millis(120)).await;
-        assert!(invoker.calls.lock().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn explicit_false_condition_skips_and_acks() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        *invoker.condition_value.lock().await = Some(Value::Bool(false));
-        let handler = QueueTriggerHandler::new(store.clone(), invoker.clone());
-        store
-            .enqueue("demo", json!({"hello": "world"}))
-            .await
-            .unwrap();
+    async fn register_passes_condition_function_id_through() {
+        let (handler, mock) = handler_with_mock();
 
         handler
             .register_trigger(trigger_config(
@@ -410,15 +350,67 @@ mod tests {
             .await
             .unwrap();
 
-        wait_until(|| {
-            let invoker = invoker.clone();
-            async move { invoker.calls.lock().await.len() == 1 }
-        })
-        .await;
-        assert_eq!(invoker.calls.lock().await[0].0, "condition");
-        assert_eq!(store.topic_stats("demo").await.delivered, 1);
-        assert!(store.dequeue("demo").await.is_none());
-        handler.shutdown().await;
+        let Call::Subscribe {
+            condition_function_id,
+            ..
+        } = &mock.calls()[0]
+        else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(condition_function_id.as_deref(), Some("condition"));
+    }
+
+    #[tokio::test]
+    async fn register_rejects_empty_queue() {
+        let (handler, _mock) = handler_with_mock();
+        let err = handler
+            .register_trigger(trigger_config("t1", "backend", json!({"queue": ""})))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("queue"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_trigger_id_is_rejected() {
+        let (handler, mock) = handler_with_mock();
+        let cfg = trigger_config("t1", "backend", json!({"queue": "demo"}));
+        handler.register_trigger(cfg.clone()).await.unwrap();
+        let err = handler.register_trigger(cfg).await.unwrap_err();
+        assert!(err.to_string().contains("already registered"));
+        assert_eq!(mock.calls().len(), 1, "adapter.subscribe called only once");
+    }
+
+    #[tokio::test]
+    async fn unregister_by_id_calls_adapter_unsubscribe() {
+        let (handler, mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config("t1", "backend", json!({"queue": "demo"})))
+            .await
+            .unwrap();
+
+        handler
+            .unregister_trigger(trigger_config("t1", "", Value::Null))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mock.calls().last().unwrap(),
+            &Call::Unsubscribe {
+                topic: "demo".to_string(),
+                id: "t1".to_string(),
+            }
+        );
+        assert!(handler.registrations().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unregister_unknown_id_is_a_noop() {
+        let (handler, mock) = handler_with_mock();
+        handler
+            .unregister_trigger(trigger_config("missing", "", Value::Null))
+            .await
+            .unwrap();
+        assert!(mock.calls().is_empty());
     }
 
     #[test]
@@ -432,7 +424,26 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.queue, "demo");
-        assert_eq!(effective_max_retries(&spec), 9);
-        assert_eq!(effective_backoff_ms(&spec), 25);
+        let merged = merged_queue_config(&spec);
+        assert_eq!(merged.max_retries, Some(9));
+        assert_eq!(merged.backoff_delay_ms, Some(25));
+    }
+
+    #[test]
+    fn top_level_overrides_win_over_queue_config() {
+        let spec = SubscriberSpec {
+            queue: "demo".to_string(),
+            max_retries: Some(2),
+            backoff_ms: Some(1),
+            condition_function_id: None,
+            queue_config: Some(SubscriberQueueConfig {
+                max_retries: Some(9),
+                backoff_delay_ms: Some(25),
+                ..Default::default()
+            }),
+        };
+        let merged = merged_queue_config(&spec);
+        assert_eq!(merged.max_retries, Some(2));
+        assert_eq!(merged.backoff_delay_ms, Some(1));
     }
 }

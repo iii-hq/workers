@@ -8,7 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::store::{Job, QueueStore};
+use crate::adapter::{QueueAdapter, SwappableAdapter};
+use crate::store::Job;
 
 pub const PUBLISH_FN_ID: &str = "iii::durable::publish";
 pub const REDRIVE_FN_ID: &str = "iii::queue::redrive";
@@ -105,110 +106,110 @@ pub struct DlqMessage {
     pub size_bytes: u64,
 }
 
-pub fn register_all(iii: &Arc<IIIClient>, store: Arc<dyn QueueStore>) {
-    let publish_store = store.clone();
+pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
+    let publish_adapter = adapter.clone();
     iii.register_function(
         PUBLISH_FN_ID,
         RegisterFunction::new_async(move |input: PublishInput| {
-            let store = publish_store.clone();
-            async move { publish(store, input).await }
+            let adapter = publish_adapter.clone();
+            async move { publish(adapter, input).await }
         })
         .description("Enqueue a message"),
     );
 
-    let redrive_store = store.clone();
+    let redrive_adapter = adapter.clone();
     iii.register_function(
         REDRIVE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveInput| {
-            let store = redrive_store.clone();
-            async move { redrive(store, input).await }
+            let adapter = redrive_adapter.clone();
+            async move { redrive(adapter, input).await }
         })
         .description("Redrive all DLQ messages back to the main queue"),
     );
 
-    let redrive_message_store = store.clone();
+    let redrive_message_adapter = adapter.clone();
     iii.register_function(
         REDRIVE_MESSAGE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveSingleInput| {
-            let store = redrive_message_store.clone();
-            async move { redrive_message(store, input).await }
+            let adapter = redrive_message_adapter.clone();
+            async move { redrive_message(adapter, input).await }
         })
         .description("Redrive a single DLQ message by ID back to the main queue"),
     );
 
-    let discard_store = store.clone();
+    let discard_adapter = adapter.clone();
     iii.register_function(
         DISCARD_MESSAGE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveSingleInput| {
-            let store = discard_store.clone();
-            async move { discard_message(store, input).await }
+            let adapter = discard_adapter.clone();
+            async move { discard_message(adapter, input).await }
         })
         .description("Discard (purge) a single DLQ message by ID"),
     );
 
-    let list_store = store.clone();
+    let list_adapter = adapter.clone();
     iii.register_function(
         LIST_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: Value| {
-            let store = list_store.clone();
-            async move { list_topics(store).await }
+            let adapter = list_adapter.clone();
+            async move { list_topics(adapter).await }
         })
         .description("List all queue topics"),
     );
 
-    let stats_store = store.clone();
+    let stats_adapter = adapter.clone();
     iii.register_function(
         TOPIC_STATS_FN_ID,
         RegisterFunction::new_async(move |input: TopicStatsInput| {
-            let store = stats_store.clone();
-            async move { topic_stats(store, input).await }
+            let adapter = stats_adapter.clone();
+            async move { topic_stats(adapter, input).await }
         })
         .description("Get stats for a queue topic"),
     );
 
-    let dlq_topics_store = store.clone();
+    let dlq_topics_adapter = adapter.clone();
     iii.register_function(
         DLQ_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: Value| {
-            let store = dlq_topics_store.clone();
-            async move { dlq_topics(store).await }
+            let adapter = dlq_topics_adapter.clone();
+            async move { dlq_topics(adapter).await }
         })
         .description("List DLQ topics with counts"),
     );
 
-    let dlq_messages_store = store;
+    let dlq_messages_adapter = adapter;
     iii.register_function(
         DLQ_MESSAGES_FN_ID,
         RegisterFunction::new_async(move |input: DlqMessagesInput| {
-            let store = dlq_messages_store.clone();
-            async move { dlq_messages(store, input).await }
+            let adapter = dlq_messages_adapter.clone();
+            async move { dlq_messages(adapter, input).await }
         })
         .description("Browse DLQ messages"),
     );
 }
 
 pub async fn publish(
-    store: Arc<dyn QueueStore>,
+    adapter: Arc<SwappableAdapter>,
     input: PublishInput,
 ) -> Result<Option<Value>, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("Topic is not set".to_string()));
     }
-    store
-        .enqueue(&input.topic, input.data)
-        .await
-        .map_err(|e| Error::Handler(e.to_string()))?;
+    adapter.enqueue(&input.topic, input.data, None, None).await;
     Ok(None)
 }
 
 pub async fn redrive(
-    store: Arc<dyn QueueStore>,
+    adapter: Arc<SwappableAdapter>,
     input: RedriveInput,
 ) -> Result<RedriveResult, Error> {
     if input.queue.is_empty() {
         return Err(Error::Handler("Queue name is required".to_string()));
     }
-    let redriven = store.redrive_dlq(&input.queue).await;
+    let redriven = adapter
+        .redrive_dlq(&input.queue)
+        .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(RedriveResult {
         queue: input.queue,
         redriven,
@@ -216,13 +217,14 @@ pub async fn redrive(
 }
 
 pub async fn redrive_message(
-    store: Arc<dyn QueueStore>,
+    adapter: Arc<SwappableAdapter>,
     input: RedriveSingleInput,
 ) -> Result<RedriveSingleResult, Error> {
     validate_single_input(&input)?;
-    let found = store
+    let found = adapter
         .redrive_dlq_message(&input.queue, &input.message_id)
-        .await;
+        .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(RedriveSingleResult {
         queue: input.queue,
         message_id: input.message_id,
@@ -231,13 +233,14 @@ pub async fn redrive_message(
 }
 
 pub async fn discard_message(
-    store: Arc<dyn QueueStore>,
+    adapter: Arc<SwappableAdapter>,
     input: RedriveSingleInput,
 ) -> Result<RedriveSingleResult, Error> {
     validate_single_input(&input)?;
-    let found = store
+    let found = adapter
         .discard_dlq_message(&input.queue, &input.message_id)
-        .await;
+        .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(RedriveSingleResult {
         queue: input.queue,
         message_id: input.message_id,
@@ -245,13 +248,15 @@ pub async fn discard_message(
     })
 }
 
-pub async fn list_topics(store: Arc<dyn QueueStore>) -> Result<Vec<TopicInfo>, Error> {
-    Ok(store
+pub async fn list_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<TopicInfo>, Error> {
+    let topics = adapter
         .list_topics()
         .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
+    Ok(topics
         .into_iter()
-        .map(|name| TopicInfo {
-            name,
+        .map(|topic| TopicInfo {
+            name: topic.name,
             broker_type: "builtin".to_string(),
             subscriber_count: 0,
         })
@@ -259,13 +264,16 @@ pub async fn list_topics(store: Arc<dyn QueueStore>) -> Result<Vec<TopicInfo>, E
 }
 
 pub async fn topic_stats(
-    store: Arc<dyn QueueStore>,
+    adapter: Arc<SwappableAdapter>,
     input: TopicStatsInput,
 ) -> Result<TopicStatsOutput, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("topic is required".to_string()));
     }
-    let stats = store.topic_stats(&input.topic).await;
+    let stats = adapter
+        .topic_stats(&input.topic)
+        .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(TopicStatsOutput {
         depth: stats.depth,
         consumer_count: 0,
@@ -274,32 +282,49 @@ pub async fn topic_stats(
     })
 }
 
-pub async fn dlq_topics(store: Arc<dyn QueueStore>) -> Result<Vec<DlqTopicInfo>, Error> {
-    Ok(store
-        .dlq_topics()
+/// Ported from the engine builtin's `console_dlq_topics`
+/// (`engine/src/workers/queue/queue.rs:524-560`): iterate every known topic
+/// and pair it with its DLQ depth, keeping only topics that actually have
+/// dead-lettered messages. A per-topic `dlq_count` failure is treated as
+/// zero (matching the engine's `unwrap_or(0)`) rather than failing the
+/// whole call.
+pub async fn dlq_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<DlqTopicInfo>, Error> {
+    let topics = adapter
+        .list_topics()
         .await
-        .into_iter()
-        .map(|(topic, message_count)| DlqTopicInfo {
-            topic,
-            broker_type: "builtin".to_string(),
-            message_count,
-        })
-        .collect())
+        .map_err(|e| Error::Handler(e.to_string()))?;
+
+    let mut dlq_topics = Vec::new();
+    for topic in topics {
+        let dlq_count = adapter.dlq_count(&topic.name).await.unwrap_or(0);
+        if dlq_count > 0 {
+            dlq_topics.push(DlqTopicInfo {
+                topic: topic.name,
+                broker_type: "builtin".to_string(),
+                message_count: dlq_count,
+            });
+        }
+    }
+    Ok(dlq_topics)
 }
 
 pub async fn dlq_messages(
-    store: Arc<dyn QueueStore>,
+    adapter: Arc<SwappableAdapter>,
     input: DlqMessagesInput,
 ) -> Result<Vec<DlqMessage>, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("topic is required".to_string()));
     }
-    let messages = store
-        .dlq_messages(&input.topic, input.offset.saturating_add(input.limit))
+    let count = input.offset.saturating_add(input.limit) as usize;
+    let values = adapter
+        .dlq_messages(&input.topic, count)
         .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
+    let messages = values
         .into_iter()
         .skip(input.offset as usize)
         .take(input.limit as usize)
+        .filter_map(|value| serde_json::from_value::<Job>(value).ok())
         .map(dlq_message_from_job)
         .collect();
     Ok(messages)
@@ -330,26 +355,176 @@ fn dlq_message_from_job(job: Job) -> DlqMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{InMemoryStore, QueueStore};
+    use crate::adapter::TopicInfo as AdapterTopicInfo;
+    use crate::store::TopicStats;
+    use crate::subscriber_config::SubscriberQueueConfig;
     use serde_json::json;
+    use std::sync::Mutex as StdMutex;
 
-    fn store() -> Arc<dyn QueueStore> {
-        Arc::new(InMemoryStore::new())
+    #[derive(Debug, Clone, PartialEq)]
+    enum Call {
+        Enqueue { topic: String, data: Value },
+        RedriveDlq { topic: String },
+        RedriveDlqMessage { topic: String, message_id: String },
+        DiscardDlqMessage { topic: String, message_id: String },
+        DlqCount { topic: String },
+        ListTopics,
+        TopicStats { topic: String },
+        DlqMessages { topic: String, count: usize },
     }
 
-    async fn move_one_to_dlq(store: Arc<dyn QueueStore>, queue: &str) -> String {
-        store.enqueue(queue, json!({"dead": true})).await.unwrap();
-        let job = store.dequeue(queue).await.unwrap();
-        let id = job.id.clone();
-        store.nack(queue, job, 1, 1).await;
-        id
+    /// Records every call and lets a test script canned return values (an
+    /// `Err` here is how a real adapter surfaces a transport-specific
+    /// failure, e.g. redis's "does not support DLQ" -- functions must
+    /// propagate it 1:1).
+    #[derive(Default)]
+    struct MockAdapter {
+        calls: StdMutex<Vec<Call>>,
+        redrive_dlq_result: StdMutex<Option<anyhow::Result<u64>>>,
+        redrive_dlq_message_result: StdMutex<Option<anyhow::Result<bool>>>,
+        discard_dlq_message_result: StdMutex<Option<anyhow::Result<bool>>>,
+        dlq_count_result: StdMutex<Option<anyhow::Result<u64>>>,
+        list_topics_result: StdMutex<Option<anyhow::Result<Vec<AdapterTopicInfo>>>>,
+        topic_stats_result: StdMutex<Option<anyhow::Result<TopicStats>>>,
+        dlq_messages_result: StdMutex<Option<anyhow::Result<Vec<Value>>>>,
+    }
+
+    impl MockAdapter {
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl QueueAdapter for MockAdapter {
+        async fn enqueue(
+            &self,
+            topic: &str,
+            data: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) {
+            self.calls.lock().unwrap().push(Call::Enqueue {
+                topic: topic.to_string(),
+                data,
+            });
+        }
+
+        async fn subscribe(
+            &self,
+            _topic: &str,
+            _id: &str,
+            _function_id: &str,
+            _condition_function_id: Option<String>,
+            _queue_config: Option<SubscriberQueueConfig>,
+        ) {
+        }
+
+        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+
+        async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
+            self.calls.lock().unwrap().push(Call::RedriveDlq {
+                topic: topic.to_string(),
+            });
+            self.redrive_dlq_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(0))
+        }
+
+        async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+            self.calls.lock().unwrap().push(Call::RedriveDlqMessage {
+                topic: topic.to_string(),
+                message_id: message_id.to_string(),
+            });
+            self.redrive_dlq_message_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(false))
+        }
+
+        async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+            self.calls.lock().unwrap().push(Call::DiscardDlqMessage {
+                topic: topic.to_string(),
+                message_id: message_id.to_string(),
+            });
+            self.discard_dlq_message_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(false))
+        }
+
+        async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
+            self.calls.lock().unwrap().push(Call::DlqCount {
+                topic: topic.to_string(),
+            });
+            self.dlq_count_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(0))
+        }
+
+        async fn dlq_messages(&self, topic: &str, count: usize) -> anyhow::Result<Vec<Value>> {
+            self.calls.lock().unwrap().push(Call::DlqMessages {
+                topic: topic.to_string(),
+                count,
+            });
+            self.dlq_messages_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(vec![]))
+        }
+
+        async fn list_topics(&self) -> anyhow::Result<Vec<AdapterTopicInfo>> {
+            self.calls.lock().unwrap().push(Call::ListTopics);
+            self.list_topics_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(vec![]))
+        }
+
+        async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats> {
+            self.calls.lock().unwrap().push(Call::TopicStats {
+                topic: topic.to_string(),
+            });
+            self.topic_stats_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(Ok(TopicStats::default()))
+        }
+
+        async fn shutdown(&self) {}
+    }
+
+    fn adapter() -> (Arc<SwappableAdapter>, Arc<MockAdapter>) {
+        let mock = Arc::new(MockAdapter::default());
+        let dyn_adapter: Arc<dyn QueueAdapter> = mock.clone();
+        (Arc::new(SwappableAdapter::new(dyn_adapter)), mock)
+    }
+
+    fn job_value(id: &str, payload: Value, attempts: u32) -> Value {
+        serde_json::to_value(Job {
+            id: id.to_string(),
+            payload,
+            attempts,
+            enqueued_at_ms: 0,
+            ready_at_ms: 0,
+        })
+        .unwrap()
     }
 
     #[tokio::test]
-    async fn publish_enqueues_message() {
-        let store = store();
+    async fn publish_calls_adapter_enqueue() {
+        let (adapter, mock) = adapter();
         publish(
-            store.clone(),
+            adapter,
             PublishInput {
                 topic: "demo".to_string(),
                 data: json!({"hello": "world"}),
@@ -358,76 +533,141 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.dequeue("demo").await.unwrap().payload,
-            json!({"hello": "world"})
+            mock.calls(),
+            vec![Call::Enqueue {
+                topic: "demo".to_string(),
+                data: json!({"hello": "world"}),
+            }]
         );
     }
 
     #[tokio::test]
-    async fn redrive_moves_dlq_back() {
-        let store = store();
-        move_one_to_dlq(store.clone(), "demo").await;
+    async fn publish_rejects_empty_topic() {
+        let (adapter, mock) = adapter();
+        let err = publish(
+            adapter,
+            PublishInput {
+                topic: String::new(),
+                data: Value::Null,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Topic"));
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn redrive_returns_adapter_count() {
+        let (adapter, mock) = adapter();
+        *mock.redrive_dlq_result.lock().unwrap() = Some(Ok(3));
         let result = redrive(
-            store.clone(),
+            adapter,
             RedriveInput {
                 queue: "demo".to_string(),
             },
         )
         .await
         .unwrap();
-        assert_eq!(result.redriven, 1);
-        assert!(store.dequeue("demo").await.is_some());
+        assert_eq!(result.redriven, 3);
+        assert_eq!(
+            mock.calls(),
+            vec![Call::RedriveDlq {
+                topic: "demo".to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn redrive_propagates_adapter_error() {
+        let (adapter, mock) = adapter();
+        *mock.redrive_dlq_result.lock().unwrap() =
+            Some(Err(anyhow::anyhow!("redis does not support DLQ")));
+        let err = redrive(
+            adapter,
+            RedriveInput {
+                queue: "demo".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("does not support DLQ"));
     }
 
     #[tokio::test]
     async fn redrive_message_moves_one_dlq_message() {
-        let store = store();
-        let id = move_one_to_dlq(store.clone(), "demo").await;
+        let (adapter, mock) = adapter();
+        *mock.redrive_dlq_message_result.lock().unwrap() = Some(Ok(true));
         let result = redrive_message(
-            store.clone(),
+            adapter,
             RedriveSingleInput {
                 queue: "demo".to_string(),
-                message_id: id.clone(),
+                message_id: "m1".to_string(),
             },
         )
         .await
         .unwrap();
         assert_eq!(result.redriven, 1);
-        assert_eq!(store.dequeue("demo").await.unwrap().id, id);
+        assert_eq!(
+            mock.calls(),
+            vec![Call::RedriveDlqMessage {
+                topic: "demo".to_string(),
+                message_id: "m1".to_string(),
+            }]
+        );
     }
 
     #[tokio::test]
     async fn discard_message_purges_one_dlq_message() {
-        let store = store();
-        let id = move_one_to_dlq(store.clone(), "demo").await;
+        let (adapter, mock) = adapter();
+        *mock.discard_dlq_message_result.lock().unwrap() = Some(Ok(true));
         let result = discard_message(
-            store.clone(),
+            adapter,
             RedriveSingleInput {
                 queue: "demo".to_string(),
-                message_id: id,
+                message_id: "m1".to_string(),
             },
         )
         .await
         .unwrap();
         assert_eq!(result.redriven, 1);
-        assert!(store.dlq_messages("demo", 10).await.is_empty());
+        assert_eq!(
+            mock.calls(),
+            vec![Call::DiscardDlqMessage {
+                topic: "demo".to_string(),
+                message_id: "m1".to_string(),
+            }]
+        );
     }
 
     #[tokio::test]
-    async fn list_and_stats_return_store_state() {
-        let store = store();
-        store.enqueue("demo", json!("ready")).await.unwrap();
-        move_one_to_dlq(store.clone(), "demo").await;
+    async fn list_and_stats_return_adapter_state() {
+        let (adapter, _mock) = adapter();
+        {
+            let mock = _mock.clone();
+            *mock.list_topics_result.lock().unwrap() = Some(Ok(vec![AdapterTopicInfo {
+                name: "demo".to_string(),
+                depth: 1,
+            }]));
+        }
+        let topics = list_topics(adapter.clone()).await.unwrap();
         assert_eq!(
-            list_topics(store.clone()).await.unwrap()[0],
+            topics[0],
             TopicInfo {
                 name: "demo".to_string(),
                 broker_type: "builtin".to_string(),
                 subscriber_count: 0,
             }
         );
+
+        *_mock.topic_stats_result.lock().unwrap() = Some(Ok(TopicStats {
+            depth: 1,
+            dlq_depth: 1,
+            delivered: 0,
+            failed: 1,
+        }));
         let stats = topic_stats(
-            store.clone(),
+            adapter,
             TopicStatsInput {
                 topic: "demo".to_string(),
             },
@@ -439,19 +679,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dlq_browse_returns_topics_and_messages() {
-        let store = store();
-        let id = move_one_to_dlq(store.clone(), "demo").await;
-        assert_eq!(
-            dlq_topics(store.clone()).await.unwrap(),
-            vec![DlqTopicInfo {
-                topic: "demo".to_string(),
-                broker_type: "builtin".to_string(),
-                message_count: 1,
-            }]
-        );
+    async fn dlq_topics_only_includes_topics_with_positive_dlq_depth() {
+        let (adapter, mock) = adapter();
+        *mock.list_topics_result.lock().unwrap() = Some(Ok(vec![
+            AdapterTopicInfo {
+                name: "demo".to_string(),
+                depth: 0,
+            },
+            AdapterTopicInfo {
+                name: "empty".to_string(),
+                depth: 0,
+            },
+        ]));
+        // dlq_count is called once per topic in list order; queue the "demo"
+        // answer first, then "empty"'s.
+        *mock.dlq_count_result.lock().unwrap() = Some(Ok(1));
+        let result = dlq_topics(adapter.clone()).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].topic, "demo");
+        assert_eq!(result[0].message_count, 1);
+    }
+
+    #[tokio::test]
+    async fn dlq_browse_returns_messages() {
+        let (adapter, mock) = adapter();
+        *mock.dlq_messages_result.lock().unwrap() =
+            Some(Ok(vec![job_value("m1", json!({"dead": true}), 1)]));
         let messages = dlq_messages(
-            store,
+            adapter,
             DlqMessagesInput {
                 topic: "demo".to_string(),
                 offset: 0,
@@ -460,7 +715,30 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(messages[0].id, id);
+        assert_eq!(messages[0].id, "m1");
         assert_eq!(messages[0].retries, 1);
+        assert_eq!(
+            mock.calls(),
+            vec![Call::DlqMessages {
+                topic: "demo".to_string(),
+                count: 50,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn dlq_messages_rejects_empty_topic() {
+        let (adapter, _mock) = adapter();
+        let err = dlq_messages(
+            adapter,
+            DlqMessagesInput {
+                topic: String::new(),
+                offset: 0,
+                limit: 50,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("topic"));
     }
 }

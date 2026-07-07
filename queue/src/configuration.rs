@@ -8,10 +8,11 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
+use crate::adapter::SwappableAdapter;
+use crate::adapters::builtin::BuiltinAdapter;
 use crate::boot::{ApplyLock, ConfigCell};
 use crate::config::QueueConfig;
-use crate::store::SwappableStore;
-use crate::trigger::QueueTriggerHandler;
+use crate::trigger::{IiiInvoker, QueueTriggerHandler};
 
 pub const CONFIG_ID: &str = "queue";
 pub const CONFIG_FN_ID: &str = "queue::on-config-change";
@@ -56,7 +57,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<QueueConfig, String> {
 
 pub fn register_config_trigger(
     iii: &Arc<IIIClient>,
-    store: Arc<SwappableStore>,
+    adapter: Arc<SwappableAdapter>,
     trigger_handler: QueueTriggerHandler,
     config: ConfigCell,
     apply_lock: ApplyLock,
@@ -66,12 +67,12 @@ pub fn register_config_trigger(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
             let engine = engine.clone();
-            let store = store.clone();
+            let adapter = adapter.clone();
             let trigger_handler = trigger_handler.clone();
             let config = config.clone();
             let apply_lock = apply_lock.clone();
             async move {
-                on_config_change(&engine, store, trigger_handler, config, apply_lock).await;
+                on_config_change(engine, adapter, trigger_handler, config, apply_lock).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -91,15 +92,15 @@ pub fn register_config_trigger(
 }
 
 async fn on_config_change(
-    iii: &IIIClient,
-    store: Arc<SwappableStore>,
+    iii: Arc<IIIClient>,
+    adapter: Arc<SwappableAdapter>,
     trigger_handler: QueueTriggerHandler,
     config: ConfigCell,
     apply_lock: ApplyLock,
 ) {
     let _guard = apply_lock.lock().await;
 
-    let next = match fetch_config(iii).await {
+    let next = match fetch_config(&iii).await {
         Ok(config) => config.normalized(),
         Err(err) => {
             tracing::error!(error = %err, "queue config-change: fetch failed; keeping previous config");
@@ -117,8 +118,12 @@ async fn on_config_change(
                 return;
             }
         };
+        let new_adapter = Arc::new(BuiltinAdapter::new(
+            new_store,
+            Arc::new(IiiInvoker::new(iii.clone())),
+        ));
         trigger_handler.shutdown().await;
-        store.replace(new_store).await;
+        adapter.replace(new_adapter).await;
         *config.write().await = Arc::new(next);
 
         for registration in registrations {

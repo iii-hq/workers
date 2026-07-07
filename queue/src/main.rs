@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
 
     configuration::register_config_trigger(
         &iii,
-        boot.store.clone(),
+        boot.adapter.clone(),
         boot.trigger_handler.clone(),
         boot.config.clone(),
         boot.apply_lock.clone(),

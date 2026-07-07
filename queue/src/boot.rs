@@ -7,8 +7,10 @@ use iii_sdk::{IIIClient, RegisterTriggerType};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
 
+use crate::adapter::SwappableAdapter;
+use crate::adapters::builtin::BuiltinAdapter;
 use crate::config::QueueConfig;
-use crate::store::{FileStore, InMemoryStore, QueueStore, SwappableStore};
+use crate::store::{FileStore, InMemoryStore, QueueStore};
 use crate::trigger::{IiiInvoker, QueueTriggerHandler, SubscriberSpec};
 use crate::TRIGGER_TYPE;
 
@@ -19,7 +21,7 @@ pub type ConfigCell = Arc<RwLock<Arc<QueueConfig>>>;
 pub type ApplyLock = Arc<Mutex<()>>;
 
 pub struct BootHandle {
-    pub store: Arc<SwappableStore>,
+    pub adapter: Arc<SwappableAdapter>,
     pub trigger_handler: QueueTriggerHandler,
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
@@ -34,14 +36,17 @@ impl BootHandle {
 pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
 
-    let store = Arc::new(SwappableStore::new(build_store(&config).await?));
+    let store = build_store(&config).await?;
+    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let adapter = Arc::new(SwappableAdapter::new(Arc::new(BuiltinAdapter::new(
+        store, invoker,
+    ))));
     let config = Arc::new(RwLock::new(Arc::new(config.normalized())));
     let apply_lock = Arc::new(Mutex::new(()));
 
-    crate::functions::register_all(&iii, store.clone());
+    crate::functions::register_all(&iii, adapter.clone());
 
-    let trigger_handler =
-        QueueTriggerHandler::new(store.clone(), Arc::new(IiiInvoker::new(iii.clone())));
+    let trigger_handler = QueueTriggerHandler::new(adapter.clone());
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,
@@ -52,7 +57,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
     );
 
     Ok(BootHandle {
-        store,
+        adapter,
         trigger_handler,
         config,
         apply_lock,

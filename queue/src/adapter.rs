@@ -9,10 +9,12 @@
 //! Telemetry/tracing spans present on the engine's trait methods are
 //! dropped — the worker emits its own `tracing` events at call sites.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
 use crate::store::TopicStats;
 use crate::subscriber_config::SubscriberQueueConfig;
@@ -208,5 +210,254 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _max_retries: u32,
     ) -> anyhow::Result<()> {
         Ok(()) // no-op by default
+    }
+}
+
+/// Hot-swappable [`QueueAdapter`]: holds the currently active adapter behind
+/// an `RwLock` and forwards every trait method to it. Same pattern as
+/// [`crate::store::SwappableStore`] — a configuration change replaces the
+/// inner adapter (e.g. builtin -> file-backed builtin) without the trigger
+/// handler or service functions needing to know a swap happened.
+#[derive(Clone)]
+pub struct SwappableAdapter {
+    inner: Arc<RwLock<Arc<dyn QueueAdapter>>>,
+}
+
+impl SwappableAdapter {
+    pub fn new(adapter: Arc<dyn QueueAdapter>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(adapter)),
+        }
+    }
+
+    pub async fn current(&self) -> Arc<dyn QueueAdapter> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn replace(&self, adapter: Arc<dyn QueueAdapter>) {
+        *self.inner.write().await = adapter;
+    }
+}
+
+#[async_trait]
+impl QueueAdapter for SwappableAdapter {
+    async fn enqueue(
+        &self,
+        topic: &str,
+        data: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) {
+        self.current()
+            .await
+            .enqueue(topic, data, traceparent, baggage)
+            .await;
+    }
+
+    async fn subscribe(
+        &self,
+        topic: &str,
+        id: &str,
+        function_id: &str,
+        condition_function_id: Option<String>,
+        queue_config: Option<SubscriberQueueConfig>,
+    ) {
+        self.current()
+            .await
+            .subscribe(topic, id, function_id, condition_function_id, queue_config)
+            .await;
+    }
+
+    async fn unsubscribe(&self, topic: &str, id: &str) {
+        self.current().await.unsubscribe(topic, id).await;
+    }
+
+    async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
+        self.current().await.redrive_dlq(topic).await
+    }
+
+    async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+        self.current()
+            .await
+            .redrive_dlq_message(topic, message_id)
+            .await
+    }
+
+    async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+        self.current()
+            .await
+            .discard_dlq_message(topic, message_id)
+            .await
+    }
+
+    async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
+        self.current().await.dlq_count(topic).await
+    }
+
+    async fn dlq_messages(&self, topic: &str, count: usize) -> anyhow::Result<Vec<Value>> {
+        self.current().await.dlq_messages(topic, count).await
+    }
+
+    async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
+        self.current().await.list_topics().await
+    }
+
+    async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats> {
+        self.current().await.topic_stats(topic).await
+    }
+
+    async fn dlq_peek(&self, topic: &str, offset: u64, limit: u64) -> anyhow::Result<Vec<Value>> {
+        self.current().await.dlq_peek(topic, offset, limit).await
+    }
+
+    async fn shutdown(&self) {
+        self.current().await.shutdown().await;
+    }
+
+    async fn publish_to_function_queue(
+        &self,
+        queue_name: &str,
+        function_id: &str,
+        data: Value,
+        message_id: &str,
+        max_retries: u32,
+        backoff_ms: u64,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+        priority: Option<u8>,
+    ) {
+        self.current()
+            .await
+            .publish_to_function_queue(
+                queue_name,
+                function_id,
+                data,
+                message_id,
+                max_retries,
+                backoff_ms,
+                traceparent,
+                baggage,
+                priority,
+            )
+            .await;
+    }
+
+    async fn setup_function_queue(
+        &self,
+        queue_name: &str,
+        config: &FunctionQueueConfig,
+    ) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .setup_function_queue(queue_name, config)
+            .await
+    }
+
+    async fn consume_function_queue(
+        &self,
+        queue_name: &str,
+        prefetch: u32,
+    ) -> anyhow::Result<mpsc::Receiver<QueueMessage>> {
+        self.current()
+            .await
+            .consume_function_queue(queue_name, prefetch)
+            .await
+    }
+
+    async fn ack_function_queue(&self, queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .ack_function_queue(queue_name, delivery_id)
+            .await
+    }
+
+    async fn nack_function_queue(
+        &self,
+        queue_name: &str,
+        delivery_id: u64,
+        attempt: u32,
+        max_retries: u32,
+    ) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .nack_function_queue(queue_name, delivery_id, attempt, max_retries)
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Default)]
+    struct CountingAdapter {
+        enqueue_calls: AtomicU64,
+    }
+
+    #[async_trait]
+    impl QueueAdapter for CountingAdapter {
+        async fn enqueue(
+            &self,
+            _topic: &str,
+            _data: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) {
+            self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn subscribe(
+            &self,
+            _topic: &str,
+            _id: &str,
+            _function_id: &str,
+            _condition_function_id: Option<String>,
+            _queue_config: Option<SubscriberQueueConfig>,
+        ) {
+        }
+
+        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+
+        async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+
+        async fn redrive_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn discard_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+
+        async fn shutdown(&self) {}
+    }
+
+    #[tokio::test]
+    async fn current_reflects_replace() {
+        let first = Arc::new(CountingAdapter::default());
+        let swappable = SwappableAdapter::new(first.clone());
+        swappable.enqueue("demo", Value::Null, None, None).await;
+        assert_eq!(first.enqueue_calls.load(Ordering::SeqCst), 1);
+
+        let second = Arc::new(CountingAdapter::default());
+        swappable.replace(second.clone()).await;
+        swappable.enqueue("demo", Value::Null, None, None).await;
+
+        assert_eq!(first.enqueue_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second.enqueue_calls.load(Ordering::SeqCst), 1);
     }
 }
