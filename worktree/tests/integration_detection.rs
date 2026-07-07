@@ -8,7 +8,7 @@ mod support;
 
 use std::path::Path;
 
-use support::{commit_file, git, init_repo, make_env, test_config, TestEnv};
+use support::{commit_file, create_request, git, init_repo, make_env, test_config, TestEnv};
 use worktree::functions::{create, prune, status};
 
 struct Setup {
@@ -23,18 +23,9 @@ async fn setup(tmp: &Path) -> Setup {
     let repo = tmp.join("repo");
     init_repo(&repo);
     let env = make_env(tmp, test_config(tmp));
-    let created = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: Some("main".into()),
-            branch: None,
-            pr: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap();
+    let mut req = create_request(&repo);
+    req.base_ref = Some("main".into());
+    let created = create::handle(&env.deps, req).await.unwrap();
     Setup {
         env,
         repo,
@@ -169,15 +160,13 @@ async fn prune_removes_integrated_but_ahead_and_keeps_diverged() {
     init_repo(&repo);
     let env = make_env(tmp.path(), cfg);
 
-    let mk = |branch: Option<String>| create::Request {
-        repo_path: repo.to_string_lossy().into_owned(),
-        base_ref: Some("main".into()),
-        branch,
-        pr: None,
-        session_id: None,
+    let mk = || {
+        let mut req = create_request(&repo);
+        req.base_ref = Some("main".into());
+        req
     };
-    let landed = create::handle(&env.deps, mk(None)).await.unwrap();
-    let diverged = create::handle(&env.deps, mk(None)).await.unwrap();
+    let landed = create::handle(&env.deps, mk()).await.unwrap();
+    let diverged = create::handle(&env.deps, mk()).await.unwrap();
 
     // `landed` is squash-merged into main (ahead of base, yet integrated).
     commit_file(

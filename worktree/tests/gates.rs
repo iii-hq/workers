@@ -4,7 +4,7 @@
 
 mod support;
 
-use support::{init_repo, make_env, test_config, TestEnv};
+use support::{create_request, init_repo, make_env, test_config, TestEnv};
 use worktree::config::WorkerConfig;
 use worktree::functions::{claim, create, land, prune, release, remove, validate};
 
@@ -200,16 +200,6 @@ async fn land_targets_glob_pins_the_target() {
     assert_eq!(err.code, "W200");
 }
 
-fn create_req(repo: &std::path::Path) -> create::Request {
-    create::Request {
-        repo_path: repo.to_string_lossy().into_owned(),
-        base_ref: None,
-        branch: None,
-        pr: None,
-        session_id: None,
-    }
-}
-
 #[tokio::test]
 async fn repos_glob_gates_create_by_canonical_path() {
     let tmp = tempfile::tempdir().unwrap();
@@ -219,7 +209,7 @@ async fn repos_glob_gates_create_by_canonical_path() {
 
     // Denied: the allowlist points elsewhere; the message names the key.
     let env = env_with(tmp.path(), |c| c.gates.repos = vec!["/nowhere/*".into()]);
-    let err = create::handle(&env.deps, create_req(&repo))
+    let err = create::handle(&env.deps, create_request(&repo))
         .await
         .unwrap_err();
     assert_eq!(err.code, "W503");
@@ -228,7 +218,9 @@ async fn repos_glob_gates_create_by_canonical_path() {
     // Allowed: a glob over the canonicalized path admits the create.
     let allow = format!("{}*", canonical.parent().unwrap().to_string_lossy());
     let env = env_with(tmp.path(), |c| c.gates.repos = vec![allow]);
-    let created = create::handle(&env.deps, create_req(&repo)).await.unwrap();
+    let created = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
     assert!(created.worktree_id.starts_with("wt_"));
 }
 
@@ -240,11 +232,15 @@ async fn worktree_budget_bounds_live_worktrees_per_repo() {
     let env = env_with(tmp.path(), |c| c.gates.max_worktrees_per_repo = 2);
 
     // N-1 under the budget: both creates succeed.
-    let first = create::handle(&env.deps, create_req(&repo)).await.unwrap();
-    create::handle(&env.deps, create_req(&repo)).await.unwrap();
+    let first = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
+    create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
 
     // At the budget: the third create refuses, naming the key and count.
-    let err = create::handle(&env.deps, create_req(&repo))
+    let err = create::handle(&env.deps, create_request(&repo))
         .await
         .unwrap_err();
     assert_eq!(err.code, "W504");
@@ -267,6 +263,8 @@ async fn worktree_budget_bounds_live_worktrees_per_repo() {
     .await
     .unwrap();
     assert!(!checked.valid);
-    let created = create::handle(&env.deps, create_req(&repo)).await.unwrap();
+    let created = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
     assert!(created.worktree_id.starts_with("wt_"));
 }

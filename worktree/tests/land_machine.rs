@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use support::{
-    branch_sha, commit_file, git, head_sha, init_repo, make_env, make_env_with_runner, test_config,
-    FailingStore, ScriptedTestRunner, TestEnv,
+    branch_sha, commit_file, create_request, git, head_sha, init_repo, make_env,
+    make_env_with_runner, test_config, FailingStore, ScriptedTestRunner, TestEnv,
 };
 use worktree::functions::{create, land};
 use worktree::land::{run_step, LandDeps};
@@ -31,18 +31,9 @@ async fn setup(env: TestEnv, tmp: &Path) -> Scenario {
     let repo = tmp.join("repo");
     init_repo(&repo);
     git(&repo, &["branch", "trunk"]);
-    let created = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            pr: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap();
+    let created = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
     let wt_path = PathBuf::from(&created.path);
     commit_file(&wt_path, "feature.txt", "feature\n", "add feature");
     Scenario {

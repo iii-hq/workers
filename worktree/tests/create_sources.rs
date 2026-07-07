@@ -6,7 +6,7 @@ mod support;
 
 use std::path::Path;
 
-use support::{commit_file, git, init_repo, make_env, test_config};
+use support::{commit_file, create_request, git, init_repo, make_env, test_config};
 use worktree::config::BranchNaming;
 use worktree::functions::create;
 use worktree::ids;
@@ -34,18 +34,9 @@ async fn create_from_pr_head_branches_at_the_fetched_ref() {
     let (repo, pr_sha) = setup_pr_fixture(tmp.path());
     let env = make_env(tmp.path(), test_config(tmp.path()));
 
-    let created = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            pr: Some(7),
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap();
+    let mut req = create_request(&repo);
+    req.pr = Some(7);
+    let created = create::handle(&env.deps, req).await.unwrap();
 
     assert_eq!(created.branch, "iii/pr-7");
     assert_eq!(created.base_ref, "refs/pull/7/head");
@@ -60,34 +51,16 @@ async fn create_pr_is_mutually_exclusive_and_fails_cleanly_when_missing() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = setup_pr_fixture(tmp.path());
     let env = make_env(tmp.path(), test_config(tmp.path()));
-    let repo_path = repo.to_string_lossy().into_owned();
 
-    let err = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo_path.clone(),
-            base_ref: Some("main".into()),
-            branch: None,
-            pr: Some(7),
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap_err();
+    let mut req = create_request(&repo);
+    req.base_ref = Some("main".into());
+    req.pr = Some(7);
+    let err = create::handle(&env.deps, req).await.unwrap_err();
     assert_eq!(err.code, "W001");
 
-    let err = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path,
-            base_ref: None,
-            branch: None,
-            pr: Some(999),
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap_err();
+    let mut req = create_request(&repo);
+    req.pr = Some(999);
+    let err = create::handle(&env.deps, req).await.unwrap_err();
     assert_eq!(err.code, "W112");
     assert!(
         err.message.contains("refs/pull/999/head"),
@@ -105,18 +78,9 @@ async fn codename_naming_mints_the_deterministic_friendly_branch() {
     cfg.branch_naming = BranchNaming::Codename;
     let env = make_env(tmp.path(), cfg);
 
-    let created = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            pr: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap();
+    let created = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
 
     assert_eq!(
         created.branch,
@@ -135,18 +99,9 @@ async fn dev_port_rides_the_create_response() {
     init_repo(&repo);
     let env = make_env(tmp.path(), test_config(tmp.path()));
 
-    let created = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            pr: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap();
+    let created = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
     assert_eq!(created.dev_port, ids::dev_port(&created.worktree_id));
     assert!((10_000..20_000).contains(&created.dev_port));
 }

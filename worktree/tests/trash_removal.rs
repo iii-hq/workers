@@ -8,24 +8,15 @@ mod support;
 use std::path::Path;
 use std::time::Duration;
 
-use support::{git, init_repo, make_env, test_config, TestEnv};
+use support::{create_request, git, init_repo, make_env, test_config, TestEnv};
 use worktree::functions::{create, prune, remove};
 use worktree::trash;
 use worktree::types::now_ms;
 
 async fn create_wt(env: &TestEnv, repo: &Path) -> create::Response {
-    create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            pr: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap()
+    create::handle(&env.deps, create_request(repo))
+        .await
+        .unwrap()
 }
 
 async fn wait_gone(path: &Path) {
