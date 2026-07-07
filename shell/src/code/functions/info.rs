@@ -12,11 +12,17 @@ use serde::{Deserialize, Serialize};
 use crate::code::config::CoderConfig;
 use crate::code::path::PathResolver;
 
-/// No arguments — `coder::info` is a pure discovery call.
+/// No caller arguments — `coder::info` is a pure discovery call. The harness
+/// stamps the session filesystem scope internally.
 // examples are wire-contract; goldens pin them.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(example = "example_info_input")]
-pub struct InfoInput {}
+pub struct InfoInput {
+    /// Internal harness filesystem scope; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub fs_scope: Option<crate::fs::FsScope>,
+}
 
 // examples are wire-contract; goldens pin them.
 fn example_info_input() -> serde_json::Value {
@@ -32,8 +38,18 @@ pub struct InfoOutput {
     pub base_paths: Vec<String>,
 
     /// Convenience duplicate of `base_paths[0]` — the primary allowed root.
-    /// Relative paths resolve against this directory.
+    /// Relative paths resolve against this directory when the session is NOT
+    /// scoped; when `session_root` is present, they resolve against that
+    /// instead.
     pub primary_root: String,
+
+    /// The session working directory this call is scoped to, when the harness
+    /// stamped one (the default for console chats). When present, relative
+    /// paths anchor HERE rather than at `primary_root`; new files land here by
+    /// default. A canonical absolute path inside one of `base_paths`. `None`
+    /// for an unscoped session — relative paths then anchor at `primary_root`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_root: Option<String>,
 
     /// Glob patterns matched per root (root-relative). Files whose
     /// root-relative path matches are listable but not
@@ -116,25 +132,36 @@ pub struct InfoOutput {
 pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
+    req: InfoInput,
 ) -> Result<InfoOutput, String> {
     // info canonicalizes the configured roots (fs), so keep it off the executor
     // for consistency with the other read handlers.
-    tokio::task::spawn_blocking(move || Ok(inner(&resolver, &cfg)))
-        .await
-        .map_err(|e| format!("info task join failed: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+        Ok(inner(&resolver, &cfg, scope_root))
+    })
+    .await
+    .map_err(|e| format!("info task join failed: {e}"))?
 }
 
-fn inner(resolver: &PathResolver, cfg: &CoderConfig) -> InfoOutput {
+fn inner(resolver: &PathResolver, cfg: &CoderConfig, scope_root: Option<&str>) -> InfoOutput {
     let base_paths: Vec<String> = resolver
         .roots()
         .iter()
         .map(|p| p.display().to_string())
         .collect();
     let primary_root = base_paths[0].clone();
+    // Echo the scope root only when it canonicalises inside an allowed root —
+    // the SAME acceptance the resolver applies, so `session_root` reflects
+    // exactly where scoped relative paths would anchor.
+    let session_root = scope_root
+        .and_then(|r| resolver.session_root(r))
+        .map(|p| p.display().to_string());
 
     InfoOutput {
         base_paths,
         primary_root,
+        session_root,
         non_accessible_globs: cfg.non_accessible_globs.clone(),
         default_exclude_globs: cfg.default_exclude_globs.clone(),
         max_read_bytes: cfg.max_read_bytes,
@@ -181,7 +208,7 @@ mod tests {
         let non_canon = tmp.path().join(".");
         let (resolver, cfg) = make_resolver_cfg(vec![non_canon], vec![]);
 
-        let out = inner(&resolver, &cfg);
+        let out = inner(&resolver, &cfg, None);
 
         let expected_canon = std::fs::canonicalize(tmp.path())
             .unwrap()
@@ -222,7 +249,7 @@ mod tests {
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
 
-        let out = inner(&resolver, &cfg);
+        let out = inner(&resolver, &cfg, None);
 
         // primary_root == base_paths[0]
         assert!(!out.base_paths.is_empty());
@@ -250,5 +277,33 @@ mod tests {
 
         // version
         assert_eq!(out.version, env!("CARGO_PKG_VERSION"));
+
+        // No scope stamped → no session_root.
+        assert_eq!(out.session_root, None);
+    }
+
+    /// A scoped call echoes the canonical session working directory in
+    /// `session_root`; an unscoped call reports `None`. A scope root that
+    /// canonicalises OUTSIDE every allowed root is not echoed (mirrors the
+    /// resolver's own rejection).
+    #[test]
+    fn session_root_reflects_scope() {
+        let tmp = tempdir().unwrap();
+        let sub = tmp.path().join("workdir");
+        std::fs::create_dir(&sub).unwrap();
+        let (resolver, cfg) = make_resolver_cfg(vec![tmp.path().to_path_buf()], vec![]);
+
+        // Unscoped: None.
+        assert_eq!(inner(&resolver, &cfg, None).session_root, None);
+
+        // Scoped inside an allowed root: canonical path echoed.
+        let canon_sub = std::fs::canonicalize(&sub).unwrap().display().to_string();
+        let scoped = inner(&resolver, &cfg, Some(sub.to_str().unwrap()));
+        assert_eq!(scoped.session_root, Some(canon_sub));
+
+        // Scope outside every allowed root: not echoed.
+        let outside = tempdir().unwrap();
+        let out = inner(&resolver, &cfg, Some(outside.path().to_str().unwrap()));
+        assert_eq!(out.session_root, None);
     }
 }

@@ -260,7 +260,9 @@ served by the shell worker (no separate install). Confirm they are available wit
 `engine::functions::list { prefix: "coder::" }`. Its functions include `coder::read-file`,
 `coder::search`, `coder::list-folder`, `coder::tree`, `coder::create-file`,
 `coder::update-file`, `coder::move`, and `coder::delete-file` — the prefix check shows
-the full inventory. Use `coder::move` for renames and moves, never delete-then-recreate. Plain
+the full inventory. Use `coder::move` for renames and moves, never delete-then-recreate. New
+files belong in your working directory by default — relative paths resolve against it; only
+write to another location when the user names one. Plain
 file browsing outside code work (like `shell::fs::ls`) is still fine. Fetch each contract
 first, as always.
 

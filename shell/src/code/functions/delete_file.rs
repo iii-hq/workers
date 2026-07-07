@@ -16,11 +16,12 @@ use crate::code::path::PathResolver;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(example = "example_delete_file_input")]
 pub struct DeleteFileInput {
-    /// Paths to remove. Each entry is relative to the primary allowed root,
-    /// or an absolute path inside any allowed root. Call `coder::info` to
-    /// see the allowed roots. Paths outside every allowed root are rejected
-    /// — use the shell worker's `shell::fs::*` for host paths outside the
-    /// jail.
+    /// Paths to remove. Relative paths resolve against the session working
+    /// directory when the session is scoped (the default for console chats),
+    /// otherwise against the primary allowed root; an absolute path must sit
+    /// inside an allowed root. Call `coder::info` for the allowed roots and the
+    /// session root. Paths outside every allowed root are rejected — use the
+    /// shell worker's `shell::fs::*` for host paths outside the jail.
     pub paths: Vec<String>,
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]

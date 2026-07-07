@@ -25,8 +25,10 @@ pub struct CreateFileInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateFileSpec {
-    /// Path relative to the primary allowed root, or an absolute path inside
-    /// any allowed root. Call `coder::info` to see the allowed roots. Paths
+    /// Relative paths resolve against the session working directory when the
+    /// session is scoped (the default for console chats), otherwise against the
+    /// primary allowed root; an absolute path must sit inside an allowed root.
+    /// Call `coder::info` for the allowed roots and the session root. Paths
     /// outside every allowed root are rejected — use the shell worker's
     /// `shell::fs::*` for host paths outside the jail.
     pub path: String,

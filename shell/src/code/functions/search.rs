@@ -35,13 +35,15 @@ pub struct SearchInput {
     /// Pattern to search for. Treated as a regex when `regex: true`,
     /// otherwise as a literal substring.
     pub query: String,
-    /// Folder scoping the walk. Relative to the primary allowed root, or an
-    /// absolute path inside any allowed root. Defaults to `.` (the primary
-    /// root itself). Globs are matched relative to the containing root;
+    /// Folder scoping the walk. Relative paths resolve against the session
+    /// working directory when the session is scoped (the default for console
+    /// chats), otherwise against the primary allowed root; an absolute path
+    /// must sit inside an allowed root. Defaults to `.` (that anchor root
+    /// itself). Globs are matched relative to the containing root;
     /// result paths are absolute regardless of this value. Call
-    /// `coder::info` to see the allowed roots. Paths outside every allowed
-    /// root are rejected — use the shell worker's `shell::fs::*` for host
-    /// paths outside the jail.
+    /// `coder::info` for the allowed roots and the session root. Paths outside
+    /// every allowed root are rejected — use the shell worker's `shell::fs::*`
+    /// for host paths outside the jail.
     #[serde(default = "default_path")]
     pub path: String,
     #[serde(default)]

@@ -3,7 +3,7 @@
   "function_id": "coder::info",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "No arguments — `coder::info` is a pure discovery call.",
+    "description": "No caller arguments — `coder::info` is a pure discovery call. The harness stamps the session filesystem scope internally.",
     "examples": [
       {}
     ],
@@ -71,7 +71,7 @@
         "type": "array"
       },
       "primary_root": {
-        "description": "Convenience duplicate of `base_paths[0]` — the primary allowed root. Relative paths resolve against this directory.",
+        "description": "Convenience duplicate of `base_paths[0]` — the primary allowed root. Relative paths resolve against this directory when the session is NOT scoped; when `session_root` is present, they resolve against that instead.",
         "type": "string"
       },
       "search_default_max_line_bytes": {
@@ -91,6 +91,13 @@
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "session_root": {
+        "description": "The session working directory this call is scoped to, when the harness stamped one (the default for console chats). When present, relative paths anchor HERE rather than at `primary_root`; new files land here by default. A canonical absolute path inside one of `base_paths`. `None` for an unscoped session — relative paths then anchor at `primary_root`.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "tree_default_depth": {
         "description": "Default `max_depth` used by `coder::tree` when the caller omits it.",

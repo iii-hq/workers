@@ -16,9 +16,11 @@ use crate::code::path::PathResolver;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(example = "example_list_folder_input")]
 pub struct ListFolderInput {
-    /// Folder to list. Relative to the primary allowed root, or an absolute
-    /// path inside any allowed root. Defaults to `.` (the primary root
-    /// itself). Call `coder::info` to see the allowed roots. Paths outside
+    /// Folder to list. Relative paths resolve against the session working
+    /// directory when the session is scoped (the default for console chats),
+    /// otherwise against the primary allowed root; an absolute path must sit
+    /// inside an allowed root. Defaults to `.` (that anchor root itself). Call
+    /// `coder::info` for the allowed roots and the session root. Paths outside
     /// every allowed root are rejected — use the shell worker's
     /// `shell::fs::*` for host paths outside the jail.
     #[serde(default = "default_path")]

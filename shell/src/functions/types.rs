@@ -110,8 +110,10 @@ pub struct ExecRequest {
     /// the fs jail exactly like `shell::fs::*` paths: jail-relative when
     /// `fs.host_roots` are set (else absolute), canonicalized, and must resolve
     /// inside a jail root and miss the denylist — a path that escapes returns
-    /// S215. Must already exist and be a directory. Omit to use the configured
-    /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
+    /// S215. Must already exist and be a directory. Omitted, the call runs in
+    /// the session working directory when it is session-scoped (the default for
+    /// console chats), else the configured `working_dir`. Rejected (S210) on a
+    /// sandbox target.
     #[serde(default)]
     pub cwd: Option<String>,
     /// Internal harness filesystem scope; omitted from published schema.

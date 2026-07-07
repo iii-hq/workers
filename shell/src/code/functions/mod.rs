@@ -62,10 +62,12 @@ const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (s
      to read multiple files in one call — entries are processed in \
      request order against batch_read_budget_bytes, measured in \
      bytes of returned content (after UTF-8 sanitization); per-entry \
-     errors (C211/C213) leave other entries unaffected. Paths are relative \
-     to the primary allowed root or absolute inside any allowed root \
-     (coder::info lists them); for host paths outside the jail use \
-     shell::fs::*. Non-accessible paths return C211.";
+     errors (C211/C213) leave other entries unaffected. Relative paths \
+     anchor at the session working directory when the session is scoped \
+     (default for console chats), else the primary allowed root; an absolute \
+     path must sit inside an allowed root (coder::info lists the roots and the \
+     session root); for host paths outside the jail use shell::fs::*. \
+     Non-accessible paths return C211.";
 
 const SEARCH_ID: &str = "coder::search";
 const SEARCH_DESC: &str = "Search file contents and/or paths. Supports literal or regex \
@@ -81,10 +83,11 @@ const SEARCH_DESC: &str = "Search file contents and/or paths. Supports literal o
      than max_read_bytes are silently skipped during content scanning. \
      Results are capped by max_matches AND a response byte budget \
      (search_response_budget_bytes); when truncated is true, refine \
-     the query or add include_globs rather than paginate. Paths are relative \
-     to the primary allowed root or absolute inside any allowed root \
-     (coder::info lists them); for host paths outside the jail use \
-     shell::fs::*.";
+     the query or add include_globs rather than paginate. Relative paths \
+     anchor at the session working directory when the session is scoped \
+     (default for console chats), else the primary allowed root; an absolute \
+     path must sit inside an allowed root (coder::info lists the roots and the \
+     session root); for host paths outside the jail use shell::fs::*.";
 
 const UPDATE_FILE_ID: &str = "coder::update-file";
 const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits across one or more \
@@ -107,34 +110,40 @@ const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits acro
      post-apply echo (±2 context lines); regex replace ops return up \
      to 5 per-match-site echoes (first + last line of each replaced \
      region, inner lines elided) — verify from the echoes instead of \
-     re-reading the file. Paths are relative to the primary \
-     allowed root or absolute inside any allowed root (coder::info \
-     lists them); for host paths outside the jail use shell::fs::*.";
+     re-reading the file. Relative paths anchor at the session working \
+     directory when the session is scoped (default for console chats), else \
+     the primary allowed root; an absolute path must sit inside an allowed \
+     root (coder::info lists the roots and the session root); for host paths \
+     outside the jail use shell::fs::*.";
 
 const CREATE_FILE_ID: &str = "coder::create-file";
 const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
      \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
-     flags; non-accessible paths return C211. Paths are relative to \
-     the primary allowed root or absolute inside any allowed root \
-     (coder::info lists them); for host paths outside the jail use \
-     shell::fs::*.";
+     flags; non-accessible paths return C211. Relative paths anchor at \
+     the session working directory when the session is scoped (default for \
+     console chats), else the primary allowed root; an absolute path must sit \
+     inside an allowed root (coder::info lists the roots and the session \
+     root); for host paths outside the jail use shell::fs::*.";
 
 const DELETE_FILE_ID: &str = "coder::delete-file";
 const DELETE_FILE_DESC: &str = "Remove one or more paths. Request shape: {\"paths\": [\"...\"]}. \
      Directories need `recursive: true`; \
      missing paths are idempotent successes; recursive removal \
-     refuses to descend through non-accessible entries. Paths are \
-     relative to the primary allowed root or absolute inside any \
-     allowed root (coder::info lists them); for host paths outside \
-     the jail use shell::fs::*.";
+     refuses to descend through non-accessible entries. Relative paths \
+     anchor at the session working directory when the session is scoped \
+     (default for console chats), else the primary allowed root; an absolute \
+     path must sit inside an allowed root (coder::info lists the roots and the \
+     session root); for host paths outside the jail use shell::fs::*.";
 
 const LIST_FOLDER_ID: &str = "coder::list-folder";
 const LIST_FOLDER_DESC: &str = "Paginated single-folder listing, sorted by name. Entries carry \
      only `name`; derive an entry's absolute path as the response's \
      `path` + '/' + name. Non-accessible entries are still listed with a \
-     `non_accessible: true` flag. Paths are relative to the primary \
-     allowed root or absolute inside any allowed root (coder::info \
-     lists them); for host paths outside the jail use shell::fs::*.";
+     `non_accessible: true` flag. Relative paths anchor at the session \
+     working directory when the session is scoped (default for console \
+     chats), else the primary allowed root; an absolute path must sit inside \
+     an allowed root (coder::info lists the roots and the session root); for \
+     host paths outside the jail use shell::fs::*.";
 
 const TREE_ID: &str = "coder::tree";
 const TREE_DESC: &str = "Recursive directory snapshot bounded by `max_depth` and a \
@@ -145,17 +154,20 @@ const TREE_DESC: &str = "Recursive directory snapshot bounded by `max_depth` and
      coder::list-folder for pagination. Noise directories matching \
      default_exclude_globs (.git, node_modules, target, … — \
      coder::info lists them) appear as childless `truncated` stubs; \
-     pass use_default_excludes: false to descend into them. Paths are \
-     relative to the primary allowed root or absolute inside any \
-     allowed root (coder::info lists them); for host paths outside \
-     the jail use shell::fs::*.";
+     pass use_default_excludes: false to descend into them. Relative paths \
+     anchor at the session working directory when the session is scoped \
+     (default for console chats), else the primary allowed root; an absolute \
+     path must sit inside an allowed root (coder::info lists the roots and the \
+     session root); for host paths outside the jail use shell::fs::*.";
 
 const MOVE_FILE_ID: &str = "coder::move";
 const MOVE_FILE_DESC: &str = "Move or rename one or more paths inside the jail. Request shape: \
-     {\"files\": [{\"from\": \"...\", \"to\": \"...\"}]}. Paths are \
-     relative to the primary allowed root or absolute inside any \
-     allowed root (coder::info lists them); for host paths outside \
-     the jail use shell::fs::*. Per-entry `overwrite` and `parents` \
+     {\"files\": [{\"from\": \"...\", \"to\": \"...\"}]}. Relative paths \
+     anchor at the session working directory when the session is scoped \
+     (default for console chats), else the primary allowed root; an absolute \
+     path must sit inside an allowed root (coder::info lists the roots and the \
+     session root); for host paths outside the jail use shell::fs::*. \
+     Per-entry `overwrite` and `parents` \
      flags. Same-root moves use a per-file-atomic rename; cross-root \
      moves use copy+delete (files only — cross-root directory moves \
      are unsupported, move files individually). Copy+delete is \
@@ -269,12 +281,12 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
 fn register_info(iii: &IIIClient, cells: CodeCells) {
     iii.register_function(
         INFO_ID,
-        RegisterFunction::new_async(move |_req: info::InfoInput| {
+        RegisterFunction::new_async(move |req: info::InfoInput| {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
                 let cfg = cells.config.read().await.clone();
-                info::handle(resolver, cfg).await.map_err(Error::from)
+                info::handle(resolver, cfg, req).await.map_err(Error::from)
             }
         })
         .description(INFO_DESC),

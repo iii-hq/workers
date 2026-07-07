@@ -1178,7 +1178,11 @@ async fn assemble_context(
 fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
     let mut lines = vec![format!("Your session id is {}.", record.session_id)];
     if let Some(dir) = record.options.filesystem_root() {
-        lines.push(format!("Your working directory is {dir}."));
+        lines.push(format!(
+            "Your working directory is {dir}. Create new files there by default — \
+             relative paths resolve against it; only write elsewhere when the user \
+             names another location."
+        ));
     }
     if let Some(aid) = policy_aid(record.options.functions.as_ref()) {
         lines.push(aid);

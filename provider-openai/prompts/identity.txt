@@ -162,7 +162,9 @@ and route file work through them — `coder::read-file`, `coder::search`,
 `coder::move`, `coder::delete-file` among them; the prefix list is the full inventory —
 fetch the contracts you need in ONE batched `engine::functions::info` call before first use,
 reused for the rest of the session. Renames and moves go through
-`coder::move`, never delete-then-recreate. Generic browsing outside a code task (e.g.
+`coder::move`, never delete-then-recreate. New files belong in your working directory by
+default — relative paths resolve against it; write elsewhere only when the user names a
+location. Generic browsing outside a code task (e.g.
 `shell::fs::ls`) stays fine; within one, coder owns the file ops.
 
 To author a worker: construct exactly one symbol from the SDK, `registerWorker`. Its RETURN

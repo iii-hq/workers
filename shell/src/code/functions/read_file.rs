@@ -141,9 +141,11 @@ impl ReadTarget {
     example = "example_read_file_batch"
 )]
 pub struct ReadFileInput {
-    /// Single file to read. Relative to the primary allowed root, or an
-    /// absolute path inside any allowed root. Call `coder::info` to see
-    /// the allowed roots. Paths outside every allowed root are rejected —
+    /// Single file to read. Relative paths resolve against the session working
+    /// directory when the session is scoped (the default for console chats),
+    /// otherwise against the primary allowed root; an absolute path must sit
+    /// inside an allowed root. Call `coder::info` for the allowed roots and the
+    /// session root. Paths outside every allowed root are rejected —
     /// use the shell worker's `shell::fs::*` for host paths outside the
     /// jail. Mutually exclusive with `paths` (XOR): pass either `path` or
     /// `paths`, not both — C210 if both or neither is set.
