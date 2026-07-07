@@ -67,9 +67,10 @@ pub async fn invoke_target(
 ) -> ResultData {
     match engine.dispatch(function_id, arguments.clone()).await {
         Ok(mut value) => {
-            if function_id == "engine::functions::list" || function_id == "engine::functions::info"
-            {
+            if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
+            } else if function_id == "engine::functions::info" {
+                post_filter_info(&mut value, policy);
             }
             let (content, is_error) = normalize(&value);
             ResultData {
@@ -85,6 +86,38 @@ pub async fn invoke_target(
                 is_error: true,
                 details: json!({ "error": { "code": e.code, "message": message } }),
             }
+        }
+    }
+}
+
+/// Post-filter an `engine::functions::info` result — the flat single-id
+/// detail (blanked to `null` when not callable, as ever) or the engine's
+/// `function_ids` batch envelope. Batch entries the agent cannot dispatch are
+/// masked to the same `{ function_id, error: "not available" }` stub the
+/// engine uses for unknown ids — denied stays indistinguishable from
+/// nonexistent, and (unlike the list filter) entries are never dropped, so
+/// the model can pair every requested id with an outcome.
+fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
+    let keep = |id: &str| policy.allows(id);
+    if let Some(items) = value.get_mut("functions").and_then(Value::as_array_mut) {
+        for item in items.iter_mut() {
+            let id = item
+                .get("function_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !keep(&id) {
+                *item = json!({ "function_id": id, "error": "not available" });
+            }
+        }
+    } else if let Some(id) = value
+        .get("function_id")
+        .or_else(|| value.get("id"))
+        .and_then(Value::as_str)
+    {
+        if !keep(id) {
+            *value = Value::Null;
         }
     }
 }
@@ -125,8 +158,10 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
     (vec![ContentBlock::text(rendered)], is_error)
 }
 
-/// Drop functions the agent cannot call from a discovery result so the model
-/// only sees what its policy permits.
+/// Drop functions the agent cannot call from an `engine::functions::list`
+/// result so the model only sees what its policy permits (a list is a
+/// filtered view — dropping is correct there; info results go through
+/// [`post_filter_info`] instead, which masks rather than drops).
 fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
     let keep = |id: &str| policy.allows(id);
     if let Some(arr) = value.get_mut("functions").and_then(Value::as_array_mut) {
@@ -138,15 +173,6 @@ fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
                 .map(keep)
                 .unwrap_or(false)
         });
-    } else if let Some(id) = value
-        .get("function_id")
-        .or_else(|| value.get("id"))
-        .and_then(Value::as_str)
-    {
-        // engine::functions::info: blank the descriptor when not callable.
-        if !keep(id) {
-            *value = Value::Null;
-        }
     }
 }
 
@@ -194,5 +220,40 @@ mod tests {
             .map(|f| f["function_id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, vec!["shell::run"]);
+    }
+
+    #[test]
+    fn info_filter_masks_denied_batch_entries_without_dropping() {
+        let policy = pol(&["shell::*"]);
+        let mut v = json!({ "functions": [
+            { "function_id": "shell::run", "request_schema": { "type": "object" } },
+            { "function_id": "fs::read", "request_schema": { "type": "object" } },
+            { "function_id": "nope::missing", "error": "not_found" }
+        ]});
+        post_filter_info(&mut v, &policy);
+        let items = v["functions"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "batch entries are masked, never dropped");
+        assert!(items[0].get("request_schema").is_some());
+        assert_eq!(
+            items[1],
+            json!({ "function_id": "fs::read", "error": "not available" })
+        );
+        // A not_found marker for an id outside the policy is masked uniformly.
+        assert_eq!(
+            items[2],
+            json!({ "function_id": "nope::missing", "error": "not available" })
+        );
+    }
+
+    #[test]
+    fn info_filter_blanks_denied_single_detail() {
+        let policy = pol(&["shell::*"]);
+        let mut allowed = json!({ "function_id": "shell::run", "request_schema": {} });
+        post_filter_info(&mut allowed, &policy);
+        assert!(allowed.is_object());
+
+        let mut denied = json!({ "function_id": "fs::read", "request_schema": {} });
+        post_filter_info(&mut denied, &policy);
+        assert!(denied.is_null());
     }
 }

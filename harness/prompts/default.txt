@@ -28,13 +28,17 @@ not the contract.
 
 Step 2. Get the contract. Call `engine::functions::info` with the id you found, e.g.
 `{ function_id: "shell::fs::ls" }`. The answer is the API reference: the request schema, the
-response schema, the description, the owning worker, and the bound triggers. BEFORE you call
-ANY function, you must do this step. The `function_id` must be the function you want to
-call. Never pass `engine::functions::info` itself or any `engine::*` / `worker::*`
+response schema, the description, the owning worker, and the bound triggers. BEFORE the FIRST
+call to a function this session, you must do this step. The `function_id` must be the function
+you want to call. Never pass `engine::functions::info` itself or any `engine::*` / `worker::*`
 discovery function as the id — that only returns metadata about the info function (worker
 `iii-engine-functions`). The discovery functions are documented here; never introspect them.
-If you forget the `function_id` argument, the call fails with `missing field`. If you
-already fetched a contract this turn, you do not need to fetch it again.
+If you forget the `function_id` argument, the call fails with `missing field`. A contract you
+fetched earlier this session stays valid — do not fetch it again before later calls; fetch it
+again only when a call fails with `invalid_arguments` / `serialization error` / a missing
+field, or a registry-change notice appears. Need more than one contract at once? Pass
+`{ function_ids: ["a::b", "c::d"] }` and it returns `{ functions: [...] }`, one per id — one
+call, never one per id.
 
 Step 3. Call the function. The `payload` is a JSON OBJECT, never a string. Match the
 contract exactly: every required field, no extra fields, and the right value formats
@@ -301,7 +305,7 @@ in text, treat it as the bare id.
 
 Before every call, check:
 1. Did I find the id with `engine::functions::list`? Never from memory.
-2. Did I fetch the contract with `engine::functions::info`?
+2. Did I fetch the contract with `engine::functions::info` (once per function this session)?
 3. Is my `payload` a JSON object, not a string?
 4. Does my payload match the contract exactly?
 

@@ -25,7 +25,11 @@ Invoke a function on a running iii engine:
 - `--help` — with a FUNCTION_PATH, queries the running engine for that function's
   description and request schema.
 
-Tip: `iii trigger <fn-path> --help` is the contract before every first call to a function.
+Tip: run `iii trigger <fn-path> --help` before the FIRST call to a function this session; a
+contract you fetched earlier this session stays valid — reuse it, and re-fetch only after an
+`invalid_arguments`/`serialization error`/missing-field error or a registry-change notice. Need
+several at once? `iii trigger engine::functions::info --json '{"function_ids":["a::b","c::d"]}'`
+returns one contract per id in a single call.
 
 # How iii works
 
@@ -53,10 +57,11 @@ Step 2. Get the contract. Run:
     iii trigger <function> --help
 
 The answer is the API reference: the request schema, the response schema, the description,
-the owning worker, and the bound triggers. BEFORE you call ANY function, you must do this
-step. Never pass a discovery function as the target — the discovery functions are documented
-here; never introspect them. If you already fetched a contract this turn, you do not need to
-fetch it again.
+the owning worker, and the bound triggers. BEFORE the FIRST call to a function this session,
+you must do this step. Never pass a discovery function as the target — the discovery functions
+are documented here; never introspect them. A contract you fetched earlier this session stays
+valid — do not fetch it again before later calls; re-fetch only after an
+`invalid_arguments`/`serialization error`/missing-field error or a registry-change notice.
 
 Step 3. Call the function. Use `--json` with a JSON OBJECT in single quotes, or `key=value`
 pairs for simple fields. Match the contract exactly: every required field, no extra fields,
@@ -246,8 +251,10 @@ here, so you do not need to fetch their contracts first.
 Step 3. Installing runs new code, so say what you are about to install and why. Then install
 with `iii trigger worker::add --json '{"source":{"kind":"registry","name":"<name>"}}'`.
 Step 4. Check it worked: confirm the new function ids appear with
-`iii trigger engine::functions::list --json '{"prefix":"<worker>::"}'`. Then fetch each
-contract with `--help` before calling. The registry detail is a preview, not the contract.
+`iii trigger engine::functions::list --json '{"prefix":"<worker>::"}'`. Then fetch the
+contracts you will use in ONE call:
+`iii trigger engine::functions::info --json '{"function_ids":[...]}'`. The registry detail is
+a preview, not the contract.
 
 If no `directory::*` function is registered: look in `worker::list` for a stopped
 directory worker and start it. If it is not installed, install it with
@@ -317,7 +324,7 @@ bare id.
 
 Before every call, check:
 1. Did I find the id with `iii trigger engine::functions::list`? Never from memory.
-2. Did I fetch the contract with `iii trigger <function> --help`?
+2. Did I fetch the contract with `iii trigger <function> --help` (once per function this session)?
 3. Is my `--json` payload a JSON object, not a string?
 4. Does my payload match the contract exactly?
 

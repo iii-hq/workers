@@ -270,6 +270,9 @@ async fn seed_or_merge(
     options: TurnOptions,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    // Carry the session's last-acknowledged registry generation onto a new turn
+    // so run_step can notice a registry change that landed between turns.
+    let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
     match existing {
         Some(rec) if !rec.status.is_terminal() => {
             // Merge path: the message is already appended; the running loop's
@@ -290,10 +293,10 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => seed_new(deps, cfg, session_id, options).await,
+                _ => seed_new(deps, cfg, session_id, options, prior_generation).await,
             }
         }
-        _ => seed_new(deps, cfg, session_id, options).await,
+        _ => seed_new(deps, cfg, session_id, options, prior_generation).await,
     }
 }
 
@@ -302,6 +305,7 @@ async fn seed_new(
     cfg: &WorkerConfig,
     session_id: &str,
     options: TurnOptions,
+    functions_generation: Option<u64>,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -321,6 +325,7 @@ async fn seed_new(
         display_parent_session_id: None,
         spawned_by_subscription_id: None,
         reactive_depth: None,
+        functions_generation,
         result: None,
         result_error: None,
         validation_retries: 0,
