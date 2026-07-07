@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::store::QueueStore;
+use crate::subscriber_config::SubscriberQueueConfig;
 
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 pub const DEFAULT_BACKOFF_MS: u64 = 1000;
@@ -70,18 +71,6 @@ pub struct SubscriberSpec {
     pub condition_function_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_config: Option<SubscriberQueueConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SubscriberQueueConfig {
-    #[serde(default, alias = "maxRetries", skip_serializing_if = "Option::is_none")]
-    pub max_retries: Option<u32>,
-    #[serde(
-        default,
-        alias = "backoffDelayMs",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub backoff_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

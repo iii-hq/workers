@@ -15,9 +15,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::store::TopicStats;
-// Until Task 2 lands this is the existing 2-field struct in trigger.rs;
-// Task 2 replaces it with the full port at crate::subscriber_config.
-use crate::trigger::SubscriberQueueConfig;
+use crate::subscriber_config::SubscriberQueueConfig;
 
 /// Summary of a known queue topic, returned by [`QueueAdapter::list_topics`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
