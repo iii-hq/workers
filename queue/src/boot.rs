@@ -368,6 +368,16 @@ mod tests {
         );
     }
 
+    // NOTE: this test never actually runs under plain `cargo test`, even with
+    // `--no-default-features`. The dev-dependency self-reference
+    // (`iii-queue = { path = ".", features = ["test-adapters"] }` above)
+    // doesn't set `default-features = false`, so Cargo's feature unification
+    // pulls the default `rabbitmq` feature back in for the whole test build
+    // regardless of what the outer `cargo test` invocation requested. The
+    // `#[cfg(not(feature = "rabbitmq"))]` guard is therefore always false in
+    // practice; this only compiles/runs if something changes the dev-dep to
+    // disable default features. Same gap as the engine's equivalent test
+    // (`engine/Cargo.toml:168-171`) — left unfixed here to stay 1:1 with it.
     #[cfg(not(feature = "rabbitmq"))]
     #[tokio::test]
     async fn build_adapter_rabbitmq_without_feature_mentions_the_feature() {

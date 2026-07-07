@@ -29,13 +29,18 @@ the same `durable:subscriber` trigger type.
 ## Boundaries
 
 - Not fire-and-forget broadcast. Use `pubsub` when missed events are acceptable.
-- Redis and RabbitMQ transports are follow-up work; this worker currently ships
-  the builtin in-process transport with `in_memory` and `file_based` storage.
+- Three transports ship today: `builtin` (in-process, full DLQ/retry/fifo),
+  `redis` (pub/sub only, no DLQ), and `rabbitmq` (full: retry/DLQ/priority/fifo).
+  The `bridge` adapter is not ported — it was engine-internal and is superseded
+  by the engine's `QueueEnqueuer` cut (MOT-3829).
 - Engine `TriggerAction.Enqueue` / named function queues require the separate
   `QueueEnqueuer` engine cut. Until that lands, use `iii::durable::publish` and
   `durable:subscriber` triggers for this standalone worker.
 - File-backed mode survives worker restarts. In-memory mode loses pending jobs
-  on restart or transport hot-swap.
+  on restart or transport hot-swap. An unreachable `redis`/`rabbitmq` target at
+  boot fails the boot (no fallback to `builtin`).
+- `fifo` mode is strictly serial — there is no grouped-fifo partitioning by
+  `group_id` like the engine's `GroupedFifoWorker`.
 - This worker carries work items, not key/value or stream state. Use `state` or
   `stream` for those.
 
@@ -100,6 +105,29 @@ adapter:
     save_interval_ms: 5000
 ```
 
+For pub/sub-only delivery against a shared Redis (no DLQ, no durability):
+
+```yaml
+adapter:
+  name: redis
+  config:
+    redis_url: redis://localhost:6379
+```
+
+For full retry/DLQ/priority/fifo delivery against RabbitMQ:
+
+```yaml
+adapter:
+  name: rabbitmq
+  config:
+    amqp_url: amqp://localhost:5672
+    max_attempts: 3
+    prefetch_count: 10
+    queue_mode: standard
+    priority_field: priority
+```
+
 Changing the adapter config hot-swaps the transport and restarts every
-consumer. File-backed jobs survive by construction; in-memory jobs are lost,
-matching the builtin adapter's in-process durability profile.
+consumer — the new adapter is built first, so a bad config leaves the
+previous one serving. File-backed jobs survive by construction; in-memory
+jobs are lost, matching the builtin adapter's in-process durability profile.
