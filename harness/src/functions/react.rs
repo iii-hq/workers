@@ -189,6 +189,12 @@ pub struct ReactSpec {
     /// auto-unregister its predecessor subscriptions.
     #[serde(default, rename = "__subscription_id")]
     pub subscription_id: Option<String>,
+    /// Stamped by the registration interceptor when the agent asked `once:
+    /// true` (never caller-supplied): retire this binding after its first
+    /// successful spawn. Meaningless on join edges — the join lifecycle owns
+    /// predecessor bindings.
+    #[serde(default, rename = "__once")]
+    pub once: bool,
     /// Stamped by the interceptor at registration (never caller-supplied): the
     /// registering session. Console-tree parent fallback for fires whose event
     /// carries no session id (state/cron/stream).
@@ -362,14 +368,18 @@ pub async fn handle(
 
     match spec.join.clone() {
         None => {
-            spawn_reaction(
+            let res = spawn_reaction(
                 deps,
                 single_event_task(&spec.task, &event),
                 &spec,
                 parent,
                 spawn_depth,
             )
-            .await
+            .await;
+            if spec.once && matches!(&res, Ok(r) if r.spawned) {
+                once_unregister(deps, &spec).await;
+            }
+            res
         }
         Some(join) => join_edge(deps, event, &spec, &join, parent, spawn_depth).await,
     }
@@ -436,16 +446,7 @@ async fn join_edge(
         tracing::info!(join = %join.id, "harness::react: join re-armed; predecessor subscriptions stay registered");
     } else {
         for id in join_binding_ids(&rec) {
-            // Turn-event edges record the ENGINE binding id (stamped by the
-            // fan-out); state/cron/stream edges record the interceptor's
-            // local `sub_` handle — resolve it through the registry first.
-            let engine_id = if id.starts_with("sub_") {
-                deps.subscriptions.take(&id).and_then(|(_, t)| t)
-            } else {
-                deps.subscriptions.take_by_trigger_id(&id);
-                Some(id.clone())
-            };
-            let Some(engine_id) = engine_id else {
+            let Some(engine_id) = resolve_engine_binding(deps, &id) else {
                 tracing::warn!(join = %join.id, subscription = %id, "harness::react: join predecessor has no resolvable engine binding; skipping unregister");
                 continue;
             };
@@ -595,6 +596,38 @@ async fn resolve_root(deps: &Deps, session_id: &str) -> String {
         }
     }
     current
+}
+
+/// Resolve a recorded binding id to the ENGINE trigger id, evicting the local
+/// registry slot. Turn-event fires stamp the engine binding id directly;
+/// state/cron/stream fires deliver the interceptor's local `sub_` handle —
+/// resolve it through the registry first.
+fn resolve_engine_binding(deps: &Deps, id: &str) -> Option<String> {
+    if id.starts_with("sub_") {
+        deps.subscriptions.take(id).and_then(|(_, t)| t)
+    } else {
+        deps.subscriptions.take_by_trigger_id(id);
+        Some(id.to_string())
+    }
+}
+
+/// A `once: true` simple edge spawned: retire its binding so it never refires.
+/// Best-effort — a failed unregister only risks an extra fire, never the spawn.
+async fn once_unregister(deps: &Deps, spec: &ReactSpec) {
+    let Some(id) = spec.subscription_id.as_deref() else {
+        tracing::warn!("harness::react: once-binding fired without a subscription id; cannot auto-unregister");
+        return;
+    };
+    match resolve_engine_binding(deps, id) {
+        Some(engine_id) => {
+            if let Err(e) = unregister_subscription(deps, &engine_id).await {
+                tracing::warn!(error = %e, subscription = %engine_id, "harness::react: once-binding auto-unregister failed");
+            }
+        }
+        None => {
+            tracing::warn!(subscription = %id, "harness::react: once-binding has no resolvable engine binding; skipping unregister");
+        }
+    }
 }
 
 async fn unregister_subscription(deps: &Deps, id: &str) -> Result<(), HarnessError> {
@@ -816,8 +849,18 @@ mod tests {
             parent_session_id: None,
             join: None,
             subscription_id: None,
+            once: false,
             owner_session_id: None,
         }
+    }
+
+    #[test]
+    fn once_stamp_parses_and_defaults_off() {
+        let s: ReactSpec = serde_json::from_value(json!({ "model": "m", "task": "t" })).unwrap();
+        assert!(!s.once);
+        let s: ReactSpec =
+            serde_json::from_value(json!({ "model": "m", "task": "t", "__once": true })).unwrap();
+        assert!(s.once);
     }
 
     #[test]
