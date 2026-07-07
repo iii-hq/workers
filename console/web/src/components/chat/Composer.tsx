@@ -64,6 +64,13 @@ interface ComposerProps {
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
   isStreaming?: boolean
+  /**
+   * When true, the editor stays unlocked while streaming: a submit queues the
+   * message on the running turn (delivered when the stream ends) and the stop
+   * button stays available. When false (mock backends), streaming locks the
+   * editor as before.
+   */
+  queueWhileStreaming?: boolean
   /** External lock (e.g. harness not installed). Editor + send disabled. */
   blocked?: boolean
   /** Placeholder while `blocked` is true. */
@@ -96,6 +103,7 @@ export function Composer({
   onSubmit,
   onStop,
   isStreaming,
+  queueWhileStreaming,
   blocked,
   blockedPlaceholder = 'chat unavailable…',
   initialContent,
@@ -108,7 +116,10 @@ export function Composer({
   const [clearToken, setClearToken] = useState(0)
   const textRef = useRef('')
 
-  const inputDisabled = isStreaming || blocked
+  const inputDisabled = blocked || (isStreaming && !queueWhileStreaming)
+  // Turn options are frozen on the running turn; changing them mid-stream
+  // would silently not apply, so the pickers stay locked while streaming.
+  const optionsDisabled = isStreaming || blocked
 
   const handleSubmit = useCallback(() => {
     if (inputDisabled) return
@@ -150,10 +161,12 @@ export function Composer({
           onSubmit={handleSubmit}
           clearToken={clearToken}
           placeholder={
-            isStreaming
-              ? 'streaming response…'
-              : blocked
-                ? blockedPlaceholder
+            blocked
+              ? blockedPlaceholder
+              : isStreaming
+                ? queueWhileStreaming
+                  ? 'queue a message…'
+                  : 'streaming response…'
                 : 'send a message…'
           }
           disabled={inputDisabled}
@@ -171,7 +184,7 @@ export function Composer({
             value={workingDir ?? null}
             onChange={onWorkingDirChange}
             locked={workingDirLocked}
-            disabled={inputDisabled}
+            disabled={optionsDisabled}
             worktrees={worktreePicker}
           />
         ) : null}
@@ -179,7 +192,7 @@ export function Composer({
           <PermissionModePicker
             value={permissionMode}
             onChange={onPermissionModeChange}
-            disabled={inputDisabled || !!permissionModeLoading}
+            disabled={optionsDisabled || !!permissionModeLoading}
           />
         ) : null}
         <div className="flex-1 min-w-0" />
@@ -190,16 +203,29 @@ export function Composer({
             label: l === 'off' ? 'thinking off' : `thinking ${l}`,
           }))}
           onChange={onThinkingLevelChange}
-          disabled={inputDisabled}
+          disabled={optionsDisabled}
           aria-label="thinking level"
         />
         <ModelPicker
           value={model}
           options={modelOptions}
           onChange={onModelChange}
-          disabled={inputDisabled}
+          disabled={optionsDisabled}
           loading={catalogLoading}
         />
+        {isStreaming && queueWhileStreaming ? (
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={handleSubmit}
+            disabled={blocked}
+            aria-label="queue message"
+          >
+            send
+            <span aria-hidden>→</span>
+          </Button>
+        ) : null}
         {isStreaming ? (
           <Button
             type="button"

@@ -27,6 +27,7 @@ import { loadApprovalGateDefaults } from './approval-gate-config'
 import {
   getTurnStatus,
   type HarnessFunctionPolicy,
+  type HarnessSendRequest,
   type HarnessThinkingLevel,
   isTurnActive,
   sendTurn,
@@ -42,6 +43,7 @@ import type {
   ChatBackend,
   ChatStreamOptions,
   CompactResult,
+  QueuedMessagePreview,
   StreamEvent,
 } from './types'
 
@@ -92,6 +94,93 @@ export function buildTurnMetadata(
     message_id: messageId,
     ...(workingDir ? { fs_scope: { root: workingDir } } : {}),
   }
+}
+
+/**
+ * Assemble the `harness::send` request shared by the stream kickoff and the
+ * mid-stream queue path — model/provider resolution, thinking level, the
+ * approval-gate structural floor, and the string-sugar vs structured message
+ * form.
+ */
+async function buildSendRequest(
+  prompt: string,
+  mode: Mode,
+  model: ModelId,
+  sessionId: string,
+  messageId: string,
+  opts?: ChatStreamOptions,
+): Promise<HarnessSendRequest> {
+  const { provider, model: modelId } = resolveRunParams(model)
+  const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
+
+  let functionPolicy = FALLBACK_FUNCTION_POLICY
+  try {
+    functionPolicy = (await loadApprovalGateDefaults()).functionPolicy
+  } catch (err) {
+    if (import.meta.env.DEV) {
+      console.warn(
+        '[real-backend] approval-gate config unavailable; using fallback policy',
+        err,
+      )
+    }
+  }
+
+  // Attachment blocks (file-mention expansions) upgrade the message to the
+  // structured MessageInput form; plain sends keep the string sugar so the
+  // wire payload stays byte-identical for the common case.
+  const attachedBlocks = opts?.attachedBlocks ?? []
+  const message =
+    attachedBlocks.length > 0
+      ? {
+          role: 'user' as const,
+          content: [prompt, ...attachedBlocks].map((text) => ({
+            type: 'text' as const,
+            text,
+          })),
+          timestamp: Date.now(),
+        }
+      : prompt
+
+  return {
+    session_id: sessionId,
+    message,
+    model: modelId,
+    provider,
+    idempotency_key: messageId,
+    session: { metadata: { surface: 'console' } },
+    options: {
+      mode,
+      functions: functionPolicy,
+      ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+      metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
+    },
+  }
+}
+
+/**
+ * Mid-stream send (MOT-3837): the turn is already streaming, so just trigger
+ * `harness::send` — the harness queues the message and delivers it after the
+ * stream ends. No second stream loop: the live one keeps rendering, and the
+ * queued row lands via session events on drain.
+ */
+async function realQueueMessage(
+  prompt: string,
+  mode: Mode,
+  model: ModelId,
+  opts?: ChatStreamOptions,
+): Promise<void> {
+  const client = await getIiiClient()
+  const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
+  const messageId = opts?.messageId ?? newMessageId()
+  const req = await buildSendRequest(
+    prompt,
+    mode,
+    model,
+    sessionId,
+    messageId,
+    opts,
+  )
+  await sendTurn(client, req)
 }
 
 async function* realStream(
@@ -149,8 +238,6 @@ async function* realStream(
 
   let kickoffError: Error | null = null
   try {
-    const { provider, model: modelId } = resolveRunParams(model)
-
     // Reconnect recovery: rebuild any pending-approval cards a prior turn left
     // held (e.g. resending after a reload). Best-effort; skipped without the gate.
     if (approvalGateAvailable) {
@@ -170,52 +257,17 @@ async function* realStream(
         })
     }
 
-    const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
-
-    let functionPolicy = FALLBACK_FUNCTION_POLICY
-    try {
-      functionPolicy = (await loadApprovalGateDefaults()).functionPolicy
-    } catch (err) {
-      if (import.meta.env.DEV) {
-        console.warn(
-          '[real-backend] approval-gate config unavailable; using fallback policy',
-          err,
-        )
-      }
-    }
-
-    // Attachment blocks (file-mention expansions) upgrade the message to the
-    // structured MessageInput form; plain sends keep the string sugar so the
-    // wire payload stays byte-identical for the common case.
-    const attachedBlocks = opts?.attachedBlocks ?? []
-    const message =
-      attachedBlocks.length > 0
-        ? {
-            role: 'user' as const,
-            content: [prompt, ...attachedBlocks].map((text) => ({
-              type: 'text' as const,
-              text,
-            })),
-            timestamp: Date.now(),
-          }
-        : prompt
-
     // Kick off (or steer) the turn. A turn already running for this session
-    // folds the message in (merge) rather than rejecting — no busy error.
-    void sendTurn(client, {
-      session_id: sessionId,
-      message,
-      model: modelId,
-      provider,
-      idempotency_key: messageId,
-      session: { metadata: { surface: 'console' } },
-      options: {
-        mode,
-        functions: functionPolicy,
-        ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
-        metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
-      },
-    }).catch((err) => {
+    // folds the message in (merge/queue) rather than rejecting — no busy error.
+    const sendRequest = await buildSendRequest(
+      prompt,
+      mode,
+      model,
+      sessionId,
+      messageId,
+      opts,
+    )
+    void sendTurn(client, sendRequest).catch((err) => {
       kickoffError = err instanceof Error ? err : new Error(String(err))
       if (import.meta.env.DEV) {
         console.warn('[real-backend] harness::send failed', err)
@@ -254,6 +306,26 @@ async function* realStream(
     stopTurnEvents()
     stopApprovalEvents()
   }
+}
+
+/**
+ * The session's server-side message queue: `harness::status` → `queued` rows
+ * mapped to previews keyed by their eventual transcript entry id. Includes
+ * messages queued by other tabs and subagent/subscription notifications.
+ */
+async function realListQueued(
+  sessionId: string,
+): Promise<QueuedMessagePreview[]> {
+  const client = await getIiiClient()
+  const status = await getTurnStatus(client, sessionId).catch(() => null)
+  return (status?.queued ?? []).map((row) => ({
+    id: row.entry_id,
+    text: (row.message.content ?? [])
+      .filter((b) => b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n'),
+    queuedAt: row.queued_at,
+  }))
 }
 
 async function realResolveApproval(
@@ -391,6 +463,8 @@ async function realCompactSession(
 export const realBackend: ChatBackend = {
   id: 'real',
   stream: realStream,
+  queueMessage: realQueueMessage,
+  listQueued: realListQueued,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
   compactSession: realCompactSession,

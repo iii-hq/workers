@@ -1,5 +1,5 @@
 import { Copy, Folder } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
@@ -19,7 +19,10 @@ import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
-import type { CompactResult } from '@/lib/backend/types'
+import type {
+  CompactResult,
+  QueuedMessagePreview,
+} from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
@@ -148,6 +151,82 @@ export function ChatView({
   // covers the gap before the first status event lands.
   const serverWorking = conversation.status === 'working'
   const streamingIndicator = isStreaming || serverWorking
+
+  // Messages queued mid-stream (MOT-3837): shown above the composer until the
+  // harness drains them into the transcript. Each draft carries the predicted
+  // entry id of its eventual transcript row.
+  const [queuedDrafts, setQueuedDrafts] = useState<UserMessage[]>([])
+
+  // Drafts belong to one conversation; never leak across switches.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on id change only
+  useEffect(() => {
+    setQueuedDrafts([])
+  }, [conversation.id])
+
+  // Pop a draft into the chat the moment its drained row (same predicted
+  // entry id) arrives via session events — the transcript owns it from there.
+  useEffect(() => {
+    if (queuedDrafts.length === 0) return
+    const ids = new Set(conversation.messages.map((m) => m.id))
+    setQueuedDrafts((drafts) => {
+      const next = drafts.filter((d) => !ids.has(d.id))
+      return next.length === drafts.length ? drafts : next
+    })
+  }, [conversation.messages, queuedDrafts.length])
+
+  // Safety flush: the turn ended (the harness's finalize drain already
+  // appended any leftovers server-side), so surviving drafts become
+  // optimistic transcript rows that reconcile in place when events land.
+  useEffect(() => {
+    if (streamingIndicator || queuedDrafts.length === 0) return
+    setQueuedDrafts([])
+    for (const draft of queuedDrafts) {
+      onAppendMessage(conversation.id, draft)
+    }
+  }, [streamingIndicator, queuedDrafts, conversation.id, onAppendMessage])
+
+  // Server-side queue: while a step streams, poll `harness::status` so the
+  // strip also shows messages queued by other tabs and subagent/subscription
+  // notifications — not just this tab's drafts. Cleared when idle (the
+  // transcript owns everything by then).
+  const [serverQueued, setServerQueued] = useState<QueuedMessagePreview[]>([])
+  useEffect(() => {
+    const listQueued = backend.listQueued
+    if (!streamingIndicator || !listQueued) {
+      setServerQueued([])
+      return
+    }
+    let alive = true
+    // The conversation id IS the engine session_id (see `sessionId` below).
+    const poll = () =>
+      listQueued(conversation.id)
+        .then((rows) => {
+          if (alive) setServerQueued(rows)
+        })
+        .catch(() => {})
+    void poll()
+    const timer = window.setInterval(() => void poll(), 2500)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [streamingIndicator, backend.listQueued, conversation.id])
+
+  // The strip's rows: this tab's drafts first, then server-queued rows not
+  // already covered by a draft or an arrived transcript row (a stale poll
+  // must not re-show a message that just drained into the chat).
+  const queuedStrip = useMemo(() => {
+    const seen = new Set<string>(queuedDrafts.map((d) => d.id))
+    for (const m of conversation.messages) seen.add(m.id)
+    const drafts = queuedDrafts.map((d) => ({
+      id: d.id,
+      text: d.content || '(attachments only)',
+    }))
+    const server = serverQueued
+      .filter((row) => !seen.has(row.id))
+      .map((row) => ({ id: row.id, text: row.text || '(notification)' }))
+    return [...drafts, ...server]
+  }, [queuedDrafts, serverQueued, conversation.messages])
 
   // The conversation id IS the engine session_id (console-<uuid> for chats
   // created here). Matches iii.session.id on every span so the traces UI can
@@ -315,9 +394,21 @@ export function ChatView({
           payload.attachments.length > 0 ? payload.attachments : undefined,
         createdAt: Date.now(),
       }
-      onAppendMessage(conversationId, userMsg)
 
+      // Mid-stream sends are queued by the harness (MOT-3837): the message
+      // waits above the composer instead of rendering mid-transcript, and pops
+      // into the chat when its drained row arrives via session events.
+      // `/compact` keeps the normal path (compactSession refuses while live).
       const trimmed = payload.text.trim()
+      const isCompact =
+        trimmed === '/compact' || trimmed.startsWith('/compact ')
+      const willQueue =
+        !isCompact &&
+        (isStreaming || serverWorking) &&
+        Boolean(backend.queueMessage)
+
+      if (!willQueue) onAppendMessage(conversationId, userMsg)
+
       if (trimmed === '/compact' || trimmed.startsWith('/compact ')) {
         if (!backend.compactSession) {
           onAppendMessage(
@@ -393,7 +484,7 @@ export function ChatView({
       if (workingDir && mentionPaths.length > 0) {
         const expanded = await expandFileMentions(workingDir, mentionPaths)
         attachedBlocks = expanded.blocks
-        if (expanded.attachments.length > 0) {
+        if (expanded.attachments.length > 0 && !willQueue) {
           onPatchMessage(conversationId, userMsg.id, {
             attachments: [
               ...(userMsg.attachments ?? []),
@@ -415,6 +506,44 @@ export function ChatView({
             ),
           )
         }
+      }
+
+      // Mid-stream send (MOT-3837): a turn is already streaming, so the
+      // harness queues the message and delivers it when the stream ends. No
+      // second stream loop — the live one keeps rendering. The draft chip
+      // above the composer stands in until the drained row (same predicted
+      // entry id) arrives via session events and pops it into the chat.
+      if (willQueue && backend.queueMessage) {
+        setQueuedDrafts((drafts) => [...drafts, userMsg])
+        try {
+          await backend.queueMessage(
+            payload.text || '(attachments only)',
+            conversation.mode,
+            model,
+            {
+              sessionId,
+              messageId,
+              thinkingLevel,
+              workingDir: conversation.workingDir,
+              approvalGateAvailable: approvalEnabled,
+              ...(attachedBlocks && attachedBlocks.length > 0
+                ? { attachedBlocks }
+                : {}),
+            },
+          )
+        } catch (err) {
+          setQueuedDrafts((drafts) =>
+            drafts.filter((d) => d.id !== userMsg.id),
+          )
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not queue the message — ${err instanceof Error ? err.message : String(err)}`,
+              'error',
+            ),
+          )
+        }
+        return
       }
 
       const controller = new AbortController()
@@ -680,6 +809,8 @@ export function ChatView({
       approvalEnabled,
       announcer,
       ensureSession,
+      isStreaming,
+      serverWorking,
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
@@ -965,6 +1096,24 @@ export function ChatView({
               </button>
             </div>
           ) : null}
+          {queuedStrip.length > 0 ? (
+            <div
+              className="mb-1 border border-rule bg-bg"
+              aria-label="queued messages"
+            >
+              {queuedStrip.map((row) => (
+                <div
+                  key={row.id}
+                  className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0"
+                >
+                  <span className="min-w-0 flex-1 truncate">{row.text}</span>
+                  <span className="shrink-0 lowercase text-ink-ghost">
+                    queued
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <Composer
             mode={conversation.mode}
             model={conversation.model}
@@ -993,6 +1142,7 @@ export function ChatView({
             onSubmit={handleSubmit}
             onStop={handleStop}
             isStreaming={streamingIndicator}
+            queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}
             blockedPlaceholder={
               conversationsCtx

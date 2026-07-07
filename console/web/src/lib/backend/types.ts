@@ -158,6 +158,18 @@ export type CompactResult =
   | { status: 'empty' }
   | { status: 'error'; message: string }
 
+/**
+ * Preview of a message parked in the harness's server-side queue while a step
+ * streams. `id` is the deterministic transcript entry id the drain will
+ * append under — the same id the drained row arrives with, so consumers can
+ * dedupe against local drafts and the transcript.
+ */
+export interface QueuedMessagePreview {
+  id: string
+  text: string
+  queuedAt: number
+}
+
 export interface ChatBackend {
   /** stable identifier used by the playground for telemetry / labels */
   readonly id: string
@@ -181,6 +193,26 @@ export interface ChatBackend {
      */
     opts?: { accessDuration?: 'once' | 'session' | 'always' },
   ): Promise<void>
+  /**
+   * Send a message into a session whose turn is already streaming, WITHOUT
+   * opening a second stream loop. The harness queues it (`queued: true`) and
+   * delivers it after the stream ends; the row then renders via session
+   * events. Backends that don't support mid-stream queueing omit this and the
+   * composer stays locked while streaming.
+   */
+  queueMessage?(
+    prompt: string,
+    mode: Mode,
+    model: ModelId,
+    opts?: ChatStreamOptions,
+  ): Promise<void>
+  /**
+   * The session's server-side message queue (`harness::status` → `queued`):
+   * everything parked while the current step streams — including messages
+   * from other tabs and subagent/subscription notifications, not just this
+   * tab's sends. Empty when idle.
+   */
+  listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
   /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).
    * The client-side AbortSignal only stops rendering; without this the
