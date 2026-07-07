@@ -17,6 +17,10 @@ path = "src/lib.rs"
 name = "queue"
 path = "src/main.rs"
 
+[features]
+default = ["rabbitmq"]
+rabbitmq = ["dep:lapin"]
+
 [dependencies]
 iii-sdk = "=0.20.0"
 async-trait = "0.1"
@@ -32,6 +36,7 @@ schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
+lapin = { version = "3", optional = true }
 
 [dev-dependencies]
 serial_test = "3"
