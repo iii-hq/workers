@@ -123,7 +123,7 @@ adapter:
 | Field | Default | Description |
 |---|---|---|
 | `adapter.config.amqp_url` | `amqp://localhost:5672` | AMQP connection string. |
-| `adapter.config.max_attempts` | `3` | Delivery attempts before a message moves to DLQ (adapter-level default; per-subscriber `queue_config.maxRetries` overrides it). |
+| `adapter.config.max_attempts` | `3` | Delivery attempts before a message moves to DLQ. The retry budget is stamped on each message at publish time from this adapter-level value, so per-subscriber `queue_config.maxRetries` does not override it on this transport (it applies to the builtin adapter). |
 | `adapter.config.prefetch_count` | `10` | Consumer prefetch (QoS), used in `standard` queue mode. |
 | `adapter.config.queue_mode` | `standard` | `standard` or `fifo`. Unrecognized values fall back to `standard`. |
 | `adapter.config.priority_field` | none | JSON field read from each published message's payload to set the AMQP message priority. Only applies to subscribers whose `queue_config.maxPriority` declares the queue as a priority queue (`x-max-priority`). |
@@ -146,7 +146,7 @@ The `durable:subscriber` trigger's `queue_config` accepts the full builtin
 | Field | Default | Description |
 |---|---|---|
 | `type` | `concurrent` | `fifo` (strictly serial) or `concurrent`. |
-| `maxRetries` | `3` | Failed deliveries before DLQ, per subscriber. |
+| `maxRetries` | `3` | Failed deliveries before DLQ, per subscriber (builtin adapter; RabbitMQ uses adapter-level `max_attempts`). |
 | `concurrency` | `10` (builtin) | In-flight invocations for `concurrent` mode. `0` pauses consumption. Ignored by `fifo` (always serial — this worker has no grouped-fifo partitioning; see Known Gaps). |
 | `visibilityTimeout` | — | Accepted for parity. |
 | `delaySeconds` | — | Accepted for parity. |

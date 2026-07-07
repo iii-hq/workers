@@ -222,10 +222,9 @@ pub trait QueueAdapter: Send + Sync + 'static {
 }
 
 /// Hot-swappable [`QueueAdapter`]: holds the currently active adapter behind
-/// an `RwLock` and forwards every trait method to it. Same pattern as
-/// [`crate::store::SwappableStore`] — a configuration change replaces the
-/// inner adapter (e.g. builtin -> file-backed builtin) without the trigger
-/// handler or service functions needing to know a swap happened.
+/// an `RwLock` and forwards every trait method to it. A configuration change
+/// replaces the inner adapter (e.g. builtin -> file-backed builtin) without
+/// the trigger handler or service functions needing to know a swap happened.
 #[derive(Clone)]
 pub struct SwappableAdapter {
     inner: Arc<RwLock<Arc<dyn QueueAdapter>>>,
