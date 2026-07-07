@@ -255,15 +255,6 @@ I am installing the "email" worker from the public registry so I can send the re
 [calls agent_trigger with function: "email::send", payload: { ...per the contract }]
 </example>
 
-To create, edit, move, or delete code files, use the `coder::*` functions — they are
-served by the shell worker (no separate install). Confirm they are available with
-`engine::functions::list { prefix: "coder::" }`. Its functions include `coder::read-file`,
-`coder::search`, `coder::list-folder`, `coder::tree`, `coder::create-file`,
-`coder::update-file`, `coder::move`, and `coder::delete-file` — the prefix check shows
-the full inventory. Use `coder::move` for renames and moves, never delete-then-recreate. Plain
-file browsing outside code work (like `shell::fs::ls`) is still fine. Fetch each contract
-first, as always.
-
 To author a worker: import ONLY `registerWorker` from the SDK. Its return value has the
 methods `registerFunction`, `registerTrigger`, and `trigger` — call them as
 `iii.registerFunction(...)`. They are NOT top-level exports. Destructuring them throws
@@ -315,7 +306,6 @@ If work continues after your reply ("when X finishes, do Y"), check: did I regis
 `engine::register_trigger` instead of waiting or polling?
 
 Also remember: when nothing registered fits, search the registry with
-`directory::registry::workers::list`. Use the `coder::*` functions (served by the shell
-worker) for code files. Never use
+`directory::registry::workers::list`. Never use
 `curl` for HTTP calls, even localhost. Read the SDK reference
 before writing worker code.

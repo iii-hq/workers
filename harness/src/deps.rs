@@ -12,6 +12,7 @@ use crate::configuration::ConfigCell;
 use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
+use crate::instructions::{InstructionsCell, InstructionsSnapshot};
 use crate::locks::SessionLocks;
 use crate::subscriptions::SubscriptionRegistry;
 
@@ -20,6 +21,7 @@ pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub config: ConfigCell,
     pub functions: FunctionsCell,
+    pub instructions: InstructionsCell,
     pub events: TurnEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
@@ -33,6 +35,7 @@ impl Deps {
         iii: Arc<IIIClient>,
         config: ConfigCell,
         functions: FunctionsCell,
+        instructions: InstructionsCell,
         events: TurnEvents,
         hooks: HookRegistry,
     ) -> Self {
@@ -40,6 +43,7 @@ impl Deps {
             iii,
             config,
             functions,
+            instructions,
             events,
             hooks,
             locks: SessionLocks::new(),
@@ -58,6 +62,12 @@ impl Deps {
     /// Carries both the callable set (`.functions`) and its `.generation`.
     pub async fn functions(&self) -> Arc<FunctionsSnapshot> {
         self.functions.read().await.clone()
+    }
+
+    /// The current instructions snapshot (cheap `Arc` clone). Kept live by the
+    /// unfiltered `configuration` trigger; see [`crate::instructions`].
+    pub async fn instructions(&self) -> Arc<InstructionsSnapshot> {
+        self.instructions.read().await.clone()
     }
 
     pub async fn session(&self) -> SessionClient {

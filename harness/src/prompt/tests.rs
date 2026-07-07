@@ -1,6 +1,6 @@
 use super::{
     build_system_prompt, resolve_system_prompt, variants, Mode, SystemPromptOpts,
-    SystemPromptStrategy,
+    SystemPromptStrategy, WorkerSection,
 };
 
 /// Stand-in for a router-served (provider-declared or operator-overridden)
@@ -8,10 +8,15 @@ use super::{
 const IDENTITY: &str = "You are an iii agent worker. TEST-VOICE identity.";
 
 fn default_prompt() -> String {
-    build_system_prompt(SystemPromptOpts {
-        mode: None,
-        identity: None,
-    })
+    build_system_prompt(SystemPromptOpts::default())
+}
+
+fn identity_opts(mode: Option<Mode>) -> SystemPromptOpts<'static> {
+    SystemPromptOpts {
+        mode,
+        identity: Some(IDENTITY),
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -20,8 +25,7 @@ fn resolve_non_empty_override_returns_verbatim() {
         resolve_system_prompt(
             Some("custom".into()),
             SystemPromptStrategy::Override,
-            Some(Mode::Plan),
-            Some(IDENTITY)
+            identity_opts(Some(Mode::Plan)),
         ),
         Some("custom".into())
     );
@@ -32,8 +36,7 @@ fn resolve_empty_override_falls_through_to_builtin() {
     let out = resolve_system_prompt(
         Some(String::new()),
         SystemPromptStrategy::Override,
-        None,
-        None,
+        SystemPromptOpts::default(),
     )
     .expect("built-in prompt");
     assert!(out.contains("You are an iii agent worker"));
@@ -41,15 +44,19 @@ fn resolve_empty_override_falls_through_to_builtin() {
 
 #[test]
 fn resolve_missing_override_uses_fetched_identity_verbatim() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, None, Some(IDENTITY))
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, identity_opts(None))
         .expect("built-in prompt");
     assert_eq!(out, IDENTITY);
 }
 
 #[test]
 fn resolve_absent_identity_falls_back_to_embedded_default() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, None)
-        .expect("built-in prompt");
+    let out = resolve_system_prompt(
+        None,
+        SystemPromptStrategy::Enrich,
+        SystemPromptOpts::default(),
+    )
+    .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
 
@@ -58,8 +65,7 @@ fn resolve_enrich_appends_custom_to_builtin() {
     let out = resolve_system_prompt(
         Some("Speak only in haiku.".into()),
         SystemPromptStrategy::Enrich,
-        None,
-        Some(IDENTITY),
+        identity_opts(None),
     )
     .expect("enriched prompt");
     // Built-in identity is preserved...
@@ -73,15 +79,86 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
     let out = resolve_system_prompt(
         Some(String::new()),
         SystemPromptStrategy::Enrich,
-        None,
-        Some(IDENTITY),
+        identity_opts(None),
     )
     .expect("built-in prompt");
-    let built_in = build_system_prompt(SystemPromptOpts {
-        mode: None,
-        identity: Some(IDENTITY),
-    });
+    let built_in = build_system_prompt(identity_opts(None));
     assert_eq!(out, built_in);
+}
+
+fn sections() -> Vec<WorkerSection> {
+    vec![
+        WorkerSection {
+            worker: "email".into(),
+            declared: None,
+            user: Some("Always cc ops@example.com.".into()),
+        },
+        WorkerSection {
+            worker: "shell".into(),
+            declared: Some("Use coder::* for code files.".into()),
+            user: Some("Prefer rg over grep.".into()),
+        },
+    ]
+}
+
+#[test]
+fn worker_sections_and_global_compose_in_order() {
+    let sections = sections();
+    let out = build_system_prompt(SystemPromptOpts {
+        mode: Some(Mode::Agent),
+        identity: Some(IDENTITY),
+        sections: &sections,
+        user_global: Some("Reply in English."),
+    });
+    let order = [
+        "operating in agent mode",
+        IDENTITY,
+        "# Notes from the `email` worker",
+        "Always cc ops@example.com.",
+        "# Notes from the `shell` worker",
+        "Use coder::* for code files.",
+        "Prefer rg over grep.",
+        "# Operator instructions",
+        "Reply in English.",
+    ];
+    let mut last = 0;
+    for part in order {
+        let at = out[last..]
+            .find(part)
+            .unwrap_or_else(|| panic!("`{part}` missing or out of order"));
+        last += at + part.len();
+    }
+}
+
+#[test]
+fn enrich_appends_after_sections_and_global() {
+    let sections = sections();
+    let out = resolve_system_prompt(
+        Some("Speak only in haiku.".into()),
+        SystemPromptStrategy::Enrich,
+        SystemPromptOpts {
+            mode: None,
+            identity: Some(IDENTITY),
+            sections: &sections,
+            user_global: Some("Reply in English."),
+        },
+    )
+    .expect("enriched prompt");
+    assert!(out.ends_with("Speak only in haiku."));
+    assert!(out.find("# Operator instructions") < out.find("Speak only in haiku."));
+}
+
+#[test]
+fn blank_global_and_empty_sections_leave_prompt_unchanged() {
+    for user_global in [None, Some(""), Some("   ")] {
+        let out = build_system_prompt(SystemPromptOpts {
+            mode: None,
+            identity: Some(IDENTITY),
+            sections: &[],
+            user_global,
+        });
+        assert_eq!(out, IDENTITY);
+    }
 }
 
 #[test]
@@ -186,27 +263,13 @@ fn directory_bootstrap_degrade() {
 }
 
 #[test]
-fn coder_routing() {
+fn coder_guidance_moved_to_the_shell_worker() {
+    // The coder/code-editing guidance is contributed by the shell worker
+    // (`agent_instructions` on its configuration entry) while it runs — the
+    // identity prompt must not duplicate or contradict it.
     let out = default_prompt();
-    assert!(out.contains("engine::functions::list { prefix: \"coder::\" }"));
-    // The code surface is served by the shell worker now — the prompt must NOT
-    // tell agents to install a separate `coder` registry worker.
+    assert!(!out.contains("coder::"));
     assert!(!out.contains("registry\", name: \"coder\""));
-    assert!(out.contains("served by the shell worker"));
-    for id in [
-        "coder::read-file",
-        "coder::search",
-        "coder::list-folder",
-        "coder::tree",
-        "coder::create-file",
-        "coder::update-file",
-        "coder::move",
-        "coder::delete-file",
-    ] {
-        assert!(out.contains(id), "missing {id}");
-    }
-    assert!(out.contains("the full inventory"));
-    assert!(out.contains("never delete-then-recreate"));
 }
 
 #[test]
@@ -242,7 +305,7 @@ fn prompt_injection_defense() {
 fn mode_plan_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Plan),
-        identity: None,
+        ..Default::default()
     });
     assert!(out.contains("operating in plan mode"));
     assert!(out.find("operating in plan mode") < out.find("You are an iii agent worker"));
@@ -252,7 +315,7 @@ fn mode_plan_prepends_before_identity() {
 fn mode_ask_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
-        identity: None,
+        ..Default::default()
     });
     assert!(out.contains("operating in ask mode"));
     assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
@@ -262,7 +325,7 @@ fn mode_ask_prepends_before_identity() {
 fn mode_agent_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Agent),
-        identity: None,
+        ..Default::default()
     });
     assert!(out.contains("operating in agent mode"));
     assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
@@ -270,10 +333,7 @@ fn mode_agent_prepends_before_identity() {
 
 #[test]
 fn mode_prepends_before_a_fetched_identity_too() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Plan),
-        identity: Some(IDENTITY),
-    });
+    let out = build_system_prompt(identity_opts(Some(Mode::Plan)));
     assert!(out.starts_with("You are operating in plan mode"));
     assert!(out.ends_with(IDENTITY));
 }
@@ -302,7 +362,6 @@ fn default_variant_invariants() {
     assert!(out.starts_with("You are an iii agent worker."));
     assert!(out.contains("agent_trigger"));
     assert!(out.contains("directory::registry::workers::list"));
-    assert!(out.contains("coder::move"));
     assert!(out.contains("the FIRST line of worker code"));
     assert!(out.contains("email::send"));
     assert!(out.contains("I am installing the \"email\" worker"));
@@ -319,17 +378,6 @@ fn default_variant_invariants() {
 fn capability_ladder_ordering() {
     let out = variants::DEFAULT;
     assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
-    assert!(out.find("coder::") < out.find("registerWorker"));
-}
-
-#[test]
-fn default_variant_routes_coder_surface_through_shell() {
-    // Semantic guard for the coder→shell merge. A byte-length snapshot is
-    // brittle; what matters is that the default prompt does not regress back
-    // to installing a standalone coder registry worker.
-    assert!(variants::DEFAULT.contains("engine::functions::list { prefix: \"coder::\" }"));
-    assert!(variants::DEFAULT.contains("served by the shell worker"));
-    assert!(!variants::DEFAULT.contains("registry\", name: \"coder\""));
 }
 
 fn extract_directory_ids(text: &str) -> Vec<String> {

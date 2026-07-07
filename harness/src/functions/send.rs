@@ -121,13 +121,23 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     let session = deps.session().await;
 
     // Freeze the per-send options before moving the message out of `req`.
-    // The provider identity prompt is fetched once here and frozen with them.
+    // The provider identity prompt is fetched once here and frozen with them,
+    // as are the running-worker instruction sections (cached snapshots).
     let identity = deps
         .router()
         .await
         .system_prompt_get(req.provider.as_deref())
         .await;
-    let options = build_options(&cfg, &req, identity.as_deref());
+    let instructions = deps.instructions().await;
+    let functions = deps.functions().await;
+    let sections = crate::instructions::live_sections(&instructions, &functions);
+    let options = build_options(
+        &cfg,
+        &req,
+        identity.as_deref(),
+        &sections,
+        instructions.user.global.as_deref(),
+    );
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
@@ -241,7 +251,13 @@ pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, Har
     }
 }
 
-fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) -> TurnOptions {
+fn build_options(
+    cfg: &WorkerConfig,
+    req: &SendRequest,
+    identity: Option<&str>,
+    sections: &[prompt::WorkerSection],
+    user_global: Option<&str>,
+) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     TurnOptions {
         model: req.model.clone(),
@@ -249,8 +265,12 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) 
         system_prompt: prompt::resolve_system_prompt(
             opts.system_prompt,
             opts.system_prompt_strategy,
-            opts.mode,
-            identity,
+            prompt::SystemPromptOpts {
+                mode: opts.mode,
+                identity,
+                sections,
+                user_global,
+            },
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -375,15 +395,62 @@ mod tests {
             }),
         };
         // Router-served identity used when present…
-        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            Some("You are an iii agent worker. VOICE."),
+            &[],
+            None,
+        );
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.ends_with("You are an iii agent worker. VOICE."));
         // …embedded default when the router serves none.
-        let opts = build_options(&cfg, &req, None);
+        let opts = build_options(&cfg, &req, None, &[], None);
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("# The steps for every action"));
+    }
+
+    #[test]
+    fn build_options_appends_worker_sections_and_global_instructions() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: "m".into(),
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: None,
+        };
+        let sections = vec![prompt::WorkerSection {
+            worker: "shell".into(),
+            declared: Some("Use coder::* for code files.".into()),
+            user: Some("Prefer rg over grep.".into()),
+        }];
+        let opts = build_options(
+            &cfg,
+            &req,
+            Some("IDENTITY."),
+            &sections,
+            Some("Reply in English."),
+        );
+        let prompt = opts.system_prompt.expect("composed prompt");
+        let shell = prompt
+            .find("# Notes from the `shell` worker")
+            .expect("shell section");
+        let global = prompt
+            .find("# Operator instructions")
+            .expect("global instructions");
+        assert!(prompt.starts_with("IDENTITY."));
+        assert!(
+            shell < global,
+            "worker sections precede global instructions"
+        );
+        assert!(prompt.contains("Use coder::* for code files."));
+        assert!(prompt.contains("Prefer rg over grep."));
+        assert!(prompt.ends_with("Reply in English."));
     }
 
     #[test]
@@ -403,7 +470,19 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
+        // Override is absolute: worker sections and global instructions are skipped too.
+        let sections = vec![prompt::WorkerSection {
+            worker: "shell".into(),
+            declared: Some("shell text".into()),
+            user: None,
+        }];
+        let opts = build_options(
+            &cfg,
+            &req,
+            Some("You are an iii agent worker. VOICE."),
+            &sections,
+            Some("global text"),
+        );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -423,7 +502,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            Some("You are an iii agent worker. VOICE."),
+            &[],
+            None,
+        );
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
         assert!(prompt.ends_with("Speak only in haiku."));

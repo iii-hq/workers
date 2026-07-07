@@ -314,7 +314,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerH
     tracing::info!("harness configuration reloaded");
 }
 
-async fn trigger_with_retry(
+pub(crate) async fn trigger_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

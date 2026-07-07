@@ -52,6 +52,18 @@ const FUNCTIONS_FN_ID: &str = "harness::on-functions-change";
 const FUNCTIONS_TRIGGER_TYPE: &str = "engine::functions-available";
 const SAFETY_RELOAD_SECS: u64 = 300;
 
+impl FunctionsSnapshot {
+    /// A snapshot literal for unit tests (the fingerprint field is private).
+    #[cfg(test)]
+    pub fn for_tests(functions: Vec<FunctionDescriptor>) -> Self {
+        Self {
+            fingerprint: fingerprint_of(&functions),
+            functions,
+            generation: 1,
+        }
+    }
+}
+
 /// An empty registry snapshot (generation 0) — seeded at boot, then kept live
 /// by the trigger. The boot seed bumps it to 1 on the first non-empty apply.
 pub fn new_cell() -> FunctionsCell {

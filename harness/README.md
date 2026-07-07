@@ -166,6 +166,29 @@ the built-in prompt, while `override` uses it verbatim. Assembly is tested in
 [`src/prompt/tests.rs`](src/prompt/tests.rs); provider-specific prompt bodies
 live in each provider worker (`provider-*/prompts/identity.txt`).
 
+### Worker sections and operator instructions
+
+Between the identity prompt and the per-send `enrich` text the harness composes
+two more layers (top to bottom — later text refines earlier text):
+
+1. **Worker sections.** A worker publishes agent guidance by setting
+   `metadata.agent_instructions` (a markdown string) on the configuration entry
+   it registers (`configuration::register`). The section is injected — under a
+   `# Notes from the \`<id>\` worker` heading, sorted by entry id — only while
+   the worker is live (some `<entry_id>::` function is registered), so
+   installing the shell worker adds its `coder::*` guidance and stopping it
+   removes it.
+2. **Operator instructions.** The harness owns an `instructions` configuration
+   entry: `global` (appended to every turn under `# Operator instructions`) and
+   `workers.<id>` (appended inside that worker's section — it can also steer a
+   live worker that declares nothing). Editable in the console configuration
+   page; changes hot-reload.
+
+`options.system_prompt` with `override` skips ALL of this and is served
+verbatim. The snapshot is cached and refreshed by a `configuration` trigger;
+composition happens once at send/spawn time and is frozen on the turn (see
+[`src/instructions.rs`](src/instructions.rs)).
+
 ## Custom trigger types
 
 The harness emits two async orchestration trigger types siblings and consumers

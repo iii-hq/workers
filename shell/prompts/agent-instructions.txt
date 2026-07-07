@@ -1,0 +1,8 @@
+To create, edit, move, or delete code files, use the `coder::*` functions — they are
+served by this shell worker (no separate install). Confirm they are available with
+`engine::functions::list { prefix: "coder::" }`. Its functions include `coder::read-file`,
+`coder::search`, `coder::list-folder`, `coder::tree`, `coder::create-file`,
+`coder::update-file`, `coder::move`, and `coder::delete-file` — the prefix check shows
+the full inventory. Use `coder::move` for renames and moves, never delete-then-recreate.
+Never improvise code-file edits via `shell::exec`. Plain file browsing outside code work
+(like `shell::fs::ls`) is still fine. Fetch each contract first, as always.

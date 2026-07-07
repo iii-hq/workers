@@ -29,7 +29,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, discovery, functions, manifest, subscriptions};
+use harness::{config, discovery, functions, instructions, manifest, subscriptions};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -114,10 +114,12 @@ async fn main() -> Result<()> {
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
     let functions_cell = discovery::new_cell();
+    let instructions_cell = instructions::new_cell();
     let deps = Arc::new(Deps::new(
         iii.clone(),
         cell.clone(),
         functions_cell.clone(),
+        instructions_cell.clone(),
         events,
         hooks,
     ));
@@ -133,6 +135,13 @@ async fn main() -> Result<()> {
 
     discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
     discovery::register_functions_trigger(&iii, functions_cell, cfg.dispatch_timeout_ms);
+
+    // Agent-instructions surface: the operator-editable `instructions` entry,
+    // the boot seed, and the unfiltered configuration trigger keeping worker
+    // sections live. All best-effort — never gates boot.
+    instructions::register_entry(&iii).await;
+    instructions::reload(&iii, &instructions_cell).await;
+    instructions::register_instructions_trigger(&iii, instructions_cell);
 
     // LAST: bind the configuration-change trigger.
     configuration::register_config_trigger(&iii, cell, handles)

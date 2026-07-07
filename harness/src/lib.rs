@@ -21,6 +21,7 @@ pub mod filesystem_scope;
 pub mod functions;
 pub mod hooks;
 pub mod ids;
+pub mod instructions;
 pub mod locks;
 pub mod manifest;
 pub mod policy;

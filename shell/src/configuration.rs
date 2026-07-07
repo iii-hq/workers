@@ -179,6 +179,10 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
         "name": "Shell",
         "description": "Command allowlist/denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
+        // Agent guidance the harness appends to the system prompt while this
+        // worker is running (the `coder::*` code surface lives here, not in
+        // the identity prompt).
+        "metadata": { "agent_instructions": include_str!("../prompts/agent-instructions.txt") },
     });
     let candidate: Option<ShellConfig> = match seed {
         Some(s) => Some(s.clone()),
@@ -520,6 +524,29 @@ mod tests {
     fn prepare_config_rejects_unjailed_default() {
         let err = prepare_config(&ShellConfig::default()).expect_err("default is unsafe");
         assert!(err.contains("fs jail"));
+    }
+
+    /// The coder-surface guidance moved here from the harness/provider identity
+    /// prompts (the harness injects it via `agent_instructions` while this
+    /// worker runs) — it must keep covering the full surface.
+    #[test]
+    fn agent_instructions_cover_the_coder_surface() {
+        let text = include_str!("../prompts/agent-instructions.txt");
+        for id in [
+            "coder::read-file",
+            "coder::search",
+            "coder::list-folder",
+            "coder::tree",
+            "coder::create-file",
+            "coder::update-file",
+            "coder::move",
+            "coder::delete-file",
+        ] {
+            assert!(text.contains(id), "missing {id}");
+        }
+        assert!(text.contains("never delete-then-recreate"));
+        assert!(text.contains("Never improvise code-file edits via `shell::exec`"));
+        assert!(!text.contains("registry\", name: \"coder\""));
     }
 
     #[test]

@@ -177,6 +177,26 @@ defaults in code rather than paginating every field:
 Other keys (and their defaults) live in [`src/config.rs`](src/config.rs).
 ```
 
+### Agent instructions (optional)
+
+If agents need standing guidance to use your worker well (routing rules,
+"never do X via Y", surface inventories), publish it as
+`metadata.agent_instructions` — a markdown string — on the configuration
+entry you register:
+
+```jsonc
+// configuration::register
+{ "id": "<worker>", "name": "…", "schema": …,
+  "metadata": { "agent_instructions": "Use `<worker>::…` for …" } }
+```
+
+The harness appends it to every agent's system prompt (under
+`# Notes from the \`<id>\` worker`) while your worker is running — some
+`<entry_id>::` function must be registered — and drops it when the worker
+stops. Keep it short; it rides every turn. Operators can append their own
+per-worker text via the harness-owned `instructions` configuration entry
+(`instructions` is a reserved entry id).
+
 ## Optional: Custom trigger types
 
 Include this section only if your worker publishes custom trigger

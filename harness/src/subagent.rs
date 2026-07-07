@@ -126,12 +126,16 @@ async fn seed_child(
         .clone()
         .or_else(|| parent_record.and_then(|p| p.options.provider.clone()));
     // Children resolve their own prompt (never inherited); the provider
-    // identity prompt is fetched once here and frozen on the child's turn.
+    // identity prompt is fetched once here and frozen on the child's turn,
+    // as are the running-worker instruction sections (cached snapshots).
     let identity = deps
         .router()
         .await
         .system_prompt_get(provider.as_deref())
         .await;
+    let instructions = deps.instructions().await;
+    let functions = deps.functions().await;
+    let sections = crate::instructions::live_sections(&instructions, &functions);
 
     let requested_policy = req.options.as_ref().and_then(|o| o.functions.as_ref());
     let functions = match parent_record {
@@ -221,8 +225,12 @@ async fn seed_child(
                     .as_ref()
                     .map(|o| o.system_prompt_strategy)
                     .unwrap_or_default(),
-                req.options.as_ref().and_then(|o| o.mode),
-                identity.as_deref(),
+                prompt::SystemPromptOpts {
+                    mode: req.options.as_ref().and_then(|o| o.mode),
+                    identity: identity.as_deref(),
+                    sections: &sections,
+                    user_global: instructions.user.global.as_deref(),
+                },
             ),
             mode: req.options.as_ref().and_then(|o| o.mode),
             max_turns,
