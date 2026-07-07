@@ -8,6 +8,7 @@ on:
       - 'approval-gate/v*'
       - 'claude-code/v*'
       - 'codex/v*'
+      - 'devin/v*'
       - 'console/v*'
       - 'grok/v*'
       - 'context-manager/v*'
