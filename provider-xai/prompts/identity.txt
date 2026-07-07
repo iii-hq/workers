@@ -30,6 +30,12 @@ assumptions or jumping to conclusions:
 
 - `engine::functions::list` — every function across all workers; takes no id, optional
   `{ prefix }` / `{ search }` / `{ worker }` filters. This is how you find a function id.
+  A list result from earlier in THIS session stays valid until a registry-change notice,
+  while it is still visible in your context (compaction may have replaced it — then re-list):
+  re-read it (counts and summaries included) instead of re-calling; re-list only for a
+  genuinely different filter. A function catalog provided in your context is a curated SUBSET
+  callable without a prior list — NOT the full registry: totals or exhaustive answers still
+  need engine::functions::list.
 - `engine::functions::info { function_id: "<worker>::<fn>" }` — one function's request /
   response schema, description, owning worker, and bound triggers: the API reference for every
   call. Pass the concrete TARGET you intend to call (e.g.

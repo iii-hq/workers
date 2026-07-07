@@ -139,6 +139,16 @@ fn contract_before_call() {
 }
 
 #[test]
+fn list_results_are_session_valid() {
+    // List reuse: a list result (or an injected catalog) from earlier in the
+    // session is re-read, not re-fetched. Wrap-proof comparison.
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("A list result from earlier in THIS session stays valid"));
+    assert!(out.contains("re-list only for a genuinely different filter"));
+    assert!(out.contains("function catalog"));
+}
+
+#[test]
 fn function_id_required_example() {
     let out = default_prompt();
     assert!(out.contains("{ function_id: \"shell::fs::ls\" }"));

@@ -7,6 +7,7 @@
 //! function calls, and repeat until the turn stops — as durable enqueued steps
 //! so a crash resumes mid-turn.
 
+pub mod catalog;
 pub mod clients;
 pub mod config;
 pub mod configuration;

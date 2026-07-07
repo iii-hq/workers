@@ -214,6 +214,14 @@ pub struct TurnRecord {
     /// contracts get re-fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions_generation: Option<u64>,
+    /// `engine::functions::list` payloads (canonical JSON) already served to
+    /// this session, with the registry generation at fetch time. A
+    /// byte-identical repeat at an unchanged generation gets an "unchanged —
+    /// re-read your earlier result" stub instead of another full result.
+    /// Cleared on context compaction (the stub is only safe while the
+    /// original result is still in context). Capped at 16 (oldest dropped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub list_queries: Vec<(String, u64)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -295,6 +303,7 @@ mod tests {
             spawned_by_subscription_id: None,
             reactive_depth: None,
             functions_generation: None,
+            list_queries: Vec::new(),
             result: None,
             result_error: None,
             validation_retries: 0,

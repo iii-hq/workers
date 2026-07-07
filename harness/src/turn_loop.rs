@@ -200,7 +200,8 @@ pub async fn run_step(
     // session last acknowledged its generation, tell the model its cached
     // contracts may be stale. First sighting stamps silently. Persisted by the
     // pre-generate put_turn below.
-    let current_generation = deps.functions().await.generation;
+    let snapshot = deps.functions().await;
+    let current_generation = snapshot.generation;
     if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
         assembled.system_prompt = Some(match assembled.system_prompt.take() {
             Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
@@ -208,6 +209,40 @@ pub async fn run_step(
         });
     }
     record.functions_generation = Some(current_generation);
+
+    // A compaction may have summarized earlier list results out of the
+    // context — the dedup stub is only safe while the original result is
+    // still readable, so forget served list queries. Persist immediately:
+    // the compaction record is already durable (assemble_context wrote it),
+    // and a crash before the pre-generate put_turn must not resurrect
+    // entries whose results were summarized away (re-assembly of an
+    // already-compacted path reports compacted=false).
+    if assembled.compacted && !record.list_queries.is_empty() {
+        record.list_queries.clear();
+        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    }
+
+    // Injected function catalog: the configured slice of the registry
+    // snapshot, so common ids need no engine::functions::list round trip.
+    // agent_trigger exposure only — native/code-mode tools already carry
+    // their own surface. Rebuilt per step from the live snapshot, so it is
+    // always current.
+    let expose = record
+        .options
+        .functions
+        .as_ref()
+        .map(|f| f.expose)
+        .unwrap_or(ExposeMode::AgentTrigger);
+    if expose == ExposeMode::AgentTrigger {
+        let globs = crate::catalog::compile_globs(&cfg.catalog_functions);
+        let policy = CompiledPolicy::from(record.options.functions.as_ref());
+        if let Some(block) = crate::catalog::render(&snapshot.functions, &globs, &policy) {
+            assembled.system_prompt = Some(match assembled.system_prompt.take() {
+                Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{block}"),
+                _ => block,
+            });
+        }
+    }
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -542,15 +577,38 @@ pub async fn run_step(
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
-            let raw = crate::functions::subscribe::invoke(
-                deps,
-                &engine,
-                &policy,
-                &call.function_id,
-                &eff_args,
-                &record.session_id,
-            )
-            .await;
+            // Same-query list dedup first: a byte-identical
+            // engine::functions::list repeat at an unchanged registry
+            // generation gets an "unchanged — re-read your earlier result"
+            // stub instead of another full catalog dump. The generation is
+            // re-read HERE, not reused from step start — generation can take
+            // minutes and a registry change in between must not be answered
+            // with a stale "unchanged" stub.
+            let is_list_call = call.function_id == "engine::functions::list";
+            let list_generation = if is_list_call {
+                deps.functions().await.generation
+            } else {
+                0
+            };
+            let dedup_stub = if is_list_call {
+                list_dedup(&record.list_queries, &eff_args, list_generation)
+            } else {
+                None
+            };
+            let raw = match dedup_stub {
+                Some(stub) => stub,
+                None => {
+                    crate::functions::subscribe::invoke(
+                        deps,
+                        &engine,
+                        &policy,
+                        &call.function_id,
+                        &eff_args,
+                        &record.session_id,
+                    )
+                    .await
+                }
+            };
             let post_outcome = deps
                 .hooks
                 .run_post_trigger(
@@ -590,6 +648,13 @@ pub async fn run_step(
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
                 .await?;
+            // Record the served list query only once its SUCCESSFUL result
+            // durably exists in the session — a held call or a hook-rewritten
+            // error must never poison the dedup with a stub pointing at a
+            // result the model cannot read.
+            if is_list_call && !data.is_error {
+                list_dedup_record(&mut record.list_queries, &eff_args, list_generation);
+            }
             mark_done(&mut record, &call.id, &entry_id);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
         }
@@ -1151,6 +1216,7 @@ async fn assemble_context(
             Ok(Assembled {
                 system_prompt: with_filesystem_root_aid(Some(out.system_prompt), record),
                 messages,
+                compacted: out.applied.compacted,
             })
         }
         Ok(None) | Err(_) => {
@@ -1162,6 +1228,7 @@ async fn assemble_context(
                     record,
                 ),
                 messages,
+                compacted: false,
             })
         }
     }
@@ -1228,6 +1295,9 @@ fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
 struct Assembled {
     system_prompt: Option<String>,
     messages: Vec<Value>,
+    /// Whether THIS assembly compacted the context (a new compaction summary
+    /// was persisted): earlier tool results may now be summarized away.
+    compacted: bool,
 }
 
 /// A user entry appended while a step was generating (or assembling — the
@@ -1347,7 +1417,7 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
 
 /// The single-line notice appended to the system prompt when the registry
 /// changed under a session that had already acknowledged an earlier generation.
-const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts and list results you fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again, and re-list before reusing an earlier list result. (A function catalog block in this prompt is rebuilt fresh each turn and is already current.)";
 
 /// Decide the registry-change notice for a step. `None` when the record already
 /// matches the live generation, or is being stamped for the first time; `Some`
@@ -1357,6 +1427,51 @@ fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
     match record_gen {
         Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
         _ => None,
+    }
+}
+
+/// Cap on remembered `engine::functions::list` payloads per session.
+const LIST_QUERIES_MAX: usize = 16;
+
+/// Canonical form of a list payload — serde_json's map is BTreeMap-backed,
+/// so serialization sorts keys.
+fn list_query_key(arguments: &Value) -> String {
+    serde_json::to_string(arguments).unwrap_or_default()
+}
+
+/// The dedup check: `Some(stub)` when this exact list payload was already
+/// served to this session at the CURRENT registry generation — the model can
+/// re-read its earlier result instead of receiving another full catalog dump.
+/// Entries recorded at older generations never match (the registry changed;
+/// a fresh fetch is correct).
+fn list_dedup(
+    seen: &[(String, u64)],
+    arguments: &Value,
+    generation: u64,
+) -> Option<trigger::ResultData> {
+    let key = list_query_key(arguments);
+    if !seen.iter().any(|(k, g)| *k == key && *g == generation) {
+        return None;
+    }
+    let msg = "Unchanged since your earlier engine::functions::list call with these same \
+               arguments this session (registry generation unchanged) — re-read that earlier \
+               result.";
+    Some(trigger::ResultData {
+        content: vec![ContentBlock::text(msg.to_string())],
+        is_error: false,
+        details: json!({ "unchanged": true, "generation": generation }),
+    })
+}
+
+/// Remember a served list payload (idempotent; oldest evicted past the cap).
+fn list_dedup_record(seen: &mut Vec<(String, u64)>, arguments: &Value, generation: u64) {
+    let key = list_query_key(arguments);
+    if seen.iter().any(|(k, g)| *k == key && *g == generation) {
+        return;
+    }
+    seen.push((key, generation));
+    if seen.len() > LIST_QUERIES_MAX {
+        seen.remove(0);
     }
 }
 
@@ -1447,6 +1562,44 @@ impl Clone for SessionStreamSink {
 mod tests {
     use super::cancel_requested;
     use crate::types::event::StopReason;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn list_dedup_stubs_only_identical_payload_at_same_generation() {
+        let mut seen = Vec::new();
+        let args = json!({ "search": "fs" });
+
+        // Never served: no stub; record it.
+        assert!(super::list_dedup(&seen, &args, 7).is_none());
+        super::list_dedup_record(&mut seen, &args, 7);
+
+        // Identical payload, same generation: stub, not an error.
+        let stub = super::list_dedup(&seen, &args, 7).expect("stub");
+        assert!(!stub.is_error);
+        assert_eq!(stub.details["unchanged"], json!(true));
+
+        // Key order does not defeat the dedup (canonical serialization)...
+        let reordered: Value = serde_json::from_str("{\"search\":\"fs\"}").expect("parse");
+        assert!(super::list_dedup(&seen, &reordered, 7).is_some());
+        // ...but a different filter or a bumped generation dispatches fresh.
+        assert!(super::list_dedup(&seen, &json!({ "search": "web" }), 7).is_none());
+        assert!(super::list_dedup(&seen, &args, 8).is_none());
+    }
+
+    #[test]
+    fn list_dedup_record_is_idempotent_and_capped() {
+        let mut seen = Vec::new();
+        let args = json!({});
+        super::list_dedup_record(&mut seen, &args, 1);
+        super::list_dedup_record(&mut seen, &args, 1);
+        assert_eq!(seen.len(), 1);
+        for i in 0..30u64 {
+            super::list_dedup_record(&mut seen, &json!({ "prefix": i.to_string() }), 1);
+        }
+        assert!(seen.len() <= super::LIST_QUERIES_MAX);
+        // Oldest evicted first: the original empty payload is gone.
+        assert!(super::list_dedup(&seen, &args, 1).is_none());
+    }
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {

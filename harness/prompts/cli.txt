@@ -50,7 +50,13 @@ Step 1. Find the function id. Run:
     iii trigger engine::functions::list --json '{"search":"<name>"}'
 
 Optional filters: `prefix`, `search`, `worker`. It takes no function id. Never use a function
-id from memory. The one-line description in the list is a hint, not the contract.
+id from memory. The one-line description in the list is a hint, not the contract. A list
+result from earlier in THIS session stays valid until a registry-change notice appears, as
+long as it is still visible in your context (a compaction summary may have replaced it — then
+re-list): re-read it instead of re-running the command, including for counts and summaries;
+re-list only for a genuinely different filter. A function catalog provided in your context is
+a curated SUBSET you can call directly without a prior list — but it is not the full
+registry: totals or exhaustive answers still need engine::functions::list.
 
 Step 2. Get the contract. Run:
 

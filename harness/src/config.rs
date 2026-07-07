@@ -81,6 +81,16 @@ pub struct WorkerConfig {
     /// deny-all.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
+
+    /// Function catalog injected into agent_trigger turns' system prompts:
+    /// glob patterns (policy-style) selecting registry-snapshot functions to
+    /// list as `id — description` lines, so common surfaces need no
+    /// `engine::functions::list` call. Intersected with the turn's dispatch
+    /// policy at render time. Empty disables the block; `["*"]` lists the
+    /// whole (non-internal) catalog. Defaults to the most-used core surface;
+    /// ids absent from a deployment's registry are skipped.
+    #[serde(default = "default_catalog_functions")]
+    pub catalog_functions: Vec<String>,
 }
 
 impl WorkerConfig {
@@ -223,6 +233,58 @@ fn default_functions() -> Option<FunctionPolicy> {
     })
 }
 
+fn default_catalog_functions() -> Vec<String> {
+    // The most-used core surface across live sessions (usage-ranked), minus
+    // `engine::*` — those are hidden from the registry snapshot the catalog
+    // renders from and are already documented inline in the identity prompts.
+    // Ids missing from a deployment's registry are skipped at render time.
+    [
+        "shell::exec",
+        "shell::exec_bg",
+        "shell::status",
+        "shell::config-status",
+        "shell::fs::ls",
+        "shell::fs::grep",
+        "shell::fs::read",
+        "shell::fs::write",
+        "shell::fs::mkdir",
+        "coder::read-file",
+        "coder::search",
+        "coder::tree",
+        "coder::update-file",
+        "coder::apply-patch",
+        "coder::create-file",
+        "coder::list-folder",
+        "coder::info",
+        "coder::context",
+        "harness::todo",
+        "harness::spawn",
+        "harness::status",
+        "harness::subscribe",
+        "harness::unsubscribe",
+        "router::complete",
+        "router::models::list",
+        "worker::list",
+        "worker::status",
+        "worker::add",
+        "worker::start",
+        "worker::stop",
+        "worker::validate",
+        "worker::logs",
+        "worker::schema",
+        "configuration::get",
+        "configuration::set",
+        "configuration::list",
+        "configuration::schema",
+        "directory::registry::workers::list",
+        "directory::registry::workers::info",
+        "web::fetch",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
 fn expand_env(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -264,6 +326,7 @@ impl Default for WorkerConfig {
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
+            catalog_functions: default_catalog_functions(),
         }
     }
 }
@@ -309,6 +372,24 @@ mod tests {
         let cfg =
             WorkerConfig::from_json(&serde_json::json!({ "default_functions": null })).unwrap();
         assert!(cfg.default_functions.is_none());
+    }
+
+    #[test]
+    fn catalog_functions_defaults_to_core_seed_and_is_clearable() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert!(cfg.catalog_functions.len() >= 30);
+        for id in ["shell::exec", "coder::read-file", "web::fetch"] {
+            assert!(cfg.catalog_functions.contains(&id.to_string()));
+        }
+        // engine::* is hidden from the snapshot the catalog renders from —
+        // never seed it.
+        assert!(!cfg
+            .catalog_functions
+            .iter()
+            .any(|p| p.starts_with("engine::")));
+        // An explicit empty list turns the block off.
+        let cfg = WorkerConfig::from_json(&serde_json::json!({ "catalog_functions": [] })).unwrap();
+        assert!(cfg.catalog_functions.is_empty());
     }
 
     #[test]

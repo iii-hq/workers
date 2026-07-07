@@ -270,9 +270,20 @@ async fn seed_or_merge(
     options: TurnOptions,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    // Carry the session's last-acknowledged registry generation onto a new turn
-    // so run_step can notice a registry change that landed between turns.
-    let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
+    // Carry the session's last-acknowledged registry generation onto a new
+    // turn so run_step can notice a registry change that landed between
+    // turns; carry served list queries ONLY when the new send keeps the same
+    // dispatch policy — list results are policy-post-filtered, so a policy
+    // change makes the earlier in-context result the wrong thing to re-read.
+    let new_policy = options.functions.clone();
+    let carry = move |rec: Option<&crate::types::turn::TurnRecord>| {
+        let generation = rec.and_then(|r| r.functions_generation);
+        let list_queries = rec
+            .filter(|r| r.options.functions == new_policy)
+            .map(|r| r.list_queries.clone())
+            .unwrap_or_default();
+        (generation, list_queries)
+    };
     match existing {
         Some(rec) if !rec.status.is_terminal() => {
             // Merge path: the message is already appended; the running loop's
@@ -293,10 +304,35 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => seed_new(deps, cfg, session_id, options, prior_generation).await,
+                // Seed from the RECHECK record: the running turn may have
+                // compacted (clearing list_queries) and gone terminal after
+                // the first read.
+                recheck => {
+                    let (prior_generation, prior_list_queries) = carry(recheck.as_ref());
+                    seed_new(
+                        deps,
+                        cfg,
+                        session_id,
+                        options,
+                        prior_generation,
+                        prior_list_queries,
+                    )
+                    .await
+                }
             }
         }
-        _ => seed_new(deps, cfg, session_id, options, prior_generation).await,
+        existing => {
+            let (prior_generation, prior_list_queries) = carry(existing.as_ref());
+            seed_new(
+                deps,
+                cfg,
+                session_id,
+                options,
+                prior_generation,
+                prior_list_queries,
+            )
+            .await
+        }
     }
 }
 
@@ -306,6 +342,7 @@ async fn seed_new(
     session_id: &str,
     options: TurnOptions,
     functions_generation: Option<u64>,
+    list_queries: Vec<(String, u64)>,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -326,6 +363,7 @@ async fn seed_new(
         spawned_by_subscription_id: None,
         reactive_depth: None,
         functions_generation,
+        list_queries,
         result: None,
         result_error: None,
         validation_retries: 0,
