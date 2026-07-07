@@ -6,5 +6,13 @@
 //! tree, and every individual file (`#![cfg(feature = "rabbitmq")]`), compile
 //! out entirely with `--no-default-features`.
 
-pub mod naming;
+mod adapter;
+mod consumer;
+mod naming;
+mod publisher;
+mod retry;
+mod topology;
 pub mod types;
+mod worker;
+
+pub use adapter::RabbitMQAdapter;

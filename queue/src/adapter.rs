@@ -67,6 +67,14 @@ pub struct FunctionQueueConfig {
     pub concurrency: u32,
     /// Base delay in milliseconds for the exponential retry backoff.
     pub backoff_ms: u64,
+    /// Declares the queue as a RabbitMQ priority queue with this many
+    /// priority levels (`x-max-priority`). `None` means not a priority
+    /// queue. RabbitMQ-only; other adapters ignore it. Added (rather than
+    /// part of the original minimal port) so
+    /// [`QueueAdapter::setup_function_queue`] can pass it through to the
+    /// RabbitMQ adapter's topology setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_priority: Option<u8>,
 }
 
 /// Transport abstraction implemented by every queue backend adapter
