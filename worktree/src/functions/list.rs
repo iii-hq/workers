@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WError;
-use crate::functions::status::build_status;
+use crate::functions::status::{build_status, TargetCache};
 use crate::functions::Deps;
 use crate::git::{ops, validate_abs_path};
 use crate::state;
@@ -57,6 +57,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     };
 
     let mut worktrees = Vec::new();
+    let mut targets = TargetCache::new();
     for record in state::list_records(deps.state.as_ref()).await? {
         if let Some((_, repo_key)) = &repo_filter {
             if &record.repo_key != repo_key {
@@ -76,7 +77,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         };
         let mut info = WorktreeInfo::from_record(&record, lifecycle);
         if req.include_status && dir_exists {
-            match build_status(&record, t).await {
+            match build_status(&record, t, &mut targets).await {
                 Ok(status) => info.status = Some(status),
                 Err(e) => {
                     tracing::warn!(worktree_id = %record.worktree_id, error = %e, "status failed")

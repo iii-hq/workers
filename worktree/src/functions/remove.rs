@@ -83,8 +83,13 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     if wt.is_dir() && repo_available {
         if !req.force {
-            let st = ops::status(wt, t).await?;
-            if !st.clean() {
+            // All three probes are read-only, so they run concurrently.
+            let (st, ahead_behind, busy) = tokio::join!(
+                ops::status(wt, t),
+                ops::ahead_behind(wt, &record.base_sha, t),
+                crate::trash::dir_in_use(wt),
+            );
+            if !st?.clean() {
                 return Err(WError::new(
                     codes::DIRTY,
                     format!(
@@ -93,7 +98,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                     ),
                 ));
             }
-            let (_, ahead) = ops::ahead_behind(wt, &record.base_sha, t).await?;
+            let (_, ahead) = ahead_behind?;
             if ahead > 0 {
                 return Err(WError::new(
                     codes::UNMERGED_WORK,
@@ -104,7 +109,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                     ),
                 ));
             }
-            if crate::trash::dir_in_use(wt).await == Some(true) {
+            if busy == Some(true) {
                 return Err(WError::new(
                     codes::WORKTREE_BUSY,
                     format!(

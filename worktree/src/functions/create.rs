@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{codes, WError};
 use crate::events::{CreatedEvent, EventCtx, EventKind};
 use crate::functions::Deps;
-use crate::git::{ops, validate_abs_path, validate_ref_name};
+use crate::git::{canonical_or_self, ops, validate_abs_path, validate_ref_name};
 use crate::ids;
 use crate::state;
 use crate::types::{now_ms, Lifecycle, WorktreeRecord};
@@ -55,6 +55,13 @@ pub struct Response {
 }
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
+    if req.pr.is_some() && (req.base_ref.is_some() || req.branch.is_some()) {
+        return Err(WError::new(
+            codes::INVALID_REQUEST,
+            "pr is mutually exclusive with base_ref and branch",
+        ));
+    }
+
     let cfg = deps.cfg().await;
     let t = cfg.git_timeout_ms;
 
@@ -68,15 +75,12 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     // Gate on the canonicalized path so symlink spellings cannot dodge the
     // allowlist. Checked at create only: narrowing the list later never
     // breaks existing worktrees.
-    let canonical_repo = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
+    let canonical_repo = canonical_or_self(&repo);
     if !cfg.gates.repo_allowed(&canonical_repo.to_string_lossy()) {
-        return Err(WError::new(
+        return Err(crate::functions::allowlist_denied(
             codes::REPO_NOT_ALLOWED,
-            format!(
-                "repository {} is not allowed by configuration; add it to \
-                 gates.repos to enable",
-                canonical_repo.display()
-            ),
+            &format!("repository {}", canonical_repo.display()),
+            "gates.repos",
         ));
     }
 
@@ -86,61 +90,41 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     // Budget check under the repo lock so concurrent creates serialize
     // against the same count. Orphaned records are not live worktrees.
     if cfg.gates.max_worktrees_per_repo > 0 {
-        let live = state::list_records(deps.state.as_ref())
+        let live = state::collect_records(deps.state.as_ref())
             .await?
             .iter()
             .filter(|r| r.repo_key == repo_key && r.lifecycle != Lifecycle::Orphaned)
             .count() as u32;
         if live >= cfg.gates.max_worktrees_per_repo {
-            return Err(WError::new(
-                codes::WORKTREE_BUDGET_EXCEEDED,
-                format!(
-                    "repository {} already has {live} live worktree(s), the \
-                     configured budget; raise gates.max_worktrees_per_repo to \
-                     allow more",
-                    canonical_repo.display()
-                ),
-            ));
+            return Err(crate::functions::budget_denied(&canonical_repo, live));
         }
     }
 
-    if req.pr.is_some() && (req.base_ref.is_some() || req.branch.is_some()) {
-        return Err(WError::new(
-            codes::INVALID_REQUEST,
-            "pr is mutually exclusive with base_ref and branch",
-        ));
-    }
-
     let worktree_id = ids::mint_worktree_id();
-    let (base_ref, base_sha, branch) = match req.pr {
+    let (base_ref, base_sha, branch, branch_taken) = match req.pr {
         Some(n) => {
+            let branch = format!("{}pr-{n}", cfg.branch_prefix);
+            validate_ref_name("branch", &branch)?;
             let sha = ops::fetch_pr_head(&repo, n, t).await?;
-            (
-                format!("refs/pull/{n}/head"),
-                sha,
-                format!("{}pr-{n}", cfg.branch_prefix),
-            )
+            let taken = ops::branch_exists(&repo, &branch, t).await?;
+            (format!("refs/pull/{n}/head"), sha, branch, taken)
         }
         None => {
             let base_ref = req.base_ref.unwrap_or_else(|| "HEAD".to_string());
             validate_ref_name("base_ref", &base_ref)?;
-            let sha = ops::rev_parse(&repo, &base_ref, t).await?;
-            let branch = match req.branch {
-                Some(branch) => branch,
-                None => match cfg.branch_naming {
-                    crate::config::BranchNaming::Id => {
-                        format!("{}{}", cfg.branch_prefix, worktree_id)
-                    }
-                    crate::config::BranchNaming::Codename => {
-                        ids::codename_branch(&cfg.branch_prefix, &worktree_id)
-                    }
-                },
-            };
-            (base_ref, sha, branch)
+            let branch = req
+                .branch
+                .unwrap_or_else(|| cfg.default_branch(&worktree_id));
+            validate_ref_name("branch", &branch)?;
+            // Independent read-only lookups; run them concurrently.
+            let (sha, taken) = tokio::join!(
+                ops::rev_parse(&repo, &base_ref, t),
+                ops::branch_exists(&repo, &branch, t),
+            );
+            (base_ref, sha?, branch, taken?)
         }
     };
-    validate_ref_name("branch", &branch)?;
-    if ops::branch_exists(&repo, &branch, t).await? {
+    if branch_taken {
         return Err(WError::new(
             codes::BRANCH_EXISTS,
             format!("branch {branch:?} already exists"),
@@ -160,9 +144,8 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     ops::worktree_add(&repo, &dir, &branch, &base_sha, &worktree_id, t).await?;
     // Store the canonical path so comparisons against git's own worktree
-    // listing (which resolves symlinks, e.g. /var vs /private/var on macOS)
-    // match exactly.
-    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    // listing match exactly.
+    let dir = canonical_or_self(&dir);
 
     let now = now_ms();
     let record = WorktreeRecord {
@@ -179,7 +162,6 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
             Lifecycle::Active
         },
         session_id: req.session_id.clone(),
-        dev_port: ids::dev_port(&worktree_id),
         created_at: now,
         updated_at: now,
     };
@@ -228,7 +210,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     }
 
     Ok(Response {
-        dev_port: record.dev_port,
+        dev_port: ids::dev_port(&worktree_id),
         worktree_id,
         path: record.path,
         branch,

@@ -57,13 +57,10 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         ));
     }
     if !cfg.gates.land_target_allowed(&req.target_branch) {
-        return Err(WError::new(
+        return Err(crate::functions::allowlist_denied(
             codes::LAND_TARGET_NOT_ALLOWED,
-            format!(
-                "target branch {:?} is not allowed by configuration; add it to \
-                 gates.land_targets to enable",
-                req.target_branch
-            ),
+            &format!("target branch {:?}", req.target_branch),
+            "gates.land_targets",
         ));
     }
     let t = cfg.git_timeout_ms;

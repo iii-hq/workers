@@ -5,10 +5,12 @@
 //! (`boot_signature`) re-binds the prune cron trigger.
 
 use anyhow::Result;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -101,7 +103,7 @@ pub enum BranchNaming {
 
 /// Deny-by-config gates over the mutating surface. Checked FIRST by every
 /// mutating handler; a denial returns a `W5xx` error naming the key.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GatesConfig {
     /// Allow `worktree::remove`.
@@ -123,7 +125,7 @@ pub struct GatesConfig {
     pub allow_prune: bool,
     /// Branches `worktree::land` may target. Glob list (`*` matches any
     /// characters); pin to `["main"]` to allow only mainline lands.
-    #[serde(default = "default_land_targets")]
+    #[serde(default = "default_match_all")]
     pub land_targets: Vec<String>,
     /// Repositories `worktree::create` may branch from. Glob list over the
     /// canonicalized repository path; checked at create only, so existing
@@ -134,14 +136,18 @@ pub struct GatesConfig {
     /// 0 = unlimited.
     #[serde(default)]
     pub max_worktrees_per_repo: u32,
+    /// Compiled `land_targets`, built once per config snapshot.
+    #[serde(skip)]
+    #[schemars(skip)]
+    land_targets_set: OnceLock<GlobSet>,
+    /// Compiled `repos`, built once per config snapshot.
+    #[serde(skip)]
+    #[schemars(skip)]
+    repos_set: OnceLock<GlobSet>,
 }
 
 fn default_true() -> bool {
     true
-}
-
-fn default_land_targets() -> Vec<String> {
-    default_match_all()
 }
 
 fn default_match_all() -> Vec<String> {
@@ -151,43 +157,70 @@ fn default_match_all() -> Vec<String> {
 impl Default for GatesConfig {
     fn default() -> Self {
         Self {
-            allow_remove: true,
+            allow_remove: default_true(),
             allow_force: false,
-            allow_branch_delete: true,
-            allow_land: true,
-            allow_prune: true,
-            land_targets: default_land_targets(),
+            allow_branch_delete: default_true(),
+            allow_land: default_true(),
+            allow_prune: default_true(),
+            land_targets: default_match_all(),
             repos: default_match_all(),
             max_worktrees_per_repo: 0,
+            land_targets_set: OnceLock::new(),
+            repos_set: OnceLock::new(),
         }
+    }
+}
+
+impl PartialEq for GatesConfig {
+    fn eq(&self, other: &Self) -> bool {
+        // Compiled glob caches are derived data; only the source lists count.
+        self.allow_remove == other.allow_remove
+            && self.allow_force == other.allow_force
+            && self.allow_branch_delete == other.allow_branch_delete
+            && self.allow_land == other.allow_land
+            && self.allow_prune == other.allow_prune
+            && self.land_targets == other.land_targets
+            && self.repos == other.repos
+            && self.max_worktrees_per_repo == other.max_worktrees_per_repo
     }
 }
 
 impl GatesConfig {
     /// True when `target` matches any of the `land_targets` globs.
     pub fn land_target_allowed(&self, target: &str) -> bool {
-        self.land_targets.iter().any(|g| glob_match(g, target))
+        self.land_targets_set
+            .get_or_init(|| compile_globs(&self.land_targets))
+            .is_match(target)
     }
 
     /// True when the canonicalized repository path matches any of the
     /// `repos` globs.
     pub fn repo_allowed(&self, repo_path: &str) -> bool {
-        self.repos.iter().any(|g| glob_match(g, repo_path))
+        self.repos_set
+            .get_or_init(|| compile_globs(&self.repos))
+            .is_match(repo_path)
     }
 }
 
-/// Minimal glob: `*` matches any run of characters (including `/`); every
-/// other character matches literally.
-pub fn glob_match(pattern: &str, value: &str) -> bool {
-    fn inner(p: &[u8], v: &[u8]) -> bool {
-        match (p.first(), v.first()) {
-            (None, None) => true,
-            (Some(b'*'), _) => inner(&p[1..], v) || (!v.is_empty() && inner(p, &v[1..])),
-            (Some(pc), Some(vc)) if pc == vc => inner(&p[1..], &v[1..]),
-            _ => false,
+/// Compile a glob list with the default settings (`*` crosses `/`, matching
+/// the documented gate semantics). Invalid patterns are logged and skipped;
+/// they can only narrow, never widen, an allowlist.
+pub(crate) fn compile_globs(patterns: &[String]) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        match Glob::new(pattern) {
+            Ok(glob) => {
+                builder.add(glob);
+            }
+            Err(e) => {
+                tracing::warn!(pattern, error = %e, "invalid glob in config; pattern ignored")
+            }
         }
     }
-    inner(pattern.as_bytes(), value.as_bytes())
+    builder.build().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "glob set failed to build; nothing will match");
+        GlobSet::empty()
+    })
 }
 
 fn default_worktree_root() -> String {
@@ -258,6 +291,15 @@ impl WorkerConfig {
     /// `worktree_root` with a leading `~/` expanded.
     pub fn expanded_worktree_root(&self) -> PathBuf {
         expand_home(&self.worktree_root)
+    }
+
+    /// Default branch name for a new worktree under the configured naming
+    /// scheme.
+    pub fn default_branch(&self, worktree_id: &str) -> String {
+        match self.branch_naming {
+            BranchNaming::Id => format!("{}{}", self.branch_prefix, worktree_id),
+            BranchNaming::Codename => crate::ids::codename_branch(&self.branch_prefix, worktree_id),
+        }
     }
 
     /// Schema registered with the `configuration` worker; shipped defaults
@@ -377,14 +419,17 @@ mod tests {
 
     #[test]
     fn glob_match_star_and_literals() {
-        assert!(glob_match("*", "anything/at/all"));
-        assert!(glob_match("main", "main"));
-        assert!(!glob_match("main", "main2"));
-        assert!(glob_match("release/*", "release/1.2"));
-        assert!(!glob_match("release/*", "release"));
-        assert!(glob_match("*-wip", "feature-wip"));
-        assert!(!glob_match("", "x"));
-        assert!(glob_match("", ""));
+        let gates = |patterns: &[&str]| GatesConfig {
+            land_targets: patterns.iter().map(|s| s.to_string()).collect(),
+            ..GatesConfig::default()
+        };
+        assert!(gates(&["*"]).land_target_allowed("anything/at/all"));
+        assert!(gates(&["main"]).land_target_allowed("main"));
+        assert!(!gates(&["main"]).land_target_allowed("main2"));
+        assert!(gates(&["release/*"]).land_target_allowed("release/1.2"));
+        assert!(!gates(&["release/*"]).land_target_allowed("release"));
+        assert!(gates(&["*-wip"]).land_target_allowed("feature-wip"));
+        assert!(!gates(&[]).land_target_allowed("anything"));
     }
 
     #[test]

@@ -10,9 +10,8 @@
 //! macOS (`cp -c`, plain fallback), `--reflink=auto` on Linux.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
-use crate::config::{glob_match, ProvisionConfig};
+use crate::config::{compile_globs, ProvisionConfig};
 use crate::error::WError;
 use crate::git::run_git_ok;
 
@@ -29,18 +28,15 @@ pub enum CopyMode {
     Plain,
 }
 
-/// Platform copy mode, probed once per process.
+/// Platform copy mode: a compile-time choice, no runtime probing.
 pub fn platform_copy_mode() -> CopyMode {
-    static MODE: OnceLock<CopyMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        if cfg!(target_os = "macos") {
-            CopyMode::MacClone
-        } else if cfg!(target_os = "linux") {
-            CopyMode::LinuxReflink
-        } else {
-            CopyMode::Plain
-        }
-    })
+    if cfg!(target_os = "macos") {
+        CopyMode::MacClone
+    } else if cfg!(target_os = "linux") {
+        CopyMode::LinuxReflink
+    } else {
+        CopyMode::Plain
+    }
 }
 
 /// Repo-relative gitignored entries, fully-ignored directories collapsed
@@ -69,14 +65,19 @@ pub async fn enumerate_ignored(repo: &Path, timeout_ms: u64) -> Result<Vec<Strin
 
 /// Apply include/exclude globs plus the always-on exclusions: VCS metadata
 /// dirs, the managed worktree root, and registered worktree paths (a
-/// worktree nested under an ignored dir is never copied).
+/// worktree nested under an ignored dir is never copied). `repo_canon` must
+/// be the canonicalized repository path: git reports canonical worktree
+/// paths, and a symlinked spelling here (macOS /var vs /private/var) would
+/// silently disable the nested-worktree exclusion.
 pub fn filter_entries(
     entries: Vec<String>,
     cfg: &ProvisionConfig,
-    repo: &Path,
+    repo_canon: &Path,
     worktree_root: &Path,
     registered_worktrees: &[String],
 ) -> Vec<String> {
+    let include = compile_globs(&cfg.include);
+    let exclude = compile_globs(&cfg.exclude);
     entries
         .into_iter()
         .filter(|entry| {
@@ -90,26 +91,21 @@ pub fn filter_entries(
             {
                 return false;
             }
-            let absolute = repo.join(rel);
+            let absolute = repo_canon.join(rel);
             if absolute.starts_with(worktree_root) {
                 return false;
             }
-            // Canonicalize before comparing against the registered list:
-            // git reports canonical worktree paths while `repo` may be a
-            // symlinked spelling (macOS /var vs /private/var), and a miss
-            // here silently disables the nested-worktree exclusion.
-            let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
-            let abs_str = canonical.to_string_lossy();
+            let abs_str = absolute.to_string_lossy();
             if registered_worktrees
                 .iter()
                 .any(|wt| wt.starts_with(abs_str.as_ref()) || abs_str.starts_with(wt.as_str()))
             {
                 return false;
             }
-            if !cfg.include.is_empty() && !cfg.include.iter().any(|g| glob_match(g, rel)) {
+            if !cfg.include.is_empty() && !include.is_match(rel) {
                 return false;
             }
-            if cfg.exclude.iter().any(|g| glob_match(g, rel)) {
+            if exclude.is_match(rel) {
                 return false;
             }
             true
@@ -138,22 +134,22 @@ fn entry_size(path: &Path, budget: u64) -> u64 {
     total
 }
 
-async fn run_cp(program: &str, args: &[&str]) -> bool {
-    let out = tokio::process::Command::new(program)
+fn run_cp(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await;
-    matches!(out, Ok(o) if o.status.success())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Copy one entry with the mode's cheapest flags, degrading to a plain
 /// `cp -R` when the clone-capable invocation fails (non-APFS volume, older
-/// coreutils). `program` is injectable for tests.
-pub async fn copy_entry_with(program: &str, mode: CopyMode, src: &Path, dst: &Path) -> bool {
+/// coreutils). Blocking by design: it runs on the copy loop's blocking
+/// thread. `program` is injectable for tests.
+pub fn copy_entry_with(program: &str, mode: CopyMode, src: &Path, dst: &Path) -> bool {
     let src_s = src.to_string_lossy();
     let dst_s = dst.to_string_lossy();
     let first: &[&str] = match mode {
@@ -161,13 +157,13 @@ pub async fn copy_entry_with(program: &str, mode: CopyMode, src: &Path, dst: &Pa
         CopyMode::LinuxReflink => &["-R", "--reflink=auto", &src_s, &dst_s],
         CopyMode::Plain => &["-R", &src_s, &dst_s],
     };
-    if run_cp(program, first).await {
+    if run_cp(program, first) {
         return true;
     }
     if mode == CopyMode::Plain {
         return false;
     }
-    run_cp(program, &["-R", &src_s, &dst_s]).await
+    run_cp(program, &["-R", &src_s, &dst_s])
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -177,9 +173,11 @@ pub struct CopySummary {
     pub over_budget: bool,
 }
 
-/// Replicate the filtered gitignored entries from `repo` into `worktree`,
-/// bounded by `max_copy_bytes`. Entries already present in the worktree are
-/// left alone (idempotent under retries).
+/// Replicate the filtered gitignored entries from `repo` (canonicalized by
+/// the caller) into `worktree`, bounded by `max_copy_bytes`. Entries already
+/// present in the worktree are left alone (idempotent under retries). The
+/// size scans and copies are blocking filesystem work and run on a blocking
+/// thread, off the async runtime.
 pub async fn copy_ignored(
     repo: &Path,
     worktree: &Path,
@@ -192,43 +190,54 @@ pub async fn copy_ignored(
     let raw = enumerate_ignored(repo, timeout_ms).await?;
     let entries = filter_entries(raw, cfg, repo, worktree_root, registered_worktrees);
 
-    let cp = "cp";
-    let mut summary = CopySummary::default();
-    for entry in entries {
-        let rel = entry.trim_end_matches('/');
-        let src = repo.join(rel);
-        let dst = worktree.join(rel);
-        if !src.exists() || dst.exists() {
-            continue;
-        }
-        let size = entry_size(&src, cfg.max_copy_bytes);
-        if summary.bytes.saturating_add(size) > cfg.max_copy_bytes {
-            summary.over_budget = true;
-            tracing::warn!(
-                entry = rel,
-                max_copy_bytes = cfg.max_copy_bytes,
-                "provision copy budget exceeded; skipping the remaining entries"
-            );
-            break;
-        }
-        if let Some(parent) = dst.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
+    let repo = repo.to_path_buf();
+    let worktree = worktree.to_path_buf();
+    let max_copy_bytes = cfg.max_copy_bytes;
+    let summary = tokio::task::spawn_blocking(move || {
+        let mut summary = CopySummary::default();
+        for entry in entries {
+            let rel = entry.trim_end_matches('/');
+            let src = repo.join(rel);
+            let dst = worktree.join(rel);
+            if !src.exists() || dst.exists() {
                 continue;
             }
+            let size = entry_size(&src, max_copy_bytes);
+            if summary.bytes.saturating_add(size) > max_copy_bytes {
+                summary.over_budget = true;
+                tracing::warn!(
+                    entry = rel,
+                    max_copy_bytes,
+                    "provision copy budget exceeded; skipping the remaining entries"
+                );
+                break;
+            }
+            if let Some(parent) = dst.parent() {
+                if std::fs::create_dir_all(parent).is_err() {
+                    continue;
+                }
+            }
+            if copy_entry_with("cp", mode, &src, &dst) {
+                summary.copied += 1;
+                summary.bytes = summary.bytes.saturating_add(size);
+            } else {
+                tracing::warn!(entry = rel, "provision copy entry failed");
+            }
         }
-        if copy_entry_with(cp, mode, &src, &dst).await {
-            summary.copied += 1;
-            summary.bytes = summary.bytes.saturating_add(size);
-        } else {
-            tracing::warn!(entry = rel, "provision copy entry failed");
-        }
-    }
+        summary
+    })
+    .await
+    .unwrap_or_else(|e| {
+        // Best-effort contract: a lost copy task degrades to an empty
+        // summary rather than failing the caller.
+        tracing::warn!(error = %e, "provision copy task did not finish");
+        CopySummary::default()
+    });
     Ok(summary)
 }
 
 /// Detached best-effort provisioning task, spawned after the create
 /// response is already on the wire.
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_copy_ignored(
     repo: PathBuf,
     worktree: PathBuf,
@@ -240,9 +249,7 @@ pub fn spawn_copy_ignored(
         // The listing includes the primary checkout itself; excluding it
         // would exclude every repository entry, so drop it (canonical
         // compare: git reports canonical paths, callers may not).
-        let repo_canon = tokio::fs::canonicalize(&repo)
-            .await
-            .unwrap_or_else(|_| repo.clone());
+        let repo_canon = crate::git::canonical_or_self(&repo);
         let registered = match crate::git::ops::worktree_list(&repo, timeout_ms).await {
             Ok(entries) => entries
                 .into_iter()
@@ -252,7 +259,7 @@ pub fn spawn_copy_ignored(
             Err(_) => Vec::new(),
         };
         match copy_ignored(
-            &repo,
+            &repo_canon,
             &worktree,
             &cfg,
             &registered,

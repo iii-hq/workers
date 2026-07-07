@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
-use support::{git, init_repo, make_env, test_config};
+use support::{create_request, git, init_repo, make_env, test_config};
 use worktree::config::ProvisionConfig;
 use worktree::functions::create;
 use worktree::provision::{copy_entry_with, copy_ignored, filter_entries, CopyMode};
@@ -139,8 +139,8 @@ async fn copy_budget_stops_the_copy_with_a_warning() {
     assert!(!wt.join(".env").exists());
 }
 
-#[tokio::test]
-async fn clone_flag_falls_back_to_a_plain_copy() {
+#[test]
+fn clone_flag_falls_back_to_a_plain_copy() {
     let tmp = tempfile::tempdir().unwrap();
     // A cp shim that refuses the macOS clone flag and otherwise delegates,
     // simulating a filesystem without clone support.
@@ -161,8 +161,7 @@ async fn clone_flag_falls_back_to_a_plain_copy() {
         CopyMode::MacClone,
         &src,
         &dst,
-    )
-    .await;
+    );
     assert!(ok, "fallback plain copy must succeed");
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "payload\n");
 }
@@ -175,18 +174,9 @@ async fn create_spawns_the_background_provisioning() {
     cfg.provision.copy_ignored = true;
     let env = make_env(tmp.path(), cfg);
 
-    let created = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            pr: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap();
+    let created = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
 
     // The response returns before the copy; poll for the background task
     // with a generous deadline (cold CI runners need well over a second).

@@ -39,10 +39,7 @@ pub fn repo_slug(repo_key: &str) -> String {
             }
         })
         .collect();
-    // DefaultHasher::new() uses fixed keys, so the slug is stable across runs.
-    let mut hasher = std::hash::DefaultHasher::new();
-    repo_key.hash(&mut hasher);
-    format!("{sanitized}-{:06x}", hasher.finish() & 0xff_ffff)
+    format!("{sanitized}-{:06x}", stable_hash(repo_key) & 0xff_ffff)
 }
 
 /// `<worktree_root>/<repo_slug>/<wt_id>`.
@@ -107,6 +104,15 @@ mod tests {
         assert!(id.starts_with("wt_"));
         assert_eq!(id.len(), 15);
         assert_ne!(mint_worktree_id(), mint_worktree_id());
+    }
+
+    #[test]
+    fn stable_hash_matches_inline_default_hasher() {
+        for input in ["/home/u/My Repo/.git", "/x/.git", "", "wt_abc12345"] {
+            let mut hasher = std::hash::DefaultHasher::new();
+            input.hash(&mut hasher);
+            assert_eq!(stable_hash(input), hasher.finish(), "{input}");
+        }
     }
 
     #[test]

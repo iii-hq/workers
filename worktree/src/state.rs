@@ -220,8 +220,10 @@ pub async fn delete_record(store: &dyn StateStore, worktree_id: &str) -> Result<
     store.delete(SCOPE_RECORD, worktree_id).await
 }
 
-pub async fn list_records(store: &dyn StateStore) -> Result<Vec<WorktreeRecord>, WError> {
-    let mut records: Vec<WorktreeRecord> = store
+/// All parseable records, in store order. For pure counts/filters where the
+/// oldest-first ordering of [`list_records`] would be wasted work.
+pub async fn collect_records(store: &dyn StateStore) -> Result<Vec<WorktreeRecord>, WError> {
+    Ok(store
         .list(SCOPE_RECORD)
         .await?
         .into_iter()
@@ -243,7 +245,11 @@ pub async fn list_records(store: &dyn StateStore) -> Result<Vec<WorktreeRecord>,
                 }
             }
         })
-        .collect();
+        .collect())
+}
+
+pub async fn list_records(store: &dyn StateStore) -> Result<Vec<WorktreeRecord>, WError> {
+    let mut records = collect_records(store).await?;
     records.sort_by_key(|r| r.created_at);
     Ok(records)
 }

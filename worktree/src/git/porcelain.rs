@@ -12,6 +12,8 @@ pub struct StatusV2 {
     pub ahead: u64,
     pub behind: u64,
     pub has_upstream: bool,
+    /// HEAD commit from `# branch.oid`; `None` on an unborn branch.
+    pub oid: Option<String>,
 }
 
 impl StatusV2 {
@@ -23,7 +25,11 @@ impl StatusV2 {
 pub fn parse_status_v2(input: &str) -> StatusV2 {
     let mut st = StatusV2::default();
     for line in input.lines() {
-        if let Some(ab) = line.strip_prefix("# branch.ab ") {
+        if let Some(oid) = line.strip_prefix("# branch.oid ") {
+            if oid != "(initial)" {
+                st.oid = Some(oid.to_string());
+            }
+        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
             st.has_upstream = true;
             for token in ab.split_whitespace() {
                 if let Some(n) = token.strip_prefix('+') {
@@ -129,6 +135,7 @@ u UU N... 100644 100644 100644 100644 a a a conflict.txt
         assert_eq!(st.ahead, 2);
         assert_eq!(st.behind, 1);
         assert!(st.has_upstream);
+        assert_eq!(st.oid.as_deref(), Some("abc"));
         assert!(!st.clean());
     }
 
@@ -138,6 +145,8 @@ u UU N... 100644 100644 100644 100644 a a a conflict.txt
         assert!(st.clean());
         assert!(!st.has_upstream);
         assert_eq!(st.ahead, 0);
+        assert_eq!(st.oid.as_deref(), Some("abc"));
+        assert_eq!(parse_status_v2("# branch.oid (initial)\n").oid, None);
     }
 
     #[test]

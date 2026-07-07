@@ -26,6 +26,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+globset = "0.4"
 # Must stay on the same schemars major as iii-sdk so the derived
 # `JsonSchema` impls satisfy `RegisterFunction::new_async` /
 # `RegisterTriggerType::trigger_request_format`.

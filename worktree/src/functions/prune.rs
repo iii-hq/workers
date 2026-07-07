@@ -43,6 +43,18 @@ pub struct Response {
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let cfg = deps.cfg().await;
+    let now = now_ms();
+
+    // The trash sweep is remove's crash recovery (detached deletes that were
+    // interrupted), not part of prune's destructive surface, so it runs even
+    // when the prune gate is closed.
+    if !req.dry_run {
+        let cleared = crate::trash::sweep(&cfg.expanded_worktree_root(), now).await;
+        if cleared > 0 {
+            tracing::info!(cleared, "trash sweep cleared stale entries");
+        }
+    }
+
     if !cfg.gates.allow_prune {
         return Err(crate::functions::gate_denied(
             "worktree::prune",
@@ -60,10 +72,10 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         None => None,
     };
 
-    let now = now_ms();
     let mut pruned = Vec::new();
     let mut skipped = Vec::new();
     let mut touched_repos: BTreeSet<String> = BTreeSet::new();
+    let mut targets = crate::functions::status::TargetCache::new();
 
     for record in state::list_records(deps.state.as_ref()).await? {
         if let Some(repo_key) = &repo_key_filter {
@@ -155,14 +167,14 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         if ahead > 0 {
             // Ahead of base is not unmerged work when the target already
             // absorbed it (squash merge, rebase): integrated worktrees are
-            // prunable.
-            let integrated = match ops::rev_parse(wt, "HEAD", t).await {
-                Ok(head_sha) => {
-                    crate::functions::status::integration_of(&record, &head_sha, t)
+            // prunable. HEAD comes from the porcelain status already read.
+            let integrated = match &st.oid {
+                Some(head_sha) => {
+                    crate::functions::status::integration_of(&record, head_sha, t, &mut targets)
                         .await
                         .integrated
                 }
-                Err(_) => false,
+                None => false,
             };
             if !integrated {
                 skipped.push(PruneSkip {
@@ -191,14 +203,6 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     for repo_path in touched_repos {
         ops::worktree_prune(Path::new(&repo_path), t).await;
-    }
-
-    // Backstop for detached trash deletes interrupted by a crash/restart.
-    if !req.dry_run {
-        let cleared = crate::trash::sweep(&cfg.expanded_worktree_root(), now).await;
-        if cleared > 0 {
-            tracing::info!(cleared, "trash sweep cleared stale entries");
-        }
     }
 
     Ok(Response { pruned, skipped })

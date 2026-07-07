@@ -55,8 +55,9 @@ pub async fn git_common_dir(dir: &Path, timeout_ms: u64) -> Result<String, WErro
     } else {
         dir.join(path)
     };
-    let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
-    Ok(canonical.to_string_lossy().into_owned())
+    Ok(crate::git::canonical_or_self(&absolute)
+        .to_string_lossy()
+        .into_owned())
 }
 
 pub async fn worktree_add(
@@ -149,41 +150,6 @@ pub async fn branch_delete(repo: &Path, branch: &str, force: bool, timeout_ms: u
             tracing::debug!(branch, error = %e, "branch delete failed");
             false
         }
-    }
-}
-
-/// True when `ancestor` is reachable from `descendant`.
-pub async fn is_ancestor(
-    repo: &Path,
-    ancestor: &str,
-    descendant: &str,
-    timeout_ms: u64,
-) -> Result<bool, WError> {
-    let out = run_git(
-        repo,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            "--end-of-options",
-            ancestor,
-            descendant,
-        ],
-        timeout_ms,
-    )
-    .await?;
-    // git reports the ancestry answer as exit 0 (yes) / 1 (no); any other
-    // nonzero exit is a real failure (invalid ref, IO) and must propagate.
-    match out.exit_code {
-        0 => Ok(true),
-        1 => Ok(false),
-        _ => Err(WError::new(
-            codes::GIT_NONZERO,
-            format!(
-                "merge-base --is-ancestor failed in {}: {}",
-                repo.display(),
-                out.stderr.trim()
-            ),
-        )),
     }
 }
 
@@ -447,14 +413,14 @@ pub struct Integration {
 }
 
 impl Integration {
-    fn no() -> Self {
+    pub(crate) fn no() -> Self {
         Self {
             integrated: false,
             reason: None,
         }
     }
 
-    fn yes(reason: &'static str) -> Self {
+    pub(crate) fn yes(reason: &'static str) -> Self {
         Self {
             integrated: true,
             reason: Some(reason),
@@ -464,96 +430,84 @@ impl Integration {
 
 /// The branch a worktree's work is expected to merge into: its recorded
 /// base ref when that is a real ref, else the primary checkout's current
-/// branch. `None` when neither resolves (detached primary, deleted base).
+/// branch. Returns `(name, sha)`; `None` when neither resolves (detached
+/// primary, deleted base).
 pub async fn integration_target(
     repo: &Path,
     base_ref: &str,
     timeout_ms: u64,
-) -> Result<Option<String>, WError> {
-    if base_ref != "HEAD" {
-        let out = run_git(
-            repo,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                "--end-of-options",
-                base_ref,
-            ],
-            timeout_ms,
-        )
-        .await?;
-        if out.exit_code == 0 {
-            return Ok(Some(base_ref.to_string()));
+) -> Result<Option<(String, String)>, WError> {
+    let name = if base_ref != "HEAD" {
+        base_ref.to_string()
+    } else {
+        let out = run_git(repo, &["symbolic-ref", "--short", "HEAD"], timeout_ms).await?;
+        if out.exit_code != 0 {
+            return Ok(None);
         }
-        return Ok(None);
-    }
-    let out = run_git(repo, &["symbolic-ref", "--short", "HEAD"], timeout_ms).await?;
-    if out.exit_code == 0 {
         let name = out.stdout_trimmed();
-        if !name.is_empty() {
-            return Ok(Some(name));
+        if name.is_empty() {
+            return Ok(None);
         }
+        name
+    };
+    match rev_parse(repo, &name, timeout_ms).await {
+        Ok(sha) => Ok(Some((name, sha))),
+        Err(e) if e.code == codes::REF_NOT_FOUND => Ok(None),
+        Err(e) => Err(e),
     }
-    Ok(None)
 }
 
-async fn tree_of(dir: &Path, commitish: &str, timeout_ms: u64) -> Result<String, WError> {
-    let spec = format!("{commitish}^{{tree}}");
-    let out = run_git_ok(
-        dir,
-        &["rev-parse", "--verify", "--quiet", &spec],
-        timeout_ms,
-    )
-    .await?;
-    Ok(out.stdout_trimmed())
+/// Both commits' tree ids in one spawn (one output line per commit). No
+/// `--end-of-options` here: in list mode rev-parse echoes it into stdout,
+/// and both arguments are engine-resolved commit shas, never caller input.
+async fn trees_of(
+    dir: &Path,
+    a: &str,
+    b: &str,
+    timeout_ms: u64,
+) -> Result<(String, String), WError> {
+    let spec_a = format!("{a}^{{tree}}");
+    let spec_b = format!("{b}^{{tree}}");
+    let out = run_git_ok(dir, &["rev-parse", &spec_a, &spec_b], timeout_ms).await?;
+    let mut lines = out.stdout.lines();
+    let tree_a = lines.next().unwrap_or("").trim().to_string();
+    let tree_b = lines.next().unwrap_or("").trim().to_string();
+    Ok((tree_a, tree_b))
 }
 
 /// Cheapest-first integration chain: is every change on `branch_sha` already
-/// contained in `target`? Catches fast-forwards and true merges (ancestor),
-/// rebases (matching trees), squash merges (merge adds nothing, or the
-/// patch-id fallback when the squashed files were touched again), and
-/// no-op branches. A diverged branch with real unmerged work reports
-/// not-integrated. Runs inside the worktree; objects are shared repo-wide.
+/// contained in the commit `target_sha`? Catches fast-forwards and true
+/// merges (ancestor), rebases (matching trees), squash merges (merge adds
+/// nothing, or the patch-id fallback when the squashed files were touched
+/// again), and no-op branches. A diverged branch with real unmerged work
+/// reports not-integrated. Runs inside the worktree; objects are shared
+/// repo-wide.
 pub async fn check_integration(
     dir: &Path,
     branch_sha: &str,
-    target: &str,
+    target_sha: &str,
     timeout_ms: u64,
 ) -> Result<Integration, WError> {
-    let spec = format!("{target}^{{commit}}");
-    let resolved = run_git(
-        dir,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            &spec,
-        ],
-        timeout_ms,
-    )
-    .await?;
-    if resolved.exit_code != 0 {
-        return Ok(Integration::no());
-    }
-    let target_sha = resolved.stdout_trimmed();
-
     if branch_sha == target_sha {
         return Ok(Integration::yes("same_commit"));
     }
 
-    if is_ancestor(dir, branch_sha, &target_sha, timeout_ms).await? {
-        return Ok(Integration::yes("ancestor"));
-    }
-
-    // Everything past here needs a merge base; unrelated histories are
-    // never integrated.
-    let based = run_git(dir, &["merge-base", branch_sha, &target_sha], timeout_ms).await?;
+    // One merge-base spawn answers both questions: unrelated histories are
+    // never integrated, and a merge base equal to the branch head means the
+    // branch is an ancestor of the target.
+    let based = run_git(
+        dir,
+        &["merge-base", "--end-of-options", branch_sha, target_sha],
+        timeout_ms,
+    )
+    .await?;
     if based.exit_code != 0 {
         return Ok(Integration::no());
     }
     let merge_base = based.stdout_trimmed();
+    if merge_base == branch_sha {
+        return Ok(Integration::yes("ancestor"));
+    }
 
     let added = run_git_ok(
         dir,
@@ -569,8 +523,7 @@ pub async fn check_integration(
         return Ok(Integration::yes("no_added_changes"));
     }
 
-    let branch_tree = tree_of(dir, branch_sha, timeout_ms).await?;
-    let target_tree = tree_of(dir, &target_sha, timeout_ms).await?;
+    let (branch_tree, target_tree) = trees_of(dir, branch_sha, target_sha, timeout_ms).await?;
     if branch_tree == target_tree {
         return Ok(Integration::yes("trees_match"));
     }
@@ -580,7 +533,7 @@ pub async fn check_integration(
     // git without the merge-tree write-tree plumbing) also falls through.
     let merged = run_git(
         dir,
-        &["merge-tree", "--write-tree", &target_sha, branch_sha],
+        &["merge-tree", "--write-tree", target_sha, branch_sha],
         timeout_ms,
     )
     .await?;
@@ -592,7 +545,7 @@ pub async fn check_integration(
         return Ok(Integration::no());
     }
 
-    patch_id_match(dir, branch_sha, &target_sha, &merge_base, timeout_ms).await
+    patch_id_match(dir, branch_sha, target_sha, &merge_base, timeout_ms).await
 }
 
 /// Squash-merge fallback: the branch's combined diff (merge base to head)
@@ -606,20 +559,21 @@ async fn patch_id_match(
     merge_base: &str,
     timeout_ms: u64,
 ) -> Result<Integration, WError> {
-    let count = run_git_ok(
+    // One walk, capped at one past the limit: line count doubles as the
+    // commit count, and the same stdout feeds `diff-tree --stdin` below.
+    let max_count = format!("--max-count={}", PATCH_ID_WALK_CAP + 1);
+    let target_commits = run_git_ok(
         dir,
         &[
             "rev-list",
-            "--count",
+            &max_count,
             "--end-of-options",
             &format!("{merge_base}..{target_sha}"),
         ],
         timeout_ms,
     )
-    .await?
-    .stdout_trimmed()
-    .parse::<u64>()
-    .unwrap_or(u64::MAX);
+    .await?;
+    let count = target_commits.stdout.lines().count() as u64;
     if count == 0 || count > PATCH_ID_WALK_CAP {
         return Ok(Integration::no());
     }
@@ -642,16 +596,6 @@ async fn patch_id_match(
     };
     let branch_id = branch_id.to_string();
 
-    let target_commits = run_git_ok(
-        dir,
-        &[
-            "rev-list",
-            "--end-of-options",
-            &format!("{merge_base}..{target_sha}"),
-        ],
-        timeout_ms,
-    )
-    .await?;
     let target_diffs = crate::git::run_git_with_stdin(
         dir,
         &["diff-tree", "--stdin", "-p"],
