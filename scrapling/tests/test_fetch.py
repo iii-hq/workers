@@ -163,3 +163,12 @@ def test_fetch_format_markdown_renders_content(monkeypatch):
     assert res["format"] == "markdown"
     assert "Hi" in res["content"]  # the FakePage HTML has <h1>Hi</h1>
     assert "html" not in res  # format does not imply raw html
+
+
+def test_fetch_format_css_selector_scopes_render(monkeypatch):
+    h = _h(monkeypatch)
+    res = asyncio.run(
+        h["fetch"]({"url": "https://e.com", "format": "markdown", "css_selector": "h1"})
+    )
+    assert "Hi" in res["content"]
+    assert "X" not in res["content"]  # content outside the scoped subtree is dropped

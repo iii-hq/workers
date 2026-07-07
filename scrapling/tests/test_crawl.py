@@ -212,6 +212,25 @@ def test_crawl_include_html_returns_html(monkeypatch):
     assert "<h1>Home</h1>" in out["items"][0]["html"]
 
 
+def test_crawl_forwards_render_knobs(monkeypatch):
+    _patch(monkeypatch)
+    out = asyncio.run(
+        crawl.run_crawl(
+            CFG,
+            None,
+            {
+                "start_urls": ["https://site.com/"],
+                "format": "markdown",
+                "css_selector": "h1",
+                "max_depth": 0,
+            },
+        )
+    )
+    item = out["items"][0]
+    assert "Home" in item["content"]
+    assert "ext" not in item["content"]  # links outside the scoped subtree are gone
+
+
 def test_crawl_one_bad_page_does_not_abort_crawl(monkeypatch):
     # A selector/parse failure on one page must be captured per-URL, not sink the run.
     def fake(cfg, payload, tier):
