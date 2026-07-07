@@ -469,10 +469,10 @@ async fn cas_branch_delete_refuses_when_the_branch_moved() {
     let moved = commit_file(&repo, "move.txt", "m\n", "moves victim");
     git(&repo, &["update-ref", "refs/heads/victim", &moved]);
 
-    let refused = worktree::git::ops::cas_branch_delete(&repo, "victim", &first, 30_000)
+    let deleted = worktree::git::ops::cas_branch_delete(&repo, "victim", &first, 30_000)
         .await
         .unwrap();
-    assert!(!refused, "delete must refuse when the branch moved");
+    assert!(!deleted, "delete must refuse when the branch moved");
     let branches = git(&repo, &["branch", "--list", "victim"]);
     assert!(branches.contains("victim"), "branch retained");
 

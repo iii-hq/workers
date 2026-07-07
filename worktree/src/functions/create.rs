@@ -88,13 +88,10 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let _guard = deps.locks.guard(&repo_key).await;
 
     // Budget check under the repo lock so concurrent creates serialize
-    // against the same count. Orphaned records are not live worktrees.
+    // against the same count. Orphaned records are not live worktrees;
+    // corrupt records count (they may still be live).
     if cfg.gates.max_worktrees_per_repo > 0 {
-        let live = state::collect_records(deps.state.as_ref())
-            .await?
-            .iter()
-            .filter(|r| r.repo_key == repo_key && r.lifecycle != Lifecycle::Orphaned)
-            .count() as u32;
+        let live = state::count_live_records(deps.state.as_ref(), &repo_key).await?;
         if live >= cfg.gates.max_worktrees_per_repo {
             return Err(crate::functions::budget_denied(&canonical_repo, live));
         }

@@ -78,6 +78,7 @@ pub fn filter_entries(
 ) -> Vec<String> {
     let include = compile_globs(&cfg.include);
     let exclude = compile_globs(&cfg.exclude);
+    let worktree_root = crate::git::canonical_or_self(worktree_root);
     entries
         .into_iter()
         .filter(|entry| {
@@ -92,14 +93,15 @@ pub fn filter_entries(
                 return false;
             }
             let absolute = repo_canon.join(rel);
-            if absolute.starts_with(worktree_root) {
+            if absolute.starts_with(&worktree_root) {
                 return false;
             }
-            let abs_str = absolute.to_string_lossy();
-            if registered_worktrees
-                .iter()
-                .any(|wt| wt.starts_with(abs_str.as_ref()) || abs_str.starts_with(wt.as_str()))
-            {
+            // Component-wise on both sides so `/repo/node_modules2` never
+            // reads as nested under a registered `/repo/node_modules`.
+            if registered_worktrees.iter().any(|wt| {
+                let wt = Path::new(wt);
+                wt.starts_with(&absolute) || absolute.starts_with(wt)
+            }) {
                 return false;
             }
             if !cfg.include.is_empty() && !include.is_match(rel) {
@@ -196,6 +198,18 @@ pub async fn copy_ignored(
     let summary = tokio::task::spawn_blocking(move || {
         let mut summary = CopySummary::default();
         for entry in entries {
+            // Liveness guard: `worktree::remove` renames the directory away
+            // instantly (trash staging), so a vanished root means the
+            // worktree is being torn down and copying on would recreate its
+            // parents. The record lives in async state and this loop is
+            // blocking, so the cheap per-entry probe is the right signal.
+            if !worktree.is_dir() {
+                tracing::debug!(
+                    worktree = %worktree.display(),
+                    "worktree gone mid-provision; aborting the remaining entries"
+                );
+                break;
+            }
             let rel = entry.trim_end_matches('/');
             let src = repo.join(rel);
             let dst = worktree.join(rel);

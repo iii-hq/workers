@@ -68,10 +68,13 @@ pub fn spawn_delete(staged: PathBuf) -> tokio::task::JoinHandle<()> {
 }
 
 /// Parse the `-<epoch-secs>` suffix of a trash entry name. Entries without
-/// one were not created by this worker and are never touched.
+/// one (or with a suffix that does not survive the seconds-to-millis
+/// conversion) were not created by this worker and are never touched.
 pub fn parse_trash_timestamp(name: &str) -> Option<i64> {
     let (_, ts) = name.rsplit_once('-')?;
-    ts.parse::<i64>().ok().map(|secs| secs * 1000)
+    ts.parse::<i64>()
+        .ok()
+        .and_then(|secs| secs.checked_mul(1000))
 }
 
 /// Trash entries older than [`TRASH_MAX_AGE_MS`] as of `now`.
@@ -143,6 +146,11 @@ mod tests {
     fn unparseable_entries_are_ignored() {
         assert_eq!(parse_trash_timestamp("no-suffix-here"), None);
         assert_eq!(parse_trash_timestamp("plain"), None);
+        assert_eq!(
+            parse_trash_timestamp("wt_x-9223372036854775807"),
+            None,
+            "seconds that overflow the millis conversion are rejected"
+        );
     }
 
     #[test]

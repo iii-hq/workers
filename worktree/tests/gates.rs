@@ -7,6 +7,7 @@ mod support;
 use support::{create_request, init_repo, make_env, test_config, TestEnv};
 use worktree::config::WorkerConfig;
 use worktree::functions::{claim, create, land, prune, release, remove, validate};
+use worktree::state::{StateStore, SCOPE_RECORD};
 
 fn env_with(tmp: &std::path::Path, mutate: impl FnOnce(&mut WorkerConfig)) -> TestEnv {
     let mut cfg = test_config(tmp);
@@ -267,4 +268,29 @@ async fn worktree_budget_bounds_live_worktrees_per_repo() {
         .await
         .unwrap();
     assert!(created.worktree_id.starts_with("wt_"));
+}
+
+#[tokio::test]
+async fn corrupt_records_consume_the_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_repo(&repo);
+    let env = env_with(tmp.path(), |c| c.gates.max_worktrees_per_repo = 1);
+
+    // A corrupt record without a readable repo_key counts against every
+    // repo's budget: it may still be a live worktree.
+    env.state
+        .set(
+            SCOPE_RECORD,
+            "wt_corrupt00000",
+            serde_json::json!({ "garbage": true }),
+        )
+        .await
+        .unwrap();
+
+    let err = create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "W504");
+    assert!(err.message.contains("1 live worktree"), "{}", err.message);
 }

@@ -15,7 +15,7 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::error::{codes, WError};
-use crate::types::{LandJob, WorktreeRecord};
+use crate::types::{LandJob, Lifecycle, WorktreeRecord};
 
 pub const SCOPE_RECORD: &str = "worktree";
 pub const SCOPE_JOB: &str = "worktree_land_job";
@@ -252,6 +252,39 @@ pub async fn list_records(store: &dyn StateStore) -> Result<Vec<WorktreeRecord>,
     let mut records = collect_records(store).await?;
     records.sort_by_key(|r| r.created_at);
     Ok(records)
+}
+
+/// Live-worktree count for one repo, for the create budget. Parseable
+/// records count when their `repo_key` matches and they are not orphaned.
+/// A corrupt record may still be a live worktree, so it consumes budget
+/// too when its `repo_key` matches or cannot be read (conservative:
+/// skipping it would let creates sail past the operator's cap).
+pub async fn count_live_records(store: &dyn StateStore, repo_key: &str) -> Result<u32, WError> {
+    let mut live: u32 = 0;
+    for value in store.list(SCOPE_RECORD).await? {
+        match serde_json::from_value::<WorktreeRecord>(value.clone()) {
+            Ok(record) => {
+                if record.repo_key == repo_key && record.lifecycle != Lifecycle::Orphaned {
+                    live += 1;
+                }
+            }
+            Err(e) => {
+                let in_scope = value
+                    .get("repo_key")
+                    .and_then(|k| k.as_str())
+                    .is_none_or(|k| k == repo_key);
+                if in_scope {
+                    tracing::warn!(
+                        code = codes::STATE_CORRUPT,
+                        error = %e,
+                        "corrupt worktree record counts against the create budget"
+                    );
+                    live += 1;
+                }
+            }
+        }
+    }
+    Ok(live)
 }
 
 pub async fn get_job(store: &dyn StateStore, job_id: &str) -> Result<Option<LandJob>, WError> {

@@ -116,6 +116,52 @@ async fn copy_ignored_replicates_into_the_worktree() {
     assert!(!wt.join(".git").exists());
 }
 
+#[test]
+fn sibling_prefix_paths_are_not_excluded() {
+    let repo = Path::new("/repo");
+    let root = Path::new("/repo/.wts");
+    let entries = vec!["node_modules/".to_string(), "node_modules2/".to_string()];
+    let kept = filter_entries(
+        entries,
+        &pcfg(|_| {}),
+        repo,
+        root,
+        &["/repo/node_modules".to_string()],
+    );
+    assert_eq!(
+        kept,
+        vec!["node_modules2/"],
+        "prefix-sibling paths must not read as nested worktrees"
+    );
+}
+
+#[tokio::test]
+async fn copy_aborts_when_the_worktree_vanishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = ignored_fixture(tmp.path());
+    // Never created: simulates worktree::remove staging the directory away
+    // between enumeration and the copy loop.
+    let wt = tmp.path().join("wt-gone");
+
+    let summary = copy_ignored(
+        &repo,
+        &wt,
+        &pcfg(|_| {}),
+        &[],
+        &tmp.path().join("wts"),
+        CopyMode::Plain,
+        30_000,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(summary.copied, 0);
+    assert!(
+        !wt.exists(),
+        "copy loop must not recreate a removed worktree"
+    );
+}
+
 #[tokio::test]
 async fn copy_budget_stops_the_copy_with_a_warning() {
     let tmp = tempfile::tempdir().unwrap();
