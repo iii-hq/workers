@@ -275,10 +275,28 @@ export function ChatView({
   // group by it.
   const sessionId = conversation.id
 
+  // Discovered sessions (sub-agents especially) carry no client-side model
+  // choice — `conversation.model` is null. Fall back to the model the latest
+  // assistant reply actually used (transcript entries carry it), resolved
+  // against the catalog's composite ids so the picker preselects when it can.
+  const effectiveModel = useMemo(() => {
+    if (conversation.model) return conversation.model
+    const last = [...conversation.messages]
+      .reverse()
+      .find(
+        (m): m is AssistantMessage => m.role === 'assistant' && Boolean(m.model),
+      )
+    if (!last?.model) return null
+    const catalog = modelOptions.find(
+      (o) => o.id === last.model || o.id.endsWith(`::${last.model}`),
+    )
+    return catalog?.id ?? last.model
+  }, [conversation.model, conversation.messages, modelOptions])
+
   const contextWindow = useMemo(() => {
-    const match = modelOptions.find((o) => o.id === conversation.model)
+    const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.contextWindow
-  }, [modelOptions, conversation.model])
+  }, [modelOptions, effectiveModel])
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -397,7 +415,9 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       if (harnessBlockedRef.current) return
       const conversationId = conversation.id
-      const model = conversation.model
+      // Steering a discovered/sub-agent session: inherit the model the
+      // transcript shows when the conversation carries none of its own.
+      const model = conversation.model ?? effectiveModel
       if (!model) {
         onAppendMessage(
           conversationId,
@@ -844,6 +864,7 @@ export function ChatView({
       conversation.mode,
       conversation.model,
       conversation.workingDir,
+      effectiveModel,
       thinkingLevel,
       sessionId,
       contextWindow,
@@ -1006,9 +1027,7 @@ export function ChatView({
           <span className="text-accent flex-shrink-0" aria-hidden>
             $
           </span>
-          <span className="text-ink truncate min-w-0">
-            {conversation.model}
-          </span>
+          <span className="text-ink truncate min-w-0">{effectiveModel}</span>
           <span className="text-ink-ghost flex-shrink-0">·</span>
           <span className="text-ink-faint flex-shrink-0">
             {conversation.mode}
@@ -1162,7 +1181,7 @@ export function ChatView({
           ) : null}
           <Composer
             mode={conversation.mode}
-            model={conversation.model}
+            model={effectiveModel}
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             functionEntries={functionEntries}
