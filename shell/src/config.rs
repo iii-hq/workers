@@ -514,11 +514,20 @@ impl ShellConfig {
     /// The bootable, zero-config default: seeded as `initial_value` on first
     /// registration and used as the runtime fallback when the stored value is
     /// null, so the worker boots with no config file at all (database-style
-    /// zero-config). This is deliberately NOT `Default::default()` — that is
-    /// unjailed (empty `host_roots`) so an operator config that omits the jail
-    /// fails closed. This seed is the shipped permissive dev default: jailed to
-    /// `/tmp`, env forwarded, open exec with a catastrophic-only denylist. It is
-    /// kept in sync with `config.yaml` by a unit test.
+    /// zero-config). Unjailed by design (`allow_unjailed: true`, empty
+    /// `host_roots`): `shell::fs::*` and the per-call `cwd` on `shell::exec`
+    /// operate against the real filesystem, confined only by
+    /// `denylist_paths` — matching `shell::exec` itself, which is deny-only
+    /// rather than confinement-based. `coder::*` is unaffected: it falls back
+    /// to its own default roots (engine workspace cwd + `/tmp`, see
+    /// `code::path::default_roots`) whenever `host_roots` is empty, regardless
+    /// of `allow_unjailed`. `Default::default()` is ALSO unjailed (empty
+    /// `host_roots`) but leaves `allow_unjailed: false`, so an operator config
+    /// that merely omits the `fs` section — never explicitly opting in —
+    /// still fails closed; only this seed opts in explicitly. This seed is
+    /// the shipped permissive dev default: env forwarded, open exec with a
+    /// catastrophic-only denylist. It is kept in sync with `config.yaml` by a
+    /// unit test.
     pub fn seed_default() -> Self {
         Self {
             max_timeout_ms: 120_000,
@@ -548,7 +557,7 @@ impl ShellConfig {
                 "/etc/shadow".into(),
             ],
             fs: FsConfig {
-                host_roots: vec![PathBuf::from("/tmp")],
+                allow_unjailed: true,
                 max_read_bytes: 16_777_216,
                 max_write_bytes: 16_777_216,
                 denylist_paths: vec![PathBuf::from("/etc/passwd"), PathBuf::from("/etc/shadow")],
