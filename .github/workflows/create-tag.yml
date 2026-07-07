@@ -35,6 +35,7 @@ on:
           - provider-anthropic
           - provider-openai
           - provider-xai
+          - provider-zai
           - pubsub
           - rbac-proxy
           - session-manager

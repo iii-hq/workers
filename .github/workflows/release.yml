@@ -29,6 +29,7 @@ on:
       - 'provider-anthropic/v*'
       - 'provider-openai/v*'
       - 'provider-xai/v*'
+      - 'provider-zai/v*'
       - 'pubsub/v*'
       - 'rbac-proxy/v*'
       - 'session-manager/v*'
