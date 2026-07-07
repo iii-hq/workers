@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-bridge"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Bridge worker for iii — connects to a remote iii instance to expose and forward functions"
 license = "Apache-2.0"
