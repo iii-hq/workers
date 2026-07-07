@@ -68,12 +68,22 @@ mod tests {
 
     #[test]
     fn endpoint_picks_the_catalog_slice() {
-        // default (coding) endpoint → the plan's three models
+        // default (coding) endpoint → only the plan's models
         let coding: Vec<String> = catalog_for(DEFAULT_API_URL)
             .into_iter()
             .map(|m| m.id)
             .collect();
-        assert_eq!(coding, ["glm-5.2", "glm-5-turbo", "glm-4.7"]);
+        assert_eq!(
+            coding,
+            [
+                "glm-5.2",
+                "glm-5.1",
+                "glm-5",
+                "glm-5-turbo",
+                "glm-4.7",
+                "glm-4.5-air"
+            ]
+        );
         // general pay-as-you-go endpoint and custom servers → full table
         assert_eq!(
             catalog_for("https://api.z.ai/api/paas/v4/chat/completions").len(),

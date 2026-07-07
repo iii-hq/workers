@@ -10,7 +10,8 @@ Implements the provider protocol from
 Default upstream: `https://api.z.ai/api/coding/paas/v4/chat/completions` —
 the GLM Coding Plan endpoint (subscription keys, the common case). The
 catalog follows the resolved endpoint: the coding endpoint reconciles only
-the plan's models (`glm-5.2`, `glm-5-turbo`, `glm-4.7`); override `api_url`
+the plan's models (`glm-5.2`, `glm-5.1`, `glm-5`, `glm-5-turbo`, `glm-4.7`,
+`glm-4.5-air`); override `api_url`
 to `https://api.z.ai/api/paas/v4/chat/completions` (pay-as-you-go) for the
 full GLM lineup.
 

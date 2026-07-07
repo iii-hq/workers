@@ -153,10 +153,20 @@ const ROWS: &[Row] = &[
     },
 ];
 
-/// The GLM Coding Plan (subscription) serves only these models
-/// (docs.z.ai devpack); the catalog shrinks to them when the resolved
-/// endpoint is the coding one.
-const CODING_PLAN_IDS: [&str; 3] = ["glm-5.2", "glm-5-turbo", "glm-4.7"];
+/// Models the GLM Coding Plan endpoint serves: the featured tier models
+/// (docs.z.ai devpack/overview: GLM-5.2, GLM-5-Turbo, GLM-4.7) plus the
+/// additional codes the coding-tools guide documents for that endpoint
+/// (docs.z.ai scenario-example/develop-tools/others: GLM-5.1, GLM-5,
+/// GLM-4.5-air). The catalog shrinks to these when the resolved endpoint
+/// is the coding one.
+const CODING_PLAN_IDS: [&str; 6] = [
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5",
+    "glm-5-turbo",
+    "glm-4.7",
+    "glm-4.5-air",
+];
 
 /// The full catalog slice reconciled into the router.
 pub fn models() -> Vec<Model> {

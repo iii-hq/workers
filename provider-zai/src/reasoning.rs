@@ -32,9 +32,24 @@ pub fn thinking_type(level: Option<ThinkingLevel>, reasoning: bool) -> Option<&'
     })
 }
 
-/// Only GLM-5.2+ documents `reasoning_effort`.
+/// Only GLM-5.2 and newer document `reasoning_effort`: parse the numeric
+/// version after `glm-` so glm-5.3/glm-6 qualify without a code change,
+/// while glm-5-turbo (5.0) and glm-5v-turbo stay excluded.
 fn accepts_effort(model: &str) -> bool {
-    model.to_ascii_lowercase().starts_with("glm-5.2")
+    let id = model.to_ascii_lowercase();
+    let Some(rest) = id.strip_prefix("glm-") else {
+        return false;
+    };
+    let version = rest
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .next()
+        .unwrap_or("");
+    let mut parts = version.split('.');
+    let Some(major) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+        return false;
+    };
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (5, 2)
 }
 
 /// Effort for a reasoning model. Z.AI accepts the full vocabulary
@@ -89,6 +104,15 @@ mod tests {
             reasoning_effort_for(Some(ThinkingLevel::Minimal), "glm-5.2"),
             Some("minimal")
         );
+        // newer versions qualify without a code change (docs: "GLM-5.2+")
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "glm-5.3"),
+            Some("high")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "glm-6"),
+            Some("high")
+        );
         // earlier families keep the thinking toggle but never the effort param
         assert_eq!(
             reasoning_effort_for(Some(ThinkingLevel::High), "glm-4.7"),
@@ -100,6 +124,10 @@ mod tests {
         );
         assert_eq!(
             reasoning_effort_for(Some(ThinkingLevel::High), "glm-5-turbo"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "glm-5v-turbo"),
             None
         );
     }
