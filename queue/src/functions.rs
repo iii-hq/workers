@@ -54,6 +54,25 @@ pub struct RedriveSingleResult {
     pub redriven: u64,
 }
 
+/// Acknowledgement type for `iii::durable::publish`. The function always
+/// returns `null` on the wire (engine parity — the builtin returns
+/// `Success(None)`); this type exists so the registered response schema is
+/// typed instead of `AnyValue`, which the registry publish gate rejects.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct PublishAck {}
+
+/// Input for `engine::queue::list_topics`. The function takes no
+/// parameters; any provided fields are ignored (engine parity). The empty
+/// struct keeps the registered request schema typed for the registry
+/// publish gate.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ListTopicsInput {}
+
+/// Input for `engine::queue::dlq_topics` — same story as
+/// [`ListTopicsInput`].
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct DlqTopicsInput {}
+
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct TopicInfo {
     pub name: String,
@@ -150,7 +169,7 @@ pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
     let list_adapter = adapter.clone();
     iii.register_function(
         LIST_TOPICS_FN_ID,
-        RegisterFunction::new_async(move |_input: Value| {
+        RegisterFunction::new_async(move |_input: ListTopicsInput| {
             let adapter = list_adapter.clone();
             async move { list_topics(adapter).await }
         })
@@ -170,7 +189,7 @@ pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
     let dlq_topics_adapter = adapter.clone();
     iii.register_function(
         DLQ_TOPICS_FN_ID,
-        RegisterFunction::new_async(move |_input: Value| {
+        RegisterFunction::new_async(move |_input: DlqTopicsInput| {
             let adapter = dlq_topics_adapter.clone();
             async move { dlq_topics(adapter).await }
         })
@@ -191,11 +210,14 @@ pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
 pub async fn publish(
     adapter: Arc<SwappableAdapter>,
     input: PublishInput,
-) -> Result<Option<Value>, Error> {
+) -> Result<Option<PublishAck>, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("Topic is not set".to_string()));
     }
     adapter.enqueue(&input.topic, input.data, None, None).await;
+    // Always `None` → `null` on the wire, matching the engine builtin's
+    // `Success(None)`. The `PublishAck` type only exists to keep the
+    // registered response schema typed.
     Ok(None)
 }
 
