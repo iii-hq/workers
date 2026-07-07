@@ -1,0 +1,222 @@
+//! Request payloads. Each derives `JsonSchema` so the engine publishes the
+//! parameter table for `iii trigger <fn> --help`, and `Deserialize` so the
+//! handler parses at the unknown boundary.
+
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{json, Map, Value};
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct Message {
+    pub role: String,
+    /// Either a plain string or an array of content blocks.
+    pub content: Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct RunRequest {
+    /// iii session id; reuse to keep the same local record. Omit to generate one.
+    pub session_id: Option<String>,
+    /// The prompt handed to the `devin` CLI for this turn.
+    pub prompt: Option<String>,
+    /// Alternative to prompt: role/content messages; the last user entry becomes the prompt.
+    pub messages: Option<Vec<Message>>,
+    /// Working directory the CLI runs in. Empty = the worker's process directory.
+    pub cwd: Option<String>,
+    /// Prepend the iii runtime discovery prompt as leading instructions (default from config).
+    pub iii_context: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SessionIdRequest {
+    /// iii session id (devin::run) or Devin cloud session id (devin::session::*).
+    pub session_id: String,
+}
+
+/// A raw pass-through call to any Devin v3 endpoint. Use this for anything the
+/// typed wrappers do not cover. Paths are relative to the configured base URL
+/// (e.g. `organizations/{org_id}/sessions`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ApiRequest {
+    /// HTTP method: GET, POST, PUT, PATCH, or DELETE.
+    pub method: String,
+    /// Path relative to the configured base URL, e.g. `organizations/{org_id}/sessions`.
+    pub path: String,
+    /// Optional query parameters as a flat object.
+    pub query: Option<Value>,
+    /// Optional JSON request body.
+    pub body: Option<Value>,
+}
+
+/// Create a Devin session. `prompt` (or a user `messages` entry) is required.
+/// The remaining fields are the union of the v1 (`POST /v1/sessions`) and v3
+/// (`POST /v3/organizations/{org_id}/sessions`) bodies; each is omitted when
+/// absent, so populate the ones your token's API version accepts.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SessionCreateRequest {
+    /// The task prompt for the new Devin session.
+    pub prompt: Option<String>,
+    /// Alternative to prompt: role/content messages; the last user entry becomes the prompt.
+    pub messages: Option<Vec<Message>>,
+    /// Human-readable session title.
+    pub title: Option<String>,
+    /// Tags to apply to the session.
+    pub tags: Option<Vec<String>>,
+    /// Playbook id to run.
+    pub playbook_id: Option<String>,
+    /// Knowledge ids to attach to the session.
+    pub knowledge_ids: Option<Vec<String>>,
+    /// Secret ids to expose to the session.
+    pub secret_ids: Option<Vec<String>>,
+    /// Cap the session's ACU consumption.
+    pub max_acu_limit: Option<u64>,
+    /// (v3) Agent mode: normal, fast, lite, ultra, or fusion.
+    pub devin_mode: Option<String>,
+    /// (v3) Repository identifiers to attach to the session.
+    pub repos: Option<Vec<String>>,
+    /// (v3) File attachment URLs.
+    pub attachment_urls: Option<Vec<String>>,
+    /// (v3) Preserve VM state so the session can be resumed (default true).
+    pub resumable: Option<bool>,
+    /// (v3) Skip approval workflows for this session.
+    pub bypass_approval: Option<bool>,
+    /// (v1) Machine snapshot id to start the session from.
+    pub snapshot_id: Option<String>,
+    /// (v1) Create the session as unlisted.
+    pub unlisted: Option<bool>,
+    /// (v1) Reuse an existing matching session instead of creating a duplicate.
+    pub idempotent: Option<bool>,
+}
+
+impl SessionCreateRequest {
+    /// Build the `POST /organizations/{org_id}/sessions` body, inserting
+    /// `prompt` and only the fields the caller supplied.
+    pub fn to_body(&self, prompt: &str) -> Value {
+        let mut m = Map::new();
+        m.insert("prompt".into(), json!(prompt));
+        if let Some(v) = &self.title {
+            m.insert("title".into(), json!(v));
+        }
+        if let Some(v) = &self.devin_mode {
+            m.insert("devin_mode".into(), json!(v));
+        }
+        if let Some(v) = &self.repos {
+            m.insert("repos".into(), json!(v));
+        }
+        if let Some(v) = &self.attachment_urls {
+            m.insert("attachment_urls".into(), json!(v));
+        }
+        if let Some(v) = &self.playbook_id {
+            m.insert("playbook_id".into(), json!(v));
+        }
+        if let Some(v) = &self.knowledge_ids {
+            m.insert("knowledge_ids".into(), json!(v));
+        }
+        if let Some(v) = &self.secret_ids {
+            m.insert("secret_ids".into(), json!(v));
+        }
+        if let Some(v) = self.max_acu_limit {
+            m.insert("max_acu_limit".into(), json!(v));
+        }
+        if let Some(v) = self.resumable {
+            m.insert("resumable".into(), json!(v));
+        }
+        if let Some(v) = self.bypass_approval {
+            m.insert("bypass_approval".into(), json!(v));
+        }
+        if let Some(v) = &self.snapshot_id {
+            m.insert("snapshot_id".into(), json!(v));
+        }
+        if let Some(v) = self.unlisted {
+            m.insert("unlisted".into(), json!(v));
+        }
+        if let Some(v) = self.idempotent {
+            m.insert("idempotent".into(), json!(v));
+        }
+        if let Some(v) = &self.tags {
+            m.insert("tags".into(), json!(v));
+        }
+        Value::Object(m)
+    }
+}
+
+/// Send a follow-up message to a running Devin session.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SessionMessageRequest {
+    /// Devin cloud session id (returned by devin::session::create).
+    pub session_id: String,
+    /// The message to send.
+    pub message: String,
+}
+
+/// Trigger a Devin PR review for a pull/merge request.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PrReviewTriggerRequest {
+    /// Full URL of the pull/merge request to review.
+    pub pr_url: String,
+}
+
+/// Look up the latest Devin PR review for a pull/merge request.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PrReviewStatusRequest {
+    /// Full URL of the pull/merge request to look up.
+    pub pr_url: String,
+    /// Commit SHA (full or short); defaults to the PR head when omitted.
+    pub commit_sha: Option<String>,
+}
+
+impl PrReviewStatusRequest {
+    pub fn to_query(&self) -> Value {
+        let mut m = Map::new();
+        m.insert("pr_url".into(), json!(self.pr_url));
+        if let Some(v) = &self.commit_sha {
+            m.insert("commit_sha".into(), json!(v));
+        }
+        Value::Object(m)
+    }
+}
+
+/// Extract the prompt from a run-style payload: explicit `prompt` (incl. empty
+/// string) wins; otherwise the last user message's text.
+fn extract_from(
+    prompt: &Option<String>,
+    messages: &Option<Vec<Message>>,
+) -> anyhow::Result<String> {
+    if let Some(p) = prompt {
+        return Ok(p.clone());
+    }
+    let messages = messages
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("requires `prompt` or a user message in `messages`"))?;
+    let last = messages
+        .iter()
+        .rfind(|m| m.role == "user")
+        .ok_or_else(|| anyhow::anyhow!("requires `prompt` or a user message in `messages`"))?;
+    match &last.content {
+        Value::String(s) => Ok(s.clone()),
+        Value::Array(blocks) => {
+            let text = blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                return Err(anyhow::anyhow!("message content has no text blocks"));
+            }
+            Ok(text)
+        }
+        _ => Err(anyhow::anyhow!(
+            "unsupported message content: expected a string or an array of content blocks"
+        )),
+    }
+}
+
+pub fn extract_prompt(req: &RunRequest) -> anyhow::Result<String> {
+    extract_from(&req.prompt, &req.messages)
+}
+
+pub fn extract_create_prompt(req: &SessionCreateRequest) -> anyhow::Result<String> {
+    extract_from(&req.prompt, &req.messages)
+}

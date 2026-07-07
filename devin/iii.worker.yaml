@@ -1,0 +1,7 @@
+iii: v1
+name: devin
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: devin
+description: Devin CLI + API as an iii worker; devin::run/start/stop/status/sessions::list follow the agent-worker family and stream AgentEvent frames onto agent::events, devin::session::* wrap the Devin cloud session lifecycle, devin::pr-review::* exposes Devin's review surface, and devin::api reaches any Devin v1/v3 endpoint.
