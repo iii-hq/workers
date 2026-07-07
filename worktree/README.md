@@ -122,6 +122,19 @@ never reserved anywhere; point dev servers at it to avoid port fights.
 read as merged, and `worktree::prune` removes integrated-but-ahead worktrees
 instead of holding them forever.
 
+### Removal and trash
+
+`worktree::remove` never blocks on a large directory delete: the worktree
+is renamed into a `.trash` staging area under `worktree_root` (instant),
+the git admin entry is pruned, and a detached task deletes the staged
+directory in the background; if the rename fails the removal falls back to
+a synchronous `git worktree remove`. Entries stranded by a crash are
+cleared by the next prune's trash sweep, which runs even when
+`gates.allow_prune` is off (it is remove's crash recovery, not part of
+prune's destructive surface). Unforced removals also probe for processes
+holding files open under the worktree and refuse with `W222` rather than
+deleting a directory out from under a running dev server.
+
 ### Gates
 
 Every mutating handler checks its gate before anything else, so an operator
@@ -190,8 +203,9 @@ instance.
   takeover and `W210`/`W211` mismatch errors.
 - `worktree::status` — clean, ahead/behind, staged/unstaged/untracked,
   diffstat, rebase-in-progress.
-- `worktree::remove` — guarded removal (`W220` dirty, `W221` unmerged),
-  optional branch deletion.
+- `worktree::remove` — guarded removal (`W220` dirty, `W221` unmerged,
+  `W222` busy), instant trash staging with background delete, optional
+  branch deletion.
 - `worktree::prune` — reconcile sweep, cron-bound; `{}` payload works.
 - `worktree::land` — queue a land job; returns `{ job_id, queued }`.
 - `worktree::land-step` — internal queue consumer; not agent-callable.
