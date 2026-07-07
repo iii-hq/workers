@@ -11,8 +11,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{Error, IIIClient, TriggerAction};
-use serde::Deserialize;
-use serde_json::Value;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::config::{ExposeEntry, ForwardEntry};
@@ -58,13 +59,83 @@ impl From<BridgeError> for Error {
 }
 
 /// Exact parity with the builtin's `InvokeInput` (mod.rs:50-57).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct InvokeInput {
+    /// Id of the function to invoke on the remote iii instance.
     pub function_id: String,
+    /// Payload passed to the remote function, forwarded verbatim.
     #[serde(default)]
     pub data: Value,
+    /// Milliseconds to wait for the result. `bridge.invoke` defaults to 30s
+    /// when omitted; `bridge.invoke_async` ignores this field (fire-and-forget).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+}
+
+/// Schema-typed pass-through for an arbitrary JSON value. `#[serde(transparent)]`
+/// keeps the wire format identical to a bare `Value` — deserializing can never
+/// fail — while the manual [`JsonSchema`] impl still emits a schema-defining
+/// keyword (`type`) so `collect_worker_interface.py --assert-typed-schemas`
+/// (and the per-worker golden test it mirrors, `docs/sops/binary-worker.md`
+/// §"Typed schemas are mandatory") doesn't flag it as the permissive
+/// `AnyValue`/empty schema. Used for `bridge.invoke`'s raw result and for the
+/// dynamic `forward`/`expose` proxy functions, whose request/response shapes
+/// are genuinely user-defined at config time.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RawValue(pub Value);
+
+impl From<Value> for RawValue {
+    fn from(value: Value) -> Self {
+        Self(value)
+    }
+}
+
+impl From<RawValue> for Value {
+    fn from(raw: RawValue) -> Self {
+        raw.0
+    }
+}
+
+impl JsonSchema for RawValue {
+    fn schema_name() -> String {
+        "RawValue".to_string()
+    }
+
+    /// Inline rather than emitting a `$ref`: this schema has no derivable
+    /// named shape, it's a hand-written permissive union.
+    fn is_referenceable() -> bool {
+        false
+    }
+
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        serde_json::from_value(json!({
+            "type": ["null", "boolean", "number", "string", "array", "object"],
+            "description": "Raw JSON value returned or forwarded without validation."
+        }))
+        .expect("valid schema literal")
+    }
+}
+
+/// `bridge.invoke_async` always resolves to `null` (builtin `FunctionResult::
+/// NoResult` parity, see [`handle_invoke_async`]). A dedicated unit type keeps
+/// the published response schema exactly `{"type": "null"}` instead of
+/// `RawValue`'s wider permissive union.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct NullResult;
+
+impl JsonSchema for NullResult {
+    fn schema_name() -> String {
+        "NullResult".to_string()
+    }
+
+    fn is_referenceable() -> bool {
+        false
+    }
+
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        serde_json::from_value(json!({ "type": "null" })).expect("valid schema literal")
+    }
 }
 
 #[async_trait]
@@ -219,13 +290,50 @@ fn parse_invoke(input: Value) -> Result<InvokeInput, BridgeError> {
     })
 }
 
-/// `bridge.invoke` — call a remote function and wait (default 30s).
-pub async fn handle_invoke(remote: &dyn Caller, input: Value) -> Result<Value, BridgeError> {
-    let invoke = parse_invoke(input)?;
+/// Deserialization-failure mapper for the SDK's typed `bridge.invoke` /
+/// `bridge.invoke_async` registrations (`RegisterFunction::
+/// new_async_with_bad_request`, see `boot::register_bridge_functions`).
+/// Mirrors [`parse_invoke`]'s `deserialization_error` contract exactly, so
+/// the wire error is identical whether the SDK rejects the payload before
+/// calling the handler (typed registration) or `parse_invoke` rejects it
+/// inside [`handle_invoke`]/[`handle_invoke_async`] (direct unit-test calls).
+pub fn invoke_bad_request(err: serde_json::Error) -> Error {
+    BridgeError {
+        code: "deserialization_error".into(),
+        message: format!("Failed to parse invoke input: {}", err),
+        stacktrace: None,
+    }
+    .into()
+}
+
+/// `bridge.invoke` on an already-parsed [`InvokeInput`] — the typed
+/// registration path (SDK deserializes before calling in). Returns the
+/// remote result RAW, wrapped in the schema-typed [`RawValue`].
+pub async fn handle_invoke_typed(
+    remote: &dyn Caller,
+    invoke: InvokeInput,
+) -> Result<RawValue, BridgeError> {
     let timeout = invoke.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
     remote
         .call(&invoke.function_id, invoke.data, Some(timeout))
         .await
+        .map(RawValue)
+}
+
+/// `bridge.invoke_async` on an already-parsed [`InvokeInput`] — the typed
+/// registration path. Fire-and-forget; always resolves to [`NullResult`].
+pub async fn handle_invoke_async_typed(
+    remote: &dyn Caller,
+    invoke: InvokeInput,
+) -> Result<NullResult, BridgeError> {
+    remote.call_void(&invoke.function_id, invoke.data).await?;
+    Ok(NullResult)
+}
+
+/// `bridge.invoke` — call a remote function and wait (default 30s).
+pub async fn handle_invoke(remote: &dyn Caller, input: Value) -> Result<Value, BridgeError> {
+    let invoke = parse_invoke(input)?;
+    handle_invoke_typed(remote, invoke).await.map(Value::from)
 }
 
 /// `bridge.invoke_async` — fire-and-forget. The builtin returns
@@ -233,7 +341,7 @@ pub async fn handle_invoke(remote: &dyn Caller, input: Value) -> Result<Value, B
 /// `null` is the closest parity.
 pub async fn handle_invoke_async(remote: &dyn Caller, input: Value) -> Result<Value, BridgeError> {
     let invoke = parse_invoke(input)?;
-    remote.call_void(&invoke.function_id, invoke.data).await?;
+    handle_invoke_async_typed(remote, invoke).await?;
     Ok(Value::Null)
 }
 
