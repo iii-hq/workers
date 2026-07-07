@@ -8,13 +8,31 @@
 //! - `engine/src/builtins/queue.rs` (`QueueConfig` defaults, the
 //!   `Worker`/`FifoWorker`/`GroupedFifoWorker` polling loops).
 //!
+//! Fan-out model (matches the engine exactly — see
+//! `engine/src/workers/queue/adapters/builtin/adapter.rs:196-337`):
+//! - Each `(topic, id)` subscription gets its own internal queue named
+//!   `format!("{topic}::{function_id}")` (`adapter.rs:206,229`); `topic_functions`
+//!   tracks which function ids are currently subscribed to a topic.
+//! - `enqueue` pushes a **separate copy** of the message onto every
+//!   subscribed function's internal queue when the topic has subscribers
+//!   (`adapter.rs:203-215`, broadcast — N subscribers each receive every
+//!   message, they do not compete for one shared queue); with no
+//!   subscribers it enqueues straight onto the bare topic name
+//!   (`adapter.rs:216-218`), where it sits until a subscriber later
+//!   attaches (same buffering behavior as the engine).
+//! - `redrive_dlq`, `redrive_dlq_message`, `discard_dlq_message`,
+//!   `dlq_count`/`topic_stats`, and `dlq_peek` all resolve a bare topic
+//!   name the same way: if it has subscribers, operate on/aggregate over
+//!   every subscriber's internal queue (`adapter.rs:310-384,586-637`);
+//!   otherwise operate on the bare topic directly. This lets service
+//!   functions and operators keep passing the bare topic name for these
+//!   ops regardless of how many subscribers exist.
+//! - `list_topics` mirrors `adapter.rs:558-584`: topics are enumerated
+//!   from the subscription registry (`topic_functions`), not by scanning
+//!   every key the store happens to hold — a topic that only ever had a
+//!   bare, subscriber-less `enqueue` does not appear (same as the engine).
+//!
 //! Deliberate deviations from the engine port:
-//! - No per-function internal-queue fan-out (`topic::function_id`). The
-//!   engine redirects each subscribed function to its own copy of every
-//!   message; this port hands `enqueue` straight to the shared
-//!   [`QueueStore`] topic, matching this task's brief ("enqueue delegates
-//!   to store"). Two subscribers on the same topic therefore compete for
-//!   messages rather than each receiving a copy.
 //! - No `GroupedFifoWorker` (fifo + concurrency > 1, partitioned by
 //!   `job.group_id`). This store's `Job` carries no group id, so fifo mode
 //!   always processes strictly one job at a time regardless of the
@@ -36,7 +54,7 @@
 //!   this port applies the same guard to the builtin adapter to preserve
 //!   the "one subscription per (topic, id)" invariant.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -68,7 +86,10 @@ enum Mode {
 /// Per-subscription settings resolved from [`SubscriberQueueConfig`],
 /// shared (read-only) across a subscription's polling task(s).
 struct PollerConfig {
-    topic: String,
+    /// The internal queue this subscription's poller reads from —
+    /// `format!("{topic}::{function_id}")`, not the bare topic name (see
+    /// the module doc's fan-out model).
+    queue_name: String,
     function_id: String,
     condition_function_id: Option<String>,
     max_retries: u32,
@@ -76,13 +97,37 @@ struct PollerConfig {
     poll_interval_ms: u64,
 }
 
+/// A tracked `(topic, id)` subscription: its polling task plus the
+/// function id it targets, so `unsubscribe` can decide whether any other
+/// subscription still needs that function's entry in `topic_functions`
+/// (mirrors the engine's `trigger_function_map`, `adapter.rs:50,273-308` —
+/// folded into `subscriptions` here since the two maps always share the
+/// same `(topic, id)` key set).
+struct Subscription {
+    task: JoinHandle<()>,
+    function_id: String,
+}
+
 /// Builtin transport adapter: subscriptions are backed by pure in-process
 /// polling tasks over the worker's [`QueueStore`].
 pub struct BuiltinAdapter {
     store: Arc<dyn QueueStore>,
     invoker: Arc<dyn Invoker>,
-    subscriptions: Mutex<HashMap<(String, String), JoinHandle<()>>>,
+    subscriptions: Mutex<HashMap<(String, String), Subscription>>,
+    /// topic -> set of function ids currently subscribed to it. Resolves a
+    /// bare topic name to its subscribers' internal queue names
+    /// (`format!("{topic}::{function_id}")`) for fan-out enqueue and all
+    /// DLQ/stat ops — mirrors the engine's `topic_functions`
+    /// (`adapter.rs:49`).
+    topic_functions: Mutex<HashMap<String, HashSet<String>>>,
     poll_interval_ms: u64,
+}
+
+/// `format!("{topic}::{function_id}")` — the internal queue name a
+/// subscription's messages, acks/nacks, and DLQ entries live under.
+/// Mirrors the engine's internal-queue naming (`adapter.rs:206,229`).
+fn internal_queue_name(topic: &str, function_id: &str) -> String {
+    format!("{topic}::{function_id}")
 }
 
 impl BuiltinAdapter {
@@ -102,6 +147,7 @@ impl BuiltinAdapter {
             store,
             invoker,
             subscriptions: Mutex::new(HashMap::new()),
+            topic_functions: Mutex::new(HashMap::new()),
             poll_interval_ms,
         }
     }
@@ -118,7 +164,23 @@ impl QueueAdapter for BuiltinAdapter {
     ) {
         // This store's `Job` carries no trace context yet, so traceparent/
         // baggage are accepted (for trait parity) but dropped.
-        let _ = self.store.enqueue(topic, data).await;
+        //
+        // Fan-out mirrors `adapter.rs:196-219`: a topic with subscribers
+        // gets a separate copy pushed onto EACH subscriber's own internal
+        // queue (broadcast); a topic with none enqueues straight onto the
+        // bare topic name.
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    let _ = self.store.enqueue(&queue_name, data.clone()).await;
+                }
+            }
+            _ => {
+                let _ = self.store.enqueue(topic, data).await;
+            }
+        }
     }
 
     async fn subscribe(
@@ -136,11 +198,12 @@ impl QueueAdapter for BuiltinAdapter {
             return;
         }
 
+        // No clamp: the engine has none either — `concurrency: 0` means
+        // consumption is paused (the semaphore never yields a permit).
         let concurrency = queue_config
             .as_ref()
             .and_then(|c| c.concurrency)
-            .unwrap_or(DEFAULT_CONCURRENCY)
-            .max(1);
+            .unwrap_or(DEFAULT_CONCURRENCY);
         let max_retries = queue_config
             .as_ref()
             .and_then(|c| c.max_retries)
@@ -154,8 +217,17 @@ impl QueueAdapter for BuiltinAdapter {
             _ => Mode::Concurrent,
         };
 
+        let queue_name = internal_queue_name(topic, function_id);
+
+        self.topic_functions
+            .lock()
+            .await
+            .entry(topic.to_string())
+            .or_default()
+            .insert(function_id.to_string());
+
         let cfg = PollerConfig {
-            topic: topic.to_string(),
+            queue_name,
             function_id: function_id.to_string(),
             condition_function_id,
             max_retries,
@@ -170,67 +242,190 @@ impl QueueAdapter for BuiltinAdapter {
             mode,
             concurrency,
         );
-        subs.insert(key, task);
+        subs.insert(
+            key,
+            Subscription {
+                task,
+                function_id: function_id.to_string(),
+            },
+        );
 
         tracing::debug!(topic = %topic, id = %id, function_id = %function_id, ?mode, "Subscribed to queue via BuiltinAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
         let key = (topic.to_string(), id.to_string());
-        let mut subs = self.subscriptions.lock().await;
-        if let Some(task) = subs.remove(&key) {
-            task.abort();
-            tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
-        } else {
+        let removed = self.subscriptions.lock().await.remove(&key);
+
+        let Some(sub) = removed else {
             tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
+            return;
+        };
+        sub.task.abort();
+        tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
+
+        // Only drop `function_id` from `topic_functions[topic]` once no
+        // other subscription on this topic still targets it — mirrors the
+        // engine's ref-counted cleanup (`adapter.rs:291-307`).
+        let still_targeted = self
+            .subscriptions
+            .lock()
+            .await
+            .iter()
+            .any(|((t, _), s)| t == topic && s.function_id == sub.function_id);
+
+        if !still_targeted {
+            let mut tf = self.topic_functions.lock().await;
+            if let Some(function_ids) = tf.get_mut(topic) {
+                function_ids.remove(&sub.function_id);
+                if function_ids.is_empty() {
+                    tf.remove(topic);
+                }
+            }
         }
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.store.redrive_dlq(topic).await)
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                let mut total = 0u64;
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    total += self.store.redrive_dlq(&queue_name).await;
+                }
+                Ok(total)
+            }
+            _ => Ok(self.store.redrive_dlq(topic).await),
+        }
     }
 
     async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        Ok(self.store.redrive_dlq_message(topic, message_id).await)
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    if self
+                        .store
+                        .redrive_dlq_message(&queue_name, message_id)
+                        .await
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(self.store.redrive_dlq_message(topic, message_id).await),
+        }
     }
 
     async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        Ok(self.store.discard_dlq_message(topic, message_id).await)
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    if self
+                        .store
+                        .discard_dlq_message(&queue_name, message_id)
+                        .await
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(self.store.discard_dlq_message(topic, message_id).await),
+        }
     }
 
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.store.topic_stats(topic).await.dlq_depth)
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                let mut total = 0u64;
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    total += self.store.topic_stats(&queue_name).await.dlq_depth;
+                }
+                Ok(total)
+            }
+            _ => Ok(self.store.topic_stats(topic).await.dlq_depth),
+        }
     }
 
     async fn dlq_peek(&self, topic: &str, offset: u64, limit: u64) -> anyhow::Result<Vec<Value>> {
-        let jobs = self
-            .store
-            .dlq_messages(topic, offset.saturating_add(limit))
-            .await;
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        let jobs: Vec<Job> = match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                let mut all = Vec::new();
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    all.extend(
+                        self.store
+                            .dlq_messages(&queue_name, offset.saturating_add(limit))
+                            .await,
+                    );
+                }
+                all
+            }
+            _ => {
+                self.store
+                    .dlq_messages(topic, offset.saturating_add(limit))
+                    .await
+            }
+        };
         Ok(jobs
             .into_iter()
             .skip(offset as usize)
+            .take(limit as usize)
             .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
             .collect())
     }
 
     async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
-        let mut infos = Vec::new();
-        for name in self.store.list_topics().await {
-            let depth = self.store.topic_stats(&name).await.depth;
-            infos.push(TopicInfo { name, depth });
+        // Enumerated from the subscription registry, not by scanning every
+        // key the store happens to hold — mirrors `adapter.rs:558-584`.
+        let topic_functions = self.topic_functions.lock().await.clone();
+        let mut infos = Vec::with_capacity(topic_functions.len());
+        for (topic, function_ids) in &topic_functions {
+            let mut depth = 0u64;
+            for function_id in function_ids {
+                let queue_name = internal_queue_name(topic, function_id);
+                depth += self.store.topic_stats(&queue_name).await.depth;
+            }
+            infos.push(TopicInfo {
+                name: topic.clone(),
+                depth,
+            });
         }
         Ok(infos)
     }
 
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats> {
-        Ok(self.store.topic_stats(topic).await)
+        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
+        match function_ids {
+            Some(function_ids) if !function_ids.is_empty() => {
+                let mut aggregate = TopicStats::default();
+                for function_id in &function_ids {
+                    let queue_name = internal_queue_name(topic, function_id);
+                    let stats = self.store.topic_stats(&queue_name).await;
+                    aggregate.depth += stats.depth;
+                    aggregate.dlq_depth += stats.dlq_depth;
+                    aggregate.delivered += stats.delivered;
+                    aggregate.failed += stats.failed;
+                }
+                Ok(aggregate)
+            }
+            _ => Ok(self.store.topic_stats(topic).await),
+        }
     }
 
     async fn shutdown(&self) {
-        let tasks = self.subscriptions.lock().await.drain().collect::<Vec<_>>();
-        for (_, task) in tasks {
-            task.abort();
+        let subs = self.subscriptions.lock().await.drain().collect::<Vec<_>>();
+        for (_, sub) in subs {
+            sub.task.abort();
         }
     }
 }
@@ -255,7 +450,7 @@ fn spawn_poller(
 /// retry-in-place behavior — see the module doc's "Deliberate deviations".
 async fn run_fifo(store: Arc<dyn QueueStore>, invoker: Arc<dyn Invoker>, cfg: PollerConfig) {
     loop {
-        match store.dequeue(&cfg.topic).await {
+        match store.dequeue(&cfg.queue_name).await {
             Some(job) => process_job(&store, &invoker, &cfg, job).await,
             None => tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await,
         }
@@ -280,7 +475,7 @@ async fn run_concurrent(
             Err(_) => return, // semaphore closed; subscription is being torn down
         };
 
-        match store.dequeue(&cfg.topic).await {
+        match store.dequeue(&cfg.queue_name).await {
             Some(job) => {
                 let store = Arc::clone(&store);
                 let invoker = Arc::clone(&invoker);
@@ -313,10 +508,10 @@ async fn process_job(
     .await;
 
     match result {
-        Ok(()) => store.ack(&cfg.topic, &job.id).await,
+        Ok(()) => store.ack(&cfg.queue_name, &job.id).await,
         Err(_err) => {
             store
-                .nack(&cfg.topic, job, cfg.max_retries, cfg.backoff_ms)
+                .nack(&cfg.queue_name, job, cfg.max_retries, cfg.backoff_ms)
                 .await
         }
     }
@@ -488,7 +683,90 @@ mod tests {
             async move { invoker.calls().await.len() == 1 }
         })
         .await;
-        assert_eq!(store.topic_stats("demo").await.delivered, 1);
+        assert_eq!(adapter.topic_stats("demo").await.unwrap().delivered, 1);
+        adapter.shutdown().await;
+    }
+
+    // (g) enqueue fans out a separate copy to EVERY subscriber on the same
+    // topic (broadcast) instead of the subscribers competing for one
+    // shared queue — mirrors `adapter.rs:203-215`.
+    #[tokio::test]
+    async fn enqueue_fans_out_to_every_subscriber() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
+
+        adapter.subscribe("demo", "sub-a", "fn-a", None, None).await;
+        adapter.subscribe("demo", "sub-b", "fn-b", None, None).await;
+
+        for i in 0..3 {
+            adapter.enqueue("demo", json!(i), None, None).await;
+        }
+
+        wait_until(|| {
+            let invoker = invoker.clone();
+            async move { invoker.calls().await.len() == 6 }
+        })
+        .await;
+
+        let calls = invoker.calls().await;
+        let fn_a_calls = calls.iter().filter(|(f, _)| f == "fn-a").count();
+        let fn_b_calls = calls.iter().filter(|(f, _)| f == "fn-b").count();
+        assert_eq!(fn_a_calls, 3, "fn-a should receive every enqueued message");
+        assert_eq!(fn_b_calls, 3, "fn-b should receive every enqueued message");
+        adapter.shutdown().await;
+    }
+
+    // enqueue onto a topic with no subscribers buffers directly on the
+    // bare topic name (no internal-queue namespacing) — mirrors
+    // `adapter.rs:216-218`.
+    #[tokio::test]
+    async fn enqueue_without_subscribers_buffers_on_bare_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker, 5);
+
+        adapter
+            .enqueue("demo", json!("no subscribers yet"), None, None)
+            .await;
+
+        assert_eq!(store.topic_stats("demo").await.depth, 1);
+        let job = store
+            .dequeue("demo")
+            .await
+            .expect("job should be on the bare topic");
+        assert_eq!(job.payload, json!("no subscribers yet"));
+    }
+
+    // concurrency: 0 pauses consumption entirely — no clamp, matching the
+    // engine (a semaphore with zero permits never yields one).
+    #[tokio::test]
+    async fn concurrency_zero_pauses_consumption() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
+
+        adapter
+            .subscribe(
+                "demo",
+                "sub1",
+                "backend",
+                None,
+                config(SubscriberQueueConfig {
+                    concurrency: Some(0),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        adapter
+            .enqueue("demo", json!({"hello": "world"}), None, None)
+            .await;
+
+        sleep(Duration::from_millis(200)).await;
+        assert!(
+            invoker.calls().await.is_empty(),
+            "concurrency: 0 must not deliver any message"
+        );
         adapter.shutdown().await;
     }
 
@@ -496,9 +774,6 @@ mod tests {
     #[tokio::test]
     async fn concurrency_limits_in_flight_invocations() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        for i in 0..12 {
-            store.enqueue("demo", json!(i)).await.unwrap();
-        }
         let invoker = Arc::new(ConcurrencyGateInvoker::new(60));
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
 
@@ -514,6 +789,9 @@ mod tests {
                 }),
             )
             .await;
+        for i in 0..12 {
+            adapter.enqueue("demo", json!(i), None, None).await;
+        }
 
         wait_until(|| {
             let invoker = invoker.clone();
@@ -530,9 +808,6 @@ mod tests {
     #[tokio::test]
     async fn fifo_processes_strictly_in_order() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        for i in 0..20 {
-            store.enqueue("demo", json!(i)).await.unwrap();
-        }
         let invoker = Arc::new(OrderRecordingInvoker::default());
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
 
@@ -551,6 +826,9 @@ mod tests {
                 }),
             )
             .await;
+        for i in 0..20 {
+            adapter.enqueue("demo", json!(i), None, None).await;
+        }
 
         wait_until(|| {
             let invoker = invoker.clone();
@@ -563,11 +841,13 @@ mod tests {
         adapter.shutdown().await;
     }
 
-    // (d) failing handler -> DLQ after max_retries.
+    // (d) failing handler -> DLQ after max_retries. Also exercises finding
+    // 1's requirement that DLQ ops keep working against the bare topic
+    // name a service function passes, even though the job actually lives
+    // under the internal `demo::backend` queue.
     #[tokio::test]
     async fn failing_handler_moves_to_dlq_after_max_retries() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        store.enqueue("demo", json!("job")).await.unwrap();
         let invoker = Arc::new(FakeInvoker::default());
         invoker.fail_backend.store(true, Ordering::SeqCst);
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
@@ -585,15 +865,59 @@ mod tests {
                 }),
             )
             .await;
+        adapter.enqueue("demo", json!("job"), None, None).await;
 
-        wait_until(|| {
-            let store = store.clone();
-            async move { !store.dlq_messages("demo", 10).await.is_empty() }
-        })
-        .await;
-        let stats = store.topic_stats("demo").await;
-        assert_eq!(stats.failed, 1);
-        assert_eq!(store.dlq_messages("demo", 10).await[0].attempts, 2);
+        wait_until(|| async { adapter.dlq_count("demo").await.unwrap_or(0) > 0 }).await;
+
+        assert_eq!(adapter.dlq_count("demo").await.unwrap(), 1);
+        let peeked = adapter.dlq_peek("demo", 0, 10).await.unwrap();
+        assert_eq!(peeked.len(), 1);
+        assert_eq!(peeked[0]["attempts"], json!(2));
+        adapter.shutdown().await;
+    }
+
+    // DLQ ops (redrive_dlq, discard_dlq_message, dlq_count, dlq_peek)
+    // resolve a bare topic across MULTIPLE subscribers by aggregating over
+    // each one's internal queue — mirrors `adapter.rs:310-384`.
+    #[tokio::test]
+    async fn dlq_ops_resolve_bare_topic_across_multiple_subscribers() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(FakeInvoker::default());
+        invoker.fail_backend.store(true, Ordering::SeqCst);
+        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+
+        let retry_cfg = || {
+            config(SubscriberQueueConfig {
+                max_retries: Some(1),
+                backoff_delay_ms: Some(1),
+                ..Default::default()
+            })
+        };
+        adapter
+            .subscribe("demo", "sub-a", "fn-a", None, retry_cfg())
+            .await;
+        adapter
+            .subscribe("demo", "sub-b", "fn-b", None, retry_cfg())
+            .await;
+
+        adapter.enqueue("demo", json!("job"), None, None).await;
+
+        // Both subscribers get their own copy and both fail straight to
+        // their own DLQ (max_retries: 1) -> dlq_count aggregates both.
+        wait_until(|| async { adapter.dlq_count("demo").await.unwrap_or(0) >= 2 }).await;
+        assert_eq!(adapter.dlq_count("demo").await.unwrap(), 2);
+
+        let peeked = adapter.dlq_peek("demo", 0, 10).await.unwrap();
+        assert_eq!(peeked.len(), 2);
+
+        let job_id = peeked[0]["id"].as_str().unwrap().to_string();
+        assert!(adapter.discard_dlq_message("demo", &job_id).await.unwrap());
+        assert_eq!(adapter.dlq_count("demo").await.unwrap(), 1);
+
+        let redriven = adapter.redrive_dlq("demo").await.unwrap();
+        assert_eq!(redriven, 1);
+        assert_eq!(adapter.dlq_count("demo").await.unwrap(), 0);
+
         adapter.shutdown().await;
     }
 
@@ -619,10 +943,6 @@ mod tests {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
         *invoker.condition_value.lock().await = Some(Value::Bool(false));
-        store
-            .enqueue("demo", json!({"hello": "world"}))
-            .await
-            .unwrap();
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
 
         adapter
@@ -634,6 +954,9 @@ mod tests {
                 None,
             )
             .await;
+        adapter
+            .enqueue("demo", json!({"hello": "world"}), None, None)
+            .await;
 
         wait_until(|| {
             let invoker = invoker.clone();
@@ -641,7 +964,7 @@ mod tests {
         })
         .await;
         assert_eq!(invoker.calls().await[0].0, "condition");
-        assert_eq!(store.topic_stats("demo").await.delivered, 1);
+        assert_eq!(adapter.topic_stats("demo").await.unwrap().delivered, 1);
         adapter.shutdown().await;
     }
 
