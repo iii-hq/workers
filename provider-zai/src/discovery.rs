@@ -47,6 +47,21 @@ pub async fn refresh_models(iii: &IIIClient) -> Result<usize, Error> {
     Ok(count)
 }
 
+pub fn make_refresh_models(
+    iii: IIIClient,
+) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
+       + Send
+       + Sync
+       + 'static {
+    move |_req: RefreshModelsRequest| {
+        let iii = iii.clone();
+        Box::pin(async move {
+            let count = refresh_models(&iii).await?;
+            Ok(RefreshModelsResponse { ok: true, count })
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,20 +83,5 @@ mod tests {
             catalog_for("http://127.0.0.1:8000/v1/chat/completions").len(),
             curated::models().len()
         );
-    }
-}
-
-pub fn make_refresh_models(
-    iii: IIIClient,
-) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
-    move |_req: RefreshModelsRequest| {
-        let iii = iii.clone();
-        Box::pin(async move {
-            let count = refresh_models(&iii).await?;
-            Ok(RefreshModelsResponse { ok: true, count })
-        })
     }
 }
