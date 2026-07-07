@@ -320,13 +320,13 @@ pub struct EnvConfig {
     /// only the keys listed in `allow`.
     #[serde(default)]
     pub inherit: bool,
-    /// Env keys with a dual role. (1) Forwarding allowlist: when `inherit` is
-    /// false, ONLY these keys are copied from the worker's env into the child.
-    /// (2) Per-call gate: a `shell::exec`/`shell::exec_bg` request may set an
-    /// `env` value only for a key listed here — MINUS the hardcoded dangerous
-    /// keys (PATH, IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV,
-    /// PYTHONSTARTUP, NODE_OPTIONS, ...), which are never settable per call
-    /// even if listed. Default: [PATH, HOME, LANG, LC_ALL, TERM].
+    /// Forwarding allowlist: when `inherit` is false, ONLY these keys are
+    /// copied from the worker's env into the child. Has NO effect on the
+    /// per-call `env` override on `shell::exec`/`shell::exec_bg` — that is
+    /// deny-only, gated solely by the hardcoded dangerous-key list (PATH,
+    /// IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV, PYTHONSTARTUP,
+    /// NODE_OPTIONS, ...), never by this list. Default: [PATH, HOME, LANG,
+    /// LC_ALL, TERM].
     #[serde(default = "default_env_allow")]
     pub allow: Vec<String>,
 }
@@ -1078,8 +1078,13 @@ mod tests {
             .as_str()
             .expect("env.allow described");
         assert!(
-            allow_desc.contains("Forwarding") && allow_desc.contains("Per-call"),
-            "env.allow description must explain both roles: {allow_desc}"
+            allow_desc.contains("Forwarding"),
+            "env.allow description must explain its (now sole) forwarding role: {allow_desc}"
+        );
+        assert!(
+            !allow_desc.contains("Per-call"),
+            "env.allow no longer gates the per-call env override (deny-only); \
+             the description must not claim it does: {allow_desc}"
         );
     }
 
