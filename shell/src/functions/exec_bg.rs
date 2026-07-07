@@ -40,7 +40,7 @@ pub async fn handle(
     cfg.is_command_allowed(&argv)?;
 
     // Gate the per-call cwd/env up front, BEFORE branching on target. Same
-    // rules as shell::exec (jail-confined cwd, env.allow + dangerous-key env
+    // rules as shell::exec (jail-confined cwd, deny-only dangerous-key env
     // gating). exec_bg returns its spawn-time failures as plain strings (its
     // documented contract), so we stringify the S-code into the message — the
     // agent still sees the code (e.g. "S215") and the self-correcting text.

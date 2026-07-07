@@ -118,14 +118,15 @@ pub struct ExecRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
-    /// Optional per-call environment values (host target only). A key may be
-    /// set ONLY if the operator listed it in `env.allow`, and NEVER for an
-    /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
-    /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS) — those are
-    /// rejected even if allowlisted. Supplying a key that is not in `env.allow`,
-    /// or any dangerous key, rejects the WHOLE call (S210) naming the offending
-    /// key; the env is never silently dropped. Permitted values override what
-    /// would otherwise be forwarded for that key. Rejected (S210) on a sandbox target.
+    /// Optional per-call environment values (host target only). Deny-only: a
+    /// key may be set to ANY value except an exec-hijacking key (PATH, IFS,
+    /// HOME, LD_*/DYLD_*, and other loader/lookup and interpreter-startup
+    /// keys — see DANGEROUS_ENV_KEYS), which is rejected unconditionally
+    /// (`env.allow` plays no role here — that list only gates which vars get
+    /// forwarded from the worker's own environment). Supplying a dangerous
+    /// key rejects the WHOLE call (S210) naming the offending key; the env is
+    /// never silently dropped. Values override what would otherwise be
+    /// forwarded for that key. Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
     /// Optional bytes written to the program's standard input, followed by EOF.
@@ -169,9 +170,9 @@ pub struct ExecBgRequest {
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
     /// Optional per-call environment values (host target only). Same gating as
-    /// [`ExecRequest::env`]: a key must be in `env.allow` and must not be an
-    /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
-    /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS); any violation
+    /// [`ExecRequest::env`]: deny-only, rejecting only an exec-hijacking key
+    /// (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup and
+    /// interpreter-startup keys — see DANGEROUS_ENV_KEYS); any violation
     /// rejects the whole call (S210). Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,

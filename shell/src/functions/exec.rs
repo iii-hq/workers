@@ -31,8 +31,8 @@ pub async fn handle(
     cfg.is_command_allowed(&argv)?;
 
     // Gate the per-call cwd/env BEFORE picking a backend. A jail-escaping cwd
-    // (S215) or an env key outside env.allow / in DANGEROUS_ENV_KEYS (S210)
-    // rejects here, carrying the S-code to the wire via From<ExecError>. The
+    // (S215) or an env key in DANGEROUS_ENV_KEYS (S210) rejects here, carrying
+    // the S-code to the wire via From<ExecError>. The
     // sandbox backend additionally rejects any populated override (host-only).
     // `scope_root` only scopes the host working directory: drop it for a sandbox
     // target so the harness-injected session dir does not surface as a host cwd
