@@ -3,6 +3,7 @@
 /// before this worker can boot (see [`boot::start`]'s guard).
 pub const TRIGGER_TYPE: &str = "durable:subscriber";
 
+pub mod adapter;
 pub mod boot;
 pub mod config;
 pub mod configuration;
