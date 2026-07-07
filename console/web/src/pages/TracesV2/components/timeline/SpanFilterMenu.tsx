@@ -1,10 +1,10 @@
 /**
- * The timeline's floating filter: a funnel button that expands on hover
+ * The trace detail views' filter: a funnel button that expands on hover
  * into a dropdown menu (also opens on click/keyboard — hover is sugar, not
- * the only path). One "spans" group lists the trace's span groups,
- * most-populated first; checking an entry hides those spans and their
- * subtrees. Built on the design-system `DropdownMenu` (the shadcn anatomy
- * over Radix).
+ * the only path). Two sections: "workers" hides everything a worker ran,
+ * "spans" hides one span group; both list entries most-populated first and
+ * hide the matched spans together with their subtrees. Built on the
+ * design-system `DropdownMenu` (the shadcn anatomy over Radix).
  */
 
 import { EyeOff, Funnel } from 'lucide-react'
@@ -25,23 +25,76 @@ import type { SpanGroup } from './spanVisibility'
 /** Grace period so the pointer can travel from the trigger to the popup. */
 const HOVER_CLOSE_DELAY_MS = 150
 
-export interface SpanFilterMenuProps {
+interface FilterSectionProps {
+  label: string
   /** Menu entries, already ranked (see `deriveSpanGroups`). */
   groups: readonly SpanGroup[]
   /** Group keys currently hidden — rendered as checked items. */
   hiddenKeys: ReadonlySet<string>
+  onToggle: (key: string) => void
+}
+
+function FilterSection({
+  label,
+  groups,
+  hiddenKeys,
+  onToggle,
+}: FilterSectionProps) {
+  if (groups.length === 0) return null
+  return (
+    <DropdownMenuGroup>
+      <DropdownMenuLabel>{label}</DropdownMenuLabel>
+      {groups.map((group) => (
+        <DropdownMenuCheckboxItem
+          key={group.key}
+          checked={hiddenKeys.has(group.key)}
+          onCheckedChange={() => onToggle(group.key)}
+          // Keep the menu open across toggles — filtering is multi-select.
+          onSelect={(e) => e.preventDefault()}
+          // Checked here means HIDDEN — the eye-off reads that state
+          // better than a checkmark would.
+          indicator={<EyeOff aria-hidden className="h-3 w-3" />}
+          title={
+            hiddenKeys.has(group.key)
+              ? `hidden — click to show ${group.key}`
+              : `hide ${group.key} and everything under it`
+          }
+        >
+          <span className="min-w-0 flex-1 truncate">{group.key}</span>
+          <span className="ml-2 shrink-0 text-ink-faint tabular-nums">
+            {group.count}
+          </span>
+        </DropdownMenuCheckboxItem>
+      ))}
+    </DropdownMenuGroup>
+  )
+}
+
+export interface SpanFilterMenuProps {
+  /** Span-group entries, already ranked (see `deriveSpanGroups`). */
+  groups: readonly SpanGroup[]
+  /** Worker entries, already ranked (`deriveSpanGroups` + `workerGroupKey`). */
+  workerGroups: readonly SpanGroup[]
+  /** Span-group keys currently hidden. */
+  hiddenKeys: ReadonlySet<string>
+  /** Worker names currently hidden. */
+  hiddenWorkerKeys: ReadonlySet<string>
   /** Spans removed from the view right now (badge on the funnel). */
   hiddenSpanCount: number
   onToggle: (key: string) => void
+  onToggleWorker: (key: string) => void
   onClear: () => void
   className?: string
 }
 
 export function SpanFilterMenu({
   groups,
+  workerGroups,
   hiddenKeys,
+  hiddenWorkerKeys,
   hiddenSpanCount,
   onToggle,
+  onToggleWorker,
   onClear,
   className,
 }: SpanFilterMenuProps) {
@@ -74,7 +127,9 @@ export function SpanFilterMenu({
   )
 
   const filtering = hiddenSpanCount > 0
-  if (groups.length === 0 && !filtering) return null
+  const anyHidden = hiddenKeys.size > 0 || hiddenWorkerKeys.size > 0
+  if (groups.length === 0 && workerGroups.length === 0 && !filtering)
+    return null
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
@@ -102,32 +157,22 @@ export function SpanFilterMenu({
         onPointerLeave={scheduleClose}
         className="max-h-64 min-w-[14rem] overflow-y-auto"
       >
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>spans</DropdownMenuLabel>
-          {groups.map((group) => (
-            <DropdownMenuCheckboxItem
-              key={group.key}
-              checked={hiddenKeys.has(group.key)}
-              onCheckedChange={() => onToggle(group.key)}
-              // Keep the menu open across toggles — filtering is multi-select.
-              onSelect={(e) => e.preventDefault()}
-              // Checked here means HIDDEN — the eye-off reads that state
-              // better than a checkmark would.
-              indicator={<EyeOff aria-hidden className="h-3 w-3" />}
-              title={
-                hiddenKeys.has(group.key)
-                  ? `hidden — click to show ${group.key}`
-                  : `hide ${group.key} and everything under it`
-              }
-            >
-              <span className="min-w-0 flex-1 truncate">{group.key}</span>
-              <span className="ml-2 shrink-0 text-ink-faint tabular-nums">
-                {group.count}
-              </span>
-            </DropdownMenuCheckboxItem>
-          ))}
-        </DropdownMenuGroup>
-        {hiddenKeys.size > 0 && (
+        <FilterSection
+          label="workers"
+          groups={workerGroups}
+          hiddenKeys={hiddenWorkerKeys}
+          onToggle={onToggleWorker}
+        />
+        {workerGroups.length > 0 && groups.length > 0 && (
+          <DropdownMenuSeparator />
+        )}
+        <FilterSection
+          label="spans"
+          groups={groups}
+          hiddenKeys={hiddenKeys}
+          onToggle={onToggle}
+        />
+        {anyHidden && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem

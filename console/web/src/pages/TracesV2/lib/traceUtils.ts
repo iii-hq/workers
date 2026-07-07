@@ -60,7 +60,7 @@ export function useCopyToClipboard(timeout = 2000) {
   return { copiedKey, copy }
 }
 
-export function getServiceName(span: {
+export function getWorkerName(span: {
   service_name?: string
   name: string
 }): string {

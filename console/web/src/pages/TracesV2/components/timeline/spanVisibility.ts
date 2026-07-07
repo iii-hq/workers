@@ -1,17 +1,23 @@
 /**
- * Span-group visibility for the trace detail timeline: spans are grouped by
- * a caller-supplied key (the page groups by owning function id — see
- * `lib/traceTimelineFilters.ts`), the filter menu lists the groups
- * most-populated first, and hiding a group hides each of its spans TOGETHER
- * WITH its descendants — hiding an invocation hides the work it caused,
- * never orphaning children. This module owns only the mechanics; what a
- * group IS lives with the caller.
+ * Span visibility for the trace detail views (timeline + waterfall): spans
+ * are grouped by a caller-supplied key (the page groups by owning function
+ * id — see `lib/traceTimelineFilters.ts`) and by worker, the filter menu
+ * lists both sections most-populated first, and hiding an entry hides each
+ * of its spans TOGETHER WITH its descendants — hiding an invocation (or a
+ * whole worker) hides the work it caused, never orphaning children. This
+ * module owns only the mechanics; what a span GROUP is lives with the
+ * caller, while workers are fixed to `getWorkerName`.
  */
 
+import type { SpanFilterSelection } from '../../lib/spanFilters'
 import type { VisualizationSpan, WaterfallData } from '../../lib/traceTransform'
+import { getWorkerName } from '../../lib/traceUtils'
 
 /** Grouping key for a span, or null when the span belongs to no group. */
 export type SpanGroupKey = (span: VisualizationSpan) => string | null
+
+/** Grouping key for the filter menu's workers section. */
+export const workerGroupKey: SpanGroupKey = (span) => getWorkerName(span)
 
 export interface SpanGroup {
   key: string
@@ -67,20 +73,22 @@ function collectSubtreeIds(
 }
 
 /**
- * Apply the hidden groups to the waterfall. The time window
- * (`total_duration_ms`) is deliberately preserved — filtering noise out
- * must not rescale the remaining bars. Returns `data` unchanged when
- * nothing is hidden or nothing matches.
+ * Apply the filter selection (hidden span groups + hidden workers) to the
+ * waterfall. The time window (`total_duration_ms`) is deliberately
+ * preserved — filtering noise out must not rescale the remaining bars.
+ * Returns `data` unchanged when nothing is hidden or nothing matches.
  */
-export function applyHiddenSpanGroups(
+export function applyHiddenSpanFilters(
   data: WaterfallData,
   keyOf: SpanGroupKey,
-  hiddenKeys: ReadonlySet<string>,
+  selection: SpanFilterSelection,
 ): WaterfallData {
-  if (hiddenKeys.size === 0) return data
+  const { hiddenGroups, hiddenWorkers } = selection
+  if (hiddenGroups.size === 0 && hiddenWorkers.size === 0) return data
   const hidden = collectSubtreeIds(data.spans, (span) => {
+    if (hiddenWorkers.has(getWorkerName(span))) return true
     const key = keyOf(span)
-    return key != null && hiddenKeys.has(key)
+    return key != null && hiddenGroups.has(key)
   })
   if (hidden.size === 0) return data
 

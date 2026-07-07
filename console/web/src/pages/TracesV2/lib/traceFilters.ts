@@ -41,7 +41,7 @@ export function buildFilterParams(
   const params: TracesFilterParams = {}
   const warnings: FilterValidationWarnings = {}
 
-  if (filters.serviceName) params.service_name = filters.serviceName
+  if (filters.workerName) params.service_name = filters.workerName
   if (filters.operationName) {
     params.name = filters.operationName
     params.search_all_spans = true
@@ -99,7 +99,7 @@ export function buildFilterParams(
  */
 export function countActiveFilters(filters: TraceFilterState): number {
   let count = 0
-  if (filters.serviceName) count++
+  if (filters.workerName) count++
   if (filters.operationName) count++
   if (filters.status != null) count++
   if (filters.minDurationMs !== null) count++
@@ -109,5 +109,7 @@ export function countActiveFilters(filters: TraceFilterState): number {
   if (filters.attributes && filters.attributes.length > 0) count++
   if (filters.sortBy !== 'start_time') count++
   if (filters.sortOrder !== 'desc') count++
+  if (filters.hiddenFunctions && filters.hiddenFunctions.length > 0) count++
+  if (filters.labelMode && filters.labelMode !== 'function') count++
   return count
 }

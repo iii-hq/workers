@@ -109,15 +109,21 @@ export function mergeTraceListSpans(
       byTrace.set(span.trace_id, span)
       continue
     }
+    // Streamed spans never carry `trace_tags` (only `traces::list` merges
+    // them) — a replacement must not erase tags the seeded row already has.
+    const withTags = (s: StoredSpan): StoredSpan =>
+      s.trace_tags || !current.trace_tags
+        ? s
+        : { ...s, trace_tags: current.trace_tags }
     const spanIsRoot = !span.parent_span_id
     const currentIsRoot = !current.parent_span_id
     if (spanIsRoot && !currentIsRoot) {
-      byTrace.set(span.trace_id, span)
+      byTrace.set(span.trace_id, withTags(span))
     } else if (
       spanIsRoot === currentIsRoot &&
       span.start_time_unix_nano >= current.start_time_unix_nano
     ) {
-      byTrace.set(span.trace_id, span)
+      byTrace.set(span.trace_id, withTags(span))
     }
   }
   const spans = [...byTrace.values()].sort(
@@ -130,7 +136,7 @@ export function mergeTraceListSpans(
  * Whether the list can be live-APPENDED from the stream, vs. needing a refetch.
  *
  * Append is only correct for the default "newest traces, unfiltered" view:
- * - No CONTENT filter (service/name/status/duration/time/attributes/search) —
+ * - No CONTENT filter (worker/name/status/duration/time/attributes/search) —
  *   a streamed row might not match it, so a filtered view must refetch.
  * - The default `start_time` / `desc` sort — append keeps the list newest-first,
  *   which only matches that ordering (a duration/asc sort + limit would be

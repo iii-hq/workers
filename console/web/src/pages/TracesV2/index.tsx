@@ -32,7 +32,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { startTraceSpansStream } from '@/lib/traces-stream'
 import { cn } from '@/lib/utils'
 import { fetchTraces, type StoredSpan } from './api/traces'
-import { ServiceBreakdown } from './components/ServiceBreakdown'
+import { GroupedTraceList } from './components/GroupedTraceList'
 import { SpanPanel } from './components/SpanPanel'
 import { TraceFilters } from './components/TraceFilters'
 import { TraceHeader } from './components/TraceHeader'
@@ -40,11 +40,22 @@ import { TraceListRow } from './components/TraceListRow'
 import { TimelineStrip } from './components/timeline/TimelineStrip'
 import { TraceTimeline } from './components/timeline/TraceTimeline'
 import { ViewSwitcher, type ViewType } from './components/ViewSwitcher'
+import { ViewsDropdown } from './components/ViewsDropdown'
 import { WaterfallChart } from './components/WaterfallChart'
+import { WorkerBreakdown } from './components/WorkerBreakdown'
+import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
 import { useTraceData } from './hooks/useTraceData'
 import { useTraceFilters } from './hooks/useTraceFilters'
+import { useTraceViews } from './hooks/useTraceViews'
+import type { RowLabelConfig } from './lib/traceListItem'
+import {
+  applyViewConfig,
+  captureViewConfig,
+  type TracesView,
+  viewConfigEquals,
+} from './lib/tracesViews'
 import { traceSpanGroupKey } from './lib/traceTimelineFilters'
 import {
   mergeDetailSpan,
@@ -96,6 +107,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     filters: filterState,
     updateFilter,
     resetFilters,
+    replaceFilters,
     getFilterOnlyParams,
     validationWarnings,
     clearValidationWarnings,
@@ -120,7 +132,97 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     showSystem,
     debouncedSearch,
     isPaused,
+    hiddenFunctions: filterState.hiddenFunctions,
   })
+
+  // ── Saved views (server-persisted via the `console` configuration entry) ──
+  const {
+    views,
+    available: viewsAvailable,
+    activeViewId,
+    setActiveViewId,
+    saveView,
+    updateView,
+    renameView,
+    deleteView,
+  } = useTraceViews()
+
+  // ── Detail-view span filter (hidden span groups + workers) ──
+  // One selection shared by the timeline AND waterfall tabs, persisted in
+  // the console configuration alongside the saved views.
+  const spanFilter = useSpanFilterSelection()
+
+  const activeSavedView = views.find((v) => v.id === activeViewId) ?? null
+  const activeViewModified = useMemo(
+    () =>
+      activeSavedView
+        ? !viewConfigEquals(captureViewConfig(filterState), activeSavedView)
+        : false,
+    [activeSavedView, filterState],
+  )
+
+  const handleSelectView = useCallback(
+    (view: TracesView | null) => {
+      setActiveViewId(view?.id ?? null)
+      if (view) replaceFilters(applyViewConfig(view))
+      else resetFilters()
+    },
+    [setActiveViewId, replaceFilters, resetFilters],
+  )
+
+  // Re-apply the remembered view once its definition arrives after a page
+  // load — filters are still pristine at that point, so this can't clobber
+  // anything the user already changed.
+  const appliedInitialViewRef = useRef(false)
+  useEffect(() => {
+    if (appliedInitialViewRef.current) return
+    if (!activeViewId || views.length === 0) return
+    appliedInitialViewRef.current = true
+    const view = views.find((v) => v.id === activeViewId)
+    if (view) replaceFilters(applyViewConfig(view))
+    else setActiveViewId(null)
+  }, [activeViewId, views, replaceFilters, setActiveViewId])
+
+  const hideFunction = useCallback(
+    (functionId: string) => {
+      const current = filterState.hiddenFunctions ?? []
+      if (current.includes(functionId)) return
+      updateFilter('hiddenFunctions', [...current, functionId])
+    },
+    [filterState.hiddenFunctions, updateFilter],
+  )
+
+  const rowLabel: RowLabelConfig | undefined = useMemo(
+    () =>
+      filterState.labelMode && filterState.labelMode !== 'function'
+        ? {
+            mode: filterState.labelMode,
+            attribute: filterState.labelAttribute,
+          }
+        : undefined,
+    [filterState.labelMode, filterState.labelAttribute],
+  )
+
+  // Every attribute key observed on loaded traces (row attributes + merged
+  // trace tags) feeds the group-by picker — grouping accepts ANY key, these
+  // just make the known ones one click. iii.* identity/tag keys sort first.
+  const attributeKeySuggestions = useMemo(() => {
+    const keys = new Set<string>()
+    for (const trace of traceGroups) {
+      for (const key of Object.keys(trace.traceTags ?? {})) keys.add(key)
+      for (const key of Object.keys(trace.attributes ?? {})) keys.add(key)
+    }
+    return [...keys].sort((a, b) => {
+      const aIii = a.startsWith('iii.') ? 0 : 1
+      const bIii = b.startsWith('iii.') ? 0 : 1
+      return aIii - bIii || a.localeCompare(b)
+    })
+  }, [traceGroups])
+
+  const groupByAttribute =
+    filterState.groupBy && filterState.groupBy !== 'none'
+      ? filterState.groupBy
+      : null
 
   // Span activity per trace (start + close with engine live_spans on): keeps
   // the strip's bars live/growing while a trace is still doing work (the rows
@@ -311,6 +413,38 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
               searchQuery={searchQuery}
               onSearchChange={handleSearchChange}
               stats={hasOtelConfigured ? stats : undefined}
+              attributeKeySuggestions={attributeKeySuggestions}
+              leading={
+                viewsAvailable ? (
+                  <ViewsDropdown
+                    views={views}
+                    activeViewId={activeViewId}
+                    activeModified={activeViewModified}
+                    onSelectView={handleSelectView}
+                    onSaveNew={(name) => {
+                      void saveView(name, captureViewConfig(filterState)).then(
+                        (view) => setActiveViewId(view.id),
+                      )
+                    }}
+                    onUpdateActive={() => {
+                      if (activeViewId)
+                        void updateView(
+                          activeViewId,
+                          captureViewConfig(filterState),
+                        )
+                    }}
+                    onRenameActive={(name) => {
+                      if (activeViewId) void renameView(activeViewId, name)
+                    }}
+                    onDeleteActive={() => {
+                      if (activeViewId) {
+                        void deleteView(activeViewId)
+                        setActiveViewId(null)
+                      }
+                    }}
+                  />
+                ) : undefined
+              }
             />
           </ErrorBoundary>
         </div>
@@ -394,6 +528,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                             onSpanClick={setSelectedSpan}
                             selectedSpanId={selectedSpan?.span_id}
                             spanGroupKey={traceSpanGroupKey}
+                            spanFilter={spanFilter}
                           />
                         )}
                         {activeView === 'waterfall' && (
@@ -401,11 +536,13 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                             data={waterfallData}
                             onSpanClick={setSelectedSpan}
                             selectedSpanId={selectedSpan?.span_id}
+                            spanGroupKey={traceSpanGroupKey}
+                            spanFilter={spanFilter}
                           />
                         )}
                       </div>
                       <div className="border-t border-rule flex-shrink-0">
-                        <ServiceBreakdown data={waterfallData} />
+                        <WorkerBreakdown data={waterfallData} />
                       </div>
                     </>
                   )}
@@ -445,6 +582,18 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                   </>
                 ) : null}
               </>
+            ) : groupByAttribute ? (
+              <div className="flex-1 overflow-y-auto">
+                <GroupedTraceList
+                  attribute={groupByAttribute}
+                  showSystem={showSystem}
+                  hiddenFunctions={filterState.hiddenFunctions}
+                  label={rowLabel}
+                  selectedTraceId={selectedTraceId}
+                  onSelectTrace={(traceId) => selectTrace(traceId)}
+                  onHideFunction={hideFunction}
+                />
+              </div>
             ) : (
               <div className="flex flex-col flex-1 overflow-hidden">
                 {isQueryLoading && traceGroups.length === 0 ? (
@@ -501,6 +650,8 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                           trace={trace}
                           isSelected={selectedTraceId === trace.traceId}
                           isNew={newTraceIds.has(trace.traceId)}
+                          label={rowLabel}
+                          onHideFunction={hideFunction}
                           onSelect={() =>
                             selectTrace(
                               selectedTraceId === trace.traceId

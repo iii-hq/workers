@@ -165,12 +165,12 @@ describe('mapSpanToListItem — basic shape', () => {
     )
     expect(out.traceId).toBe('abc')
     expect(out.rootOperation).toBe('POST /x')
-    expect(out.services).toEqual(['svc-x'])
+    expect(out.workers).toEqual(['svc-x'])
   })
 
   it('falls back to "unknown" when service_name is missing', () => {
     expect(
-      mapSpanToListItem(makeSpan({ service_name: undefined })).services,
+      mapSpanToListItem(makeSpan({ service_name: undefined })).workers,
     ).toEqual(['unknown'])
   })
 
@@ -278,7 +278,7 @@ describe('fingerprintTraceList', () => {
       status: 'ok',
       startTime: 0,
       spanCount: 1,
-      services: [],
+      workers: [],
     }
   }
 

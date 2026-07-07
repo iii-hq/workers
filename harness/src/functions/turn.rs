@@ -14,13 +14,41 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     // (the BaggageSpanProcessor allowlist), so the turn's spans are
     // attributable and groupable by session/message. `iii.message.id` is the
     // turn id: one assistant turn is one grouped "message".
+    //
+    // Display metadata rides along for the console's grouped views: the
+    // message preview as the `iii.tag.message` trace tag, and the session
+    // title as `iii.session.name` (fetched best-effort — a missing title
+    // must never fail or delay the step).
     let session_id = payload.session_id.clone();
     let turn_id = payload.turn_id.clone();
-    let baggage = [
+    let preview = payload
+        .message_preview
+        .clone()
+        .filter(|p| !p.trim().is_empty());
+    let session_name = deps.session().await.title(&session_id).await;
+
+    let mut baggage: Vec<(&str, &str)> = vec![
         ("iii.session.id", session_id.as_str()),
         ("iii.message.id", turn_id.as_str()),
     ];
-    iii_helpers::observability::run_with_baggage(&baggage, run(deps, payload)).await
+    if let Some(preview) = preview.as_deref() {
+        baggage.push(("iii.tag.message", preview));
+    }
+    if let Some(name) = session_name.as_deref() {
+        baggage.push(("iii.session.name", name));
+    }
+    // The explicit step span matters: the baggage only materializes as span
+    // attributes when a span STARTS inside this scope, and downstream workers
+    // may run older SDKs whose processors drop the newer keys. This span is
+    // ours, so the turn's trace always carries the tags — and the session::*
+    // / router client calls parent under it instead of dangling.
+    iii_helpers::observability::run_with_baggage(&baggage, async {
+        iii_helpers::observability::run_in_span("harness::turn step", None, || {
+            run(deps, payload)
+        })
+        .await
+    })
+    .await
 }
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {

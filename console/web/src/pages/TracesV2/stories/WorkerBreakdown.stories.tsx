@@ -1,13 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { ServiceBreakdown } from '../components/ServiceBreakdown'
+import { WorkerBreakdown } from '../components/WorkerBreakdown'
 import {
   WATERFALL_FIXTURE,
   WATERFALL_SIMPLE,
 } from '../fixtures/traces-fixtures'
 
 const meta = {
-  title: 'TracesV2/ServiceBreakdown',
-  component: ServiceBreakdown,
+  title: 'TracesV2/WorkerBreakdown',
+  component: WorkerBreakdown,
   parameters: { layout: 'centered' },
   decorators: [
     (Story) => (
@@ -17,7 +17,7 @@ const meta = {
     ),
   ],
   args: { data: WATERFALL_FIXTURE },
-} satisfies Meta<typeof ServiceBreakdown>
+} satisfies Meta<typeof WorkerBreakdown>
 
 export default meta
 type Story = StoryObj<typeof meta>

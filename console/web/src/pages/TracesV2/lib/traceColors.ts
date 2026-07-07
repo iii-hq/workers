@@ -1,20 +1,20 @@
 /**
- * Service color resolution for TracesV2.
+ * Worker color resolution for TracesV2.
  *
- * Service identity is encoded through a stable 8-color chromatic palette
- * (the same one the timeline lab stories established): a service name hashes
- * to one of eight hues, so runs with the same services always produce the
+ * Worker identity is encoded through a stable 8-color chromatic palette
+ * (the same one the timeline lab stories established): a worker name hashes
+ * to one of eight hues, so runs with the same workers always produce the
  * same, distinguishable colors. The palette is theme-independent — the hues
  * hold enough contrast against both the cream and the dark paper.
  *
  * Status still overrides identity: errors collapse onto `--color-alert`,
  * and the currently active trace/span carries the accent ring.
  *
- * `getServiceColor` returns a CSS color (suitable for inline
+ * `getWorkerColor` returns a CSS color (suitable for inline
  * `style={{ backgroundColor: ... }}` or as an SVG `stroke`/`fill`).
  */
 
-export const SERVICE_PALETTE = [
+export const WORKER_PALETTE = [
   '#6366f1',
   '#0ea5e9',
   '#14b8a6',
@@ -33,8 +33,8 @@ function hashString(input: string): number {
   return Math.abs(h)
 }
 
-export function getServiceColor(service: string): string {
-  return SERVICE_PALETTE[hashString(service) % SERVICE_PALETTE.length]
+export function getWorkerColor(worker: string): string {
+  return WORKER_PALETTE[hashString(worker) % WORKER_PALETTE.length]
 }
 
 export const SPAN_STATUS_COLORS = {

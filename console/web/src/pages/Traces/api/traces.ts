@@ -44,6 +44,10 @@ export interface StoredSpan {
   resource?: Record<string, unknown>
   /** In-flight live snapshot: still running, end_time_unix_nano is 0. */
   pending?: boolean
+  /** Trace-level tags (`iii.tag.*` + session/message identity attributes)
+   *  merged across the trace by `engine::traces::list`. Only present on
+   *  list rows; live-streamed rows don't carry it. */
+  trace_tags?: Record<string, string>
 }
 
 export interface TracesResponse {

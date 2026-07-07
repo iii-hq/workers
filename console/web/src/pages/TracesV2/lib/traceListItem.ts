@@ -84,8 +84,49 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
     endTime,
     duration,
     spanCount: 1,
-    services: [span.service_name || 'unknown'],
+    workers: [span.service_name || 'unknown'],
+    attributes: attrs,
+    traceTags: span.trace_tags,
   }
+}
+
+/** How a list row is labelled — mirrors `RowLabelConfig` in tracesViews. */
+export interface RowLabelConfig {
+  mode: 'function' | 'span-name' | 'attribute'
+  attribute?: string
+}
+
+export interface ResolvedRowLabel {
+  /** Faint uppercase prefix (the `enqueue:` treatment). */
+  prefix?: string
+  text: string
+}
+
+/**
+ * Resolve the row's display label for the configured mode.
+ *
+ * 'attribute' looks the key up in the trace-level tags first (merged by
+ * `engine::traces::list` across the whole trace — live-streamed rows don't
+ * carry them), then the row span's own attributes, and falls back to the
+ * default function labelling when absent so rows never render blank.
+ */
+export function resolveRowLabel(
+  item: TraceListItem,
+  label?: RowLabelConfig,
+): ResolvedRowLabel {
+  if (label?.mode === 'span-name') {
+    return { text: item.rootOperation }
+  }
+  if (label?.mode === 'attribute' && label.attribute) {
+    const value =
+      item.traceTags?.[label.attribute] ?? item.attributes?.[label.attribute]
+    const text = value == null ? '' : String(value)
+    if (text.length > 0) return { text }
+  }
+  if (item.topic) {
+    return { prefix: 'enqueue:', text: item.topic }
+  }
+  return { text: item.functionId ?? item.rootOperation }
 }
 
 /**
@@ -127,13 +168,24 @@ export function dedupeToTraceRoots(
  * Stable identity fingerprint for a list of TraceListItems. Used by
  * the hook to dedupe back-to-back fetches that return the same rows.
  *
- * Joins all trace IDs in order. Earlier versions sampled only first +
- * last + count, which would have missed middle-only churn if the sort
- * order ever flipped. At the 500-trace ceiling × 32-char IDs the
- * fingerprint is ~16KB — cheap to compare.
+ * Joins all trace IDs in order, plus the row-visible fields that can
+ * change for an UNCHANGED set of ids — status (pending→final) and the
+ * trace tags (they arrive late, when a tag-bearing child span closes
+ * after the root row was seeded/streamed). An id-only fingerprint
+ * would swallow those in-place updates. Earlier versions sampled only
+ * first + last + count, which would have missed middle-only churn if
+ * the sort order ever flipped. At the 500-trace ceiling the
+ * fingerprint stays tens-of-KB — cheap to compare.
  */
 export function fingerprintTraceList(
   traces: ReadonlyArray<TraceListItem>,
 ): string {
-  return `${traces.length}:${traces.map((t) => t.traceId).join(',')}`
+  return `${traces.length}:${traces
+    .map(
+      (t) =>
+        `${t.traceId}/${t.status}/${
+          t.traceTags ? Object.entries(t.traceTags).flat().join('') : ''
+        }`,
+    )
+    .join(',')}`
 }

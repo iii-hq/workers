@@ -6,16 +6,19 @@
  *   props.data (WaterfallData)
  *        │
  *        ▼
+ *   applyHiddenSpanGroups(data)     ← span-group filter (funnel menu), shared
+ *        │                            with the timeline views
+ *        ▼
  *   buildSpanTree(spans)            ← parent/child linking, marks critical path
  *        │
  *        ▼
- *   useReducer<DisplayState>        ← expand/collapse + critical-path-only toggle
+ *   useReducer<DisplayState>        ← expand/collapse
  *        │
  *        ▼
- *   flattenTree(tree, opts)         ← respects expandedIds, hideEngineRouting,
- *        │                            collapseEngineRoutingPairs, onlyCriticalPath;
- *        │                            emits depth-offset adjusted rows so hidden
- *        │                            parents don't leave gaps
+ *   flattenTree(tree, opts)         ← respects expandedIds; engine-routing
+ *        │                            spans are always hidden, with depth-offset
+ *        │                            adjusted rows so hidden parents don't
+ *        │                            leave gaps
  *        ▼
  *   visibleSpans: FlatSpanRow[]
  *        │
@@ -24,31 +27,33 @@
  *                   duration, bar (status-colored), merged-routing `+1`
  *                   chip when applicable
  *
- * Toolbar toggles (driven by the user):
- *   show critical path  →  filter visibleSpans to only the slowest chain.
- *   show engine routing →  reveal `handle_invocation` / `call` pairs (off by
- *                          default). When on, pairs are always merged into
- *                          a single row with a `+1` affordance.
+ * Hovering a row raises the shared SpanHoverCard (same card as the
+ * timeline views) with the worker name, duration, start offset, status
+ * and %-of-trace — the row itself stays lean (no worker tag).
+ *
+ * Filtering: the toolbar hosts the same funnel menu as the timeline view
+ * (`SpanFilterMenu` over `deriveSpanGroups` / `applyHiddenSpanFilters`),
+ * with a workers section and a span-groups section — hiding an entry
+ * removes its spans and their subtrees without rescaling the time window.
+ * What a span group IS comes from the caller via `spanGroupKey` (the page
+ * groups by owning function id); the SELECTION comes from the caller via
+ * `spanFilter`, shared with the timeline and persisted in the console
+ * configuration. Engine-routing spans (`handle_invocation` / `call`
+ * pairs) are always hidden; the old reveal + critical-path-only toggles
+ * are gone.
  *
  * Persistent state (localStorage):
- *   iii-trace-show-engine-routing       boolean — shared with the timeline views
  *   iii-span-col-width                  resizer position
  *
- * Coloring: OK bars carry the service's chromatic identity color
- * (`getServiceColor`, shared with the timelines and the service breakdown);
+ * Coloring: OK bars carry the worker's chromatic identity color
+ * (`getWorkerColor`, shared with the timelines and the worker breakdown);
  * error bars collapse onto `--color-alert`, unset/pending onto ghost.
  *
  * Engine-routing heuristics live in `../lib/spanLabel`.
  */
 
 import { useVirtualizer } from '@tanstack/react-virtual'
-import {
-  ChevronRight,
-  ChevronsDown,
-  ChevronsUp,
-  Eye,
-  Sparkles,
-} from 'lucide-react'
+import { ChevronRight, ChevronsDown, ChevronsUp } from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -65,22 +70,39 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
-import { useShowEngineRouting } from '../hooks/useShowEngineRouting'
-import {
-  formatSpanLabel,
-  getSpanKindIndicator,
-  isEngineRoutingSpan,
-} from '../lib/spanLabel'
+import type { SpanFilterControls } from '../lib/spanFilters'
+import { formatSpanLabel, getSpanKindIndicator } from '../lib/spanLabel'
 import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
-import { getServiceColor } from '../lib/traceColors'
+import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
-import { formatDuration, getServiceName } from '../lib/traceUtils'
-import { IconToggleButton } from './IconToggleButton'
+import { formatDuration, getWorkerName } from '../lib/traceUtils'
+import type { TimelineSpan } from './timeline/layout'
+import { SpanFilterMenu } from './timeline/SpanFilterMenu'
+import { SpanHoverCard } from './timeline/SpanHoverCard'
+import {
+  applyHiddenSpanFilters,
+  deriveSpanGroups,
+  type SpanGroup,
+  type SpanGroupKey,
+  workerGroupKey,
+} from './timeline/spanVisibility'
 
 interface WaterfallChartProps {
   data: WaterfallData
   onSpanClick: (span: VisualizationSpan) => void
   selectedSpanId?: string | null
+  /**
+   * Grouping key for the toolbar's span filter (same contract as the
+   * timeline views — see `lib/traceTimelineFilters.ts`).
+   */
+  spanGroupKey?: SpanGroupKey
+  /**
+   * Selection + mutations behind the toolbar's funnel menu. Owned by the
+   * caller so the same selection is shared with the timeline view and
+   * persisted (see `hooks/useSpanFilterSelection.ts`). The menu renders
+   * only when BOTH this and `spanGroupKey` are provided.
+   */
+  spanFilter?: SpanFilterControls
 }
 
 interface WaterfallRowProps {
@@ -89,6 +111,8 @@ interface WaterfallRowProps {
   isExpanded: boolean
   onSpanClick: (span: VisualizationSpan) => void
   onToggleExpand: (spanId: string) => void
+  onHoverMove: (span: VisualizationSpan, e: React.MouseEvent) => void
+  onHoverEnd: (spanId: string) => void
 }
 
 const WaterfallRow = memo(function WaterfallRow({
@@ -97,24 +121,22 @@ const WaterfallRow = memo(function WaterfallRow({
   isExpanded,
   onSpanClick,
   onToggleExpand,
+  onHoverMove,
+  onHoverEnd,
 }: WaterfallRowProps) {
-  const effectiveChildren = span.mergedRouting
-    ? (span.children[0]?.children ?? [])
-    : span.children
-  const hasChildren = effectiveChildren.length > 0
-  const isEngineDim = !isSelected && isEngineRoutingSpan(span)
+  const hasChildren = span.children.length > 0
   const kindIndicator = getSpanKindIndicator(span.kind)
   const displayLabel = formatSpanLabel(span)
   const isError = span.status === 'error'
 
-  // Color mapping: OK bars carry the service's chromatic identity color
-  // (same hash the timelines and service breakdown use); errors collapse
+  // Color mapping: OK bars carry the worker's chromatic identity color
+  // (same hash the timelines and worker breakdown use); errors collapse
   // onto alert, unset/pending stays ghost. The critical-path toggle
   // filters the visible rows rather than re-coloring them.
   const barColor = isError
     ? 'var(--color-alert)'
     : span.status === 'ok'
-      ? getServiceColor(getServiceName(span))
+      ? getWorkerColor(getWorkerName(span))
       : 'var(--color-ink-ghost)'
 
   // Hover is pure CSS (`hover:bg-panel`). Selected/error chrome
@@ -142,13 +164,11 @@ const WaterfallRow = memo(function WaterfallRow({
           onSpanClick(span)
         }
       }}
+      onMouseEnter={(e) => onHoverMove(span, e)}
+      onMouseMove={(e) => onHoverMove(span, e)}
+      onMouseLeave={() => onHoverEnd(span.span_id)}
     >
-      <div
-        className={cn(
-          'flex items-center gap-1.5 min-w-0',
-          isEngineDim && 'opacity-60',
-        )}
-      >
+      <div className="flex items-center gap-1.5 min-w-0">
         <div
           className="flex-shrink-0 flex"
           style={{ width: span.displayDepth * 16 }}
@@ -181,11 +201,6 @@ const WaterfallRow = memo(function WaterfallRow({
 
         <StatusDot tone={statusDotTone(span.status)} />
 
-        {span.service_name && (
-          <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-mono tracking-[0.06em] border border-rule bg-bg text-ink-faint leading-none lowercase">
-            {span.service_name}
-          </span>
-        )}
         {kindIndicator && (
           <span
             className="flex-shrink-0 text-[11px] text-ink-faint leading-none w-3 text-center"
@@ -200,18 +215,9 @@ const WaterfallRow = memo(function WaterfallRow({
             'text-[13px] font-mono truncate lowercase',
             isSelected ? 'text-accent' : 'text-ink',
           )}
-          title={span.name}
         >
           {displayLabel}
         </span>
-        {span.mergedRouting && (
-          <span
-            className="flex-shrink-0 px-1 py-0.5 text-[9px] font-mono tracking-[0.06em] border border-rule bg-panel text-ink-faint leading-none tabular-nums"
-            title="merged: this row hides the engine 'call' child of a handle_invocation pair"
-          >
-            +1
-          </span>
-        )}
 
         <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 ml-auto tabular-nums">
           {formatDuration(span.duration_ms)}
@@ -234,7 +240,6 @@ const WaterfallRow = memo(function WaterfallRow({
             width: `${Math.max(0.5, span.width_percent)}%`,
             backgroundColor: barColor,
           }}
-          title={`${span.name} — ${formatDuration(span.duration_ms)}${span.pending ? '… (running)' : ''}`}
         />
       </div>
     </div>
@@ -243,25 +248,31 @@ const WaterfallRow = memo(function WaterfallRow({
 
 interface DisplayState {
   expandedIds: Set<string>
-  showCriticalPath: boolean
 }
 
 type DisplayAction =
   | { type: 'TOGGLE_SPAN'; spanId: string }
   | { type: 'SET_ALL_EXPANDED'; ids: Set<string> }
-  | { type: 'SET_CRITICAL_PATH'; value: boolean }
 
 const initialDisplayState: DisplayState = {
   expandedIds: new Set(),
-  showCriticalPath: false,
 }
 
-// Note: `hoveredSpanId` used to live here, but mouse-sweep over the
-// chart fired one dispatch per row entered/exited — each one a full
-// re-render of every visible row. For a 2000+-span trace that froze
-// the page on mouse-move. The only consumer of the JS hover state was
-// row-background styling, which Tailwind's `hover:bg-panel` already
-// provides via CSS. Keeping the state was redundant work.
+// Note: `hoveredSpanId` used to live in this reducer, but mouse-sweep
+// over the chart fired one dispatch per row entered/exited — each one a
+// full re-render of every visible row. For a 2000+-span trace that froze
+// the page on mouse-move. Row-background styling stays pure CSS
+// (`hover:bg-panel`); the hover DETAIL card (SpanHoverCard, shared with
+// the timelines) is plain `useState` on the chart component instead:
+// rows are memo'd with stable callbacks, so a per-mousemove state update
+// re-renders only the shallow wrapper map and the card — never the rows.
+
+interface HoverState {
+  id: string
+  /** viewport coords of the cursor, fed to the fixed-position card */
+  x: number
+  y: number
+}
 
 function displayReducer(
   state: DisplayState,
@@ -279,8 +290,6 @@ function displayReducer(
     }
     case 'SET_ALL_EXPANDED':
       return { ...state, expandedIds: action.ids }
-    case 'SET_CRITICAL_PATH':
-      return { ...state, showCriticalPath: action.value }
   }
 }
 
@@ -317,19 +326,17 @@ function indentKeys(spanId: string, depth: number): string[] {
   return keys
 }
 
-// Compact icon-driven toolbar. The two view toggles (critical-path-only,
-// show engine routing) are square icon buttons whose `pressed` state
-// fills with ink; their meaning is exposed via hover tooltips.
-// Expand/collapse-all sit at the start as plain icon buttons. Engine
-// routing is hidden by default; when shown, routing pairs are always
-// merged into a single row.
+// Compact icon-driven toolbar: expand/collapse-all as plain icon
+// buttons, then the span-group funnel menu (shared with the timeline
+// views) behind a divider. The funnel hides itself when the trace has
+// no groups to offer and nothing is filtered.
 interface ToolbarProps {
   expandAll: () => void
   collapseAll: () => void
-  showCriticalPath: boolean
-  setShowCriticalPath: (value: boolean) => void
-  showEngineRouting: boolean
-  setShowEngineRouting: (value: boolean) => void
+  spanGroups: readonly SpanGroup[]
+  workerGroups: readonly SpanGroup[]
+  spanFilter?: SpanFilterControls
+  hiddenSpanCount: number
   visibleCount: number
   totalCount: number
 }
@@ -338,10 +345,10 @@ function Toolbar(props: ToolbarProps) {
   const {
     expandAll,
     collapseAll,
-    showCriticalPath,
-    setShowCriticalPath,
-    showEngineRouting,
-    setShowEngineRouting,
+    spanGroups,
+    workerGroups,
+    spanFilter,
+    hiddenSpanCount,
     visibleCount,
     totalCount,
   } = props
@@ -374,21 +381,25 @@ function Toolbar(props: ToolbarProps) {
           </TooltipTrigger>
           <TooltipContent side="bottom">collapse all</TooltipContent>
         </Tooltip>
-        <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
-        <IconToggleButton
-          active={showCriticalPath}
-          onClick={() => setShowCriticalPath(!showCriticalPath)}
-          label="only critical path"
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-        </IconToggleButton>
-        <IconToggleButton
-          active={showEngineRouting}
-          onClick={() => setShowEngineRouting(!showEngineRouting)}
-          label="show engine routing spans"
-        >
-          <Eye className="w-3.5 h-3.5" />
-        </IconToggleButton>
+        {spanFilter &&
+          (spanGroups.length > 0 ||
+            workerGroups.length > 0 ||
+            hiddenSpanCount > 0) && (
+            <>
+              <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
+              <SpanFilterMenu
+                groups={spanGroups}
+                workerGroups={workerGroups}
+                hiddenKeys={spanFilter.hiddenGroups}
+                hiddenWorkerKeys={spanFilter.hiddenWorkers}
+                hiddenSpanCount={hiddenSpanCount}
+                onToggle={spanFilter.toggleGroup}
+                onToggleWorker={spanFilter.toggleWorker}
+                onClear={spanFilter.clear}
+                className="h-7"
+              />
+            </>
+          )}
       </div>
       <div className="text-[11px] text-ink-faint tabular-nums lowercase">
         {visibleCount} of {totalCount} spans
@@ -401,12 +412,14 @@ export function WaterfallChart({
   data,
   onSpanClick,
   selectedSpanId,
+  spanGroupKey,
+  spanFilter,
 }: WaterfallChartProps) {
   const [displayState, dispatch] = useReducer(
     displayReducer,
     initialDisplayState,
   )
-  const { expandedIds, showCriticalPath } = displayState
+  const { expandedIds } = displayState
   const containerRef = useRef<HTMLDivElement | null>(null)
   const thumbRef = useRef<HTMLDivElement | null>(null)
 
@@ -428,12 +441,30 @@ export function WaterfallChart({
     return () => obs.disconnect()
   }, [])
 
-  // Engine routing spans (`handle_invocation X`, `call X` on the `iii`
-  // service) are hidden by default; toggling reveals them in their
-  // always-merged form (one row per handle/call pair, marked with `+1`).
-  // The persisted hook is shared with the flame-graph view so the
-  // preference survives view swaps.
-  const [showEngineRouting, setShowEngineRouting] = useShowEngineRouting()
+  // The hidden-group/worker selection behind the toolbar's funnel menu
+  // lives with the CALLER (`spanFilter`) so the waterfall and timeline
+  // share one selection and it persists in the console configuration.
+  // This component only derives menu entries and applies the selection.
+  const filterEnabled = !!spanGroupKey && !!spanFilter
+
+  // Menu entries against the FULL data (an already-hidden group must
+  // keep its row so it can be turned back on), busiest first.
+  const spanGroups = useMemo(
+    () => (filterEnabled ? deriveSpanGroups(data.spans, spanGroupKey) : []),
+    [data.spans, spanGroupKey, filterEnabled],
+  )
+  const workerGroups = useMemo(
+    () => (filterEnabled ? deriveSpanGroups(data.spans, workerGroupKey) : []),
+    [data.spans, filterEnabled],
+  )
+
+  const visibleData = useMemo(
+    () =>
+      filterEnabled
+        ? applyHiddenSpanFilters(data, spanGroupKey, spanFilter)
+        : data,
+    [data, spanGroupKey, spanFilter, filterEnabled],
+  )
 
   // span column resize
   const [spanColWidth, setSpanColWidth] = useState<number>(() => {
@@ -510,8 +541,14 @@ export function WaterfallChart({
     [totalMs],
   )
 
-  const spanTree = useMemo(() => buildSpanTree(data.spans), [data.spans])
+  const spanTree = useMemo(
+    () => buildSpanTree(visibleData.spans),
+    [visibleData.spans],
+  )
 
+  // Keyed on the RAW spans so only a trace switch re-expands everything —
+  // toggling a filter group must not reset the user's collapse state.
+  // (Expanded ids for filtered-out spans are harmless leftovers.)
   useEffect(() => {
     const allIds = new Set(data.spans.map((s) => s.span_id))
     dispatch({ type: 'SET_ALL_EXPANDED', ids: allIds })
@@ -521,13 +558,10 @@ export function WaterfallChart({
     () =>
       flattenTree(spanTree, {
         expandedIds,
-        hideEngineRouting: !showEngineRouting,
-        // Showing engine routing always merges each handle/call pair —
-        // there's no separate user toggle for un-merged routing.
-        collapseEngineRoutingPairs: showEngineRouting,
-        onlyCriticalPath: showCriticalPath,
+        hideEngineRouting: true,
+        collapseEngineRoutingPairs: false,
       }),
-    [spanTree, expandedIds, showEngineRouting, showCriticalPath],
+    [spanTree, expandedIds],
   )
 
   // @tanstack/react-virtual owns scroll state, container measurement,
@@ -586,6 +620,43 @@ export function WaterfallChart({
     dispatch({ type: 'TOGGLE_SPAN', spanId })
   }, [])
 
+  // Hover detail card. Stable callbacks keep the memo'd rows from
+  // re-rendering on mouse-move (see the note above DisplayState).
+  const [hover, setHover] = useState<HoverState | null>(null)
+  const handleHoverMove = useCallback(
+    (span: VisualizationSpan, e: React.MouseEvent) => {
+      // Suppress the card while the span column is being resized — the
+      // global drag listeners sweep the cursor across rows.
+      if (colResizeRef.current) return
+      setHover({ id: span.span_id, x: e.clientX, y: e.clientY })
+    },
+    [],
+  )
+  const handleHoverEnd = useCallback((spanId: string) => {
+    setHover((prev) => (prev?.id === spanId ? null : prev))
+  }, [])
+
+  // Resolved by id against the visible rows so a span that leaves the
+  // list (collapse, toggle, live replacement) drops its card instead of
+  // going stale. Same offset/label/meta recipe as the timeline bars
+  // (`waterfallToTimelineSpans`), so the card reads identically in both
+  // views: worker name as the subtitle, trace-relative start, % of trace.
+  const hoveredCard = useMemo(() => {
+    if (!hover) return null
+    const span = visibleSpans.find((s) => s.span_id === hover.id)
+    if (!span) return null
+    const start = (span.start_percent / 100) * totalMs
+    const cardSpan: TimelineSpan = {
+      id: span.span_id,
+      startTime: start,
+      endTime: start + span.duration_ms,
+      status: span.pending && span.status !== 'error' ? 'pending' : span.status,
+      label: formatSpanLabel(span),
+      meta: getWorkerName(span),
+    }
+    return { cardSpan, tracePercent: Math.min(100, span.width_percent) }
+  }, [hover, visibleSpans, totalMs])
+
   const expandAll = () => {
     const allIds = new Set(data.spans.map((s) => s.span_id))
     dispatch({ type: 'SET_ALL_EXPANDED', ids: allIds })
@@ -598,11 +669,10 @@ export function WaterfallChart({
   const toolbarProps: ToolbarProps = {
     expandAll,
     collapseAll,
-    showCriticalPath,
-    setShowCriticalPath: (value: boolean) =>
-      dispatch({ type: 'SET_CRITICAL_PATH', value }),
-    showEngineRouting,
-    setShowEngineRouting,
+    spanGroups,
+    workerGroups,
+    spanFilter,
+    hiddenSpanCount: data.spans.length - visibleData.spans.length,
     visibleCount: visibleSpans.length,
     totalCount: data.span_count,
   }
@@ -645,12 +715,14 @@ export function WaterfallChart({
       </div>
 
       <div className="flex flex-1 overflow-hidden">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse-leave only dismisses the pointer-driven hover card (a backstop for rows that unmount under the cursor mid-scroll) — there is no interaction to expose to keyboard/AT users */}
         <div
           ref={containerRef}
           style={
             { '--span-col-width': `${spanColWidth}px` } as React.CSSProperties
           }
           className="flex-1 overflow-y-auto"
+          onMouseLeave={() => setHover(null)}
         >
           {/* Height spacer keeps the native scrollbar accurate; each
               virtualized row is absolutely positioned via translateY so
@@ -679,6 +751,8 @@ export function WaterfallChart({
                     isExpanded={expandedIds.has(span.span_id)}
                     onSpanClick={onSpanClick}
                     onToggleExpand={toggleExpand}
+                    onHoverMove={handleHoverMove}
+                    onHoverEnd={handleHoverEnd}
                   />
                 </div>
               )
@@ -696,7 +770,7 @@ export function WaterfallChart({
               className="relative bg-rule-2 overflow-hidden"
               style={{ height: MINIMAP_HEIGHT }}
             >
-              {data.spans.map((span, i) => {
+              {visibleData.spans.map((span, i) => {
                 const isError = span.status === 'error'
                 return (
                   <div
@@ -707,7 +781,7 @@ export function WaterfallChart({
                     )}
                     style={{
                       opacity: isError ? 0.7 : 0.5,
-                      top: `${(i / data.spans.length) * 100}%`,
+                      top: `${(i / visibleData.spans.length) * 100}%`,
                       left: `${span.start_percent}%`,
                       width: `${Math.max(2, span.width_percent)}%`,
                     }}
@@ -723,6 +797,17 @@ export function WaterfallChart({
           </div>
         )}
       </div>
+
+      {hover && hoveredCard && (
+        <SpanHoverCard
+          span={hoveredCard.cardSpan}
+          now={totalMs}
+          x={hover.x}
+          y={hover.y}
+          relativeStart
+          tracePercent={hoveredCard.tracePercent}
+        />
+      )}
     </div>
   )
 }

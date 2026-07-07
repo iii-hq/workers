@@ -11,7 +11,7 @@ function makeFilters(
   overrides: Partial<TraceFilterState> = {},
 ): TraceFilterState {
   return {
-    serviceName: undefined,
+    workerName: undefined,
     operationName: undefined,
     status: null,
     minDurationMs: null,
@@ -37,9 +37,9 @@ describe('buildFilterParams — happy path', () => {
     expect(warnings).toEqual({})
   })
 
-  it('translates serviceName -> service_name', () => {
+  it('translates workerName -> service_name', () => {
     const { params } = buildFilterParams(
-      makeFilters({ serviceName: 'api-gateway' }),
+      makeFilters({ workerName: 'api-gateway' }),
     )
     expect(params.service_name).toBe('api-gateway')
   })
@@ -196,7 +196,7 @@ describe('countActiveFilters', () => {
   })
 
   it('counts each non-default field', () => {
-    expect(countActiveFilters(makeFilters({ serviceName: 'api' }))).toBe(1)
+    expect(countActiveFilters(makeFilters({ workerName: 'api' }))).toBe(1)
     expect(countActiveFilters(makeFilters({ operationName: 'GET /x' }))).toBe(1)
     expect(countActiveFilters(makeFilters({ status: 'error' }))).toBe(1)
     expect(countActiveFilters(makeFilters({ minDurationMs: 100 }))).toBe(1)
@@ -226,7 +226,7 @@ describe('countActiveFilters', () => {
     expect(
       countActiveFilters(
         makeFilters({
-          serviceName: 'api',
+          workerName: 'api',
           status: 'error',
           minDurationMs: 100,
           sortBy: 'duration',

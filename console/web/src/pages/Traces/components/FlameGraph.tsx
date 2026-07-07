@@ -10,7 +10,7 @@
  * (`[data-theme="light"]` / dark) flips automatically because the same
  * variable names re-resolve.
  *
- * Depth tiling: per DESIGN.md §3 the schematic is monochrome. Service
+ * Depth tiling: per DESIGN.md §3 the schematic is monochrome. Worker
  * identity is encoded through ink shades by depth, never through a
  * chromatic palette. Errors collapse onto `--color-alert`, pending/unset
  * onto `--color-warn`, and the selected rectangle gets a 2px accent
@@ -769,7 +769,7 @@ export function FlameGraph({
               {hoveredNode.span.name}
             </div>
 
-            {/* service line */}
+            {/* worker line */}
             <div className="flex items-center gap-1.5 mb-2">
               <StatusDot tone={hoveredStatusTone} />
               <span className="text-[10px] text-ink-faint font-mono lowercase">

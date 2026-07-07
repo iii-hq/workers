@@ -4,7 +4,7 @@
  * is pre-seeded so the window is full at mount, then a 200ms scheduler keeps
  * spawning spans, completing them at their planned end, and pruning ones
  * that scrolled out. Colors come from the production path — each label
- * hashes into SERVICE_PALETTE, and wide-enough bars reveal the span name
+ * hashes into WORKER_PALETTE, and wide-enough bars reveal the span name
  * with a leading ellipsis.
  *
  * Motion: the track slides on a virtual clock — it tracks the wall clock

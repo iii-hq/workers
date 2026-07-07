@@ -83,7 +83,7 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
     endTime,
     duration,
     spanCount: 1,
-    services: [span.service_name || 'unknown'],
+    workers: [span.service_name || 'unknown'],
   }
 }
 

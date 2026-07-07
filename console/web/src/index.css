@@ -38,7 +38,10 @@
   --color-accent: #b8420f;
   --color-accent-fg: #f2f0ed;
 
-  --color-alert: #c43e1c;
+  /* The single error color — every error surface (text-alert, StatusDot,
+     SPAN_STATUS_COLORS in the trace charts) resolves through this token.
+     No dark-mode override: it applies to both themes. */
+  --color-alert: #d21c37;
   --color-warn: #a87a00;
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */

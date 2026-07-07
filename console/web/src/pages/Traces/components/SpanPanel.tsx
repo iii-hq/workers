@@ -9,7 +9,7 @@ import { fetchOtelLogs } from '../api/otel-logs'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
-  getServiceName,
+  getWorkerName,
   useCopyToClipboard,
 } from '../lib/traceUtils'
 import { SpanBaggageTab } from './SpanBaggageTab'
@@ -87,17 +87,17 @@ export function SpanPanel({
   const attrCount = Object.keys(span.attributes || {}).length
   const eventCount = span.events?.length || 0
   const linkCount = span.links?.length || 0
-  const service = getServiceName(span)
+  const worker = getWorkerName(span)
   const tone = statusTone(span.status)
 
   return (
     <div className="h-full bg-panel overflow-hidden flex flex-col">
       {/* Header strip */}
       <div className="flex-shrink-0 bg-panel border-b border-rule">
-        {/* Row 1: service badge + span name + close */}
+        {/* Row 1: worker badge + span name + close */}
         <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
           <span className="px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0 border border-rule bg-bg text-ink-faint lowercase">
-            {service}
+            {worker}
           </span>
           <h2
             className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0 lowercase"

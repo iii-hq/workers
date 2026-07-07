@@ -1,13 +1,13 @@
 /**
  * Shared visual vocabulary for timeline spans — used by both the live
  * Timeline strip and the static TraceTimeline so a span reads identically
- * wherever it renders: same kind icon, same chromatic service color, same
+ * wherever it renders: same kind icon, same chromatic worker color, same
  * in-bar label, same hover (ink) / selection (accent) ring recipe.
  */
 
 import { Flame, Sparkle, SquareFunction, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
-import { getServiceColor, SPAN_STATUS_COLORS } from '../../lib/traceColors'
+import { getWorkerColor, SPAN_STATUS_COLORS } from '../../lib/traceColors'
 import type { TimelineSpan, TimelineSpanKind } from './layout'
 
 export const KIND_ICONS: Record<
@@ -31,7 +31,7 @@ const LIGHT_BAR_COLORS = new Set([
 
 export function resolveColor(span: TimelineSpan): string {
   if (span.status === 'error') return SPAN_STATUS_COLORS.error
-  return span.color ?? getServiceColor(span.label ?? span.id)
+  return span.color ?? getWorkerColor(span.label ?? span.id)
 }
 
 export function iconColorFor(barColor: string): string {

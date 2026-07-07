@@ -53,9 +53,9 @@ export function formatSpanLabel(
     }
   }
   if (span.service_name) {
-    const servicePrefix = `${span.service_name}.`
-    if (label.startsWith(servicePrefix)) {
-      label = label.slice(servicePrefix.length)
+    const workerPrefix = `${span.service_name}.`
+    if (label.startsWith(workerPrefix)) {
+      label = label.slice(workerPrefix.length)
     }
   }
   return label
@@ -65,7 +65,7 @@ export function formatSpanLabel(
 // fixtures continue to compile — the predicate just no longer uses it.
 //
 // The name prefix alone is NOT sufficient: the harness SDK emits its own
-// client span literally named `call <fn>` (service `harness`) alongside the
+// client span literally named `call <fn>` (worker `harness`) alongside the
 // engine's `call <fn>` invocation span. Gating only on the prefix swept up
 // those worker spans too, collapsing legitimate harness work. Engine-emitted
 // routing spans carry a `function_id` attribute (set by the engine's

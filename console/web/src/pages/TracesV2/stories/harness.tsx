@@ -68,13 +68,13 @@ async function fakeTrigger({
       // the filter bar and search box visibly do something in the playground.
       let spans: StoredSpan[] = LIST_SPANS
       const name = p.name as string | undefined
-      const service = p.service_name as string | undefined
+      const worker = p.service_name as string | undefined
       const status = p.status as string | undefined
       if (name) {
         const q = name.toLowerCase()
         spans = spans.filter((s) => s.name.toLowerCase().includes(q))
       }
-      if (service) spans = spans.filter((s) => s.service_name === service)
+      if (worker) spans = spans.filter((s) => s.service_name === worker)
       if (status) {
         spans = spans.filter(
           (s) =>

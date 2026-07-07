@@ -1,13 +1,13 @@
 // Trace filter bar.
 //
 // Layout: a single row of always-visible controls (search, group-by,
-// status, more-filters trigger, stats) with active-filter chips
-// rendered below. The advanced filters (time range, sort, duration,
-// service, operation, attributes) live inside a "more filters"
-// popover so they stay out of the way until needed.
+// more-filters trigger, stats) with active-filter chips
+// rendered below. The advanced filters (status, time range, sort,
+// duration, worker, operation, attributes) live inside a "more
+// filters" popover so they stay out of the way until needed.
 //
 // Behaviors preserved from motia:
-//   • 300ms-debounced text inputs (serviceName, operationName) — wired
+//   • 300ms-debounced text inputs (workerName, operationName) — wired
 //     via the parent useTraceFilters hook.
 //   • Min/max duration validation warnings.
 //   • Group-by switching (server-side aggregation).
@@ -38,6 +38,7 @@ import { cn } from '@/lib/utils'
 import type { TraceFilterState } from '../hooks/useTraceFilters'
 import type { GroupByOption } from '../lib/groupTraces'
 import { AttributesFilter } from './AttributesFilter'
+import { GroupByPicker } from './GroupByPicker'
 
 interface TraceFiltersProps {
   filters: TraceFilterState
@@ -56,6 +57,14 @@ interface TraceFiltersProps {
     errorCount: number
     avgDuration: number
   }
+  /** Rendered first in the control row (the saved-views dropdown). */
+  leading?: React.ReactNode
+  /**
+   * Attribute keys observed on loaded traces (row attributes + trace tags),
+   * offered as group-by suggestions. Grouping accepts ANY key — these just
+   * make the known ones one click.
+   */
+  attributeKeySuggestions?: string[]
 }
 
 const TIME_RANGE_PRESETS: Array<{ label: string; ms: number | null }> = [
@@ -73,7 +82,7 @@ const SORT_BY_OPTIONS: Array<{
 }> = [
   { label: 'start time', value: 'start_time' },
   { label: 'duration', value: 'duration' },
-  { label: 'service name', value: 'service_name' },
+  { label: 'worker name', value: 'service_name' },
 ]
 
 type StatusValue = 'all' | 'ok' | 'error' | 'unset'
@@ -85,11 +94,13 @@ const STATUS_OPTIONS: Array<{ value: StatusValue; label: string }> = [
   { value: 'unset', label: 'unset' },
 ]
 
-const GROUP_BY_OPTIONS: Array<{ value: GroupByOption; label: string }> = [
-  { value: 'none', label: 'no grouping' },
-  { value: 'iii.message.id', label: 'message' },
-  { value: 'iii.session.id', label: 'session' },
-  { value: 'iii.function.id', label: 'function' },
+const LABEL_MODE_OPTIONS: Array<{
+  value: NonNullable<TraceFilterState['labelMode']>
+  label: string
+}> = [
+  { value: 'function', label: 'function name' },
+  { value: 'span-name', label: 'span name' },
+  { value: 'attribute', label: 'attribute value' },
 ]
 
 const SORT_ORDER_OPTIONS: Array<{ value: 'asc' | 'desc'; label: string }> = [
@@ -99,24 +110,24 @@ const SORT_ORDER_OPTIONS: Array<{ value: 'asc' | 'desc'; label: string }> = [
 
 // --- Temp Inputs Reducer ---
 interface TempInputsState {
-  tempServiceName: string
+  tempWorkerName: string
   tempOperationName: string
   tempMinDuration: string
   tempMaxDuration: string
 }
 
 type TempInputsAction =
-  | { type: 'SET_SERVICE_NAME'; payload: string }
+  | { type: 'SET_WORKER_NAME'; payload: string }
   | { type: 'SET_OPERATION_NAME'; payload: string }
   | { type: 'SET_MIN_DURATION'; payload: string }
   | { type: 'SET_MAX_DURATION'; payload: string }
   | { type: 'CLEAR_DURATION' }
-  | { type: 'CLEAR_SERVICE_NAME' }
+  | { type: 'CLEAR_WORKER_NAME' }
   | { type: 'CLEAR_OPERATION_NAME' }
   | {
       type: 'SYNC_FROM_FILTERS'
       payload: {
-        serviceName?: string
+        workerName?: string
         operationName?: string
         minDurationMs?: number | null
         maxDurationMs?: number | null
@@ -128,8 +139,8 @@ function tempInputsReducer(
   action: TempInputsAction,
 ): TempInputsState {
   switch (action.type) {
-    case 'SET_SERVICE_NAME':
-      return { ...state, tempServiceName: action.payload }
+    case 'SET_WORKER_NAME':
+      return { ...state, tempWorkerName: action.payload }
     case 'SET_OPERATION_NAME':
       return { ...state, tempOperationName: action.payload }
     case 'SET_MIN_DURATION':
@@ -138,13 +149,13 @@ function tempInputsReducer(
       return { ...state, tempMaxDuration: action.payload }
     case 'CLEAR_DURATION':
       return { ...state, tempMinDuration: '', tempMaxDuration: '' }
-    case 'CLEAR_SERVICE_NAME':
-      return { ...state, tempServiceName: '' }
+    case 'CLEAR_WORKER_NAME':
+      return { ...state, tempWorkerName: '' }
     case 'CLEAR_OPERATION_NAME':
       return { ...state, tempOperationName: '' }
     case 'SYNC_FROM_FILTERS':
       return {
-        tempServiceName: action.payload.serviceName || '',
+        tempWorkerName: action.payload.workerName || '',
         tempOperationName: action.payload.operationName || '',
         tempMinDuration: action.payload.minDurationMs?.toString() || '',
         tempMaxDuration: action.payload.maxDurationMs?.toString() || '',
@@ -327,35 +338,37 @@ export function TraceFilters({
   searchQuery = '',
   onSearchChange,
   stats,
+  leading,
+  attributeKeySuggestions = [],
 }: TraceFiltersProps) {
   const [tempInputs, dispatchTempInputs] = useReducer(tempInputsReducer, {
-    tempServiceName: filters.serviceName || '',
+    tempWorkerName: filters.workerName || '',
     tempOperationName: filters.operationName || '',
     tempMinDuration: filters.minDurationMs?.toString() || '',
     tempMaxDuration: filters.maxDurationMs?.toString() || '',
   })
   const {
-    tempServiceName,
+    tempWorkerName,
     tempOperationName,
     tempMinDuration,
     tempMaxDuration,
   } = tempInputs
 
   const [prevFilters, setPrevFilters] = useState({
-    serviceName: filters.serviceName,
+    workerName: filters.workerName,
     operationName: filters.operationName,
     minDurationMs: filters.minDurationMs,
     maxDurationMs: filters.maxDurationMs,
   })
 
   if (
-    prevFilters.serviceName !== filters.serviceName ||
+    prevFilters.workerName !== filters.workerName ||
     prevFilters.operationName !== filters.operationName ||
     prevFilters.minDurationMs !== filters.minDurationMs ||
     prevFilters.maxDurationMs !== filters.maxDurationMs
   ) {
     setPrevFilters({
-      serviceName: filters.serviceName,
+      workerName: filters.workerName,
       operationName: filters.operationName,
       minDurationMs: filters.minDurationMs,
       maxDurationMs: filters.maxDurationMs,
@@ -363,7 +376,7 @@ export function TraceFilters({
     dispatchTempInputs({
       type: 'SYNC_FROM_FILTERS',
       payload: {
-        serviceName: filters.serviceName,
+        workerName: filters.workerName,
         operationName: filters.operationName,
         minDurationMs: filters.minDurationMs,
         maxDurationMs: filters.maxDurationMs,
@@ -371,8 +384,24 @@ export function TraceFilters({
     })
   }
 
-  const applyService = () => {
-    onFilterChange('serviceName', tempServiceName || undefined)
+  // Display: label-attribute key is typed then applied on blur/Enter, like
+  // the other text filters (but simple enough not to join the reducer).
+  const [tempLabelAttribute, setTempLabelAttribute] = useState(
+    filters.labelAttribute ?? '',
+  )
+  const [prevLabelAttribute, setPrevLabelAttribute] = useState(
+    filters.labelAttribute,
+  )
+  if (prevLabelAttribute !== filters.labelAttribute) {
+    setPrevLabelAttribute(filters.labelAttribute)
+    setTempLabelAttribute(filters.labelAttribute ?? '')
+  }
+  const applyLabelAttribute = () => {
+    onFilterChange('labelAttribute', tempLabelAttribute.trim() || undefined)
+  }
+
+  const applyWorker = () => {
+    onFilterChange('workerName', tempWorkerName || undefined)
   }
   const applyOperation = () => {
     onFilterChange('operationName', tempOperationName || undefined)
@@ -419,9 +448,9 @@ export function TraceFilters({
       case 'status':
         onFilterChange('status', null)
         break
-      case 'serviceName':
-        onFilterChange('serviceName', undefined)
-        dispatchTempInputs({ type: 'CLEAR_SERVICE_NAME' })
+      case 'workerName':
+        onFilterChange('workerName', undefined)
+        dispatchTempInputs({ type: 'CLEAR_WORKER_NAME' })
         break
       case 'operationName':
         onFilterChange('operationName', undefined)
@@ -445,17 +474,33 @@ export function TraceFilters({
       case 'sortOrder':
         onFilterChange('sortOrder', 'desc')
         break
+      case 'display':
+        onFilterChange('labelMode', 'function')
+        onFilterChange('labelAttribute', undefined)
+        setTempLabelAttribute('')
+        break
     }
   }
 
-  const activeFilters: Array<{ key: string; label: string }> = []
+  const unhideFunction = (fn: string) => {
+    onFilterChange(
+      'hiddenFunctions',
+      (filters.hiddenFunctions ?? []).filter((f) => f !== fn),
+    )
+  }
+
+  const activeFilters: Array<{
+    key: string
+    label: string
+    onRemove?: () => void
+  }> = []
   if (filters.status) {
     activeFilters.push({ key: 'status', label: `status: ${filters.status}` })
   }
-  if (filters.serviceName) {
+  if (filters.workerName) {
     activeFilters.push({
-      key: 'serviceName',
-      label: `service: ${filters.serviceName}`,
+      key: 'workerName',
+      label: `worker: ${filters.workerName}`,
     })
   }
   if (filters.operationName) {
@@ -500,15 +545,30 @@ export function TraceFilters({
       label: `order: ${filters.sortOrder}`,
     })
   }
+  if (filters.labelMode && filters.labelMode !== 'function') {
+    activeFilters.push({
+      key: 'display',
+      label:
+        filters.labelMode === 'attribute'
+          ? `display: ${filters.labelAttribute || 'attribute'}`
+          : 'display: span name',
+    })
+  }
+  for (const fn of filters.hiddenFunctions ?? []) {
+    activeFilters.push({
+      key: `hidden:${fn}`,
+      label: `hidden: ${fn}`,
+      onRemove: () => unhideFunction(fn),
+    })
+  }
 
   const statusValue: StatusValue = (filters.status ?? 'all') as StatusValue
   const groupByValue = (filters.groupBy ?? 'none') as GroupByOption
   const sortOrderValue = filters.sortOrder ?? 'desc'
 
-  // Chips that aren't already represented by inline controls (status/group)
-  const advancedFilterCount = activeFilters.filter(
-    (f) => f.key !== 'status',
-  ).length
+  // Chips that aren't already represented by inline controls (group-by);
+  // status lives in the popover, so it counts here.
+  const advancedFilterCount = activeFilters.length
 
   const [popoverOpen, setPopoverOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -557,26 +617,20 @@ export function TraceFilters({
         </div>
       )}
 
-      {/* Always-visible row: search, group-by, status, more filters, stats */}
+      {/* Always-visible row: views, search, group-by, more filters, stats */}
       <div className="flex items-center gap-2 flex-wrap">
+        {leading}
+
         <SearchInput
           searchQuery={searchQuery}
           onSearchChange={onSearchChange}
           className="flex-1 min-w-[240px] max-w-[460px]"
         />
 
-        <ModeToggle<GroupByOption>
+        <GroupByPicker
           value={groupByValue}
-          options={GROUP_BY_OPTIONS}
           onChange={(next) => onFilterChange('groupBy', next)}
-        />
-
-        <ModeToggle<StatusValue>
-          value={statusValue}
-          options={STATUS_OPTIONS}
-          onChange={(next) =>
-            onFilterChange('status', next === 'all' ? null : next)
-          }
+          suggestions={attributeKeySuggestions}
         />
 
         <button
@@ -625,7 +679,9 @@ export function TraceFilters({
             <button
               key={filter.key}
               type="button"
-              onClick={() => removeFilter(filter.key)}
+              onClick={() =>
+                filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
+              }
               className="flex items-center gap-1 px-1.5 py-0.5 bg-panel border border-rule hover:border-accent hover:text-ink font-mono text-[10px] text-ink-faint transition-colors group lowercase"
             >
               <span>{filter.label}</span>
@@ -659,6 +715,19 @@ export function TraceFilters({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1 col-span-2">
+              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
+                status
+              </span>
+              <ModeToggle<StatusValue>
+                value={statusValue}
+                options={STATUS_OPTIONS}
+                onChange={(next) =>
+                  onFilterChange('status', next === 'all' ? null : next)
+                }
+              />
+            </div>
+
             <label className="flex flex-col gap-1">
               <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
                 time range
@@ -712,20 +781,20 @@ export function TraceFilters({
 
             <label className="flex flex-col gap-1">
               <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                service
+                worker
               </span>
               <input
                 type="text"
                 placeholder="e.g. api-*, backend"
-                value={tempServiceName}
+                value={tempWorkerName}
                 onChange={(e) =>
                   dispatchTempInputs({
-                    type: 'SET_SERVICE_NAME',
+                    type: 'SET_WORKER_NAME',
                     payload: e.target.value,
                   })
                 }
-                onBlur={applyService}
-                onKeyDown={(e) => handleEnterApply(e, applyService)}
+                onBlur={applyWorker}
+                onKeyDown={(e) => handleEnterApply(e, applyWorker)}
                 className={inputClass}
               />
             </label>
@@ -788,6 +857,51 @@ export function TraceFilters({
                 />
               </div>
             </label>
+          </div>
+
+          <div className="pt-2 border-t border-rule-2">
+            <div className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em] mb-2">
+              display
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
+                  label rows by
+                </span>
+                <select
+                  className={selectClass}
+                  value={filters.labelMode ?? 'function'}
+                  onChange={(e) =>
+                    onFilterChange(
+                      'labelMode',
+                      e.target.value as TraceFilterState['labelMode'],
+                    )
+                  }
+                >
+                  {LABEL_MODE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {filters.labelMode === 'attribute' && (
+                <label className="flex flex-col gap-1">
+                  <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
+                    attribute key
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="e.g. iii.tag.message"
+                    value={tempLabelAttribute}
+                    onChange={(e) => setTempLabelAttribute(e.target.value)}
+                    onBlur={applyLabelAttribute}
+                    onKeyDown={(e) => handleEnterApply(e, applyLabelAttribute)}
+                    className={inputClass}
+                  />
+                </label>
+              )}
+            </div>
           </div>
 
           <div className="pt-2 border-t border-rule-2">

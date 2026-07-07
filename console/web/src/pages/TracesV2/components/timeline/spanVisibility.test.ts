@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { traceSpanGroupKey } from '../../lib/traceTimelineFilters'
 import type { VisualizationSpan, WaterfallData } from '../../lib/traceTransform'
-import { applyHiddenSpanGroups, deriveSpanGroups } from './spanVisibility'
+import {
+  applyHiddenSpanFilters,
+  deriveSpanGroups,
+  workerGroupKey,
+} from './spanVisibility'
 
 function vis(overrides: Partial<VisualizationSpan> = {}): VisualizationSpan {
   return {
@@ -55,7 +59,17 @@ describe('deriveSpanGroups', () => {
   })
 })
 
-describe('applyHiddenSpanGroups', () => {
+function selection(overrides: {
+  hiddenGroups?: string[]
+  hiddenWorkers?: string[]
+}) {
+  return {
+    hiddenGroups: new Set(overrides.hiddenGroups ?? []),
+    hiddenWorkers: new Set(overrides.hiddenWorkers ?? []),
+  }
+}
+
+describe('applyHiddenSpanFilters', () => {
   const data = waterfall([
     vis({ span_id: 'root', name: 'root' }),
     vis({ span_id: 'n', name: 'noise', parent_span_id: 'root' }),
@@ -65,15 +79,66 @@ describe('applyHiddenSpanGroups', () => {
   ])
 
   it('hides a group together with its whole subtrees, keeping the window', () => {
-    const out = applyHiddenSpanGroups(data, byName, new Set(['noise']))
+    const out = applyHiddenSpanFilters(
+      data,
+      byName,
+      selection({ hiddenGroups: ['noise'] }),
+    )
     expect(out.spans.map((s) => s.span_id)).toEqual(['root', 'kept'])
     expect(out.span_count).toBe(2)
     expect(out.total_duration_ms).toBe(data.total_duration_ms)
   })
 
   it('is an identity when nothing is hidden or nothing matches', () => {
-    expect(applyHiddenSpanGroups(data, byName, new Set())).toBe(data)
-    expect(applyHiddenSpanGroups(data, byName, new Set(['absent']))).toBe(data)
+    expect(applyHiddenSpanFilters(data, byName, selection({}))).toBe(data)
+    expect(
+      applyHiddenSpanFilters(
+        data,
+        byName,
+        selection({ hiddenGroups: ['absent'], hiddenWorkers: ['absent'] }),
+      ),
+    ).toBe(data)
+  })
+
+  it('hides a whole worker (service_name) with its subtrees', () => {
+    const workers = waterfall([
+      vis({ span_id: 'root', name: 'root', service_name: 'gateway' }),
+      vis({
+        span_id: 'pg',
+        name: 'query',
+        service_name: 'postgres',
+        parent_span_id: 'root',
+      }),
+      vis({
+        span_id: 'pg-child',
+        name: 'tcp',
+        service_name: 'net',
+        parent_span_id: 'pg',
+      }),
+      vis({
+        span_id: 'kept',
+        name: 'work',
+        service_name: 'agent',
+        parent_span_id: 'root',
+      }),
+    ])
+    const out = applyHiddenSpanFilters(
+      workers,
+      byName,
+      selection({ hiddenWorkers: ['postgres'] }),
+    )
+    expect(out.spans.map((s) => s.span_id)).toEqual(['root', 'kept'])
+  })
+
+  it('combines hidden groups and hidden workers in one pass', () => {
+    const out = applyHiddenSpanFilters(
+      data,
+      byName,
+      selection({ hiddenGroups: ['work'], hiddenWorkers: ['noise'] }),
+    )
+    // `noise` spans match via the worker fallback (name prefix), `work`
+    // via its group — only the root survives.
+    expect(out.spans.map((s) => s.span_id)).toEqual(['root'])
   })
 
   it('survives malformed parent cycles', () => {
@@ -81,8 +146,19 @@ describe('applyHiddenSpanGroups', () => {
       vis({ span_id: 'a', name: 'noise', parent_span_id: 'b' }),
       vis({ span_id: 'b', name: 'other', parent_span_id: 'a' }),
     ])
-    const out = applyHiddenSpanGroups(cyclic, byName, new Set(['noise']))
+    const out = applyHiddenSpanFilters(
+      cyclic,
+      byName,
+      selection({ hiddenGroups: ['noise'] }),
+    )
     expect(out.spans).toEqual([])
+  })
+})
+
+describe('workerGroupKey', () => {
+  it('groups by service_name, falling back to the name prefix', () => {
+    expect(workerGroupKey(vis({ service_name: 'agent' }))).toBe('agent')
+    expect(workerGroupKey(vis({ name: 'billing.charge' }))).toBe('billing')
   })
 })
 

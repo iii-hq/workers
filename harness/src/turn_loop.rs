@@ -31,6 +31,10 @@ pub struct TurnStepPayload {
     pub session_id: String,
     pub turn_id: String,
     pub step: u64,
+    /// Preview carried from the turn record so the step can stamp the
+    /// `iii.tag.message` baggage before any state read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -50,10 +54,15 @@ pub async fn enqueue_step(
     session_id: &str,
     turn_id: &str,
     step: u64,
+    message_preview: Option<&str>,
 ) -> Result<(), HarnessError> {
+    let mut payload = json!({ "session_id": session_id, "turn_id": turn_id, "step": step });
+    if let Some(preview) = message_preview {
+        payload["message_preview"] = json!(preview);
+    }
     iii.trigger(TriggerRequest {
         function_id: "harness::turn".to_string(),
-        payload: json!({ "session_id": session_id, "turn_id": turn_id, "step": step }),
+        payload,
         action: Some(TriggerAction::Enqueue {
             queue: TURN_QUEUE.to_string(),
         }),
@@ -725,7 +734,14 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
     record.status = TurnStatus::Running;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    enqueue_step(&deps.iii, &record.session_id, &record.turn_id, next).await?;
+    enqueue_step(
+        &deps.iii,
+        &record.session_id,
+        &record.turn_id,
+        next,
+        record.message_preview.as_deref(),
+    )
+    .await?;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Running,

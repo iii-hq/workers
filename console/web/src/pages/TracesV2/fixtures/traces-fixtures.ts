@@ -60,7 +60,7 @@ function span(s: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Trace 1 — rich agent turn. Depth 5, four services, an engine-routing
+// Trace 1 — rich agent turn. Depth 5, four workers, an engine-routing
 // pair (handle_invocation/call greet), an LLM client span, an ERRORED tool
 // span with an exception event, a db span, baggage + link attributes.
 // ─────────────────────────────────────────────────────────────────────────
@@ -235,7 +235,7 @@ export const TRACE_1_SPANS: StoredSpan[] = [
 ]
 
 // ─────────────────────────────────────────────────────────────────────────
-// Trace 2 — simple healthy request (2 spans, 2 services).
+// Trace 2 — simple healthy request (2 spans, 2 workers).
 // ─────────────────────────────────────────────────────────────────────────
 
 export const TRACE_2_ID = 'trace-http-0000000000000002'

@@ -4,7 +4,7 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
-  getServiceName,
+  getWorkerName,
   useCopyToClipboard,
 } from '../lib/traceUtils'
 
@@ -24,7 +24,7 @@ function statusTone(
 export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
   const { copiedKey: copiedField, copy: copyToClipboard } = useCopyToClipboard()
 
-  const service = getServiceName(span)
+  const worker = getWorkerName(span)
   const tracePercent = traceData
     ? (span.duration_ms / traceData.total_duration_ms) * 100
     : 0
@@ -89,18 +89,18 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
         </div>
       </div>
 
-      {/* Service & Operation */}
+      {/* Worker & Operation */}
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-          service & operation
+          worker & operation
         </div>
         <div className="border border-rule bg-bg divide-y divide-rule">
           <div className="px-4 py-2.5 flex items-center justify-between">
             <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-              service
+              worker
             </span>
             <span className="font-mono text-[13px] text-ink lowercase">
-              {service}
+              {worker}
             </span>
           </div>
           <div className="px-4 py-2.5 flex items-center justify-between gap-4">

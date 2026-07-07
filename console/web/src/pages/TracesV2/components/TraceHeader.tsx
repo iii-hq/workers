@@ -2,11 +2,11 @@ import { AlertCircle, ChevronRight, Clock, Copy, Layers, X } from 'lucide-react'
 import { Fragment, useMemo } from 'react'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
-import { getServiceColor } from '../lib/traceColors'
+import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
-  getServiceName,
+  getWorkerName,
   useCopyToClipboard,
 } from '../lib/traceUtils'
 
@@ -55,33 +55,33 @@ export function TraceHeader({
     return path
   }, [data.spans])
 
-  const { errorCount, serviceList, serviceDurations } = useMemo(() => {
+  const { errorCount, workerList, workerDurations } = useMemo(() => {
     let errorCount = 0
-    const services = new Set<string>()
+    const workers = new Set<string>()
     const durationMap = new Map<string, number>()
 
     for (const span of data.spans) {
       if (span.status === 'error') errorCount++
-      const svc = getServiceName(span)
-      if (span.service_name) services.add(span.service_name)
-      durationMap.set(svc, (durationMap.get(svc) || 0) + span.duration_ms)
+      const worker = getWorkerName(span)
+      if (span.service_name) workers.add(span.service_name)
+      durationMap.set(worker, (durationMap.get(worker) || 0) + span.duration_ms)
     }
 
-    const serviceList = Array.from(services).filter((s): s is string =>
+    const workerList = Array.from(workers).filter((s): s is string =>
       Boolean(s),
     )
-    return { errorCount, serviceList, serviceDurations: durationMap }
+    return { errorCount, workerList, workerDurations: durationMap }
   }, [data])
 
   const hasErrors = errorCount > 0
-  const serviceCount = Math.max(serviceList.length, 1)
-  const rootService = rootSpan ? getServiceName(rootSpan) : 'trace'
+  const workerCount = Math.max(workerList.length, 1)
+  const rootWorker = rootSpan ? getWorkerName(rootSpan) : 'trace'
 
   return (
     <div className="bg-panel border-b border-rule-2 flex-shrink-0">
       <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
         <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.06em] flex-shrink-0 border border-rule bg-bg text-ink-faint lowercase">
-          {rootService}
+          {rootWorker}
         </span>
         <h2
           className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0 lowercase"
@@ -134,7 +134,7 @@ export function TraceHeader({
 
         <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
           <span className="text-[11px] font-mono text-ink-faint tabular-nums">
-            {serviceCount} svc
+            {workerCount} worker{workerCount === 1 ? '' : 's'}
           </span>
         </span>
 
@@ -148,40 +148,40 @@ export function TraceHeader({
         )}
       </div>
 
-      {serviceList.length > 1 && (
+      {workerList.length > 1 && (
         <div className="px-4 pb-2.5">
           <div className="flex h-1.5 bg-bg border border-rule overflow-hidden">
-            {serviceList.map((svc, i) => {
-              const svcDuration = serviceDurations.get(svc) || 0
-              const pct = (svcDuration / data.total_duration_ms) * 100
+            {workerList.map((worker, i) => {
+              const workerDuration = workerDurations.get(worker) || 0
+              const pct = (workerDuration / data.total_duration_ms) * 100
               return (
                 <div
-                  key={svc}
+                  key={worker}
                   className={cn(
                     'h-full transition-all duration-300',
                     i > 0 && 'border-l border-rule-2',
                   )}
                   style={{
                     width: `${Math.max(2, pct)}%`,
-                    backgroundColor: getServiceColor(svc),
+                    backgroundColor: getWorkerColor(worker),
                   }}
-                  title={`${svc}: ${pct.toFixed(1)}%`}
+                  title={`${worker}: ${pct.toFixed(1)}%`}
                 />
               )
             })}
           </div>
           <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-            {serviceList.map((svc) => (
+            {workerList.map((worker) => (
               <div
-                key={svc}
+                key={worker}
                 className="flex items-center gap-1 font-mono text-[10px] text-ink-faint"
               >
                 <span
                   aria-hidden
                   className="w-1.5 h-1.5 flex-shrink-0"
-                  style={{ backgroundColor: getServiceColor(svc) }}
+                  style={{ backgroundColor: getWorkerColor(worker) }}
                 />
-                <span className="truncate lowercase">{svc}</span>
+                <span className="truncate lowercase">{worker}</span>
               </div>
             ))}
           </div>

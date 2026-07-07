@@ -14,6 +14,12 @@ export interface UseTraceGroupsOptions {
   groupBy: GroupByOption
   /** Include engine-internal spans. */
   includeInternal: boolean
+  /**
+   * Attribute resolved per group into a human-readable heading (e.g.
+   * `iii.session.name` when grouping by `iii.session.id`). See
+   * `defaultLabelAttribute` in lib/groupTraces.
+   */
+  labelAttribute?: string
 }
 
 export interface UseTraceGroupsReturn {
@@ -41,6 +47,7 @@ export interface UseTraceGroupsReturn {
 export function useTraceGroups({
   groupBy,
   includeInternal,
+  labelAttribute,
 }: UseTraceGroupsOptions): UseTraceGroupsReturn {
   const enabled = groupBy !== 'none'
 
@@ -48,13 +55,14 @@ export function useTraceGroups({
     TracesGroupByResponse,
     Error
   >({
-    queryKey: ['traceGroups', groupBy, includeInternal],
+    queryKey: ['traceGroups', groupBy, includeInternal, labelAttribute],
     enabled,
     queryFn: () =>
       fetchTracesGroupBy({
         attribute: groupBy,
         limit: DEFAULT_GROUP_LIMIT,
         include_internal: includeInternal,
+        label_attribute: labelAttribute,
       }),
     // Live updates: `useTraceData`'s `trace-rows` stream effect invalidates
     // the ['traceGroups'] key on span activity (the aggregate can't be

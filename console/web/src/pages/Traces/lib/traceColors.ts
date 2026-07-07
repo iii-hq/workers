@@ -1,15 +1,15 @@
 /**
- * Service color resolution under the iii Schematic.
+ * Worker color resolution under the iii Schematic.
  *
- * The schematic is a single-accent palette (DESIGN.md §3). Service
+ * The schematic is a single-accent palette (DESIGN.md §3). Worker
  * identity is encoded through ink shades, never through a chromatic
  * palette. Errors collapse onto `--color-alert`; the currently active
  * trace/span collapses onto `--color-accent`. Everything else picks one
- * of four ink shades based on a hash of the service name so that runs
- * with the same services produce stable, distinguishable bars without
+ * of four ink shades based on a hash of the worker name so that runs
+ * with the same workers produce stable, distinguishable bars without
  * introducing color.
  *
- * `getServiceColor` returns a CSS color reference (suitable for inline
+ * `getWorkerColor` returns a CSS color reference (suitable for inline
  * `style={{ backgroundColor: ... }}` or as the second argument to an
  * SVG `stroke`/`fill`). The shades are CSS variables so theme swaps
  * automatically.
@@ -30,8 +30,8 @@ function hashString(input: string): number {
   return Math.abs(h)
 }
 
-export function getServiceColor(service: string): string {
-  return INK_SHADES[hashString(service) % INK_SHADES.length]
+export function getWorkerColor(worker: string): string {
+  return INK_SHADES[hashString(worker) % INK_SHADES.length]
 }
 
 export const SPAN_STATUS_COLORS = {

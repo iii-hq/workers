@@ -172,7 +172,8 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         .await?;
 
     // CAS-seed the turn (or take the merge path).
-    let outcome = seed_or_merge(deps, &cfg, &session_id, options).await?;
+    let preview = message_preview(&message);
+    let outcome = seed_or_merge(deps, &cfg, &session_id, options, preview).await?;
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
@@ -218,10 +219,11 @@ pub async fn inject(
             ))
         })?;
 
+    let preview = message_preview(&message);
     session
         .append(session_id, &message, entry_id, None, origin)
         .await?;
-    seed_or_merge(deps, &cfg, session_id, options).await
+    seed_or_merge(deps, &cfg, session_id, options, preview).await
 }
 
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
@@ -239,6 +241,20 @@ pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, Har
             ))),
         },
     }
+}
+
+/// First 30 chars of the user message, collapsed to a single line — the
+/// `iii.tag.message` trace tag that labels message-grouped traces in the
+/// console. `None` for non-user messages and empty text.
+pub(crate) fn message_preview(message: &AgentMessage) -> Option<String> {
+    const PREVIEW_CHARS: usize = 30;
+    let AgentMessage::User(user) = message else {
+        return None;
+    };
+    let text = crate::types::content::ContentBlock::join_text(&user.content);
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview: String = collapsed.chars().take(PREVIEW_CHARS).collect();
+    (!preview.is_empty()).then_some(preview)
 }
 
 fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) -> TurnOptions {
@@ -268,6 +284,7 @@ async fn seed_or_merge(
     cfg: &WorkerConfig,
     session_id: &str,
     options: TurnOptions,
+    message_preview: Option<String>,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     // Carry the session's last-acknowledged registry generation onto a new turn
@@ -293,10 +310,10 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => seed_new(deps, cfg, session_id, options, prior_generation).await,
+                _ => seed_new(deps, cfg, session_id, options, prior_generation, message_preview).await,
             }
         }
-        _ => seed_new(deps, cfg, session_id, options, prior_generation).await,
+        _ => seed_new(deps, cfg, session_id, options, prior_generation, message_preview).await,
     }
 }
 
@@ -306,6 +323,7 @@ async fn seed_new(
     session_id: &str,
     options: TurnOptions,
     functions_generation: Option<u64>,
+    message_preview: Option<String>,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -316,6 +334,7 @@ async fn seed_new(
         step: 0,
         turn_count: 0,
         depth: 0,
+        message_preview,
         abort: false,
         watermark_entry_id: None,
         stream_request_id: None,
@@ -333,7 +352,14 @@ async fn seed_new(
         updated_at: now,
     };
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    turn_loop::enqueue_step(&deps.iii, session_id, &turn_id, 0).await?;
+    turn_loop::enqueue_step(
+        &deps.iii,
+        session_id,
+        &turn_id,
+        0,
+        record.message_preview.as_deref(),
+    )
+    .await?;
     Ok(StartOutcome {
         session_id: session_id.to_string(),
         turn_id,
@@ -357,6 +383,29 @@ mod tests {
         let assistant = AgentMessage::Assistant(crate::types::message::empty_assistant("p", "m"));
         let err = normalize_message(MessageInput::Message(Box::new(assistant))).unwrap_err();
         assert_eq!(err.code(), "harness/invalid_message_role");
+    }
+
+    #[test]
+    fn message_preview_takes_first_30_chars_single_line() {
+        let m = normalize_message(MessageInput::Text(
+            "help me implement the traces v2 new tags please".into(),
+        ))
+        .unwrap();
+        assert_eq!(
+            message_preview(&m).as_deref(),
+            Some("help me implement the traces v"),
+        );
+
+        let multiline =
+            normalize_message(MessageInput::Text("fix\nthe   login\n\nbug".into())).unwrap();
+        assert_eq!(message_preview(&multiline).as_deref(), Some("fix the login bug"));
+
+        // Char-boundary safe on multi-byte text.
+        let emoji = normalize_message(MessageInput::Text("🦀".repeat(40))).unwrap();
+        assert_eq!(message_preview(&emoji).unwrap().chars().count(), 30);
+
+        let empty = normalize_message(MessageInput::Text("   ".into())).unwrap();
+        assert_eq!(message_preview(&empty), None);
     }
 
     #[test]

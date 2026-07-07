@@ -26,6 +26,7 @@
 
 import { Fragment, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+import type { SpanFilterControls } from '../../lib/spanFilters'
 import { waterfallToTimelineSpans } from '../../lib/timelineSpans'
 import type { VisualizationSpan, WaterfallData } from '../../lib/traceTransform'
 import { formatDuration } from '../../lib/traceUtils'
@@ -33,9 +34,10 @@ import { BAR_HEIGHT, MIN_BAR_WIDTH, type TimelineSpan } from './layout'
 import { SpanFilterMenu } from './SpanFilterMenu'
 import { SpanHoverCard } from './SpanHoverCard'
 import {
-  applyHiddenSpanGroups,
+  applyHiddenSpanFilters,
   deriveSpanGroups,
   type SpanGroupKey,
+  workerGroupKey,
 } from './spanVisibility'
 import {
   BarLabel,
@@ -51,13 +53,20 @@ export interface TraceTimelineProps {
   selectedSpanId?: string
   className?: string
   /**
-   * Enables the floating filter menu (funnel, top-right of the canvas):
-   * spans are grouped by this key, the menu lists groups most-populated
-   * first, and hiding a group hides its spans with their subtrees. WHAT a
-   * group is stays the caller's business — see `lib/traceTimelineFilters.ts`
-   * for the page's grouping.
+   * Grouping for the filter menu's spans section: the menu lists groups
+   * most-populated first, and hiding a group hides its spans with their
+   * subtrees. WHAT a group is stays the caller's business — see
+   * `lib/traceTimelineFilters.ts` for the page's grouping.
    */
   spanGroupKey?: SpanGroupKey
+  /**
+   * Selection + mutations behind the floating filter menu (funnel,
+   * top-right of the canvas). Owned by the caller so the same selection
+   * can be shared with the waterfall view and persisted (see
+   * `hooks/useSpanFilterSelection.ts`). The menu renders only when BOTH
+   * this and `spanGroupKey` are provided.
+   */
+  spanFilter?: SpanFilterControls
 }
 
 const PADDING_X = 16
@@ -301,6 +310,7 @@ export function TraceTimeline({
   selectedSpanId,
   className,
   spanGroupKey,
+  spanFilter,
 }: TraceTimelineProps) {
   const stageRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -310,31 +320,29 @@ export function TraceTimeline({
   const [hover, setHover] = useState<HoverState | null>(null)
   const [dragging, setDragging] = useState(false)
 
-  // Hidden span groups. Kept across trace switches on purpose — hiding a
-  // noisy call family is a sticky preference, not a per-trace one.
-  const [hiddenGroupKeys, setHiddenGroupKeys] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  )
-  const toggleGroup = (key: string) =>
-    setHiddenGroupKeys((prev) => {
-      const next = new Set(prev)
-      if (!next.delete(key)) next.add(key)
-      return next
-    })
+  // The hidden-group/worker selection lives with the CALLER (`spanFilter`)
+  // so the timeline and waterfall share one selection and it persists in
+  // the console configuration. This component only derives menu entries
+  // and applies the selection.
+  const filterEnabled = !!spanGroupKey && !!spanFilter
 
   // Menu entries against the FULL data (an already-hidden group must keep
   // its row so it can be turned back on), busiest first.
   const spanGroups = useMemo(
-    () => (spanGroupKey ? deriveSpanGroups(data.spans, spanGroupKey) : []),
-    [data.spans, spanGroupKey],
+    () => (filterEnabled ? deriveSpanGroups(data.spans, spanGroupKey) : []),
+    [data.spans, spanGroupKey, filterEnabled],
+  )
+  const workerGroups = useMemo(
+    () => (filterEnabled ? deriveSpanGroups(data.spans, workerGroupKey) : []),
+    [data.spans, filterEnabled],
   )
 
   const visibleData = useMemo(
     () =>
-      spanGroupKey
-        ? applyHiddenSpanGroups(data, spanGroupKey, hiddenGroupKeys)
+      filterEnabled
+        ? applyHiddenSpanFilters(data, spanGroupKey, spanFilter)
         : data,
-    [data, spanGroupKey, hiddenGroupKeys],
+    [data, spanGroupKey, spanFilter, filterEnabled],
   )
 
   useLayoutEffect(() => {
@@ -541,15 +549,18 @@ export function TraceTimeline({
           ))}
 
         {/* filter menu, floating over the canvas: funnel expands on hover
-            into the span-group list (busiest first). */}
-        {spanGroupKey && (
+            into the workers + span-group lists (busiest first). */}
+        {spanFilter && (
           <div className="absolute top-1.5 right-2 z-10">
             <SpanFilterMenu
               groups={spanGroups}
-              hiddenKeys={hiddenGroupKeys}
+              workerGroups={workerGroups}
+              hiddenKeys={spanFilter.hiddenGroups}
+              hiddenWorkerKeys={spanFilter.hiddenWorkers}
               hiddenSpanCount={data.spans.length - visibleData.spans.length}
-              onToggle={toggleGroup}
-              onClear={() => setHiddenGroupKeys(new Set())}
+              onToggle={spanFilter.toggleGroup}
+              onToggleWorker={spanFilter.toggleWorker}
+              onClear={spanFilter.clear}
             />
           </div>
         )}

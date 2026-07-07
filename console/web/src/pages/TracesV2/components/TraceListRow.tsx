@@ -1,7 +1,8 @@
-import { Timer, Zap } from 'lucide-react'
+import { EyeOff, Timer, Zap } from 'lucide-react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { TraceListItem } from '../hooks/useTraceData'
+import { type RowLabelConfig, resolveRowLabel } from '../lib/traceListItem'
 import { formatDuration } from '../lib/traceUtils'
 
 function formatTime(timestamp: number): string {
@@ -35,6 +36,11 @@ interface TraceListRowProps {
   isNew: boolean
   onSelect: () => void
   onAnimationEnd: () => void
+  /** How the row's primary label is resolved; defaults to function id. */
+  label?: RowLabelConfig
+  /** When set (and the row has a functionId), hover surfaces a "hide this
+   *  function" affordance that adds it to the view's hidden list. */
+  onHideFunction?: (functionId: string) => void
 }
 
 export function TraceListRow({
@@ -43,14 +49,18 @@ export function TraceListRow({
   isNew,
   onSelect,
   onAnimationEnd,
+  label,
+  onHideFunction,
 }: TraceListRowProps) {
+  const resolved = resolveRowLabel(trace, label)
+  const canHide = !!onHideFunction && !!trace.functionId
   return (
     <button
       type="button"
       onClick={onSelect}
       onAnimationEnd={onAnimationEnd}
       className={cn(
-        'w-full px-4 py-3 border-b border-rule-2 text-left transition-colors',
+        'group/row w-full px-4 py-3 border-b border-rule-2 text-left transition-colors',
         isSelected ? 'bg-panel border-l-2 border-l-accent' : 'hover:bg-panel',
         isNew && 'trace-flash',
       )}
@@ -61,17 +71,37 @@ export function TraceListRow({
           pulse={trace.status === 'pending'}
         />
         <span className="font-mono text-[13px] text-ink truncate flex-1 lowercase">
-          {trace.topic ? (
-            <>
-              <span className="text-ink-faint text-[11px] mr-1 uppercase tracking-[0.06em]">
-                enqueue:
-              </span>
-              {trace.topic}
-            </>
-          ) : (
-            (trace.functionId ?? trace.rootOperation)
+          {resolved.prefix && (
+            <span className="text-ink-faint text-[11px] mr-1 uppercase tracking-[0.06em]">
+              {resolved.prefix}
+            </span>
           )}
+          {resolved.text}
         </span>
+        {canHide && (
+          // A native <button> can't nest inside the row <button>; a keyboard-
+          // operable span keeps the affordance valid HTML.
+          // biome-ignore lint/a11y/useSemanticElements: nested interactive inside the row button
+          <span
+            role="button"
+            tabIndex={0}
+            title={`hide ${trace.functionId} from the list`}
+            aria-label={`hide ${trace.functionId} from the list`}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (trace.functionId) onHideFunction?.(trace.functionId)
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault()
+              e.stopPropagation()
+              if (trace.functionId) onHideFunction?.(trace.functionId)
+            }}
+            className="opacity-0 group-hover/row:opacity-100 focus:opacity-100 text-ink-faint hover:text-ink transition-opacity flex-shrink-0"
+          >
+            <EyeOff className="w-3 h-3" />
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-3 font-mono text-[11px] text-ink-faint">
         <code className="tabular-nums">{trace.traceId.slice(0, 8)}</code>
@@ -83,7 +113,7 @@ export function TraceListRow({
         </span>
         <span className="flex items-center gap-1">
           <Zap className="w-2.5 h-2.5" />
-          {trace.services.join(', ')}
+          {trace.workers.join(', ')}
         </span>
         <span className="ml-auto tabular-nums">
           {formatTime(trace.startTime)}
