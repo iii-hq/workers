@@ -176,7 +176,7 @@ On boot, this worker queries `engine::workers::list` and refuses to start if
 | Transports | builtin (memory/file), redis (pub/sub, no DLQ), rabbitmq (full: retry/DLQ/priority/fifo) | same as builtin |
 | bridge adapter | engine-internal (`TriggerAction::Enqueue`) | N/A — engine `QueueEnqueuer` cut (MOT-3829) |
 | Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly once the engine remote-enqueue cut lands |
-| Latency benchmark | in-process baseline required | tracked in `queue/benches/enqueue_latency.md`; final budget is a pre-deprecation gate |
+| Latency benchmark | in-process baseline required | final budget is a pre-deprecation gate (tracked in the migration master plan) |
 
 The full engine `TriggerAction::Enqueue` path depends on the separate
 `QueueEnqueuer` engine cut tracked in the migration master plan.
@@ -196,6 +196,10 @@ The full engine `TriggerAction::Enqueue` path depends on the separate
   address a bare topic name and, on the builtin adapter, aggregate across
   every subscriber's internal queue on that topic — matching the engine's
   behavior (and its naming quirk) exactly, rather than fixing it here.
+  On the rabbitmq transport this makes DLQ browse/redrive against a
+  subscriber topic 404 (retries write to the per-function DLQ), and the
+  AMQP channel closure stops every consumer on the worker. Upstream engine
+  fix tracked as MOT-3904; this worker follows once the engine lands it.
 - **`dlq_topics` filters to `dlq_count > 0`.** The engine's equivalent also
   iterates every known topic but returns all of them regardless of DLQ
   depth; this worker only returns topics that currently have dead-lettered
