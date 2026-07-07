@@ -4,6 +4,7 @@
 pub const TRIGGER_TYPE: &str = "durable:subscriber";
 
 pub mod adapter;
+pub mod adapters;
 pub mod boot;
 pub mod config;
 pub mod configuration;
