@@ -63,6 +63,16 @@ const worktreeStatusSchema = z.object({
 })
 export type WorktreeStatusInfo = z.infer<typeof worktreeStatusSchema>
 
+/**
+ * Label for an integrated worktree: "merged upstream", with the worker's
+ * detection reason appended when it reports one.
+ */
+export function integrationLabel(status: WorktreeStatusInfo): string {
+  return status.integration_reason
+    ? `merged upstream (${status.integration_reason})`
+    : 'merged upstream'
+}
+
 const worktreeInfoSchema = z.object({
   worktree_id: z.string(),
   repo_path: z.string(),

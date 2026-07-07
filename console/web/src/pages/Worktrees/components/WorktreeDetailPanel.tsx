@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
+  integrationLabel,
   lifecycleTone,
   lifecycleToneClass,
   shortWorktreeId,
@@ -149,12 +150,7 @@ export function WorktreeDetailPanel({
           <Row label="integrated">
             <span className="inline-flex items-center gap-1.5 text-ink">
               <GitMerge size={12} className="text-ink-faint" aria-hidden />
-              merged upstream
-              {status.integration_reason ? (
-                <span className="text-[11px] lowercase text-ink-ghost">
-                  {status.integration_reason}
-                </span>
-              ) : null}
+              {integrationLabel(status)}
             </span>
           </Row>
         ) : null}

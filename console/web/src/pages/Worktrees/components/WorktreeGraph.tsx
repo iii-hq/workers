@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
+  integrationLabel,
   lifecycleTone,
   lifecycleToneClass,
   shortWorktreeId,
@@ -144,11 +145,7 @@ export function WorktreeGraph({
               {wt.status?.integrated ? (
                 <span
                   className="shrink-0 text-ink-ghost"
-                  title={`merged upstream${
-                    wt.status.integration_reason
-                      ? ` (${wt.status.integration_reason})`
-                      : ''
-                  }`}
+                  title={integrationLabel(wt.status)}
                 >
                   <GitMerge size={11} aria-hidden />
                 </span>
