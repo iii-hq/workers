@@ -67,6 +67,13 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   localStorage keeps only UI affordances (active id, last model).
   Double-click a row to rename inline (writes through `session::set-meta`);
   hover to reveal the delete affordance (`session::delete`).
+- **Worktree surface** backed by the optional
+  [worktree](../../worktree) worker: a worktrees tab in the
+  working-directory picker (picking validates the path and claims the
+  worktree for the session, released when the conversation points
+  elsewhere), a working-dir badge with branch / dirty / ahead / lifecycle,
+  live landed and land-blocked notices in chat, and the `#/worktrees`
+  graph page. Every piece is gated on worker presence.
 - **Light / dark theme** toggle, persisted under `iii-theme` and applied
   pre-paint to avoid a flash.
 
@@ -75,12 +82,14 @@ Then open the printed `Local:` URL (Vite picks the first free port from
 ```
 src/
   main.tsx
-  App.tsx                # routing (traces + configuration) + always-on chat dock
+  App.tsx                # routing (traces + configuration + worktrees) + always-on chat dock
   index.css              # Tailwind v4 + iii Schematic tokens + utilities
   lib/
     utils.ts             # cn = twMerge(clsx(...))
     storage.ts           # localStorage for UI affordances (active id, last model)
     markdown.tsx         # iii-styled react-markdown wrapper
+    worktrees.ts         # worktree worker wire types, calls, labels
+    worktree-claims.ts   # console-made claims + auto-release decision
     sessions/            # session-manager integration
       api.ts             #     session::* calls (list/ensure/set_meta/delete/messages)
       events.ts          #     bindings for the six session::* trigger types
@@ -97,7 +106,10 @@ src/
   types/chat.ts          # Conversation, Message, Mode, ModelId, Attachment
   hooks/
     use-conversations.ts # server-backed conversation store (session-manager)
-    use-hash-route.ts    # #/traces #/configuration
+    use-hash-route.ts    # #/traces #/configuration #/worktrees
+    use-worktree-status.ts   # worker presence probe (gates the surface)
+    use-worktree-binding.ts  # working dir -> managed worktree for the badge
+    use-worktree-events.ts   # landed / land-blocked trigger bindings
     use-theme.ts         # theme + persistence
   components/
     ui/                  # iii Schematic primitives (+ co-located *.stories.tsx)
@@ -106,6 +118,7 @@ src/
   pages/
     Configuration/       # console + workers config surfaces
     Traces/              # trace explorer
+    Worktrees/           # live worktree graph (repo -> worktree -> session)
   stories/               # Storybook-only assets (never in the app bundle)
     decorators.tsx       # shared decorators (.workers-tab scope, padding)
     fixtures/            # mock data for the component stories

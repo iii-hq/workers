@@ -23,6 +23,14 @@ The land test gate delegates to `shell::exec`, so the shell worker must be
 installed and `worktree_root` must sit inside its `fs.host_roots` jail.
 Landing never pushes to remotes; it moves local branches only.
 
+Destructive surfaces are gated by configuration: every mutating function
+checks its gate first, the force paths (claim takeover, forced removal,
+land `force_restart`) ship closed, and a denial names the exact config key
+to flip. The path `worktree::create` returns doubles as the turn's
+filesystem scope root (`metadata.fs_scope.root`), so file access inside the
+worktree is fenced by the shell worker while the gates cover the lifecycle
+door the scope cannot see (remove, prune, branch deletion, landing).
+
 ## When to Use
 
 - A task should run in isolation from the primary checkout or from other
@@ -31,6 +39,9 @@ Landing never pushes to remotes; it moves local branches only.
 - You need to see which worktrees exist, who owns them, and whether they
   carry uncommitted or unlanded work (`worktree::list`,
   `worktree::status`).
+- A GitHub pull request should be reviewed or exercised in isolation
+  (`worktree::create` with `pr: <number>` fetches `refs/pull/<n>/head`
+  from `origin` and branches at it).
 - A finished branch should merge back into `main` (or any target) with
   tests enforced first (`worktree::land` with `test_cmd`).
 - A land was blocked on conflicts and the agent resolved them in place:
@@ -56,8 +67,10 @@ Landing never pushes to remotes; it moves local branches only.
 
 ## Functions
 
-- `worktree::create` — mint a locked, isolated worktree off a base ref;
-  auto-claims for `session_id` when given.
+- `worktree::create` — mint a locked, isolated worktree off a base ref or
+  a pull request head (`pr`); auto-claims for `session_id` when given,
+  names the branch by id or deterministic codename per config, and returns
+  an advisory `dev_port` derived from the id (never reserved anywhere).
 - `worktree::list` — registry view, filterable by repo or session, with
   optional git status per worktree.
 - `worktree::get` — one worktree with status.
@@ -66,21 +79,36 @@ Landing never pushes to remotes; it moves local branches only.
 - `worktree::claim` — take session ownership (`force` to take over).
 - `worktree::release` — release ownership (`force` to override).
 - `worktree::status` — clean flag, ahead/behind, staged/unstaged/untracked
-  counts, diffstat, rebase-in-progress.
+  counts, diffstat, rebase-in-progress, and `integrated` with an
+  `integration_reason`, so squash- or rebase-landed branches read as
+  merged even while ahead of their base.
 - `worktree::remove` — remove a worktree; refuses dirty or unlanded work
-  unless forced; can delete the branch.
+  unless forced, and refuses while running processes hold files open under
+  it (`W222`); the directory leaves its path instantly (staged into a
+  trash area, deleted in the background); can delete the branch.
 - `worktree::prune` — sweep: drop records whose directories are gone and
-  remove clean, unclaimed, expired worktrees (cron-bound, `{}` payload).
+  remove clean, unclaimed, expired worktrees, including integrated ones
+  whose work already landed (cron-bound, `{}` payload).
 - `worktree::land` — queue the rebase / test / fast-forward / cleanup
   pipeline; returns a `job_id` immediately.
 - `worktree::land-step` — internal queue consumer that executes land
   phases; never call it directly (denied to agents).
 
+With `provision.copy_ignored` enabled in config, every create also
+replicates the source repo's gitignored files (.env files, caches) into
+the new worktree in the background; the create response never waits on it.
+
 Errors carry stable `W###` codes; the ones worth branching on are `W210`
-(already claimed), `W220` (dirty), `W221` (unmerged work), `W401` (land
-already queued), `W402` (unresolved rebase from a previous land), and the
-land-block reasons carried on events (`W410` conflict, `W411` tests,
-`W412` target kept moving, `W413` target checked out dirty).
+(already claimed), `W220` (dirty), `W221` (unmerged work), `W222` (files
+held open by running processes), `W401` (land already queued), `W402`
+(unresolved rebase from a previous land), and the land-block reasons
+carried on events (`W410` conflict, `W411` tests, `W412` target kept
+moving, `W413` target checked out dirty). `W5xx` means configuration
+denied the operation, not that it failed: `W500` gate off, `W501` force
+disabled, `W502` land target not in `gates.land_targets`, `W503`
+repository not in `gates.repos`, `W504` per-repo worktree budget hit. The
+message names the exact key; do not retry, surface that key to the
+operator (or drop the force flag) instead.
 
 ## Reactive triggers
 

@@ -1,8 +1,9 @@
-import { Check, Copy, X } from 'lucide-react'
+import { Check, Copy, GitMerge, X } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
+  integrationLabel,
   lifecycleTone,
   lifecycleToneClass,
   shortWorktreeId,
@@ -136,6 +137,22 @@ export function WorktreeDetailPanel({
         ) : null}
         {worktree.session_id ? (
           <Row label="claimed by">{worktree.session_id}</Row>
+        ) : null}
+        {worktree.dev_port != null ? (
+          <Row label="dev port">
+            <span className="tabular-nums">{worktree.dev_port}</span>
+            <span className="ml-2 text-[11px] lowercase text-ink-ghost">
+              advisory, derived from the id
+            </span>
+          </Row>
+        ) : null}
+        {status?.integrated ? (
+          <Row label="integrated">
+            <span className="inline-flex items-center gap-1.5 text-ink">
+              <GitMerge size={12} className="text-ink-faint" aria-hidden />
+              {integrationLabel(status)}
+            </span>
+          </Row>
         ) : null}
         {created ? <Row label="created">{created}</Row> : null}
         {updated ? <Row label="updated">{updated}</Row> : null}

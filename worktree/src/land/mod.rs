@@ -79,6 +79,9 @@ pub struct LandDeps {
     pub git_timeout_ms: u64,
     pub test_timeout_ms: u64,
     pub max_land_retries: u32,
+    /// gates.allow_branch_delete snapshot: when false, finalize keeps the
+    /// landed branch instead of deleting it.
+    pub allow_branch_delete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +148,10 @@ pub async fn run_step(deps: &LandDeps, job_id: &str) -> Result<StepResult, WErro
                     return block(deps, &mut job, codes::DIRTY, "dirty", None, None).await;
                 }
                 let repo = Path::new(&job.repo_path);
+                // Data-safety anchor: pin the pre-rebase head until finalize
+                // succeeds; a blocked land keeps the ref for recovery.
+                let head = ops::rev_parse(wt, "HEAD", git_t).await?;
+                ops::set_backup_ref(repo, &job.worktree_id, &head, git_t).await?;
                 match ops::rev_parse(repo, &job.target_branch, git_t).await {
                     Ok(sha) => job.recorded_target_sha = Some(sha),
                     Err(e) if e.code == codes::REF_NOT_FOUND => {
@@ -354,27 +361,31 @@ pub async fn run_step(deps: &LandDeps, job_id: &str) -> Result<StepResult, WErro
                         // once the directory is gone.
                         ops::worktree_remove(repo, wt, true, git_t).await?;
                     }
-                    // `git branch -d` checks mergedness against HEAD, not the
-                    // land target, so verify the ancestry explicitly and then
-                    // force-delete: the target already contains every commit
-                    // of the landed branch.
-                    let target_ref = format!("refs/heads/{}", job.target_branch);
-                    let branch_ref = format!("refs/heads/{}", job.branch);
-                    match ops::is_ancestor(repo, &branch_ref, &target_ref, git_t).await {
-                        Ok(true) => {
-                            ops::branch_delete(repo, &job.branch, true, git_t).await;
+                    if deps.allow_branch_delete {
+                        // CAS delete: drop the branch only while it still
+                        // points at the exact commit the land merged. A branch
+                        // that moved since is retained, never dropped blind.
+                        match ops::cas_branch_delete(repo, &job.branch, &merged_sha, git_t).await {
+                            Ok(true) => {}
+                            Ok(false) => tracing::warn!(
+                                branch = %job.branch,
+                                "finalize: branch moved since the land; keeping it"
+                            ),
+                            Err(e) => {
+                                tracing::debug!(error = %e, "finalize: CAS branch delete failed")
+                            }
                         }
-                        Ok(false) => tracing::warn!(
+                    } else {
+                        tracing::info!(
                             branch = %job.branch,
-                            "finalize: branch is not contained in the target; keeping it"
-                        ),
-                        Err(e) => {
-                            tracing::debug!(error = %e, "finalize: ancestry check failed")
-                        }
+                            "finalize: branch deletion disabled by gates.allow_branch_delete"
+                        );
                     }
                     state::delete_record(deps.state.as_ref(), &job.worktree_id).await?;
                 }
 
+                // The land is durable: release the data-safety anchor.
+                ops::delete_backup_ref(repo, &job.worktree_id, git_t).await;
                 state::clear_active_job_id(deps.state.as_ref(), &job.worktree_id).await?;
                 deps.emitter
                     .emit(

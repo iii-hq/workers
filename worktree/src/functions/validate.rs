@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::WError;
 use crate::functions::Deps;
-use crate::git::{ops, validate_abs_path};
+use crate::git::{canonical_or_self, ops, validate_abs_path};
 use crate::state;
 use crate::types::{now_ms, Lifecycle};
 
@@ -35,16 +35,14 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let cfg = deps.cfg().await;
     let t = cfg.git_timeout_ms;
     let path = validate_abs_path("path", &req.path)?;
-    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let canonical = canonical_or_self(&path);
 
     let records = state::list_records(deps.state.as_ref()).await?;
     let matched = records.into_iter().find(|r| {
         let record_path = Path::new(&r.path);
         record_path == path
             || record_path == canonical
-            || std::fs::canonicalize(record_path)
-                .map(|c| c == canonical)
-                .unwrap_or(false)
+            || canonical_or_self(record_path) == canonical
     });
 
     if let Some(mut record) = matched {

@@ -54,8 +54,51 @@ impl Deps {
             git_timeout_ms: cfg.git_timeout_ms,
             test_timeout_ms: cfg.test_timeout_ms,
             max_land_retries: cfg.max_land_retries,
+            allow_branch_delete: cfg.gates.allow_branch_delete,
         }
     }
+}
+
+/// `W500` denial naming the exact config key to flip.
+pub(crate) fn gate_denied(op: &str, key: &str) -> crate::error::WError {
+    crate::error::WError::new(
+        crate::error::codes::OP_DISABLED,
+        format!("{op} is disabled by configuration; set {key}: true to enable"),
+    )
+}
+
+/// `W501` denial for the force paths, all behind one key.
+pub(crate) fn force_denied(op: &str) -> crate::error::WError {
+    crate::error::WError::new(
+        crate::error::codes::FORCE_DISABLED,
+        format!("{op} is disabled by configuration; set gates.allow_force: true to enable"),
+    )
+}
+
+/// Allowlist denial (`W502`/`W503`) naming the rejected subject and the
+/// glob-list config key to extend.
+pub(crate) fn allowlist_denied(
+    code: &'static str,
+    subject: &str,
+    key: &str,
+) -> crate::error::WError {
+    crate::error::WError::new(
+        code,
+        format!("{subject} is not allowed by configuration; add it to {key} to enable"),
+    )
+}
+
+/// `W504` denial carrying the live count that hit the per-repo budget.
+pub(crate) fn budget_denied(repo: &std::path::Path, live: u32) -> crate::error::WError {
+    crate::error::WError::new(
+        crate::error::codes::WORKTREE_BUDGET_EXCEEDED,
+        format!(
+            "repository {} already has {live} live worktree(s), the \
+             configured budget; raise gates.max_worktrees_per_repo to \
+             allow more",
+            repo.display()
+        ),
+    )
 }
 
 macro_rules! register {

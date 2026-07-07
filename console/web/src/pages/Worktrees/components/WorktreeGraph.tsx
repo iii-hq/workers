@@ -1,8 +1,9 @@
-import { FolderGit2, GitBranch } from 'lucide-react'
+import { FolderGit2, GitBranch, GitMerge } from 'lucide-react'
 import { useMemo } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
+  integrationLabel,
   lifecycleTone,
   lifecycleToneClass,
   shortWorktreeId,
@@ -139,6 +140,14 @@ export function WorktreeGraph({
                   title={`${ahead} commit(s) ahead of base`}
                 >
                   +{ahead}
+                </span>
+              ) : null}
+              {wt.status?.integrated ? (
+                <span
+                  className="shrink-0 text-ink-ghost"
+                  title={integrationLabel(wt.status)}
+                >
+                  <GitMerge size={11} aria-hidden />
                 </span>
               ) : null}
             </span>

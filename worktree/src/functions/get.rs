@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::error::WError;
 use crate::functions::create::require_record;
-use crate::functions::status::build_status;
+use crate::functions::status::{build_status, TargetCache};
 use crate::functions::Deps;
 use crate::types::{Lifecycle, WorktreeInfo};
 
@@ -30,7 +30,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     };
     let mut info = WorktreeInfo::from_record(&record, lifecycle);
     if dir_exists {
-        match build_status(&record, cfg.git_timeout_ms).await {
+        match build_status(&record, cfg.git_timeout_ms, &mut TargetCache::new()).await {
             Ok(status) => info.status = Some(status),
             Err(e) => {
                 tracing::warn!(worktree_id = %record.worktree_id, error = %e, "status failed")

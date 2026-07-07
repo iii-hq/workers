@@ -36,6 +36,21 @@ pub struct Response {
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let cfg = deps.cfg().await;
+    if !cfg.gates.allow_remove {
+        return Err(crate::functions::gate_denied(
+            "worktree::remove",
+            "gates.allow_remove",
+        ));
+    }
+    if req.force && !cfg.gates.allow_force {
+        return Err(crate::functions::force_denied("worktree::remove force"));
+    }
+    if req.delete_branch && !cfg.gates.allow_branch_delete {
+        return Err(crate::functions::gate_denied(
+            "branch deletion",
+            "gates.allow_branch_delete",
+        ));
+    }
     let t = cfg.git_timeout_ms;
     let record = require_record(deps, &req.worktree_id).await?;
     let _guard = deps.locks.guard(&record.repo_key).await;
@@ -68,8 +83,13 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     if wt.is_dir() && repo_available {
         if !req.force {
-            let st = ops::status(wt, t).await?;
-            if !st.clean() {
+            // All three probes are read-only, so they run concurrently.
+            let (st, ahead_behind, busy) = tokio::join!(
+                ops::status(wt, t),
+                ops::ahead_behind(wt, &record.base_sha, t),
+                crate::trash::dir_in_use(wt),
+            );
+            if !st?.clean() {
                 return Err(WError::new(
                     codes::DIRTY,
                     format!(
@@ -78,7 +98,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                     ),
                 ));
             }
-            let (_, ahead) = ops::ahead_behind(wt, &record.base_sha, t).await?;
+            let (_, ahead) = ahead_behind?;
             if ahead > 0 {
                 return Err(WError::new(
                     codes::UNMERGED_WORK,
@@ -89,9 +109,31 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                     ),
                 ));
             }
+            if busy == Some(true) {
+                return Err(WError::new(
+                    codes::WORKTREE_BUSY,
+                    format!(
+                        "worktree {} has files open by running processes; stop them \
+                         or pass force to remove anyway",
+                        record.worktree_id
+                    ),
+                ));
+            }
         }
         ops::worktree_unlock(repo, wt, t).await;
-        ops::worktree_remove(repo, wt, true, t).await?;
+        // Rename into the trash (instant) and delete in the background; a
+        // failed rename falls back to the synchronous git removal.
+        let root = cfg.expanded_worktree_root();
+        match crate::trash::stage(wt, &root, &record.worktree_id) {
+            Ok(staged) => {
+                ops::worktree_prune(repo, t).await;
+                crate::trash::spawn_delete(staged);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "trash staging failed; removing synchronously");
+                ops::worktree_remove(repo, wt, true, t).await?;
+            }
+        }
     } else if repo_available {
         // Directory already gone: clean up stale admin metadata.
         ops::worktree_prune(repo, t).await;

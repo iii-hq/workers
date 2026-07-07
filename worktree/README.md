@@ -74,13 +74,87 @@ hot-reload on change (a `prune_schedule` change re-binds the cron live).
 ```yaml
 worktree_root: "~/.iii/worktrees"   # where managed worktrees are created
 branch_prefix: "iii/"               # auto-minted branch names
+branch_naming: "id"                 # or "codename" for <adjective>-<noun>-<4hex> names
 prune_schedule: "0 0 * * * *"       # six-field cron for the reconcile sweep
 prune_expire_hours: 72              # idle hours before a clean, unclaimed worktree is prunable
 land_queue: "worktree-land"         # engine queue name for land jobs
 max_land_retries: 3                 # rebase retries when the target branch moves mid-land
 git_timeout_ms: 60000               # per-git-subprocess bound
 test_timeout_ms: 600000             # land test gate bound
+provision:
+  copy_ignored: false               # replicate gitignored files into new worktrees
+  include: []                       # globs; empty = every ignored path
+  exclude: []                       # globs subtracted from the copy
+  max_copy_bytes: 2147483648        # total budget; entries beyond it are skipped
+gates:
+  allow_remove: true                # worktree::remove
+  allow_force: false                # remove force, claim/release force, land force_restart
+  allow_branch_delete: true         # remove delete_branch and the land finalize cleanup
+  allow_land: true                  # worktree::land
+  allow_prune: true                 # worktree::prune (including the cron sweep)
+  land_targets: ["*"]               # globs; pin to ["main"] to allow only mainline lands
+  repos: ["*"]                      # globs over canonical repo paths worktrees may branch from
+  max_worktrees_per_repo: 0         # live-worktree budget per repo at create time; 0 = unlimited
 ```
+
+### Copy-ignored provisioning
+
+With `provision.copy_ignored: true`, every create spawns a background task
+that replicates the source repo's gitignored files (.env files, caches,
+local settings) into the new worktree: cheapest copy per platform (APFS
+clones via `cp -c` with a plain fallback on macOS, `--reflink=auto` on
+Linux), VCS metadata directories and the managed worktree root always
+excluded, bounded by `max_copy_bytes`. Provisioning is best-effort by
+design: the create response never waits on it, failures only log, and a
+retried copy skips files that already landed.
+
+### Pull request checkouts, dev ports, integration
+
+`worktree::create` also takes `pr: <number>`: it fetches
+`refs/pull/<n>/head` from `origin` (GitHub layout) and branches
+`<prefix>pr-<n>` at it, so reviewing a PR gets its own isolated checkout.
+Every worktree carries an advisory `dev_port` (10000 + hash of the id mod
+10000): deterministic, collision-improbable across parallel worktrees, and
+never reserved anywhere; point dev servers at it to avoid port fights.
+`worktree::status` reports `integrated` with an `integration_reason`
+(`same_commit`, `ancestor`, `no_added_changes`, `trees_match`,
+`merge_adds_nothing`, `patch_id_match`) so squash- or rebase-landed branches
+read as merged, and `worktree::prune` removes integrated-but-ahead worktrees
+instead of holding them forever.
+
+### Removal and trash
+
+`worktree::remove` never blocks on a large directory delete: the worktree
+is renamed into a `.trash` staging area under `worktree_root` (instant),
+the git admin entry is pruned, and a detached task deletes the staged
+directory in the background; if the rename fails the removal falls back to
+a synchronous `git worktree remove`. Entries stranded by a crash are
+cleared by the next prune's trash sweep, which runs even when
+`gates.allow_prune` is off (it is remove's crash recovery, not part of
+prune's destructive surface). Unforced removals also probe for processes
+holding files open under the worktree and refuse with `W222` rather than
+deleting a directory out from under a running dev server.
+
+### Gates
+
+Every mutating handler checks its gate before anything else, so an operator
+can turn off whole classes of destruction with one config flip and the
+change hot-reloads. Denials are structured: `W500` (operation disabled),
+`W501` (force paths disabled), `W502` (land target not allowed), and every
+message names the exact key to flip, e.g. `worktree::remove is disabled by
+configuration; set gates.allow_remove: true to enable`. Force is the one
+gate that ships closed: takeovers, forced removals, and land restarts are
+opt-in.
+
+Creation is gated too: `gates.repos` pins which repositories worktrees may
+branch from (globs over the canonicalized path, `W503` otherwise), and
+`gates.max_worktrees_per_repo` caps live worktrees per repository at create
+time (`W504` names the current count; orphaned records do not count, and
+narrowing either gate later never breaks existing worktrees).
+
+Gates constrain this worker's own surface only. Restricting what an agent
+can run in a shell (`rm`, `git branch -D`, ...) is the shell worker's
+allowlist/denylist job; pair both for defense in depth.
 
 ### Filesystem scope interplay
 
@@ -129,8 +203,9 @@ instance.
   takeover and `W210`/`W211` mismatch errors.
 - `worktree::status` — clean, ahead/behind, staged/unstaged/untracked,
   diffstat, rebase-in-progress.
-- `worktree::remove` — guarded removal (`W220` dirty, `W221` unmerged),
-  optional branch deletion.
+- `worktree::remove` — guarded removal (`W220` dirty, `W221` unmerged,
+  `W222` busy), instant trash staging with background delete, optional
+  branch deletion.
 - `worktree::prune` — reconcile sweep, cron-bound; `{}` payload works.
 - `worktree::land` — queue a land job; returns `{ job_id, queued }`.
 - `worktree::land-step` — internal queue consumer; not agent-callable.

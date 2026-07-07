@@ -30,6 +30,9 @@ pub struct Response {
 }
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
+    if req.force && !deps.cfg().await.gates.allow_force {
+        return Err(crate::functions::force_denied("worktree::release force"));
+    }
     if req.session_id.trim().is_empty() {
         return Err(WError::new(
             codes::INVALID_REQUEST,

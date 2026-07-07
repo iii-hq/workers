@@ -15,9 +15,9 @@ Both use the same binary on one port. Context is usually a desk with a large mon
 
 ## Product Purpose
 
-Console is the local control panel for the [iii](https://github.com/iii-hq) engine: agentic chat, trace exploration, and provider configuration in a single embedded SPA served by one Rust binary.
+Console is the local control panel for the [iii](https://github.com/iii-hq) engine: agentic chat, trace exploration, worktree oversight for parallel agents, and provider configuration in a single embedded SPA served by one Rust binary. Surfaces backed by optional workers (like the worktree graph) appear only while their worker is connected, so the UI never advertises functions the engine does not have.
 
-Success looks like an operator who can steer an agent, watch function calls resolve, jump from a conversation session into the trace explorer, and configure AI providers without leaving the browser or fighting CORS. The product exists to make the engine legible: what ran, why it failed, and what to do next.
+Success looks like an operator who can steer an agent, watch function calls resolve, jump from a conversation session into the trace explorer, see which agent owns which checkout and whether its branch landed, and configure AI providers without leaving the browser or fighting CORS. The product exists to make the engine legible: what ran, why it failed, and what to do next.
 
 ## Brand Personality
 

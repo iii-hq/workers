@@ -28,10 +28,14 @@ impl GitOutput {
     }
 }
 
-/// Run `git <args>` in `dir` with hardening and a timeout. Returns the
-/// captured output regardless of exit code; use [`run_git_ok`] when nonzero
-/// is an error.
-pub async fn run_git(dir: &Path, args: &[&str], timeout_ms: u64) -> Result<GitOutput, WError> {
+/// The single hardened spawn point: prompts disabled, ext transport never
+/// allowed, bounded by one timeout, output captured whatever the exit code.
+async fn run_git_inner(
+    dir: &Path,
+    args: &[&str],
+    stdin_data: Option<&[u8]>,
+    timeout_ms: u64,
+) -> Result<GitOutput, WError> {
     let mut cmd = Command::new("git");
     cmd.arg("-c")
         .arg("protocol.ext.allow=never")
@@ -39,26 +43,66 @@ pub async fn run_git(dir: &Path, args: &[&str], timeout_ms: u64) -> Result<GitOu
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PROTOCOL_FROM_USER", "0")
-        .stdin(Stdio::null())
+        .stdin(if stdin_data.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let output = timeout(Duration::from_millis(timeout_ms), cmd.output())
+    let run = async {
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| WError::new(codes::GIT_SPAWN, format!("spawn git: {e}")))?;
+        if let Some(data) = stdin_data {
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                stdin
+                    .write_all(data)
+                    .await
+                    .map_err(|e| WError::new(codes::GIT_SPAWN, format!("write git stdin: {e}")))?;
+                drop(stdin);
+            }
+        }
+        child
+            .wait_with_output()
+            .await
+            .map_err(|e| WError::new(codes::GIT_SPAWN, format!("await git: {e}")))
+    };
+    let output = timeout(Duration::from_millis(timeout_ms), run)
         .await
         .map_err(|_| {
             WError::new(
                 codes::GIT_TIMEOUT,
                 format!("git {} timed out after {timeout_ms} ms", args.join(" ")),
             )
-        })?
-        .map_err(|e| WError::new(codes::GIT_SPAWN, format!("spawn git: {e}")))?;
+        })??;
 
     Ok(GitOutput {
         exit_code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+/// Run `git <args>` in `dir` with hardening and a timeout. Returns the
+/// captured output regardless of exit code; use [`run_git_ok`] when nonzero
+/// is an error.
+pub async fn run_git(dir: &Path, args: &[&str], timeout_ms: u64) -> Result<GitOutput, WError> {
+    run_git_inner(dir, args, None, timeout_ms).await
+}
+
+/// Like [`run_git`], but feeds `stdin_data` to the child (used for the
+/// `diff-tree --stdin` / `patch-id` plumbing pipelines).
+pub async fn run_git_with_stdin(
+    dir: &Path,
+    args: &[&str],
+    stdin_data: &[u8],
+    timeout_ms: u64,
+) -> Result<GitOutput, WError> {
+    run_git_inner(dir, args, Some(stdin_data), timeout_ms).await
 }
 
 /// Like [`run_git`], but a nonzero exit is a `W102` error carrying the
@@ -77,6 +121,14 @@ pub async fn run_git_ok(dir: &Path, args: &[&str], timeout_ms: u64) -> Result<Gi
         ));
     }
     Ok(out)
+}
+
+/// Canonicalize a path, falling back to the path itself when resolution
+/// fails (missing entry, permissions). Canonical spellings keep comparisons
+/// against git's own output honest: git reports resolved paths while
+/// callers may use a symlinked spelling (macOS /var vs /private/var).
+pub fn canonical_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Reject values that would be parsed as git options.

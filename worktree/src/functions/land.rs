@@ -45,6 +45,24 @@ pub struct Response {
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let cfg = deps.cfg().await;
+    if !cfg.gates.allow_land {
+        return Err(crate::functions::gate_denied(
+            "worktree::land",
+            "gates.allow_land",
+        ));
+    }
+    if req.force_restart && !cfg.gates.allow_force {
+        return Err(crate::functions::force_denied(
+            "worktree::land force_restart",
+        ));
+    }
+    if !cfg.gates.land_target_allowed(&req.target_branch) {
+        return Err(crate::functions::allowlist_denied(
+            codes::LAND_TARGET_NOT_ALLOWED,
+            &format!("target branch {:?}", req.target_branch),
+            "gates.land_targets",
+        ));
+    }
     let t = cfg.git_timeout_ms;
     validate_ref_name("target_branch", &req.target_branch)?;
 

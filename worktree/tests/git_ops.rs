@@ -7,24 +7,20 @@ mod support;
 use std::path::Path;
 
 use serde_json::json;
-use support::{commit_file, git, head_sha, init_repo, make_env, test_config, TestEnv};
+use support::{
+    commit_file, create_request, git, head_sha, init_repo, make_env, test_config, TestEnv,
+};
 use worktree::error::codes;
 use worktree::functions::{claim, create, list, prune, release, remove, status, validate};
 use worktree::state;
 use worktree::types::Lifecycle;
 
 async fn create_wt(env: &TestEnv, repo: &Path, session: Option<&str>) -> create::Response {
-    create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            session_id: session.map(str::to_string),
-        },
-    )
-    .await
-    .expect("create worktree")
+    let mut req = create_request(repo);
+    req.session_id = session.map(str::to_string);
+    create::handle(&env.deps, req)
+        .await
+        .expect("create worktree")
 }
 
 #[tokio::test]
@@ -67,45 +63,21 @@ async fn create_rejects_existing_branch_and_bad_paths() {
     git(&repo, &["branch", "taken"]);
     let env = make_env(tmp.path(), test_config(tmp.path()));
 
-    let err = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: Some("taken".into()),
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap_err();
+    let mut req = create_request(&repo);
+    req.branch = Some("taken".into());
+    let err = create::handle(&env.deps, req).await.unwrap_err();
     assert_eq!(err.code, codes::BRANCH_EXISTS);
 
-    let err = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: "relative/repo".into(),
-            base_ref: None,
-            branch: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap_err();
+    let err = create::handle(&env.deps, create_request(Path::new("relative/repo")))
+        .await
+        .unwrap_err();
     assert_eq!(err.code, codes::BAD_PATH);
 
     let not_repo = tmp.path().join("not-a-repo");
     std::fs::create_dir_all(&not_repo).unwrap();
-    let err = create::handle(
-        &env.deps,
-        create::Request {
-            repo_path: not_repo.to_string_lossy().into_owned(),
-            base_ref: None,
-            branch: None,
-            session_id: None,
-        },
-    )
-    .await
-    .unwrap_err();
+    let err = create::handle(&env.deps, create_request(&not_repo))
+        .await
+        .unwrap_err();
     assert_eq!(err.code, codes::NOT_A_REPO);
 }
 
@@ -484,4 +456,30 @@ fn prune_request_accepts_empty_cron_payload() {
     let req: prune::Request = serde_json::from_value(json!({})).unwrap();
     assert!(req.repo_path.is_none());
     assert!(!req.dry_run);
+}
+
+#[tokio::test]
+async fn cas_branch_delete_refuses_when_the_branch_moved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_repo(&repo);
+    let first = head_sha(&repo);
+    git(&repo, &["branch", "victim"]);
+    // The branch moves past the sha the caller expects.
+    let moved = commit_file(&repo, "move.txt", "m\n", "moves victim");
+    git(&repo, &["update-ref", "refs/heads/victim", &moved]);
+
+    let deleted = worktree::git::ops::cas_branch_delete(&repo, "victim", &first, 30_000)
+        .await
+        .unwrap();
+    assert!(!deleted, "delete must refuse when the branch moved");
+    let branches = git(&repo, &["branch", "--list", "victim"]);
+    assert!(branches.contains("victim"), "branch retained");
+
+    let deleted = worktree::git::ops::cas_branch_delete(&repo, "victim", &moved, 30_000)
+        .await
+        .unwrap();
+    assert!(deleted);
+    let branches = git(&repo, &["branch", "--list", "victim"]);
+    assert!(!branches.contains("victim"));
 }

@@ -57,6 +57,15 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 - **Resizable panels** — drag to resize, double-click to reset
 - **Critical-path breadcrumb** with cross-trace parent jump
 
+### Worktrees
+
+The human window into the [`worktree`](../worktree) worker: parallel agent checkouts, ownership, and land outcomes. Lives in [`web/src/pages/Worktrees/`](web/src/pages/Worktrees) and [`web/src/components/chat/`](web/src/components/chat). The whole surface is presence-gated: it appears only while the worktree worker is connected to the engine (the nav entry and picker tab hide; a direct `#/worktrees` hit lands on an install notice).
+
+- **Graph page** (`#/worktrees`) — repo, worktree, and owning-session nodes from `worktree::list { include_status: true }`, refreshed live off all six `worktree::*` lifecycle trigger types (poll fallback while bindings are unavailable), with a per-worktree detail panel: branch, base, advisory dev port, clean / ahead / behind, diffstat, and the integrated marker for squash- or rebase-landed branches
+- **Picker tab** — the chat working-directory picker grows a **worktrees** tab next to directory browsing: picking a managed worktree validates the path and claims it for the conversation's session; the console-made claim auto-releases when the conversation points elsewhere (best-effort; the worker's prune sweep is the durable backstop). Worktrees with a land in progress are listed but not retargetable
+- **Working-dir badge** — a conversation rooted in a managed worktree shows branch, short id, dirty `*` / ahead `+n` indicators, and a lifecycle dot instead of the plain path chip; the raw path stays reachable as the tooltip
+- **Live land notices** — `worktree::landed` / `worktree::land-blocked` events surface in the chat as notices (target branch and merged sha, or the block reason and conflicted files) and refresh the badge
+
 ### Live catalogs
 
 The composer's `@`-mentions and the model picker pull from the engine in real time.

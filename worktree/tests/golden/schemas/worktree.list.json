@@ -111,6 +111,12 @@
             "format": "int64",
             "type": "integer"
           },
+          "dev_port": {
+            "description": "Advisory dev-server port derived from the worktree id: deterministic, collision-improbable, never reserved anywhere.",
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "lifecycle": {
             "allOf": [
               {
@@ -164,6 +170,7 @@
           "base_sha",
           "branch",
           "created_at",
+          "dev_port",
           "lifecycle",
           "path",
           "repo_key",
@@ -209,6 +216,18 @@
           "in_rebase": {
             "description": "True while a rebase is in progress in this worktree.",
             "type": "boolean"
+          },
+          "integrated": {
+            "default": false,
+            "description": "True when the branch's work is already contained in its integration target (fast-forward, merge, rebase, or squash merge). Integrated worktrees are prunable even when ahead of their base.",
+            "type": "boolean"
+          },
+          "integration_reason": {
+            "description": "Which check detected the integration: `same_commit`, `ancestor`, `no_added_changes`, `trees_match`, `merge_adds_nothing`, or `patch_id_match`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "staged": {
             "description": "Staged entry count.",

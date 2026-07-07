@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{codes, WError};
 use crate::events::{CreatedEvent, EventCtx, EventKind};
 use crate::functions::Deps;
-use crate::git::{ops, validate_abs_path, validate_ref_name};
+use crate::git::{canonical_or_self, ops, validate_abs_path, validate_ref_name};
 use crate::ids;
 use crate::state;
 use crate::types::{now_ms, Lifecycle, WorktreeRecord};
@@ -20,9 +20,15 @@ pub struct Request {
     /// Ref to base the worktree on. Defaults to `HEAD`.
     #[serde(default)]
     pub base_ref: Option<String>,
-    /// Branch to create. Defaults to `<branch_prefix><worktree_id>`.
+    /// Branch to create. Defaults to `<branch_prefix><worktree_id>` (or a
+    /// codename when `branch_naming: codename`).
     #[serde(default)]
     pub branch: Option<String>,
+    /// Create the worktree at a GitHub pull request head: fetches
+    /// `refs/pull/<n>/head` from `origin` and branches `<prefix>pr-<n>` at
+    /// it. Mutually exclusive with `base_ref` and `branch`.
+    #[serde(default)]
+    pub pr: Option<u64>,
     /// Session to auto-claim the worktree for.
     #[serde(default)]
     pub session_id: Option<String>,
@@ -42,11 +48,20 @@ pub struct Response {
     pub base_sha: String,
     /// Canonical per-repo key (FIFO group for lands).
     pub repo_key: String,
+    /// Advisory dev-server port derived from the worktree id.
+    pub dev_port: u16,
     /// Creation time, ms since epoch.
     pub created_at: i64,
 }
 
 pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
+    if req.pr.is_some() && (req.base_ref.is_some() || req.branch.is_some()) {
+        return Err(WError::new(
+            codes::INVALID_REQUEST,
+            "pr is mutually exclusive with base_ref and branch",
+        ));
+    }
+
     let cfg = deps.cfg().await;
     let t = cfg.git_timeout_ms;
 
@@ -57,20 +72,56 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
             format!("repo_path is not a directory: {}", repo.display()),
         ));
     }
+    // Gate on the canonicalized path so symlink spellings cannot dodge the
+    // allowlist. Checked at create only: narrowing the list later never
+    // breaks existing worktrees.
+    let canonical_repo = canonical_or_self(&repo);
+    if !cfg.gates.repo_allowed(&canonical_repo.to_string_lossy()) {
+        return Err(crate::functions::allowlist_denied(
+            codes::REPO_NOT_ALLOWED,
+            &format!("repository {}", canonical_repo.display()),
+            "gates.repos",
+        ));
+    }
+
     let repo_key = ops::git_common_dir(&repo, t).await?;
     let _guard = deps.locks.guard(&repo_key).await;
 
-    let base_ref = req.base_ref.unwrap_or_else(|| "HEAD".to_string());
-    validate_ref_name("base_ref", &base_ref)?;
-    let base_sha = ops::rev_parse(&repo, &base_ref, t).await?;
+    // Budget check under the repo lock so concurrent creates serialize
+    // against the same count. Orphaned records are not live worktrees;
+    // corrupt records count (they may still be live).
+    if cfg.gates.max_worktrees_per_repo > 0 {
+        let live = state::count_live_records(deps.state.as_ref(), &repo_key).await?;
+        if live >= cfg.gates.max_worktrees_per_repo {
+            return Err(crate::functions::budget_denied(&canonical_repo, live));
+        }
+    }
 
     let worktree_id = ids::mint_worktree_id();
-    let branch = match req.branch {
-        Some(branch) => branch,
-        None => format!("{}{}", cfg.branch_prefix, worktree_id),
+    let (base_ref, base_sha, branch, branch_taken) = match req.pr {
+        Some(n) => {
+            let branch = format!("{}pr-{n}", cfg.branch_prefix);
+            validate_ref_name("branch", &branch)?;
+            let sha = ops::fetch_pr_head(&repo, n, t).await?;
+            let taken = ops::branch_exists(&repo, &branch, t).await?;
+            (format!("refs/pull/{n}/head"), sha, branch, taken)
+        }
+        None => {
+            let base_ref = req.base_ref.unwrap_or_else(|| "HEAD".to_string());
+            validate_ref_name("base_ref", &base_ref)?;
+            let branch = req
+                .branch
+                .unwrap_or_else(|| cfg.default_branch(&worktree_id));
+            validate_ref_name("branch", &branch)?;
+            // Independent read-only lookups; run them concurrently.
+            let (sha, taken) = tokio::join!(
+                ops::rev_parse(&repo, &base_ref, t),
+                ops::branch_exists(&repo, &branch, t),
+            );
+            (base_ref, sha?, branch, taken?)
+        }
     };
-    validate_ref_name("branch", &branch)?;
-    if ops::branch_exists(&repo, &branch, t).await? {
+    if branch_taken {
         return Err(WError::new(
             codes::BRANCH_EXISTS,
             format!("branch {branch:?} already exists"),
@@ -90,9 +141,8 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     ops::worktree_add(&repo, &dir, &branch, &base_sha, &worktree_id, t).await?;
     // Store the canonical path so comparisons against git's own worktree
-    // listing (which resolves symlinks, e.g. /var vs /private/var on macOS)
-    // match exactly.
-    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    // listing match exactly.
+    let dir = canonical_or_self(&dir);
 
     let now = now_ms();
     let record = WorktreeRecord {
@@ -144,7 +194,20 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
         )
         .await;
 
+    if cfg.provision.copy_ignored {
+        // Best-effort background provisioning; the create response never
+        // waits on it and nothing new is emitted.
+        crate::provision::spawn_copy_ignored(
+            repo.clone(),
+            std::path::PathBuf::from(&record.path),
+            cfg.provision.clone(),
+            root,
+            t,
+        );
+    }
+
     Ok(Response {
+        dev_port: ids::dev_port(&worktree_id),
         worktree_id,
         path: record.path,
         branch,

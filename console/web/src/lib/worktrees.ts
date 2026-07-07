@@ -57,8 +57,21 @@ const worktreeStatusSchema = z.object({
   in_rebase: z.boolean(),
   diffstat: z.string().optional(),
   head_sha: z.string().optional(),
+  // v0.2 workers; optional so older workers keep parsing.
+  integrated: z.boolean().optional(),
+  integration_reason: z.string().nullable().optional(),
 })
 export type WorktreeStatusInfo = z.infer<typeof worktreeStatusSchema>
+
+/**
+ * Label for an integrated worktree: "merged upstream", with the worker's
+ * detection reason appended when it reports one.
+ */
+export function integrationLabel(status: WorktreeStatusInfo): string {
+  return status.integration_reason
+    ? `merged upstream (${status.integration_reason})`
+    : 'merged upstream'
+}
 
 const worktreeInfoSchema = z.object({
   worktree_id: z.string(),
@@ -70,6 +83,8 @@ const worktreeInfoSchema = z.object({
   base_sha: z.string().optional(),
   lifecycle: lifecycleSchema,
   session_id: z.string().nullable().optional(),
+  // v0.2 workers; optional so older workers keep parsing.
+  dev_port: z.number().optional(),
   created_at: z.number().optional(),
   updated_at: z.number().optional(),
   status: worktreeStatusSchema.nullable().optional(),

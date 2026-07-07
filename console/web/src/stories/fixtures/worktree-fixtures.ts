@@ -187,6 +187,7 @@ function graphWt(
     base_sha: '8fbe7a1c9d0e2f3a4b5c6d7e8f9a0b1c2d3e4f5a',
     lifecycle,
     session_id: null,
+    dev_port: 14_310,
     created_at: createdAt,
     updated_at: createdAt + 30_000,
     status: cleanStatus,
@@ -197,6 +198,7 @@ function graphWt(
 export const worktreeGraphFixtures: WorktreeInfo[] = [
   graphWt('wt_11aa22bb', '/home/dev/app', 'active', now - 500_000),
   graphWt('wt_9f8e7d6c', '/home/dev/app', 'claimed', now - 400_000, {
+    dev_port: 11_204,
     session_id: 'console-1a2b3c4d',
     status: {
       ...cleanStatus,
@@ -208,15 +210,24 @@ export const worktreeGraphFixtures: WorktreeInfo[] = [
     },
   }),
   graphWt('wt_33cc44dd', '/home/dev/app', 'landing', now - 300_000, {
+    dev_port: 15_877,
     session_id: 'console-5e6f7a8b',
-    status: { ...cleanStatus, ahead: 1, unpushed: 1 },
+    status: {
+      ...cleanStatus,
+      ahead: 1,
+      unpushed: 1,
+      integrated: true,
+      integration_reason: 'merge_adds_nothing',
+    },
   }),
   graphWt('wt_55ee66ff', '/home/dev/api', 'land-blocked', now - 200_000, {
+    dev_port: 12_642,
     base_ref: 'release/1.2',
     session_id: 'console-9c0d1e2f',
     status: { ...cleanStatus, conflicted: 2, in_rebase: true, ahead: 3 },
   }),
   graphWt('wt_7700aa11', '/home/dev/api', 'orphaned', now - 100_000, {
+    dev_port: 13_098,
     status: null,
   }),
 ]

@@ -36,6 +36,8 @@ pub mod codes {
     pub const DIRTY: &str = "W220";
     /// The worktree has commits not merged anywhere.
     pub const UNMERGED_WORK: &str = "W221";
+    /// Running processes hold files open under the worktree.
+    pub const WORKTREE_BUSY: &str = "W222";
     /// The iii state store could not be reached (retryable).
     pub const STATE_UNAVAILABLE: &str = "W300";
     /// Persisted state deserialized into an unexpected shape (corrupt record/job).
@@ -54,6 +56,16 @@ pub mod codes {
     pub const TARGET_MOVED_EXHAUSTED: &str = "W412";
     /// The target branch is checked out in a dirty checkout.
     pub const TARGET_CHECKED_OUT_DIRTY: &str = "W413";
+    /// The operation is disabled by configuration (gates).
+    pub const OP_DISABLED: &str = "W500";
+    /// Force paths are disabled by configuration (gates.allow_force).
+    pub const FORCE_DISABLED: &str = "W501";
+    /// The land target branch is not allowed by gates.land_targets.
+    pub const LAND_TARGET_NOT_ALLOWED: &str = "W502";
+    /// The repository is not allowed by gates.repos.
+    pub const REPO_NOT_ALLOWED: &str = "W503";
+    /// The repository already holds gates.max_worktrees_per_repo live worktrees.
+    pub const WORKTREE_BUDGET_EXCEEDED: &str = "W504";
 }
 
 /// One structured worker error: stable code + human-readable message.

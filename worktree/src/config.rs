@@ -5,10 +5,12 @@
 //! (`boot_signature`) re-binds the prune cron trigger.
 
 use anyhow::Result;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +23,10 @@ pub struct WorkerConfig {
     /// Prefix for auto-minted branches (`<prefix><worktree_id>`).
     #[serde(default = "default_branch_prefix")]
     pub branch_prefix: String,
+    /// Default branch naming: `id` uses the worktree id; `codename` mints a
+    /// deterministic friendly `<adjective>-<noun>-<4hex>` name from it.
+    #[serde(default)]
+    pub branch_naming: BranchNaming,
     /// Six-field cron schedule for the automatic prune sweep.
     #[serde(default = "default_prune_schedule")]
     pub prune_schedule: String,
@@ -39,6 +45,182 @@ pub struct WorkerConfig {
     /// Land test gate timeout, milliseconds.
     #[serde(default = "default_test_timeout_ms")]
     pub test_timeout_ms: u64,
+    /// Operation gates: deny-by-config for destructive surfaces. Every gate
+    /// hot-reloads; denials name the exact key to flip.
+    #[serde(default)]
+    pub gates: GatesConfig,
+    /// Best-effort provisioning of gitignored files into fresh worktrees.
+    #[serde(default)]
+    pub provision: ProvisionConfig,
+}
+
+/// Copy-ignored provisioning: replicate gitignored files (.env, caches)
+/// from the source repository into each new worktree, in the background,
+/// after `worktree::create` returns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionConfig {
+    /// Enable the background copy of gitignored files on create.
+    #[serde(default)]
+    pub copy_ignored: bool,
+    /// Globs selecting which ignored paths to copy (empty = all ignored).
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Globs excluding ignored paths from the copy.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Total copy budget in bytes; entries beyond it are skipped with a
+    /// warning.
+    #[serde(default = "default_max_copy_bytes")]
+    pub max_copy_bytes: u64,
+}
+
+fn default_max_copy_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+
+impl Default for ProvisionConfig {
+    fn default() -> Self {
+        Self {
+            copy_ignored: false,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            max_copy_bytes: default_max_copy_bytes(),
+        }
+    }
+}
+
+/// How default branch names are minted at create time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BranchNaming {
+    /// `<branch_prefix><worktree_id>`.
+    #[default]
+    Id,
+    /// `<branch_prefix><adjective>-<noun>-<4hex>`, deterministic per id.
+    Codename,
+}
+
+/// Deny-by-config gates over the mutating surface. Checked FIRST by every
+/// mutating handler; a denial returns a `W5xx` error naming the key.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GatesConfig {
+    /// Allow `worktree::remove`.
+    #[serde(default = "default_true")]
+    pub allow_remove: bool,
+    /// Allow the force paths: remove force, claim force takeover, release
+    /// force, and land force_restart. Disabled out of the box.
+    #[serde(default)]
+    pub allow_force: bool,
+    /// Allow branch deletion (remove delete_branch and the land finalize
+    /// branch cleanup).
+    #[serde(default = "default_true")]
+    pub allow_branch_delete: bool,
+    /// Allow `worktree::land`.
+    #[serde(default = "default_true")]
+    pub allow_land: bool,
+    /// Allow `worktree::prune` (including the cron sweep).
+    #[serde(default = "default_true")]
+    pub allow_prune: bool,
+    /// Branches `worktree::land` may target. Glob list (`*` matches any
+    /// characters); pin to `["main"]` to allow only mainline lands.
+    #[serde(default = "default_match_all")]
+    pub land_targets: Vec<String>,
+    /// Repositories `worktree::create` may branch from. Glob list over the
+    /// canonicalized repository path; checked at create only, so existing
+    /// worktrees keep working when the list narrows later.
+    #[serde(default = "default_match_all")]
+    pub repos: Vec<String>,
+    /// Live (non-orphaned) worktrees allowed per repository at create time;
+    /// 0 = unlimited.
+    #[serde(default)]
+    pub max_worktrees_per_repo: u32,
+    /// Compiled `land_targets`, built once per config snapshot.
+    #[serde(skip)]
+    #[schemars(skip)]
+    land_targets_set: OnceLock<GlobSet>,
+    /// Compiled `repos`, built once per config snapshot.
+    #[serde(skip)]
+    #[schemars(skip)]
+    repos_set: OnceLock<GlobSet>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_match_all() -> Vec<String> {
+    vec!["*".to_string()]
+}
+
+impl Default for GatesConfig {
+    fn default() -> Self {
+        Self {
+            allow_remove: default_true(),
+            allow_force: false,
+            allow_branch_delete: default_true(),
+            allow_land: default_true(),
+            allow_prune: default_true(),
+            land_targets: default_match_all(),
+            repos: default_match_all(),
+            max_worktrees_per_repo: 0,
+            land_targets_set: OnceLock::new(),
+            repos_set: OnceLock::new(),
+        }
+    }
+}
+
+impl PartialEq for GatesConfig {
+    fn eq(&self, other: &Self) -> bool {
+        // Compiled glob caches are derived data; only the source lists count.
+        self.allow_remove == other.allow_remove
+            && self.allow_force == other.allow_force
+            && self.allow_branch_delete == other.allow_branch_delete
+            && self.allow_land == other.allow_land
+            && self.allow_prune == other.allow_prune
+            && self.land_targets == other.land_targets
+            && self.repos == other.repos
+            && self.max_worktrees_per_repo == other.max_worktrees_per_repo
+    }
+}
+
+impl GatesConfig {
+    /// True when `target` matches any of the `land_targets` globs.
+    pub fn land_target_allowed(&self, target: &str) -> bool {
+        self.land_targets_set
+            .get_or_init(|| compile_globs(&self.land_targets))
+            .is_match(target)
+    }
+
+    /// True when the canonicalized repository path matches any of the
+    /// `repos` globs.
+    pub fn repo_allowed(&self, repo_path: &str) -> bool {
+        self.repos_set
+            .get_or_init(|| compile_globs(&self.repos))
+            .is_match(repo_path)
+    }
+}
+
+/// Compile a glob list with the default settings (`*` crosses `/`, matching
+/// the documented gate semantics). Invalid patterns are logged and skipped;
+/// they can only narrow, never widen, an allowlist.
+pub(crate) fn compile_globs(patterns: &[String]) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        match Glob::new(pattern) {
+            Ok(glob) => {
+                builder.add(glob);
+            }
+            Err(e) => {
+                tracing::warn!(pattern, error = %e, "invalid glob in config; pattern ignored")
+            }
+        }
+    }
+    builder.build().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "glob set failed to build; nothing will match");
+        GlobSet::empty()
+    })
 }
 
 fn default_worktree_root() -> String {
@@ -78,12 +260,15 @@ impl Default for WorkerConfig {
         Self {
             worktree_root: default_worktree_root(),
             branch_prefix: default_branch_prefix(),
+            branch_naming: BranchNaming::default(),
             prune_schedule: default_prune_schedule(),
             prune_expire_hours: default_prune_expire_hours(),
             land_queue: default_land_queue(),
             max_land_retries: default_max_land_retries(),
             git_timeout_ms: default_git_timeout_ms(),
             test_timeout_ms: default_test_timeout_ms(),
+            gates: GatesConfig::default(),
+            provision: ProvisionConfig::default(),
         }
     }
 }
@@ -106,6 +291,15 @@ impl WorkerConfig {
     /// `worktree_root` with a leading `~/` expanded.
     pub fn expanded_worktree_root(&self) -> PathBuf {
         expand_home(&self.worktree_root)
+    }
+
+    /// Default branch name for a new worktree under the configured naming
+    /// scheme.
+    pub fn default_branch(&self, worktree_id: &str) -> String {
+        match self.branch_naming {
+            BranchNaming::Id => format!("{}{}", self.branch_prefix, worktree_id),
+            BranchNaming::Codename => crate::ids::codename_branch(&self.branch_prefix, worktree_id),
+        }
     }
 
     /// Schema registered with the `configuration` worker; shipped defaults
@@ -189,6 +383,53 @@ mod tests {
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.land_queue, "worktree-land");
         assert_eq!(cfg.prune_expire_hours, 72);
+    }
+
+    #[test]
+    fn gates_default_open_except_force() {
+        let gates = WorkerConfig::default().gates;
+        assert!(gates.allow_remove);
+        assert!(
+            !gates.allow_force,
+            "force paths are disabled out of the box"
+        );
+        assert!(gates.allow_branch_delete);
+        assert!(gates.allow_land);
+        assert!(gates.allow_prune);
+        assert_eq!(gates.land_targets, vec!["*".to_string()]);
+        assert!(gates.land_target_allowed("anything"));
+    }
+
+    #[test]
+    fn gates_yaml_overrides() {
+        let cfg = WorkerConfig::from_yaml(
+            "gates:\n\
+             \x20 allow_remove: false\n\
+             \x20 allow_force: true\n\
+             \x20 land_targets: [\"main\", \"release/*\"]\n",
+        )
+        .unwrap();
+        assert!(!cfg.gates.allow_remove);
+        assert!(cfg.gates.allow_force);
+        assert!(cfg.gates.allow_land, "unset keys keep their defaults");
+        assert!(cfg.gates.land_target_allowed("main"));
+        assert!(cfg.gates.land_target_allowed("release/1.2"));
+        assert!(!cfg.gates.land_target_allowed("trunk"));
+    }
+
+    #[test]
+    fn glob_match_star_and_literals() {
+        let gates = |patterns: &[&str]| GatesConfig {
+            land_targets: patterns.iter().map(|s| s.to_string()).collect(),
+            ..GatesConfig::default()
+        };
+        assert!(gates(&["*"]).land_target_allowed("anything/at/all"));
+        assert!(gates(&["main"]).land_target_allowed("main"));
+        assert!(!gates(&["main"]).land_target_allowed("main2"));
+        assert!(gates(&["release/*"]).land_target_allowed("release/1.2"));
+        assert!(!gates(&["release/*"]).land_target_allowed("release"));
+        assert!(gates(&["*-wip"]).land_target_allowed("feature-wip"));
+        assert!(!gates(&[]).land_target_allowed("anything"));
     }
 
     #[test]

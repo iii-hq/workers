@@ -86,6 +86,12 @@
         "minimum": 0.0,
         "type": "integer"
       },
+      "dev_port": {
+        "description": "Advisory dev-server port derived from the worktree id.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "diffstat": {
         "description": "`git diff --shortstat` of committed work since `base_sha`.",
         "type": "string"
@@ -97,6 +103,18 @@
       "in_rebase": {
         "description": "True while a rebase is in progress in this worktree.",
         "type": "boolean"
+      },
+      "integrated": {
+        "default": false,
+        "description": "True when the branch's work is already contained in its integration target (fast-forward, merge, rebase, or squash merge). Integrated worktrees are prunable even when ahead of their base.",
+        "type": "boolean"
+      },
+      "integration_reason": {
+        "description": "Which check detected the integration: `same_commit`, `ancestor`, `no_added_changes`, `trees_match`, `merge_adds_nothing`, or `patch_id_match`.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "lifecycle": {
         "allOf": [
@@ -141,6 +159,7 @@
       "branch",
       "clean",
       "conflicted",
+      "dev_port",
       "diffstat",
       "head_sha",
       "in_rebase",

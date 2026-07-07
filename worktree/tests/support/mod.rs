@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 use worktree::config::WorkerConfig;
 use worktree::error::{codes, WError};
 use worktree::events::{Emitter, EventDeliverer, EventKind, TriggerSets};
-use worktree::functions::Deps;
+use worktree::functions::{create, Deps};
 use worktree::land::test_gate::{TestOutcome, TestRunner};
 use worktree::land::Enqueuer;
 use worktree::locks::RepoLocks;
@@ -176,6 +176,18 @@ pub fn commit_file(dir: &Path, file: &str, content: &str, message: &str) -> Stri
 
 pub fn head_sha(dir: &Path) -> String {
     git(dir, &["rev-parse", "HEAD"])
+}
+
+/// A `worktree::create` request off `repo` with every option unset; suites
+/// override single fields as needed.
+pub fn create_request(repo: &Path) -> create::Request {
+    create::Request {
+        repo_path: repo.to_string_lossy().into_owned(),
+        base_ref: None,
+        branch: None,
+        pr: None,
+        session_id: None,
+    }
 }
 
 pub fn branch_sha(dir: &Path, branch: &str) -> String {
@@ -366,12 +378,16 @@ pub struct TestEnv {
 }
 
 pub fn test_config(root: &Path) -> WorkerConfig {
-    WorkerConfig {
+    let mut cfg = WorkerConfig {
         worktree_root: root.join("wts").to_string_lossy().into_owned(),
         git_timeout_ms: 30_000,
         test_timeout_ms: 30_000,
         ..WorkerConfig::default()
-    }
+    };
+    // Behavioral tests exercise the force paths; the gates suite covers the
+    // restrictive defaults explicitly.
+    cfg.gates.allow_force = true;
+    cfg
 }
 
 /// In-process environment against a tempdir: in-memory store, recording
