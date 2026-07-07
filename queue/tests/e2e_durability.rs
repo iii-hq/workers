@@ -58,14 +58,27 @@ fn register_counting_function(
 }
 
 fn register_subscriber(iii: &Arc<IIIClient>, function_id: &str, queue: &str) {
+    register_subscriber_with_config(iii, function_id, queue, None);
+}
+
+fn register_subscriber_with_config(
+    iii: &Arc<IIIClient>,
+    function_id: &str,
+    queue: &str,
+    queue_config: Option<Value>,
+) {
+    let mut config = json!({
+        "queue": queue,
+        "max_retries": 1,
+        "backoff_ms": 5
+    });
+    if let Some(qc) = queue_config {
+        config["queue_config"] = qc;
+    }
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: TRIGGER_TYPE.to_string(),
         function_id: function_id.to_string(),
-        config: json!({
-            "queue": queue,
-            "max_retries": 1,
-            "backoff_ms": 5
-        }),
+        config,
         metadata: None,
     })
     .expect("register durable subscriber trigger");
@@ -178,13 +191,29 @@ async fn file_based_pending_message_survives_worker_restart_connect_or_skip() {
         .await
         .expect("queue worker should boot");
 
+    // Engine-parity restart scenario: the message must be enqueued onto a
+    // SUBSCRIBED topic (fan-out routes it to the subscriber's internal
+    // queue, which is what the file store persists). A publish with no
+    // subscriber buffers on the bare topic and is never drained by a later
+    // subscribe — same as the engine builtin. `concurrency: 0` pauses
+    // consumption (engine semantics) so the message is still pending when
+    // the worker shuts down.
     let queue_name = format!("e2e-restart-{}", Uuid::new_v4());
+    let function_id = format!("queue.restart.{queue_name}");
+    register_subscriber_with_config(
+        &iii,
+        &function_id,
+        &queue_name,
+        Some(json!({"concurrency": 0})),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     trigger(
         &iii,
         PUBLISH_FN_ID,
         json!({"queue": queue_name, "data": {"survives": true}}),
     )
     .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     boot.shutdown().await;
     iii.shutdown_async().await;
 
@@ -197,7 +226,8 @@ async fn file_based_pending_message_survives_worker_restart_connect_or_skip() {
 
     let fires = Arc::new(AtomicUsize::new(0));
     let fail = Arc::new(AtomicBool::new(false));
-    let function_id = format!("queue.restart.{}", Uuid::new_v4());
+    // Same function id as before the restart: the persisted job lives in
+    // the internal queue `{topic}::{function_id}`.
     register_counting_function(&iii, &function_id, fires.clone(), fail);
     register_subscriber(&iii, &function_id, &queue_name);
     wait_for_fires(&fires, 1).await;
