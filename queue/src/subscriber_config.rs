@@ -65,7 +65,11 @@ pub struct SubscriberQueueConfig {
     /// Declares this subscriber's queue as a RabbitMQ priority queue with this
     /// many levels (`x-max-priority`, 1–255). RabbitMQ-only; the priority value
     /// of each message comes from the adapter-level `priority_field`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "maxPriority",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_priority: Option<u8>,
 }
 
@@ -261,5 +265,12 @@ mod tests {
                 max_priority: Some(7),
             }
         );
+    }
+
+    #[test]
+    fn test_deserialize_accepts_camel_case_max_priority() {
+        let config: SubscriberQueueConfig =
+            serde_json::from_value(json!({"maxPriority": 10})).unwrap();
+        assert_eq!(config.max_priority, Some(10));
     }
 }
