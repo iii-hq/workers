@@ -7,8 +7,12 @@ Implements the provider protocol from
 `provider::zai::refresh_models` (curated catalog →
 `router::models::reconcile` — Z.AI exposes no models-listing endpoint).
 
-Default upstream: `https://api.z.ai/api/paas/v4/chat/completions` (Z.AI's
-OpenAI-compatible endpoint), overridable per slice via `api_url`.
+Default upstream: `https://api.z.ai/api/coding/paas/v4/chat/completions` —
+the GLM Coding Plan endpoint (subscription keys, the common case). The
+catalog follows the resolved endpoint: the coding endpoint reconciles only
+the plan's models (`glm-5.2`, `glm-5-turbo`, `glm-4.7`); override `api_url`
+to `https://api.z.ai/api/paas/v4/chat/completions` (pay-as-you-go) for the
+full GLM lineup.
 
 ## Behavior
 
@@ -26,14 +30,15 @@ OpenAI-compatible endpoint), overridable per slice via `api_url`.
 - **Credentials:** resolved per request via `router::provider::resolve`
   (config slice → `ZAI_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
-  Bearer`; v1 performs no OAuth refresh. Keys come from the
-  [Z.AI Open Platform](https://z.ai) (pay-as-you-go). GLM Coding Plan keys
-  are endpoint-restricted and fail on the general endpoint with business
-  code 1113.
+  Bearer`; v1 performs no OAuth refresh. Keys are endpoint-bound on Z.AI's
+  side: GLM Coding Plan keys work on the default coding endpoint but fail
+  on the general endpoint with business code 1113, and pay-as-you-go
+  Open Platform keys need the `api_url` override to the general endpoint.
 - **Catalog:** `src/curated.rs` is the source of truth — ids, windows,
   output ceilings, capability flags, and pricing (USD per MTok) from
   docs.z.ai. Update it when Z.AI ships new models; there is no live listing
-  to discover them from.
+  to discover them from. `refresh_models` reconciles the slice matching the
+  resolved endpoint (Coding Plan subset vs full table).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.

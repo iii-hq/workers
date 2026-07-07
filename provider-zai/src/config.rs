@@ -5,7 +5,11 @@
 use llm_router::types::credential::Credential;
 use llm_router::types::router::ProviderResolveResponse;
 
-pub const DEFAULT_API_URL: &str = "https://api.z.ai/api/paas/v4/chat/completions";
+// The GLM Coding Plan endpoint is the default: subscription keys are the
+// common case and they hard-fail (business code 1113) on the general
+// pay-as-you-go endpoint. Pay-as-you-go operators override `api_url` to
+// https://api.z.ai/api/paas/v4/chat/completions for the full GLM lineup.
+pub const DEFAULT_API_URL: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
 
 #[derive(Debug, Clone)]

@@ -153,9 +153,22 @@ const ROWS: &[Row] = &[
     },
 ];
 
+/// The GLM Coding Plan (subscription) serves only these models
+/// (docs.z.ai devpack); the catalog shrinks to them when the resolved
+/// endpoint is the coding one.
+const CODING_PLAN_IDS: [&str; 3] = ["glm-5.2", "glm-5-turbo", "glm-4.7"];
+
 /// The full catalog slice reconciled into the router.
 pub fn models() -> Vec<Model> {
     ROWS.iter().map(to_model).collect()
+}
+
+/// The Coding Plan subset of the catalog.
+pub fn coding_models() -> Vec<Model> {
+    ROWS.iter()
+        .filter(|r| CODING_PLAN_IDS.contains(&r.id))
+        .map(to_model)
+        .collect()
 }
 
 fn to_model(r: &Row) -> Model {
