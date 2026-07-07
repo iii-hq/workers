@@ -70,7 +70,7 @@ default_timeout_ms: 30000    # applied when the caller omits timeout_ms (code de
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
-  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; gates per-call `env` (dangerous keys never settable)
+  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; has no effect on per-call `env` (deny-only — dangerous keys never settable)
 
 # Command policy is deny-only: allow/ask policy lives in the approval-gate.
 # denylist_patterns are advisory regex over argv.join(" "), a tripwire for
@@ -110,7 +110,7 @@ Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `p
 `shell::exec` and `shell::exec_bg` each accept optional fields so an agent can scope a single command to a directory, set specific env values, and feed it standard input without wrapping everything in `sh -lc` (which would blur what the argv actually was):
 
 - **`cwd`** (string): the working directory for this one call. It is confined to the fs jail **exactly** like `shell::fs::*` paths — jail-relative when `fs.host_roots` is set (else absolute), canonicalized, and required to resolve inside a jail root and miss `denylist_paths`. A `cwd` that escapes the jail returns `S215`; one that doesn't exist or isn't a directory returns `S211`/`S210`. Omit it to use the configured `working_dir` (unchanged default).
-- **`env`** (object of string→string): per-call environment values. A key may be set **only** if the operator already listed it in `env.allow`, and **never** for an exec-hijacking key — `PATH`, `IFS`, `HOME`, every `LD_*`/`DYLD_*` variant, and other loader/lookup-path and interpreter startup-file keys (`GCONV_PATH`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `NODE_OPTIONS`, …) are on a hardcoded denylist that **wins over** `env.allow`. Note that `HOME` ships in the default `env.allow` for the worker's own forwarded env but is **not** settable per-call. Supplying a key that is not in `env.allow`, or any dangerous key, rejects the **whole call** with `S210` (the offending key is named and the permitted keys are listed); the env is never silently dropped. A permitted per-call value overrides the value that would otherwise be forwarded for that key. So an agent can do `NODE_ENV=test` only if the operator put `NODE_ENV` in `env.allow`, and can never inject `PATH`, `HOME`, or `LD_PRELOAD`.
+- **`env`** (object of string→string): per-call environment values. Deny-only, like the exec/fs command policy: a key may be set to **any** value **except** an exec-hijacking key — `PATH`, `IFS`, `HOME`, every `LD_*`/`DYLD_*` variant, and other loader/lookup-path and interpreter startup-file keys (`GCONV_PATH`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `NODE_OPTIONS`, …), which are rejected unconditionally. `env.allow` plays **no role** in this gate at all — that list's only job is which vars get *forwarded* from the worker's own environment when `env.inherit` is false (see [Configure](#configure)); it has nothing to do with what a per-call override may set. Supplying a dangerous key rejects the **whole call** with `S210` (the offending key is named); the env is never silently dropped. A per-call value overrides the value that would otherwise be forwarded for that key. So an agent can do `NODE_ENV=test` freely, but can never inject `PATH`, `HOME`, or `LD_PRELOAD`.
 - **`stdin`** (string): written to the program's standard input, which is then closed (EOF). Use it to feed `tee`, `patch`, `cat`, or any stdin filter instead of a shell heredoc. Omit it and stdin is `/dev/null`.
 
 All three fields are **host-only**. The `sandbox::exec` protocol does not forward `cwd`/`env`/`stdin`, so a sandbox-targeted call that supplies any of them is rejected with `S210` rather than silently ignoring it. Omit them and behaviour is identical to prior versions.
@@ -140,7 +140,7 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 
 | Function | Purpose |
 |---|---|
-| `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (confined to `fs.host_roots` when set, else absolute), `env` (gated by `env.allow` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
+| `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (confined to `fs.host_roots` when set, else absolute), `env` (deny-only, gated by a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
 | `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
 | `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
@@ -213,7 +213,7 @@ Returned error bodies carry a stable `code` field. Denylist rejections come back
 | Code | Meaning |
 |---|---|
 | `S200` | In-VM execution failure on a sandbox target. |
-| `S210` | Invalid request: non-absolute path, empty command or pattern, bad octal mode, malformed payload, `sandbox.enabled: false` on a sandbox-targeted call, a `cwd` that is not a directory, an `env` key outside `env.allow` or in the dangerous-key denylist, `cwd`/`env`/`stdin` supplied on a sandbox target (host-only), an inline string `content` on a sandbox-targeted `shell::fs::write`, or both single `path`/`content` and `files` on `shell::fs::write`. |
+| `S210` | Invalid request: non-absolute path, empty command or pattern, bad octal mode, malformed payload, `sandbox.enabled: false` on a sandbox-targeted call, a `cwd` that is not a directory, an `env` key in the dangerous-key denylist, `cwd`/`env`/`stdin` supplied on a sandbox target (host-only), an inline string `content` on a sandbox-targeted `shell::fs::write`, or both single `path`/`content` and `files` on `shell::fs::write`. |
 | `S211` | Path not found (including a `cwd` that does not exist). |
 | `S212` | Wrong file type for the operation (for example, a file where a directory was expected). |
 | `S213` | Path already exists. |
@@ -258,6 +258,14 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
   fs:
     host_roots: [/tmp]
   ```
+
+- **The per-call `env` override is deny-only.** `env.allow` no longer gates
+  which keys `shell::exec`/`exec_bg`'s per-call `env` may set — only the
+  hardcoded dangerous-key list does (see [Per-call `cwd`, `env`, and
+  `stdin`](#per-call-cwd-env-and-stdin-host-target)). This is a pure
+  widening: nothing that worked before now fails, and no stored config needs
+  a rewrite. `env.allow` keeps its other job (forwarding when `env.inherit`
+  is false) unchanged.
 
 ## Upgrading to 0.7.0
 

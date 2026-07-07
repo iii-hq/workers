@@ -104,8 +104,9 @@ pub struct ExecOverrides {
     /// Canonical, jail-confined working directory. `None` falls back to
     /// `cfg.working_dir` in `build_command`.
     pub cwd: Option<PathBuf>,
-    /// Per-call env values, already gated against `env.allow` +
-    /// [`DANGEROUS_ENV_KEYS`]. Applied on top of the config-forwarded env.
+    /// Per-call env values, already gated against
+    /// [`DANGEROUS_ENV_KEYS`] (deny-only). Applied on top of the
+    /// config-forwarded env.
     pub env: Option<BTreeMap<String, String>>,
     /// Bytes fed to the child's stdin (then EOF). `None` leaves stdin closed
     /// (`/dev/null`). Needs no jail/allowlist gating — it is opaque input data,

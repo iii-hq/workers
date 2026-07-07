@@ -2,12 +2,12 @@
 
 ## 0.8.0
 
-Deny-only command policy: the shell no longer carries a command allowlist.
-Allow/ask policy (which commands need a human) lives in the approval-gate;
-the shell's only command policy is the catastrophic-pattern denylist, and
-the sandbox backend is the real security boundary for untrusted exec (the fs
-jail is now opt-in — see below — so it no longer factors into that boundary
-by default).
+Deny-only, permissive-first policy across the board: the shell no longer
+carries a command allowlist, the fs jail is opt-in rather than defaulted on,
+and the per-call `env` override on `shell::exec`/`exec_bg` is gated only by
+the hardcoded dangerous-key denylist. Allow/ask policy (which commands need
+a human) lives in the approval-gate; the sandbox backend is the real
+security boundary for untrusted exec.
 
 ### Breaking
 - **`allowlist` is removed.** Any config still carrying the key — including
@@ -30,6 +30,16 @@ by default).
   affects a fresh, zero-config install or a stored config that gets nulled —
   an existing deployment with an explicit `fs.host_roots` keeps it; the
   stored value always wins over the seed.
+- **The per-call `env` override on `shell::exec`/`exec_bg` is deny-only.**
+  `env.allow` no longer gates which keys a caller may set per call — a key
+  is now permitted UNLESS it's an exec-hijacking key (`PATH`, `IFS`, `HOME`,
+  `LD_*`/`DYLD_*`, interpreter startup keys, ...), rejected unconditionally
+  regardless of any config. `env.allow` keeps its other job unchanged:
+  which vars get forwarded from the worker's own environment when
+  `env.inherit` is false. This is a pure widening (nothing that worked
+  before now fails) — no stored config needs a rewrite. There is no
+  replacement for restricting per-call env keys further; use approval-gate
+  rules if you need that.
 
 ### Migration
 ```yaml

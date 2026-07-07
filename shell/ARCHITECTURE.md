@@ -63,7 +63,7 @@ denylist.
 | `max_output_bytes` | `1048576` (1 MiB) | stdout/stderr truncated; `*_truncated` flagged |
 | `working_dir` | `null` | pins cwd for spawned commands when set |
 | `env.inherit` | `false` | forward the worker's FULL env to children; when `false`, only `env.allow` keys are forwarded |
-| `env.allow` | `[PATH, HOME, LANG, LC_ALL, TERM]` | dual role: forwarding allowlist when `env.inherit` is false, AND the per-call `env` settable gate (minus the hardcoded dangerous keys, which are never settable) |
+| `env.allow` | `[PATH, HOME, LANG, LC_ALL, TERM]` | forwarding allowlist when `env.inherit` is false. No effect on the per-call `env` override, which is deny-only (gated solely by the hardcoded dangerous-key list) |
 | `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |
 | `job_retention_secs` | `3600` | finished jobs evicted by a background reaper (interval `min(30s, retention/2)`) — the primary prune path; prune-on-`shell::list` remains as a harmless secondary trigger |

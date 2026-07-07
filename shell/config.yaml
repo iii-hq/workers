@@ -18,9 +18,9 @@ env:
   # NOTE: this also forwards any secrets in the worker's env to every command;
   # run the worker with a clean environment if that matters to you.
   inherit: true
-  # Dual role: (1) when `inherit` is false, ONLY these keys are forwarded to
-  # children; (2) per-call `env` may set a key only if it is listed here —
-  # minus the hardcoded dangerous keys above, which are never settable.
+  # When `inherit` is false, ONLY these keys are forwarded to children. Has
+  # no effect on per-call `env` (deny-only, see line 16 above) — this list
+  # governs forwarding only, never what a caller may override per call.
   allow:
     - PATH
     - HOME
