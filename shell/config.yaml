@@ -31,8 +31,10 @@ env:
 # unless it trips the denylist below. This is deliberate: a coding agent
 # needs arbitrary build/test/VCS tooling, and allow/ask policy (which
 # commands need a human) lives in the approval-gate, not here. This worker
-# is NOT a sandbox: the security boundary is the fs jail (fs.host_roots)
-# plus the optional sandbox backend.
+# is NOT a sandbox: for command execution, the only real security boundary
+# is the optional sandbox backend (target: { kind: "sandbox" }). fs.host_roots
+# (see the fs: block below, unjailed by default) only ever confines
+# shell::fs::*/cwd, never a spawned process's own filesystem access.
 # Advisory tripwire ONLY (regex over argv.join(" ")), trivially evadable via an
 # interpreter — NOT a security boundary. Only catastrophic, host-wrecking
 # patterns are kept to catch honest mistakes.

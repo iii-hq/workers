@@ -524,8 +524,10 @@ mod tests {
 
     #[test]
     fn prepare_config_accepts_seed_default() {
-        // The zero-config seed must boot (jailed to /tmp) — that is the whole
-        // point of seeding it instead of the unjailed Default::default().
+        // The zero-config seed must boot (unjailed, but with an explicit
+        // allow_unjailed opt-in) — that is the whole point of seeding it
+        // instead of Default::default(), which is unjailed WITHOUT that
+        // opt-in and so refuses to boot.
         prepare_config(&ShellConfig::seed_default()).expect("seed_default boots");
     }
 

@@ -33,8 +33,10 @@ Modeled on `database/tests/e2e/`.
 ```
 
 Builds the worker (`cargo build --release --bin iii-shell` from the `shell/` crate root), starts the
-engine with `config.yaml`, runs ~27 assertions across function happy paths,
-safety guardrails, background jobs, and edge cases. Exits 0 on PASS, 1 on
+engine with `config.yaml`, and runs the full case suite across function happy
+paths, safety guardrails, background jobs, and edge cases — the exact count
+drifts as cases are added; see the script's own summary line or
+`reports/report.json`'s `total` for the current count. Exits 0 on PASS, 1 on
 any FAIL.
 
 ## Flags

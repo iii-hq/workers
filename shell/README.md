@@ -61,7 +61,7 @@ Settings are managed through the central `configuration` worker. On boot, the sh
 
 The worker refuses to start unless `fs.host_roots` is set, or `fs.allow_unjailed: true` is explicitly opted in, because an unset root exposes the whole host filesystem behind only the advisory denylist.
 
-By default, `mkdir`/`chmod`/`write` reject modes carrying setuid/setgid/sticky bits (the top octal digit, e.g. `4755`) with `S210`, since they are a privilege-escalation primitive when the worker runs as root inside the jail. Set `fs.allow_special_bits: true` only if your workload genuinely needs them.
+By default, `mkdir`/`chmod`/`write` reject modes carrying setuid/setgid/sticky bits (the top octal digit, e.g. `4755`) with `S210`, since they are a privilege-escalation primitive when the worker runs as root. Set `fs.allow_special_bits: true` only if your workload genuinely needs them.
 
 ```yaml
 max_timeout_ms: 120000       # foreground exec hard cap; per-call timeout_ms is clamped to this
@@ -88,11 +88,11 @@ max_concurrent_jobs: 16      # exec_bg past this is rejected
 job_retention_secs: 3600     # finished jobs pruned after this
 
 fs:
-  host_roots: [/tmp]         # jail roots for shell::fs::*; first = primary
-  allow_unjailed: false      # opt-in to running with no jail root
+  host_roots: []             # jail roots for shell::fs::*/cwd; empty = unjailed (the shipped default); first entry = primary
+  allow_unjailed: true       # explicit opt-in to running with no jail root (required whenever host_roots is empty)
   max_read_bytes: 16777216   # 0 = unlimited (reads stream; cap bounds caller cost)
   max_write_bytes: 16777216  # 0 = unlimited
-  denylist_paths: [/etc/passwd, /etc/shadow]  # defense in depth; unreachable anyway while jailed
+  denylist_paths: [/etc/passwd, /etc/shadow]  # primary protection while unjailed; defense in depth once you set host_roots
   allow_special_bits: false  # permit setuid/setgid/sticky bits in mode (default false)
 
 sandbox:
@@ -101,7 +101,7 @@ sandbox:
 
 ### Zero-config default
 
-With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): jailed to `/tmp`, env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed.
+With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): unjailed (`fs.allow_unjailed: true`, empty `host_roots`), env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). Unjailed means `shell::fs::*` and `shell::exec`'s per-call `cwd` operate against the real filesystem, confined only by `fs.denylist_paths` — matching `shell::exec` itself, which has never been confinement-based. `coder::*` is the one exception: it falls back to its own default roots (engine workspace cwd + `/tmp`) whenever `fs.host_roots` is empty, so it stays reasonably scoped even under the zero-config default. Set `fs.host_roots` if you want `shell::fs::*`/`cwd` jailed too. If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed — the failure mode only disappears once you explicitly opt in, one way or another.
 
 Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The denylist still applies on top of either backend.
 
@@ -116,6 +116,10 @@ Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `p
 All three fields are **host-only**. The `sandbox::exec` protocol does not forward `cwd`/`env`/`stdin`, so a sandbox-targeted call that supplies any of them is rejected with `S210` rather than silently ignoring it. Omit them and behaviour is identical to prior versions.
 
 ## Quick start
+
+```sh
+npm install iii-sdk
+```
 
 ```ts
 import { registerWorker } from 'iii-sdk'
@@ -136,12 +140,12 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 
 | Function | Purpose |
 |---|---|
-| `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (jail-confined), `env` (gated by `env.allow` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
+| `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (confined to `fs.host_roots` when set, else absolute), `env` (gated by `env.allow` + a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
 | `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
 | `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
 | `shell::kill` | Terminate a running background job by `job_id`. Sandbox jobs cannot be hard-killed: the record flips to `killed` but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`). |
-| `shell::config-status` | Report the last hot-reload outcome: `last_outcome` (`applied`/`rejected`), `last_error`, and `rejected_reloads` (count since boot). A rejected outcome or non-zero count means a stored config was refused and shell is enforcing an older policy than the central store. Takes no arguments. |
+| `shell::config-status` | *(operator/automation only — not agent-callable)* Report the last hot-reload outcome: `last_outcome` (`applied`/`rejected`), `last_error`, and `rejected_reloads` (count since boot). A rejected outcome or non-zero count means a stored config was refused and shell is enforcing an older policy than the central store. Takes no arguments. |
 | `shell::fs::ls` | List a directory's entries with structured metadata. |
 | `shell::fs::stat` | Read one path's metadata (size, mode, symlink flag). |
 | `shell::fs::mkdir` | Create a directory, optionally with missing parents. Returns `{ created, path, already_existed }`. |
@@ -159,7 +163,12 @@ Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host 
 
 The shell worker also serves the **`coder::*`** code-file functions (the former
 standalone `coder` worker, folded in). They are agent-ergonomic, structured
-file operations over the **same jail** as `shell::fs::*` (`fs.host_roots`):
+file operations that share `shell::fs::*`'s jail **when `fs.host_roots` is
+set**. When it's empty (the shipped default — see
+[Zero-config default](#zero-config-default)), the two surfaces diverge:
+`shell::fs::*` becomes fully unjailed, but `coder::*` falls back to its own
+default roots (engine workspace cwd + `/tmp`) instead — it never runs
+fully unjailed, regardless of `fs.allow_unjailed`.
 
 | Function | Purpose |
 |---|---|
@@ -170,11 +179,22 @@ file operations over the **same jail** as `shell::fs::*` (`fs.host_roots`):
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 
-Roots come from `fs.host_roots`; protection globs come from
-`code.non_accessible_globs` — the **same** list `shell::fs::*` enforces (declared
-once, see [Configure](#configure)). `coder::*` returns `C2xx` error codes (its
-own taxonomy), distinct from `shell::*`'s `S2xx`. No separate install: `iii
-worker add shell` brings the whole surface.
+Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
+protection globs come from `code.non_accessible_globs` in the shipped
+`config.yaml`'s `code:` block — the **same** list `shell::fs::*` enforces.
+`coder::*` returns its own `C2xx` codes, distinct from `shell::*`'s `S2xx`:
+
+| Code | Meaning |
+|---|---|
+| `C210` | Malformed input: bad payload, illegal line numbers, overlapping ops. |
+| `C211` | Path not found, or matched `non_accessible_globs` — deliberately the same code for both, so a caller can't probe for a denied file's existence by toggling the glob. |
+| `C213` | File exceeds `max_read_bytes`/`max_write_bytes`. |
+| `C215` | Path escapes every allowed root, lexically or through a symlink. |
+| `C216` | Underlying I/O error. |
+| `C217` | `create-file` saw an existing file and `overwrite=false`. |
+| `C218` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. |
+
+No separate install: `iii worker add shell` brings the whole surface.
 
 ## Hot-reload
 
@@ -205,6 +225,39 @@ Returned error bodies carry a stable `code` field. Denylist rejections come back
 | `S300` | Sandbox VM boot failed (needs a virtualization host: Apple Silicon or `/dev/kvm`). |
 
 Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, and `S400`. Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.
+
+## Upgrading to 0.8.0
+
+- **BREAKING: `allowlist` removed.** The command allowlist is gone — the
+  shell is deny-only now (see [Configure](#configure)); allow/ask policy
+  lives entirely in the approval-gate. Any stored config still carrying the
+  key, including the inert `allowlist: []` written by older seeds, fails
+  closed at boot with a migration hint. Rewrite the stored value to drop it:
+
+  ```ts
+  import { registerWorker } from 'iii-sdk'
+  const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
+  const { value } = await iii.trigger({ function_id: 'configuration::get', payload: { id: 'shell' } })
+  delete value.allowlist
+  await iii.trigger({ function_id: 'configuration::set', payload: { id: 'shell', value } })
+  ```
+
+  If you seed from a `--config` file instead, just delete the `allowlist: []` line.
+
+- **BREAKING (fresh installs only): the fs jail is unjailed by default.** The
+  shipped `config.yaml` now sets `fs.allow_unjailed: true` with empty
+  `fs.host_roots` — `shell::fs::*` and `shell::exec`'s per-call `cwd` operate
+  against the real filesystem by default (see
+  [Zero-config default](#zero-config-default)). This only affects a
+  genuinely fresh install or a config that gets nulled — an existing
+  deployment with an explicit `fs.host_roots` already in its stored config is
+  unaffected; the stored value always wins over the seed. To keep the old
+  jailed-to-`/tmp` behavior, set it explicitly:
+
+  ```yaml
+  fs:
+    host_roots: [/tmp]
+  ```
 
 ## Upgrading to 0.7.0
 
@@ -302,6 +355,8 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
 - **`S300` on a sandbox target**: the host cannot boot microVMs. Sandbox execution requires Apple Silicon or `/dev/kvm`.
 - **Worker never connects**: the engine is not running or not bound on the configured `--url`. Start the engine first; the default WebSocket port is 49134.
 - **`config keys removed in 0.7.0: ...` at boot or on reload**: the seed file or the stored configuration value still uses the 0.6.x `inherit_env`/`allowed_env` keys (nest them under `env:` as `inherit`/`allow`) or the single-root `fs.host_root` alias (use `fs.host_roots: [<path>]`) — see [Upgrading to 0.7.0](#upgrading-to-070).
+- **`` `allowlist` (removed in 0.8.0, no replacement) `` at boot or on reload**: the seed file or the stored configuration value still carries the removed `allowlist` key (even an empty `allowlist: []` trips this) — see [Upgrading to 0.8.0](#upgrading-to-080) for the fix.
+- **A relative path (including `~`) passed to `shell::fs::*`/`cwd` behaves unexpectedly**: paths are never shell-expanded. `~` is not resolved to your home directory — when jailed, a relative path (including one starting with `~`) resolves against the primary `fs.host_roots` entry, so `~/foo` is interpreted as a path literally named `~` under that root, not your home directory; when unjailed, only absolute paths are accepted at all, so a relative path (including `~/foo`) is rejected outright. Pass an absolute, already-expanded path instead.
 
 For the threat model, streaming wire shapes, and contributor build steps, see [ARCHITECTURE.md](ARCHITECTURE.md).
 

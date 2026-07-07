@@ -29,7 +29,7 @@ iii -c ./config.yaml
 
 | flag | default | purpose |
 |------|---------|---------|
-| `--config <path>` | `./config.yaml` | Optional seed config: the YAML is passed as `initial_value` when registering the schema with the `configuration` worker on first boot. It is **not** the live source of truth — the live value is fetched over RPC after registration. When the file is absent and nothing is stored yet, the worker seeds a built-in zero-config default (`ShellConfig::seed_default()`, jailed to `/tmp`) instead. |
+| `--config <path>` | `./config.yaml` | Optional seed config: the YAML is passed as `initial_value` when registering the schema with the `configuration` worker on first boot. It is **not** the live source of truth — the live value is fetched over RPC after registration. When the file is absent and nothing is stored yet, the worker seeds a built-in zero-config default (`ShellConfig::seed_default()`, unjailed by explicit opt-in) instead. |
 | `--url <ws-url>` | `ws://127.0.0.1:49134` | iii engine WebSocket. Also read from the `III_URL` env var (the flag wins). A pre-connect probe logs one ERROR with a fix hint when the engine is unreachable; the SDK then retries forever with a 2s backoff. |
 | `--version` | — | print the worker version |
 
@@ -49,9 +49,11 @@ The shell worker integrates with the central `configuration` worker rather than 
 ## Full YAML defaults
 
 These are the CODE defaults (`ShellConfig::default()` — fail-closed: `env.inherit
-false`, unjailed refused). The shipped seed `config.yaml` / `seed_default()` is
-deliberately more permissive for dev use: `env.inherit true`, jailed to `/tmp`,
-`max_timeout_ms 120000`, catastrophic-only denylist.
+false`, unjailed refused unless explicitly opted in). The shipped seed
+`config.yaml` / `seed_default()` is deliberately more permissive for dev use:
+`env.inherit true`, unjailed but with the opt-in given explicitly
+(`fs.allow_unjailed: true`), `max_timeout_ms 120000`, catastrophic-only
+denylist.
 
 | key | default | enforced where |
 |-----|---------|----------------|
@@ -154,7 +156,7 @@ let bytes = reader.read_all().await?;
 
 ## Tests
 
-- `tests/e2e/` — TypeScript harness, **143 default cases + 1 jailed case**. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus 4 vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed suite (`run-tests-jailed.sh`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression.
+- `tests/e2e/` — TypeScript harness. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed suite (`run-tests-jailed.sh`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression. Case count drifts as cases are added/removed — treat `run-tests.sh`'s own summary line (or `reports/report.json`'s `total`) as ground truth rather than a number in this doc.
 - `tests/*.rs` — Rust integration tests (`jobs_lifecycle`, `host_fs_branches`, `sandbox_dispatch`, `function_handlers`) covering the host backend branches, sandbox forwarder, and every typed-registration handler. Run with `cargo test`.
 - Line coverage measured with `cargo tarpaulin` sits around 65%; `jobs.rs` is at 100% and the sandbox dispatch path is fully exercised.
 
