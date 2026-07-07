@@ -20,6 +20,11 @@ path = "src/main.rs"
 [features]
 default = ["rabbitmq"]
 rabbitmq = ["dep:lapin"]
+# In-process test-only transport (`adapters::memory::MemoryAdapter`),
+# registered under the adapter name "memory". Off in normal builds; turned on
+# for this crate's own test targets via the dev-dependency self-reference
+# below (mirrors `engine/Cargo.toml:168-171`).
+test-adapters = []
 
 [dependencies]
 iii-sdk = "=0.20.0"
@@ -40,3 +45,7 @@ lapin = { version = "3", optional = true }
 
 [dev-dependencies]
 serial_test = "3"
+# Self-dependency trick: turns on `test-adapters` for this crate's own test
+# targets (the `memory` adapter the config hot-swap tests swap to) without
+# enabling it for a normal build. Mirrors `engine/Cargo.toml:168-171`.
+iii-queue = { path = ".", features = ["test-adapters"] }

@@ -124,6 +124,28 @@ impl QueueTriggerHandler {
         self.adapter.shutdown().await;
     }
 
+    /// Re-subscribe every currently tracked registration directly against
+    /// the adapter, bypassing [`Self::register_subscriber`]'s duplicate-id
+    /// check and leaving the registrations map untouched. Used by the
+    /// configuration hot-swap path (`crate::configuration::swap_adapter`)
+    /// *after* [`SwappableAdapter::replace`] has pointed `self.adapter` at
+    /// the newly built transport, so these `subscribe` calls attach
+    /// consumers to the new adapter rather than the one being retired.
+    pub async fn resubscribe_all(&self) {
+        for registration in self.registrations().await {
+            let queue_config = merged_queue_config(&registration.spec);
+            self.adapter
+                .subscribe(
+                    &registration.spec.queue,
+                    &registration.trigger_id,
+                    &registration.function_id,
+                    registration.spec.condition_function_id.clone(),
+                    Some(queue_config),
+                )
+                .await;
+        }
+    }
+
     pub async fn register_subscriber(
         &self,
         registration: RegisteredSubscriber,
@@ -304,7 +326,7 @@ mod tests {
     fn handler_with_mock() -> (QueueTriggerHandler, Arc<MockAdapter>) {
         let mock = Arc::new(MockAdapter::default());
         let adapter: Arc<dyn QueueAdapter> = mock.clone();
-        let handler = QueueTriggerHandler::new(Arc::new(SwappableAdapter::new(adapter)));
+        let handler = QueueTriggerHandler::new(Arc::new(SwappableAdapter::new(adapter, "mock")));
         (handler, mock)
     }
 
@@ -401,6 +423,61 @@ mod tests {
             }
         );
         assert!(handler.registrations().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resubscribe_all_attaches_every_registration_to_the_new_adapter() {
+        let (handler, old_mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "backend-1",
+                json!({"queue": "demo-1", "max_retries": 2}),
+            ))
+            .await
+            .unwrap();
+        handler
+            .register_trigger(trigger_config(
+                "t2",
+                "backend-2",
+                json!({"queue": "demo-2"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(old_mock.calls().len(), 2, "initial registration subscribes");
+
+        // Simulate a hot-swap: the adapter behind the handler's
+        // `SwappableAdapter` is replaced with a fresh mock.
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+
+        handler.resubscribe_all().await;
+
+        // The old adapter never sees another call post-swap.
+        assert_eq!(old_mock.calls().len(), 2);
+        // The new adapter is subscribed once per tracked registration.
+        let new_calls = new_mock.calls();
+        assert_eq!(new_calls.len(), 2);
+        assert!(new_calls.contains(&Call::Subscribe {
+            topic: "demo-1".to_string(),
+            id: "t1".to_string(),
+            function_id: "backend-1".to_string(),
+            condition_function_id: None,
+            queue_config: Some(SubscriberQueueConfig {
+                max_retries: Some(2),
+                ..Default::default()
+            }),
+        }));
+        assert!(new_calls.contains(&Call::Subscribe {
+            topic: "demo-2".to_string(),
+            id: "t2".to_string(),
+            function_id: "backend-2".to_string(),
+            condition_function_id: None,
+            queue_config: Some(SubscriberQueueConfig::default()),
+        }));
+        // The registrations map itself is untouched by the swap.
+        assert_eq!(handler.registrations().await.len(), 2);
     }
 
     #[tokio::test]

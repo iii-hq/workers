@@ -249,6 +249,7 @@ pub async fn discard_message(
 }
 
 pub async fn list_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<TopicInfo>, Error> {
+    let broker_type = adapter.current_name().await;
     let topics = adapter
         .list_topics()
         .await
@@ -257,7 +258,7 @@ pub async fn list_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<TopicInfo
         .into_iter()
         .map(|topic| TopicInfo {
             name: topic.name,
-            broker_type: "builtin".to_string(),
+            broker_type: broker_type.clone(),
             subscriber_count: 0,
         })
         .collect())
@@ -289,6 +290,7 @@ pub async fn topic_stats(
 /// zero (matching the engine's `unwrap_or(0)`) rather than failing the
 /// whole call.
 pub async fn dlq_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<DlqTopicInfo>, Error> {
+    let broker_type = adapter.current_name().await;
     let topics = adapter
         .list_topics()
         .await
@@ -300,7 +302,7 @@ pub async fn dlq_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<DlqTopicIn
         if dlq_count > 0 {
             dlq_topics.push(DlqTopicInfo {
                 topic: topic.name,
-                broker_type: "builtin".to_string(),
+                broker_type: broker_type.clone(),
                 message_count: dlq_count,
             });
         }
@@ -506,7 +508,7 @@ mod tests {
     fn adapter() -> (Arc<SwappableAdapter>, Arc<MockAdapter>) {
         let mock = Arc::new(MockAdapter::default());
         let dyn_adapter: Arc<dyn QueueAdapter> = mock.clone();
-        (Arc::new(SwappableAdapter::new(dyn_adapter)), mock)
+        (Arc::new(SwappableAdapter::new(dyn_adapter, "mock")), mock)
     }
 
     fn job_value(id: &str, payload: Value, attempts: u32) -> Value {
@@ -655,7 +657,7 @@ mod tests {
             topics[0],
             TopicInfo {
                 name: "demo".to_string(),
-                broker_type: "builtin".to_string(),
+                broker_type: "mock".to_string(),
                 subscriber_count: 0,
             }
         );
@@ -698,6 +700,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].topic, "demo");
         assert_eq!(result[0].message_count, 1);
+        assert_eq!(result[0].broker_type, "mock");
     }
 
     #[tokio::test]

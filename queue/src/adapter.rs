@@ -229,12 +229,19 @@ pub trait QueueAdapter: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct SwappableAdapter {
     inner: Arc<RwLock<Arc<dyn QueueAdapter>>>,
+    /// The active adapter's identity (e.g. `"builtin"`, `"redis"`,
+    /// `"rabbitmq"`), set by the factory (`crate::boot::build_adapter`'s
+    /// caller) at construction/replace time. Exposed via [`Self::current_name`]
+    /// for service functions (`list_topics`) that report which transport
+    /// backs a topic.
+    name: Arc<RwLock<String>>,
 }
 
 impl SwappableAdapter {
-    pub fn new(adapter: Arc<dyn QueueAdapter>) -> Self {
+    pub fn new(adapter: Arc<dyn QueueAdapter>, name: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(adapter)),
+            name: Arc::new(RwLock::new(name.into())),
         }
     }
 
@@ -242,8 +249,13 @@ impl SwappableAdapter {
         self.inner.read().await.clone()
     }
 
-    pub async fn replace(&self, adapter: Arc<dyn QueueAdapter>) {
+    pub async fn current_name(&self) -> String {
+        self.name.read().await.clone()
+    }
+
+    pub async fn replace(&self, adapter: Arc<dyn QueueAdapter>, name: impl Into<String>) {
         *self.inner.write().await = adapter;
+        *self.name.write().await = name.into();
     }
 }
 
@@ -457,15 +469,26 @@ mod tests {
     #[tokio::test]
     async fn current_reflects_replace() {
         let first = Arc::new(CountingAdapter::default());
-        let swappable = SwappableAdapter::new(first.clone());
+        let swappable = SwappableAdapter::new(first.clone(), "first");
         swappable.enqueue("demo", Value::Null, None, None).await;
         assert_eq!(first.enqueue_calls.load(Ordering::SeqCst), 1);
 
         let second = Arc::new(CountingAdapter::default());
-        swappable.replace(second.clone()).await;
+        swappable.replace(second.clone(), "second").await;
         swappable.enqueue("demo", Value::Null, None, None).await;
 
         assert_eq!(first.enqueue_calls.load(Ordering::SeqCst), 1);
         assert_eq!(second.enqueue_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn current_name_reflects_replace() {
+        let first = Arc::new(CountingAdapter::default());
+        let swappable = SwappableAdapter::new(first, "builtin");
+        assert_eq!(swappable.current_name().await, "builtin");
+
+        let second = Arc::new(CountingAdapter::default());
+        swappable.replace(second, "redis").await;
+        assert_eq!(swappable.current_name().await, "redis");
     }
 }

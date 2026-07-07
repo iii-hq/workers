@@ -9,10 +9,9 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::adapter::SwappableAdapter;
-use crate::adapters::builtin::BuiltinAdapter;
-use crate::boot::{ApplyLock, ConfigCell};
+use crate::boot::{self, ApplyLock, ConfigCell};
 use crate::config::QueueConfig;
-use crate::trigger::{IiiInvoker, QueueTriggerHandler};
+use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler};
 
 pub const CONFIG_ID: &str = "queue";
 pub const CONFIG_FN_ID: &str = "queue::on-config-change";
@@ -110,33 +109,54 @@ async fn on_config_change(
 
     let old = config.read().await.clone();
     if swap_needed(&old, &next) {
-        let registrations = trigger_handler.registrations().await;
-        let new_store = match crate::boot::build_store(&next).await {
-            Ok(store) => store,
-            Err(err) => {
-                tracing::error!(error = %err, "queue config-change: failed to build replacement store; keeping previous config");
-                return;
+        let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+        match swap_adapter(&adapter, &trigger_handler, invoker, &next).await {
+            Ok(()) => {
+                *config.write().await = Arc::new(next);
+                tracing::info!("queue transport hot-swapped after configuration change");
             }
-        };
-        let new_adapter = Arc::new(BuiltinAdapter::new(
-            new_store,
-            Arc::new(IiiInvoker::new(iii.clone())),
-        ));
-        trigger_handler.shutdown().await;
-        adapter.replace(new_adapter).await;
-        *config.write().await = Arc::new(next);
-
-        for registration in registrations {
-            if let Err(err) = trigger_handler.register_subscriber(registration).await {
-                tracing::error!(error = %err, "queue config-change: failed to restart subscriber");
+            Err(err) => {
+                // Mirrors the engine's policy (`engine/src/workers/queue/queue.rs:1002-1019`
+                // builds the replacement adapter first and only swaps in the
+                // successful result): a failed hot-swap must never kill a
+                // live worker, so the previous adapter and config are left
+                // running untouched on error.
+                tracing::error!(
+                    error = %err,
+                    "queue config-change: failed to build replacement adapter; keeping the \
+                     previous adapter running"
+                );
             }
         }
-        tracing::info!("queue transport hot-swapped after configuration change");
         return;
     }
 
     *config.write().await = Arc::new(next);
     tracing::info!("queue configuration reloaded without transport swap");
+}
+
+/// Fallible core of a transport hot-swap. Builds the new adapter for `next`
+/// via [`crate::boot::build_adapter`] *before* touching anything else: only
+/// once that succeeds does this replace the live adapter and re-subscribe
+/// every tracked trigger registration onto it. A `build_adapter` failure
+/// returns `Err` with the old adapter, its subscriptions, and the config
+/// cell completely untouched -- same policy as the engine's `apply_config`
+/// (`engine/src/workers/queue/queue.rs:1002-1019`): never tear down a live
+/// transport for a replacement that didn't pan out.
+async fn swap_adapter(
+    adapter: &Arc<SwappableAdapter>,
+    trigger_handler: &QueueTriggerHandler,
+    invoker: Arc<dyn Invoker>,
+    next: &QueueConfig,
+) -> anyhow::Result<()> {
+    let new_adapter = boot::build_adapter(next, invoker).await?;
+    let old_adapter = adapter.current().await;
+    adapter
+        .replace(new_adapter, boot::adapter_identity_name(next))
+        .await;
+    old_adapter.shutdown().await;
+    trigger_handler.resubscribe_all().await;
+    Ok(())
 }
 
 pub fn swap_needed(old: &QueueConfig, new: &QueueConfig) -> bool {
@@ -221,7 +241,185 @@ pub struct ConfigChangeRequest {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{QueueAdapter, TopicInfo};
     use crate::config::AdapterEntry;
+    use crate::store::TopicStats;
+    use crate::trigger::{RegisteredSubscriber, SubscriberSpec};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct MockAdapter {
+        subscribe_calls: AtomicUsize,
+        enqueue_calls: AtomicUsize,
+        shutdown_calls: AtomicU64,
+    }
+
+    #[async_trait]
+    impl QueueAdapter for MockAdapter {
+        async fn enqueue(
+            &self,
+            _topic: &str,
+            _data: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) {
+            self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn subscribe(
+            &self,
+            _topic: &str,
+            _id: &str,
+            _function_id: &str,
+            _condition_function_id: Option<String>,
+            _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
+        ) {
+            self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+
+        async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+
+        async fn redrive_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn discard_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+
+        async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
+            Ok(vec![])
+        }
+
+        async fn topic_stats(&self, _topic: &str) -> anyhow::Result<TopicStats> {
+            Ok(TopicStats::default())
+        }
+
+        async fn shutdown(&self) {
+            self.shutdown_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct NoopInvoker;
+
+    #[async_trait]
+    impl Invoker for NoopInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+    }
+
+    fn noop_invoker() -> Arc<dyn Invoker> {
+        Arc::new(NoopInvoker)
+    }
+
+    #[tokio::test]
+    async fn swap_adapter_keeps_old_adapter_running_when_build_fails() {
+        let mock = Arc::new(MockAdapter::default());
+        let dyn_adapter: Arc<dyn QueueAdapter> = mock.clone();
+        let adapter = Arc::new(SwappableAdapter::new(dyn_adapter, "mock"));
+        let trigger_handler = QueueTriggerHandler::new(adapter.clone());
+        trigger_handler
+            .register_subscriber(RegisteredSubscriber {
+                trigger_id: "t1".to_string(),
+                function_id: "backend".to_string(),
+                spec: SubscriberSpec {
+                    queue: "demo".to_string(),
+                    max_retries: None,
+                    backoff_ms: None,
+                    condition_function_id: None,
+                    queue_config: None,
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(mock.subscribe_calls.load(Ordering::SeqCst), 1);
+
+        let bad_config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "not-a-real-adapter".to_string(),
+                config: None,
+            }),
+        };
+
+        let err = swap_adapter(&adapter, &trigger_handler, noop_invoker(), &bad_config)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not implemented"));
+
+        // The old adapter must never be shut down, and it must still be the
+        // one live behind the `SwappableAdapter`.
+        assert_eq!(mock.shutdown_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(adapter.current_name().await, "mock");
+        adapter.enqueue("demo", Value::Null, None, None).await;
+        assert_eq!(mock.enqueue_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn swap_adapter_replaces_transport_and_resubscribes_on_success() {
+        let old_mock = Arc::new(MockAdapter::default());
+        let old_dyn: Arc<dyn QueueAdapter> = old_mock.clone();
+        let adapter = Arc::new(SwappableAdapter::new(old_dyn, "mock"));
+        let trigger_handler = QueueTriggerHandler::new(adapter.clone());
+        trigger_handler
+            .register_subscriber(RegisteredSubscriber {
+                trigger_id: "t1".to_string(),
+                function_id: "backend".to_string(),
+                spec: SubscriberSpec {
+                    queue: "demo".to_string(),
+                    max_retries: None,
+                    backoff_ms: None,
+                    condition_function_id: None,
+                    queue_config: None,
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(old_mock.subscribe_calls.load(Ordering::SeqCst), 1);
+
+        // A real (dependency-free) config change: builtin -> in-memory,
+        // which `build_adapter` resolves successfully.
+        let next = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "in_memory".to_string(),
+                config: None,
+            }),
+        };
+
+        swap_adapter(&adapter, &trigger_handler, noop_invoker(), &next)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            old_mock.shutdown_calls.load(Ordering::SeqCst),
+            1,
+            "old adapter must be shut down once the new one is live"
+        );
+        assert_eq!(adapter.current_name().await, "builtin");
+        // The registration is still tracked and was re-subscribed onto the
+        // new adapter (a builtin adapter has no externally observable
+        // subscribe counter, so this is asserted end-to-end in
+        // `trigger::tests::resubscribe_all_attaches_every_registration_to_the_new_adapter`
+        // -- here we only assert the registration survived the swap).
+        assert_eq!(trigger_handler.registrations().await.len(), 1);
+    }
 
     #[test]
     fn swap_needed_ignores_implicit_builtin_default() {

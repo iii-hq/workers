@@ -7,11 +7,14 @@ use iii_sdk::{IIIClient, RegisterTriggerType};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::adapter::SwappableAdapter;
+use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::adapters::builtin::BuiltinAdapter;
-use crate::config::QueueConfig;
+#[cfg(feature = "rabbitmq")]
+use crate::adapters::rabbitmq::RabbitMQAdapter;
+use crate::adapters::redis::RedisAdapter;
+use crate::config::{adapter_config_value, QueueConfig};
 use crate::store::{FileStore, InMemoryStore, QueueStore};
-use crate::trigger::{IiiInvoker, QueueTriggerHandler, SubscriberSpec};
+use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec};
 use crate::TRIGGER_TYPE;
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
@@ -36,11 +39,12 @@ impl BootHandle {
 pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
 
-    let store = build_store(&config).await?;
     let invoker = Arc::new(IiiInvoker::new(iii.clone()));
-    let adapter = Arc::new(SwappableAdapter::new(Arc::new(BuiltinAdapter::new(
-        store, invoker,
-    ))));
+    // No fallback to builtin on a bad config: an adapter that fails to build
+    // at boot (e.g. redis/rabbitmq unreachable) must fail the boot itself,
+    // matching the engine's `make_adapter` behavior for `iii-queue`.
+    let built = build_adapter(&config, invoker).await?;
+    let adapter = Arc::new(SwappableAdapter::new(built, adapter_identity_name(&config)));
     let config = Arc::new(RwLock::new(Arc::new(config.normalized())));
     let apply_lock = Arc::new(Mutex::new(()));
 
@@ -62,6 +66,69 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
         config,
         apply_lock,
     })
+}
+
+/// Adapter factory: resolves `config`'s effective adapter name to a live
+/// [`QueueAdapter`]. This is the single dispatch point every adapter (both
+/// the ones this worker implements and any future one) is wired in from --
+/// `boot::start` uses it at boot and `configuration::swap_adapter` reuses it
+/// for hot-swaps, so both paths apply the exact same "which adapter for this
+/// config" logic.
+///
+/// Errors are never papered over with a fallback to `builtin`: a caller that
+/// wants a different failure policy (e.g. the hot-swap path keeping the
+/// previous adapter alive) decides that at the call site.
+pub async fn build_adapter(
+    config: &QueueConfig,
+    invoker: Arc<dyn Invoker>,
+) -> anyhow::Result<Arc<dyn QueueAdapter>> {
+    let name = config.effective_adapter_name();
+    match name {
+        // Legacy worker aliases keep working: they select the builtin store
+        // backend (`build_store` already dispatches `store_method` between
+        // in-memory and file-backed).
+        "builtin" | "in_memory" | "file_based" => {
+            let store = build_store(config).await?;
+            Ok(Arc::new(BuiltinAdapter::new(store, invoker)))
+        }
+        "redis" => {
+            let adapter_cfg = adapter_config_value(config);
+            let adapter = RedisAdapter::from_config(adapter_cfg.as_ref(), invoker).await?;
+            Ok(Arc::new(adapter))
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let adapter_cfg = adapter_config_value(config);
+            let adapter = RabbitMQAdapter::from_config(adapter_cfg.as_ref(), invoker).await?;
+            Ok(Arc::new(adapter))
+        }
+        #[cfg(not(feature = "rabbitmq"))]
+        "rabbitmq" => {
+            anyhow::bail!(
+                "queue adapter 'rabbitmq' requires the standalone queue worker to be built \
+                 with the `rabbitmq` feature enabled"
+            )
+        }
+        #[cfg(feature = "test-adapters")]
+        "memory" => Ok(Arc::new(crate::adapters::memory::MemoryAdapter::new(
+            invoker,
+        ))),
+        other => anyhow::bail!(
+            "queue adapter '{other}' is not implemented by the standalone queue worker yet"
+        ),
+    }
+}
+
+/// The transport identity behind `config`'s effective adapter, for
+/// [`SwappableAdapter::new`]/[`SwappableAdapter::replace`]. Distinct from
+/// `config.effective_adapter_name()`: the legacy `in_memory`/`file_based`
+/// aliases both select the `builtin` transport, so they report as `"builtin"`
+/// here too (matching the identity `build_adapter` actually constructs).
+pub fn adapter_identity_name(config: &QueueConfig) -> &str {
+    match config.effective_adapter_name() {
+        "in_memory" | "file_based" => "builtin",
+        other => other,
+    }
 }
 
 pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueStore>> {
@@ -227,5 +294,145 @@ mod tests {
         store.enqueue("demo", json!({"ok": true})).await.unwrap();
         assert!(dir.join("queue_store.json").exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct NoopInvoker;
+
+    #[async_trait::async_trait]
+    impl Invoker for NoopInvoker {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: serde_json::Value,
+        ) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
+        }
+    }
+
+    fn noop_invoker() -> Arc<dyn Invoker> {
+        Arc::new(NoopInvoker)
+    }
+
+    #[tokio::test]
+    async fn build_adapter_defaults_to_builtin_without_config() {
+        let adapter = build_adapter(&QueueConfig::default(), noop_invoker())
+            .await
+            .unwrap();
+        adapter
+            .enqueue("demo", json!({"ok": true}), None, None)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn build_adapter_accepts_legacy_in_memory_alias() {
+        let config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "in_memory".to_string(),
+                config: None,
+            }),
+        };
+        build_adapter(&config, noop_invoker()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn build_adapter_accepts_legacy_file_based_alias() {
+        let dir = std::env::temp_dir().join(format!("queue_boot_adapter_{}", Uuid::new_v4()));
+        let config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "file_based".to_string(),
+                config: Some(json!({
+                    "file_path": dir.to_string_lossy(),
+                    "save_interval_ms": 5
+                })),
+            }),
+        };
+        build_adapter(&config, noop_invoker()).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn build_adapter_rejects_unknown_adapter() {
+        let config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "sqs".to_string(),
+                config: None,
+            }),
+        };
+        let err = match build_adapter(&config, noop_invoker()).await {
+            Ok(_) => panic!("expected 'sqs' to be rejected"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err.to_string(),
+            "queue adapter 'sqs' is not implemented by the standalone queue worker yet"
+        );
+    }
+
+    #[cfg(not(feature = "rabbitmq"))]
+    #[tokio::test]
+    async fn build_adapter_rabbitmq_without_feature_mentions_the_feature() {
+        let config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "rabbitmq".to_string(),
+                config: None,
+            }),
+        };
+        let err = match build_adapter(&config, noop_invoker()).await {
+            Ok(_) => panic!("expected 'rabbitmq' to be rejected without the feature"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("rabbitmq"),
+            "error should mention the missing feature: {err}"
+        );
+        assert!(
+            err.to_string().contains("feature"),
+            "error should mention the missing feature: {err}"
+        );
+    }
+
+    #[cfg(feature = "test-adapters")]
+    #[tokio::test]
+    async fn build_adapter_selects_memory_test_adapter() {
+        let config = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "memory".to_string(),
+                config: None,
+            }),
+        };
+        let adapter = build_adapter(&config, noop_invoker()).await.unwrap();
+        adapter
+            .enqueue("demo", json!({"ok": true}), None, None)
+            .await;
+    }
+
+    #[test]
+    fn adapter_identity_name_maps_legacy_aliases_to_builtin() {
+        let in_memory = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "in_memory".to_string(),
+                config: None,
+            }),
+        };
+        let file_based = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "file_based".to_string(),
+                config: None,
+            }),
+        };
+        assert_eq!(adapter_identity_name(&in_memory), "builtin");
+        assert_eq!(adapter_identity_name(&file_based), "builtin");
+        assert_eq!(adapter_identity_name(&QueueConfig::default()), "builtin");
+    }
+
+    #[test]
+    fn adapter_identity_name_passes_through_other_names() {
+        let redis = QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: "redis".to_string(),
+                config: None,
+            }),
+        };
+        assert_eq!(adapter_identity_name(&redis), "redis");
     }
 }
