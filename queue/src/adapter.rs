@@ -123,14 +123,25 @@ pub trait QueueAdapter: Send + Sync + 'static {
     }
 
     /// List all known queue topics.
-    async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>>;
+    async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
+        Ok(vec![])
+    }
 
     /// Get stats for a specific topic.
-    async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats>;
+    async fn topic_stats(&self, _topic: &str) -> anyhow::Result<TopicStats> {
+        Ok(TopicStats::default())
+    }
 
     /// Peek at dead-lettered messages on `topic` non-destructively, paginated
     /// by `offset`/`limit`.
-    async fn dlq_peek(&self, topic: &str, offset: u64, limit: u64) -> anyhow::Result<Vec<Value>>;
+    async fn dlq_peek(
+        &self,
+        _topic: &str,
+        _offset: u64,
+        _limit: u64,
+    ) -> anyhow::Result<Vec<Value>> {
+        Ok(vec![])
+    }
 
     /// Gracefully tear down this adapter (stop consumers, close
     /// connections). The worker calls this deterministically on shutdown;
