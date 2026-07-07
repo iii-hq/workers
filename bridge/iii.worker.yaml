@@ -1,0 +1,13 @@
+iii: v1
+name: bridge
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: bridge
+description: Bridge two iii engines — expose local functions on a remote engine and invoke/forward remote functions locally.
+config:
+  url: ws://0.0.0.0:49134
+  expose: []
+  forward: []
+dependencies:
+  configuration: "^0.19.0"

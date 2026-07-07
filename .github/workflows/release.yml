@@ -6,6 +6,7 @@ on:
     tags:
       - 'acp/v*'
       - 'approval-gate/v*'
+      - 'bridge/v*'
       - 'claude-code/v*'
       - 'codex/v*'
       - 'devin/v*'

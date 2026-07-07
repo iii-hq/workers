@@ -11,6 +11,7 @@ on:
         options:
           - acp
           - approval-gate
+          - bridge
           - claude-code
           - codex
           - devin
