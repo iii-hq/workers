@@ -130,6 +130,9 @@ async def run_crawl(cfg: dict[str, Any], iii: Any, payload: dict[str, Any]) -> d
             fetch_payload["selectors"] = selectors
         if fmt:
             fetch_payload["format"] = fmt
+            for k in ("main_content_only", "css_selector"):
+                if payload.get(k) is not None:
+                    fetch_payload[k] = payload[k]
         # The WHOLE fetch→parse→link-extract is guarded: a bad selector or
         # Convertor failure on one page must not sink the crawl (per-url isolation).
         try:

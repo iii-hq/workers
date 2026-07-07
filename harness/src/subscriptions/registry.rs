@@ -197,6 +197,13 @@ impl SubscriptionRegistry {
         self.lock().by_id.get(sub_id).map(|e| e.session_id.clone())
     }
 
+    /// The engine trigger id bound to a subscription, WITHOUT evicting the
+    /// slot. `None` for an unknown id or one still in the bind window (no
+    /// engine id recorded yet) — callers distinguish via `session_of`.
+    pub fn trigger_id_of(&self, sub_id: &str) -> Option<String> {
+        self.lock().by_id.get(sub_id).and_then(|e| trigger_id(e))
+    }
+
     /// Atomically remove and return `(session_id, trigger_id)`. Winner-takes-all:
     /// only the first caller for a given id gets `Some` — this is the `once` /
     /// unsubscribe claim that guarantees at-most-once delivery + teardown.
@@ -310,6 +317,20 @@ mod tests {
         let (session, trigger_id) = reg.take("sub_1").expect("entry present");
         assert_eq!(session, "s");
         assert_eq!(trigger_id.as_deref(), Some("trig_1"));
+    }
+
+    #[test]
+    fn trigger_id_of_reads_without_evicting() {
+        let reg = SubscriptionRegistry::new();
+        reg.try_insert("sub_1", "s", 8).unwrap();
+        // Bind window: no engine id recorded yet, but the slot exists.
+        assert_eq!(reg.trigger_id_of("sub_1"), None);
+        assert_eq!(reg.session_of("sub_1").as_deref(), Some("s"));
+        assert!(reg.set_trigger_id("sub_1", "trig_1"));
+        assert_eq!(reg.trigger_id_of("sub_1").as_deref(), Some("trig_1"));
+        // Non-destructive: the slot is still takeable afterwards.
+        assert!(reg.take("sub_1").is_some());
+        assert_eq!(reg.trigger_id_of("sub_1"), None);
     }
 
     #[test]

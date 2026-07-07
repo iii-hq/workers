@@ -50,7 +50,9 @@ pub struct SubscribeRequest {
     pub label: Option<String>,
     /// Auto-unsubscribe after the first delivered notification. Defaults to true
     /// for one-shot-ish types (state / stream / custom trigger types), false for
-    /// recurring `cron`. Ignored when `function_id` targets `harness::react`.
+    /// recurring `cron`. On `harness::react` bindings only an explicit `true`
+    /// is honored (the binding retires after its first successful spawn), and
+    /// it is ignored for join predecessors — the join owns their lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub once: Option<bool>,
     /// Target function fired on each event. Omit for a notification message
@@ -87,12 +89,43 @@ pub struct SubscribeResponse {
 /// The `session_id` a turn-event registration filters on, if any — the only
 /// filter shape whose typo/mismatch starves silently.
 fn turn_event_session_filter(req: &SubscribeRequest) -> Option<&str> {
-    let is_turn_event = req.trigger_type == crate::events::TURN_STARTED
-        || req.trigger_type == crate::events::TURN_COMPLETED;
-    if !is_turn_event {
+    if !is_turn_event_type(&req.trigger_type) {
         return None;
     }
     req.config.get("session_id").and_then(Value::as_str)
+}
+
+fn is_turn_event_type(trigger_type: &str) -> bool {
+    trigger_type == crate::events::TURN_STARTED || trigger_type == crate::events::TURN_COMPLETED
+}
+
+/// Advisory for a turn-event join predecessor filtered on `parent_session_id`:
+/// it matches EVERY child completion under that parent, but always records
+/// under its one fixed `join.key` — with a single such binding the join's other
+/// keys never fill and it starves (later children overwrite the same slot);
+/// with one per key the FIRST completion fills every key with duplicate
+/// payloads. Fires only for multi-key joins with no `session_id` narrowing the
+/// match to one child. Pure; advisory only.
+fn parent_filter_join_advisory(req: &SubscribeRequest) -> Option<String> {
+    if !is_turn_event_type(&req.trigger_type) || req.config.get("session_id").is_some() {
+        return None;
+    }
+    let parent = req
+        .config
+        .get("parent_session_id")
+        .and_then(Value::as_str)?;
+    let join = req.metadata.as_ref()?.get("join")?;
+    let key = join.get("key").and_then(Value::as_str)?;
+    if join.get("expect").and_then(Value::as_array)?.len() < 2 {
+        return None;
+    }
+    Some(format!(
+        "warning: this join predecessor filters on parent_session_id \"{parent}\", which matches \
+         EVERY child completion under that parent but always records under its fixed key \
+         \"{key}\" — the join's other expected keys never fill and it starves. Register ONE \
+         subscription per predecessor with config {{ session_id: \"<that predecessor's child \
+         session id>\" }} instead."
+    ))
 }
 
 /// Advisory for a turn-event registration filtering on a session that doesn't
@@ -150,6 +183,37 @@ fn defaults_recurring(trigger_type: &str) -> bool {
 
 fn effective_once(req: &SubscribeRequest) -> bool {
     req.once.unwrap_or(!defaults_recurring(&req.trigger_type))
+}
+
+/// Advisory for a standing react binding (no `once`, no join): agents keep
+/// registering one-run pipeline kickoffs without `once: true`, leaving bindings
+/// that respawn the whole pipeline on every future matching event. Purely
+/// informative — deliberate standing watchers ignore it; cron is exempt
+/// (recurring is its whole point).
+fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
+    if once
+        || req.trigger_type == "cron"
+        || req
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.get("join").is_some())
+    {
+        return None;
+    }
+    Some(
+        "note: no `once` set — this reaction is STANDING and refires on EVERY future matching \
+         event until unregistered; pass `once: true` if it should fire for one pipeline run only."
+            .to_string(),
+    )
+}
+
+/// `once` on a react binding: honored for simple edges (the binding retires
+/// after its first successful spawn); ignored for join predecessors — the
+/// join owns their lifecycle (auto-unregister on fire, `rearm` to keep).
+/// Only an EXPLICIT `true` opts in: applying the notify path's per-type
+/// default would flip every standing watcher to one-shot.
+fn react_once(req: &SubscribeRequest) -> bool {
+    req.once == Some(true) && req.metadata.as_ref().and_then(|m| m.get("join")).is_none()
 }
 
 async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
@@ -257,19 +321,27 @@ async fn handle(
         ))
         .await;
 
-    match resp
-        .ok()
-        .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-    {
-        Some(trigger_id) => {
+    match resp.map(|v| v.get("id").and_then(Value::as_str).map(str::to_string)) {
+        Ok(Some(trigger_id)) => {
             if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
+                // Documented race, not a failure: a `once` fire claimed the
+                // slot inside the bind window, so the subscription already
+                // delivered — only the orphan engine binding is left to clean
+                // up. `Ok` is deliberate; erroring here would invite a
+                // duplicate re-registration of work that already ran.
                 unregister_engine_trigger(deps, &trigger_id).await;
             }
         }
-        None => {
+        // Carry the engine's rejection reason (e.g. an unknown config key for
+        // this trigger type) — an opaque "failed" sends the agent guess-looping.
+        outcome => {
             deps.subscriptions.take(&sub_id);
+            let reason = match outcome {
+                Err(e) => e.to_string(),
+                _ => "no binding id in response".to_string(),
+            };
             return Err(HarnessError::Dependency(format!(
-                "{REGISTER_TRIGGER_ID} `{}` failed",
+                "{REGISTER_TRIGGER_ID} `{}` failed: {reason}",
                 req.trigger_type
             )));
         }
@@ -433,14 +505,16 @@ async fn handle_react(
         .await
         .map_err(HarnessError::InvalidRequest)?;
 
+    let once = react_once(&req);
+
     // Idempotency: same rule as the notify path — an identical re-registration
     // returns the standing subscription instead of a twin reaction that would
     // double-spawn on every fire. Keyed on the raw request (pre-owner-stamp).
-    let dedup = registration_dedup_key(&req, false);
+    let dedup = registration_dedup_key(&req, once);
     if let Some(existing) = deps.subscriptions.find_duplicate(session_id, &dedup) {
         return Ok(SubscribeResponse {
             subscription_id: existing,
-            once: false,
+            once,
             note: None,
         });
     }
@@ -478,6 +552,13 @@ async fn handle_react(
             "__subscription_id".to_string(),
             Value::String(sub_id.clone()),
         );
+        // Harness stamps are never caller-supplied. The other stamps overwrite
+        // unconditionally; `__once` is conditional, so a smuggled value would
+        // make the binding retire while the response echoes standing.
+        m.remove("__once");
+        if once {
+            m.insert("__once".to_string(), Value::Bool(true));
+        }
     }
 
     let resp = deps
@@ -495,34 +576,45 @@ async fn handle_react(
         })
         .await;
 
-    match resp
-        .ok()
-        .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-    {
-        Some(trigger_id) => {
+    match resp.map(|v| v.get("id").and_then(Value::as_str).map(str::to_string)) {
+        Ok(Some(trigger_id)) => {
             if !deps.subscriptions.set_trigger_id(&sub_id, &trigger_id) {
+                // Documented race, not a failure: a `once` fire claimed the
+                // slot inside the bind window, so the subscription already
+                // delivered — only the orphan engine binding is left to clean
+                // up. `Ok` is deliberate; erroring here would invite a
+                // duplicate re-registration of work that already ran.
                 unregister_engine_trigger(deps, &trigger_id).await;
             }
         }
-        None => {
+        // Carry the engine's rejection reason (e.g. an unknown config key for
+        // this trigger type) — an opaque "failed" sends the agent guess-looping.
+        outcome => {
             deps.subscriptions.take(&sub_id);
+            let reason = match outcome {
+                Err(e) => e.to_string(),
+                _ => "no binding id in response".to_string(),
+            };
             return Err(HarnessError::Dependency(format!(
-                "{REGISTER_TRIGGER_ID} `{}` failed",
+                "{REGISTER_TRIGGER_ID} `{}` failed: {reason}",
                 req.trigger_type
             )));
         }
     }
 
-    let note = match (
+    let notes: Vec<String> = [
+        parent_filter_join_advisory(&req),
         session_filter_advisory(deps, &req).await,
         join_wiring_advisory(deps, &req).await,
-    ) {
-        (Some(a), Some(b)) => Some(format!("{a} {b}")),
-        (a, b) => a.or(b),
-    };
+        standing_binding_advisory(&req, once),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let note = (!notes.is_empty()).then(|| notes.join(" "));
     Ok(SubscribeResponse {
         subscription_id: sub_id,
-        once: false,
+        once,
         note,
     })
 }
@@ -636,6 +728,93 @@ mod tests {
         assert_eq!(turn_event_session_filter(&r), None);
         let r = mk("state", json!({ "session_id": "s_x" }));
         assert_eq!(turn_event_session_filter(&r), None);
+    }
+
+    #[test]
+    fn parent_filter_join_advisory_flags_the_starving_shape() {
+        let mk = |config: serde_json::Value, join: serde_json::Value| -> SubscribeRequest {
+            serde_json::from_value(json!({
+                "trigger_type": crate::events::TURN_COMPLETED,
+                "config": config,
+                "function_id": "harness::react",
+                "metadata": { "model": "m", "task": "t", "join": join },
+            }))
+            .unwrap()
+        };
+        let join2 = json!({ "id": "J", "expect": ["a", "b"], "key": "a" });
+        // The live miswire: one parent-filtered binding for a 2-key join.
+        let note =
+            parent_filter_join_advisory(&mk(json!({ "parent_session_id": "s_p" }), join2.clone()));
+        assert!(note.as_deref().unwrap_or("").contains("starves"));
+        // session_id narrows to one child: fine.
+        assert!(parent_filter_join_advisory(&mk(
+            json!({ "parent_session_id": "s_p", "session_id": "s_c" }),
+            join2.clone()
+        ))
+        .is_none());
+        // Single-key join on a parent filter is a legitimate any-child watcher.
+        assert!(parent_filter_join_advisory(&mk(
+            json!({ "parent_session_id": "s_p" }),
+            json!({ "id": "J", "expect": ["a"], "key": "a" })
+        ))
+        .is_none());
+        // No join, or no parent filter: silent.
+        let mut no_join = mk(json!({ "parent_session_id": "s_p" }), join2.clone());
+        no_join.metadata = Some(json!({ "model": "m", "task": "t" }));
+        assert!(parent_filter_join_advisory(&no_join).is_none());
+        assert!(parent_filter_join_advisory(&mk(json!({}), join2.clone())).is_none());
+        // Non-turn trigger types are not advised on.
+        let mut state_req = mk(json!({ "parent_session_id": "s_p" }), join2);
+        state_req.trigger_type = "state".into();
+        assert!(parent_filter_join_advisory(&state_req).is_none());
+    }
+
+    #[test]
+    fn standing_binding_advisory_notes_non_once_non_join_only() {
+        let mk = |ty: &str, join: bool| -> SubscribeRequest {
+            let mut metadata = json!({ "model": "m", "task": "t" });
+            if join {
+                metadata["join"] = json!({ "id": "J", "expect": ["a", "b"], "key": "a" });
+            }
+            serde_json::from_value(json!({
+                "trigger_type": ty,
+                "config": {},
+                "function_id": "harness::react",
+                "metadata": metadata,
+            }))
+            .unwrap()
+        };
+        // The leak shape: a state kickoff registered without once.
+        let note = standing_binding_advisory(&mk("state", false), false);
+        assert!(note.as_deref().unwrap_or("").contains("STANDING"));
+        // once retires itself; joins own their lifecycle; cron is recurring by design.
+        assert!(standing_binding_advisory(&mk("state", false), true).is_none());
+        assert!(standing_binding_advisory(&mk("state", true), false).is_none());
+        assert!(standing_binding_advisory(&mk("cron", false), false).is_none());
+    }
+
+    #[test]
+    fn react_once_needs_explicit_true_and_no_join() {
+        let mk = |once: Option<bool>, join: bool| -> SubscribeRequest {
+            let mut metadata = json!({ "model": "m", "task": "t" });
+            if join {
+                metadata["join"] = json!({ "id": "J", "expect": ["a"], "key": "a" });
+            }
+            serde_json::from_value(json!({
+                "trigger_type": "state",
+                "config": { "scope": "s", "key": "k" },
+                "function_id": "harness::react",
+                "once": once,
+                "metadata": metadata,
+            }))
+            .unwrap()
+        };
+        assert!(react_once(&mk(Some(true), false)));
+        // No notify-path default: omitted or false stays persistent.
+        assert!(!react_once(&mk(None, false)));
+        assert!(!react_once(&mk(Some(false), false)));
+        // The join owns its predecessors' lifecycle.
+        assert!(!react_once(&mk(Some(true), true)));
     }
 
     #[test]

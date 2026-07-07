@@ -58,6 +58,7 @@ _BULK_TARGET = {"url": _STR, "urls": _STR_LIST}
 _CONTENT_OUT = {
     "format": {"type": "string", "enum": ["markdown", "text"], "description": "render page body to this format"},
     "main_content_only": {**_BOOL, "description": "strip nav/scripts/hidden before rendering"},
+    "css_selector": {**_STR, "description": "scope the render to this CSS subtree (e.g. a page's content div)"},
 }
 _COMMON_OUT = {"selectors": _SELECTORS, "include_html": _BOOL, **_CONTENT_OUT}
 
@@ -410,7 +411,7 @@ _CRAWL_REQUEST = {
         "max_depth": {"type": "integer"},
         "concurrency": {"type": "integer"},
         "download_delay": {**_NUM, "description": "seconds to wait between crawl rounds"},
-        "format": {"type": "string", "enum": ["markdown", "text"]},
+        **_CONTENT_OUT,
         "include_html": _BOOL,
         "impersonate": _STR,
         "stream_name": {**_STR, "description": "stream to emit items on (default scrapling::crawl)"},

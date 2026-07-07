@@ -188,10 +188,33 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                         .and_then(Value::as_str)
                         .unwrap_or(function_id)
                         .to_string();
-                    let payload = arguments
-                        .get("payload")
-                        .cloned()
-                        .unwrap_or(Value::Object(Default::default()));
+                    let payload = match arguments.get("payload") {
+                        // A stringified payload is always wrong (the schema says
+                        // object): recover the object when the text starts with
+                        // one. Leading-value parse, not from_str — models that
+                        // stringify also tend to append stray closing braces,
+                        // which a strict parse rejects as trailing data.
+                        Some(Value::String(s)) => serde_json::Deserializer::from_str(s)
+                            .into_iter::<Value>()
+                            .next()
+                            .and_then(Result::ok)
+                            .filter(Value::is_object)
+                            .unwrap_or_else(|| Value::String(s.clone())),
+                        Some(v) => v.clone(),
+                        // No `payload` key: the model flattened the target's
+                        // arguments beside `function` (or called the target name
+                        // as the tool). Hoist them instead of dropping them —
+                        // dropping yields a misleading `missing field` error for
+                        // fields the model visibly sent.
+                        None => {
+                            let mut map = match arguments {
+                                Value::Object(m) => m.clone(),
+                                _ => Default::default(),
+                            };
+                            map.remove("function");
+                            Value::Object(map)
+                        }
+                    };
                     (target, payload)
                 } else {
                     (function_id.clone(), arguments.clone())
@@ -269,6 +292,73 @@ mod tests {
         assert_eq!(calls[0].function_id, "shell::run");
         assert_eq!(calls[0].kind, CallKind::Trigger);
         assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
+    }
+
+    #[test]
+    fn flattened_agent_trigger_args_are_hoisted_into_payload() {
+        // The model put the target's arguments beside `function` instead of
+        // inside `payload` — they must reach the target, not vanish into {}.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "engine::register_trigger", "trigger_type": "state", "config": { "key": "k" } }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].function_id, "engine::register_trigger");
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "trigger_type": "state", "config": { "key": "k" } })
+        );
+    }
+
+    #[test]
+    fn native_shaped_call_under_agent_trigger_exposure_keeps_arguments() {
+        // The model hallucinated the target id as the tool name with real args.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: "engine::triggers::info".into(),
+            arguments: json!({ "id": "state" }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].function_id, "engine::triggers::info");
+        assert_eq!(calls[0].arguments, json!({ "id": "state" }));
+    }
+
+    #[test]
+    fn stringified_payload_object_is_recovered() {
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "shell::run", "payload": "{\"cmd\":\"ls\"}" }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
+    }
+
+    #[test]
+    fn stringified_payload_with_trailing_garbage_is_recovered() {
+        // The live failure shape: a valid stringified object plus a stray `}`.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "state::set", "payload": "{\"key\":\"a\",\"value\":{\"x\":1}}}" }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "key": "a", "value": { "x": 1 } })
+        );
+    }
+
+    #[test]
+    fn non_object_string_payload_is_left_verbatim() {
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "shell::run", "payload": "not json" }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].arguments, json!("not json"));
     }
 
     #[test]

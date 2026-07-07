@@ -201,7 +201,9 @@ def serialize_page(page, payload: dict[str, Any], include_html: bool) -> dict[st
     fmt = payload.get("format")
     if fmt in ("markdown", "text"):
         out["format"] = fmt
-        out["content"] = render_content(page, fmt, bool(payload.get("main_content_only", False)))
+        out["content"] = render_content(
+            page, fmt, bool(payload.get("main_content_only", False)), payload.get("css_selector")
+        )
     if include_html:
         out["html"] = str(page.html_content)
     return out
