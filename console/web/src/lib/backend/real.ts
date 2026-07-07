@@ -38,6 +38,11 @@ import {
   type TurnSourceEvent,
   translateTurnSource,
 } from './translate'
+import {
+  listSessionTriggers,
+  type SessionTriggerInfo,
+  unregisterTrigger,
+} from './triggers'
 import { startTurnEventsSubscription } from './turn-events-live'
 import type {
   ChatBackend,
@@ -328,6 +333,18 @@ async function realListQueued(
   }))
 }
 
+async function realListTriggers(
+  sessionId: string,
+): Promise<SessionTriggerInfo[]> {
+  const client = await getIiiClient()
+  return listSessionTriggers(client, sessionId)
+}
+
+async function realUnregisterTrigger(triggerId: string): Promise<void> {
+  const client = await getIiiClient()
+  await unregisterTrigger(client, triggerId)
+}
+
 async function realResolveApproval(
   sessionId: string,
   functionCallId: string,
@@ -465,6 +482,8 @@ export const realBackend: ChatBackend = {
   stream: realStream,
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
+  listTriggers: realListTriggers,
+  unregisterTrigger: realUnregisterTrigger,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
   compactSession: realCompactSession,

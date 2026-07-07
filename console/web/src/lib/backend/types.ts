@@ -1,4 +1,5 @@
 import type { Mode, ModelId } from '@/types/chat'
+import type { SessionTriggerInfo } from './triggers'
 
 /**
  * The streaming contract every ChatBackend honors. The order is:
@@ -213,6 +214,14 @@ export interface ChatBackend {
    * tab's sends. Empty when idle.
    */
   listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
+  /**
+   * The session's registered trigger subscriptions (notify + react bindings
+   * the agent registered via the harness's `engine::register_trigger`
+   * intercept).
+   */
+  listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
+  /** Unregister one of the session's triggers by engine trigger id. */
+  unregisterTrigger?(triggerId: string): Promise<void>
   /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).
    * The client-side AbortSignal only stops rendering; without this the

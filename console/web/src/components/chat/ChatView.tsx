@@ -19,6 +19,7 @@ import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import type {
   CompactResult,
   QueuedMessagePreview,
@@ -57,6 +58,7 @@ import {
   type UserMessage,
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
+import { SessionTriggers } from './SessionTriggers'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
@@ -211,6 +213,46 @@ export function ChatView({
       window.clearInterval(timer)
     }
   }, [streamingIndicator, backend.listQueued, conversation.id])
+
+  // Registered trigger subscriptions (notify/react bindings owned by this
+  // session): shown above the composer, unregisterable, detail on click.
+  // Polled — bindings come and go as the agent registers them mid-turn.
+  const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
+    [],
+  )
+  const refreshTriggers = useCallback(() => {
+    const listTriggers = backend.listTriggers
+    if (!listTriggers) return
+    listTriggers(conversation.id)
+      .then(setSessionTriggers)
+      .catch(() => {})
+  }, [backend.listTriggers, conversation.id])
+  useEffect(() => {
+    if (!backend.listTriggers) return
+    setSessionTriggers([])
+    refreshTriggers()
+    const timer = window.setInterval(refreshTriggers, 5000)
+    return () => window.clearInterval(timer)
+  }, [refreshTriggers, backend.listTriggers])
+
+  const handleUnregisterTrigger = useCallback(
+    async (triggerId: string) => {
+      try {
+        await backend.unregisterTrigger?.(triggerId)
+        setSessionTriggers((rows) => rows.filter((t) => t.id !== triggerId))
+      } catch (err) {
+        onAppendMessage(
+          conversation.id,
+          makeSystemNotice(
+            `could not unregister the trigger — ${err instanceof Error ? err.message : String(err)}`,
+            'error',
+          ),
+        )
+      }
+      refreshTriggers()
+    },
+    [backend, conversation.id, onAppendMessage, refreshTriggers],
+  )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
@@ -1096,6 +1138,10 @@ export function ChatView({
               </button>
             </div>
           ) : null}
+          <SessionTriggers
+            triggers={sessionTriggers}
+            onUnregister={handleUnregisterTrigger}
+          />
           {queuedStrip.length > 0 ? (
             <div
               className="mb-1 border border-rule bg-bg"
