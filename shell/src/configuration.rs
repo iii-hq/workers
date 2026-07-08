@@ -528,25 +528,36 @@ mod tests {
 
     /// The coder-surface guidance moved here from the harness/provider identity
     /// prompts (the harness injects it via `agent_instructions` while this
-    /// worker runs) — it must keep covering the full surface.
+    /// worker runs). It teaches the code-work loop; the full inventory comes
+    /// from the prefix check, so only doctrine-bearing ids are pinned.
+    /// Wrap-proof: the prompt hard-wraps prose, so compare on one line.
     #[test]
-    fn agent_instructions_cover_the_coder_surface() {
-        let text = include_str!("../prompts/agent-instructions.txt");
+    fn agent_instructions_teach_the_code_work_loop() {
+        let text = include_str!("../prompts/agent-instructions.txt").replace('\n', " ");
         for id in [
+            "coder::info",
             "coder::read-file",
             "coder::search",
-            "coder::list-folder",
             "coder::tree",
             "coder::create-file",
             "coder::update-file",
             "coder::move",
-            "coder::delete-file",
         ] {
             assert!(text.contains(id), "missing {id}");
         }
-        assert!(text.contains("never delete-then-recreate"));
+        // Routing + anti-patterns.
         assert!(text.contains("Never improvise code-file edits via `shell::exec`"));
+        assert!(text.contains("never delete-then-recreate"));
         assert!(!text.contains("registry\", name: \"coder\""));
+        // The efficient loop: search with context, windowed reads, anchored
+        // regex edits guarded by expect_matches, echo-based verification.
+        assert!(text.contains("context lines"));
+        assert!(text.contains("stat: true"));
+        assert!(text.contains("numbered: true"));
+        assert!(text.contains("expect_matches: 1"));
+        assert!(text.contains("echoes in the response instead of re-reading"));
+        // The jail escape hatch stays documented.
+        assert!(text.contains("shell::fs::*"));
     }
 
     #[test]

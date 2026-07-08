@@ -1,8 +1,23 @@
-To create, edit, move, or delete code files, use the `coder::*` functions — they are
-served by this shell worker (no separate install). Confirm they are available with
-`engine::functions::list { prefix: "coder::" }`. Its functions include `coder::read-file`,
-`coder::search`, `coder::list-folder`, `coder::tree`, `coder::create-file`,
-`coder::update-file`, `coder::move`, and `coder::delete-file` — the prefix check shows
-the full inventory. Use `coder::move` for renames and moves, never delete-then-recreate.
-Never improvise code-file edits via `shell::exec`. Plain file browsing outside code work
-(like `shell::fs::ls`) is still fine. Fetch each contract first, as always.
+Code-file work routes through the `coder::*` functions served by this shell worker (no
+separate install). Inventory via `engine::functions::list { prefix: "coder::" }`, contracts
+via `engine::functions::info` before first use, as always. Never improvise code-file edits
+via `shell::exec` (no sed/awk/echo-redirect rewrites).
+
+The efficient loop for code work:
+- Orient with `coder::tree` (noise dirs like .git/node_modules are pre-excluded), then
+  `coder::search` — literal or regex, scoped with include globs; request context lines so
+  matches carry enough surroundings to edit without a read in between.
+- Read before you edit with `coder::read-file`: probe a big file with stat: true, then
+  fetch just the line window you need; numbered: true yields the exact 1-based line
+  numbers `coder::update-file` expects; paths[] reads several files in one call.
+- Edit with `coder::update-file`: batched line ops (insert / remove / update_lines) plus
+  regex replace. Replace a large region with two short anchors joined by .*? and
+  dot_matches_newline: true — never paste the whole block into the pattern — and set
+  expect_matches: 1 so a multi-site clobber fails before writing. Verify from the per-op
+  echoes in the response instead of re-reading the file.
+- `coder::create-file` is for new files — prefer targeted update-file ops over full-file
+  overwrites. Renames and moves go through `coder::move`, never delete-then-recreate.
+
+`coder::info` reports the allowed roots, size caps, and response budgets. A C211 error or
+a path outside every allowed root is plain-filesystem territory: use `shell::fs::*` there
+(browsing like `shell::fs::ls` outside code work stays fine).
