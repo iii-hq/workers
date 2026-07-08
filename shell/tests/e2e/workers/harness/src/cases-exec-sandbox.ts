@@ -168,24 +168,22 @@ export const EXEC_SANDBOX_CASES: TestCase[] = [
     },
   },
   {
-    name: 'exec_sandbox_allowlist_still_enforced',
+    name: 'exec_sandbox_denylist_still_enforced',
     async run(ctx: CaseContext) {
-      const sandbox_id = await maybeSandbox(ctx, 'exec_sandbox_allowlist_still_enforced');
+      const sandbox_id = await maybeSandbox(ctx, 'exec_sandbox_denylist_still_enforced');
       if (!sandbox_id) return;
-      // The shell allowlist gates argv[0] BEFORE backend dispatch for
-      // both targets. `nmap` is not in the e2e allowlist
-      // (echo/ls/cat/sleep/pwd/printf/sh/false/true/env), so the call
-      // must fail with an allowlist error WITHOUT reaching the VM.
-      // (We can't directly observe "VM not hit" the way we can with
-      // mocks; the assertion is just that the shell denies the call.)
+      // The shell denylist gates the argv BEFORE backend dispatch for both
+      // targets, so the call must fail with a denylist error WITHOUT
+      // reaching the VM. (We can't directly observe "VM not hit"; the
+      // assertion is just that the shell denies the call.)
       await ctx.expectError(
         () =>
           ctx.call('shell::exec', {
-            command: 'nmap',
-            args: ['-A', 'localhost'],
+            command: 'echo',
+            args: ['harness_denylist_marker'],
             target: { kind: 'sandbox', sandbox_id },
           }),
-        'allowlist',
+        'denylist',
       );
     },
   },

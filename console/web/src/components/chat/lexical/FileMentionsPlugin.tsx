@@ -11,7 +11,7 @@ import {
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchFileIndex, fuzzyFilterFiles } from '@/lib/file-index'
-import { $createFileMentionNode } from './FileMentionNode'
+import { $createFileMentionNode, PathGlyph } from './FileMentionNode'
 import { FlipMenu } from './FlipMenu'
 
 class FileMentionOption extends MenuOption {
@@ -31,7 +31,8 @@ interface FileMentionsPluginProps {
 }
 
 /**
- * `#` typeahead over the working directory's files. The index is fetched
+ * `#` typeahead over the working directory's files and folders (folders
+ * carry a trailing `/` in the index). The index is fetched
  * lazily on first open (and re-used through file-index's TTL cache), so a
  * conversation that never mentions files never walks the repo. `minLength: 1`
  * keeps markdown headings (`# foo` — the space ends the match) from flashing
@@ -107,7 +108,7 @@ export function FileMentionsPlugin({
         return createPortal(
           <FlipMenu
             anchorEl={anchorElementRef.current}
-            header="files"
+            header="files & folders"
             options={options}
             selectedIndex={props.selectedIndex}
             selectOptionAndCleanUp={props.selectOptionAndCleanUp}
@@ -119,18 +120,7 @@ export function FileMentionsPlugin({
                   aria-hidden="true"
                   className="text-accent leading-none w-3 flex justify-center shrink-0"
                 >
-                  <svg
-                    width="9"
-                    height="11"
-                    viewBox="0 0 10 12"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1"
-                    aria-hidden="true"
-                  >
-                    <path d="M1 1H6L9 4V11H1V1Z" />
-                    <path d="M6 1V4H9" />
-                  </svg>
+                  <PathGlyph path={opt.path} />
                 </span>
                 <span className="min-w-0 font-mono text-[13px] text-ink truncate">
                   {opt.path}

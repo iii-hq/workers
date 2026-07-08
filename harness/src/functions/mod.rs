@@ -73,6 +73,10 @@ pub const FILESYSTEM_REVOKE_ID: &str = "harness::filesystem::revoke";
 pub const FILESYSTEM_REVOKE_DESC: &str =
     "Internal control-plane: revoke a session's access to an additional filesystem root.";
 
+pub const FILESYSTEM_INFO_ID: &str = "harness::filesystem::info";
+pub const FILESYSTEM_INFO_DESC: &str =
+    "Internal control-plane: the default working-directory root new sessions are scoped to.";
+
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
 fn register<Req, Resp, F, Fut>(
@@ -179,6 +183,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         FILESYSTEM_REVOKE_ID,
         FILESYSTEM_REVOKE_DESC,
         |d, r| async move { filesystem::revoke(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        FILESYSTEM_INFO_ID,
+        FILESYSTEM_INFO_DESC,
+        |d, r| async move { filesystem::info(&d, r).await },
     );
 
     // Internal cron target — registered, but kept off the public catalog.

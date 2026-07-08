@@ -98,7 +98,7 @@ pub const OUTCOME_OK: &str = "ok";
 pub const OUTCOME_ERROR: &str = "error";
 
 /// Fine-grained code label used when a call fails without a coded remote error
-/// (e.g. an argv-parse or allowlist rejection surfaced as `Error::Handler`).
+/// (e.g. an argv-parse or denylist rejection surfaced as `Error::Handler`).
 pub const CODE_INVOCATION_FAILED: &str = "invocation_failed";
 
 /// Pure classification of a handler result into the `(outcome, code)` pair used
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn classify_non_coded_error_falls_back_to_invocation_failed() {
-        // An argv-parse / allowlist rejection surfaces as Handler (no S-code).
+        // An argv-parse / denylist rejection surfaces as Handler (no S-code).
         let result: Result<u8, Error> =
             Err(Error::Handler("argv: command not allowed".to_string()));
         let (outcome, code) = classify(&result);

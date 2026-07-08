@@ -84,7 +84,7 @@ trap cleanup EXIT INT TERM
 # crashed (e.g., port-conflict panic) the trap above never fired, so
 # its workers stayed alive and re-register against the next engine —
 # which then routes calls to the orphan instead of the freshly-spawned
-# worker, producing baffling test failures (wrong allowlist, wrong
+# worker, producing baffling test failures (wrong denylist, wrong
 # sandbox.enabled). Kill them before starting clean.
 reap_orphans() {
   local port_pid

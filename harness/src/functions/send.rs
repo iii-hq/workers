@@ -387,18 +387,41 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) 
     }
 }
 
+/// Default a BRAND-NEW session's working directory (MOT-3897): when the very
+/// first turn arrives without `metadata.fs_scope.root`, scope it to the
+/// configured default (the stack's launch folder). Existing sessions are never
+/// retroactively scoped — their unscoped turns stay unscoped — and an explicit
+/// root on the send always wins.
+fn apply_default_filesystem_root(
+    options: &mut TurnOptions,
+    is_new_session: bool,
+    default_root: Option<&str>,
+) {
+    if !is_new_session || options.filesystem_root().is_some() {
+        return;
+    }
+    if let Some(root) = default_root {
+        options.set_filesystem_root(root);
+    }
+}
+
 /// The turn CAS + merge double-check (harness.md § Concurrency & steering).
 async fn seed_or_merge(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
-    options: TurnOptions,
+    mut options: TurnOptions,
     message_preview: Option<String>,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     // Carry the session's last-acknowledged registry generation onto a new turn
     // so run_step can notice a registry change that landed between turns.
     let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
+    apply_default_filesystem_root(
+        &mut options,
+        existing.is_none(),
+        cfg.resolved_default_filesystem_root().as_deref(),
+    );
     match existing {
         Some(rec) if !rec.status.is_terminal() => {
             // Merge path: the message is already appended; the running loop's
@@ -611,5 +634,87 @@ mod tests {
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
         assert!(prompt.ends_with("Speak only in haiku."));
+    }
+
+    fn bare_options() -> TurnOptions {
+        build_options(
+            &WorkerConfig::default(),
+            &SendRequest {
+                session_id: None,
+                message: MessageInput::Text("hi".into()),
+                model: "m".into(),
+                provider: None,
+                idempotency_key: None,
+                session: None,
+                options: None,
+            },
+            None,
+        )
+    }
+
+    #[test]
+    fn default_root_applies_only_to_new_sessions() {
+        let mut opts = bare_options();
+        apply_default_filesystem_root(&mut opts, true, Some("/work/project"));
+        assert_eq!(opts.filesystem_root(), Some("/work/project"));
+
+        // An existing session's scope-less turn stays unscoped.
+        let mut opts = bare_options();
+        apply_default_filesystem_root(&mut opts, false, Some("/work/project"));
+        assert_eq!(opts.filesystem_root(), None);
+    }
+
+    #[test]
+    fn explicit_root_wins_over_default() {
+        let mut opts = bare_options();
+        opts.metadata = Some(serde_json::json!({ "fs_scope": { "root": "/picked" } }));
+        apply_default_filesystem_root(&mut opts, true, Some("/work/project"));
+        assert_eq!(opts.filesystem_root(), Some("/picked"));
+    }
+
+    #[test]
+    fn default_root_merges_into_existing_metadata() {
+        let mut opts = bare_options();
+        opts.metadata = Some(serde_json::json!({ "session_id": "s_1" }));
+        apply_default_filesystem_root(&mut opts, true, Some("/work/project"));
+        assert_eq!(opts.filesystem_root(), Some("/work/project"));
+        assert_eq!(
+            opts.metadata.as_ref().unwrap().get("session_id"),
+            Some(&serde_json::json!("s_1"))
+        );
+    }
+
+    #[test]
+    fn no_default_leaves_options_untouched() {
+        let mut opts = bare_options();
+        apply_default_filesystem_root(&mut opts, true, None);
+        assert_eq!(opts.filesystem_root(), None);
+        assert!(opts.metadata.is_none());
+    }
+
+    #[test]
+    fn resolved_default_filesystem_root_states() {
+        // Absent → the boot cwd (the local stack's launch folder).
+        let cfg = WorkerConfig::default();
+        let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        assert_eq!(
+            cfg.resolved_default_filesystem_root(),
+            Some(cwd.to_string_lossy().into_owned())
+        );
+        // "off" → disabled.
+        let cfg = WorkerConfig {
+            default_filesystem_root: Some("off".into()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_default_filesystem_root(), None);
+        // Explicit path → that path.
+        let cfg = WorkerConfig {
+            default_filesystem_root: Some("/srv/projects".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_default_filesystem_root(),
+            Some("/srv/projects".to_string())
+        );
     }
 }

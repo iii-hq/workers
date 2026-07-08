@@ -9,4 +9,3 @@
 max_bg_timeout_ms: 0  # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms)
 fs:
   allow_unjailed: true
-allowlist: []

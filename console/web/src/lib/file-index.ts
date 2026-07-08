@@ -44,18 +44,21 @@ const cache = new Map<string, CacheEntry>()
 const inFlight = new Map<string, Promise<string[]>>()
 
 /**
- * Flatten a tree snapshot to sorted RELATIVE file paths (the root itself is
- * `''` and never listed). Paths containing `)` are dropped — the
- * `#file(<path>)` token cannot carry them (documented limitation).
+ * Flatten a tree snapshot to sorted RELATIVE paths (the root itself is `''`
+ * and never listed). Directories carry a trailing `/` so downstream consumers
+ * can tell them apart. Paths containing `)` are dropped — the `#file(<path>)`
+ * token cannot carry them (documented limitation).
  */
 export function flattenTree(root: TreeNodeWire): string[] {
   const out: string[] = []
   const walk = (node: TreeNodeWire, prefix: string) => {
     for (const child of node.children ?? []) {
       const path = prefix ? `${prefix}/${child.name}` : child.name
+      if (path.includes(')')) continue
       if (child.kind === 'file') {
-        if (!path.includes(')')) out.push(path)
+        out.push(path)
       } else if (child.kind === 'dir') {
+        out.push(`${path}/`)
         walk(child, path)
       }
     }
@@ -80,7 +83,9 @@ export function fuzzyFilterFiles(
   const ranked: Array<{ path: string; rank: number }> = []
   for (const path of index) {
     const lower = path.toLowerCase()
-    const base = lower.slice(lower.lastIndexOf('/') + 1)
+    /* Folder paths end in `/`; strip it so their basename still ranks. */
+    const trimmed = lower.endsWith('/') ? lower.slice(0, -1) : lower
+    const base = trimmed.slice(trimmed.lastIndexOf('/') + 1)
     let rank: number
     if (base.startsWith(q)) rank = 0
     else if (lower.includes(q)) rank = 1

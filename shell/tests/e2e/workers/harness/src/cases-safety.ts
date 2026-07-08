@@ -3,34 +3,20 @@ import { expect, expectEqual } from './cases.ts';
 
 export const SAFETY_CASES: TestCase[] = [
   {
-    name: 'allowlist rejects unlisted command',
-    async run({ call, expectError }) {
-      await expectError(
-        () => call('shell::exec', { command: 'nmap', args: ['-v'] }),
-        'not in allowlist',
-      );
+    // The planted-binary guard was removed with the allowlist (0.8.0): with
+    // no allow policy to bypass, a command path grants nothing `sh -c`
+    // doesn't already grant, and rejecting paths blocked running your own
+    // build output. Paths and bare names both execute now.
+    name: 'command paths are permitted (guard removed with allowlist)',
+    async run({ call }) {
+      const r = await call('shell::exec', { command: '/bin/ls', args: ['-d', '.'] });
+      expectEqual(r.exit_code, 0, 'absolute command path runs');
+      const bare = await call('shell::exec', { command: 'ls', args: ['-d', '.'] });
+      expectEqual(bare.exit_code, 0, 'bare command name still permitted');
     },
   },
   {
-    // This suite runs UNJAILED (config.yaml sets no host_roots). In that mode a
-    // command path (anything with '/') is rejected outright: the whole host FS
-    // is writable via shell::fs::write, so a path could execute agent-planted
-    // bytes and bypass the read-only allowlist. Bare PATH-resolved names work.
-    // (In jailed mode an absolute path OUTSIDE the jail roots is still permitted by
-    // basename — exercised by the jailed suite / Rust unit tests.)
-    name: 'unjailed mode rejects command paths (RCE guard)',
-    async run({ call, expectError }) {
-      await expectError(
-        () => call('shell::exec', { command: '/bin/ls', args: ['-d', '.'] }),
-        'unjailed',
-      );
-      // The bare name still resolves via PATH and runs.
-      const r = await call('shell::exec', { command: 'ls', args: ['-d', '.'] });
-      expectEqual(r.exit_code, 0, 'bare command name still permitted');
-    },
-  },
-  {
-    name: 'denylist blocks via regex match on allowlisted command',
+    name: 'denylist blocks via regex match',
     async run({ call, expectError }) {
       await expectError(
         () => call('shell::exec', { command: 'echo', args: ['harness_denylist_marker'] }),

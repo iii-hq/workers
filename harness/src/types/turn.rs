@@ -113,7 +113,12 @@ impl TurnOptions {
         if self.filesystem_root() == Some(root) {
             return false;
         }
+        self.set_filesystem_root(root);
+        true
+    }
 
+    /// Set `metadata.fs_scope.root`, preserving every other metadata key.
+    pub fn set_filesystem_root(&mut self, root: &str) {
         let metadata = self
             .metadata
             .get_or_insert_with(|| Value::Object(Default::default()));
@@ -128,7 +133,6 @@ impl TurnOptions {
             );
             map.insert(FS_SCOPE_KEY.to_string(), Value::Object(fs_scope));
         }
-        true
     }
 }
 
