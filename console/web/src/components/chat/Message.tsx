@@ -1,3 +1,4 @@
+import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
@@ -10,7 +11,6 @@ import type {
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { AttachmentChip } from './AttachmentChip'
-import { FunctionCallMessage } from './FunctionCallMessage'
 import { ThoughtMessage } from './ThoughtMessage'
 
 interface MessageProps {
@@ -77,7 +77,7 @@ export function Message({
           onResolveFilesystemAccess(sessionId, functionCallId, action)
       }
       return (
-        <FunctionCallMessage
+        <FunctionCallCard
           message={message}
           onApprove={onApprove}
           onDeny={onDeny}

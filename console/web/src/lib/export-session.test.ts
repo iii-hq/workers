@@ -93,7 +93,7 @@ describe('conversationToMarkdown', () => {
     expect(out).toContain('## User\nhello')
     expect(out).toContain('## Assistant (openai::gpt-5, agent)\nworld')
     expect(out).toContain('## Thought\nthinking…')
-    expect(out).toContain('## Tool call — search')
+    expect(out).toContain('## Trigger — search')
     expect(out).toContain('"query": "foo"')
     expect(out).toContain('"query": "bar"')
     expect(out).toContain('"hits": 3')
@@ -148,7 +148,7 @@ describe('conversationToMarkdown', () => {
       createdAt: 1,
     }
     const out = conversationToMarkdown(baseConversation([fcall]))
-    expect(out).toContain('## Tool call — broken')
+    expect(out).toContain('## Trigger — broken')
     // Either '[object Object]' from the toString fallback or the markdown
     // simply didn't throw — both signal graceful handling.
     expect(out).toContain('[object Object]')
@@ -182,7 +182,7 @@ describe('conversationToMarkdown', () => {
     expect(thirdIdx).toBeGreaterThan(secondIdx)
   })
 
-  it('annotates a pending-approval tool call in the heading', () => {
+  it('annotates a pending-approval trigger in the heading', () => {
     const fcall: FunctionCallMessage = {
       id: 'f1',
       role: 'function-call',
@@ -192,7 +192,7 @@ describe('conversationToMarkdown', () => {
       createdAt: 1,
     }
     const out = conversationToMarkdown(baseConversation([fcall]))
-    expect(out).toContain('## Tool call — delete_file (pending approval)')
+    expect(out).toContain('## Trigger — delete_file (pending approval)')
   })
 })
 

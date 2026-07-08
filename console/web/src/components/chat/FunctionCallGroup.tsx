@@ -1,10 +1,13 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
+import {
+  FunctionCallCard,
+  isErrorOutput,
+} from '@/components/function-call/FunctionCallCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
-import { FunctionCallMessage } from './FunctionCallMessage'
 
 interface FunctionCallGroupProps {
   messages: FunctionCallMessageType[]
@@ -34,20 +37,6 @@ interface FunctionCallGroupProps {
   workingDir?: string | null
 }
 
-/**
- * Soft failures ride on `fcall-end.output` as `{ error: { kind, ... } }`
- * (see PLAYGROUND.md "Error semantics"). The shape isn't typed beyond
- * `unknown`, so this guard stays narrow on purpose.
- */
-function isErrorOutput(v: unknown): boolean {
-  return (
-    !!v &&
-    typeof v === 'object' &&
-    !Array.isArray(v) &&
-    'error' in (v as Record<string, unknown>)
-  )
-}
-
 type Tone = 'warn' | 'accent' | 'alert' | 'ink'
 
 interface GroupStatus {
@@ -72,7 +61,7 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
       pulse: false,
       label: (
         <>
-          permission to run{' '}
+          permission to trigger{' '}
           <span className="text-accent italic font-semibold">ƒ</span>{' '}
           <span className="text-ink">{pending.functionId}</span>
         </>
@@ -88,11 +77,14 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
       pulse: true,
       label: (
         <>
-          running function{' '}
-          <span className="tabular-nums">{runningIdx + 1}</span> of{' '}
+          function <span className="tabular-nums">{runningIdx + 1}</span> of{' '}
           <span className="tabular-nums">{total}</span>:{' '}
           <span className="text-accent italic font-semibold">ƒ</span>{' '}
-          <span className="text-ink">{running.functionId}</span>
+          {running.unresolvedTarget ? (
+            <span className="text-ink-faint">…</span>
+          ) : (
+            <span className="text-ink">{running.functionId}</span>
+          )}
         </>
       ),
     }
@@ -124,7 +116,7 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
     pulse: false,
     label: (
       <>
-        ran <span className="tabular-nums">{total}</span> functions for{' '}
+        <span className="tabular-nums">{total}</span> functions for{' '}
         <span className="tabular-nums">{sum}</span>ms
       </>
     ),
@@ -169,7 +161,7 @@ export function FunctionCallGroup({
      and code panes (`bg-bg`) sit one and two layers above, creating a clear
      depth hierarchy in both light and dark themes. */
   return (
-    <div className="border border-rule bg-panel">
+    <div className="function-call-surface border border-rule bg-panel">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -226,7 +218,7 @@ export function FunctionCallGroup({
                 onResolveFilesystemAccess(sessionId, functionCallId, action)
             }
             return (
-              <FunctionCallMessage
+              <FunctionCallCard
                 key={m.id}
                 message={m}
                 onApprove={onApprove}

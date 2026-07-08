@@ -40,7 +40,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
   {
     id: 'happy-plan',
     label: 'happy · plan',
-    description: 'thought + assistant body, no function calls.',
+    description: 'thought + assistant body, no function triggers.',
     group: 'happy paths',
     preferredMode: 'plan',
     backend: happyPlan,
@@ -48,7 +48,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
   {
     id: 'happy-ask',
     label: 'happy · ask',
-    description: 'assistant body only, no thought, no function calls.',
+    description: 'assistant body only, no thought, no function triggers.',
     group: 'happy paths',
     preferredMode: 'ask',
     backend: happyAsk,
@@ -56,7 +56,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
   {
     id: 'happy-agent',
     label: 'happy · agent',
-    description: 'thought + one function call + assistant body.',
+    description: 'thought + one function trigger + assistant body.',
     group: 'happy paths',
     preferredMode: 'agent',
     backend: happyAgent,
@@ -109,7 +109,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     id: 'error-on-fcall',
     label: 'error on fcall',
     description:
-      'function call ends with an error payload (rate_limited) instead of data.',
+      'function trigger ends with an error payload (rate_limited) instead of data.',
     group: 'failure modes',
     preferredMode: 'agent',
     backend: errorOnFcall,
@@ -118,7 +118,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     id: 'multi-function-agent',
     label: 'multi-function agent',
     description:
-      'three sequential function calls before the assistant body — surfaces fcall pointer reuse.',
+      'three sequential function triggers before the assistant body — surfaces fcall pointer reuse.',
     group: 'agent',
     preferredMode: 'agent',
     backend: multiFunctionAgent,

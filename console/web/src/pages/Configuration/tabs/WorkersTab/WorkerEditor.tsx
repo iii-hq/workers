@@ -222,7 +222,9 @@ function EditorHeader({ entry }: { entry: ConfigurationSchemaView }) {
   return (
     <header className="px-6 py-4 border-b border-rule shrink-0">
       <div className="flex items-baseline gap-3">
-        <h2 className={cn(wt.heading, 'text-ink lowercase tracking-[-0.01em]')}>
+        <h2
+          className={cn(wt.heading, 'text-ink capitalize tracking-[-0.01em]')}
+        >
           {entry.name || entry.id}
         </h2>
         <span className={cn(wt.caption, 'text-ink-ghost')}>{entry.id}</span>

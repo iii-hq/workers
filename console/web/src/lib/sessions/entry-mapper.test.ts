@@ -180,6 +180,41 @@ describe('entrySegments', () => {
       tokensBefore: 1200,
     })
   })
+
+  it('flags an agent_trigger whose target is not resolvable yet', () => {
+    // Providers degrade partial/streaming JSON arguments to `{}`, so the
+    // wrapped target function is unknown until the stream finishes.
+    const [seg] = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {},
+        },
+      ]),
+    )
+    expect(seg).toMatchObject({
+      role: 'function-call',
+      functionId: 'agent_trigger',
+      unresolvedTarget: true,
+    })
+    // A resolvable wrapper carries no flag.
+    const [resolved] = entrySegments(
+      assistantItem('e-b', [
+        {
+          type: 'function_call',
+          id: 'fc-2',
+          function_id: 'agent_trigger',
+          arguments: { function: 'shell::run', payload: {} },
+        },
+      ]),
+    )
+    expect(resolved).toMatchObject({
+      functionId: 'shell::run',
+      unresolvedTarget: undefined,
+    })
+  })
 })
 
 describe('applyEntryUpsert', () => {
@@ -334,6 +369,148 @@ describe('applyEntryUpsert', () => {
         errorCode: 'S215',
       },
     })
+  })
+
+  it('infers running for unpaired calls while the session is working', () => {
+    const messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({
+      role: 'function-call',
+      running: true,
+    })
+  })
+
+  it('does not infer running when the session is not working', () => {
+    const messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+    )
+    expect((messages[0] as { running?: boolean }).running).toBeUndefined()
+  })
+
+  it('clears inferred running when the function_result pairs in', () => {
+    let messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    messages = applyEntryUpsert(messages, resultItem('fr-fc-1', 'fc-1', 'ok'), {
+      working: true,
+    })
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ running: false })
+    // A later snapshot of the same entry keeps the paired call done.
+    messages = applyEntryUpsert(
+      messages,
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({ running: false })
+  })
+
+  it('never marks a pending-approval call as running', () => {
+    const local: Message = {
+      id: 'local-1',
+      role: 'function-call',
+      functionId: 'shell::run',
+      input: {},
+      pendingApproval: true,
+      functionCallId: 'fc-1',
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    expect(next[0]).toMatchObject({ pendingApproval: true })
+    expect((next[0] as { running?: boolean }).running).toBeFalsy()
+  })
+})
+
+describe('transcriptToMessages — running inference on hydration', () => {
+  const call = (id: string) =>
+    ({
+      type: 'function_call',
+      id,
+      function_id: 'shell::run',
+      arguments: {},
+    }) as const
+
+  it('marks unpaired calls of the last assistant entry while working', () => {
+    const messages = transcriptToMessages(
+      [
+        userItem('e-u', 'go'),
+        assistantItem('e-a', [call('fc-1')]),
+        resultItem('fr-fc-1', 'fc-1', 'ok'),
+        assistantItem('e-b', [call('fc-2')]),
+      ],
+      'sess-1',
+      { working: true },
+    )
+    const rows = messages.filter((m) => m.role === 'function-call')
+    expect(rows[0]).toMatchObject({ functionCallId: 'fc-1', running: false })
+    expect(rows[1]).toMatchObject({ functionCallId: 'fc-2', running: true })
+  })
+
+  it('does not pulse historical unpaired calls (earlier entries or idle sessions)', () => {
+    // Unpaired call in an EARLIER entry (interrupted turn) stays still even
+    // while working.
+    const working = transcriptToMessages(
+      [
+        assistantItem('e-a', [call('fc-1')]),
+        assistantItem('e-b', [{ type: 'text', text: 'done' }]),
+      ],
+      'sess-1',
+      { working: true },
+    )
+    const row = working.find((m) => m.role === 'function-call')
+    expect((row as { running?: boolean }).running).toBeFalsy()
+
+    // Idle session: nothing pulses.
+    const idle = transcriptToMessages(
+      [assistantItem('e-a', [call('fc-1')])],
+      'sess-1',
+    )
+    expect((idle[0] as { running?: boolean }).running).toBeUndefined()
   })
 })
 

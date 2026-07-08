@@ -222,6 +222,7 @@ async fn seed_child(
 
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
+    let message_preview = crate::functions::send::message_preview(&task);
     let record = TurnRecord {
         turn_id: turn_id.clone(),
         session_id: child_session_id.clone(),
@@ -229,6 +230,7 @@ async fn seed_child(
         step: 0,
         turn_count: 0,
         depth,
+        message_preview,
         abort: false,
         watermark_entry_id: None,
         stream_request_id: None,
@@ -285,7 +287,15 @@ async fn seed_child(
         updated_at: now,
     };
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    crate::turn_loop::enqueue_step(&deps.iii, &child_session_id, &turn_id, 0).await?;
+    crate::turn_loop::enqueue_step(
+        &deps.iii,
+        &child_session_id,
+        &turn_id,
+        0,
+        record.message_preview.as_deref(),
+        depth,
+    )
+    .await?;
 
     Ok(ChildIds {
         session_id: child_session_id,
@@ -342,6 +352,7 @@ mod tests {
             step: 1,
             turn_count: 1,
             depth: 0,
+            message_preview: None,
             abort: false,
             watermark_entry_id: None,
             stream_request_id: None,

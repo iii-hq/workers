@@ -1,11 +1,13 @@
+import { Paperclip } from 'lucide-react'
 import { useRef } from 'react'
-import { Button } from '@/components/ui/Button'
 import { uid } from '@/hooks/use-conversations'
+import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
 interface AttachmentButtonProps {
   onAttach: (attachments: Attachment[]) => void
   disabled?: boolean
+  className?: string
 }
 
 const MAX_PREVIEW_BYTES = 1_000_000
@@ -25,6 +27,7 @@ function readPreview(file: File): Promise<string | undefined> {
 export function AttachmentButton({
   onAttach,
   disabled,
+  className,
 }: AttachmentButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -47,29 +50,19 @@ export function AttachmentButton({
 
   return (
     <>
-      <Button
-        variant="icon"
-        size="icon"
+      <button
         type="button"
         disabled={disabled}
         aria-label="attach files"
         title="attach files"
         onClick={() => inputRef.current?.click()}
+        className={cn(
+          'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink transition-colors disabled:opacity-40 disabled:pointer-events-none',
+          className,
+        )}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1"
-          strokeLinecap="square"
-          aria-hidden="true"
-        >
-          {/* paperclip: two parallel diagonals with hairline strokes, no curves */}
-          <path d="M9.5 3.5L4.5 8.5L4.5 10L6 10L11 5L11 3.5L9.5 2L8 2L3 7" />
-        </svg>
-      </Button>
+        <Paperclip size={16} aria-hidden />
+      </button>
       <input
         ref={inputRef}
         type="file"

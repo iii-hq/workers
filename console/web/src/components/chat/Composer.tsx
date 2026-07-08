@@ -1,17 +1,17 @@
 import type { LexicalEditor } from 'lexical'
+import { ArrowUp, Square } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
-import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Button } from '@/components/ui/Button'
-import { Select } from '@/components/ui/Select'
+import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
-import {
-  type Attachment,
-  type Mode,
-  type ModelId,
-  type ModelOption,
-  THINKING_LEVELS,
-  type ThinkingLevel,
+import { cn } from '@/lib/utils'
+import type {
+  Attachment,
+  Mode,
+  ModelId,
+  ModelOption,
+  ThinkingLevel,
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
@@ -140,9 +140,9 @@ export function Composer({
   }, [])
 
   return (
-    <div className="border border-rule bg-bg">
+    <div className="border border-rule bg-panel">
       {attachments.length > 0 ? (
-        <div className="flex flex-wrap gap-2 px-3 pt-3 pb-1 border-b border-rule-2">
+        <div className="flex flex-wrap gap-2 p-3 border-b border-rule-2">
           {attachments.map((a) => (
             <AttachmentChip
               key={a.id}
@@ -177,7 +177,6 @@ export function Composer({
       </div>
 
       <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
-        <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
         <ModePicker value={mode} onChange={onModeChange} />
         {showWorkingDir && onWorkingDirChange ? (
           <DirectoryPicker
@@ -195,24 +194,17 @@ export function Composer({
             disabled={optionsDisabled || !!permissionModeLoading}
           />
         ) : null}
-        <div className="flex-1 min-w-0" />
-        <Select<ThinkingLevel>
-          value={thinkingLevel}
-          options={THINKING_LEVELS.map((l) => ({
-            value: l,
-            label: l === 'off' ? 'thinking off' : `thinking ${l}`,
-          }))}
-          onChange={onThinkingLevelChange}
-          disabled={optionsDisabled}
-          aria-label="thinking level"
-        />
         <ModelPicker
           value={model}
           options={modelOptions}
+          thinkingLevel={thinkingLevel}
           onChange={onModelChange}
+          onThinkingLevelChange={onThinkingLevelChange}
           disabled={optionsDisabled}
           loading={catalogLoading}
         />
+        <div className="flex-1 min-w-0" />
+        <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
         {isStreaming && queueWhileStreaming ? (
           <Button
             type="button"
@@ -227,27 +219,36 @@ export function Composer({
           </Button>
         ) : null}
         {isStreaming ? (
-          <Button
+          <button
             type="button"
-            variant="pill"
-            size="sm"
             onClick={onStop}
             aria-label="stop generating"
+            className={cn(
+              'inline-flex items-center justify-center size-8 rounded-full bg-bg text-ink',
+              '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
+              'hover:opacity-80 transition-opacity duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              'disabled:pointer-events-none disabled:opacity-40',
+            )}
           >
-            stop
-          </Button>
+            <Square size={16} aria-hidden className="fill-black/90" />
+          </button>
         ) : (
-          <Button
+          <button
             type="button"
-            variant="primary"
-            size="sm"
             onClick={handleSubmit}
             disabled={blocked}
             aria-label="send message"
+            className={cn(
+              'inline-flex items-center justify-center size-8 rounded-full bg-bg text-ink',
+              '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
+              'hover:opacity-80 transition-opacity duration-150',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              'disabled:pointer-events-none disabled:opacity-40',
+            )}
           >
-            send
-            <span aria-hidden>→</span>
-          </Button>
+            <ArrowUp size={20} aria-hidden />
+          </button>
         )}
       </div>
     </div>

@@ -9,6 +9,7 @@ export interface ModelOption {
   id: ModelId
   label: string
   contextWindow?: number
+  supportsThinking?: boolean
 }
 
 export const MODES: { id: Mode; label: string }[] = [
@@ -86,6 +87,12 @@ export interface FunctionCallMessage extends BaseMessage {
   output?: unknown
   durationMs?: number
   running?: boolean
+  /**
+   * An `agent_trigger` wrapper whose target function is not known yet (its
+   * arguments are still streaming). The UI renders a placeholder instead of
+   * the literal `agent_trigger` while running.
+   */
+  unresolvedTarget?: boolean
   /** awaiting user approval before execution; lifecycle: pending → running → done */
   pendingApproval?: boolean
   /** iii function_call_id — set on pending entries so the approve/deny UI can resolve. */

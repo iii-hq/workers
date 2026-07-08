@@ -69,7 +69,7 @@ export function AlwaysAllowButton({
             approve always for this potentially destructive function?
           </DialogTitle>
           <DialogDescription className="mt-3 text-ink">
-            you're about to let the agent call{' '}
+            you're about to let the agent trigger{' '}
             <code className="px-1 bg-paper-2 text-accent">{functionId}</code>{' '}
             for the rest of this conversation with no further prompts.
           </DialogDescription>

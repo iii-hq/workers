@@ -64,7 +64,7 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
   }, [])
 
   return (
-    <div className="flex-1 flex min-h-0 min-w-0">
+    <div className="chat-surface flex-1 flex min-h-0 min-w-0">
       <ConversationSidebar
         conversations={conversations}
         activeId={activeId}

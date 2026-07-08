@@ -47,15 +47,14 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 
 ### Traces
 
-Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::list`. Lives in [`web/src/pages/Traces/`](web/src/pages/Traces).
+Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::list`. Lives in [`web/src/pages/TracesV2/`](web/src/pages/TracesV2).
 
-- **Four visualizations** — waterfall (virtualized for huge traces), flame graph, service map, and a `dagre`-laid-out flow view via [`@xyflow/react`](https://reactflow.dev)
-- **Rich filtering** — status (ok / error / unset), time presets, sort, min/max duration, service, operation, arbitrary attribute key/value pairs, debounced free-text search
-- **Group by** — none, message, session, function — server-side aggregation with lazy per-group span trees
+- **Live timeline strip masthead** — every span streamed in real time, with a shared funnel as the volume control
+- **Two detail visualizations** — lane timeline (same visual grammar as the strip) and a waterfall tree virtualized for huge traces
+- **Rich filtering** — status, time presets, min/max duration, arbitrary attribute key/value pairs, debounced free-text search, saved views
+- **Group by** — server-side aggregation with lazy per-group member expansion
 - **Span detail tabs** — info, attributes, events, errors, OTel logs, context (baggage), links
-- **Live polling** — pause / resume, hover-deferred refreshes, 25 / 50 / 100 page sizes
-- **Resizable panels** — drag to resize, double-click to reset
-- **Critical-path breadcrumb** with cross-trace parent jump
+- **Live streaming** — spans append over iii streams (`iii:devtools:*`) instead of polling; one seed read, then append
 
 ### Worktrees
 
