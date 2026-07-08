@@ -36,6 +36,14 @@ export type TimelineSpanKind = 'zap' | 'sparkle' | 'flame' | 'lambda'
 
 export interface TimelineSpan {
   id: string
+  /** owning trace, when it differs from `id` — click and selection
+   *  resolve through it when present */
+  traceId?: string
+  /** shared span-filter keys (`lib/spanFilters.ts` selection): the owning
+   *  function id and worker name — bars matching a hidden entry are
+   *  filtered out by the strip before layout */
+  groupKey?: string
+  workerKey?: string
   /** epoch ms */
   startTime: number
   /** epoch ms; null/undefined while the span is still running */

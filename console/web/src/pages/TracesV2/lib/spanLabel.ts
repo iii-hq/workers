@@ -68,6 +68,39 @@ export function formatSpanLabel(
   return label
 }
 
+// The "relevant span" tagging convention (see
+// workers/console/docs/timeline-span-tags.md): a producing worker stamps
+// `iii.tag.kind`/`iii.tag.display_name` as OTel baggage, which the (>=
+// 0.21.2-next.1) BaggageSpanProcessor copies onto every span attribute set
+// in scope, same mechanism as the existing `iii.tag.message`/
+// `iii.session.name` trace tags — plain W3C baggage, nothing custom-protocol.
+const TAG_KIND_ATTR = 'iii.tag.kind'
+const TAG_DISPLAY_NAME_ATTR = 'iii.tag.display_name'
+
+/** `iii.tag.kind` off a span's attributes, if a producer set one. */
+export function tagKindOf(
+  span: Pick<VisualizationSpan, 'name' | 'service_name'> & {
+    attributes?: Record<string, unknown>
+  },
+): string | undefined {
+  const value = span.attributes?.[TAG_KIND_ATTR]
+  return typeof value === 'string' ? value : undefined
+}
+
+/**
+ * Display label for a span, preferring a producer-supplied
+ * `iii.tag.display_name` override before falling back to the usual
+ * verb-stripped span name.
+ */
+export function resolveSpanLabel(
+  span: Pick<VisualizationSpan, 'name' | 'service_name'> & {
+    attributes?: Record<string, unknown>
+  },
+): string {
+  const override = span.attributes?.[TAG_DISPLAY_NAME_ATTR]
+  return typeof override === 'string' ? override : formatSpanLabel(span)
+}
+
 // We keep `service_name` in the `Pick<...>` so existing callers and
 // fixtures continue to compile — the predicate just no longer uses it.
 //

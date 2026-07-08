@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import type { StoredSpan } from '../api/traces'
 import type { TraceListItem } from '../hooks/useTraceData'
 import {
   isTraceLive,
+  storedSpansToTimelineSpans,
   TRACE_ACTIVITY_ECHO_MS,
   TRACE_ACTIVITY_IDLE_MS,
-  traceListToTimelineSpans,
   waterfallToTimelineSpans,
 } from './timelineSpans'
 import type { VisualizationSpan, WaterfallData } from './traceTransform'
@@ -28,79 +29,6 @@ function row(overrides: Partial<TraceListItem> = {}): TraceListItem {
 function liveness(entries: Record<string, number>, now: number) {
   return { activity: new Map(Object.entries(entries)), now }
 }
-
-describe('traceListToTimelineSpans', () => {
-  it('maps a closed row to a settled bar (no liveness given)', () => {
-    const [span] = traceListToTimelineSpans([row()])
-    expect(span).toMatchObject({
-      id: 't-1',
-      startTime: 100_000,
-      endTime: 100_040,
-      status: 'ok',
-    })
-  })
-
-  it('keeps a pending row live regardless of activity', () => {
-    const [span] = traceListToTimelineSpans([
-      row({ status: 'pending', endTime: undefined }),
-    ])
-    expect(span.endTime).toBeNull()
-    expect(span.status).toBe('pending')
-  })
-
-  it('ignores the row’s own close echoing back through the trigger', () => {
-    // Activity within the echo dead-band of the root's end is just the
-    // root's own arrival — the trace must NOT go live because of it.
-    const echo = 100_040 + TRACE_ACTIVITY_ECHO_MS - 1
-    const [span] = traceListToTimelineSpans(
-      [row()],
-      liveness({ 't-1': echo }, echo + 100),
-    )
-    expect(span.endTime).toBe(100_040)
-    expect(span.status).toBe('ok')
-  })
-
-  it('marks a trace live while span-close activity is fresh', () => {
-    const activityAt = 100_040 + 5_000 // children still closing 5s past root
-    const now = activityAt + TRACE_ACTIVITY_IDLE_MS - 500
-    const [span] = traceListToTimelineSpans(
-      [row()],
-      liveness({ 't-1': activityAt }, now),
-    )
-    expect(span.endTime).toBeNull()
-    expect(span.status).toBe('pending')
-  })
-
-  it('settles a quiet trace at its last activity time', () => {
-    const activityAt = 100_040 + 5_000
-    const now = activityAt + TRACE_ACTIVITY_IDLE_MS + 500
-    const [span] = traceListToTimelineSpans(
-      [row()],
-      liveness({ 't-1': activityAt }, now),
-    )
-    expect(span.endTime).toBe(activityAt)
-    expect(span.status).toBe('ok')
-  })
-
-  it('keeps error status on a live bar', () => {
-    const activityAt = 100_040 + 5_000
-    const [span] = traceListToTimelineSpans(
-      [row({ status: 'error' })],
-      liveness({ 't-1': activityAt }, activityAt),
-    )
-    expect(span.endTime).toBeNull()
-    expect(span.status).toBe('error')
-  })
-
-  it('ignores activity for traces that have no row', () => {
-    const spans = traceListToTimelineSpans(
-      [row()],
-      liveness({ 'unknown-trace': 999_999_999 }, 999_999_999),
-    )
-    expect(spans).toHaveLength(1)
-    expect(spans[0].id).toBe('t-1')
-  })
-})
 
 describe('isTraceLive', () => {
   it('is live while the root itself is still pending', () => {
@@ -130,13 +58,111 @@ describe('isTraceLive', () => {
     const now = activityAt + TRACE_ACTIVITY_IDLE_MS + 500
     expect(isTraceLive(row(), liveness({ 't-1': activityAt }, now))).toBe(false)
   })
+})
 
-  it('agrees with traceListToTimelineSpans on the same inputs', () => {
-    const activityAt = 100_040 + 5_000
-    const now = activityAt + TRACE_ACTIVITY_IDLE_MS - 500
-    const live = liveness({ 't-1': activityAt }, now)
-    const [span] = traceListToTimelineSpans([row()], live)
-    expect(isTraceLive(row(), live)).toBe(span.endTime == null)
+/** Realistic epoch base — `toMs` only treats values past ~2100 as ns. */
+const T0_MS = 1_700_000_100_000
+
+function storedSpan(
+  overrides: Partial<StoredSpan> & { span_id: string },
+): StoredSpan {
+  return {
+    trace_id: 't-1',
+    parent_span_id: 'parent-1',
+    name: 'execute session::update-message',
+    kind: 'internal',
+    start_time_unix_nano: (T0_MS + 10) * 1_000_000,
+    end_time_unix_nano: (T0_MS + 50) * 1_000_000,
+    status: 'OK',
+    attributes: [],
+    events: [],
+    links: [],
+    service_name: 'harness',
+    ...overrides,
+  }
+}
+
+describe('storedSpansToTimelineSpans', () => {
+  it('maps one bar per span with waterfall-consistent label and keys', () => {
+    const [bar] = storedSpansToTimelineSpans([
+      storedSpan({
+        span_id: 's-1',
+        attributes: [['function_id', 'session::update-message']],
+      }),
+    ])
+    expect(bar).toMatchObject({
+      id: 's-1',
+      traceId: 't-1',
+      label: 'session::update-message', // `execute ` verb stripped
+      groupKey: 'session::update-message', // owning function id
+      workerKey: 'harness',
+      status: 'ok',
+      kind: 'lambda',
+    })
+    // ns→ms via float loses sub-ms precision at epoch scale — tolerate it.
+    expect(bar.startTime).toBeCloseTo(T0_MS + 10, 0)
+    expect(bar.endTime).toBeCloseTo(T0_MS + 50, 0)
+  })
+
+  it('renders a pending span as a live bar', () => {
+    const [bar] = storedSpansToTimelineSpans([
+      storedSpan({ span_id: 's-1', end_time_unix_nano: 0 }),
+    ])
+    expect(bar.endTime).toBeNull()
+    expect(bar.status).toBe('pending')
+  })
+
+  it('skips engine routing wrappers but keeps worker spans', () => {
+    const bars = storedSpansToTimelineSpans([
+      storedSpan({
+        span_id: 'wrap-1',
+        name: 'handle_invocation session::update-message',
+        service_name: 'iii',
+        attributes: [['function_id', 'session::update-message']],
+      }),
+      storedSpan({
+        span_id: 'call-1',
+        name: 'call session::update-message',
+        service_name: 'iii',
+        attributes: [['function_id', 'session::update-message']],
+      }),
+      storedSpan({ span_id: 'exec-1' }),
+    ])
+    expect(bars.map((b) => b.id)).toEqual(['exec-1'])
+  })
+
+  it('honors producer display names and tag kinds', () => {
+    const [bar] = storedSpansToTimelineSpans([
+      storedSpan({
+        span_id: 'fnq-1',
+        name: 'fn_queue default',
+        kind: 'consumer',
+        service_name: 'iii',
+        attributes: [
+          ['function_id', 'harness::turn'],
+          ['iii.tag.kind', 'queue.process'],
+          ['iii.tag.display_name', 'harness::turn (default)'],
+        ],
+      }),
+    ])
+    expect(bar.label).toBe('harness::turn (default)')
+    expect(bar.kind).toBe('flame')
+    expect(bar.groupKey).toBe('harness::turn')
+  })
+
+  it('groups unattributed spans by their span name', () => {
+    const [bar] = storedSpansToTimelineSpans([
+      storedSpan({ span_id: 's-1', name: 'HTTP GET', kind: 'client' }),
+    ])
+    expect(bar.groupKey).toBe('HTTP GET')
+    expect(bar.kind).toBe('sparkle')
+  })
+
+  it('reports error status', () => {
+    const [bar] = storedSpansToTimelineSpans([
+      storedSpan({ span_id: 's-1', status: 'ERROR' }),
+    ])
+    expect(bar.status).toBe('error')
   })
 })
 

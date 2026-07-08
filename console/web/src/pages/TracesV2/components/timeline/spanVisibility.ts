@@ -26,13 +26,14 @@ export interface SpanGroup {
 }
 
 /**
- * Group the trace's spans by `keyOf`, most-populated groups first (ties
- * break alphabetically) — the busiest call families float to the top of
- * the filter menu.
+ * Group spans by `keyOf`, most-populated groups first (ties break
+ * alphabetically) — the busiest call families float to the top of the
+ * filter menu. Generic over the span shape: the detail views group
+ * `VisualizationSpan`s, the masthead strip groups its `TimelineSpan` bars.
  */
-export function deriveSpanGroups(
-  spans: readonly VisualizationSpan[],
-  keyOf: SpanGroupKey,
+export function deriveSpanGroups<T>(
+  spans: readonly T[],
+  keyOf: (span: T) => string | null | undefined,
 ): SpanGroup[] {
   const counts = new Map<string, number>()
   for (const span of spans) {

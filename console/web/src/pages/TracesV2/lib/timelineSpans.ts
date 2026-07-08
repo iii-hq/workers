@@ -3,32 +3,35 @@
  * shape of the timeline visualizations.
  *
  * Two sources feed a timeline:
- * - the flat trace LIST (`TraceListItem[]`) feeds the live top strip: one
- *   bar per trace, live-growing while the trace is pending;
+ * - flat stored spans (`StoredSpan[]`, from the all-spans seed + stream)
+ *   feed the live top strip: one bar per SPAN across all traces, live while
+ *   the span is pending;
  * - a trace DETAIL (`WaterfallData`) feeds the static per-trace timeline:
  *   one bar per span, with ms offsets synthesized from the waterfall
  *   percentages so the window is exactly [0, total_duration_ms].
  *
- * The list rows alone under-describe a trace: a row is the trace's ROOT
- * span, exported when it CLOSES — for queue-triggered traces that is the
- * instant "publish" moment, while the real work continues in child spans
- * for seconds after. Without correction every such trace renders as a dot
- * pinned at its start. `TraceLiveness` (per-trace last span-close activity
- * from the engine's `trace` trigger) fills the gap: recent activity beyond
- * the root's own end keeps the bar LIVE and growing; once the trace goes
- * quiet the bar settles at the last activity time (≈ the real end, within
- * one engine coalesce window).
+ * `isTraceLive` (per-trace last span-close activity from the engine's
+ * `trace` trigger) also lives here: the trace LIST's rows are root spans
+ * that close instantly for queue-triggered traces, so the rows' pulsing
+ * status dot needs the activity signal to know the trace is still working.
  */
 
+import type { StoredSpan } from '../api/traces'
 import type {
   TimelineSpan,
   TimelineSpanKind,
 } from '../components/timeline/layout'
 import type { TraceActivityMap } from '../hooks/useTraceActivity'
 import type { TraceListItem } from '../hooks/useTraceData'
-import { formatSpanLabel } from './spanLabel'
+import { isEngineRoutingSpan, resolveSpanLabel, tagKindOf } from './spanLabel'
 import { getWorkerColor } from './traceColors'
-import type { VisualizationSpan, WaterfallData } from './traceTransform'
+import { normalizeSpanAttributes } from './traceListItem'
+import {
+  isPendingSpan,
+  toMs,
+  type VisualizationSpan,
+  type WaterfallData,
+} from './traceTransform'
 import { getWorkerName } from './traceUtils'
 
 /**
@@ -37,14 +40,23 @@ import { getWorkerName } from './traceUtils'
  * - `lambda`   — worker function invocations
  * - `sparkle`  — outbound client calls (llm, db, http)
  * - `flame`    — queue consumers/producers
+ *
+ * A producer can steer this classification directly via the `iii.tag.kind`
+ * baggage tag (see `spanLabel.ts#tagKindOf` and
+ * workers/console/docs/timeline-span-tags.md): `harness.turn`/
+ * `harness.subagent` read as `lambda` (a function invocation), and
+ * `queue.process` reads as `flame` (the existing "queue consumers/producers"
+ * bucket) — checked before falling back to the raw OTel `SpanKind`.
  */
-function kindForListItem(item: TraceListItem): TimelineSpanKind {
-  if (item.topic) return 'zap'
-  if (item.functionId) return 'lambda'
-  return 'sparkle'
-}
-
-function kindForOtelSpan(span: VisualizationSpan): TimelineSpanKind {
+function kindForOtelSpan(
+  span: Pick<VisualizationSpan, 'name' | 'service_name'> & {
+    kind?: string
+    attributes?: Record<string, unknown>
+  },
+): TimelineSpanKind {
+  const tag = tagKindOf(span)
+  if (tag === 'queue.process') return 'flame'
+  if (tag?.startsWith('harness.')) return 'lambda'
   switch (span.kind?.toLowerCase()) {
     case 'server':
       return 'zap'
@@ -122,47 +134,71 @@ export function isTraceLive(
   )
 }
 
+/** The waterfall's span-group identity (`traceTimelineFilters.ts`): owning
+ *  function id from the explicit/baggage attrs, span name fallback — so the
+ *  strip's funnel entries line up with the detail views'. */
+const FUNCTION_ID_ATTRS = [
+  'faas.invoked_name',
+  'function_id',
+  'iii.function.id',
+] as const
+
+function storedSpanGroupKey(
+  span: StoredSpan,
+  attrs: Record<string, unknown>,
+): string {
+  for (const key of FUNCTION_ID_ATTRS) {
+    const value = attrs[key]
+    if (typeof value === 'string' && value !== '') return value
+  }
+  return span.name
+}
+
 /**
- * One timeline bar per trace row.
+ * One timeline bar per stored span — the masthead's all-spans view.
  *
- * With `liveness`, a row whose trace shows span-close activity beyond its
- * own end is corrected from "instant root dot" to the trace's real extent:
- * `endTime: null` (live, growing) while activity is fresh, settled at the
- * last activity once the trace goes quiet. Live bars report `pending`
- * status (unless the row already errored) so hover/aria say "running".
+ * Engine ROUTING wrappers (`handle_invocation X` / `call X`) are skipped:
+ * every invocation would otherwise stack three near-identical bars around
+ * the worker's own `execute` span, and the detail views collapse those
+ * wrappers too. Labels follow the waterfall's rules (producer
+ * `iii.tag.display_name` override, else the verb-stripped span name), a
+ * pending span is a LIVE bar (`endTime: null`, grows along the now-edge),
+ * and every bar carries the shared filter keys so the funnel menu can hide
+ * the same function families the waterfall hides.
  */
-export function traceListToTimelineSpans(
-  items: readonly TraceListItem[],
-  liveness?: TraceLiveness,
+export function storedSpansToTimelineSpans(
+  spans: readonly StoredSpan[],
 ): TimelineSpan[] {
-  const spans: TimelineSpan[] = []
-  for (const item of items) {
-    let running = item.status === 'pending' || item.endTime == null
-    let end = running ? null : (item.endTime ?? null)
-
-    if (!running && liveness) {
-      const lastActivity = activityBeyondRoot(end ?? 0, liveness, item.traceId)
-      if (lastActivity != null) {
-        if (liveness.now - lastActivity < TRACE_ACTIVITY_IDLE_MS) {
-          running = true
-          end = null
-        } else {
-          end = Math.max(end ?? 0, lastActivity)
-        }
-      }
+  const out: TimelineSpan[] = []
+  for (const span of spans) {
+    const attrs = normalizeSpanAttributes(span.attributes)
+    const shaped = {
+      name: span.name,
+      service_name: span.service_name,
+      attributes: attrs,
     }
-
-    spans.push({
-      id: item.traceId,
-      startTime: item.startTime,
-      endTime: end,
-      status: running && item.status !== 'error' ? 'pending' : item.status,
-      kind: kindForListItem(item),
-      label: item.functionId ?? item.topic ?? item.rootOperation,
-      meta: `${item.workers.join(', ')} · ${item.traceId.slice(0, 8)}`,
+    if (isEngineRoutingSpan(shaped)) continue
+    const pending = isPendingSpan(span)
+    const worker = getWorkerName(shaped)
+    out.push({
+      id: span.span_id,
+      traceId: span.trace_id,
+      startTime: toMs(span.start_time_unix_nano),
+      endTime: pending ? null : toMs(span.end_time_unix_nano),
+      status:
+        span.status.toLowerCase() === 'error'
+          ? 'error'
+          : pending
+            ? 'pending'
+            : 'ok',
+      kind: kindForOtelSpan({ ...shaped, kind: span.kind }),
+      label: resolveSpanLabel(shaped),
+      meta: `${worker} · ${span.trace_id.slice(0, 8)}`,
+      groupKey: storedSpanGroupKey(span, attrs),
+      workerKey: worker,
     })
   }
-  return spans
+  return out
 }
 
 export interface TraceDetailTimeline {
@@ -198,8 +234,9 @@ export function waterfallToTimelineSpans(
       kind: kindForOtelSpan(span),
       color: getWorkerColor(getWorkerName(span)),
       // Verb prefixes (`execute `, `call `, ...) are stripped for display —
-      // the bar/hover label reads as the function, not the SDK span name.
-      label: formatSpanLabel(span),
+      // the bar/hover label reads as the function, not the SDK span name —
+      // unless a producer set an `iii.tag.display_name` override.
+      label: resolveSpanLabel(span),
       meta: getWorkerName(span),
     }
   })

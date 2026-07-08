@@ -1,6 +1,9 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
+import {
+  FunctionCallCard,
+  isErrorOutput,
+} from '@/components/function-call/FunctionCallCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
@@ -32,20 +35,6 @@ interface FunctionCallGroupProps {
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
-}
-
-/**
- * Soft failures ride on `fcall-end.output` as `{ error: { kind, ... } }`
- * (see PLAYGROUND.md "Error semantics"). The shape isn't typed beyond
- * `unknown`, so this guard stays narrow on purpose.
- */
-function isErrorOutput(v: unknown): boolean {
-  return (
-    !!v &&
-    typeof v === 'object' &&
-    !Array.isArray(v) &&
-    'error' in (v as Record<string, unknown>)
-  )
 }
 
 type Tone = 'warn' | 'accent' | 'alert' | 'ink'

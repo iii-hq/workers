@@ -358,6 +358,7 @@ async fn seed_new(
         &turn_id,
         0,
         record.message_preview.as_deref(),
+        0,
     )
     .await?;
     Ok(StartOutcome {

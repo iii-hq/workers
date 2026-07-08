@@ -66,6 +66,21 @@ const fcallDoneMulti: FCallType = {
   createdAt: Date.now(),
 }
 
+const fcallError: FCallType = {
+  id: 'f4',
+  role: 'function-call',
+  functionId: 'engine::functions::info',
+  input: { function_id: 'nope::missing' },
+  output: {
+    error: {
+      kind: 'function_error',
+      message: "Function 'nope::missing' is not registered.",
+    },
+  },
+  durationMs: 87,
+  createdAt: Date.now(),
+}
+
 /** Bordered gallery of every fixture in a namespace family, all expanded so
  *  the custom terminal/preview panes render (not just the collapsed header). */
 function FamilyGallery({ fixtures }: { fixtures: readonly FCallType[] }) {
@@ -125,6 +140,16 @@ export const DoneExpanded: Story = {
 export const DoneMultiFieldExpanded: Story = {
   name: 'done · multi-field (expanded)',
   args: { message: fcallDoneMulti, defaultOpen: true },
+}
+
+export const ErrorCollapsed: Story = {
+  name: 'error (collapsed)',
+  args: { message: fcallError },
+}
+
+export const ErrorExpanded: Story = {
+  name: 'error (expanded)',
+  args: { message: fcallError, defaultOpen: true },
 }
 
 export const SandboxFamily: Story = {

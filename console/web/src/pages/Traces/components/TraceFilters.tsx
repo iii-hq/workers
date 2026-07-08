@@ -193,16 +193,46 @@ function MoreFiltersPopover({
   children,
 }: MoreFiltersPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+  const [pos, setPos] = useState<{
+    top: number
+    right: number
+    width: number
+    maxHeight: number
+  } | null>(null)
 
   useEffect(() => {
     if (!open || !triggerRef.current) return
-    const rect = triggerRef.current.getBoundingClientRect()
-    setPos({
-      top: rect.bottom + 4,
-      right: window.innerWidth - rect.right,
-    })
-  }, [open, triggerRef])
+    const MARGIN = 8
+    const update = () => {
+      const trigger = triggerRef.current
+      if (!trigger) return
+      const rect = trigger.getBoundingClientRect()
+      const actualWidth = Math.min(width, window.innerWidth - MARGIN * 2)
+      // Right-align to the trigger, clamped so neither edge leaves the
+      // viewport.
+      const right = Math.min(
+        Math.max(window.innerWidth - rect.right, MARGIN),
+        window.innerWidth - actualWidth - MARGIN,
+      )
+      let top = rect.bottom + 4
+      let maxHeight = window.innerHeight - top - MARGIN
+      const MIN_HEIGHT = 240
+      if (maxHeight < MIN_HEIGHT) {
+        // Not enough room below the trigger — raise the popover (possibly
+        // over the trigger) so the content stays usable and scrollable.
+        maxHeight = Math.min(MIN_HEIGHT, window.innerHeight - MARGIN * 2)
+        top = window.innerHeight - MARGIN - maxHeight
+      }
+      setPos({ top, right, width: actualWidth, maxHeight })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open, triggerRef, width])
 
   useEffect(() => {
     if (!open) return
@@ -232,10 +262,11 @@ function MoreFiltersPopover({
         position: 'fixed',
         top: pos.top,
         right: pos.right,
-        width,
+        width: pos.width,
+        maxHeight: pos.maxHeight,
         zIndex: 50,
       }}
-      className="bg-bg border border-rule p-3 shadow-[0_8px_24px_rgba(0,0,0,0.18)]"
+      className="bg-bg border border-rule p-3 shadow-[0_8px_24px_rgba(0,0,0,0.18)] overflow-y-auto"
     >
       {children}
     </div>,

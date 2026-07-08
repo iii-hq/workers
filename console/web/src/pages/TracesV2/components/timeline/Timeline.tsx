@@ -83,7 +83,8 @@ export interface TimelineProps {
   maxLanes?: number
   /** clicking a bar/chip selects it (trace strip: opens the trace) */
   onSpanClick?: (span: TimelineSpan) => void
-  /** span carrying the accent ring */
+  /** span carrying the accent ring — matched against the span id, or its
+   *  owning `traceId` (selecting a trace rings every bar it contributed) */
   selectedSpanId?: string
   className?: string
 }
@@ -391,7 +392,9 @@ export function Timeline({
             {layout.bars.map(({ span, lane, live }) => {
               const color = resolveColor(span)
               const Icon = KIND_ICONS[span.kind ?? 'zap']
-              const selected = selectedSpanId === span.id
+              const selected =
+                selectedSpanId != null &&
+                (selectedSpanId === span.id || selectedSpanId === span.traceId)
               const hovered = hover?.id === span.id
               const rect = live
                 ? undefined
@@ -453,7 +456,11 @@ export function Timeline({
                 lane={lane}
                 zIndex={zIndex}
                 now={structureNow}
-                selected={selectedSpanId === span.id}
+                selected={
+                  selectedSpanId != null &&
+                  (selectedSpanId === span.id ||
+                    selectedSpanId === span.traceId)
+                }
                 hovered={hover?.id === span.id}
                 onMouseEnter={trackHover(span.id)}
                 onMouseMove={trackHover(span.id)}

@@ -38,10 +38,12 @@ import type { StoredSpan, TracesFilterParams } from '@/pages/Traces/api/traces'
 /** iii:: prefix → engine-internal → delivery spans hidden + stream loop-break. */
 const TRACE_ROWS_FN = 'iii::console::trace_rows'
 const TRACE_SPANS_FN = 'iii::console::trace_spans'
+const ALL_SPANS_FN = 'iii::console::all_spans'
 const TRACE_ACTIVITY_FN = 'iii::console::trace_activity'
 /** Stream names the observability worker pushes onto (mirror the engine consts). */
 const TRACE_ROWS_STREAM = 'iii:devtools:trace-rows'
 const TRACE_SPANS_STREAM = 'iii:devtools:trace-spans'
+const ALL_SPANS_STREAM = 'iii:devtools:all-spans'
 /** The single group every list subscriber joins (the list is a global firehose). */
 const TRACE_ROWS_GROUP = 'all'
 /** The engine observability worker's span-activity trigger type. */
@@ -218,6 +220,39 @@ export function startTraceSpansStream(
     config: { stream_name: TRACE_SPANS_STREAM, group_id: traceId },
   })
   dlog('trace-spans stream subscribed', { functionId, traceId })
+
+  return () => {
+    off()
+    try {
+      offTrigger()
+    } catch {
+      // SDK already disposed; nothing to do.
+    }
+  }
+}
+
+/**
+ * Subscribe to the global ALL-spans stream: every non-internal span of every
+ * trace, pushed by the engine each coalesce window — the masthead strip's
+ * per-span live feed. Same frame shape and lifecycle as the rows stream; one
+ * global `all` group.
+ */
+export function startAllSpansFeed(
+  client: Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>,
+  onSpans: (spans: StoredSpan[]) => void,
+): () => void {
+  const off = client.on(ALL_SPANS_FN, (frame: unknown) => {
+    const spans = extractStreamSpans(frame)
+    if (spans.length > 0) onSpans(spans)
+  })
+
+  const functionId = `${ALL_SPANS_FN}::${client.browserId}`
+  const offTrigger = client.registerTrigger({
+    type: 'stream',
+    function_id: functionId,
+    config: { stream_name: ALL_SPANS_STREAM, group_id: TRACE_ROWS_GROUP },
+  })
+  dlog('all-spans stream subscribed', { functionId })
 
   return () => {
     off()

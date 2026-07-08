@@ -41,7 +41,7 @@
   /* The single error color — every error surface (text-alert, StatusDot,
      SPAN_STATUS_COLORS in the trace charts) resolves through this token.
      No dark-mode override: it applies to both themes. */
-  --color-alert: #d21c37;
+  --color-alert: #ff0026;
   --color-warn: #a87a00;
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
@@ -83,6 +83,9 @@
   body,
   #root {
     height: 100%;
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    text-rendering: optimizeLegibility !important;
   }
 
   html,

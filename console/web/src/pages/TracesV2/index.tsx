@@ -43,6 +43,7 @@ import { ViewSwitcher, type ViewType } from './components/ViewSwitcher'
 import { ViewsDropdown } from './components/ViewsDropdown'
 import { WaterfallChart } from './components/WaterfallChart'
 import { WorkerBreakdown } from './components/WorkerBreakdown'
+import { useAllSpans } from './hooks/useAllSpans'
 import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
@@ -73,8 +74,11 @@ export interface TracesV2Props {
 }
 
 export function TracesV2({ initialTraceId }: TracesV2Props) {
-  const [showSystem, setShowSystem] = useState(false)
-  const [isPaused, setIsPaused] = useState(false)
+  // The strip's system/pause/refresh controls were removed; both stay at
+  // their defaults (streams live, internal spans hidden) until some other
+  // surface grows a toggle.
+  const [showSystem] = useState(false)
+  const [isPaused] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -125,7 +129,6 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     setNewTraceIds,
     hasOtelConfigured,
     isQueryLoading,
-    refetch,
     isHoveredRef,
     flushPendingTraces,
   } = useTraceData({
@@ -230,6 +233,10 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // above only carry the root span, which for queue-triggered traces ends
   // instantly).
   const traceActivity = useTraceActivity(isPaused)
+
+  // The masthead strip's data: every span across all traces (seed + the
+  // engine's all-spans stream), one bar per span.
+  const allSpans = useAllSpans(isPaused, showSystem)
 
   const totalPages = Math.max(
     1,
@@ -406,14 +413,9 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   return (
     <section className="flex-1 flex flex-col overflow-hidden">
       <TimelineStrip
-        traces={traceGroups}
-        activity={traceActivity}
+        spans={allSpans}
+        spanFilter={spanFilter}
         isPaused={isPaused}
-        showSystem={showSystem}
-        isLoading={isQueryLoading}
-        onTogglePause={() => setIsPaused((v) => !v)}
-        onToggleSystem={() => setShowSystem((v) => !v)}
-        onRefresh={() => refetch()}
         onTraceClick={(traceId) =>
           selectTrace(traceId === selectedTraceId ? null : traceId)
         }

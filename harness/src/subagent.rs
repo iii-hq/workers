@@ -273,6 +273,7 @@ async fn seed_child(
         &turn_id,
         0,
         record.message_preview.as_deref(),
+        depth,
     )
     .await?;
 

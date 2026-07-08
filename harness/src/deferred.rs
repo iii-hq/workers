@@ -234,6 +234,7 @@ async fn persist_and_maybe_resume(
         &record.turn_id,
         record.step,
         record.message_preview.as_deref(),
+        record.depth,
     )
     .await?;
     Ok(true)

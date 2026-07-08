@@ -1,3 +1,4 @@
+import { Check, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
@@ -84,6 +85,20 @@ interface FunctionCallCardProps {
    * The internal layout — header, body, pending bar — stays identical.
    */
   embedded?: boolean
+}
+
+/**
+ * Soft failures ride on `fcall-end.output` as `{ error: { kind, ... } }`
+ * (see PLAYGROUND.md "Error semantics"). The shape isn't typed beyond
+ * `unknown`, so this guard stays narrow on purpose.
+ */
+export function isErrorOutput(v: unknown): boolean {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    'error' in (v as Record<string, unknown>)
+  )
 }
 
 function formatJson(value: unknown): string {
@@ -261,11 +276,7 @@ export function FunctionCallCard({
     if (pending) setOpen(true)
   }, [pending])
 
-  const dotTone: 'accent' | 'warn' | 'ink' = pending
-    ? 'warn'
-    : running
-      ? 'accent'
-      : 'ink'
+  const errored = !pending && !running && isErrorOutput(message.output)
 
   return (
     <div
@@ -285,7 +296,25 @@ export function FunctionCallCard({
         )}
       >
         <span className="flex items-center gap-2 min-w-0">
-          <StatusDot tone={dotTone} pulse={running} className="shrink-0" />
+          {pending || running ? (
+            <StatusDot
+              tone={pending ? 'warn' : 'accent'}
+              pulse={running}
+              className="shrink-0"
+            />
+          ) : errored ? (
+            <X
+              aria-hidden
+              strokeWidth={2.5}
+              className="size-3.5 shrink-0 text-alert"
+            />
+          ) : (
+            <Check
+              aria-hidden
+              strokeWidth={2.5}
+              className="size-3.5 shrink-0 text-ok"
+            />
+          )}
           <span className="font-mono text-[13px] text-ink truncate">
             {pending ? (
               <>
