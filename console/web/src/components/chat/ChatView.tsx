@@ -42,7 +42,6 @@ import {
 } from '@/lib/worktrees'
 import {
   type AssistantMessage,
-  type Attachment,
   type Conversation,
   DEFAULT_THINKING_LEVEL,
   type FunctionCallMessage,
@@ -163,10 +162,6 @@ export function ChatView({
   // harness drains them into the transcript. Each draft carries the predicted
   // entry id of its eventual transcript row.
   const [queuedDrafts, setQueuedDrafts] = useState<UserMessage[]>([])
-  // Latest drafts for the Up-arrow recall handler (a stable callback that must
-  // read the current queue without re-subscribing the composer each change).
-  const queuedDraftsRef = useRef(queuedDrafts)
-  queuedDraftsRef.current = queuedDrafts
 
   // Drafts belong to one conversation; never leak across switches.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on id change only
@@ -320,33 +315,40 @@ export function ChatView({
   // group by it.
   const sessionId = conversation.id
 
-  // Up-arrow in an empty composer recalls the most recent queued message for
-  // editing: drop the local draft, pull the row out of the server queue (so
-  // the old version doesn't also drain into the transcript), and hand the
-  // text + attachments back to the composer to load. Best-effort removal — a
-  // row that already drained is a no-op. Only wired when the backend can
-  // actually remove queued rows; recall without removal would double-deliver.
-  const handleRecallLastQueued = useCallback((): {
-    text: string
-    attachments: Attachment[]
-  } | null => {
-    const drafts = queuedDraftsRef.current
-    const last = drafts[drafts.length - 1]
-    if (!last) return null
-    setQueuedDrafts((current) => current.filter((d) => d.id !== last.id))
-    // If removal fails the old version still drains — surface it (the strip
-    // also re-shows the row on the next poll, so the dup is visible).
-    void backend.removeQueued?.(conversation.id, last.id).catch(() => {
-      onAppendMessage(
-        conversation.id,
-        makeSystemNotice(
-          'could not pull the queued message back — it may still be delivered when the turn ends',
-          'warn',
-        ),
-      )
-    })
-    return { text: last.content, attachments: last.attachments ?? [] }
-  }, [backend, conversation.id, onAppendMessage])
+  // ↑/↓ browse this tab's queued messages for editing (oldest→newest). The
+  // composer owns navigation; ChatView just supplies the list and the id of
+  // whichever is being edited (for the strip highlight).
+  const [browsedQueuedId, setBrowsedQueuedId] = useState<string | null>(null)
+  const queuedForEdit = useMemo(
+    () =>
+      queuedDrafts.map((d) => ({
+        id: d.id,
+        text: d.content,
+        attachments: d.attachments ?? [],
+      })),
+    [queuedDrafts],
+  )
+
+  // Commit an edit: drop the browsed message from the queue (local draft +
+  // server row) so the resubmitted text replaces it rather than duplicating.
+  // Best-effort removal — a row that already drained is a no-op; a failure
+  // means the old version may still deliver, so surface it. Only wired when
+  // the backend can remove queued rows (recall without removal double-delivers).
+  const handleCommitQueuedEdit = useCallback(
+    (id: string) => {
+      setQueuedDrafts((current) => current.filter((d) => d.id !== id))
+      void backend.removeQueued?.(conversation.id, id).catch(() => {
+        onAppendMessage(
+          conversation.id,
+          makeSystemNotice(
+            'could not replace the queued message — the original may still be delivered when the turn ends',
+            'warn',
+          ),
+        )
+      })
+    },
+    [backend, conversation.id, onAppendMessage],
+  )
 
   // Discovered sessions (sub-agents especially) carry no client-side model
   // choice — `conversation.model` is null. Fall back to the model the latest
@@ -1326,20 +1328,40 @@ export function ChatView({
               className="mb-1 border border-rule bg-bg"
               aria-label="queued messages"
             >
-              {queuedStrip.map((row) => (
-                <div
-                  key={row.id}
-                  className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0"
-                >
-                  <span className="min-w-0 flex-1 truncate">{row.text}</span>
-                  <span className="shrink-0 lowercase text-ink-ghost">
-                    queued
-                  </span>
-                </div>
-              ))}
+              {queuedStrip.map((row) => {
+                const editing = row.id === browsedQueuedId
+                return (
+                  <div
+                    key={row.id}
+                    className={cn(
+                      'flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0',
+                      editing && 'bg-accent/10',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'min-w-0 flex-1 truncate',
+                        editing && 'text-accent',
+                      )}
+                    >
+                      {row.text}
+                    </span>
+                    <span
+                      className={cn(
+                        'shrink-0 lowercase',
+                        editing ? 'text-accent' : 'text-ink-ghost',
+                      )}
+                    >
+                      {editing ? 'editing' : 'queued'}
+                    </span>
+                  </div>
+                )
+              })}
               {backend.removeQueued && queuedDrafts.length > 0 ? (
                 <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
-                  press ↑ in the composer to edit the last
+                  {browsedQueuedId
+                    ? '↑ / ↓ cycle · enter saves · ↓ past newest cancels'
+                    : 'press ↑ in the composer to edit queued messages'}
                 </div>
               ) : null}
             </section>
@@ -1373,9 +1395,11 @@ export function ChatView({
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
-            onRecallLast={
-              backend.removeQueued ? handleRecallLastQueued : undefined
+            queuedForEdit={backend.removeQueued ? queuedForEdit : undefined}
+            onCommitEdit={
+              backend.removeQueued ? handleCommitQueuedEdit : undefined
             }
+            onBrowseChange={setBrowsedQueuedId}
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}

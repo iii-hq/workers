@@ -1,6 +1,6 @@
 import type { LexicalEditor } from 'lexical'
 import { ArrowUp, Square } from 'lucide-react'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Button } from '@/components/ui/Button'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
@@ -19,6 +19,7 @@ import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
+import { nextHistoryTarget } from './queue-history'
 
 export interface ComposerSubmitPayload {
   text: string
@@ -85,11 +86,18 @@ interface ComposerProps {
   initialAttachments?: Attachment[]
   functionEntries?: FunctionEntry[]
   /**
-   * Up-arrow in an empty composer recalls a message for editing (the last
-   * queued message). Returns its text + attachments to load, or null. The
-   * caller is responsible for removing the recalled message from the queue.
+   * Queued messages the composer can browse+edit with ↑/↓, oldest→newest.
+   * Non-destructive: browsing just loads a message; the edit is committed on
+   * submit (see `onCommitEdit`). When set alongside `onCommitEdit`, ↑/↓ cycle.
    */
-  onRecallLast?: () => { text: string; attachments: Attachment[] } | null
+  queuedForEdit?: Array<{ id: string; text: string; attachments: Attachment[] }>
+  /**
+   * Submit while browsing a queued message: remove that message from the queue
+   * (the submitted text replaces it). Given its id.
+   */
+  onCommitEdit?: (id: string) => void
+  /** Which queued message is being browsed (`null` = live draft), for highlight. */
+  onBrowseChange?: (id: string | null) => void
 }
 
 export function Composer({
@@ -121,7 +129,9 @@ export function Composer({
   initialContent,
   initialAttachments,
   functionEntries,
-  onRecallLast,
+  queuedForEdit,
+  onCommitEdit,
+  onBrowseChange,
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<Attachment[]>(
     initialAttachments ?? [],
@@ -129,15 +139,44 @@ export function Composer({
   const [clearToken, setClearToken] = useState(0)
   const textRef = useRef('')
 
-  // Up-arrow (empty composer) recall: load the message's text into the editor
-  // (return it; LexicalShell does the insert) and restore its attachment chips.
-  const handleArrowUpWhenEmpty = useCallback((): string | null => {
-    const recalled = onRecallLast?.()
-    if (!recalled) return null
-    setAttachments(recalled.attachments)
-    textRef.current = recalled.text
-    return recalled.text
-  }, [onRecallLast])
+  // ↑/↓ browse the queued messages for editing. `browseId` is the message the
+  // editor currently holds (null = a live draft). Navigation is non-destructive
+  // — the message is removed from the queue only when the edit is submitted.
+  const [browseId, setBrowseId] = useState<string | null>(null)
+  const setBrowse = useCallback(
+    (id: string | null) => {
+      setBrowseId(id)
+      onBrowseChange?.(id)
+    },
+    [onBrowseChange],
+  )
+
+  // Drop the browse cursor if the message it pointed at left the queue.
+  useEffect(() => {
+    if (browseId !== null && !queuedForEdit?.some((m) => m.id === browseId)) {
+      setBrowse(null)
+    }
+  }, [queuedForEdit, browseId, setBrowse])
+
+  // Apply the pure ↑/↓ decision (see queue-history): load the chosen message
+  // (returning its text for LexicalShell to insert) or return null to let the
+  // arrow move the caret.
+  const handleHistoryNav = useCallback(
+    (direction: 'up' | 'down'): string | null => {
+      const result = nextHistoryTarget(
+        queuedForEdit ?? [],
+        browseId,
+        textRef.current,
+        direction,
+      )
+      if (result.kind === 'noop') return null
+      setBrowse(result.target.id)
+      setAttachments(result.target.attachments)
+      textRef.current = result.target.text
+      return result.target.text
+    },
+    [queuedForEdit, browseId, setBrowse],
+  )
 
   const inputDisabled = blocked || (isStreaming && !queueWhileStreaming)
   // Turn options are frozen on the running turn; changing them mid-stream
@@ -148,11 +187,17 @@ export function Composer({
     if (inputDisabled) return
     const text = textRef.current.trim()
     if (!text && attachments.length === 0) return
+    // Committing an edit: drop the browsed message from the queue; the send
+    // below re-queues the edited text.
+    if (browseId !== null) {
+      onCommitEdit?.(browseId)
+      setBrowse(null)
+    }
     onSubmit({ text, attachments })
     textRef.current = ''
     setAttachments([])
     setClearToken((t) => t + 1)
-  }, [inputDisabled, attachments, onSubmit])
+  }, [inputDisabled, attachments, onSubmit, browseId, onCommitEdit, setBrowse])
 
   const handleAttach = useCallback((next: Attachment[]) => {
     setAttachments((current) => [...current, ...next])
@@ -196,7 +241,7 @@ export function Composer({
           initialContent={initialContent}
           functionEntries={functionEntries}
           workingDir={workingDir}
-          onArrowUpWhenEmpty={onRecallLast ? handleArrowUpWhenEmpty : undefined}
+          onHistoryNav={onCommitEdit ? handleHistoryNav : undefined}
         />
       </div>
 
