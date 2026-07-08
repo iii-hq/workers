@@ -174,6 +174,18 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                         _ => None,
                     })
                     .collect();
+                // A content-less, call-less assistant serializes to a bare
+                // {"role":"assistant"} that Z.AI rejects with 400/1214 "The
+                // messages parameter is illegal." A dead retry's empty_assistant
+                // placeholder (harness appends it before streaming; a transient
+                // upstream failure can leave it durably empty), a poisoned entry
+                // a prior failed turn left mid-transcript, and a thinking-only
+                // turn (no reasoning replay here) all reduce to this shape. It
+                // carries nothing for the model — omit it, the way
+                // provider-anthropic and provider-openai-codex already do.
+                if text.is_empty() && tool_calls.is_empty() {
+                    continue;
+                }
                 let mut entry = json!({ "role": "assistant" });
                 if !text.is_empty() {
                     entry["content"] = Value::String(text);
@@ -546,5 +558,53 @@ mod tests {
         );
         assert_eq!(wire.len(), 1);
         assert_eq!(wire[0]["role"], "user");
+    }
+
+    #[test]
+    fn empty_assistant_is_omitted_wherever_it_sits() {
+        // Live repro (Z.AI 400/1214 "The messages parameter is illegal"): a
+        // content-less, call-less assistant — a dead retry's empty_assistant
+        // placeholder, a poisoned entry a prior failed turn persisted, or a
+        // thinking-only turn — must never reach the wire as a bare
+        // {"role":"assistant"} row. Dropped mid-list (poisoned session heals):
+        let wire = to_wire_messages(
+            &[
+                user(vec![ContentBlock::Text {
+                    text: "task".into(),
+                }]),
+                assistant(vec![ContentBlock::Text {
+                    text: "reply".into(),
+                }]),
+                assistant(vec![]),
+                user(vec![ContentBlock::Text {
+                    text: "next".into(),
+                }]),
+            ],
+            "",
+        );
+        let roles: Vec<&str> = wire.iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "user"], "got: {wire:?}");
+        // Dropped when trailing (the dead-placeholder shape) — no assistant-final
+        // row survives to trigger the reject.
+        let wire = to_wire_messages(
+            &[
+                user(vec![ContentBlock::Text {
+                    text: "task".into(),
+                }]),
+                assistant(vec![]),
+            ],
+            "",
+        );
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0]["role"], "user");
+        // A thinking-only assistant reduces to the same empty shape here.
+        let wire = to_wire_messages(
+            &[assistant(vec![ContentBlock::Thinking {
+                text: "hmm".into(),
+                signature: None,
+            }])],
+            "",
+        );
+        assert!(wire.is_empty(), "thinking-only assistant omitted: {wire:?}");
     }
 }
