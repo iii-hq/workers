@@ -138,9 +138,15 @@ export function entrySegments(
 
   switch (message.role) {
     case 'user': {
-      const notif = (item.origin as { notification?: unknown } | undefined)
-        ?.notification
-      const isNotif = notif === true || item.entry_id.startsWith('e_notify_')
+      const origin = item.origin as
+        | { notification?: unknown; reaction?: unknown }
+        | undefined
+      const isNotif =
+        origin?.notification === true || item.entry_id.startsWith('e_notify_')
+      // A react-fired task delivered into this session (origin on events,
+      // `e_react_` prefix on reads — session::messages carries no origin).
+      const isReaction =
+        origin?.reaction === true || item.entry_id.startsWith('e_react_')
       const { text, attachments } = splitUserContent(message.content)
       const msg: UserMessage = {
         id: item.entry_id,
@@ -149,6 +155,7 @@ export function entrySegments(
         createdAt: message.timestamp,
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
+        ...(isReaction ? { reaction: true } : {}),
       }
       return [msg]
     }

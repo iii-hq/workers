@@ -194,10 +194,30 @@ async fn seed_child(
         None => session.create(None, linkage.as_ref()).await?,
     };
 
-    // The task is the child's opening user message.
+    // The task is the child's opening user message. React-fired spawns
+    // (`reactive_depth` is stamped only by `harness::react`) mark the entry —
+    // `{ reaction: true }` origin plus an `e_react_` id, the notify pattern —
+    // so clients render the task as a trigger reaction, not as something the
+    // human typed (a reaction delivered into a chat looks user-authored
+    // otherwise).
     let task = normalize_message(req.task.clone())?;
+    let (entry_id, origin) = if req.reactive_depth.is_some() {
+        let mut origin = json!({ "reaction": true });
+        if let Some(sub) = &req.spawned_by_subscription_id {
+            origin["subscription_id"] = json!(sub);
+        }
+        (Some(ids::react_entry_id()), Some(origin))
+    } else {
+        (None, None)
+    };
     session
-        .append(&child_session_id, &task, None, None, None)
+        .append(
+            &child_session_id,
+            &task,
+            entry_id.as_deref(),
+            None,
+            origin.as_ref(),
+        )
         .await?;
 
     let turn_id = ids::new_turn_id();

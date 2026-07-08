@@ -40,6 +40,13 @@ pub fn idem_user_entry_id(key: &str) -> String {
     format!("e_idem_{}", sanitize(key))
 }
 
+/// The opening task entry of a react-fired spawn (`e_react_<uuid>`). The
+/// prefix lets transcript reads mark the row as a trigger reaction even
+/// though `session::messages` does not return `origin` (the notify pattern).
+pub fn react_entry_id() -> String {
+    format!("e_react_{}", short_uuid())
+}
+
 /// The assistant message of a generate step: `e_<turn_id>_<step>_assistant`.
 /// A resumed step streams into this same entry rather than appending a second.
 pub fn assistant_entry_id(turn_id: &str, step: u64) -> String {

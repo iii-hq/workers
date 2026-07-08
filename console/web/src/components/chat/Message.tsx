@@ -46,6 +46,8 @@ export function Message({
     case 'user':
       return message.notification ? (
         <NotificationMessage message={message} />
+      ) : message.reaction ? (
+        <ReactionTaskMessage message={message} />
       ) : (
         <UserMessage message={message} />
       )
@@ -154,6 +156,24 @@ function NotificationMessage({ message }: { message: UserMessageType }) {
     <article className="border-l-2 border-l-rule pl-3 py-1 font-mono text-[12px] text-ink-faint flex items-start gap-2">
       <span aria-hidden="true">🔔</span>
       <span className="break-words">{message.content}</span>
+    </article>
+  )
+}
+
+/**
+ * A react-fired task delivered into this session (`harness::react`): the
+ * turn's input, but machine-sent — labeled "trigger" and left-aligned so it
+ * never reads as something the human typed.
+ */
+function ReactionTaskMessage({ message }: { message: UserMessageType }) {
+  return (
+    <article className="flex flex-col items-start gap-2">
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+        <Prompt symbol="⚡">trigger · reaction task</Prompt>
+      </header>
+      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
+        <Markdown>{message.content}</Markdown>
+      </div>
     </article>
   )
 }

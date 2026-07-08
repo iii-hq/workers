@@ -121,6 +121,18 @@ describe('entrySegments', () => {
     })
   })
 
+  it('marks react-fired task entries as reactions', () => {
+    expect(
+      entrySegments(userItem('e-1', 'do the thing', { reaction: true }))[0],
+    ).toMatchObject({ reaction: true })
+    expect(entrySegments(userItem('e_react_ab12', 'do it'))[0]).toMatchObject({
+      reaction: true,
+    })
+    expect(
+      entrySegments(userItem('e-2', 'typed by hand'))[0],
+    ).not.toHaveProperty('reaction')
+  })
+
   it('splits an assistant entry into thought/text/function-call segments by block', () => {
     const segments = entrySegments(
       assistantItem('e-a', [

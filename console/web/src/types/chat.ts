@@ -60,6 +60,8 @@ export interface UserMessage extends BaseMessage {
   content: string
   attachments?: Attachment[]
   notification?: boolean
+  /** A react-fired task delivered into this session — machine-sent, not typed. */
+  reaction?: boolean
 }
 
 export interface AssistantMessage extends BaseMessage {
