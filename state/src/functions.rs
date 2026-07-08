@@ -40,6 +40,27 @@ impl StateCtx {
     }
 }
 
+/// Typed "JSON value or null" response schema override.
+///
+/// `state::get`, `state::delete`, and `state::list` all return
+/// `Option<serde_json::Value>` on the wire (the raw stored value/group, or
+/// `null`) — that shape is intentionally polymorphic, so it can't be a
+/// concrete `#[derive(JsonSchema)]` struct. Left to `schemars`, `Option<Value>`
+/// auto-extracts to the permissive `{"title": "Nullable_AnyValue"}` schema
+/// (no `type`/`properties`/... keyword), which the registry publish gate
+/// (`collect_worker_interface.py --assert-typed-schemas`) rejects as
+/// "unknown". This override documents the exact same permissive shape with an
+/// explicit `type` keyword instead — it only annotates the registered schema
+/// and never changes what the handler returns.
+fn json_value_or_null_schema(title: &str, description: &str) -> Value {
+    serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": title,
+        "description": description,
+        "type": ["string", "number", "boolean", "object", "array", "null"],
+    })
+}
+
 fn event(
     event_type: StateEventType,
     scope: String,
@@ -118,7 +139,11 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         .map_err(|e| Error::Handler(format!("GET_ERROR: Failed to get value: {e}")))
                 }
             })
-            .description("Get a value from state"),
+            .description("Get a value from state")
+            .response_format(json_value_or_null_schema(
+                "StateGetResponse",
+                "The raw value stored at scope/key, or null if absent.",
+            )),
         );
     }
 
@@ -157,7 +182,11 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(old)
                 }
             })
-            .description("Delete a value from state"),
+            .description("Delete a value from state")
+            .response_format(json_value_or_null_schema(
+                "StateDeleteResponse",
+                "The value that was deleted (read before delete), or null if it did not exist.",
+            )),
         );
     }
 
@@ -210,7 +239,12 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(serde_json::to_value(values).ok())
                 }
             })
-            .description("Get a group from state"),
+            .description("Get a group from state")
+            .response_format(json_value_or_null_schema(
+                "StateListResponse",
+                "The values in the given scope, as a JSON array (or null on the \
+                 rare serialization failure).",
+            )),
         );
     }
 
