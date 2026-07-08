@@ -65,10 +65,8 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     // ours, so the turn's trace always carries the tags — and the session::*
     // / router client calls parent under it instead of dangling.
     iii_helpers::observability::run_with_baggage(&baggage, async {
-        iii_helpers::observability::run_in_span("harness::turn step", None, || {
-            run(deps, payload)
-        })
-        .await
+        iii_helpers::observability::run_in_span("harness::turn step", None, || run(deps, payload))
+            .await
     })
     .await
 }

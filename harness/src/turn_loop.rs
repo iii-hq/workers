@@ -64,7 +64,8 @@ pub async fn enqueue_step(
     message_preview: Option<&str>,
     depth: u32,
 ) -> Result<(), HarnessError> {
-    let mut payload = json!({ "session_id": session_id, "turn_id": turn_id, "step": step, "depth": depth });
+    let mut payload =
+        json!({ "session_id": session_id, "turn_id": turn_id, "step": step, "depth": depth });
     if let Some(preview) = message_preview {
         payload["message_preview"] = json!(preview);
     }

@@ -310,10 +310,30 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => seed_new(deps, cfg, session_id, options, prior_generation, message_preview).await,
+                _ => {
+                    seed_new(
+                        deps,
+                        cfg,
+                        session_id,
+                        options,
+                        prior_generation,
+                        message_preview,
+                    )
+                    .await
+                }
             }
         }
-        _ => seed_new(deps, cfg, session_id, options, prior_generation, message_preview).await,
+        _ => {
+            seed_new(
+                deps,
+                cfg,
+                session_id,
+                options,
+                prior_generation,
+                message_preview,
+            )
+            .await
+        }
     }
 }
 
@@ -399,7 +419,10 @@ mod tests {
 
         let multiline =
             normalize_message(MessageInput::Text("fix\nthe   login\n\nbug".into())).unwrap();
-        assert_eq!(message_preview(&multiline).as_deref(), Some("fix the login bug"));
+        assert_eq!(
+            message_preview(&multiline).as_deref(),
+            Some("fix the login bug")
+        );
 
         // Char-boundary safe on multi-byte text.
         let emoji = normalize_message(MessageInput::Text("🦀".repeat(40))).unwrap();
