@@ -100,6 +100,33 @@ function splitUserContent(blocks: ContentBlock[]): {
   return { text, attachments }
 }
 
+/**
+ * `harness::react` appends the firing event (or a join's gathered inputs) to
+ * the task as a trailing `<event>`/`<inputs>` fenced-JSON block. Split it off
+ * so the task renders as clean prose and the payload as collapsible JSON.
+ * Tolerant of whitespace collapse; pretty-prints when the JSON parses.
+ */
+const REACTION_APPENDIX =
+  /\n*<(event|inputs)>\s*(?:```json\n?)?([\s\S]*?)(?:\n?```)?\s*<\/\1>\s*$/
+
+export function splitReactionTask(content: string): {
+  task: string
+  appendix?: { label: 'event' | 'inputs'; json: string }
+} {
+  const m = content.match(REACTION_APPENDIX)
+  if (!m || m.index === undefined) return { task: content }
+  let json = m[2].trim()
+  try {
+    json = JSON.stringify(JSON.parse(json), null, 2)
+  } catch {
+    // Not valid JSON (truncated event?) — show it raw rather than hide it.
+  }
+  return {
+    task: content.slice(0, m.index).trimEnd(),
+    appendix: { label: m[1] as 'event' | 'inputs', json },
+  }
+}
+
 function compactionMarker(
   entryId: string,
   data: unknown,
@@ -156,14 +183,16 @@ export function entrySegments(
       const isReaction =
         origin?.reaction === true || item.entry_id.startsWith('e_react_')
       const { text, attachments } = splitUserContent(message.content)
+      const split = isReaction ? splitReactionTask(text) : { task: text }
       const msg: UserMessage = {
         id: item.entry_id,
         role: 'user',
-        content: text,
+        content: split.task,
         createdAt: message.timestamp,
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
         ...(isReaction ? { reaction: true } : {}),
+        ...(split.appendix ? { reactionEvent: split.appendix } : {}),
       }
       return [msg]
     }
