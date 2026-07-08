@@ -100,6 +100,29 @@ describe('expandFileMentions', () => {
     expect(out.attachments).toEqual([])
   })
 
+  it('skips folder mentions and reads only files', async () => {
+    const trigger = vi.fn().mockResolvedValue({
+      results: [
+        { path: '/w/src/a.rs', success: true, content: 'x', is_utf8: true },
+      ],
+    })
+    const out = await expandFileMentions('/w', ['src/', 'src/a.rs'], trigger)
+    expect(trigger).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
+      paths: ['src/a.rs'],
+      fs_scope: { root: '/w' },
+    })
+    expect(out.blocks).toHaveLength(1)
+    expect(out.blocks[0]).toContain('path="src/a.rs"')
+    expect(out.failures).toEqual([])
+  })
+
+  it('makes no read call when only folders are mentioned', async () => {
+    const trigger = vi.fn()
+    const out = await expandFileMentions('/w', ['src/'], trigger)
+    expect(trigger).not.toHaveBeenCalled()
+    expect(out).toEqual({ blocks: [], attachments: [], failures: [] })
+  })
+
   it('degrades every mention to a failure when the batch call throws', async () => {
     const trigger = vi.fn().mockRejectedValue(new Error('shell worker away'))
     const out = await expandFileMentions('/w', ['a.txt', 'b.txt'], trigger)
