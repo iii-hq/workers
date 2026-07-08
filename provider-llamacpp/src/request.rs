@@ -131,7 +131,10 @@ mod tests {
 
         let mut on = args();
         on.enable_thinking = true;
-        assert_eq!(build_body(&on)["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(
+            build_body(&on)["chat_template_kwargs"]["enable_thinking"],
+            true
+        );
     }
 
     #[test]

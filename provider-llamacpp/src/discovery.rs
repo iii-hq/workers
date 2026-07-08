@@ -133,7 +133,9 @@ async fn fetch_live_models(
     }
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {}", error_chain(&e))),
+        Err(e) => {
+            return FetchOutcome::Transient(format!("models fetch failed: {}", error_chain(&e)))
+        }
     };
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
