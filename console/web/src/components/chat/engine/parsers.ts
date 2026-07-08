@@ -19,6 +19,7 @@ export const ENGINE_FUNCTION_IDS = [
   'engine::functions::list',
   'engine::functions::info',
   'engine::triggers::list',
+  'engine::triggers::info',
   'engine::registered-triggers::list',
   'engine::workers::list',
   'engine::workers::info',
@@ -129,6 +130,37 @@ export const triggersListResponseSchema = z.object({
   triggers: z.array(triggerTypeSummarySchema),
 })
 export type TriggersListResponse = z.infer<typeof triggersListResponseSchema>
+
+/* ---------------- engine::triggers::info ---------------- */
+
+export const triggerInfoRequestSchema = z.object({
+  id: z.string(),
+})
+export type TriggerInfoRequest = z.infer<typeof triggerInfoRequestSchema>
+
+export const triggerTypeDetailSchema = z.object({
+  id: z.string(),
+  worker_name: z.string(),
+  description: z.string().nullable().optional(),
+  /** Live registrations of this trigger type. */
+  instance_count: z.number().optional(),
+  /** Per-binding `config` shape accepted by `engine::register_trigger`. */
+  configuration_schema: z.unknown().optional(),
+  /** Payload shape delivered to the bound function when the trigger fires. */
+  request_schema: z.unknown().optional(),
+})
+export type TriggerTypeDetail = z.infer<typeof triggerTypeDetailSchema>
+
+/**
+ * `null` means the output didn't parse; the caller should fall back to the
+ * generic panes rather than render a blank terminal tab (same contract as
+ * `parseFunctionInfoResponse`).
+ */
+export function parseTriggerInfoResponse(
+  output: unknown,
+): TriggerTypeDetail | null {
+  return safeParseResponse(triggerTypeDetailSchema, output)
+}
 
 /* ------------- engine::registered-triggers::list ------------- */
 

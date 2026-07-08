@@ -6,10 +6,12 @@ import { FunctionsListView } from './FunctionsListView'
 import {
   isEngineListFunction,
   parseFunctionInfoResponse,
+  parseTriggerInfoResponse,
   unwrapEnvelope,
 } from './parsers'
 import { RegisteredTriggersListView } from './RegisteredTriggersListView'
 import { RegisterTriggerView } from './RegisterTriggerView'
+import { TriggerInfoView } from './TriggerInfoView'
 import { TriggersListView } from './TriggersListView'
 import { WorkerInfoView } from './WorkerInfoView'
 import { WorkersListView } from './WorkersListView'
@@ -67,6 +69,14 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
       return (
         <TriggersListView input={input} output={output} running={running} />
       )
+    case 'engine::triggers::info': {
+      if (running) return <TriggerInfoView input={input} running />
+      // Same contract as functions::info: unparseable settled output returns
+      // null so the card falls back to the generic panes, never a blank tab.
+      const detail = parseTriggerInfoResponse(rawOutput)
+      if (!detail) return null
+      return <TriggerInfoView input={input} detail={detail} />
+    }
     case 'engine::registered-triggers::list':
       return (
         <RegisteredTriggersListView

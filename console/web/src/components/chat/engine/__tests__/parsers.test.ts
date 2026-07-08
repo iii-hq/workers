@@ -7,6 +7,7 @@ import {
   functionsListResponseSchema,
   isEngineListFunction,
   parseFunctionInfoResponse,
+  parseTriggerInfoResponse,
   reactSpecSchema,
   registeredTriggersListRequestSchema,
   registeredTriggersListResponseSchema,
@@ -14,6 +15,7 @@ import {
   registerTriggerResponseSchema,
   safeParseRequest,
   safeParseResponse,
+  triggerInfoRequestSchema,
   triggersListRequestSchema,
   triggersListResponseSchema,
   unwrapEnvelope,
@@ -206,6 +208,34 @@ describe('engine::triggers::list', () => {
   it('rejects payloads missing the `triggers` array', () => {
     const resp = safeParseResponse(triggersListResponseSchema, { foo: [] })
     expect(resp).toBeNull()
+  })
+})
+
+describe('engine::triggers::info', () => {
+  it('parses the request payload', () => {
+    expect(safeParseRequest(triggerInfoRequestSchema, { id: 'state' })).toEqual(
+      { id: 'state' },
+    )
+    expect(safeParseRequest(triggerInfoRequestSchema, {})).toBeNull()
+  })
+
+  it('parses a wrapped trigger-type detail (mirrors the live shape)', () => {
+    const detail = {
+      id: 'state',
+      worker_name: 'iii-state',
+      description: 'State trigger',
+      instance_count: 3,
+      configuration_schema: { type: 'object', title: 'StateTriggerConfig' },
+      request_schema: { type: 'object' },
+    }
+    const parsed = parseTriggerInfoResponse(wrap(detail))
+    expect(parsed?.id).toBe('state')
+    expect(parsed?.instance_count).toBe(3)
+  })
+
+  it('returns null for unknown shapes (card falls back to panes)', () => {
+    expect(parseTriggerInfoResponse({ nonsense: true })).toBeNull()
+    expect(parseTriggerInfoResponse(undefined)).toBeNull()
   })
 })
 

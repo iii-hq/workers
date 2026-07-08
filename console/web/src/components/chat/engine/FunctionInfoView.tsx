@@ -204,7 +204,7 @@ interface SchemaSectionProps {
   treatEmptyAsAny?: boolean
 }
 
-function SchemaSection({
+export function SchemaSection({
   label,
   schema,
   treatEmptyAsAny = true,
