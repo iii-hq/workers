@@ -27,6 +27,7 @@ on:
       - 'opencode/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'
+      - 'provider-llamacpp/v*'
       - 'provider-openai/v*'
       - 'provider-xai/v*'
       - 'provider-zai/v*'
