@@ -177,7 +177,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Shell",
-        "description": "Command allowlist/denylist, timeout & output caps, and the fs jail.",
+        "description": "Command denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
     });
     let candidate: Option<ShellConfig> = match seed {
@@ -424,7 +424,7 @@ where
 async fn on_config_change(state: &AppState) -> Result<(), String> {
     // SECURITY: do not trust the event payload. `shell::on-config-change` is a
     // registered (callable) function, so a direct caller could forge `new_value`
-    // to hot-swap the security policy (allowlist, fs jail, sandbox toggle),
+    // to hot-swap the security policy (denylist, fs jail, sandbox toggle),
     // bypassing configuration::set authorization. Always re-read the authoritative
     // value from the configuration worker and apply that — a spurious direct call
     // can at most trigger a reload of the already-stored config.
@@ -524,8 +524,10 @@ mod tests {
 
     #[test]
     fn prepare_config_accepts_seed_default() {
-        // The zero-config seed must boot (jailed to /tmp) — that is the whole
-        // point of seeding it instead of the unjailed Default::default().
+        // The zero-config seed must boot (unjailed, but with an explicit
+        // allow_unjailed opt-in) — that is the whole point of seeding it
+        // instead of Default::default(), which is unjailed WITHOUT that
+        // opt-in and so refuses to boot.
         prepare_config(&ShellConfig::seed_default()).expect("seed_default boots");
     }
 
@@ -540,7 +542,7 @@ mod tests {
     fn removed_host_root_config_is_rejected_with_hint() {
         // The removed single-root key must fail closed before serde ignores it
         // and before runtime validation reports only "host_roots is unset".
-        let yaml = "allowlist: []\nfs:\n  host_root: /tmp/legacy-root\n";
+        let yaml = "fs:\n  host_root: /tmp/legacy-root\n";
         let err = ShellConfig::from_yaml(yaml).expect_err("the 0.6.x alias must be rejected");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("fs.host_roots"), "{err}");

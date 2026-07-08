@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.8.0
+
+Deny-only, permissive-first policy across the board: the shell no longer
+carries a command allowlist, the fs jail is opt-in rather than defaulted on,
+and the per-call `env` override on `shell::exec`/`exec_bg` is gated only by
+the hardcoded dangerous-key denylist. Allow/ask policy (which commands need
+a human) lives in the approval-gate; the sandbox backend is the real
+security boundary for untrusted exec.
+
+### Breaking
+- **`allowlist` is removed.** Any config still carrying the key — including
+  the inert `allowlist: []` written by older seeds — is rejected at parse
+  with a migration hint. Rewrite the stored value via `configuration::set`
+  (id: `shell`) without the key. There is no replacement: to gate commands,
+  add approval-gate rules.
+- **The planted-binary guard is removed with it.** Command paths (including
+  files inside the writable fs jail, e.g. your own build output) now
+  execute. The guard existed solely to prevent allowlist bypass; with no
+  allowlist, running a planted file grants nothing `sh -c` doesn't already
+  grant.
+- **The shipped default is unjailed.** `config.yaml`/`seed_default()` now set
+  `fs.allow_unjailed: true` with empty `fs.host_roots`: `shell::fs::*` and
+  `shell::exec`'s per-call `cwd` operate against the real filesystem,
+  confined only by `fs.denylist_paths` — matching `shell::exec` itself,
+  which has never been confinement-based. `coder::*` is unaffected: it falls
+  back to its own default roots (engine workspace cwd + `/tmp`) whenever
+  `fs.host_roots` is empty, regardless of `fs.allow_unjailed`. This only
+  affects a fresh, zero-config install or a stored config that gets nulled —
+  an existing deployment with an explicit `fs.host_roots` keeps it; the
+  stored value always wins over the seed.
+- **The per-call `env` override on `shell::exec`/`exec_bg` is deny-only.**
+  `env.allow` no longer gates which keys a caller may set per call — a key
+  is now permitted UNLESS it's an exec-hijacking key (`PATH`, `IFS`, `HOME`,
+  `LD_*`/`DYLD_*`, interpreter startup keys, ...), rejected unconditionally
+  regardless of any config. `env.allow` keeps its other job unchanged:
+  which vars get forwarded from the worker's own environment when
+  `env.inherit` is false. This is a pure widening (nothing that worked
+  before now fails) — no stored config needs a rewrite. There is no
+  replacement for restricting per-call env keys further; use approval-gate
+  rules if you need that.
+
+### Migration
+```yaml
+# Rewrite the stored `shell` config to drop `allowlist` (any value,
+# including `[]`) — there is no replacement key.
+```
+- A stored configuration value (id `shell`) still carrying `allowlist` makes
+  the worker fail closed at boot with the hint above. Rewrite it via
+  `configuration::set` without the key (see
+  [README's Upgrading to 0.8.0](README.md#upgrading-to-080) for a runnable
+  example).
+- If you want to keep the pre-0.8.0 jailed-to-`/tmp` behavior instead of the
+  new unjailed default, set `fs.host_roots: [/tmp]` explicitly — a fresh
+  install with no config file at all now boots unjailed.
+- **Order matters** for the `allowlist` removal, same as 0.7.0: deploy the
+  0.8.0 binary FIRST, then rewrite the stored value. Writing the new shape
+  while an older worker is still running makes it hot-reload a config it
+  doesn't understand.
+
 ## 0.7.0
 
 Environment-variable DX overhaul: one consolidated `env` config block, a

@@ -59,7 +59,7 @@ jobs:
           sudo mkdir -p /private/tmp
           sudo chmod 1777 /private/tmp
 
-      - name: Run default harness (144 cases)
+      - name: Run default harness
         working-directory: shell/tests/e2e
         run: ./run-tests.sh
 

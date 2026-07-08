@@ -1,7 +1,7 @@
 //! Backend trait for exec — host and sandbox impls live in sibling
 //! modules. The trait takes `argv`, a resolved `timeout_ms`, and the
 //! validated per-call `overrides` (cwd/env); the handler is responsible
-//! for argv parsing, allowlist checking, timeout resolution, and the
+//! for argv parsing, denylist checking, timeout resolution, and the
 //! cwd/env gating before calling `run`.
 
 use async_trait::async_trait;

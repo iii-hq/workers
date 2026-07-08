@@ -5,8 +5,8 @@ import { expectEqual, type TestCase } from './cases.ts';
 const FAKE_SANDBOX_ID = '00000000-0000-4000-8000-000000000000';
 
 // Covers the per-call `stdin` field added to shell::exec / shell::exec_bg in
-// v0.4.0 — the agent-friendly alternative to a shell heredoc. `cat` is in the
-// e2e allowlist and echoes stdin to stdout, so it's the natural probe.
+// v0.4.0 — the agent-friendly alternative to a shell heredoc. `cat` is
+// universally available and echoes stdin to stdout, so it's the natural probe.
 export const EXEC_STDIN_CASES: TestCase[] = [
   {
     name: 'exec_stdin_piped_to_cat',

@@ -64,14 +64,6 @@ pub struct ShellConfig {
     #[serde(default)]
     pub env: EnvConfig,
 
-    /// Command allowlist by argv[0] basename. EMPTY (the default) means every
-    /// command is allowed — deliberate for coding agents that need arbitrary
-    /// build/test/VCS tooling; the security boundary is the fs jail and the
-    /// sandbox backend, not this list. A non-empty list flips exec to
-    /// deny-by-default: only the listed basenames run.
-    #[serde(default)]
-    pub allowlist: Vec<String>,
-
     /// ADVISORY ONLY. Regular expressions matched against the whole command
     /// line (`argv.join(" ")`). A match rejects the exec, but this is a
     /// best-effort guardrail, NOT the security boundary — the sandbox backend
@@ -144,15 +136,30 @@ fn default_job_retention_secs() -> u64 {
 struct RemovedKey {
     old: &'static str,
     new: Option<&'static str>,
+    /// Version that removed the key — rendered per-hit so 0.7.0 and 0.8.0
+    /// removals can share one error message.
+    since: &'static str,
 }
 const fn renamed(old: &'static str, new: &'static str) -> RemovedKey {
     RemovedKey {
         old,
         new: Some(new),
+        since: "0.7.0",
     }
 }
 const fn deleted(old: &'static str) -> RemovedKey {
-    RemovedKey { old, new: None }
+    RemovedKey {
+        old,
+        new: None,
+        since: "0.7.0",
+    }
+}
+const fn deleted_in(old: &'static str, since: &'static str) -> RemovedKey {
+    RemovedKey {
+        old,
+        new: None,
+        since,
+    }
 }
 
 /// Top-level keys removed in 0.7.0.
@@ -186,6 +193,11 @@ const REMOVED_ENV_KEYS: &[RemovedKey] = &[
 /// not silently tolerated forever.
 const REMOVED_CODE_KEYS: &[RemovedKey] = &[deleted("base_path"), deleted("base_paths")];
 
+/// Exec-policy keys removed in 0.8.0: the shell is deny-only; command
+/// allow/ask policy lives in the approval-gate (see
+/// tech-specs/2026-06-agentic/shell-deny-only-policy.md).
+const REMOVED_EXEC_KEYS: &[RemovedKey] = &[deleted_in("allowlist", "0.8.0")];
+
 const CONFIGURATION_SET_HINT: &str =
     "If this is the stored value, rewrite it via configuration::set (id: shell).";
 
@@ -206,8 +218,14 @@ fn scan_removed(
         if obj.contains_key(key.old) {
             hit = true;
             match key.new {
-                Some(new) => hits.push(format!("`{prefix}{}` -> `{new}`", key.old)),
-                None => hits.push(format!("`{prefix}{}` (removed, no replacement)", key.old)),
+                Some(new) => hits.push(format!(
+                    "`{prefix}{}` -> `{new}` (removed in {})",
+                    key.old, key.since
+                )),
+                None => hits.push(format!(
+                    "`{prefix}{}` (removed in {}, no replacement)",
+                    key.old, key.since
+                )),
             }
         }
     }
@@ -250,6 +268,8 @@ fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
         .and_then(serde_json::Value::as_object)
         .is_some_and(|code| scan_removed(code, "code.", REMOVED_CODE_KEYS, &mut hits));
 
+    let exec_hit = scan_removed(obj, "", REMOVED_EXEC_KEYS, &mut hits);
+
     if hits.is_empty() {
         return Ok(());
     }
@@ -265,9 +285,15 @@ fn check_removed_keys(value: &serde_json::Value) -> Result<(), String> {
     if code_hit {
         remedies.push("Delete `code.base_path`/`code.base_paths` — the code resolver's roots always come from `fs.host_roots`.");
     }
+    if exec_hit {
+        remedies.push(
+            "Delete `allowlist` — the shell worker is deny-only (denylist_patterns); \
+             command allow/ask policy lives in the approval-gate.",
+        );
+    }
 
     Err(format!(
-        "config keys removed in 0.7.0: {}. {} {CONFIGURATION_SET_HINT}",
+        "removed config keys: {}. {} {CONFIGURATION_SET_HINT}",
         hits.join(", "),
         remedies.join(" "),
     ))
@@ -294,13 +320,13 @@ pub struct EnvConfig {
     /// only the keys listed in `allow`.
     #[serde(default)]
     pub inherit: bool,
-    /// Env keys with a dual role. (1) Forwarding allowlist: when `inherit` is
-    /// false, ONLY these keys are copied from the worker's env into the child.
-    /// (2) Per-call gate: a `shell::exec`/`shell::exec_bg` request may set an
-    /// `env` value only for a key listed here — MINUS the hardcoded dangerous
-    /// keys (PATH, IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV,
-    /// PYTHONSTARTUP, NODE_OPTIONS, ...), which are never settable per call
-    /// even if listed. Default: [PATH, HOME, LANG, LC_ALL, TERM].
+    /// Forwarding allowlist: when `inherit` is false, ONLY these keys are
+    /// copied from the worker's env into the child. Has NO effect on the
+    /// per-call `env` override on `shell::exec`/`shell::exec_bg` — that is
+    /// deny-only, gated solely by the hardcoded dangerous-key list (PATH,
+    /// IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV, PYTHONSTARTUP,
+    /// NODE_OPTIONS, ...), never by this list. Default: [PATH, HOME, LANG,
+    /// LC_ALL, TERM].
     #[serde(default = "default_env_allow")]
     pub allow: Vec<String>,
 }
@@ -446,7 +472,6 @@ impl Default for ShellConfig {
             max_output_bytes: default_max_output_bytes(),
             working_dir: None,
             env: EnvConfig::default(),
-            allowlist: Vec::new(),
             denylist_patterns: Vec::new(),
             max_concurrent_jobs: default_max_concurrent_jobs(),
             job_retention_secs: default_job_retention_secs(),
@@ -489,11 +514,20 @@ impl ShellConfig {
     /// The bootable, zero-config default: seeded as `initial_value` on first
     /// registration and used as the runtime fallback when the stored value is
     /// null, so the worker boots with no config file at all (database-style
-    /// zero-config). This is deliberately NOT `Default::default()` — that is
-    /// unjailed (empty `host_roots`) so an operator config that omits the jail
-    /// fails closed. This seed is the shipped permissive dev default: jailed to
-    /// `/tmp`, env forwarded, open exec with a catastrophic-only denylist. It is
-    /// kept in sync with `config.yaml` by a unit test.
+    /// zero-config). Unjailed by design (`allow_unjailed: true`, empty
+    /// `host_roots`): `shell::fs::*` and the per-call `cwd` on `shell::exec`
+    /// operate against the real filesystem, confined only by
+    /// `denylist_paths` — matching `shell::exec` itself, which is deny-only
+    /// rather than confinement-based. `coder::*` is unaffected: it falls back
+    /// to its own default roots (engine workspace cwd + `/tmp`, see
+    /// `code::path::default_roots`) whenever `host_roots` is empty, regardless
+    /// of `allow_unjailed`. `Default::default()` is ALSO unjailed (empty
+    /// `host_roots`) but leaves `allow_unjailed: false`, so an operator config
+    /// that merely omits the `fs` section — never explicitly opting in —
+    /// still fails closed; only this seed opts in explicitly. This seed is
+    /// the shipped permissive dev default: env forwarded, open exec with a
+    /// catastrophic-only denylist. It is kept in sync with `config.yaml` by a
+    /// unit test.
     pub fn seed_default() -> Self {
         Self {
             max_timeout_ms: 120_000,
@@ -523,7 +557,7 @@ impl ShellConfig {
                 "/etc/shadow".into(),
             ],
             fs: FsConfig {
-                host_roots: vec![PathBuf::from("/tmp")],
+                allow_unjailed: true,
                 max_read_bytes: 16_777_216,
                 max_write_bytes: 16_777_216,
                 denylist_paths: vec![PathBuf::from("/etc/passwd"), PathBuf::from("/etc/shadow")],
@@ -584,29 +618,9 @@ impl ShellConfig {
     }
 
     pub fn is_command_allowed(&self, argv: &[String]) -> Result<(), String> {
-        let cmd = argv
-            .first()
-            .ok_or_else(|| "empty command".to_string())?
-            .clone();
-
-        if !self.allowlist.is_empty() {
-            let base = std::path::Path::new(&cmd)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&cmd);
-            if !self.allowlist.iter().any(|a| a == base || a == &cmd) {
-                // Append the permitted commands so an agent can self-correct
-                // (mirrors COMMAND_ARRAY_HINT in functions/types.rs). The
-                // allowlist is the policy the caller must comply with, not a
-                // secret, so list it in full.
-                return Err(format!(
-                    "command '{}' not in allowlist; allowed: [{}]",
-                    base,
-                    self.allowlist.join(", ")
-                ));
-            }
+        if argv.is_empty() {
+            return Err("empty command".to_string());
         }
-
         let joined = argv.join(" ");
         for re in &self.compiled_denylist {
             if re.is_match(&joined) {
@@ -618,58 +632,6 @@ impl ShellConfig {
                 ));
             }
         }
-
-        // Confinement guard: a command given as a PATH (contains a '/') that
-        // canonicalizes to a location INSIDE the writable fs jail is rejected.
-        // `shell::fs::write` can plant an executable (0755) under a jail root,
-        // and the basename allowlist check above matches by file_name — so
-        // `command: "<jail root>/ls"` would otherwise pass the allowlist and be
-        // executed verbatim, a host RCE that bypasses the read-only allowlist.
-        // Bare program names (no '/') are PATH-resolved by the OS and stay
-        // allowed; legitimate absolute paths OUTSIDE the jail (e.g. /usr/bin/ls)
-        // are not writable via shell::fs::write and stay allowed. A path that
-        // fails to canonicalize (does not exist) is NOT rejected here — the
-        // normal exec spawn surfaces its own not-found error.
-        if cmd.contains('/') {
-            // Unjailed mode (empty host_roots) has NO writable boundary — the
-            // whole host filesystem is reachable via shell::fs::write, so an
-            // agent can plant `/tmp/ls` and run `command: "/tmp/ls"` (basename
-            // `ls` is allowlisted), bypassing the read-only allowlist entirely.
-            // There is no path that distinguishes "agent-planted" from "system
-            // binary" here, so reject ALL command paths and require a bare,
-            // PATH-resolved name. (In jailed mode the check below is precise:
-            // only paths inside the jail roots are rejected.)
-            if !self.fs.is_jailed() {
-                return Err(format!(
-                    "command path '{}' is not allowed when fs is unjailed \
-                     (fs.host_roots is empty): any host path is writable via \
-                     shell::fs::write, so a command path could execute \
-                     agent-planted bytes and bypass the allowlist. Use a bare \
-                     command name (PATH-resolved).",
-                    cmd
-                ));
-            }
-            // Jailed: reject a command path that canonicalizes inside ANY
-            // writable root. A binary planted via shell::fs::write under any
-            // root would otherwise pass the basename allowlist and execute —
-            // host RCE. All roots are writable, so all must be checked.
-            if let Ok(canon_cmd) = std::fs::canonicalize(&cmd) {
-                for root in self.fs.roots() {
-                    if let Ok(canon_root) = std::fs::canonicalize(&root) {
-                        if canon_cmd.starts_with(&canon_root) {
-                            return Err(format!(
-                                "command path '{}' resolves inside the writable fs jail ({}); \
-                                 executing files written via shell::fs::write is not allowed. \
-                                 Use a bare command name (PATH-resolved) or a path outside the jail.",
-                                cmd,
-                                root.display()
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -688,7 +650,7 @@ impl ShellConfig {
     /// top-level/`fs`/`env` walk per funnel. The config itself still
     /// deserializes from the ORIGINAL TEXT, not the bridged Value:
     /// `serde_yaml::from_value` self-tags plain scalars (an unquoted `false`
-    /// in `allowlist` becomes `Bool` and can no longer deserialize into
+    /// in `denylist_patterns` becomes `Bool` and can no longer deserialize into
     /// `String`), while `from_str` drives parsing by the target type.
     /// Double-parsing a config-sized string is free.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
@@ -728,9 +690,8 @@ impl ShellConfig {
 mod tests {
     use super::*;
 
-    fn cfg_with(allow: Vec<&str>, deny: Vec<&str>) -> ShellConfig {
+    fn cfg_with_deny(deny: Vec<&str>) -> ShellConfig {
         let mut c = ShellConfig {
-            allowlist: allow.into_iter().map(String::from).collect(),
             denylist_patterns: deny.into_iter().map(String::from).collect(),
             ..Default::default()
         };
@@ -749,59 +710,8 @@ mod tests {
     }
 
     #[test]
-    fn test_allowlist_permits() {
-        let c = cfg_with(vec!["ls", "cat"], vec![]);
-        assert!(c.is_command_allowed(&["ls".into(), "-la".into()]).is_ok());
-    }
-
-    #[test]
-    fn test_allowlist_rejects() {
-        let c = cfg_with(vec!["ls"], vec![]);
-        let err = c
-            .is_command_allowed(&["nmap".into()])
-            .expect_err("must reject");
-        assert!(err.contains("not in allowlist"));
-    }
-
-    #[test]
-    fn test_allowlist_rejection_lists_allowed_commands() {
-        // The rejection must name the permitted commands so an agent can
-        // self-correct without trial-and-error against the policy.
-        let c = cfg_with(vec!["ls", "cat", "grep"], vec![]);
-        let err = c
-            .is_command_allowed(&["nmap".into()])
-            .expect_err("must reject");
-        assert!(err.contains("ls"), "got: {err}");
-        assert!(err.contains("cat"), "got: {err}");
-        assert!(err.contains("grep"), "got: {err}");
-    }
-
-    #[test]
-    fn test_allowlist_empty_means_open() {
-        let c = cfg_with(vec![], vec![]);
-        assert!(c.is_command_allowed(&["anything".into()]).is_ok());
-    }
-
-    #[test]
-    fn test_allowlist_basename_match() {
-        // Basename matching for an absolute command path is only meaningful in
-        // JAILED mode: an out-of-jail path (not writable via shell::fs::write)
-        // is permitted by basename. Unjailed mode rejects all paths outright
-        // (see exec_command_path_rejected_when_unjailed), so set a jail root
-        // that does NOT contain /usr/bin/ls to exercise the basename contract.
-        let mut c = cfg_with(vec!["ls"], vec![]);
-        c.fs.host_roots =
-            vec![std::env::temp_dir().join(format!("shell-basename-{}", uuid::Uuid::new_v4()))];
-        std::fs::create_dir_all(&c.fs.host_roots[0]).unwrap();
-        assert!(c
-            .is_command_allowed(&["/usr/bin/ls".into(), "-la".into()])
-            .is_ok());
-        std::fs::remove_dir_all(&c.fs.host_roots[0]).ok();
-    }
-
-    #[test]
     fn test_denylist_blocks() {
-        let c = cfg_with(vec![], vec![r"rm\s+-rf\s+/"]);
+        let c = cfg_with_deny(vec![r"rm\s+-rf\s+/"]);
         let err = c
             .is_command_allowed(&["rm".into(), "-rf".into(), "/".into()])
             .expect_err("must reject");
@@ -814,52 +724,74 @@ mod tests {
         assert!(c.is_command_allowed(&[]).is_err());
     }
 
+    /// With no allowlist there is no policy for a command path to bypass:
+    /// running a file inside the jail grants nothing `sh -c` doesn't already
+    /// grant, and the old guard blocked the legitimate case of executing your
+    /// own build output. Paths — inside the jail, outside it, and bare names —
+    /// all pass policy; a nonexistent path fails at spawn, not here.
     #[test]
-    fn test_allowlisted_command_still_blocked_by_denylist() {
-        // Both lists non-empty: `tar` is allowlisted (passes argv[0] check)
-        // but the argv string matches a denylist pattern, so it is rejected.
-        // The denylist is the second gate and must apply even to allowlisted
-        // commands.
-        let c = cfg_with(vec!["tar", "ls"], vec![r"--checkpoint-action"]);
-        // Sanity: a benign allowlisted invocation passes.
+    fn command_paths_are_permitted() {
+        let root = std::env::temp_dir().join(format!("shell-cfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("mytool"), "#!/bin/sh\necho built\n").unwrap();
+
+        let mut c = ShellConfig::default();
+        c.fs.host_roots = vec![root.clone()];
+        c.compile_denylist().unwrap();
+
+        let in_jail = root.join("mytool").to_string_lossy().to_string();
+        assert!(
+            c.is_command_allowed(&[in_jail]).is_ok(),
+            "own build output runs"
+        );
+        assert!(c.is_command_allowed(&["/bin/ls".into()]).is_ok());
+        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
+
+        // Unjailed mode too — the blanket path rejection is gone with the guard.
+        let mut u = ShellConfig::default();
+        u.fs.allow_unjailed = true;
+        u.compile_denylist().unwrap();
+        assert!(u.is_command_allowed(&["/bin/ls".into()]).is_ok());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_denylist_blocks_dangerous_form_but_not_benign() {
+        let c = cfg_with_deny(vec![r"--checkpoint-action"]);
         assert!(c
             .is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
             .is_ok());
-        // The dangerous allowlisted invocation is blocked by the denylist.
         let err = c
             .is_command_allowed(&[
                 "tar".into(),
                 "--checkpoint-action=exec=sh".into(),
                 "x".into(),
             ])
-            .expect_err("denylist must override allowlist");
+            .expect_err("dangerous form must trip the denylist");
         assert!(err.contains("denylist"), "got: {err}");
     }
 
-    /// Loads the shipped `config.yaml` and pins the permissive standard: an
-    /// empty allowlist means arbitrary commands are allowed (cargo/git/bash/…),
-    /// while the catastrophic-only denylist still trips on host-wrecking
-    /// patterns. Parses the YAML directly (skipping the fs-jail check, which is
-    /// unrelated to the exec policy under test).
+    /// Loads the shipped `config.yaml` and pins the permissive standard:
+    /// arbitrary commands are allowed (cargo/git/bash/…) because there is no
+    /// allow policy shell-side, while the catastrophic-only denylist still
+    /// trips on host-wrecking patterns. Parses the YAML directly (skipping the
+    /// fs-jail check, which is unrelated to the exec policy under test).
     #[test]
     fn shipped_config_is_open_exec_with_catastrophic_denylist() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
         let content = std::fs::read_to_string(path).expect("read config.yaml");
         let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
         c.compile_denylist().expect("denylist compiles");
-        // Empty allowlist == open: every command a coding agent needs is permitted.
-        assert!(
-            c.allowlist.is_empty(),
-            "shipped allowlist must be open (empty)"
-        );
+        // Open exec: every command a coding agent needs is permitted.
         for cmd in ["cargo", "git", "bash", "make", "node", "python3"] {
             assert!(
                 c.is_command_allowed(&[cmd.into()]).is_ok(),
-                "open allowlist must permit {cmd}"
+                "no allow policy exists to block {cmd}"
             );
         }
         // The previously-blocked exec-escape (`env <cmd>`) is now permitted —
-        // the open allowlist is the point of this standard.
+        // there is no allow policy to reject it, only the denylist can.
         assert!(c.is_command_allowed(&["env".into(), "nmap".into()]).is_ok());
         // The catastrophic denylist is still a live tripwire.
         let err = c
@@ -1033,7 +965,7 @@ mod tests {
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("`inherit_env` -> `env.inherit`"), "{err}");
         assert!(
-            err.contains("`migrated_from_coder` (removed, no replacement)"),
+            err.contains("`migrated_from_coder` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
     }
@@ -1051,7 +983,7 @@ mod tests {
         let err = ShellConfig::from_json(&v).expect_err("removed marker rejects");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(
-            err.contains("`migrated_from_coder` (removed, no replacement)"),
+            err.contains("`migrated_from_coder` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
         assert!(err.contains("configuration::set"), "{err}");
@@ -1070,26 +1002,25 @@ mod tests {
         let err = ShellConfig::from_json(&v).expect_err("removed code keys reject");
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(
-            err.contains("`code.base_path` (removed, no replacement)"),
+            err.contains("`code.base_path` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
         assert!(
-            err.contains("`code.base_paths` (removed, no replacement)"),
+            err.contains("`code.base_paths` (removed in 0.7.0, no replacement)"),
             "{err}"
         );
         assert!(err.contains("configuration::set"), "{err}");
     }
 
     /// Regression: the removed-key pre-parse must NOT change how scalars
-    /// deserialize. An unquoted `false` in a string list (the e2e fixture
-    /// allowlists the `false` binary) self-tags as Bool through
-    /// `serde_yaml::from_value`, so `from_yaml` must re-deserialize from the
-    /// text, where the target type drives parsing.
+    /// deserialize. An unquoted `false` in a string list self-tags as Bool
+    /// through `serde_yaml::from_value`, so `from_yaml` must re-deserialize
+    /// from the text, where the target type drives parsing.
     #[test]
     fn from_yaml_keeps_unquoted_boolean_like_strings() {
-        let c = ShellConfig::from_yaml("allowlist: [echo, false, \"true\"]\n")
-            .expect("boolean-looking allowlist entries parse as strings");
-        assert_eq!(c.allowlist, vec!["echo", "false", "true"]);
+        let c = ShellConfig::from_yaml("denylist_patterns: [echo, false, \"true\"]\n")
+            .expect("boolean-looking list entries parse as strings");
+        assert_eq!(c.denylist_patterns, vec!["echo", "false", "true"]);
     }
 
     /// The nested block parses, and every omitted field takes the EnvConfig
@@ -1147,87 +1078,14 @@ mod tests {
             .as_str()
             .expect("env.allow described");
         assert!(
-            allow_desc.contains("Forwarding") && allow_desc.contains("Per-call"),
-            "env.allow description must explain both roles: {allow_desc}"
+            allow_desc.contains("Forwarding"),
+            "env.allow description must explain its (now sole) forwarding role: {allow_desc}"
         );
-    }
-
-    #[test]
-    fn exec_command_path_inside_jail_is_rejected() {
-        // An agent can plant `<jail root>/ls` (0755) via shell::fs::write; the
-        // basename allowlist matches "ls", so without the confinement guard
-        // `command: "<jail root>/ls"` would execute that jail-planted file —
-        // host RCE. The guard must reject a command path that canonicalizes
-        // inside the jail while still permitting bare PATH-resolved names and
-        // out-of-jail absolute paths.
-        let root = std::env::temp_dir().join(format!("shell-cfg-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("ls"), "#!/bin/sh\necho pwned\n").unwrap();
-
-        let mut c = ShellConfig {
-            allowlist: vec!["ls".into()],
-            ..Default::default()
-        };
-        c.fs.host_roots = vec![root.clone()];
-        c.compile_denylist().unwrap();
-
-        // The jail-planted path is rejected with a jail-mentioning error.
-        let jailed_cmd = root.join("ls").to_string_lossy().to_string();
-        let err = c
-            .is_command_allowed(&[jailed_cmd])
-            .expect_err("jail-planted command must be rejected");
-        assert!(err.contains("jail"), "got: {err}");
-
-        // A bare command name stays allowed (PATH-resolved by the OS).
-        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
-
-        // An out-of-jail absolute path whose basename is allowlisted stays
-        // allowed — it is not writable via shell::fs::write.
-        for candidate in ["/bin/cat", "/usr/bin/true"] {
-            if std::path::Path::new(candidate).exists() {
-                let mut c2 = ShellConfig {
-                    allowlist: vec![std::path::Path::new(candidate)
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string()],
-                    ..Default::default()
-                };
-                c2.fs.host_roots = vec![root.clone()];
-                c2.compile_denylist().unwrap();
-                assert!(
-                    c2.is_command_allowed(&[candidate.to_string()]).is_ok(),
-                    "out-of-jail absolute path {candidate} must be allowed"
-                );
-            }
-        }
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn exec_command_path_rejected_when_unjailed() {
-        // Unjailed mode (empty host_roots) has no writable boundary: the whole
-        // host FS is reachable via shell::fs::write, so ANY command path could
-        // execute agent-planted bytes and bypass the allowlist. Reject every
-        // path; only bare PATH-resolved names are permitted.
-        let mut c = ShellConfig {
-            allowlist: vec!["ls".into()],
-            ..Default::default()
-        };
-        c.fs.host_roots = Vec::new();
-        c.fs.allow_unjailed = true;
-        c.compile_denylist().unwrap();
-
-        // Even a real system binary is rejected — there is no way to tell it
-        // apart from an agent-planted file when nothing confines writes.
-        let err = c
-            .is_command_allowed(&["/bin/ls".into()])
-            .expect_err("command path must be rejected when unjailed");
-        assert!(err.contains("unjailed"), "got: {err}");
-
-        // The bare name still resolves via PATH and is allowed.
-        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
+        assert!(
+            !allow_desc.contains("Per-call"),
+            "env.allow no longer gates the per-call env override (deny-only); \
+             the description must not claim it does: {allow_desc}"
+        );
     }
 
     #[test]
@@ -1250,7 +1108,6 @@ mod tests {
     #[test]
     fn yaml_with_fs_section_parses() {
         let yaml = r#"
-allowlist: []
 fs:
   host_roots: [/tmp/shell]
   max_read_bytes: 1024
@@ -1271,7 +1128,7 @@ sandbox:
 
     #[test]
     fn missing_fs_section_uses_defaults() {
-        let yaml = "allowlist: []\n";
+        let yaml = "max_timeout_ms: 30000\n";
         let c: ShellConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(c.fs.max_read_bytes, 0);
         assert_eq!(c.fs.max_write_bytes, 0);
@@ -1326,44 +1183,13 @@ sandbox:
     }
 
     #[test]
-    fn exec_guard_rejects_command_path_inside_any_root() {
-        // SECURITY: the planted-binary guard must check EVERY writable root,
-        // not just the first. A binary planted via shell::fs::write under the
-        // SECOND root must be rejected exactly like one under the primary.
-        let root_a = std::env::temp_dir().join(format!("shell-mr-a-{}", uuid::Uuid::new_v4()));
-        let root_b = std::env::temp_dir().join(format!("shell-mr-b-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root_a).unwrap();
-        std::fs::create_dir_all(&root_b).unwrap();
-        std::fs::write(root_b.join("ls"), "#!/bin/sh\necho pwned\n").unwrap();
-
-        let mut c = ShellConfig {
-            allowlist: vec!["ls".into()],
-            ..Default::default()
-        };
-        c.fs.host_roots = vec![root_a.clone(), root_b.clone()];
-        c.compile_denylist().unwrap();
-
-        // Planted under the SECOND root → rejected with a jail-mentioning error.
-        let planted = root_b.join("ls").to_string_lossy().to_string();
-        let err = c
-            .is_command_allowed(&[planted])
-            .expect_err("a command path inside the 2nd root must be rejected");
-        assert!(err.contains("jail"), "got: {err}");
-
-        // A bare name still PATH-resolves and is allowed.
-        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
-
-        std::fs::remove_dir_all(&root_a).ok();
-        std::fs::remove_dir_all(&root_b).ok();
-    }
-
-    #[test]
     fn json_schema_has_top_level_keys() {
         let schema = ShellConfig::json_schema();
         let obj = schema.as_object().expect("schema is an object");
         assert!(obj.contains_key("properties"));
         let props = obj["properties"].as_object().expect("properties object");
-        assert!(props.contains_key("allowlist"));
+        // `allowlist` was removed in 0.8.0 and must NOT reappear in the schema.
+        assert!(!props.contains_key("allowlist"));
         assert!(props.contains_key("fs"));
         // compiled_denylist must NOT leak into the published schema.
         assert!(!props.contains_key("compiled_denylist"));
@@ -1399,18 +1225,17 @@ sandbox:
     fn to_json_from_json_round_trips() {
         let mut c = ShellConfig::default();
         c.fs.host_roots = vec![std::path::PathBuf::from("/tmp/shell")];
-        c.allowlist = vec!["ls".into(), "cat".into()];
+        c.denylist_patterns = vec![r"rm\s+-rf\s+/".into()];
         let v = c.to_json();
         let back = ShellConfig::from_json(&v).expect("from_json round-trips");
-        assert_eq!(back.allowlist, c.allowlist);
+        assert_eq!(back.denylist_patterns, c.denylist_patterns);
         assert_eq!(back.fs.host_roots, c.fs.host_roots);
     }
 
     #[test]
     fn from_yaml_parses_seed() {
-        let c = ShellConfig::from_yaml("allowlist: [ls]\nfs:\n  host_roots: [/tmp/x]\n")
-            .expect("seed yaml parses");
-        assert_eq!(c.allowlist, vec!["ls".to_string()]);
+        let c = ShellConfig::from_yaml("fs:\n  host_roots: [/tmp/x]\n").expect("seed yaml parses");
+        assert_eq!(c.fs.host_roots, vec![std::path::PathBuf::from("/tmp/x")]);
     }
 
     /// A 0.6.x seed still carrying the removed single-root alias must be
@@ -1433,6 +1258,26 @@ sandbox:
         assert!(err.contains("removed in 0.7.0"), "{err}");
         assert!(err.contains("fs.host_roots"), "{err}");
         assert!(err.contains("configuration::set"), "{err}");
+    }
+
+    /// `allowlist` was removed in 0.8.0 (deny-only shell — allow/ask policy
+    /// lives in the approval-gate). A seed or stored value still carrying it,
+    /// even the inert `allowlist: []` the old seed wrote, must fail closed
+    /// with a migration hint, through BOTH funnels.
+    #[test]
+    fn from_yaml_rejects_removed_allowlist_with_hint() {
+        let err = ShellConfig::from_yaml("allowlist: []\n").expect_err("removed key rejects");
+        assert!(err.contains("`allowlist`"), "{err}");
+        assert!(err.contains("removed in 0.8.0"), "{err}");
+        assert!(err.contains("approval-gate"), "{err}");
+    }
+
+    #[test]
+    fn from_json_rejects_removed_allowlist_with_hint() {
+        let err = ShellConfig::from_json(&serde_json::json!({ "allowlist": ["ls"] }))
+            .expect_err("removed key rejects via the stored-value funnel");
+        assert!(err.contains("`allowlist`"), "{err}");
+        assert!(err.contains("removed in 0.8.0"), "{err}");
     }
 
     /// Both a top-level removed env key AND the nested `fs.host_root` present

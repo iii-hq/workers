@@ -280,20 +280,20 @@ async fn main() -> Result<()> {
                 })
             })
             .description(
-                "Run an allowlisted command in the foreground and return its full output. \
+                "Run a command in the foreground and return its full output. \
                  Put the program name in `command` (string) and arguments in `args` (string[]) — \
                  do NOT pass argv as an array in `command`. `timeout_ms` is capped at the \
                  configured max; negative/fractional values fall back to the default. `target` \
                  defaults to the host; pass { kind: \"sandbox\", sandbox_id } to run in a microVM. \
                  Optional host-only `cwd` scopes this call to a directory (jail-confined exactly \
                  like shell::fs::* paths; escaping it is S215), optional `env` (object) sets \
-                 per-call values — but only for keys already in the operator's env.allow list and never for \
-                 PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup and interpreter-startup keys \
-                 (those reject S210) — and optional host-only `stdin` (string) is written to the \
+                 per-call values for ANY key except PATH/IFS/HOME/LD_*/DYLD_* or other \
+                 loader/lookup and interpreter-startup keys \
+                 (those reject S210 unconditionally) — and optional host-only `stdin` (string) is written to the \
                  program's standard input (use it for `tee`, `patch`, or any stdin filter instead \
                  of a shell heredoc). cwd/env/stdin on a sandbox target reject S210. \
                  Backend errors return { code, message }; common: S216 host exec error, S300 VM \
-                 boot failed, S200 in-VM failure. argv-parse and allowlist/denylist rejections are \
+                 boot failed, S200 in-VM failure. argv-parse and denylist rejections are \
                  plain-string messages naming the violation.",
             ),
         );
@@ -312,17 +312,17 @@ async fn main() -> Result<()> {
                 })
             })
             .description(
-                "Spawn an allowlisted command as a background job; returns { job_id, argv } \
+                "Spawn a command as a background job; returns { job_id, argv } \
                  immediately. Same payload as shell::exec (command + args, do NOT pass argv as an \
                  array), including the optional host-only `cwd` (jail-confined; escape is S215), \
-                 `env` (only keys in the operator's env.allow list, never PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup \
-                 and interpreter-startup keys), and `stdin` (string written to the job's stdin); \
+                 `env` (any key except PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup \
+                 and interpreter-startup keys, rejected unconditionally), and `stdin` (string written to the job's stdin); \
                  violations and cwd/env/stdin on a sandbox target reject with an S210 message. Poll \
                  with shell::status, terminate with shell::kill, list with shell::list. \
                  Host background jobs ignore the per-call timeout_ms and run until they exit or \
                  shell::kill terminates them; set the operator config `max_bg_timeout_ms` (0 = \
                  unbounded, the default) to force-kill a runaway job after that long. \
-                 Spawn-time failures (argv-parse, allowlist/denylist, cwd/env gating, spawn, \
+                 Spawn-time failures (argv-parse, denylist, cwd/env gating, spawn, \
                  concurrency cap) are plain-string messages naming the violation; once spawned, \
                  per-job failures surface through shell::status (the job record's status/stderr), \
                  not this call's return.",

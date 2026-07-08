@@ -18,28 +18,26 @@ env:
   # NOTE: this also forwards any secrets in the worker's env to every command;
   # run the worker with a clean environment if that matters to you.
   inherit: true
-  # Dual role: (1) when `inherit` is false, ONLY these keys are forwarded to
-  # children; (2) per-call `env` may set a key only if it is listed here —
-  # minus the hardcoded dangerous keys above, which are never settable.
+  # When `inherit` is false, ONLY these keys are forwarded to children. Has
+  # no effect on per-call `env` (deny-only, see line 16 above) — this list
+  # governs forwarding only, never what a caller may override per call.
   allow:
     - PATH
     - HOME
     - LANG
     - LC_ALL
     - TERM
-# PERMISSIVE DEFAULT: an EMPTY allowlist means every command is allowed
-# (cargo, git, bash, make, node, python3, …). This is deliberate — a coding
-# agent needs arbitrary build/test/VCS tooling, and a half-open list is
-# defeated the moment any shell/interpreter is on it. This worker is NOT a
-# sandbox: the security boundary is the fs jail (fs.host_roots) plus the
-# optional sandbox backend, NOT this list. To re-scope exec to deny-by-default,
-# list the permitted argv[0] basenames here (a non-empty list flips the gate).
-allowlist: []
+# DENY-ONLY POLICY: the shell has no command allowlist — every command runs
+# unless it trips the denylist below. This is deliberate: a coding agent
+# needs arbitrary build/test/VCS tooling, and allow/ask policy (which
+# commands need a human) lives in the approval-gate, not here. This worker
+# is NOT a sandbox: for command execution, the only real security boundary
+# is the optional sandbox backend (target: { kind: "sandbox" }). fs.host_roots
+# (see the fs: block below, unjailed by default) only ever confines
+# shell::fs::*/cwd, never a spawned process's own filesystem access.
 # Advisory tripwire ONLY (regex over argv.join(" ")), trivially evadable via an
-# interpreter — NOT a security boundary. With an open allowlist the old
-# sub-execution escapes (find -exec, sed -i, node/python -c, npm run, env <cmd>)
-# are pure dev friction with no security value, so they were dropped; only
-# catastrophic, host-wrecking patterns are kept to catch honest mistakes.
+# interpreter — NOT a security boundary. Only catastrophic, host-wrecking
+# patterns are kept to catch honest mistakes.
 #
 # Command-SHAPED patterns (mkfs/dd/shutdown/reboot) are anchored to argv[0],
 # case-insensitive, tolerating an optional sudo/doas/nohup/timeout wrapper (or
@@ -64,23 +62,26 @@ max_concurrent_jobs: 16
 job_retention_secs: 3600
 
 fs:
-  # SET host_roots to the directories you intend to expose to shell::fs::*.
-  # The FIRST entry is the primary root (relative paths resolve against it).
-  # When empty, the worker refuses to start unless allow_unjailed is true
-  # (because the alternative is "the entire filesystem is reachable
-  # behind only the advisory denylist", which is rarely intended).
-  # (the 0.6.x `host_root` single-root form was removed in 0.7.0)
+  # Unjailed by default (allow_unjailed: true, empty host_roots):
+  # shell::fs::* and shell::exec's per-call `cwd` operate against the real
+  # filesystem, confined only by denylist_paths below — matching
+  # shell::exec itself, which is deny-only rather than confinement-based.
+  # SET host_roots to jail shell::fs::*/cwd to specific directories instead;
+  # the FIRST entry becomes the primary root (relative paths resolve
+  # against it), and allow_unjailed stops mattering once host_roots is
+  # non-empty. (the 0.6.x `host_root` single-root form was removed in 0.7.0)
   #
-  # Default is /tmp: exists on every Unix host, is writable, and contains
-  # only ephemeral data. Operators should point this at the workspace(s)
-  # they intend the shell worker to manage.
-  host_roots: [/tmp]
-  allow_unjailed: false
+  # Note: coder::* does NOT follow this setting — it falls back to its own
+  # default roots (engine workspace cwd + /tmp) whenever host_roots is
+  # empty, regardless of allow_unjailed.
+  host_roots: []
+  allow_unjailed: true
   max_read_bytes: 16777216
   max_write_bytes: 16777216
-  # Defense in depth: while the jail is /tmp these paths are unreachable
-  # through shell::fs::* anyway (the jail rejects them first, S215); they
-  # exist so widening the jail — or going unjailed — never exposes them.
+  # Since fs is unjailed by default, this is the PRIMARY protection for
+  # these two paths, not defense in depth: shell::fs::* would otherwise
+  # reach them freely. If you set host_roots above, this becomes defense
+  # in depth on top of that jail instead.
   # The exec side can't be fs-jailed (children read the host freely), which
   # is why /etc/shadow ALSO appears in denylist_patterns above; /etc/passwd
   # is world-readable by design and gets no exec tripwire.

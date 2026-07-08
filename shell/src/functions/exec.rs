@@ -20,7 +20,7 @@ pub async fn handle(
     //   Some(_) → use args verbatim, even if empty
     // The typed-schema path must NOT collapse "absent args" into
     // "args: []" or callers lose the shell-words path.
-    // argv-parse and allowlist/denylist rejections are plain Strings with no
+    // argv-parse and denylist rejections are plain Strings with no
     // S-code; via `From<String> for Error` they become the engine's
     // `invocation_failed` envelope, message naming the violation. Only the
     // backend `ExecError` below carries an S-code, surfaced as the wire `code`
@@ -31,8 +31,8 @@ pub async fn handle(
     cfg.is_command_allowed(&argv)?;
 
     // Gate the per-call cwd/env BEFORE picking a backend. A jail-escaping cwd
-    // (S215) or an env key outside env.allow / in DANGEROUS_ENV_KEYS (S210)
-    // rejects here, carrying the S-code to the wire via From<ExecError>. The
+    // (S215) or an env key in DANGEROUS_ENV_KEYS (S210) rejects here, carrying
+    // the S-code to the wire via From<ExecError>. The
     // sandbox backend additionally rejects any populated override (host-only).
     // `scope_root` only scopes the host working directory: drop it for a sandbox
     // target so the harness-injected session dir does not surface as a host cwd

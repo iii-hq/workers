@@ -34,7 +34,6 @@ workers:
       env:
         inherit: false
         allow: [PATH, HOME, LANG, HARNESS_TEST_VAR]
-      allowlist: [echo, ls, cat, sleep, pwd, printf, sh, false, "true", env]
       denylist_patterns:
         - "rm\\s+-rf\\s+/"
       max_concurrent_jobs: 2
