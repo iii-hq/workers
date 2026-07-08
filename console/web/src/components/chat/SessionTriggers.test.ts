@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
-import { buildTriggerWorkflow } from './SessionTriggers'
+import { buildTriggerWorkflow, levelWatches } from './SessionTriggers'
 
 function trigger(over: Partial<SessionTriggerInfo>): SessionTriggerInfo {
   return {
@@ -67,6 +67,26 @@ describe('buildTriggerWorkflow', () => {
     expect(wf.levels).toHaveLength(2)
     expect(wf.levels[0][0].members[0].id).toBe('root')
     expect(wf.levels[1][0].join?.id).toBe('j')
+  })
+
+  it('levelWatches dedupes the sessions a stage waits on', () => {
+    const wf = buildTriggerWorkflow([
+      trigger({ id: 'root', metadata: { session_id: 'analyst-1' } }),
+      trigger({
+        id: 'w1',
+        triggerType: 'harness::turn-completed',
+        config: { session_id: 'analyst-1' },
+        metadata: { join: { id: 'j', expect: ['a', 'b'], key: 'a' } },
+      }),
+      trigger({
+        id: 'w2',
+        triggerType: 'harness::turn-completed',
+        config: { session_id: 'analyst-1' },
+        metadata: { join: { id: 'j', expect: ['a', 'b'], key: 'b' } },
+      }),
+    ])
+    expect(levelWatches(wf.levels[0])).toEqual([])
+    expect(levelWatches(wf.levels[1])).toEqual(['analyst-1'])
   })
 
   it('a watch cycle collapses instead of hanging', () => {

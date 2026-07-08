@@ -1,4 +1,11 @@
-import { Check, Copy, GitMerge, Zap } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  GitMerge,
+  Zap,
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import {
@@ -126,8 +133,7 @@ export function buildTriggerWorkflow(
     const watched = new Set(watches(child))
     const feeding = units.filter(
       (parent) =>
-        parent.key !== child.key &&
-        spawns(parent).some((s) => watched.has(s)),
+        parent.key !== child.key && spawns(parent).some((s) => watched.has(s)),
     )
     if (feeding.length > 0) hasEdge = true
     parents.set(child.key, feeding)
@@ -164,6 +170,17 @@ export function buildTriggerWorkflow(
 /** `console-9a8a0cbc-…` → `console-9a8a0cbc`; short ids pass through. */
 function shortSession(sessionId: string): string {
   return sessionId.length > 24 ? `${sessionId.slice(0, 21)}…` : sessionId
+}
+
+/** Distinct sessions a stage's units wait on — the divider's "after …" label. */
+export function levelWatches(units: TriggerUnit[]): string[] {
+  return [
+    ...new Set(
+      units.flatMap((unit) =>
+        unit.members.map(watchedSession).filter((s): s is string => s !== null),
+      ),
+    ),
+  ]
 }
 
 /**
@@ -243,7 +260,11 @@ function CopyableId({ value }: { value: string }) {
         aria-label={copied ? 'copied' : 'copy id'}
         title={copied ? 'copied' : 'copy'}
       >
-        {copied ? <Check size={11} aria-hidden /> : <Copy size={11} aria-hidden />}
+        {copied ? (
+          <Check size={11} aria-hidden />
+        ) : (
+          <Copy size={11} aria-hidden />
+        )}
       </button>
     </span>
   )
@@ -319,15 +340,18 @@ function TriggerRow({
 
 /**
  * The conversation's registered trigger subscriptions, stacked above the
- * composer next to the queued-messages strip. Joined / chained bindings
- * render as a staged workflow (fan-in groups + ↓ between stages); anything
- * unconnected stays a flat row. Click a row for the full detail dialog;
- * ✕ (or the dialog button) unregisters the engine trigger.
+ * composer next to the queued-messages strip. Collapsed by default to a
+ * count header; expanding shows the rows. Joined / chained bindings render
+ * as a staged workflow (fan-in groups + an "after <session> completes"
+ * divider between stages); anything unconnected stays a flat row. Click a
+ * row for the full detail dialog; ✕ (or the dialog button) unregisters the
+ * engine trigger.
  */
 export function SessionTriggers({
   triggers,
   onUnregister,
 }: SessionTriggersProps) {
+  const [expanded, setExpanded] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const workflow = useMemo(() => buildTriggerWorkflow(triggers), [triggers])
@@ -355,71 +379,114 @@ export function SessionTriggers({
         className="mb-1 border border-rule bg-bg"
         aria-label="registered triggers"
       >
-        {workflow.hasStructure
-          ? workflow.levels.map((units, levelIdx) => (
-              <div key={units[0]?.key ?? levelIdx}>
-                {levelIdx > 0 ? (
-                  <div
-                    className="border-b border-rule-2 py-0.5 text-center text-[10px] leading-none text-ink-ghost"
-                    aria-label="then"
-                  >
-                    ↓
-                  </div>
-                ) : null}
-                {units.map((unit) =>
-                  unit.join ? (
-                    <div key={unit.key}>
-                      <div className="flex items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5 text-[12px]">
-                        <GitMerge
-                          size={12}
-                          className="shrink-0 text-ink-ghost"
-                          aria-hidden
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          join {unit.join.id}
-                          <span className="text-ink-ghost">
-                            {' '}
-                            · waits for {unit.join.expect.join(' + ')} · spawns
-                            sub-agent
-                          </span>
-                        </span>
-                      </div>
-                      {unit.members.map((member, memberIdx) => (
-                        <TriggerRow
-                          key={member.id}
-                          trigger={member}
-                          connector={
-                            memberIdx === unit.members.length - 1 ? '└' : '├'
-                          }
-                          memberKey={joinMeta(member)?.key}
-                          busy={busyId === member.id}
-                          onOpen={() => setSelectedId(member.id)}
-                          onUnregister={() => void unregister(member.id)}
-                        />
-                      ))}
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-[12px] hover:text-ink transition-colors"
+        >
+          <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-left">
+            {triggers.length} trigger{triggers.length === 1 ? '' : 's'}{' '}
+            registered
+            <span className="text-ink-ghost">
+              {workflow.hasStructure && workflow.levels.length > 1
+                ? ` · ${workflow.levels.length} stages`
+                : ''}
+            </span>
+          </span>
+          {expanded ? (
+            <ChevronDown
+              size={12}
+              className="shrink-0 text-ink-ghost"
+              aria-hidden
+            />
+          ) : (
+            <ChevronRight
+              size={12}
+              className="shrink-0 text-ink-ghost"
+              aria-hidden
+            />
+          )}
+        </button>
+        {expanded ? (
+          <div className="border-t border-rule-2">
+            {workflow.hasStructure
+              ? workflow.levels.map((units, levelIdx) => {
+                  const upstream = levelWatches(units)
+                  const upstreamLabel = upstream.map(shortSession).join(', ')
+                  return (
+                    <div key={units[0]?.key ?? levelIdx}>
+                      {levelIdx > 0 ? (
+                        <div className="truncate border-b border-rule-2 px-3 py-0.5 text-center text-[10px] leading-none text-ink-ghost">
+                          {upstreamLabel ? (
+                            `↓ after ${upstreamLabel} ${upstream.length === 1 ? 'completes' : 'complete'}`
+                          ) : (
+                            <span aria-hidden>↓</span>
+                          )}
+                        </div>
+                      ) : null}
+                      {units.map((unit) =>
+                        unit.join ? (
+                          <div key={unit.key}>
+                            <div className="flex items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5 text-[12px]">
+                              <GitMerge
+                                size={12}
+                                className="shrink-0 text-ink-ghost"
+                                aria-hidden
+                              />
+                              <span className="min-w-0 flex-1 truncate">
+                                join {unit.join.id}
+                                <span className="text-ink-ghost">
+                                  {' '}
+                                  · waits for {unit.join.expect.join(' + ')} ·
+                                  spawns sub-agent
+                                </span>
+                              </span>
+                            </div>
+                            {unit.members.map((member, memberIdx) => (
+                              <TriggerRow
+                                key={member.id}
+                                trigger={member}
+                                connector={
+                                  memberIdx === unit.members.length - 1
+                                    ? '└'
+                                    : '├'
+                                }
+                                memberKey={joinMeta(member)?.key}
+                                busy={busyId === member.id}
+                                onOpen={() => setSelectedId(member.id)}
+                                onUnregister={() => void unregister(member.id)}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <TriggerRow
+                            key={unit.key}
+                            trigger={unit.members[0]}
+                            showTargets
+                            busy={busyId === unit.members[0].id}
+                            onOpen={() => setSelectedId(unit.members[0].id)}
+                            onUnregister={() =>
+                              void unregister(unit.members[0].id)
+                            }
+                          />
+                        ),
+                      )}
                     </div>
-                  ) : (
-                    <TriggerRow
-                      key={unit.key}
-                      trigger={unit.members[0]}
-                      showTargets
-                      busy={busyId === unit.members[0].id}
-                      onOpen={() => setSelectedId(unit.members[0].id)}
-                      onUnregister={() => void unregister(unit.members[0].id)}
-                    />
-                  ),
-                )}
-              </div>
-            ))
-          : triggers.map((trigger) => (
-              <TriggerRow
-                key={trigger.id}
-                trigger={trigger}
-                busy={busyId === trigger.id}
-                onOpen={() => setSelectedId(trigger.id)}
-                onUnregister={() => void unregister(trigger.id)}
-              />
-            ))}
+                  )
+                })
+              : triggers.map((trigger) => (
+                  <TriggerRow
+                    key={trigger.id}
+                    trigger={trigger}
+                    busy={busyId === trigger.id}
+                    onOpen={() => setSelectedId(trigger.id)}
+                    onUnregister={() => void unregister(trigger.id)}
+                  />
+                ))}
+          </div>
+        ) : null}
       </div>
 
       <Dialog
@@ -456,7 +523,9 @@ export function SessionTriggers({
                 </dd>
                 <dt className="lowercase text-ink-ghost">lifetime</dt>
                 <dd className="text-ink">
-                  {selected.once ? 'once — retires after first fire' : 'until unregistered'}
+                  {selected.once
+                    ? 'once — retires after first fire'
+                    : 'until unregistered'}
                 </dd>
                 {selectedSubscription ? (
                   <>
