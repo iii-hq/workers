@@ -512,6 +512,24 @@ describe('engine::register_trigger', () => {
     ).toEqual({ subscription_id: 'sub-1', once: false })
   })
 
+  it('recovers a double-encoded request through the full render chain', () => {
+    // The exact shape from the screenshot: the whole payload is one JSON
+    // string. index.tsx does coerceJsonObject(unwrapEnvelope(input)).
+    const stringified = JSON.stringify({
+      trigger_type: 'harness::turn-completed',
+      function_id: 'harness::react',
+      config: { session_id: 'analyst-2-deep' },
+      metadata: { model: 'claude-sonnet-5', task: 'deep dive' },
+    })
+    const input = coerceJsonObject(unwrapEnvelope(stringified))
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.trigger_type).toBe('harness::turn-completed')
+    expect(req?.function_id).toBe('harness::react')
+    expect(configFilters(req?.config)).toEqual([
+      { label: 'session', value: 'analyst-2-deep' },
+    ])
+  })
+
   it('extracts filter chips across state and turn-event configs', () => {
     // state config
     expect(
