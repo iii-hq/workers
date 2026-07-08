@@ -159,6 +159,11 @@ export function applyCatalogModelFallback(
   let changed = false
   const next = conversations.map((c) => {
     if (c.model && validModels.has(c.model)) return c
+    // A discovered session (sub-agent, other-surface) with no model choice
+    // must stay null — inventing one here would misreport the model the
+    // session actually runs; the chat view derives it from the transcript.
+    // Only console drafts get the catalog default.
+    if (!c.model && !c.draft) return c
     changed = true
     return { ...c, model: fallbackModel }
   })

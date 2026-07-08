@@ -162,9 +162,10 @@ pub struct ReactSpec {
     /// The sub-agent's opening task; the event (simple) or all predecessor
     /// results (join) are appended fenced so it sees its inputs.
     pub task: String,
-    /// Spawn into this session (e.g. a fork); omit for a fresh child session.
-    /// Exception: a completed JOIN's downstream defaults to the registering
-    /// session when omitted, so the fan-in result lands back in that chat.
+    /// Spawn into this session (e.g. a fork); when omitted, defaults to the
+    /// registering session (the pipeline's owner) so the result lands back
+    /// as a turn in that chat — a fresh detached child only for raw
+    /// registrations that carry no owner stamp.
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
@@ -366,6 +367,13 @@ pub async fn handle(
         },
     };
 
+    // Delivery session, resolved once for BOTH dispatch paths below: an
+    // explicit pin wins; otherwise the registering (owner) session, so a
+    // reaction with no pin lands as a turn in the chat that wired it instead
+    // of a detached child nobody watches.
+    let mut spec = spec;
+    spec.session_id = reaction_delivery_session(&spec);
+
     match spec.join.clone() {
         None => {
             let res = spawn_reaction(
@@ -453,14 +461,10 @@ async fn join_edge(
     }
 
     // Fire the downstream sub-agent fed ALL predecessors' results, then GC the
-    // accumulator record. A fan-in's result belongs to whoever wired the
-    // pipeline: without an explicit `session_id` pin, deliver INTO the owner
-    // session — a new turn in the chat that registered the join — instead of
-    // a detached child nobody reads. Joins fire once, so this cannot spam.
-    let mut spec = spec.clone();
-    spec.session_id = join_delivery_session(&spec);
+    // accumulator record. The delivery session (owner fallback when unpinned)
+    // is already resolved by the caller. Joins fire once, so this cannot spam.
     let task = gather_inputs_task(&spec.task, &rec);
-    let res = spawn_reaction(deps, task, &spec, parent, spawn_depth).await;
+    let res = spawn_reaction(deps, task, spec, parent, spawn_depth).await;
     // The delete is the cycle reset: a stale record (fire=1, all keys arrived)
     // makes the next cycle's fire-guard land on 2 and refuse forever — for a
     // rearmed join that is a permanent, silent wedge. Retry transient state
@@ -541,11 +545,12 @@ async fn state_update(deps: &Deps, key: &str, ops: Vec<Value>) -> Result<Value, 
     Ok(resp.get("new_value").cloned().unwrap_or(Value::Null))
 }
 
-/// The session a completed join's downstream spawns into: an explicit spec pin
-/// wins; otherwise the registering session (the pipeline's owner), so the
-/// fan-in result lands as a turn in the chat that wired it. `None` (a fresh
-/// detached child) only for raw registrations that carry no owner stamp.
-fn join_delivery_session(spec: &ReactSpec) -> Option<String> {
+/// The session a reaction's spawn delivers into — simple edge or a completed
+/// join's downstream alike: an explicit spec pin wins; otherwise the
+/// registering session (the pipeline's owner), so the result lands as a turn
+/// in the chat that wired it. `None` (a fresh detached child) only for raw
+/// registrations that carry no owner stamp.
+fn reaction_delivery_session(spec: &ReactSpec) -> Option<String> {
     spec.session_id
         .clone()
         .or_else(|| spec.owner_session_id.clone())
@@ -915,17 +920,23 @@ mod tests {
     }
 
     #[test]
-    fn join_downstream_delivers_into_the_owner_session_by_default() {
+    fn reaction_delivery_session_prefers_pin_then_owner_stamp() {
+        // Applies uniformly to both dispatch paths: a simple (non-join) edge
+        // and a join's downstream spawn both resolve through this function.
         let mut s = spec();
         s.owner_session_id = Some("console-owner".into());
         // Explicit pin wins.
-        assert_eq!(join_delivery_session(&s).as_deref(), Some("s_run"));
-        // No pin: the fan-in result lands in the chat that wired the join.
+        assert_eq!(reaction_delivery_session(&s).as_deref(), Some("s_run"));
+        // No pin: a non-join reaction lands in the chat that wired it, same
+        // as a join's fan-in result would.
         s.session_id = None;
-        assert_eq!(join_delivery_session(&s).as_deref(), Some("console-owner"));
+        assert_eq!(
+            reaction_delivery_session(&s).as_deref(),
+            Some("console-owner")
+        );
         // Raw registration without an owner stamp: fresh child stands.
         s.owner_session_id = None;
-        assert_eq!(join_delivery_session(&s), None);
+        assert_eq!(reaction_delivery_session(&s), None);
     }
 
     #[test]

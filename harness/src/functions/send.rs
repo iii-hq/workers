@@ -91,6 +91,10 @@ pub struct SendResponse {
     /// True when folded into an in-flight turn (steering).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<bool>,
+    /// True when the message was queued while a step was streaming; it lands
+    /// in the transcript when the stream ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<bool>,
     /// True when `idempotency_key` matched an earlier send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deduplicated: Option<bool>,
@@ -101,6 +105,7 @@ pub struct StartOutcome {
     pub session_id: String,
     pub turn_id: String,
     pub merged: bool,
+    pub queued: bool,
     pub deduplicated: bool,
 }
 
@@ -111,6 +116,7 @@ pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, Harne
         turn_id: out.turn_id,
         accepted: true,
         merged: out.merged.then_some(true),
+        queued: out.queued.then_some(true),
         deduplicated: out.deduplicated.then_some(true),
     })
 }
@@ -141,6 +147,7 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
                 session_id: existing.session_id,
                 turn_id: existing.turn_id,
                 merged: false,
+                queued: false,
                 deduplicated: true,
             });
         }
@@ -162,24 +169,44 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
 
-    // Persist the user message (idempotent entry id when a dedupe key is set).
+    // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key
         .as_ref()
         .map(|k| ids::idem_user_entry_id(k));
-    let appended_entry = session
-        .append(&session_id, &message, entry_id.as_deref(), None, None)
-        .await?;
 
-    // CAS-seed the turn (or take the merge path).
-    let outcome = seed_or_merge(deps, &cfg, &session_id, options).await?;
+    // Queue path: a `Running` step may be streaming — park the message as a
+    // durable queue row the loop drains after the stream ends, instead of
+    // appending mid-transcript.
+    let (outcome, entry) = match try_enqueue(
+        deps,
+        &cfg,
+        &session_id,
+        &message,
+        entry_id.as_deref(),
+        None,
+        &options,
+    )
+    .await?
+    {
+        Some((outcome, row_entry)) => (outcome, row_entry),
+        None => {
+            // Append path (no turn / terminal / parked): persist the message,
+            // then CAS-seed the turn (or take the merge path).
+            let appended_entry = session
+                .append(&session_id, &message, entry_id.as_deref(), None, None)
+                .await?;
+            let outcome = seed_or_merge(deps, &cfg, &session_id, options).await?;
+            (outcome, appended_entry)
+        }
+    };
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
         let rec = IdemRecord {
             session_id: session_id.clone(),
             turn_id: outcome.turn_id.clone(),
-            entry_id: appended_entry,
+            entry_id: entry,
             ts: AgentMessage::now_ms(),
         };
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
@@ -218,10 +245,80 @@ pub async fn inject(
             ))
         })?;
 
+    if let Some((outcome, _)) =
+        try_enqueue(deps, &cfg, session_id, &message, entry_id, origin, &options).await?
+    {
+        return Ok(outcome);
+    }
     session
         .append(session_id, &message, entry_id, None, origin)
         .await?;
     seed_or_merge(deps, &cfg, session_id, options).await
+}
+
+/// The queue path: while a turn step is `Running` a stream may be in flight,
+/// so the message parks as a durable `harness_queue` row the loop drains after
+/// the stream ends (harness.md § Concurrency & steering). Returns `None` when
+/// no step is running — the caller appends to the transcript as before.
+///
+/// After the (lock-free, blind-key) enqueue the turn record is re-read: a
+/// still-live turn drains the row at its next step; a turn that went terminal
+/// in the window gets a fresh turn seeded, whose step-0 drain delivers the
+/// row. A row landing after the loop's last queue check is appended by the
+/// finalize drain — queued messages are never silently dropped.
+async fn try_enqueue(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    message: &AgentMessage,
+    entry_id: Option<&str>,
+    origin: Option<&Value>,
+    options: &TurnOptions,
+) -> Result<Option<(StartOutcome, String)>, HarnessError> {
+    let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
+    match existing {
+        Some(rec) if rec.status == TurnStatus::Running => {}
+        _ => return Ok(None),
+    }
+
+    let id = ids::new_queued_id();
+    let entry_id = entry_id
+        .map(str::to_string)
+        .unwrap_or_else(|| ids::queued_entry_id(&id));
+    let row = crate::state::QueuedMessage {
+        id,
+        session_id: session_id.to_string(),
+        message: message.clone(),
+        entry_id: entry_id.clone(),
+        origin: origin.cloned(),
+        queued_at: AgentMessage::now_ms(),
+    };
+    crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+
+    let recheck = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    let outcome = match recheck {
+        Some(mut r) if !r.status.is_terminal() => {
+            if r.options.refresh_filesystem_root_from(options) {
+                r.updated_at = AgentMessage::now_ms();
+                crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
+            }
+            StartOutcome {
+                session_id: session_id.to_string(),
+                turn_id: r.turn_id,
+                merged: true,
+                queued: true,
+                deduplicated: false,
+            }
+        }
+        _ => {
+            let mut seeded =
+                seed_new(deps, cfg, session_id, options.clone(), prior_generation).await?;
+            seeded.queued = true;
+            seeded
+        }
+    };
+    Ok(Some((outcome, entry_id)))
 }
 
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
@@ -290,6 +387,7 @@ async fn seed_or_merge(
                         session_id: session_id.to_string(),
                         turn_id: r.turn_id,
                         merged: true,
+                        queued: false,
                         deduplicated: false,
                     })
                 }
@@ -338,6 +436,7 @@ async fn seed_new(
         session_id: session_id.to_string(),
         turn_id,
         merged: false,
+        queued: false,
         deduplicated: false,
     })
 }

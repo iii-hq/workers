@@ -46,8 +46,9 @@ describe('applyCatalogModelFallback', () => {
         updatedAt: 2_000,
       }),
       conversation({
-        id: 'missing-model',
+        id: 'draft-missing-model',
         model: null,
+        draft: true,
         updatedAt: 3_000,
       }),
     ]
@@ -60,6 +61,27 @@ describe('applyCatalogModelFallback', () => {
 
     expect(next.map((c) => c.model)).toEqual([fallback, fallback])
     expect(next.map((c) => c.updatedAt)).toEqual([2_000, 3_000])
+  })
+
+  it('never invents a model for a discovered session (sub-agents)', () => {
+    const fallback = 'provider::current-model'
+    const sessions = [
+      conversation({
+        id: 'summarizer-k7m2x',
+        model: null,
+        updatedAt: 3_000,
+      }),
+    ]
+
+    const next = applyCatalogModelFallback(
+      sessions,
+      new Set([fallback]),
+      fallback,
+    )
+
+    // The chat view derives the display model from the transcript instead.
+    expect(next[0].model).toBeNull()
+    expect(next).toBe(sessions)
   })
 })
 
