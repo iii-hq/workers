@@ -355,6 +355,34 @@ export const reactOptionsSchema = z.object({
 })
 export type ReactOptions = z.infer<typeof reactOptionsSchema>
 
+/**
+ * The known filter fields across trigger `config` shapes — state
+ * (`scope`/`key`/`condition_function_id`) and turn events
+ * (`session_id`/`parent_session_id`) — as labeled chips, in a stable order.
+ * `null` when the config carries none of them (the caller shows raw JSON or
+ * "no filter"); unknown fields stay visible in the RAW JSON tab.
+ */
+export function configFilters(
+  config: unknown,
+): { label: string; value: string }[] | null {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return null
+  }
+  const c = config as Record<string, unknown>
+  const pick = (key: string, label: string) =>
+    typeof c[key] === 'string' && c[key]
+      ? { label, value: c[key] as string }
+      : null
+  const chips = [
+    pick('scope', 'scope'),
+    pick('key', 'key'),
+    pick('session_id', 'session'),
+    pick('parent_session_id', 'parent'),
+    pick('condition_function_id', 'if'),
+  ].filter((x): x is { label: string; value: string } => x !== null)
+  return chips.length ? chips : null
+}
+
 /** Engine returns `{ id }`; the harness-intercepted path returns
  * `{ subscription_id, once }`. Model both loosely. */
 export const registerTriggerResponseSchema = z.object({

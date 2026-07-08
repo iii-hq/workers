@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   coerceJsonObject,
+  configFilters,
   ENGINE_FUNCTION_IDS,
   functionDetailSchema,
   functionInfoRequestSchema,
@@ -509,6 +510,32 @@ describe('engine::register_trigger', () => {
         once: false,
       }),
     ).toEqual({ subscription_id: 'sub-1', once: false })
+  })
+
+  it('extracts filter chips across state and turn-event configs', () => {
+    // state config
+    expect(
+      configFilters({
+        scope: 'ops',
+        key: 'build',
+        condition_function_id: 'gate::ok',
+      }),
+    ).toEqual([
+      { label: 'scope', value: 'ops' },
+      { label: 'key', value: 'build' },
+      { label: 'if', value: 'gate::ok' },
+    ])
+    // turn-event config (previously fell through to raw JSON)
+    expect(configFilters({ session_id: 'reviewer-cr7k2' })).toEqual([
+      { label: 'session', value: 'reviewer-cr7k2' },
+    ])
+    expect(configFilters({ parent_session_id: 'root-1' })).toEqual([
+      { label: 'parent', value: 'root-1' },
+    ])
+    // no known filters → null (caller shows "no filter" / raw JSON)
+    expect(configFilters({})).toBeNull()
+    expect(configFilters({ unknown_field: 'x' })).toBeNull()
+    expect(configFilters(undefined)).toBeNull()
   })
 })
 
