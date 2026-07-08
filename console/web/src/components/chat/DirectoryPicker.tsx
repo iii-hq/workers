@@ -712,7 +712,7 @@ export function DirectoryPicker({
                         )}
                         aria-hidden
                       />
-                      <span className="flex min-w-0 flex-col">
+                      <span className="flex min-w-0 flex-1 flex-col">
                         <span
                           className={cn(
                             'truncate text-[12px]',
