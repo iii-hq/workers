@@ -62,7 +62,9 @@ export type FunctionsListResponse = z.infer<typeof functionsListResponseSchema>
 /* ---------------- engine::functions::info ---------------- */
 
 export const functionInfoRequestSchema = z.object({
-  function_id: z.string(),
+  // Single lookup, or a batch (`function_ids`) — the engine accepts both.
+  function_id: z.string().optional(),
+  function_ids: z.array(z.string()).optional(),
 })
 export type FunctionInfoRequest = z.infer<typeof functionInfoRequestSchema>
 
@@ -86,6 +88,25 @@ export const functionDetailSchema = z.object({
   registered_triggers: z.array(registeredTriggerRefSchema),
 })
 export type FunctionDetail = z.infer<typeof functionDetailSchema>
+
+export const functionInfoBatchResponseSchema = z.object({
+  functions: z.array(functionDetailSchema),
+})
+
+/**
+ * `engine::functions::info` answers a `function_id` lookup with a bare
+ * detail and a `function_ids` batch with `{ functions: [...] }` — normalize
+ * both to a list. `null` means neither shape parsed; the caller should fall
+ * back to the generic panes rather than render a blank terminal tab.
+ */
+export function parseFunctionInfoResponse(
+  output: unknown,
+): FunctionDetail[] | null {
+  const single = safeParseResponse(functionDetailSchema, output)
+  if (single) return [single]
+  const batch = safeParseResponse(functionInfoBatchResponseSchema, output)
+  return batch ? batch.functions : null
+}
 
 /* ---------------- engine::triggers::list ---------------- */
 

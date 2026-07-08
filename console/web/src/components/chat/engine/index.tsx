@@ -3,7 +3,11 @@ import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
 import { FunctionInfoView } from './FunctionInfoView'
 import { FunctionsListView } from './FunctionsListView'
-import { isEngineListFunction, unwrapEnvelope } from './parsers'
+import {
+  isEngineListFunction,
+  parseFunctionInfoResponse,
+  unwrapEnvelope,
+} from './parsers'
 import { RegisteredTriggersListView } from './RegisteredTriggersListView'
 import { RegisterTriggerView } from './RegisterTriggerView'
 import { TriggersListView } from './TriggersListView'
@@ -50,10 +54,15 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
       return (
         <FunctionsListView input={input} output={output} running={running} />
       )
-    case 'engine::functions::info':
-      return (
-        <FunctionInfoView input={input} output={output} running={running} />
-      )
+    case 'engine::functions::info': {
+      if (running) return <FunctionInfoView input={input} running />
+      // Parse HERE, not in the view: returning null makes the card fall back
+      // to the generic request/response panes — a view that matched but
+      // renders nothing would leave a blank terminal tab.
+      const details = parseFunctionInfoResponse(rawOutput)
+      if (!details) return null
+      return <FunctionInfoView input={input} details={details} />
+    }
     case 'engine::triggers::list':
       return (
         <TriggersListView input={input} output={output} running={running} />

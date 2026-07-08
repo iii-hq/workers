@@ -6,6 +6,7 @@ import {
   functionsListRequestSchema,
   functionsListResponseSchema,
   isEngineListFunction,
+  parseFunctionInfoResponse,
   reactSpecSchema,
   registeredTriggersListRequestSchema,
   registeredTriggersListResponseSchema,
@@ -105,8 +106,30 @@ describe('engine::functions::info', () => {
     ).toEqual({ function_id: 'sandbox::fs::write' })
   })
 
-  it('rejects a request missing function_id', () => {
-    expect(safeParseRequest(functionInfoRequestSchema, {})).toBeNull()
+  it('parses a batch request (function_ids)', () => {
+    expect(
+      safeParseRequest(functionInfoRequestSchema, {
+        function_ids: ['state::get', 'state::set'],
+      }),
+    ).toEqual({ function_ids: ['state::get', 'state::set'] })
+  })
+
+  it('normalizes single and batch responses to a detail list', () => {
+    const detail = {
+      function_id: 'state::get',
+      worker_name: 'iii-state',
+      registered_triggers: [],
+    }
+    expect(
+      parseFunctionInfoResponse(detail)?.map((d) => d.function_id),
+    ).toEqual(['state::get'])
+    expect(
+      parseFunctionInfoResponse(
+        wrap({ functions: [detail, { ...detail, function_id: 'state::set' }] }),
+      )?.map((d) => d.function_id),
+    ).toEqual(['state::get', 'state::set'])
+    // Neither shape → null, so the card falls back to the generic panes.
+    expect(parseFunctionInfoResponse({ nonsense: true })).toBeNull()
   })
 
   it('parses a wrapped AnyValue-schema detail (mirrors the screenshot)', () => {

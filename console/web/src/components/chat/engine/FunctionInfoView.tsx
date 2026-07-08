@@ -9,36 +9,38 @@ import { CodeHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import {
   type FunctionDetail,
-  functionDetailSchema,
   functionInfoRequestSchema,
   safeParseRequest,
-  safeParseResponse,
 } from './parsers'
 
 interface FunctionInfoViewProps {
   input: unknown
-  output: unknown
+  /** Parsed detail(s) — single lookups carry one, batches several. */
+  details?: FunctionDetail[]
   running?: boolean
 }
 
 export function FunctionInfoView({
   input,
-  output,
+  details,
   running,
 }: FunctionInfoViewProps) {
   const req = safeParseRequest(functionInfoRequestSchema, input)
+  const reqLabel =
+    req?.function_id ??
+    (req?.function_ids ? `${req.function_ids.length} functions` : null)
 
-  if (running) {
+  if (running || !details) {
     return (
       <div className="border-t border-rule-2 bg-bg">
         <MetaRow>
           <StatusPill label="loading…" variant="default" />
-          {req ? (
+          {reqLabel ? (
             <Chip>
               <span className="text-ink-faint uppercase tracking-[0.06em]">
-                function
+                {req?.function_ids ? 'batch' : 'function'}
               </span>
-              <span className="ml-1 text-ink break-all">{req.function_id}</span>
+              <span className="ml-1 text-ink break-all">{reqLabel}</span>
             </Chip>
           ) : null}
         </MetaRow>
@@ -49,32 +51,68 @@ export function FunctionInfoView({
     )
   }
 
-  const detail = safeParseResponse(functionDetailSchema, output)
-  if (!detail) return null
-
   return (
     <div className="border-t border-rule-2 bg-bg">
-      <MetaRow>
-        <StatusPill label="function" variant="accent" />
-        <Chip>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            worker
-          </span>
-          <span className="ml-1 text-ink">{detail.worker_name}</span>
-        </Chip>
-        <Chip>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            triggers
-          </span>
-          <span className="ml-1 text-ink tabular-nums">
-            {detail.registered_triggers.length}
-          </span>
-        </Chip>
-      </MetaRow>
+      {details.length > 1 ? (
+        <MetaRow>
+          <StatusPill label="functions" variant="accent" />
+          <Chip>
+            <span className="text-ink-faint uppercase tracking-[0.06em]">
+              batch
+            </span>
+            <span className="ml-1 text-ink tabular-nums">{details.length}</span>
+          </Chip>
+        </MetaRow>
+      ) : null}
+      {details.map((detail) => (
+        <FunctionDetailBlock
+          key={detail.function_id}
+          detail={detail}
+          summaryRow={details.length === 1}
+        />
+      ))}
+    </div>
+  )
+}
+
+function FunctionDetailBlock({
+  detail,
+  summaryRow,
+}: {
+  detail: FunctionDetail
+  /** Single lookups keep the worker/triggers MetaRow above the ƒ line. */
+  summaryRow: boolean
+}) {
+  return (
+    <>
+      {summaryRow ? (
+        <MetaRow>
+          <StatusPill label="function" variant="accent" />
+          <Chip>
+            <span className="text-ink-faint uppercase tracking-[0.06em]">
+              worker
+            </span>
+            <span className="ml-1 text-ink">{detail.worker_name}</span>
+          </Chip>
+          <Chip>
+            <span className="text-ink-faint uppercase tracking-[0.06em]">
+              triggers
+            </span>
+            <span className="ml-1 text-ink tabular-nums">
+              {detail.registered_triggers.length}
+            </span>
+          </Chip>
+        </MetaRow>
+      ) : null}
       <ActionLine symbol="ƒ" tone="accent">
         <span className="font-mono text-[13px] text-accent break-all">
           {detail.function_id}
         </span>
+        {!summaryRow ? (
+          <span className="ml-2 font-mono text-[11px] text-ink-faint">
+            · {detail.worker_name}
+          </span>
+        ) : null}
       </ActionLine>
       {detail.description ? (
         <div className="px-3 py-2 border-b border-rule-2 font-mono text-[12px] text-ink-faint leading-[1.55]">
@@ -91,7 +129,7 @@ export function FunctionInfoView({
         />
       ) : null}
       <RegisteredTriggers triggers={detail.registered_triggers} />
-    </div>
+    </>
   )
 }
 
