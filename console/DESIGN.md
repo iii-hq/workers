@@ -1630,6 +1630,9 @@ export function PageHeader({
 - Use **container queries** (`@container`, `@3xl:`, `@4xl:`) for panel-level
   responsiveness. Pages set `@container` and grids split with `@3xl:`.
 - Use **`tabular-nums`** on every number, timestamp, and KPI.
+- Use **Lucide icons** (`lucide-react`) for every UI icon — checkmarks,
+  carets, funnels, status glyphs. One icon family keeps stroke weight and
+  optical size consistent across the console.
 
 **Don't**
 
@@ -1652,6 +1655,10 @@ export function PageHeader({
   small icon, dot, or left stripe.
 - Don't introduce **viewport breakpoints** for panel layouts — use
   container queries.
+- Don't hand-write **inline `<svg>` elements or text-glyph icons** (`✓`,
+  `×`, arrows) in components — use the matching Lucide icon instead. The
+  wordmark and data visualizations (trace bars, diagrams) are the only
+  sanctioned hand-drawn SVG.
 
 ---
 

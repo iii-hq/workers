@@ -11,6 +11,15 @@
  *   - `iii:devtools:trace-spans` / group `<traceId>` → every span of one trace
  *     for the DETAIL waterfall (joined only for the selected trace).
  *
+ * A third, non-stream feed rides the engine's `type:'trace'` trigger
+ * (`startTraceActivityFeed`): `{ trace_ids }` for every ~300ms window in which
+ * any non-internal span of those traces CLOSED. The rows stream only carries
+ * ROOT spans — for queue-triggered traces the root is the instant publish
+ * span, so the row alone says nothing about the seconds of child work that
+ * follow. The activity feed is that missing liveness signal: the timeline
+ * strip uses it to keep a trace's bar growing while its spans are still
+ * closing and to settle the bar once the trace goes quiet.
+ *
  * The in-memory trace store stays the source of truth: each surface does ONE
  * seed read, then appends from its stream. A dropped broadcast frame is not
  * fatal — a single re-seed on reconnect self-heals (the caller wires that).
@@ -18,20 +27,30 @@
  * Handlers are named with the `iii::` prefix (`is_iii_builtin_function_id`), so
  * the spans produced by DELIVERING a frame are `iii.function.kind=internal` and
  * are excluded by the engine's stream loop-break (`is_trace_stream_delivery`),
- * so deliveries never re-enter the trace feed.
+ * so deliveries never re-enter the trace feed. The trace trigger has its own
+ * loop-break: spans produced by delivering to a registered trace-trigger
+ * function are dropped before they can re-fire it.
  */
 
 import type { IiiClient } from '@/lib/iii-client'
-import type { StoredSpan, TracesFilterParams } from '@/pages/Traces/api/traces'
+import type {
+  StoredSpan,
+  TracesFilterParams,
+} from '@/pages/TracesV2/api/traces'
 
 /** iii:: prefix → engine-internal → delivery spans hidden + stream loop-break. */
 const TRACE_ROWS_FN = 'iii::console::trace_rows'
 const TRACE_SPANS_FN = 'iii::console::trace_spans'
+const ALL_SPANS_FN = 'iii::console::all_spans'
+const TRACE_ACTIVITY_FN = 'iii::console::trace_activity'
 /** Stream names the observability worker pushes onto (mirror the engine consts). */
 const TRACE_ROWS_STREAM = 'iii:devtools:trace-rows'
 const TRACE_SPANS_STREAM = 'iii:devtools:trace-spans'
+const ALL_SPANS_STREAM = 'iii:devtools:all-spans'
 /** The single group every list subscriber joins (the list is a global firehose). */
 const TRACE_ROWS_GROUP = 'all'
+/** The engine observability worker's span-activity trigger type. */
+const TRACE_TRIGGER_TYPE = 'trace'
 
 /** Dev-only stream diagnostics. Silent in production builds. */
 function dlog(msg: string, data?: unknown): void {
@@ -95,15 +114,21 @@ export function mergeTraceListSpans(
       byTrace.set(span.trace_id, span)
       continue
     }
+    // Streamed spans never carry `trace_tags` (only `traces::list` merges
+    // them) — a replacement must not erase tags the seeded row already has.
+    const withTags = (s: StoredSpan): StoredSpan =>
+      s.trace_tags || !current.trace_tags
+        ? s
+        : { ...s, trace_tags: current.trace_tags }
     const spanIsRoot = !span.parent_span_id
     const currentIsRoot = !current.parent_span_id
     if (spanIsRoot && !currentIsRoot) {
-      byTrace.set(span.trace_id, span)
+      byTrace.set(span.trace_id, withTags(span))
     } else if (
       spanIsRoot === currentIsRoot &&
       span.start_time_unix_nano >= current.start_time_unix_nano
     ) {
-      byTrace.set(span.trace_id, span)
+      byTrace.set(span.trace_id, withTags(span))
     }
   }
   const spans = [...byTrace.values()].sort(
@@ -116,7 +141,7 @@ export function mergeTraceListSpans(
  * Whether the list can be live-APPENDED from the stream, vs. needing a refetch.
  *
  * Append is only correct for the default "newest traces, unfiltered" view:
- * - No CONTENT filter (service/name/status/duration/time/attributes/search) —
+ * - No CONTENT filter (worker/name/status/duration/time/attributes/search) —
  *   a streamed row might not match it, so a filtered view must refetch.
  * - The default `start_time` / `desc` sort — append keeps the list newest-first,
  *   which only matches that ordering (a duration/asc sort + limit would be
@@ -198,6 +223,90 @@ export function startTraceSpansStream(
     config: { stream_name: TRACE_SPANS_STREAM, group_id: traceId },
   })
   dlog('trace-spans stream subscribed', { functionId, traceId })
+
+  return () => {
+    off()
+    try {
+      offTrigger()
+    } catch {
+      // SDK already disposed; nothing to do.
+    }
+  }
+}
+
+/**
+ * Subscribe to the global ALL-spans stream: every non-internal span of every
+ * trace, pushed by the engine each coalesce window — the masthead strip's
+ * per-span live feed. Same frame shape and lifecycle as the rows stream; one
+ * global `all` group.
+ */
+export function startAllSpansFeed(
+  client: Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>,
+  onSpans: (spans: StoredSpan[]) => void,
+): () => void {
+  const off = client.on(ALL_SPANS_FN, (frame: unknown) => {
+    const spans = extractStreamSpans(frame)
+    if (spans.length > 0) onSpans(spans)
+  })
+
+  const functionId = `${ALL_SPANS_FN}::${client.browserId}`
+  const offTrigger = client.registerTrigger({
+    type: 'stream',
+    function_id: functionId,
+    config: { stream_name: ALL_SPANS_STREAM, group_id: TRACE_ROWS_GROUP },
+  })
+  dlog('all-spans stream subscribed', { functionId })
+
+  return () => {
+    off()
+    try {
+      offTrigger()
+    } catch {
+      // SDK already disposed; nothing to do.
+    }
+  }
+}
+
+/**
+ * Pull the `trace_ids` out of a `type:'trace'` trigger payload. The engine
+ * delivers `{ trace_ids: string[] }` directly (a plain `engine.call`, not a
+ * stream frame). Non-string entries and malformed payloads yield `[]`.
+ */
+export function extractTraceActivityIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object') return []
+  const ids = (payload as Record<string, unknown>).trace_ids
+  if (!Array.isArray(ids)) return []
+  return ids.filter((id): id is string => typeof id === 'string')
+}
+
+/**
+ * Subscribe to the engine's global span activity: `onTraceIds` receives the
+ * batch of trace ids whose (non-internal) spans landed in each ~300ms
+ * coalesce window — on span START (live pending snapshots, when the engine's
+ * `live_spans` is on) as well as on close. This is the liveness signal the
+ * rows stream lacks — a row arrives once, while activity keeps firing for as
+ * long as the trace is doing work.
+ *
+ * Registered exactly like the old `traces-live` model's trigger, minus the
+ * refetch: the payload itself (just ids) is the data. Returns a cleanup that
+ * unregisters the handler and the trigger.
+ */
+export function startTraceActivityFeed(
+  client: Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>,
+  onTraceIds: (traceIds: string[]) => void,
+): () => void {
+  const off = client.on(TRACE_ACTIVITY_FN, (payload: unknown) => {
+    const ids = extractTraceActivityIds(payload)
+    if (ids.length > 0) onTraceIds(ids)
+  })
+
+  const functionId = `${TRACE_ACTIVITY_FN}::${client.browserId}`
+  const offTrigger = client.registerTrigger({
+    type: TRACE_TRIGGER_TYPE,
+    function_id: functionId,
+    config: {},
+  })
+  dlog('trace activity trigger subscribed', { functionId })
 
   return () => {
     off()

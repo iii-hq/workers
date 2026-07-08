@@ -21,7 +21,7 @@ import {
 import { buildViewOptions } from '@/lib/nav-options'
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
-import { Traces } from '@/pages/Traces'
+import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import { Worktrees } from '@/pages/Worktrees'
 
@@ -95,7 +95,7 @@ export function App() {
             ) : view === 'worktrees' ? (
               <Worktrees />
             ) : (
-              <Traces />
+              <TracesV2 />
             )}
           </div>
         </div>

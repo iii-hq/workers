@@ -17,7 +17,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::oneshot;
 
-use console::{config, functions, manifest, server};
+use console::{config, configuration, functions, manifest, server};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -104,6 +104,15 @@ async fn main() -> Result<()> {
     let iii = Arc::new(iii);
 
     functions::register_all(&iii, &cfg, &engine_url);
+
+    // Best-effort: guarantee the `console` configuration entry exists for the
+    // UI's saved preferences, without delaying HTTP serve.
+    {
+        let iii = iii.clone();
+        tokio::spawn(async move {
+            configuration::register_console_config(&iii).await;
+        });
+    }
 
     if !console::assets::has_bundle() {
         tracing::warn!(

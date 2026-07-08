@@ -8,3 +8,4 @@ pub mod pricing;
 pub mod relay;
 pub mod retry;
 pub mod synthesize;
+pub mod telemetry;

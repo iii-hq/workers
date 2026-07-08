@@ -218,6 +218,17 @@ impl ChatPipeline {
             )
             .await;
         self.inflight.remove(&request_id);
+        // Stamp token usage + cost onto the active `execute router::chat`
+        // span. Every terminal outcome of the attempt loop funnels into the
+        // ChatResponse, which carries the cost-filled usage.
+        if let Ok(resp) = &result {
+            super::telemetry::record_llm_call(
+                &provider,
+                &call.model,
+                resp.stop_reason,
+                resp.usage.as_ref(),
+            );
+        }
         result
     }
 

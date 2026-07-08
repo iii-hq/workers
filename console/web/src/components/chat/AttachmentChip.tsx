@@ -1,3 +1,4 @@
+import { File, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
@@ -33,21 +34,7 @@ export function AttachmentChip({
           className="size-6 object-cover border border-rule-2"
         />
       ) : (
-        <span aria-hidden="true" className="text-ink-faint shrink-0">
-          {/* tiny "file" glyph: hairline rectangle with a corner fold */}
-          <svg
-            width="10"
-            height="12"
-            viewBox="0 0 10 12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1"
-            aria-hidden="true"
-          >
-            <path d="M1 1H6L9 4V11H1V1Z" />
-            <path d="M6 1V4H9" />
-          </svg>
-        </span>
+        <File size={12} aria-hidden className="text-ink-faint shrink-0" />
       )}
       <span className="truncate min-w-0">{attachment.name}</span>
       <span className="text-ink-ghost tabular-nums shrink-0">
@@ -60,7 +47,7 @@ export function AttachmentChip({
           className="text-ink-faint hover:text-accent transition-colors shrink-0"
           aria-label={`remove ${attachment.name}`}
         >
-          ×
+          <X size={12} aria-hidden />
         </button>
       ) : null}
     </div>

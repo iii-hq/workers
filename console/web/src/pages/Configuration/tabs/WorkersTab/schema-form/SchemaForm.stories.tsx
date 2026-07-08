@@ -15,7 +15,7 @@ import { SchemaForm } from './SchemaForm'
  */
 function ValuePreview({ value }: { value: JsonValue }) {
   return (
-    <pre className="mt-3 border-t border-rule-2 pt-3 font-mono text-[12px] leading-relaxed text-ink-faint overflow-x-auto whitespace-pre-wrap">
+    <pre className="mt-3 border-t border-rule-2 pt-3 font-sans text-[12px] leading-relaxed text-ink-faint overflow-x-auto whitespace-pre-wrap">
       {JSON.stringify(value, null, 2)}
     </pre>
   )
@@ -91,3 +91,4 @@ export const Dictionary = storyFor('dictionary')
 export const Ref = storyFor('ref')
 export const Unsupported = storyFor('unsupported')
 export const ValidationErrors = storyFor('errors')
+export const LongDescriptions = storyFor('long-descriptions')

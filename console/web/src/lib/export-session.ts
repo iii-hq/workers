@@ -1,8 +1,8 @@
 /**
  * Renders a `Conversation` as a markdown transcript and triggers a
  * browser download. Designed so the resulting `.md` file can be pasted
- * into another AI for analysis — role-prefixed messages, tool calls as
- * fenced JSON, attachments listed by metadata only (no base64 payload).
+ * into another AI for analysis — role-prefixed messages, function triggers
+ * as fenced JSON, attachments listed by metadata only (no base64 payload).
  */
 
 import type {
@@ -80,10 +80,10 @@ function renderFunctionCall(message: FunctionCallMessage): string {
   const status = message.pendingApproval
     ? ' (pending approval)'
     : message.running
-      ? ' (running)'
+      ? ' (triggering)'
       : ''
   const parts: string[] = [
-    `## Tool call — ${message.functionId}${status}`,
+    `## Trigger — ${message.functionId}${status}`,
     '**Input:**',
     '```json',
     formatJson(message.input),

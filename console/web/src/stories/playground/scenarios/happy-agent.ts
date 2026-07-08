@@ -6,12 +6,12 @@ import {
 } from './helpers'
 
 const THOUGHT = `straightforward dispatch: this is an echo through
-the engine, so i'll call \`engine::echo\` with the user's text verbatim and
+the engine, so i'll trigger \`engine::echo\` with the user's text verbatim and
 report what comes back.`
 
 const BODY = `## echoed
 
-i ran \`engine::echo\` against your prompt and got the expected mirror back.
+i triggered \`engine::echo\` against your prompt and got the expected mirror back.
 nothing else to do here — the worker is alive and responsive.
 
 \`\`\`json

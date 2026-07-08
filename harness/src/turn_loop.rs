@@ -31,6 +31,17 @@ pub struct TurnStepPayload {
     pub session_id: String,
     pub turn_id: String,
     pub step: u64,
+    /// Preview carried from the turn record so the step can stamp the
+    /// `iii.tag.message` baggage before any state read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
+    /// Sub-agent depth carried from the turn record (0 = top-level), so the
+    /// step can stamp the `iii.tag.kind` baggage (`harness.turn` /
+    /// `harness.subagent`) before any state read. Defaults to 0 so stale
+    /// in-flight payloads from before this field existed still classify as
+    /// top-level turns.
+    #[serde(default)]
+    pub depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -50,10 +61,17 @@ pub async fn enqueue_step(
     session_id: &str,
     turn_id: &str,
     step: u64,
+    message_preview: Option<&str>,
+    depth: u32,
 ) -> Result<(), HarnessError> {
+    let mut payload =
+        json!({ "session_id": session_id, "turn_id": turn_id, "step": step, "depth": depth });
+    if let Some(preview) = message_preview {
+        payload["message_preview"] = json!(preview);
+    }
     iii.trigger(TriggerRequest {
         function_id: "harness::turn".to_string(),
-        payload: json!({ "session_id": session_id, "turn_id": turn_id, "step": step }),
+        payload,
         action: Some(TriggerAction::Enqueue {
             queue: TURN_QUEUE.to_string(),
         }),
@@ -725,7 +743,15 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
     record.status = TurnStatus::Running;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    enqueue_step(&deps.iii, &record.session_id, &record.turn_id, next).await?;
+    enqueue_step(
+        &deps.iii,
+        &record.session_id,
+        &record.turn_id,
+        next,
+        record.message_preview.as_deref(),
+        record.depth,
+    )
+    .await?;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Running,

@@ -46,12 +46,12 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
 
   return (
     <main
-      className="flex-1 overflow-hidden flex flex-col min-h-0"
+      className="configuration-surface font-sans flex-1 overflow-hidden flex flex-col min-h-0"
       aria-label="configuration"
     >
       <div className="px-6 pt-8 pb-4 shrink-0">
         <header className="pb-4">
-          <h1 className="font-mono text-[20px] text-ink lowercase tracking-[-0.01em]">
+          <h1 className="font-sans text-[20px] text-ink lowercase tracking-[-0.01em]">
             configuration
           </h1>
         </header>

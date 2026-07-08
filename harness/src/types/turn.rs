@@ -185,6 +185,10 @@ pub struct TurnRecord {
     pub turn_count: u32,
     /// Sub-agent depth; 0 for top-level turns.
     pub depth: u32,
+    /// First ~30 chars of the user message that started the turn, stamped
+    /// into OTel baggage as the `iii.tag.message` trace tag on every step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
     #[serde(default)]
     pub abort: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,6 +278,7 @@ mod tests {
             step: 2,
             turn_count: 1,
             depth: 0,
+            message_preview: None,
             abort: false,
             watermark_entry_id: None,
             stream_request_id: None,
