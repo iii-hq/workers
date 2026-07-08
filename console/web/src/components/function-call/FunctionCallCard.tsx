@@ -109,6 +109,48 @@ function formatJson(value: unknown): string {
   }
 }
 
+/**
+ * Parse a string that IS a JSON object/array — a double-encoded payload
+ * (e.g. a model passing `payload` as a stringified object). Scalars stay
+ * strings on purpose; only structure benefits from re-rendering.
+ */
+export function parseEmbeddedJson(s: string): unknown | undefined {
+  const t = s.trim()
+  if (!t.startsWith('{') && !t.startsWith('[')) return undefined
+  try {
+    return JSON.parse(t) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The iii function-result envelope: `{ content: [{type:"text", text}...],
+ * details? }`. Rendered raw, `content[].text` shows as an escaped one-line
+ * JSON string that usually duplicates `details` — so the pane unwraps it:
+ * texts render as text (or parsed JSON), details as its own section.
+ * Returns null for anything else (extra keys, non-text blocks) so unknown
+ * shapes keep the truthful raw rendering.
+ */
+export function resultEnvelope(
+  v: unknown,
+): { texts: string[]; details: unknown } | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  if (!Array.isArray(o.content)) return null
+  if (Object.keys(o).some((k) => k !== 'content' && k !== 'details'))
+    return null
+  const texts: string[] = []
+  for (const block of o.content) {
+    if (!block || typeof block !== 'object') return null
+    const b = block as Record<string, unknown>
+    if (b.type !== 'text' || typeof b.text !== 'string') return null
+    texts.push(b.text)
+  }
+  if (texts.length === 0 && isEmptyValue(o.details)) return null
+  return { texts, details: o.details }
+}
+
 type Primitive = string | number | boolean | null
 
 function isPrimitive(v: unknown): v is Primitive {
@@ -452,10 +494,23 @@ interface ValuePaneProps {
   bordered?: boolean
 }
 
+const TEXT_PRE_CLS =
+  'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words'
+
 function ValuePane({ label, value, bordered }: ValuePaneProps) {
   const empty = isEmptyValue(value)
   const primitive = !empty && isPrimitive(value)
   const single = !empty && !primitive ? singlePrimitiveField(value) : null
+  const envelope =
+    !empty && !primitive && !single ? resultEnvelope(value) : null
+  // A string payload that is itself JSON (double-encoded): render the parsed
+  // structure instead of an escaped one-liner, and say so in the header.
+  const embedded =
+    primitive && typeof value === 'string'
+      ? parseEmbeddedJson(value)
+      : single && typeof single.value === 'string'
+        ? parseEmbeddedJson(single.value)
+        : undefined
 
   if (empty) {
     return (
@@ -471,6 +526,44 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
     )
   }
 
+  if (envelope) {
+    const detailsEmpty = isEmptyValue(envelope.details)
+    // A text block that re-serializes `details` verbatim is pure duplication
+    // (the engine returns both display text and structured details) — drop it.
+    const blocks = envelope.texts
+      .map((raw) => ({ raw, parsed: parseEmbeddedJson(raw) }))
+      .filter(
+        (b) =>
+          detailsEmpty ||
+          b.parsed === undefined ||
+          JSON.stringify(b.parsed) !== JSON.stringify(envelope.details),
+      )
+    return (
+      <div className={cn(bordered && 'border-t border-rule-2')}>
+        <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+          {label}
+        </div>
+        {blocks.map((b) =>
+          b.parsed !== undefined ? (
+            <JsonHighlight key={b.raw} code={formatJson(b.parsed)} />
+          ) : (
+            <pre key={b.raw} className={TEXT_PRE_CLS}>
+              <code>{b.raw}</code>
+            </pre>
+          ),
+        )}
+        {!detailsEmpty ? (
+          <>
+            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+              details
+            </div>
+            <JsonHighlight code={formatJson(envelope.details)} />
+          </>
+        ) : null}
+      </div>
+    )
+  }
+
   return (
     <div className={cn(bordered && 'border-t border-rule-2')}>
       <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
@@ -481,13 +574,21 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
             · {single.key}
           </span>
         ) : null}
+        {embedded !== undefined ? (
+          <span className="text-ink-ghost normal-case tracking-normal">
+            {' '}
+            · json string
+          </span>
+        ) : null}
       </div>
-      {primitive ? (
-        <pre className="bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+      {embedded !== undefined ? (
+        <JsonHighlight code={formatJson(embedded)} />
+      ) : primitive ? (
+        <pre className={TEXT_PRE_CLS}>
           <code>{formatPrimitive(value)}</code>
         </pre>
       ) : single ? (
-        <pre className="bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+        <pre className={TEXT_PRE_CLS}>
           <code>{formatPrimitive(single.value)}</code>
         </pre>
       ) : (
