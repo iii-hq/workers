@@ -67,6 +67,13 @@ interface DirectoryPickerProps {
    * the message shown so the user can pick a replacement.
    */
   externalError?: string | null
+  /**
+   * The stack's default working directory (harness launch folder). Pinned
+   * at the top of the projects view with a "default" tag: unlike recents it
+   * is never forgettable and survives re-scoping away, so the launch folder
+   * stays one click away. Deduped against the recents list.
+   */
+  defaultDir?: string | null
   /** Show the worktrees tab next to directory browsing. */
   worktrees?: WorktreePickerOptions
   className?: string
@@ -118,6 +125,7 @@ export function DirectoryPicker({
   locked,
   disabled,
   externalError,
+  defaultDir,
   worktrees,
   className,
 }: DirectoryPickerProps) {
@@ -358,10 +366,15 @@ export function DirectoryPicker({
   )
 
   const q = query.trim().toLowerCase()
+  // The pinned default row replaces any identical recents row (a user who
+  // explicitly picked the default lands it in recents too — show it once).
   const filteredProjects = useMemo(
-    () => projects.filter((p) => p.toLowerCase().includes(q)),
-    [projects, q],
+    () =>
+      projects.filter((p) => p !== defaultDir && p.toLowerCase().includes(q)),
+    [projects, q, defaultDir],
   )
+  const showDefaultRow =
+    !!defaultDir && (q === '' || defaultDir.toLowerCase().includes(q))
   const filteredDirs = useMemo(
     () =>
       q
@@ -627,6 +640,33 @@ export function DirectoryPicker({
                 </button>
               ) : null}
 
+              {showDefaultRow && defaultDir ? (
+                <button
+                  type="button"
+                  disabled={validating !== null}
+                  onClick={() => void validateAndSelect(defaultDir)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 pr-1.5 text-left hover:bg-panel disabled:opacity-50"
+                  title={`${defaultDir} — the folder the stack was started from`}
+                >
+                  <Folder
+                    size={13}
+                    className="shrink-0 text-ink-faint"
+                    aria-hidden
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-[12px] text-ink">
+                      {basename(defaultDir)}
+                    </span>
+                    <span className="truncate font-mono text-[10px] text-ink-ghost">
+                      {parentDisplay(defaultDir)}
+                    </span>
+                  </span>
+                  <span className="shrink-0 rounded-sm border border-rule px-1 py-px text-[9px] lowercase text-ink-ghost">
+                    default
+                  </span>
+                </button>
+              ) : null}
+
               {filteredProjects.map((p) => (
                 <div
                   key={p}
@@ -665,7 +705,9 @@ export function DirectoryPicker({
                 </div>
               ))}
 
-              {filteredProjects.length === 0 && !isAbsPath(query) ? (
+              {filteredProjects.length === 0 &&
+              !showDefaultRow &&
+              !isAbsPath(query) ? (
                 <div className="px-3 py-3 text-[11px] leading-relaxed text-ink-faint">
                   {projects.length === 0
                     ? 'no recent projects yet.'

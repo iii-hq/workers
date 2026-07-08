@@ -55,6 +55,8 @@ interface ComposerProps {
   workingDirLocked?: boolean
   /** Stale-dir validation failure; auto-opens the picker with the message. */
   workingDirError?: string | null
+  /** Stack default folder — pinned "default" row in the picker. */
+  defaultWorkingDir?: string | null
   /** Worktrees tab in the picker (real backend + worktree worker only). */
   worktreePicker?: WorktreePickerOptions
   onModeChange: (next: Mode) => void
@@ -89,6 +91,7 @@ export function Composer({
   workingDir,
   workingDirLocked,
   workingDirError,
+  defaultWorkingDir,
   worktreePicker,
   onModeChange,
   onModelChange,
@@ -174,6 +177,7 @@ export function Composer({
             locked={workingDirLocked}
             disabled={inputDisabled}
             externalError={workingDirError}
+            defaultDir={defaultWorkingDir}
             worktrees={worktreePicker}
           />
         ) : null}

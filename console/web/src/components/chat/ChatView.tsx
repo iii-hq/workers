@@ -207,6 +207,23 @@ export function ChatView({
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.shellAvailable : false)
 
+  // The stack's default folder, resolved once (cached page-wide): pre-fills
+  // fresh drafts below and feeds the picker's pinned "default" row so the
+  // launch folder stays selectable after a chat re-scopes elsewhere.
+  const [defaultWorkingDir, setDefaultWorkingDir] = useState<string | null>(
+    null,
+  )
+  useEffect(() => {
+    if (!workingDirEnabled) return
+    let cancelled = false
+    void fetchDefaultWorkingDir().then((dir) => {
+      if (!cancelled) setDefaultWorkingDir(dir)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workingDirEnabled])
+
   // Default a fresh draft to the stack's current folder (MOT-3897): the
   // harness-reported launch dir, shell-validated, set only while the chat is
   // still an untouched draft (prefillWorkingDir re-checks under the patch so
@@ -1056,6 +1073,7 @@ export function ChatView({
             workingDir={conversation.workingDir ?? null}
             workingDirLocked={false}
             workingDirError={workingDirError}
+            defaultWorkingDir={defaultWorkingDir}
             onWorkingDirChange={handleWorkingDirChange}
             worktreePicker={
               worktreeEnabled
