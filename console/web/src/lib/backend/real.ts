@@ -336,6 +336,18 @@ async function realListQueued(
   }))
 }
 
+/** `harness::unqueue` — pull a still-parked message back out of the queue. */
+async function realRemoveQueued(
+  sessionId: string,
+  entryId: string,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('harness::unqueue', {
+    session_id: sessionId,
+    entry_id: entryId,
+  })
+}
+
 /**
  * `harness::message-queued` subscription: fires when any client's message
  * parks in the queue mid-stream. Sync-return unsubscribe over the async
@@ -525,6 +537,7 @@ export const realBackend: ChatBackend = {
   stream: realStream,
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
+  removeQueued: realRemoveQueued,
   onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
   unregisterTrigger: realUnregisterTrigger,

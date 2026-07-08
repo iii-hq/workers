@@ -221,6 +221,13 @@ export interface ChatBackend {
    */
   listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
   /**
+   * Remove a still-parked message from the server-side queue by its entry id
+   * (`harness::unqueue`). Lets the composer pull a queued message back for
+   * editing without the old version also draining into the transcript. A row
+   * that already drained is a harmless no-op.
+   */
+  removeQueued?(sessionId: string, entryId: string): Promise<void>
+  /**
    * Subscribe to `harness::message-queued` for a session: fires when any
    * client's message parks in the server-side queue mid-stream — the signal
    * to refetch `listQueued`. Returns an unsubscribe.

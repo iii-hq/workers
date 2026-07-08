@@ -84,6 +84,12 @@ interface ComposerProps {
   /** Initial attachment chips (applied once on mount). */
   initialAttachments?: Attachment[]
   functionEntries?: FunctionEntry[]
+  /**
+   * Up-arrow in an empty composer recalls a message for editing (the last
+   * queued message). Returns its text + attachments to load, or null. The
+   * caller is responsible for removing the recalled message from the queue.
+   */
+  onRecallLast?: () => { text: string; attachments: Attachment[] } | null
 }
 
 export function Composer({
@@ -115,12 +121,23 @@ export function Composer({
   initialContent,
   initialAttachments,
   functionEntries,
+  onRecallLast,
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<Attachment[]>(
     initialAttachments ?? [],
   )
   const [clearToken, setClearToken] = useState(0)
   const textRef = useRef('')
+
+  // Up-arrow (empty composer) recall: load the message's text into the editor
+  // (return it; LexicalShell does the insert) and restore its attachment chips.
+  const handleArrowUpWhenEmpty = useCallback((): string | null => {
+    const recalled = onRecallLast?.()
+    if (!recalled) return null
+    setAttachments(recalled.attachments)
+    textRef.current = recalled.text
+    return recalled.text
+  }, [onRecallLast])
 
   const inputDisabled = blocked || (isStreaming && !queueWhileStreaming)
   // Turn options are frozen on the running turn; changing them mid-stream
@@ -179,6 +196,7 @@ export function Composer({
           initialContent={initialContent}
           functionEntries={functionEntries}
           workingDir={workingDir}
+          onArrowUpWhenEmpty={onRecallLast ? handleArrowUpWhenEmpty : undefined}
         />
       </div>
 

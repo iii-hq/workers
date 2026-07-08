@@ -42,6 +42,7 @@ import {
 } from '@/lib/worktrees'
 import {
   type AssistantMessage,
+  type Attachment,
   type Conversation,
   DEFAULT_THINKING_LEVEL,
   type FunctionCallMessage,
@@ -162,6 +163,10 @@ export function ChatView({
   // harness drains them into the transcript. Each draft carries the predicted
   // entry id of its eventual transcript row.
   const [queuedDrafts, setQueuedDrafts] = useState<UserMessage[]>([])
+  // Latest drafts for the Up-arrow recall handler (a stable callback that must
+  // read the current queue without re-subscribing the composer each change).
+  const queuedDraftsRef = useRef(queuedDrafts)
+  queuedDraftsRef.current = queuedDrafts
 
   // Drafts belong to one conversation; never leak across switches.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on id change only
@@ -314,6 +319,34 @@ export function ChatView({
   // created here). Matches iii.session.id on every span so the traces UI can
   // group by it.
   const sessionId = conversation.id
+
+  // Up-arrow in an empty composer recalls the most recent queued message for
+  // editing: drop the local draft, pull the row out of the server queue (so
+  // the old version doesn't also drain into the transcript), and hand the
+  // text + attachments back to the composer to load. Best-effort removal — a
+  // row that already drained is a no-op. Only wired when the backend can
+  // actually remove queued rows; recall without removal would double-deliver.
+  const handleRecallLastQueued = useCallback((): {
+    text: string
+    attachments: Attachment[]
+  } | null => {
+    const drafts = queuedDraftsRef.current
+    const last = drafts[drafts.length - 1]
+    if (!last) return null
+    setQueuedDrafts((current) => current.filter((d) => d.id !== last.id))
+    // If removal fails the old version still drains — surface it (the strip
+    // also re-shows the row on the next poll, so the dup is visible).
+    void backend.removeQueued?.(conversation.id, last.id).catch(() => {
+      onAppendMessage(
+        conversation.id,
+        makeSystemNotice(
+          'could not pull the queued message back — it may still be delivered when the turn ends',
+          'warn',
+        ),
+      )
+    })
+    return { text: last.content, attachments: last.attachments ?? [] }
+  }, [backend, conversation.id, onAppendMessage])
 
   // Discovered sessions (sub-agents especially) carry no client-side model
   // choice — `conversation.model` is null. Fall back to the model the latest
@@ -1289,7 +1322,7 @@ export function ChatView({
             checkStateKey={backend.stateKeyExists}
           />
           {queuedStrip.length > 0 ? (
-            <div
+            <section
               className="mb-1 border border-rule bg-bg"
               aria-label="queued messages"
             >
@@ -1304,7 +1337,12 @@ export function ChatView({
                   </span>
                 </div>
               ))}
-            </div>
+              {backend.removeQueued && queuedDrafts.length > 0 ? (
+                <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
+                  press ↑ in the composer to edit the last
+                </div>
+              ) : null}
+            </section>
           ) : null}
           <Composer
             mode={conversation.mode}
@@ -1335,6 +1373,9 @@ export function ChatView({
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
+            onRecallLast={
+              backend.removeQueued ? handleRecallLastQueued : undefined
+            }
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}

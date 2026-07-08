@@ -61,6 +61,10 @@ pub const STOP_DESC: &str =
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
 
+pub const UNQUEUE_ID: &str = "harness::unqueue";
+pub const UNQUEUE_DESC: &str =
+    "Internal control-plane: remove a still-parked queued message by entry_id (the console's edit-queued path).";
+
 pub const FILESYSTEM_GRANT_ID: &str = "harness::filesystem::grant";
 pub const FILESYSTEM_GRANT_DESC: &str =
     "Internal control-plane: grant a session access to an additional filesystem root.";
@@ -159,6 +163,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     });
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
+    });
+
+    // Trusted control-plane (console) — registered, kept off the agent catalog.
+    register(iii, deps, UNQUEUE_ID, UNQUEUE_DESC, |d, r| async move {
+        send::unqueue(&d, r).await
     });
 
     // Internal filesystem grant controls — registered for trusted callers, kept

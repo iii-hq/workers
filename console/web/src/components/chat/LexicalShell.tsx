@@ -7,9 +7,12 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import {
+  $createParagraphNode,
+  $createTextNode,
   $getRoot,
   CLEAR_EDITOR_COMMAND,
   COMMAND_PRIORITY_LOW,
+  KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
   type LexicalEditor,
 } from 'lexical'
@@ -97,6 +100,51 @@ function SubmitOnEnterPlugin({
 }
 
 /**
+ * Up-arrow in an EMPTY editor recalls a message for editing (e.g. the last
+ * queued message — "press ↑ to edit"). `onRecall` returns the text to load, or
+ * null to let Up do its normal caret move. We gate on empty so an in-progress
+ * draft is never clobbered, and defer to an open typeahead (which owns Up/Down
+ * for option navigation). Loads the returned text and puts the caret at the end.
+ */
+function RecallOnArrowUpPlugin({
+  onRecall,
+  menuOpenRef,
+}: {
+  onRecall?: () => string | null
+  menuOpenRef: React.MutableRefObject<boolean>
+}) {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    if (!onRecall) return
+    return editor.registerCommand(
+      KEY_ARROW_UP_COMMAND,
+      (event) => {
+        if (menuOpenRef.current) return false
+        let empty = false
+        editor.getEditorState().read(() => {
+          empty = $getRoot().getTextContent().length === 0
+        })
+        if (!empty) return false
+        const text = onRecall()
+        if (text == null) return false
+        event?.preventDefault()
+        editor.update(() => {
+          const root = $getRoot()
+          root.clear()
+          const paragraph = $createParagraphNode()
+          paragraph.append($createTextNode(text))
+          root.append(paragraph)
+          paragraph.selectEnd()
+        })
+        return true
+      },
+      COMMAND_PRIORITY_LOW,
+    )
+  }, [editor, onRecall, menuOpenRef])
+  return null
+}
+
+/**
  * Imperatively expose a "clear" so the parent can wipe the editor after submit.
  * We use Lexical's CLEAR_EDITOR_COMMAND, which the ClearEditorPlugin handles.
  */
@@ -131,6 +179,8 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
   functionEntries?: FunctionEntry[]
   /** Enables the `#` file-mention typeahead, scoped to this directory. */
   workingDir?: string | null
+  /** Up-arrow in an empty editor: return text to load, or null. */
+  onArrowUpWhenEmpty?: () => string | null
 }
 
 export function LexicalShell({
@@ -142,6 +192,7 @@ export function LexicalShell({
   initialContent,
   functionEntries,
   workingDir,
+  onArrowUpWhenEmpty,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
      so the initializer callback identity doesn't trigger a remount on re-render. */
@@ -179,6 +230,10 @@ export function LexicalShell({
       <ClearOnDemandPlugin token={clearToken} />
       <ChangePlugin onChange={onChange} />
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
+      <RecallOnArrowUpPlugin
+        onRecall={onArrowUpWhenEmpty}
+        menuOpenRef={menuOpenRef}
+      />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

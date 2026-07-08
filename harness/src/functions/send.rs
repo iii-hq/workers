@@ -258,6 +258,38 @@ pub async fn inject(
     seed_or_merge(deps, &cfg, session_id, options, preview).await
 }
 
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct UnqueueRequest {
+    pub session_id: String,
+    /// The queued row's transcript entry id, as surfaced by `harness::status`
+    /// → `queued[].entry_id`. Stable and client-visible (the internal row id
+    /// is not), so removals target it.
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UnqueueResponse {
+    /// False when no still-parked row matched — already drained or unknown.
+    pub removed: bool,
+}
+
+/// Remove a still-parked message from a session's mid-turn queue so a client
+/// can pull it back (the console's "press ↑ to edit"). Best-effort: a row that
+/// already drained into the turn is simply `removed: false`. The queue is
+/// keyed by an internal row id, so match on the client-visible `entry_id` and
+/// delete by the row's own id.
+pub async fn unqueue(deps: &Deps, req: UnqueueRequest) -> Result<UnqueueResponse, HarnessError> {
+    let cfg = deps.cfg().await;
+    let rows =
+        crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
+    let Some(row) = rows.into_iter().find(|r| r.entry_id == req.entry_id) else {
+        return Ok(UnqueueResponse { removed: false });
+    };
+    crate::state::delete_queued(&deps.iii, &req.session_id, &row.id, cfg.session_timeout_ms)
+        .await?;
+    Ok(UnqueueResponse { removed: true })
+}
+
 /// The queue path: while a turn step is `Running` a stream may be in flight,
 /// so the message parks as a durable `harness_queue` row the loop drains after
 /// the stream ends (harness.md § Concurrency & steering). Returns `None` when
@@ -564,6 +596,27 @@ mod tests {
 
         let empty = normalize_message(MessageInput::Text("   ".into())).unwrap();
         assert_eq!(message_preview(&empty), None);
+    }
+
+    #[test]
+    fn unqueue_matches_the_client_visible_entry_id_not_the_row_id() {
+        // The subtlety `unqueue` encodes: the queue is keyed by an internal
+        // `q_*` row id, but clients only see `entry_id` (via harness::status).
+        // Removal must match on entry_id and resolve to the row id to delete.
+        fn row(id: &str, entry: &str) -> crate::state::QueuedMessage {
+            crate::state::QueuedMessage {
+                id: id.into(),
+                session_id: "s_1".into(),
+                message: AgentMessage::user_text("hi"),
+                entry_id: entry.into(),
+                origin: None,
+                queued_at: 0,
+            }
+        }
+        let rows = vec![row("q_aaa", "e_idem_msg-1"), row("q_bbb", "e_idem_msg-2")];
+        let hit = rows.iter().find(|r| r.entry_id == "e_idem_msg-2");
+        assert_eq!(hit.map(|r| r.id.as_str()), Some("q_bbb"));
+        assert!(rows.iter().all(|r| r.entry_id != "e_idem_msg-3"));
     }
 
     #[test]
