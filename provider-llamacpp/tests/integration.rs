@@ -533,7 +533,7 @@ async fn refresh_models_discovers_live_catalog_via_v1_models_and_props() {
     assert_eq!(model["supports_structured_output"], true);
     assert_eq!(model["supports_tools"], true);
     assert_eq!(model["supports_vision"], false);
-    assert!(model.get("pricing").map_or(true, |p| p.is_null()));
+    assert!(model.get("pricing").is_none_or(|p| p.is_null()));
 
     router_iii.shutdown();
     provider_iii.shutdown();
