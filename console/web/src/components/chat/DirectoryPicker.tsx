@@ -17,6 +17,13 @@ import { getIiiClient } from '@/lib/iii-client'
 import { loadRecentProjects, removeRecentProject } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
+  errMsg,
+  validateWorkspaceDir,
+  WORKSPACE_LIST_FUNCTION_ID,
+  WORKSPACE_ROOTS_FUNCTION_ID,
+  WORKSPACE_VALIDATE_FUNCTION_ID,
+} from '@/lib/working-dir'
+import {
   lifecycleTone,
   lifecycleToneClass,
   listWorktrees,
@@ -54,6 +61,19 @@ interface DirectoryPickerProps {
   onChange: (dir: string) => void
   locked?: boolean
   disabled?: boolean
+  /**
+   * Externally-detected problem with the current value (e.g. the saved dir
+   * no longer validates against the live shell). Auto-opens the panel with
+   * the message shown so the user can pick a replacement.
+   */
+  externalError?: string | null
+  /**
+   * The stack's default working directory (harness launch folder). Pinned
+   * at the top of the projects view with a "default" tag: unlike recents it
+   * is never forgettable and survives re-scoping away, so the launch folder
+   * stays one click away. Deduped against the recents list.
+   */
+  defaultDir?: string | null
   /** Show the worktrees tab next to directory browsing. */
   worktrees?: WorktreePickerOptions
   className?: string
@@ -74,10 +94,6 @@ interface WorkspaceListResult {
   entries?: DirEntry[]
 }
 
-interface WorkspaceValidateResult {
-  path: string
-}
-
 function basename(p: string): string {
   const parts = p.split('/').filter(Boolean)
   return parts.length ? parts[parts.length - 1] : p
@@ -96,27 +112,11 @@ function parentOf(p: string): string {
 
 const isAbsPath = (s: string) => s.trim().startsWith('/')
 
-export const WORKSPACE_ROOTS_FUNCTION_ID = 'shell::workspace::roots'
-export const WORKSPACE_LIST_FUNCTION_ID = 'shell::workspace::list'
-export const WORKSPACE_VALIDATE_FUNCTION_ID = 'shell::workspace::validate'
-
-/**
- * iii triggers reject with a plain object `{ code, message }`, not an Error, and
- * the message is often a nested `handler error: {"code":"C211","message":"…"}`.
- * Pull out the human-readable inner message.
- */
-function errMsg(err: unknown): string {
-  const raw =
-    err instanceof Error
-      ? err.message
-      : err && typeof err === 'object' && 'message' in err
-        ? String((err as { message: unknown }).message)
-        : String(err)
-  // Errors nest: `handler error: {"code":"C211","message":"…"}`. Prefer the
-  // innermost (last) message and tolerate escaped quotes inside it.
-  const matches = [...raw.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g)]
-  if (matches.length === 0) return raw
-  return matches[matches.length - 1][1].replace(/\\(.)/g, '$1')
+// Re-exported for existing consumers/tests; canonical home is lib/working-dir.
+export {
+  WORKSPACE_LIST_FUNCTION_ID,
+  WORKSPACE_ROOTS_FUNCTION_ID,
+  WORKSPACE_VALIDATE_FUNCTION_ID,
 }
 
 export function DirectoryPicker({
@@ -124,6 +124,8 @@ export function DirectoryPicker({
   onChange,
   locked,
   disabled,
+  externalError,
+  defaultDir,
   worktrees,
   className,
 }: DirectoryPickerProps) {
@@ -171,6 +173,18 @@ export function DirectoryPicker({
     setError(null)
     setOpen(true)
   }, [])
+
+  // A stale saved dir (deleted, unmounted, denylisted) surfaces here: open
+  // the panel with the failure shown so the user picks a replacement instead
+  // of silently chatting against a dead folder.
+  useEffect(() => {
+    if (!externalError || locked || disabled) return
+    setProjects(loadRecentProjects())
+    setView('projects')
+    setQuery('')
+    setError(externalError)
+    setOpen(true)
+  }, [externalError, locked, disabled])
 
   const ensureRoots = useCallback(async (): Promise<string[]> => {
     if (roots !== null) return roots
@@ -310,20 +324,12 @@ export function DirectoryPicker({
       const dir = raw.trim().replace(/\/+$/, '') || '/'
       setError(null)
       setValidating(dir)
-      try {
-        const client = await getIiiClient()
-        const res = await client.trigger<WorkspaceValidateResult>(
-          WORKSPACE_VALIDATE_FUNCTION_ID,
-          { path: dir },
-        )
-        // Select the canonical resolved dir the worker echoes back, not raw
-        // input, so stored recent projects are stable across symlinks.
-        select(res?.path ?? dir)
-      } catch (err) {
-        setError(`can't use ${dir} — ${errMsg(err)}`)
-      } finally {
-        setValidating(null)
-      }
+      // Select the canonical resolved dir the worker echoes back, not raw
+      // input, so stored recent projects are stable across symlinks.
+      const res = await validateWorkspaceDir(dir)
+      if (res.ok) select(res.path)
+      else setError(`can't use ${dir} — ${res.error}`)
+      setValidating(null)
     },
     [select],
   )
@@ -360,10 +366,15 @@ export function DirectoryPicker({
   )
 
   const q = query.trim().toLowerCase()
+  // The pinned default row replaces any identical recents row (a user who
+  // explicitly picked the default lands it in recents too — show it once).
   const filteredProjects = useMemo(
-    () => projects.filter((p) => p.toLowerCase().includes(q)),
-    [projects, q],
+    () =>
+      projects.filter((p) => p !== defaultDir && p.toLowerCase().includes(q)),
+    [projects, q, defaultDir],
   )
+  const showDefaultRow =
+    !!defaultDir && (q === '' || defaultDir.toLowerCase().includes(q))
   const filteredDirs = useMemo(
     () =>
       q
@@ -424,7 +435,7 @@ export function DirectoryPicker({
         onClick={() => (open ? setOpen(false) : openPanel())}
         className={cn(
           'inline-flex items-center gap-1 rounded-sm border border-rule px-2 py-1 text-[11px] lowercase transition-colors',
-          value ? 'text-ink' : 'text-ink-faint',
+          externalError ? 'text-warn' : value ? 'text-ink' : 'text-ink-faint',
           'hover:text-ink disabled:opacity-50',
         )}
       >
@@ -629,6 +640,33 @@ export function DirectoryPicker({
                 </button>
               ) : null}
 
+              {showDefaultRow && defaultDir ? (
+                <button
+                  type="button"
+                  disabled={validating !== null}
+                  onClick={() => void validateAndSelect(defaultDir)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 pr-1.5 text-left hover:bg-panel disabled:opacity-50"
+                  title={`${defaultDir} — the folder the stack was started from`}
+                >
+                  <Folder
+                    size={13}
+                    className="shrink-0 text-ink-faint"
+                    aria-hidden
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-[12px] text-ink">
+                      {basename(defaultDir)}
+                    </span>
+                    <span className="truncate font-mono text-[10px] text-ink-ghost">
+                      {parentDisplay(defaultDir)}
+                    </span>
+                  </span>
+                  <span className="shrink-0 rounded-sm border border-rule px-1 py-px text-[9px] lowercase text-ink-ghost">
+                    default
+                  </span>
+                </button>
+              ) : null}
+
               {filteredProjects.map((p) => (
                 <div
                   key={p}
@@ -667,7 +705,9 @@ export function DirectoryPicker({
                 </div>
               ))}
 
-              {filteredProjects.length === 0 && !isAbsPath(query) ? (
+              {filteredProjects.length === 0 &&
+              !showDefaultRow &&
+              !isAbsPath(query) ? (
                 <div className="px-3 py-3 text-[11px] leading-relaxed text-ink-faint">
                   {projects.length === 0
                     ? 'no recent projects yet.'

@@ -1,5 +1,5 @@
 import { Copy, Folder } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
@@ -25,6 +25,7 @@ import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
+import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
   consoleClaimFor,
   recordConsoleClaim,
@@ -58,6 +59,12 @@ import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
 import { WorktreeBadge } from './WorktreeBadge'
+
+/**
+ * Saved dirs already re-validated this page load, keyed sessionId + dir —
+ * one live check per activation, not one per render or per send.
+ */
+const validatedWorkingDirs = new Set<string>()
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -199,6 +206,80 @@ export function ChatView({
   const workingDirEnabled =
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.shellAvailable : false)
+
+  // The stack's default folder, resolved once (cached page-wide): pre-fills
+  // fresh drafts below and feeds the picker's pinned "default" row so the
+  // launch folder stays selectable after a chat re-scopes elsewhere.
+  const [defaultWorkingDir, setDefaultWorkingDir] = useState<string | null>(
+    null,
+  )
+  useEffect(() => {
+    if (!workingDirEnabled) return
+    let cancelled = false
+    void fetchDefaultWorkingDir().then((dir) => {
+      if (!cancelled) setDefaultWorkingDir(dir)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workingDirEnabled])
+
+  // Default a fresh draft to the stack's current folder (MOT-3897): the
+  // harness-reported launch dir, shell-validated, set only while the chat is
+  // still an untouched draft (prefillWorkingDir re-checks under the patch so
+  // an explicit pick or the first send racing this fetch wins). Visible
+  // immediately in the picker chip — a default, not a silent inheritance.
+  const prefillWorkingDir = conversationsCtx?.prefillWorkingDir
+  useEffect(() => {
+    if (!workingDirEnabled || !prefillWorkingDir) return
+    if (!conversation.draft || conversation.workingDir != null) return
+    let cancelled = false
+    void fetchDefaultWorkingDir().then((dir) => {
+      if (!cancelled && dir) prefillWorkingDir(conversation.id, dir)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    workingDirEnabled,
+    prefillWorkingDir,
+    conversation.draft,
+    conversation.workingDir,
+    conversation.id,
+  ])
+
+  // A saved working dir can be gone by the next visit (deleted, unmounted,
+  // denylisted). Re-validate once per activation against the live shell; on
+  // failure surface the error through the picker (auto-opens) instead of
+  // letting the chat silently operate against a dead folder.
+  const [workingDirError, setWorkingDirError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!workingDirEnabled || conversation.draft) return
+    const dir = conversation.workingDir
+    if (!dir) return
+    const key = `${conversation.id}:${dir}`
+    if (validatedWorkingDirs.has(key)) return
+    let cancelled = false
+    void validateWorkspaceDir(dir).then((res) => {
+      if (cancelled) return
+      if (res.ok) {
+        validatedWorkingDirs.add(key)
+        setWorkingDirError(null)
+      } else {
+        setWorkingDirError(
+          `working directory ${dir} is not usable — ${res.error}. choose another folder.`,
+        )
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    workingDirEnabled,
+    conversation.draft,
+    conversation.workingDir,
+    conversation.id,
+  ])
 
   // The worktrees tab, the working-directory badge, claim/release, and the
   // landed / land-blocked live events all require the optional `worktree`
@@ -772,6 +853,10 @@ export function ChatView({
     (next: string) => {
       const id = conversation.id
       const prev = conversation.workingDir ?? null
+      // Every picker selection is freshly shell-validated; replacing a stale
+      // dir resolves the invalid-folder state.
+      setWorkingDirError(null)
+      validatedWorkingDirs.add(`${id}:${next}`)
       onUpdateWorkingDir(id, next)
       if (!conversation.draft && next !== prev) {
         onAppendMessage(
@@ -944,8 +1029,11 @@ export function ChatView({
                       // dir=rtl keeps the trailing (most-distinguishing) path
                       // segment visible when truncated in the narrow dock.
                       dir="rtl"
-                      className="truncate text-left font-mono"
-                      title={conversation.workingDir}
+                      className={cn(
+                        'truncate text-left font-mono',
+                        workingDirError && 'text-warn',
+                      )}
+                      title={workingDirError ?? conversation.workingDir}
                     >
                       {conversation.workingDir}
                     </span>
@@ -984,6 +1072,8 @@ export function ChatView({
             showWorkingDir={workingDirEnabled}
             workingDir={conversation.workingDir ?? null}
             workingDirLocked={false}
+            workingDirError={workingDirError}
+            defaultWorkingDir={defaultWorkingDir}
             onWorkingDirChange={handleWorkingDirChange}
             worktreePicker={
               worktreeEnabled
