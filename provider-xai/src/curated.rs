@@ -4,9 +4,9 @@
 //! in everything the API cannot provide: per-family metadata for known grok
 //! families, conservative defaults for unknown ones, and the legacy denylist.
 //!
-//! Pricing for grok-4.3 and grok-build is taken from docs.x.ai; other rows
-//! are best-effort and only affect cost display, never routing. A missing row
-//! degrades display polish, not behaviour.
+//! Pricing for grok-4.5, grok-4.3 and grok-build is taken from docs.x.ai;
+//! other rows are best-effort and only affect cost display, never routing.
+//! A missing row degrades display polish, not behaviour.
 use crate::PROVIDER_ID;
 use llm_router::types::model::{Model, Pricing};
 
@@ -38,6 +38,10 @@ fn family_meta(base: &str) -> Option<(u64, u64, bool, bool, Pricing)> {
     }
     if b.contains("code-fast") {
         return Some((256_000, 16_384, true, false, price(0.20, 1.50)));
+    }
+    if b.starts_with("grok-4.5") {
+        // 500k context and $2/$6 from docs.x.ai; max-output/vision best-effort.
+        return Some((500_000, 64_000, true, true, price(2.0, 6.0)));
     }
     if b.starts_with("grok-4.3") {
         return Some((1_000_000, 64_000, true, false, price(1.25, 2.5)));
@@ -169,6 +173,21 @@ mod tests {
         let mini = enrich("grok-3-mini");
         assert_eq!(mini.display_name.as_deref(), Some("Grok 3 Mini"));
         assert_eq!(mini.supports_thinking, Some(true));
+    }
+
+    #[test]
+    fn grok_4_5_gets_its_own_row_not_the_generic_grok4_bucket() {
+        let m = enrich("grok-4.5");
+        assert_eq!(m.display_name.as_deref(), Some("Grok 4.5"));
+        assert_eq!(m.context_window, 500_000);
+        assert_eq!(m.supports_thinking, Some(true));
+        // grok-4.5 takes low/medium/high, never xhigh (only grok-4.3 does)
+        assert_eq!(m.supports_xhigh, Some(false));
+        let pricing = m.pricing.as_ref().unwrap();
+        assert_eq!(pricing.input, Some(2.0));
+        assert_eq!(pricing.output, Some(6.0));
+        // a dated snapshot resolves to the same family row
+        assert_eq!(enrich("grok-4.5-0710").context_window, 500_000);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! fails the whole request.
 //!
 //! xAI specifics (verified empirically against api.x.ai, 2026-06):
+//!   - `grok-4.5` accepts `low`/`medium`/`high` (docs.x.ai; default `high`).
 //!   - `grok-4.3` accepts the full ladder `none`/`low`/`medium`/`high`/`xhigh`.
 //!   - `grok-3-mini` accepts `low`/`high` only.
 //!   - every other current model — `grok-build`, the `grok-4.20-*` snapshots
@@ -29,6 +30,9 @@ pub fn is_reasoning_model(model: &str, catalog_supports_thinking: Option<bool>) 
 /// `low`/`high`, and every other current model rejects the param with a 400.
 fn supported_efforts(model: &str) -> &'static [&'static str] {
     let id = model.to_ascii_lowercase();
+    if id.starts_with("grok-4.5") {
+        return &["low", "medium", "high"];
+    }
     if id.starts_with("grok-4.3") {
         return &["none", "low", "medium", "high", "xhigh"];
     }
@@ -90,6 +94,16 @@ mod tests {
 
     #[test]
     fn effort_param_per_model_matches_api() {
+        // grok-4.5 takes low/medium/high (no none, no xhigh)
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Medium), "grok-4.5"),
+            Some("medium")
+        );
+        // xhigh has no equivalent on grok-4.5 → nearest below is high
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "grok-4.5"),
+            Some("high")
+        );
         // grok-4.3 takes the full ladder
         assert_eq!(
             reasoning_effort_for(Some(ThinkingLevel::High), "grok-4.3"),
