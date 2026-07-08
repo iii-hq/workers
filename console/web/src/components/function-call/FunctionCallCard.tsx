@@ -1,4 +1,4 @@
-import { Check, X } from 'lucide-react'
+import { Check, Copy, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
@@ -497,6 +497,100 @@ interface ValuePaneProps {
 const TEXT_PRE_CLS =
   'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words'
 
+/** Rendered lines above which a pane collapses behind a "show all" footer. */
+const CLAMP_LINES = 24
+/** Collapsed body height — ~16 code lines, enough to identify the payload. */
+const CLAMP_MAX_H = 'max-h-[21rem]'
+
+function countLines(s: string): number {
+  let n = 1
+  for (let i = 0; i < s.length; i++) if (s[i] === '\n') n++
+  return n
+}
+
+/**
+ * Shared chrome for one request/response pane: label row with hints and a
+ * copy affordance, and a body that clamps past CLAMP_LINES behind an explicit
+ * "show all · N lines" footer — big payloads stop drowning the chat flow
+ * (PRODUCT.md: hide complexity in collapsible detail, not opaque summaries).
+ */
+function PaneShell({
+  label,
+  hints,
+  copyText,
+  lineCount,
+  bordered,
+  children,
+}: {
+  label: string
+  hints?: string[]
+  copyText: string
+  lineCount: number
+  bordered?: boolean
+  children: React.ReactNode
+}) {
+  const clampable = lineCount > CLAMP_LINES
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const copy = () => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return
+    void navigator.clipboard.writeText(copyText).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }
+
+  return (
+    <div className={cn(bordered && 'border-t border-rule-2')}>
+      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+        <span className="min-w-0 flex-1 truncate">
+          {label}
+          {(hints ?? []).map((hint) => (
+            <span
+              key={hint}
+              className="text-ink-ghost normal-case tracking-normal"
+            >
+              {' '}
+              · {hint}
+            </span>
+          ))}
+        </span>
+        <button
+          type="button"
+          onClick={copy}
+          className="shrink-0 text-ink-ghost hover:text-ink transition-colors"
+          aria-label={copied ? 'copied' : `copy ${label}`}
+          title={copied ? 'copied' : 'copy'}
+        >
+          {copied ? (
+            <Check size={12} aria-hidden />
+          ) : (
+            <Copy size={12} aria-hidden />
+          )}
+        </button>
+      </div>
+      <div
+        className={cn(
+          clampable && !expanded && `${CLAMP_MAX_H} overflow-hidden`,
+        )}
+      >
+        {children}
+      </div>
+      {clampable ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] lowercase text-ink-faint hover:text-ink transition-colors"
+        >
+          {expanded ? '▴ collapse' : `▾ show all · ${lineCount} lines`}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 function ValuePane({ label, value, bordered }: ValuePaneProps) {
   const empty = isEmptyValue(value)
   const primitive = !empty && isPrimitive(value)
@@ -538,11 +632,20 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
           b.parsed === undefined ||
           JSON.stringify(b.parsed) !== JSON.stringify(envelope.details),
       )
+    const detailsJson = detailsEmpty ? null : formatJson(envelope.details)
+    const rendered = blocks.map((b) =>
+      b.parsed !== undefined ? formatJson(b.parsed) : b.raw,
+    )
+    const lineCount =
+      rendered.reduce((n, s) => n + countLines(s), 0) +
+      (detailsJson ? countLines(detailsJson) + 1 : 0)
     return (
-      <div className={cn(bordered && 'border-t border-rule-2')}>
-        <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          {label}
-        </div>
+      <PaneShell
+        label={label}
+        copyText={formatJson(value)}
+        lineCount={lineCount}
+        bordered={bordered}
+      >
         {blocks.map((b) =>
           b.parsed !== undefined ? (
             <JsonHighlight key={b.raw} code={formatJson(b.parsed)} />
@@ -552,48 +655,48 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
             </pre>
           ),
         )}
-        {!detailsEmpty ? (
+        {detailsJson ? (
           <>
             <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               details
             </div>
-            <JsonHighlight code={formatJson(envelope.details)} />
+            <JsonHighlight code={detailsJson} />
           </>
         ) : null}
-      </div>
+      </PaneShell>
     )
   }
 
+  const body =
+    embedded !== undefined
+      ? formatJson(embedded)
+      : primitive
+        ? formatPrimitive(value)
+        : single
+          ? formatPrimitive(single.value)
+          : formatJson(value)
+  const hints = [
+    ...(single ? [single.key] : []),
+    ...(embedded !== undefined ? ['json string'] : []),
+  ]
+
   return (
-    <div className={cn(bordered && 'border-t border-rule-2')}>
-      <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-        {label}
-        {single ? (
-          <span className="text-ink-ghost normal-case tracking-normal">
-            {' '}
-            · {single.key}
-          </span>
-        ) : null}
-        {embedded !== undefined ? (
-          <span className="text-ink-ghost normal-case tracking-normal">
-            {' '}
-            · json string
-          </span>
-        ) : null}
-      </div>
+    <PaneShell
+      label={label}
+      hints={hints}
+      copyText={body}
+      lineCount={countLines(body)}
+      bordered={bordered}
+    >
       {embedded !== undefined ? (
-        <JsonHighlight code={formatJson(embedded)} />
-      ) : primitive ? (
+        <JsonHighlight code={body} />
+      ) : primitive || single ? (
         <pre className={TEXT_PRE_CLS}>
-          <code>{formatPrimitive(value)}</code>
-        </pre>
-      ) : single ? (
-        <pre className={TEXT_PRE_CLS}>
-          <code>{formatPrimitive(single.value)}</code>
+          <code>{body}</code>
         </pre>
       ) : (
-        <JsonHighlight code={formatJson(value)} />
+        <JsonHighlight code={body} />
       )}
-    </div>
+    </PaneShell>
   )
 }
