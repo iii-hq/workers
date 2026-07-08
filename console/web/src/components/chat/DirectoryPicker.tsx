@@ -645,65 +645,106 @@ export function DirectoryPicker({
                   type="button"
                   disabled={validating !== null}
                   onClick={() => void validateAndSelect(defaultDir)}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 pr-1.5 text-left hover:bg-panel disabled:opacity-50"
+                  aria-current={defaultDir === value ? 'true' : undefined}
+                  className={cn(
+                    'flex w-full items-center gap-2 px-3 py-1.5 pr-1.5 text-left hover:bg-panel disabled:opacity-50',
+                    defaultDir === value && 'bg-panel',
+                  )}
                   title={`${defaultDir} — the folder the stack was started from`}
                 >
                   <Folder
                     size={13}
-                    className="shrink-0 text-ink-faint"
+                    className={cn(
+                      'shrink-0',
+                      defaultDir === value ? 'text-accent' : 'text-ink-faint',
+                    )}
                     aria-hidden
                   />
                   <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[12px] text-ink">
+                    <span
+                      className={cn(
+                        'truncate text-[12px]',
+                        defaultDir === value ? 'text-accent' : 'text-ink',
+                      )}
+                    >
                       {basename(defaultDir)}
                     </span>
                     <span className="truncate font-mono text-[10px] text-ink-ghost">
                       {parentDisplay(defaultDir)}
                     </span>
                   </span>
+                  {defaultDir === value ? (
+                    <Check
+                      size={13}
+                      className="shrink-0 text-accent"
+                      aria-hidden
+                    />
+                  ) : null}
                   <span className="shrink-0 rounded-sm border border-rule px-1 py-px text-[9px] lowercase text-ink-ghost">
                     default
                   </span>
                 </button>
               ) : null}
 
-              {filteredProjects.map((p) => (
-                <div
-                  key={p}
-                  className="group flex items-center gap-1 pr-1.5 hover:bg-panel"
-                >
-                  <button
-                    type="button"
-                    disabled={validating !== null}
-                    onClick={() => void validateAndSelect(p)}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left disabled:opacity-50"
-                    title={p}
+              {filteredProjects.map((p) => {
+                const isSelected = p === value
+                return (
+                  <div
+                    key={p}
+                    className={cn(
+                      'group flex items-center gap-1 pr-1.5 hover:bg-panel',
+                      isSelected && 'bg-panel',
+                    )}
                   >
-                    <Folder
-                      size={13}
-                      className="shrink-0 text-ink-faint"
-                      aria-hidden
-                    />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate text-[12px] text-ink">
-                        {basename(p)}
+                    <button
+                      type="button"
+                      disabled={validating !== null}
+                      onClick={() => void validateAndSelect(p)}
+                      aria-current={isSelected ? 'true' : undefined}
+                      className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left disabled:opacity-50"
+                      title={p}
+                    >
+                      <Folder
+                        size={13}
+                        className={cn(
+                          'shrink-0',
+                          isSelected ? 'text-accent' : 'text-ink-faint',
+                        )}
+                        aria-hidden
+                      />
+                      <span className="flex min-w-0 flex-col">
+                        <span
+                          className={cn(
+                            'truncate text-[12px]',
+                            isSelected ? 'text-accent' : 'text-ink',
+                          )}
+                        >
+                          {basename(p)}
+                        </span>
+                        <span className="truncate font-mono text-[10px] text-ink-ghost">
+                          {parentDisplay(p)}
+                        </span>
                       </span>
-                      <span className="truncate font-mono text-[10px] text-ink-ghost">
-                        {parentDisplay(p)}
-                      </span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`forget ${p}`}
-                    title="forget this project"
-                    onClick={() => forget(p)}
-                    className="shrink-0 p-1 text-ink-ghost opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
-                  >
-                    <X size={12} aria-hidden />
-                  </button>
-                </div>
-              ))}
+                      {isSelected ? (
+                        <Check
+                          size={13}
+                          className="shrink-0 text-accent"
+                          aria-hidden
+                        />
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`forget ${p}`}
+                      title="forget this project"
+                      onClick={() => forget(p)}
+                      className="shrink-0 p-1 text-ink-ghost opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                    >
+                      <X size={12} aria-hidden />
+                    </button>
+                  </div>
+                )
+              })}
 
               {filteredProjects.length === 0 &&
               !showDefaultRow &&
