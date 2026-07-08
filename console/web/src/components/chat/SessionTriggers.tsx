@@ -4,6 +4,8 @@ import {
   ChevronRight,
   Copy,
   GitMerge,
+  Trash2,
+  Workflow,
   Zap,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -16,10 +18,28 @@ import {
 } from '@/components/ui/Dialog'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { JsonHighlight } from '@/lib/syntax'
+import { TriggerDag } from './TriggerDag'
+import {
+  buildTriggerWorkflow,
+  joinMeta,
+  levelWatches,
+  reactModel,
+  reactTask,
+  shortSession,
+  spawnTarget,
+  stateWatch,
+  watchedSession,
+} from './trigger-graph'
+
+// Re-exported for SessionTriggers.test.ts, which predates the trigger-graph
+// extraction; the logic now lives in ./trigger-graph.
+export { buildTriggerWorkflow, levelWatches, stateWatch }
 
 interface SessionTriggersProps {
   triggers: SessionTriggerInfo[]
   onUnregister: (triggerId: string) => Promise<void> | void
+  /** Unregister every binding at once (see ChatView). */
+  onClearAll?: () => Promise<void> | void
   /** Backend probe: does this state key currently exist? (`null` = unknown) */
   checkStateKey?: (
     scope: string | undefined,
@@ -31,190 +51,6 @@ function targetLabel(trigger: SessionTriggerInfo): string {
   return trigger.functionId === 'harness::react'
     ? 'spawns sub-agent'
     : 'notifies this chat'
-}
-
-/* ------------------------------------------------------------------ */
-/* Workflow structure derived from the bindings themselves:            */
-/* - join groups: react bindings sharing `metadata.join.id` (fan-in)   */
-/* - chain edges: A spawns into session S (`metadata.session_id`) and  */
-/*   B watches S complete (`config.session_id` on a turn-event type)   */
-/* Rendered as topological stages with a ↓ between them; flat when     */
-/* nothing is connected.                                               */
-/* ------------------------------------------------------------------ */
-
-interface JoinMeta {
-  id: string
-  expect: string[]
-  key?: string
-  rearm?: boolean
-}
-
-function joinMeta(trigger: SessionTriggerInfo): JoinMeta | null {
-  const join = trigger.metadata?.join
-  if (!join || typeof join !== 'object') return null
-  const j = join as Record<string, unknown>
-  if (typeof j.id !== 'string') return null
-  return {
-    id: j.id,
-    expect: Array.isArray(j.expect)
-      ? j.expect.filter((k): k is string => typeof k === 'string')
-      : [],
-    key: typeof j.key === 'string' ? j.key : undefined,
-    rearm: typeof j.rearm === 'boolean' ? j.rearm : undefined,
-  }
-}
-
-/** The reaction's model, shown wherever the row says "spawns sub-agent". */
-function reactModel(trigger: SessionTriggerInfo): string | null {
-  if (trigger.functionId !== 'harness::react') return null
-  const model = trigger.metadata?.model
-  return typeof model === 'string' ? model : null
-}
-
-/** The reaction's opening task (the sub-agent's prompt). */
-function reactTask(trigger: SessionTriggerInfo): string | null {
-  if (trigger.functionId !== 'harness::react') return null
-  const task = trigger.metadata?.task
-  return typeof task === 'string' ? task : null
-}
-
-/** The session this binding's reaction spawns into (explicit targets only). */
-function spawnTarget(trigger: SessionTriggerInfo): string | null {
-  if (trigger.functionId !== 'harness::react') return null
-  const target = trigger.metadata?.session_id
-  return typeof target === 'string' ? target : null
-}
-
-/** The state key a `state`-type binding watches (`config { key, scope }`). */
-export function stateWatch(
-  trigger: SessionTriggerInfo,
-): { scope?: string; key: string } | null {
-  if (trigger.triggerType !== 'state') return null
-  const config = trigger.config as Record<string, unknown> | null | undefined
-  if (typeof config?.key !== 'string') return null
-  return {
-    key: config.key,
-    scope: typeof config.scope === 'string' ? config.scope : undefined,
-  }
-}
-
-/** The session whose turn events this binding watches. */
-function watchedSession(trigger: SessionTriggerInfo): string | null {
-  if (
-    trigger.triggerType !== 'harness::turn-completed' &&
-    trigger.triggerType !== 'harness::turn-started'
-  ) {
-    return null
-  }
-  const config = trigger.config as Record<string, unknown> | null | undefined
-  const watched = config?.session_id
-  return typeof watched === 'string' ? watched : null
-}
-
-export interface TriggerUnit {
-  key: string
-  /** Set when this unit is a join fan-in group. */
-  join: { id: string; expect: string[] } | null
-  /** The bindings in the unit (exactly one unless `join` is set). */
-  members: SessionTriggerInfo[]
-}
-
-export interface TriggerWorkflow {
-  /** Topological stages, upstream first. */
-  levels: TriggerUnit[][]
-  /** False → nothing is connected; render the flat list. */
-  hasStructure: boolean
-}
-
-export function buildTriggerWorkflow(
-  triggers: SessionTriggerInfo[],
-): TriggerWorkflow {
-  const groups = new Map<string, SessionTriggerInfo[]>()
-  const singles: SessionTriggerInfo[] = []
-  for (const trigger of triggers) {
-    const join = joinMeta(trigger)
-    if (join) {
-      const list = groups.get(join.id) ?? []
-      list.push(trigger)
-      groups.set(join.id, list)
-    } else {
-      singles.push(trigger)
-    }
-  }
-
-  const units: TriggerUnit[] = [
-    ...[...groups.entries()].map(([id, members]) => ({
-      key: `join:${id}`,
-      join: { id, expect: joinMeta(members[0])?.expect ?? [] },
-      members,
-    })),
-    ...singles.map((trigger) => ({
-      key: `t:${trigger.id}`,
-      join: null,
-      members: [trigger],
-    })),
-  ]
-
-  const spawns = (unit: TriggerUnit) =>
-    unit.members.map(spawnTarget).filter((s): s is string => s !== null)
-  const watches = (unit: TriggerUnit) =>
-    unit.members.map(watchedSession).filter((s): s is string => s !== null)
-
-  // parents[k] = units whose spawn target this unit watches.
-  const parents = new Map<string, TriggerUnit[]>()
-  let hasEdge = false
-  for (const child of units) {
-    const watched = new Set(watches(child))
-    const feeding = units.filter(
-      (parent) =>
-        parent.key !== child.key && spawns(parent).some((s) => watched.has(s)),
-    )
-    if (feeding.length > 0) hasEdge = true
-    parents.set(child.key, feeding)
-  }
-
-  // Longest-path level with a visiting guard (a cycle collapses to level 0).
-  const levelByKey = new Map<string, number>()
-  const visiting = new Set<string>()
-  const levelOf = (unit: TriggerUnit): number => {
-    const known = levelByKey.get(unit.key)
-    if (known !== undefined) return known
-    if (visiting.has(unit.key)) return 0
-    visiting.add(unit.key)
-    const feeding = parents.get(unit.key) ?? []
-    const level =
-      feeding.length === 0 ? 0 : 1 + Math.max(...feeding.map(levelOf))
-    visiting.delete(unit.key)
-    levelByKey.set(unit.key, level)
-    return level
-  }
-
-  const levels: TriggerUnit[][] = []
-  for (const unit of units) {
-    const level = levelOf(unit)
-    ;(levels[level] ??= []).push(unit)
-  }
-
-  return {
-    levels: levels.filter((l) => l.length > 0),
-    hasStructure: hasEdge || groups.size > 0,
-  }
-}
-
-/** `console-9a8a0cbc-…` → `console-9a8a0cbc`; short ids pass through. */
-function shortSession(sessionId: string): string {
-  return sessionId.length > 24 ? `${sessionId.slice(0, 21)}…` : sessionId
-}
-
-/** Distinct sessions a stage's units wait on — the divider's "after …" label. */
-export function levelWatches(units: TriggerUnit[]): string[] {
-  return [
-    ...new Set(
-      units.flatMap((unit) =>
-        unit.members.map(watchedSession).filter((s): s is string => s !== null),
-      ),
-    ),
-  ]
 }
 
 /**
@@ -400,18 +236,26 @@ function TriggerRow({
 export function SessionTriggers({
   triggers,
   onUnregister,
+  onClearAll,
   checkStateKey,
 }: SessionTriggersProps) {
   const [expanded, setExpanded] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [flowOpen, setFlowOpen] = useState(false)
+  const [clearArming, setClearArming] = useState(false)
+  const [clearing, setClearing] = useState(false)
+
+  // The DAG probes presence for every state binding, not just the visible
+  // rows, so the flow view can color unwritten roots even while collapsed.
+  const probeKeys = expanded || flowOpen
 
   // Whether each state binding's watched key exists yet — the row-level
   // diagnosis for a reaction armed on a key nothing ever writes.
-  // ponytail: refetches on each trigger-poll tick while expanded; cache if it matters.
+  // ponytail: refetches on each trigger-poll tick while open; cache if it matters.
   const [keyPresence, setKeyPresence] = useState<Record<string, boolean>>({})
   useEffect(() => {
-    if (!expanded || !checkStateKey) return
+    if (!probeKeys || !checkStateKey) return
     let alive = true
     for (const trigger of triggers) {
       const watch = stateWatch(trigger)
@@ -424,7 +268,7 @@ export function SessionTriggers({
     return () => {
       alive = false
     }
-  }, [expanded, checkStateKey, triggers])
+  }, [probeKeys, checkStateKey, triggers])
 
   const stateNote = (trigger: SessionTriggerInfo): string | null => {
     const watch = stateWatch(trigger)
@@ -462,42 +306,109 @@ export function SessionTriggers({
     }
   }
 
+  const clearAll = async () => {
+    setClearing(true)
+    try {
+      await onClearAll?.()
+      setSelectedId(null)
+    } finally {
+      setClearing(false)
+      setClearArming(false)
+    }
+  }
+
   return (
     <>
-      <div
+      <section
         className="mb-1 border border-rule bg-bg"
         aria-label="registered triggers"
       >
-        <button
-          type="button"
-          onClick={() => setExpanded((current) => !current)}
-          aria-expanded={expanded}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-[12px] hover:text-ink transition-colors"
-        >
-          <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
-          <span className="min-w-0 flex-1 truncate text-left">
-            {triggers.length} trigger{triggers.length === 1 ? '' : 's'}{' '}
-            registered
-            <span className="text-ink-ghost">
-              {workflow.hasStructure && workflow.levels.length > 1
-                ? ` · ${workflow.levels.length} stages`
-                : ''}
+        {clearArming ? (
+          <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
+            <Trash2 size={12} className="shrink-0 text-alert" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">
+              unregister all {triggers.length} triggers?
+              <span className="text-ink-ghost">
+                {' '}
+                this tears down the pipeline.
+              </span>
             </span>
-          </span>
-          {expanded ? (
-            <ChevronDown
-              size={12}
-              className="shrink-0 text-ink-ghost"
-              aria-hidden
-            />
-          ) : (
-            <ChevronRight
-              size={12}
-              className="shrink-0 text-ink-ghost"
-              aria-hidden
-            />
-          )}
-        </button>
+            <button
+              type="button"
+              onClick={() => void clearAll()}
+              disabled={clearing}
+              className="shrink-0 lowercase text-alert hover:text-alert/80 transition-colors disabled:opacity-50"
+            >
+              {clearing ? 'clearing…' : 'clear all'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setClearArming(false)}
+              disabled={clearing}
+              className="shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors disabled:opacity-50"
+            >
+              cancel
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+              aria-expanded={expanded}
+              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-[12px] hover:text-ink transition-colors"
+            >
+              <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {triggers.length} trigger{triggers.length === 1 ? '' : 's'}{' '}
+                registered
+                <span className="text-ink-ghost">
+                  {workflow.hasStructure && workflow.levels.length > 1
+                    ? ` · ${workflow.levels.length} stages`
+                    : ''}
+                </span>
+              </span>
+            </button>
+            {onClearAll || workflow.hasStructure ? (
+              <div className="flex shrink-0 items-center gap-1 pr-1 font-mono text-[11px] uppercase tracking-[0.06em]">
+                {workflow.hasStructure ? (
+                  <button
+                    type="button"
+                    onClick={() => setFlowOpen(true)}
+                    className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-ink transition-colors"
+                    title="view the pipeline flow"
+                  >
+                    <Workflow size={12} aria-hidden />
+                    flow
+                  </button>
+                ) : null}
+                {onClearAll ? (
+                  <button
+                    type="button"
+                    onClick={() => setClearArming(true)}
+                    className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-alert transition-colors"
+                    title="unregister every trigger"
+                  >
+                    <Trash2 size={12} aria-hidden />
+                    clear all
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+              aria-label={expanded ? 'collapse triggers' : 'expand triggers'}
+              className="shrink-0 px-2 py-1.5 text-ink-ghost hover:text-ink transition-colors"
+            >
+              {expanded ? (
+                <ChevronDown size={12} aria-hidden />
+              ) : (
+                <ChevronRight size={12} aria-hidden />
+              )}
+            </button>
+          </div>
+        )}
         {expanded ? (
           <div className="border-t border-rule-2">
             {workflow.hasStructure
@@ -582,7 +493,7 @@ export function SessionTriggers({
                 ))}
           </div>
         ) : null}
-      </div>
+      </section>
 
       <Dialog
         open={selected !== null}
@@ -711,6 +622,69 @@ export function SessionTriggers({
           ) : null}
         </DialogContent>
       </Dialog>
+
+      <Dialog open={flowOpen} onOpenChange={setFlowOpen}>
+        <DialogContent className="max-w-[min(92vw,64rem)]">
+          <DialogTitle className="text-[14px] lowercase">
+            <span
+              className="mr-2 inline-flex align-baseline text-ink-ghost"
+              aria-hidden
+            >
+              <Workflow size={13} />
+            </span>
+            pipeline flow
+          </DialogTitle>
+          <DialogDescription className="mt-1">
+            the reactive graph these {triggers.length} bindings form — state
+            writes and completions on the left, the sub-agents they spawn
+            flowing right.
+          </DialogDescription>
+          <div className="mt-4">
+            <TriggerDag triggers={triggers} keyPresence={keyPresence} />
+          </div>
+          <DagLegend />
+        </DialogContent>
+      </Dialog>
     </>
+  )
+}
+
+/** Reads the DAG's node/edge vocabulary in one compact row. */
+function DagLegend() {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px] lowercase text-ink-ghost">
+      <span className="flex items-center gap-1.5">
+        <span className="inline-block size-2.5 border border-rule bg-bg" />
+        agent
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="uppercase tracking-[0.06em] text-ink-faint">
+          state
+        </span>
+        state key
+      </span>
+      <span className="flex items-center gap-1.5">
+        <GitMerge size={11} className="text-ink-faint" aria-hidden />
+        join gate
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="inline-block size-2.5 border border-accent bg-bg" />
+        this chat
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="inline-block h-px w-4 bg-rule" />
+        spawns / watches
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span
+          className="inline-block h-px w-4"
+          style={{
+            backgroundImage:
+              'repeating-linear-gradient(to right, var(--color-ink-ghost) 0 3px, transparent 3px 5px)',
+          }}
+        />
+        into a join
+      </span>
+    </div>
   )
 }

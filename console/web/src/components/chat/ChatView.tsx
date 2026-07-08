@@ -265,6 +265,35 @@ export function ChatView({
     [backend, conversation.id, onAppendMessage, refreshTriggers],
   )
 
+  const handleClearAllTriggers = useCallback(async () => {
+    const unreg = backend.unregisterTrigger
+    if (!unreg) return
+    const ids = sessionTriggers.map((t) => t.id)
+    // Fire all unregisters, tolerate partial failure, surface a single notice.
+    const results = await Promise.allSettled(ids.map((id) => unreg(id)))
+    const cleared = new Set(
+      ids.filter((_, i) => results[i].status === 'fulfilled'),
+    )
+    setSessionTriggers((rows) => rows.filter((t) => !cleared.has(t.id)))
+    const failed = results.filter((r) => r.status === 'rejected').length
+    if (failed > 0) {
+      onAppendMessage(
+        conversation.id,
+        makeSystemNotice(
+          `could not unregister ${failed} of ${ids.length} triggers — they may have already fired or been removed`,
+          'error',
+        ),
+      )
+    }
+    refreshTriggers()
+  }, [
+    backend,
+    sessionTriggers,
+    conversation.id,
+    onAppendMessage,
+    refreshTriggers,
+  ])
+
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
   // must not re-show a message that just drained into the chat).
@@ -1254,6 +1283,9 @@ export function ChatView({
           <SessionTriggers
             triggers={sessionTriggers}
             onUnregister={handleUnregisterTrigger}
+            onClearAll={
+              backend.unregisterTrigger ? handleClearAllTriggers : undefined
+            }
             checkStateKey={backend.stateKeyExists}
           />
           {queuedStrip.length > 0 ? (
