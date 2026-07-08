@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  coerceJsonObject,
   ENGINE_FUNCTION_IDS,
   functionDetailSchema,
   functionInfoRequestSchema,
@@ -46,6 +47,24 @@ describe('isEngineListFunction', () => {
     expect(isEngineListFunction('engine::functions')).toBe(false)
     expect(isEngineListFunction('sandbox::exec')).toBe(false)
     expect(isEngineListFunction('engine::triggers::create')).toBe(false)
+  })
+})
+
+describe('coerceJsonObject', () => {
+  it('recovers a double-encoded (stringified) payload', () => {
+    const payload = { trigger_type: 'state', config: { scope: 'wiki' } }
+    expect(coerceJsonObject(JSON.stringify(payload))).toEqual(payload)
+    expect(coerceJsonObject('  [1, 2]  ')).toEqual([1, 2])
+  })
+
+  it('passes non-JSON-object values through untouched', () => {
+    const obj = { already: 'parsed' }
+    expect(coerceJsonObject(obj)).toBe(obj)
+    expect(coerceJsonObject('a plain string request')).toBe(
+      'a plain string request',
+    )
+    expect(coerceJsonObject('{ broken json')).toBe('{ broken json')
+    expect(coerceJsonObject(undefined)).toBeUndefined()
   })
 })
 

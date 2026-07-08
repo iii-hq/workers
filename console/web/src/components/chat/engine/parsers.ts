@@ -368,6 +368,24 @@ export type RegisterTriggerResponse = z.infer<
 
 /* ---------------- generic helpers ---------------- */
 
+/**
+ * Some agents pass a function's whole payload as a JSON *string* (double
+ * encoding), which arrives here as an escaped one-liner the rich views can't
+ * parse. Recover the object/array so schema parsing and the structured views
+ * work; anything that isn't a JSON-object/array string passes through
+ * untouched (a genuine string request is left alone).
+ */
+export function coerceJsonObject(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const t = value.trim()
+  if (!t.startsWith('{') && !t.startsWith('[')) return value
+  try {
+    return JSON.parse(t)
+  } catch {
+    return value
+  }
+}
+
 export function safeParseRequest<T>(
   schema: z.ZodType<T>,
   value: unknown,

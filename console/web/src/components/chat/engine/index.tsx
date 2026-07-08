@@ -4,6 +4,7 @@ import type { FunctionCallMessage } from '@/types/chat'
 import { FunctionInfoView } from './FunctionInfoView'
 import { FunctionsListView } from './FunctionsListView'
 import {
+  coerceJsonObject,
   isEngineListFunction,
   parseFunctionInfoResponse,
   parseTriggerInfoResponse,
@@ -38,9 +39,12 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   if (!isEngineListFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
-  const input = unwrapEnvelope(message.input)
+  // Coerce a double-encoded (stringified-JSON) payload back to an object so
+  // the structured views parse it, instead of showing an escaped one-liner.
+  const input = coerceJsonObject(unwrapEnvelope(message.input))
   const rawOutput = message.output
-  const output = rawOutput != null ? unwrapEnvelope(rawOutput) : undefined
+  const output =
+    rawOutput != null ? coerceJsonObject(unwrapEnvelope(rawOutput)) : undefined
   const running = !!message.running
 
   // Reuse the sandbox error parser for gate/transport-level errors
