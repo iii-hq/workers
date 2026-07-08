@@ -609,11 +609,11 @@ Deny-by-default for in-run agents (see [README § Security model](README.md#secu
 
 ### Trigger types emitted
 
-Session events remain the rendering surface (live transcripts, spinners); these two types are the
-**orchestration surface** — they fire at turn boundaries so consumers and siblings react without
-polling `harness::status`. Events are async and observe-only; a sibling that must *block or
-mutate* the loop binds a [hook](#hooks) instead. Bind with the standard two-step pattern (see
-[README § Reactive pattern](README.md#reactive-pattern)).
+Session events remain the rendering surface (live transcripts, spinners); these types are the
+**orchestration surface** — they fire at turn boundaries (and on mid-turn enqueue) so consumers
+and siblings react without polling `harness::status`. Events are async and observe-only; a
+sibling that must *block or mutate* the loop binds a [hook](#hooks) instead. Bind with the
+standard two-step pattern (see [README § Reactive pattern](README.md#reactive-pattern)).
 
 - **`harness::turn_started`** — a turn began executing (first loop step).
   - Config: `{ session_id?: string; parent_session_id?: string }`.
@@ -641,6 +641,23 @@ type TurnCompletedEvent = {
   result_error?: string;   // set when the contract could not be satisfied
   reason?: string;         // failure cause when status is "failed"
   parent?: { session_id: string; turn_id: string; function_call_id: string };
+  timestamp: number;
+};
+```
+
+- **`harness::message-queued`** — a message parked in the session's server-side queue while a
+  turn step streams (send's queue path, see [Concurrency & steering](#concurrency--steering)).
+  A refresh signal, not the message: consumers refetch `harness::status` → `queued`, which stays
+  idempotent under at-least-once delivery. This is how the console's queued strip sees rows from
+  other tabs and subagent/subscription notifications without polling.
+  - Config: `{ session_id?: string; parent_session_id?: string }`.
+  - Payload:
+
+```typescript
+type MessageQueuedEvent = {
+  session_id: string;
+  entry_id: string;    // transcript entry id the row lands under on drain
+  queued_at: number;
   timestamp: number;
 };
 ```

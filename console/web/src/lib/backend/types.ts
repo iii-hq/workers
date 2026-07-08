@@ -215,6 +215,12 @@ export interface ChatBackend {
    */
   listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
   /**
+   * Subscribe to `harness::message-queued` for a session: fires when any
+   * client's message parks in the server-side queue mid-stream — the signal
+   * to refetch `listQueued`. Returns an unsubscribe.
+   */
+  onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
+  /**
    * The session's registered trigger subscriptions (notify + react bindings
    * the agent registered via the harness's `engine::register_trigger`
    * intercept).

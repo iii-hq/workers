@@ -43,7 +43,10 @@ import {
   type SessionTriggerInfo,
   unregisterTrigger,
 } from './triggers'
-import { startTurnEventsSubscription } from './turn-events-live'
+import {
+  startQueuedEventsSubscription,
+  startTurnEventsSubscription,
+} from './turn-events-live'
 import type {
   ChatBackend,
   ChatStreamOptions,
@@ -333,6 +336,29 @@ async function realListQueued(
   }))
 }
 
+/**
+ * `harness::message-queued` subscription: fires when any client's message
+ * parks in the queue mid-stream. Sync-return unsubscribe over the async
+ * client bootstrap — if disposed before the client resolves, never binds.
+ */
+function realOnQueuedMessage(
+  sessionId: string,
+  onEvent: () => void,
+): () => void {
+  let disposed = false
+  let off: (() => void) | null = null
+  getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      off = startQueuedEventsSubscription(client, sessionId, () => onEvent())
+    })
+    .catch(() => {})
+  return () => {
+    disposed = true
+    off?.()
+  }
+}
+
 async function realListTriggers(
   sessionId: string,
 ): Promise<SessionTriggerInfo[]> {
@@ -482,6 +508,7 @@ export const realBackend: ChatBackend = {
   stream: realStream,
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
+  onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
   unregisterTrigger: realUnregisterTrigger,
   resolveApproval: realResolveApproval,

@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { IiiClient } from '@/lib/iii-client'
 import type {
+  MessageQueuedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
-import { startTurnEventsSubscription } from './turn-events-live'
+import {
+  startQueuedEventsSubscription,
+  startTurnEventsSubscription,
+} from './turn-events-live'
 
 function fakeClient() {
   const triggers: Array<{
@@ -111,6 +115,38 @@ describe('startTurnEventsSubscription', () => {
     const stop = startTurnEventsSubscription(client, 'sess-1', {
       onCompleted: () => {},
     })
+    stop()
+    expect(offHandler).toHaveBeenCalledTimes(1)
+    expect(triggerUnregister).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('startQueuedEventsSubscription', () => {
+  it('binds harness::message-queued scoped to the session and delivers', () => {
+    const { client, triggers, fire } = fakeClient()
+    const onQueued = vi.fn()
+    startQueuedEventsSubscription(client, 'sess-1', onQueued)
+
+    expect(triggers).toEqual([
+      {
+        type: 'harness::message-queued',
+        function_id: 'iii::console::message_queued::console-test',
+        config: { session_id: 'sess-1' },
+      },
+    ])
+    const event: MessageQueuedEvent = {
+      session_id: 'sess-1',
+      entry_id: 'entry-1',
+      queued_at: 1,
+      timestamp: 2,
+    }
+    fire('iii::console::message_queued', event)
+    expect(onQueued).toHaveBeenCalledWith(event)
+  })
+
+  it('unregisters handler and trigger on cleanup', () => {
+    const { client, offHandler, triggerUnregister } = fakeClient()
+    const stop = startQueuedEventsSubscription(client, 'sess-1', () => {})
     stop()
     expect(offHandler).toHaveBeenCalledTimes(1)
     expect(triggerUnregister).toHaveBeenCalledTimes(1)

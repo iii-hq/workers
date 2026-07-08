@@ -187,10 +187,12 @@ export function ChatView({
     }
   }, [streamingIndicator, queuedDrafts, conversation.id, onAppendMessage])
 
-  // Server-side queue: while a step streams, poll `harness::status` so the
-  // strip also shows messages queued by other tabs and subagent/subscription
-  // notifications — not just this tab's drafts. Cleared when idle (the
-  // transcript owns everything by then).
+  // Server-side queue: while a step streams, `harness::message-queued` events
+  // signal that another tab or a subagent/subscription notification parked a
+  // row — refetch `harness::status` → `queued` so the strip shows them, not
+  // just this tab's drafts. One catch-up fetch on stream start covers rows
+  // queued before the subscription bound; cleared when idle (the transcript
+  // owns everything by then).
   const [serverQueued, setServerQueued] = useState<QueuedMessagePreview[]>([])
   useEffect(() => {
     const listQueued = backend.listQueued
@@ -200,19 +202,24 @@ export function ChatView({
     }
     let alive = true
     // The conversation id IS the engine session_id (see `sessionId` below).
-    const poll = () =>
+    const refresh = () =>
       listQueued(conversation.id)
         .then((rows) => {
           if (alive) setServerQueued(rows)
         })
         .catch(() => {})
-    void poll()
-    const timer = window.setInterval(() => void poll(), 2500)
+    void refresh()
+    const off = backend.onQueuedMessage?.(conversation.id, () => void refresh())
     return () => {
       alive = false
-      window.clearInterval(timer)
+      off?.()
     }
-  }, [streamingIndicator, backend.listQueued, conversation.id])
+  }, [
+    streamingIndicator,
+    backend.listQueued,
+    backend.onQueuedMessage,
+    conversation.id,
+  ])
 
   // Registered trigger subscriptions (notify/react bindings owned by this
   // session): shown above the composer, unregisterable, detail on click.

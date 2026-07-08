@@ -1,5 +1,6 @@
-//! The two async orchestration trigger types the harness emits at turn
-//! boundaries — `harness::turn-started` and `harness::turn-completed`
+//! The async orchestration trigger types the harness emits —
+//! `harness::turn-started` / `harness::turn-completed` at turn boundaries,
+//! and `harness::message-queued` when a message parks in the mid-turn queue
 //! (harness.md § Trigger types emitted). Consumers and siblings bind these to
 //! react to outcomes without polling `harness::status`.
 //!
@@ -24,6 +25,7 @@ use crate::types::turn::ParentLink;
 
 pub const TURN_STARTED: &str = "harness::turn-started";
 pub const TURN_COMPLETED: &str = "harness::turn-completed";
+pub const MESSAGE_QUEUED: &str = "harness::message-queued";
 
 /// Binding config shared by both turn-event types.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -184,14 +186,16 @@ pub struct TurnEvents {
     iii: Arc<IIIClient>,
     started: SubscriberSet,
     completed: SubscriberSet,
+    queued: SubscriberSet,
 }
 
 impl TurnEvents {
-    /// Register both trigger types and return the emitter. Must run before
+    /// Register the trigger types and return the emitter. Must run before
     /// function registration so the handlers capture the subscriber sets.
     pub fn register(iii: &Arc<IIIClient>) -> Self {
         let started = SubscriberSet::default();
         let completed = SubscriberSet::default();
+        let queued = SubscriberSet::default();
 
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
@@ -217,13 +221,51 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
-        tracing::info!("registered harness::turn-started / harness::turn-completed trigger types");
+        let _ = iii.register_trigger_type(
+            RegisterTriggerType::new(
+                MESSAGE_QUEUED,
+                "A message parked in a session's server-side queue while its turn streams.",
+                TurnEventTriggerHandler {
+                    type_id: MESSAGE_QUEUED,
+                    set: queued.clone(),
+                    iii: iii.clone(),
+                },
+            )
+            .trigger_request_format::<TurnEventBindingConfig>(),
+        );
+        tracing::info!(
+            "registered harness::turn-started / harness::turn-completed / harness::message-queued trigger types"
+        );
 
         Self {
             iii: iii.clone(),
             started,
             completed,
+            queued,
         }
+    }
+
+    /// A message parked in the session's `harness_queue` (send's queue path).
+    /// The payload is a pointer, not the message — consumers refetch
+    /// `harness::status` → `queued` (idempotent under at-least-once delivery).
+    pub async fn emit_queued(&self, session_id: &str, entry_id: &str, queued_at: i64) {
+        tracing::info!(session_id, entry_id, "message queued");
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "entry_id": entry_id,
+            "queued_at": queued_at,
+            "timestamp": now_ms(),
+        });
+        self.fan_out(
+            &self.queued,
+            MESSAGE_QUEUED,
+            session_id,
+            None,
+            None,
+            None,
+            payload,
+        )
+        .await;
     }
 
     pub async fn emit_started(

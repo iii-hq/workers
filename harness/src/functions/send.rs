@@ -295,6 +295,11 @@ async fn try_enqueue(
         queued_at: AgentMessage::now_ms(),
     };
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+    // Fire-and-forget: lets clients (e.g. the console's queued strip) refresh
+    // `harness::status` → `queued` without polling.
+    deps.events
+        .emit_queued(session_id, &entry_id, row.queued_at)
+        .await;
 
     let recheck = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     let outcome = match recheck {

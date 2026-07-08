@@ -14,14 +14,17 @@
 
 import type { IiiClient } from '@/lib/iii-client'
 import type {
+  MessageQueuedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
 
 const TURN_COMPLETED_FN = 'iii::console::turn_completed'
 const TURN_STARTED_FN = 'iii::console::turn_started'
+const MESSAGE_QUEUED_FN = 'iii::console::message_queued'
 const TURN_COMPLETED_TRIGGER = 'harness::turn-completed'
 const TURN_STARTED_TRIGGER = 'harness::turn-started'
+const MESSAGE_QUEUED_TRIGGER = 'harness::message-queued'
 
 type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>
 
@@ -90,4 +93,25 @@ export function startTurnEventsSubscription(
   return () => {
     for (const off of offs) off()
   }
+}
+
+/**
+ * Bind `harness::message-queued` for one session: fires when a message parks
+ * in the server-side queue mid-stream (another tab's send, a subagent or
+ * subscription notification). A refresh signal — consumers refetch
+ * `harness::status` → `queued`, which stays idempotent under the trigger's
+ * at-least-once delivery. Returns a cleanup.
+ */
+export function startQueuedEventsSubscription(
+  client: ClientSubset,
+  sessionId: string,
+  onQueued: (event: MessageQueuedEvent) => void,
+): () => void {
+  return bind<MessageQueuedEvent>(
+    client,
+    MESSAGE_QUEUED_FN,
+    MESSAGE_QUEUED_TRIGGER,
+    sessionId,
+    onQueued,
+  )
 }
