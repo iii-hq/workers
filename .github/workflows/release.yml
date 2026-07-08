@@ -38,6 +38,7 @@ on:
       - 'slack/v*'
       - 'telegram-bot/v*'
       - 'shell/v*'
+      - 'state/v*'
       - 'storage/v*'
       - 'scrapling/v*'
       - 'web/v*'

@@ -44,6 +44,7 @@ on:
           - slack
           - telegram-bot
           - shell
+          - state
           - worktree
           - storage
           - scrapling
