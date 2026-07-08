@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { IiiClient } from '@/lib/iii-client'
-import type { StoredSpan } from '@/pages/Traces/api/traces'
+import type { StoredSpan } from '@/pages/TracesV2/api/traces'
 import {
   extractStreamSpans,
   extractTraceActivityIds,

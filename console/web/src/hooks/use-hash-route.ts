@@ -3,14 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// routed views are `traces`, `traces-v2`, `workers`, `worktrees`, and
-// `configuration`.
-export type View =
-  | 'configuration'
-  | 'traces'
-  | 'traces-v2'
-  | 'workers'
-  | 'worktrees'
+// routed views are `traces`, `workers`, `worktrees`, and `configuration`.
+export type View = 'configuration' | 'traces' | 'workers' | 'worktrees'
 
 /**
  * Sub-tab inside the Configuration page. URL-driven so deep links and the
@@ -33,9 +27,9 @@ function routeFromHash(hash: string): View | null {
   // Backwards compat: `#/chat` no longer exists as a view -- chat is the
   // always-visible side dock now. Land legacy bookmarks on the default view.
   if (hash === '#/chat') return 'traces'
-  if (hash === '#/traces-v2') {
-    return 'traces-v2'
-  }
+  // Backwards compat: `#/traces-v2` was the staging route while the rebuilt
+  // traces view coexisted with the original; it IS `#/traces` now.
+  if (hash === '#/traces-v2') return 'traces'
   if (hash === '#/workers') {
     return 'workers'
   }
@@ -58,8 +52,6 @@ function hashFor(view: View): string {
   switch (view) {
     case 'traces':
       return '#/traces'
-    case 'traces-v2':
-      return '#/traces-v2'
     case 'workers':
       return '#/workers'
     case 'worktrees':

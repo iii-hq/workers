@@ -1,9 +1,9 @@
 import { ModeToggle } from '@/components/ui/ModeToggle'
 
-// TracesV2 lab scope: the detail offers the lane timeline (default — the
-// same visual grammar as the live strip up top) and the waterfall tree.
-// The flame graph was replaced by the timeline; map/flow views live in the
-// original Traces surface and are out of scope here.
+// The detail offers the lane timeline (default — the same visual grammar
+// as the live strip up top) and the waterfall tree. The original Traces
+// surface's flame graph was replaced by the timeline; its map/flow views
+// were retired with it.
 export type ViewType = 'timeline' | 'waterfall'
 
 interface ViewSwitcherProps {

@@ -33,7 +33,10 @@
  */
 
 import type { IiiClient } from '@/lib/iii-client'
-import type { StoredSpan, TracesFilterParams } from '@/pages/Traces/api/traces'
+import type {
+  StoredSpan,
+  TracesFilterParams,
+} from '@/pages/TracesV2/api/traces'
 
 /** iii:: prefix → engine-internal → delivery spans hidden + stream loop-break. */
 const TRACE_ROWS_FN = 'iii::console::trace_rows'
