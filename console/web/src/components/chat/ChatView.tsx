@@ -20,10 +20,7 @@ import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
-import type {
-  CompactResult,
-  QueuedMessagePreview,
-} from '@/lib/backend/types'
+import type { CompactResult, QueuedMessagePreview } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
@@ -58,10 +55,10 @@ import {
   type UserMessage,
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
-import { SessionTriggers } from './SessionTriggers'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
+import { SessionTriggers } from './SessionTriggers'
 import { WorktreeBadge } from './WorktreeBadge'
 
 function isAbortError(err: unknown): boolean {
@@ -291,7 +288,8 @@ export function ChatView({
     const last = [...conversation.messages]
       .reverse()
       .find(
-        (m): m is AssistantMessage => m.role === 'assistant' && Boolean(m.model),
+        (m): m is AssistantMessage =>
+          m.role === 'assistant' && Boolean(m.model),
       )
     if (!last?.model) return null
     const catalog = modelOptions.find(
@@ -601,9 +599,7 @@ export function ChatView({
             },
           )
         } catch (err) {
-          setQueuedDrafts((drafts) =>
-            drafts.filter((d) => d.id !== userMsg.id),
-          )
+          setQueuedDrafts((drafts) => drafts.filter((d) => d.id !== userMsg.id))
           onAppendMessage(
             conversationId,
             makeSystemNotice(
@@ -1167,6 +1163,7 @@ export function ChatView({
           <SessionTriggers
             triggers={sessionTriggers}
             onUnregister={handleUnregisterTrigger}
+            checkStateKey={backend.stateKeyExists}
           />
           {queuedStrip.length > 0 ? (
             <div

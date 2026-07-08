@@ -6,7 +6,7 @@ import {
   GitMerge,
   Zap,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import {
   Dialog,
@@ -20,6 +20,11 @@ import { JsonHighlight } from '@/lib/syntax'
 interface SessionTriggersProps {
   triggers: SessionTriggerInfo[]
   onUnregister: (triggerId: string) => Promise<void> | void
+  /** Backend probe: does this state key currently exist? (`null` = unknown) */
+  checkStateKey?: (
+    scope: string | undefined,
+    key: string,
+  ) => Promise<boolean | null>
 }
 
 function targetLabel(trigger: SessionTriggerInfo): string {
@@ -78,6 +83,19 @@ function spawnTarget(trigger: SessionTriggerInfo): string | null {
   if (trigger.functionId !== 'harness::react') return null
   const target = trigger.metadata?.session_id
   return typeof target === 'string' ? target : null
+}
+
+/** The state key a `state`-type binding watches (`config { key, scope }`). */
+export function stateWatch(
+  trigger: SessionTriggerInfo,
+): { scope?: string; key: string } | null {
+  if (trigger.triggerType !== 'state') return null
+  const config = trigger.config as Record<string, unknown> | null | undefined
+  if (typeof config?.key !== 'string') return null
+  return {
+    key: config.key,
+    scope: typeof config.scope === 'string' ? config.scope : undefined,
+  }
 }
 
 /** The session whose turn events this binding watches. */
@@ -306,6 +324,8 @@ interface TriggerRowProps {
   memberKey?: string
   /** Annotate watched / spawn-target sessions (workflow view). */
   showTargets?: boolean
+  /** Watched state key + whether it exists yet ("on scope/key — not written yet"). */
+  stateNote?: string | null
 }
 
 function TriggerRow({
@@ -316,6 +336,7 @@ function TriggerRow({
   connector,
   memberKey,
   showTargets,
+  stateNote,
 }: TriggerRowProps) {
   const watched = watchedSession(trigger)
   const target = spawnTarget(trigger)
@@ -350,6 +371,7 @@ function TriggerRow({
               {target ? ` → ${shortSession(target)}` : ''}
             </>
           ) : null}
+          {stateNote ? ` · ${stateNote}` : ''}
           {trigger.once ? ' · once' : ''}
         </span>
       </button>
@@ -378,10 +400,40 @@ function TriggerRow({
 export function SessionTriggers({
   triggers,
   onUnregister,
+  checkStateKey,
 }: SessionTriggersProps) {
   const [expanded, setExpanded] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+
+  // Whether each state binding's watched key exists yet — the row-level
+  // diagnosis for a reaction armed on a key nothing ever writes.
+  // ponytail: refetches on each trigger-poll tick while expanded; cache if it matters.
+  const [keyPresence, setKeyPresence] = useState<Record<string, boolean>>({})
+  useEffect(() => {
+    if (!expanded || !checkStateKey) return
+    let alive = true
+    for (const trigger of triggers) {
+      const watch = stateWatch(trigger)
+      if (!watch) continue
+      void checkStateKey(watch.scope, watch.key).then((present) => {
+        if (alive && present !== null)
+          setKeyPresence((m) => ({ ...m, [trigger.id]: present }))
+      })
+    }
+    return () => {
+      alive = false
+    }
+  }, [expanded, checkStateKey, triggers])
+
+  const stateNote = (trigger: SessionTriggerInfo): string | null => {
+    const watch = stateWatch(trigger)
+    if (!watch) return null
+    const label = watch.scope ? `${watch.scope}/${watch.key}` : watch.key
+    const present = keyPresence[trigger.id]
+    if (present === undefined) return `on ${label}`
+    return present ? `on ${label} — written` : `on ${label} — not written yet`
+  }
   const workflow = useMemo(() => buildTriggerWorkflow(triggers), [triggers])
   const selected = triggers.find((t) => t.id === selectedId) ?? null
   const selectedIsReact = selected?.functionId === 'harness::react'
@@ -488,6 +540,7 @@ export function SessionTriggers({
                               <TriggerRow
                                 key={member.id}
                                 trigger={member}
+                                stateNote={stateNote(member)}
                                 connector={
                                   memberIdx === unit.members.length - 1
                                     ? '└'
@@ -505,6 +558,7 @@ export function SessionTriggers({
                             key={unit.key}
                             trigger={unit.members[0]}
                             showTargets
+                            stateNote={stateNote(unit.members[0])}
                             busy={busyId === unit.members[0].id}
                             onOpen={() => setSelectedId(unit.members[0].id)}
                             onUnregister={() =>
@@ -520,6 +574,7 @@ export function SessionTriggers({
                   <TriggerRow
                     key={trigger.id}
                     trigger={trigger}
+                    stateNote={stateNote(trigger)}
                     busy={busyId === trigger.id}
                     onOpen={() => setSelectedId(trigger.id)}
                     onUnregister={() => void unregister(trigger.id)}

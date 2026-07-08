@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
-import { buildTriggerWorkflow, levelWatches } from './SessionTriggers'
+import {
+  buildTriggerWorkflow,
+  levelWatches,
+  stateWatch,
+} from './SessionTriggers'
 
 function trigger(over: Partial<SessionTriggerInfo>): SessionTriggerInfo {
   return {
@@ -87,6 +91,25 @@ describe('buildTriggerWorkflow', () => {
     ])
     expect(levelWatches(wf.levels[0])).toEqual([])
     expect(levelWatches(wf.levels[1])).toEqual(['analyst-1'])
+  })
+
+  it('stateWatch reads key/scope from state bindings only', () => {
+    expect(
+      stateWatch(trigger({ config: { key: 'summary', scope: 'wiki' } })),
+    ).toEqual({ key: 'summary', scope: 'wiki' })
+    expect(stateWatch(trigger({ config: { key: 'summary' } }))).toEqual({
+      key: 'summary',
+      scope: undefined,
+    })
+    expect(stateWatch(trigger({ config: {} }))).toBeNull()
+    expect(
+      stateWatch(
+        trigger({
+          triggerType: 'harness::turn-completed',
+          config: { key: 'summary' },
+        }),
+      ),
+    ).toBeNull()
   })
 
   it('a watch cycle collapses instead of hanging', () => {

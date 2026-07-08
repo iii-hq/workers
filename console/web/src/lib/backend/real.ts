@@ -371,6 +371,23 @@ async function realUnregisterTrigger(triggerId: string): Promise<void> {
   await unregisterTrigger(client, triggerId)
 }
 
+/** `state::get` non-null → the key exists; errors → null (unknown). */
+async function realStateKeyExists(
+  scope: string | undefined,
+  key: string,
+): Promise<boolean | null> {
+  const client = await getIiiClient()
+  try {
+    const value = await client.trigger<unknown>('state::get', {
+      scope: scope ?? 'global',
+      key,
+    })
+    return value !== null && value !== undefined
+  } catch {
+    return null
+  }
+}
+
 async function realResolveApproval(
   sessionId: string,
   functionCallId: string,
@@ -511,6 +528,7 @@ export const realBackend: ChatBackend = {
   onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
   unregisterTrigger: realUnregisterTrigger,
+  stateKeyExists: realStateKeyExists,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
   compactSession: realCompactSession,

@@ -229,6 +229,16 @@ export interface ChatBackend {
   /** Unregister one of the session's triggers by engine trigger id. */
   unregisterTrigger?(triggerId: string): Promise<void>
   /**
+   * Whether a state key currently exists (`state::get` non-null). Lets the
+   * triggers strip mark a `state` binding whose watched key was never
+   * written — the "armed on something nothing produces" stall. `null` =
+   * unknown (call failed).
+   */
+  stateKeyExists?(
+    scope: string | undefined,
+    key: string,
+  ): Promise<boolean | null>
+  /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).
    * The client-side AbortSignal only stops rendering; without this the
    * harness keeps running the turn to completion.

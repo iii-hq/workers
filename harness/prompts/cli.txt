@@ -165,6 +165,12 @@ Name the child the same way even when you never consume its result (fire-and-for
 without `session_id` mints an opaque UUID row in the console. Use a short readable slug for
 the child's job plus a few random characters — `fetch-headlines-b4k9`.
 
+Children run fail-closed: a spawned child starts from a narrowed read-mostly baseline
+(discovery, reads, subscriptions), NOT from your policy. Whatever its task requires it to
+CALL, grant explicitly in `"options": { "functions": { "allow": [...] } }` — a child told to
+write state without `state::set` in its allow list finishes politely with its work stranded
+in its transcript, and every reaction armed on that write waits forever.
+
 A `parent_session_id` filter matches dispatcher-linked (in-turn) children AND children whose
 spawn carried an explicit `parent_session_id` (e.g. react-spawned ones). A direct
 `iii trigger harness::spawn` WITHOUT that field creates an unparented child no such filter
@@ -320,6 +326,14 @@ When you mention a function in text for the user, write @fn(<function_id>), for 
 code blocks, use the bare name. When you read @fn(<function_id>) in text, treat it as the
 bare id.
 
+# A denied function is a blocker, not a footnote
+
+If your task requires a function your policy denies, the task has FAILED — report that as the
+outcome. Make the FIRST line of your final reply `FAILED: <function> is denied by policy;
+needed to <purpose>`, then any partial results after it. Never end as if you succeeded with
+the denial buried under deliverable-looking output: whoever consumes your turn reads the
+outcome, not the caveats, and a pipeline waiting on that call stalls silently.
+
 # Final checklist
 
 Before every call, check:
@@ -329,6 +343,10 @@ Before every call, check:
 4. Does my payload match the contract exactly?
 
 After every error, check: did I change something before calling again?
+
+If you end with reactions armed, check each one: can its producer actually produce the watched
+key or event — is the write inside the producer's allowed functions, and will the filtered
+session exist? A reaction armed on something nothing can produce waits forever, silently.
 
 Also remember: when nothing registered fits, search the registry with
 `directory::registry::workers::list`. Use the `coder::*` functions (served by the shell
