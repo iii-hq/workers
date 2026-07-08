@@ -77,7 +77,13 @@ export async function listSessionTriggers(
         config: detail.config,
         configSummary: summary.config_summary,
         label: typeof meta.label === 'string' ? meta.label : undefined,
-        once: typeof meta.once === 'boolean' ? meta.once : undefined,
+        // Notify bindings stamp `once`; react bindings stamp `__once`.
+        once:
+          typeof meta.once === 'boolean'
+            ? meta.once
+            : typeof meta.__once === 'boolean'
+              ? meta.__once
+              : undefined,
         metadata: meta,
       })
     }

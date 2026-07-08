@@ -41,6 +41,7 @@ interface JoinMeta {
   id: string
   expect: string[]
   key?: string
+  rearm?: boolean
 }
 
 function joinMeta(trigger: SessionTriggerInfo): JoinMeta | null {
@@ -54,7 +55,22 @@ function joinMeta(trigger: SessionTriggerInfo): JoinMeta | null {
       ? j.expect.filter((k): k is string => typeof k === 'string')
       : [],
     key: typeof j.key === 'string' ? j.key : undefined,
+    rearm: typeof j.rearm === 'boolean' ? j.rearm : undefined,
   }
+}
+
+/** The reaction's model, shown wherever the row says "spawns sub-agent". */
+function reactModel(trigger: SessionTriggerInfo): string | null {
+  if (trigger.functionId !== 'harness::react') return null
+  const model = trigger.metadata?.model
+  return typeof model === 'string' ? model : null
+}
+
+/** The reaction's opening task (the sub-agent's prompt). */
+function reactTask(trigger: SessionTriggerInfo): string | null {
+  if (trigger.functionId !== 'harness::react') return null
+  const task = trigger.metadata?.task
+  return typeof task === 'string' ? task : null
 }
 
 /** The session this binding's reaction spawns into (explicit targets only). */
@@ -196,14 +212,23 @@ const SURFACED_METADATA_KEYS = new Set([
   'session_id',
   'label',
   'once',
+  '__once',
 ])
+
+/** React-spec keys surfaced as dedicated dialog rows / the task section. */
+const SURFACED_REACT_KEYS = new Set(['model', 'task', 'join', 'provider'])
 
 function remainingMetadata(
   metadata: Record<string, unknown> | undefined,
+  isReact: boolean,
 ): Record<string, unknown> | null {
   if (!metadata) return null
   const rest = Object.fromEntries(
-    Object.entries(metadata).filter(([k]) => !SURFACED_METADATA_KEYS.has(k)),
+    Object.entries(metadata).filter(
+      ([k]) =>
+        !SURFACED_METADATA_KEYS.has(k) &&
+        !(isReact && SURFACED_REACT_KEYS.has(k)),
+    ),
   )
   return Object.keys(rest).length > 0 ? rest : null
 }
@@ -294,6 +319,8 @@ function TriggerRow({
 }: TriggerRowProps) {
   const watched = watchedSession(trigger)
   const target = spawnTarget(trigger)
+  const model = reactModel(trigger)
+  const task = reactTask(trigger)
   const name = memberKey ?? trigger.label ?? null
   return (
     <div className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0">
@@ -308,7 +335,7 @@ function TriggerRow({
         type="button"
         onClick={onOpen}
         className="min-w-0 flex-1 truncate text-left hover:text-ink transition-colors"
-        title="show trigger detail"
+        title={task ?? 'show trigger detail'}
       >
         {name || trigger.triggerType}
         <span className="text-ink-ghost">
@@ -316,6 +343,7 @@ function TriggerRow({
           {connector
             ? '' /* the join header already says what the group does */
             : ` · ${targetLabel(trigger)}`}
+          {!connector && model ? ` · ${model}` : ''}
           {showTargets || connector ? (
             <>
               {watched ? ` · on ${shortSession(watched)}` : ''}
@@ -356,10 +384,19 @@ export function SessionTriggers({
   const [busyId, setBusyId] = useState<string | null>(null)
   const workflow = useMemo(() => buildTriggerWorkflow(triggers), [triggers])
   const selected = triggers.find((t) => t.id === selectedId) ?? null
+  const selectedIsReact = selected?.functionId === 'harness::react'
   const selectedMetadata = selected
-    ? remainingMetadata(selected.metadata)
+    ? remainingMetadata(selected.metadata, selectedIsReact)
     : null
   const selectedSubscription = selected ? subscriptionId(selected) : null
+  const selectedModel = selected ? reactModel(selected) : null
+  const selectedTask = selected ? reactTask(selected) : null
+  const selectedTarget = selected ? spawnTarget(selected) : null
+  const selectedJoin = selected ? joinMeta(selected) : null
+  const selectedProvider =
+    selectedIsReact && typeof selected?.metadata?.provider === 'string'
+      ? selected.metadata.provider
+      : null
 
   if (triggers.length === 0) return null
 
@@ -441,6 +478,9 @@ export function SessionTriggers({
                                   {' '}
                                   · waits for {unit.join.expect.join(' + ')} ·
                                   spawns sub-agent
+                                  {reactModel(unit.members[0])
+                                    ? ` · ${reactModel(unit.members[0])}`
+                                    : ''}
                                 </span>
                               </span>
                             </div>
@@ -521,6 +561,48 @@ export function SessionTriggers({
                     · {selected.functionId}
                   </span>
                 </dd>
+                {selectedModel ? (
+                  <>
+                    <dt className="lowercase text-ink-ghost">model</dt>
+                    <dd className="text-ink">
+                      {selectedModel}
+                      {selectedProvider ? (
+                        <span className="text-ink-faint">
+                          {' '}
+                          · {selectedProvider}
+                        </span>
+                      ) : null}
+                    </dd>
+                  </>
+                ) : null}
+                {selectedIsReact ? (
+                  <>
+                    <dt className="lowercase text-ink-ghost">spawns into</dt>
+                    <dd className="text-ink-faint">
+                      {selectedTarget ? (
+                        <CopyableId value={selectedTarget} />
+                      ) : (
+                        'this chat (owner session)'
+                      )}
+                    </dd>
+                  </>
+                ) : null}
+                {selectedJoin ? (
+                  <>
+                    <dt className="lowercase text-ink-ghost">join</dt>
+                    <dd className="text-ink">
+                      {selectedJoin.id}
+                      <span className="text-ink-faint">
+                        {' '}
+                        · waits for {selectedJoin.expect.join(' + ')}
+                        {selectedJoin.key
+                          ? ` · fires as ${selectedJoin.key}`
+                          : ''}
+                        {selectedJoin.rearm ? ' · re-arms after firing' : ''}
+                      </span>
+                    </dd>
+                  </>
+                ) : null}
                 <dt className="lowercase text-ink-ghost">lifetime</dt>
                 <dd className="text-ink">
                   {selected.once
@@ -540,16 +622,22 @@ export function SessionTriggers({
                   <CopyableId value={selected.id} />
                 </dd>
               </dl>
+              {selectedTask ? (
+                <div className="border border-rule-2">
+                  <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+                    task
+                  </div>
+                  <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-[12px] text-ink">
+                    {selectedTask}
+                  </div>
+                </div>
+              ) : null}
               {isEmptyConfig(selected.config) ? null : (
                 <JsonSection label="config" value={selected.config} />
               )}
               {selectedMetadata ? (
                 <JsonSection
-                  label={
-                    selected.functionId === 'harness::react'
-                      ? 'reaction spec'
-                      : 'metadata'
-                  }
+                  label={selectedIsReact ? 'spawn options' : 'metadata'}
                   value={selectedMetadata}
                 />
               ) : null}
