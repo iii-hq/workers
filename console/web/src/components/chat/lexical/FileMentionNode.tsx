@@ -138,6 +138,34 @@ interface PillProps {
 }
 
 /**
+ * Hairline glyph for a mention path: folder tab-outline when the path ends
+ * in `/`, rectangle-with-corner-fold otherwise. Shared by the pill and the
+ * `#` typeahead menu.
+ */
+export function PathGlyph({ path }: { path: string }) {
+  return (
+    <svg
+      width="9"
+      height="11"
+      viewBox="0 0 10 12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1"
+      aria-hidden="true"
+    >
+      {path.endsWith('/') ? (
+        <path d="M1 2.5H4L5.5 4H9V10H1V2.5Z" />
+      ) : (
+        <>
+          <path d="M1 1H6L9 4V11H1V1Z" />
+          <path d="M6 1V4H9" />
+        </>
+      )}
+    </svg>
+  )
+}
+
+/**
  * The inserted-token visual. Hairline file glyph in accent, relative path in
  * ink, on a panel background. Rectilinear; no rounded corners; monospace;
  * tight inline-block sizing so it flows with text. When `selected` is true
@@ -161,19 +189,7 @@ export function FileMentionPill({ path, selected, pillRef }: PillProps) {
       )}
     >
       <span aria-hidden className="text-accent leading-none shrink-0">
-        {/* tiny "file" glyph: hairline rectangle with a corner fold */}
-        <svg
-          width="9"
-          height="11"
-          viewBox="0 0 10 12"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1"
-          aria-hidden="true"
-        >
-          <path d="M1 1H6L9 4V11H1V1Z" />
-          <path d="M6 1V4H9" />
-        </svg>
+        <PathGlyph path={path} />
       </span>
       <span className="leading-none truncate max-w-[280px]">{path}</span>
     </span>

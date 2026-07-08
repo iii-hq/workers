@@ -32,13 +32,19 @@ const tree: TreeNodeWire = {
   ],
 }
 
+const flatTree = [
+  'empty/',
+  'no-children-dir/',
+  'README.md',
+  'src/',
+  'src/main.rs',
+  'src/nested/',
+  'src/nested/deep.ts',
+]
+
 describe('flattenTree', () => {
-  it('collects relative file paths, skipping dirs/symlinks and paren paths', () => {
-    expect(flattenTree(tree)).toEqual([
-      'README.md',
-      'src/main.rs',
-      'src/nested/deep.ts',
-    ])
+  it('collects files and trailing-slash folders, skipping symlinks and paren paths', () => {
+    expect(flattenTree(tree)).toEqual(flatTree)
   })
 
   it('returns [] for a childless root', () => {
@@ -68,6 +74,12 @@ describe('fuzzyFilterFiles', () => {
     expect(fuzzyFilterFiles(index, 'dnm')).toEqual(['docs/notes.md'])
   })
 
+  it('ranks folder basenames despite the trailing slash', () => {
+    expect(
+      fuzzyFilterFiles(['src/nested/deep.ts', 'src/nested/'], 'nes'),
+    ).toEqual(['src/nested/', 'src/nested/deep.ts'])
+  })
+
   it('excludes non-matches', () => {
     expect(fuzzyFilterFiles(index, 'zzz')).toEqual([])
   })
@@ -87,7 +99,7 @@ describe('fetchFileIndex', () => {
   it('fetches through coder::tree with the working dir as base_dir', async () => {
     const trigger = vi.fn().mockResolvedValue(treeResponse)
     const index = await fetchFileIndex('/w', trigger)
-    expect(index).toEqual(['README.md', 'src/main.rs', 'src/nested/deep.ts'])
+    expect(index).toEqual(flatTree)
     expect(trigger).toHaveBeenCalledWith(
       TREE_FUNCTION_ID,
       expect.objectContaining({

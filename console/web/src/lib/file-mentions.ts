@@ -81,13 +81,19 @@ type TriggerFn = (
  * Read every mentioned file in one jail-validated batch call and format the
  * attachment blocks. Batch results come back in request order (the wire
  * contract), so blocks are labeled with the caller's relative paths.
+ *
+ * Folder mentions (trailing `/`) attach nothing: the `#file(dir/)` token
+ * stays in the message text and the agent lists the folder on demand.
  */
 export async function expandFileMentions(
   workingDir: string,
   paths: string[],
   trigger?: TriggerFn,
 ): Promise<ExpandedMentions> {
-  if (paths.length === 0) return { blocks: [], attachments: [], failures: [] }
+  const filePaths = paths.filter((path) => !path.endsWith('/'))
+  if (filePaths.length === 0) {
+    return { blocks: [], attachments: [], failures: [] }
+  }
 
   const call =
     trigger ??
@@ -99,16 +105,16 @@ export async function expandFileMentions(
   let results: ReadEntryResultWire[]
   try {
     const res = (await call(READ_FILE_FUNCTION_ID, {
-      paths,
+      paths: filePaths,
       fs_scope: { root: workingDir },
     })) as ReadFileBatchWire
     results = res?.results ?? []
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     return {
-      blocks: paths.map((path) => failureBlock(path, reason)),
+      blocks: filePaths.map((path) => failureBlock(path, reason)),
       attachments: [],
-      failures: paths.map((path) => ({ path, reason })),
+      failures: filePaths.map((path) => ({ path, reason })),
     }
   }
 
@@ -116,7 +122,7 @@ export async function expandFileMentions(
   const attachments: Array<{ path: string; size: number }> = []
   const failures: FileMentionFailure[] = []
 
-  for (const [i, path] of paths.entries()) {
+  for (const [i, path] of filePaths.entries()) {
     const entry = results[i]
     if (!entry?.success || typeof entry.content !== 'string') {
       const reason = shortReason(entry?.error?.message) ?? 'read failed'
