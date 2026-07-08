@@ -4,6 +4,13 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "description": "The enqueued `harness::turn` step payload.",
     "properties": {
+      "depth": {
+        "default": 0,
+        "description": "Sub-agent depth carried from the turn record (0 = top-level), so the step can stamp the `iii.tag.kind` baggage (`harness.turn` / `harness.subagent`) before any state read. Defaults to 0 so stale in-flight payloads from before this field existed still classify as top-level turns.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "message_preview": {
         "description": "Preview carried from the turn record so the step can stamp the `iii.tag.message` baggage before any state read.",
         "type": [
