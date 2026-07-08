@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { TraceListItem } from '../hooks/useTraceData'
 import {
+  isTraceLive,
   TRACE_ACTIVITY_ECHO_MS,
   TRACE_ACTIVITY_IDLE_MS,
   traceListToTimelineSpans,
@@ -98,6 +99,44 @@ describe('traceListToTimelineSpans', () => {
     )
     expect(spans).toHaveLength(1)
     expect(spans[0].id).toBe('t-1')
+  })
+})
+
+describe('isTraceLive', () => {
+  it('is live while the root itself is still pending', () => {
+    const pending = row({ status: 'pending', endTime: undefined })
+    expect(isTraceLive(pending, liveness({}, 100_000))).toBe(true)
+  })
+
+  it('is not live with no liveness activity at all', () => {
+    expect(isTraceLive(row(), liveness({}, 100_040))).toBe(false)
+  })
+
+  it('is not live for the root close echoing back through the trigger', () => {
+    const echo = 100_040 + TRACE_ACTIVITY_ECHO_MS - 1
+    expect(isTraceLive(row(), liveness({ 't-1': echo }, echo + 100))).toBe(
+      false,
+    )
+  })
+
+  it('is live while span-close activity beyond the root is fresh', () => {
+    const activityAt = 100_040 + 5_000
+    const now = activityAt + TRACE_ACTIVITY_IDLE_MS - 500
+    expect(isTraceLive(row(), liveness({ 't-1': activityAt }, now))).toBe(true)
+  })
+
+  it('is not live once a quiet trace ages past the idle window', () => {
+    const activityAt = 100_040 + 5_000
+    const now = activityAt + TRACE_ACTIVITY_IDLE_MS + 500
+    expect(isTraceLive(row(), liveness({ 't-1': activityAt }, now))).toBe(false)
+  })
+
+  it('agrees with traceListToTimelineSpans on the same inputs', () => {
+    const activityAt = 100_040 + 5_000
+    const now = activityAt + TRACE_ACTIVITY_IDLE_MS - 500
+    const live = liveness({ 't-1': activityAt }, now)
+    const [span] = traceListToTimelineSpans([row()], live)
+    expect(isTraceLive(row(), live)).toBe(span.endTime == null)
   })
 })
 

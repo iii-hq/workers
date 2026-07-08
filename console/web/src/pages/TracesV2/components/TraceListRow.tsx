@@ -41,6 +41,13 @@ interface TraceListRowProps {
   /** When set (and the row has a functionId), hover surfaces a "hide this
    *  function" affordance that adds it to the view's hidden list. */
   onHideFunction?: (functionId: string) => void
+  /**
+   * True while the trace is still receiving spans beyond its own root (e.g.
+   * a queue-triggered trace whose root closes instantly but whose children
+   * run for seconds after) — pulses the status dot the same way a genuinely
+   * pending root does, per `isTraceLive`.
+   */
+  isLive?: boolean
 }
 
 export function TraceListRow({
@@ -51,6 +58,7 @@ export function TraceListRow({
   onAnimationEnd,
   label,
   onHideFunction,
+  isLive,
 }: TraceListRowProps) {
   const resolved = resolveRowLabel(trace, label)
   const canHide = !!onHideFunction && !!trace.functionId
@@ -68,7 +76,7 @@ export function TraceListRow({
       <div className="flex items-center gap-2 mb-1">
         <StatusDot
           tone={statusDotTone(trace.status)}
-          pulse={trace.status === 'pending'}
+          pulse={trace.status === 'pending' || isLive}
         />
         <span className="font-mono text-[13px] text-ink truncate flex-1 lowercase">
           {resolved.prefix && (

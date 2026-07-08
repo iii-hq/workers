@@ -83,6 +83,46 @@ export interface TraceLiveness {
 }
 
 /**
+ * Last-activity timestamp for a trace, but only once it clears the echo
+ * dead-band past the row's own end — i.e. evidence of work beyond the root,
+ * not the root's own arrival echoing back through the trigger. `null` when
+ * there's no such evidence.
+ */
+function activityBeyondRoot(
+  rootEnd: number,
+  liveness: TraceLiveness,
+  traceId: string,
+): number | null {
+  const lastActivity = liveness.activity.get(traceId)
+  if (
+    lastActivity == null ||
+    lastActivity - rootEnd <= TRACE_ACTIVITY_ECHO_MS
+  ) {
+    return null
+  }
+  return lastActivity
+}
+
+/**
+ * Whether a trace row should read as still doing work: its root span hasn't
+ * closed yet, or it has, but the engine's per-trace activity signal shows a
+ * span closing recently enough (beyond the root's own end, within the idle
+ * window) that children are still running. Shared by the timeline strip
+ * (keeps the bar live/growing) and the trace list (pulses the status dot) so
+ * both surfaces agree on one definition of "live".
+ */
+export function isTraceLive(
+  item: Pick<TraceListItem, 'status' | 'endTime' | 'traceId'>,
+  liveness: TraceLiveness,
+): boolean {
+  if (item.status === 'pending' || item.endTime == null) return true
+  const lastActivity = activityBeyondRoot(item.endTime, liveness, item.traceId)
+  return (
+    lastActivity != null && liveness.now - lastActivity < TRACE_ACTIVITY_IDLE_MS
+  )
+}
+
+/**
  * One timeline bar per trace row.
  *
  * With `liveness`, a row whose trace shows span-close activity beyond its
@@ -100,18 +140,15 @@ export function traceListToTimelineSpans(
     let running = item.status === 'pending' || item.endTime == null
     let end = running ? null : (item.endTime ?? null)
 
-    const lastActivity = liveness?.activity.get(item.traceId)
-    if (
-      !running &&
-      liveness &&
-      lastActivity != null &&
-      lastActivity - (end ?? 0) > TRACE_ACTIVITY_ECHO_MS
-    ) {
-      if (liveness.now - lastActivity < TRACE_ACTIVITY_IDLE_MS) {
-        running = true
-        end = null
-      } else {
-        end = Math.max(end ?? 0, lastActivity)
+    if (!running && liveness) {
+      const lastActivity = activityBeyondRoot(end ?? 0, liveness, item.traceId)
+      if (lastActivity != null) {
+        if (liveness.now - lastActivity < TRACE_ACTIVITY_IDLE_MS) {
+          running = true
+          end = null
+        } else {
+          end = Math.max(end ?? 0, lastActivity)
+        }
       }
     }
 

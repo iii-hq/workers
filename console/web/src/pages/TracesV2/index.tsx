@@ -49,6 +49,7 @@ import { useTraceActivity } from './hooks/useTraceActivity'
 import { useTraceData } from './hooks/useTraceData'
 import { useTraceFilters } from './hooks/useTraceFilters'
 import { useTraceViews } from './hooks/useTraceViews'
+import { isTraceLive } from './lib/timelineSpans'
 import type { RowLabelConfig } from './lib/traceListItem'
 import {
   applyViewConfig,
@@ -236,6 +237,27 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   )
   const start = (filterState.page - 1) * filterState.pageSize
   const paged = traceGroups.slice(start, start + filterState.pageSize)
+
+  // Liveness evaluation instant for the list rows' pulsing dot — only ticked
+  // while a visible row is actually live, mirroring the strip's clock
+  // (TimelineStrip.tsx) so an idle list renders exactly as often as its data
+  // changes.
+  const [listNow, setListNow] = useState(() => Date.now())
+  const liveTraceIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const t of paged) {
+      if (isTraceLive(t, { activity: traceActivity, now: listNow })) {
+        ids.add(t.traceId)
+      }
+    }
+    return ids
+  }, [paged, traceActivity, listNow])
+  const anyRowLive = liveTraceIds.size > 0
+  useEffect(() => {
+    if (!anyRowLive) return
+    const id = setInterval(() => setListNow(Date.now()), 500)
+    return () => clearInterval(id)
+  }, [anyRowLive])
 
   useEffect(() => {
     if (filterState.page > totalPages) updateFilter('page', totalPages)
@@ -650,6 +672,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                           trace={trace}
                           isSelected={selectedTraceId === trace.traceId}
                           isNew={newTraceIds.has(trace.traceId)}
+                          isLive={liveTraceIds.has(trace.traceId)}
                           label={rowLabel}
                           onHideFunction={hideFunction}
                           onSelect={() =>
