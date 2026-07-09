@@ -467,4 +467,40 @@ mod tests {
 
         runtime.shutdown().await;
     }
+
+    #[tokio::test]
+    async fn reconcile_replaces_a_finished_consumer() {
+        let (runtime, _calls) = runtime();
+        let mut configs = BTreeMap::new();
+        configs.insert(
+            "harness::turn::root".to_string(),
+            FunctionQueueConfig::default(),
+        );
+        runtime.reconcile(&configs).await.unwrap();
+
+        {
+            let active = runtime.active.lock().await;
+            active
+                .get("harness::turn::root")
+                .expect("consumer should be active")
+                .task
+                .abort();
+        }
+        tokio::task::yield_now().await;
+        assert!(
+            !runtime
+                .status("harness::turn::root")
+                .await
+                .expect("finished consumer should remain observable")
+                .healthy
+        );
+
+        runtime.reconcile(&configs).await.unwrap();
+        assert!(runtime
+            .status("harness::turn::root")
+            .await
+            .is_some_and(|status| status.healthy));
+
+        runtime.shutdown().await;
+    }
 }
