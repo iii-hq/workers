@@ -92,17 +92,17 @@ async fn fetch_fresh_credential(iii: &IIIClient) -> Option<Value> {
         .ok()
         .flatten()
     {
-        if near_expiry(&cred) {
-            if matches!(
+        if near_expiry(&cred)
+            && matches!(
                 router_client::refresh_if_available(iii, PROVIDER_ID).await,
                 Ok(true)
-            ) {
-                return router_client::get_token_if_available(iii, PROVIDER_ID)
-                    .await
-                    .ok()
-                    .flatten()
-                    .or(Some(cred));
-            }
+            )
+        {
+            return router_client::get_token_if_available(iii, PROVIDER_ID)
+                .await
+                .ok()
+                .flatten()
+                .or(Some(cred));
         }
         return Some(cred);
     }

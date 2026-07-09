@@ -257,6 +257,7 @@ jobs:
         if: steps.optout.outputs.skip != 'true'
         env:
           VERSION: '0.17.0'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh

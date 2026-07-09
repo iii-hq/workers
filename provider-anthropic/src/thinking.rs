@@ -42,8 +42,14 @@ pub struct ThinkingBuild {
 pub fn build_thinking_config(level: Option<ThinkingLevel>, model: Option<&Model>) -> ThinkingBuild {
     let mut warnings = Vec::new();
     let Some(level) = level else {
+        // Parity with xai reasoning models, which surface reasoning by default:
+        // with no explicit level, still request adaptive thinking on models that
+        // definitely support it (server default effort, so no output_config).
+        // Gate on Some(true), not the permissive path — an implicit default must
+        // never 400 on a non-thinking or unknown model.
+        let config = (model.and_then(|m| m.supports_thinking) == Some(true)).then_some(ADAPTIVE);
         return ThinkingBuild {
-            config: None,
+            config,
             effort: None,
             warnings,
         };
@@ -99,11 +105,29 @@ mod tests {
     }
 
     #[test]
-    fn absent_level_means_off() {
+    fn absent_level_defaults_on_for_thinking_models() {
+        // Parity with xai: no explicit level still surfaces reasoning on a model
+        // that supports thinking, at the server's default effort (no output_config).
         let built = build_thinking_config(None, Some(&model(Some(true), Some(true))));
-        assert_eq!(built.config, None);
+        assert_eq!(built.config, Some(ADAPTIVE));
         assert_eq!(built.effort, None);
         assert!(built.warnings.is_empty());
+    }
+
+    #[test]
+    fn absent_level_stays_off_without_thinking_support() {
+        // No implicit default when support is unknown or explicitly false, so the
+        // default can never 400 a non-thinking model.
+        for m in [
+            None,
+            Some(model(None, None)),
+            Some(model(Some(false), None)),
+        ] {
+            let built = build_thinking_config(None, m.as_ref());
+            assert_eq!(built.config, None);
+            assert_eq!(built.effort, None);
+            assert!(built.warnings.is_empty());
+        }
     }
 
     #[test]
