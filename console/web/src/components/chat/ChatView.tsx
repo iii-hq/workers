@@ -344,11 +344,11 @@ export function ChatView({
       const conversationId = conversation.id
       if (payload === null) {
         setQueuedDrafts((current) => current.filter((d) => d.id !== id))
-        void backend.removeQueued?.(conversationId, id).catch(() => {
+        void backend.removeQueued?.(conversationId, id).catch((err) => {
           onAppendMessage(
             conversationId,
             makeSystemNotice(
-              'could not remove the queued message — it may still be delivered when the turn ends',
+              `could not remove the queued message (${err instanceof Error ? err.message : String(err)}) — it may still be delivered when the turn ends`,
               'warn',
             ),
           )
@@ -388,11 +388,11 @@ export function ChatView({
             payload.text,
             attachedBlocks ? { attachedBlocks } : undefined,
           )
-        } catch {
+        } catch (err) {
           onAppendMessage(
             conversationId,
             makeSystemNotice(
-              'could not save the edit — the original may still be delivered when the turn ends',
+              `could not save the edit (${err instanceof Error ? err.message : String(err)}) — the original may still be delivered when the turn ends`,
               'warn',
             ),
           )
