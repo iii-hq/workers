@@ -42,6 +42,7 @@ import {
 } from '@/lib/worktrees'
 import {
   type AssistantMessage,
+  type Attachment,
   type Conversation,
   DEFAULT_THINKING_LEVEL,
   type FunctionCallMessage,
@@ -329,25 +330,76 @@ export function ChatView({
     [queuedDrafts],
   )
 
-  // Commit an edit: drop the browsed message from the queue (local draft +
-  // server row) so the resubmitted text replaces it rather than duplicating.
-  // Best-effort removal — a row that already drained is a no-op; a failure
-  // means the old version may still deliver, so surface it. Only wired when
-  // the backend can remove queued rows (recall without removal double-delivers).
-  const handleCommitQueuedEdit = useCallback(
-    (id: string) => {
-      setQueuedDrafts((current) => current.filter((d) => d.id !== id))
-      void backend.removeQueued?.(conversation.id, id).catch(() => {
-        onAppendMessage(
-          conversation.id,
-          makeSystemNotice(
-            'could not replace the queued message — the original may still be delivered when the turn ends',
-            'warn',
-          ),
-        )
-      })
+  // Submitting a browsed queued message: edit it IN PLACE (`payload`), or
+  // remove it (`null` — the composer was emptied). Both keep the message where
+  // it is in the queue; an edit rebuilds content the same way a send does
+  // (re-expanding `#file(...)` mentions). Best-effort server call — a row that
+  // already drained is a no-op; a failure means the stale version may still
+  // deliver, so surface it.
+  const handleEditQueued = useCallback(
+    (
+      id: string,
+      payload: { text: string; attachments: Attachment[] } | null,
+    ) => {
+      const conversationId = conversation.id
+      if (payload === null) {
+        setQueuedDrafts((current) => current.filter((d) => d.id !== id))
+        void backend.removeQueued?.(conversationId, id).catch(() => {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              'could not remove the queued message — it may still be delivered when the turn ends',
+              'warn',
+            ),
+          )
+        })
+        return
+      }
+      // Optimistic: reflect the new content in the strip immediately, in place.
+      setQueuedDrafts((current) =>
+        current.map((d) =>
+          d.id === id
+            ? {
+                ...d,
+                content: payload.text,
+                attachments:
+                  payload.attachments.length > 0
+                    ? payload.attachments
+                    : undefined,
+              }
+            : d,
+        ),
+      )
+      void (async () => {
+        let attachedBlocks: string[] | undefined
+        const workingDir = conversation.workingDir
+        if (backend.id === 'real' && workingDir) {
+          const mentionPaths = parseFileMentions(payload.text)
+          if (mentionPaths.length > 0) {
+            attachedBlocks = (
+              await expandFileMentions(workingDir, mentionPaths)
+            ).blocks
+          }
+        }
+        try {
+          await backend.editQueued?.(
+            conversationId,
+            id,
+            payload.text,
+            attachedBlocks ? { attachedBlocks } : undefined,
+          )
+        } catch {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              'could not save the edit — the original may still be delivered when the turn ends',
+              'warn',
+            ),
+          )
+        }
+      })()
     },
-    [backend, conversation.id, onAppendMessage],
+    [backend, conversation.id, conversation.workingDir, onAppendMessage],
   )
 
   // Discovered sessions (sub-agents especially) carry no client-side model
@@ -1357,10 +1409,10 @@ export function ChatView({
                   </div>
                 )
               })}
-              {backend.removeQueued && queuedDrafts.length > 0 ? (
+              {backend.editQueued && queuedDrafts.length > 0 ? (
                 <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
                   {browsedQueuedId
-                    ? '↑ / ↓ cycle · enter saves · ↓ past newest cancels'
+                    ? '↑ / ↓ cycle · enter saves in place · empty + enter removes'
                     : 'press ↑ in the composer to edit queued messages'}
                 </div>
               ) : null}
@@ -1395,10 +1447,8 @@ export function ChatView({
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
-            queuedForEdit={backend.removeQueued ? queuedForEdit : undefined}
-            onCommitEdit={
-              backend.removeQueued ? handleCommitQueuedEdit : undefined
-            }
+            queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
+            onEditQueued={backend.editQueued ? handleEditQueued : undefined}
             onBrowseChange={setBrowsedQueuedId}
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}

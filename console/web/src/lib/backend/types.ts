@@ -228,6 +228,18 @@ export interface ChatBackend {
    */
   removeQueued?(sessionId: string, entryId: string): Promise<void>
   /**
+   * Edit a still-parked queued message in place (`harness::edit_queued`),
+   * preserving its delivery position — unlike remove + re-queue, which moves
+   * it to the tail. `prompt` + `attachedBlocks` rebuild the content exactly
+   * as a send would.
+   */
+  editQueued?(
+    sessionId: string,
+    entryId: string,
+    prompt: string,
+    opts?: { attachedBlocks?: string[] },
+  ): Promise<void>
+  /**
    * Subscribe to `harness::message-queued` for a session: fires when any
    * client's message parks in the server-side queue mid-stream — the signal
    * to refetch `listQueued`. Returns an unsubscribe.

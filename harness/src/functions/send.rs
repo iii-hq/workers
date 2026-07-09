@@ -290,6 +290,46 @@ pub async fn unqueue(deps: &Deps, req: UnqueueRequest) -> Result<UnqueueResponse
     Ok(UnqueueResponse { removed: true })
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct EditQueuedRequest {
+    pub session_id: String,
+    /// The queued row to edit (its client-visible `entry_id`).
+    pub entry_id: String,
+    /// The replacement message (string sugar or a full user/custom message).
+    pub message: MessageInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EditQueuedResponse {
+    /// False when no still-parked row matched — already drained or unknown.
+    pub updated: bool,
+}
+
+/// Edit a still-parked queued message IN PLACE — the console's "edit queued
+/// message" preserving its delivery position. Replaces the row's `message`
+/// while keeping the same internal id, `entry_id`, `queued_at`, and `origin`,
+/// so re-writing the same state key leaves the message where it was in the
+/// queue order (unlike remove + re-queue, which moves it to the tail). Emits
+/// `harness::message-queued` so other clients refetch the new content.
+pub async fn edit_queued(
+    deps: &Deps,
+    req: EditQueuedRequest,
+) -> Result<EditQueuedResponse, HarnessError> {
+    let cfg = deps.cfg().await;
+    let rows =
+        crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
+    let Some(mut row) = rows.into_iter().find(|r| r.entry_id == req.entry_id) else {
+        return Ok(EditQueuedResponse { updated: false });
+    };
+    row.message = normalize_message(req.message)?;
+    // Same `id` → same state key → overwrite in place (position preserved).
+    crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+    deps.events
+        .emit_queued(&req.session_id, &row.entry_id, row.queued_at)
+        .await;
+    Ok(EditQueuedResponse { updated: true })
+}
+
 /// The queue path: while a turn step is `Running` a stream may be in flight,
 /// so the message parks as a durable `harness_queue` row the loop drains after
 /// the stream ends (harness.md § Concurrency & steering). Returns `None` when
@@ -617,6 +657,33 @@ mod tests {
         let hit = rows.iter().find(|r| r.entry_id == "e_idem_msg-2");
         assert_eq!(hit.map(|r| r.id.as_str()), Some("q_bbb"));
         assert!(rows.iter().all(|r| r.entry_id != "e_idem_msg-3"));
+    }
+
+    #[test]
+    fn edit_queued_preserves_position_fields_and_only_swaps_message() {
+        // Editing in place keeps id / entry_id / queued_at / origin (position
+        // is `(queued_at, id)`) and replaces only the message — so re-writing
+        // the same `session_id:id` state key leaves it where it was in order.
+        let mut row = crate::state::QueuedMessage {
+            id: "q_x".into(),
+            session_id: "s_1".into(),
+            message: AgentMessage::user_text("old text"),
+            entry_id: "e_idem_msg-1".into(),
+            origin: Some(serde_json::json!({ "reaction": true })),
+            queued_at: 4242,
+        };
+        let before = (
+            row.id.clone(),
+            row.entry_id.clone(),
+            row.queued_at,
+            row.origin.clone(),
+        );
+        row.message = normalize_message(MessageInput::Text("new text".into())).unwrap();
+        assert_eq!(
+            (row.id, row.entry_id, row.queued_at, row.origin),
+            before,
+            "only the message changes"
+        );
     }
 
     #[test]

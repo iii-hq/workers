@@ -87,15 +87,19 @@ interface ComposerProps {
   functionEntries?: FunctionEntry[]
   /**
    * Queued messages the composer can browse+edit with ↑/↓, oldest→newest.
-   * Non-destructive: browsing just loads a message; the edit is committed on
-   * submit (see `onCommitEdit`). When set alongside `onCommitEdit`, ↑/↓ cycle.
+   * Non-destructive: browsing just loads a message; the change is committed on
+   * submit (see `onEditQueued`). When set alongside `onEditQueued`, ↑/↓ cycle.
    */
   queuedForEdit?: Array<{ id: string; text: string; attachments: Attachment[] }>
   /**
-   * Submit while browsing a queued message: remove that message from the queue
-   * (the submitted text replaces it). Given its id.
+   * Submit while browsing a queued message: save the edit in place (preserving
+   * its queue position) with the new text + attachments, or remove it when the
+   * payload is `null` (submitting an emptied composer). Given its id.
    */
-  onCommitEdit?: (id: string) => void
+  onEditQueued?: (
+    id: string,
+    payload: { text: string; attachments: Attachment[] } | null,
+  ) => void
   /** Which queued message is being browsed (`null` = live draft), for highlight. */
   onBrowseChange?: (id: string | null) => void
 }
@@ -130,7 +134,7 @@ export function Composer({
   initialAttachments,
   functionEntries,
   queuedForEdit,
-  onCommitEdit,
+  onEditQueued,
   onBrowseChange,
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<Attachment[]>(
@@ -186,18 +190,20 @@ export function Composer({
   const handleSubmit = useCallback(() => {
     if (inputDisabled) return
     const text = textRef.current.trim()
-    if (!text && attachments.length === 0) return
-    // Committing an edit: drop the browsed message from the queue; the send
-    // below re-queues the edited text.
+    const empty = !text && attachments.length === 0
+    // Editing a queued message: save it in place (or remove it when emptied)
+    // instead of sending a new message. A blank live composer is a no-op.
     if (browseId !== null) {
-      onCommitEdit?.(browseId)
+      onEditQueued?.(browseId, empty ? null : { text, attachments })
       setBrowse(null)
+    } else {
+      if (empty) return
+      onSubmit({ text, attachments })
     }
-    onSubmit({ text, attachments })
     textRef.current = ''
     setAttachments([])
     setClearToken((t) => t + 1)
-  }, [inputDisabled, attachments, onSubmit, browseId, onCommitEdit, setBrowse])
+  }, [inputDisabled, attachments, onSubmit, browseId, onEditQueued, setBrowse])
 
   const handleAttach = useCallback((next: Attachment[]) => {
     setAttachments((current) => [...current, ...next])
@@ -241,7 +247,7 @@ export function Composer({
           initialContent={initialContent}
           functionEntries={functionEntries}
           workingDir={workingDir}
-          onHistoryNav={onCommitEdit ? handleHistoryNav : undefined}
+          onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
         />
       </div>
 

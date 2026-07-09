@@ -65,6 +65,10 @@ pub const UNQUEUE_ID: &str = "harness::unqueue";
 pub const UNQUEUE_DESC: &str =
     "Internal control-plane: remove a still-parked queued message by entry_id (the console's edit-queued path).";
 
+pub const EDIT_QUEUED_ID: &str = "harness::edit_queued";
+pub const EDIT_QUEUED_DESC: &str =
+    "Internal control-plane: edit a still-parked queued message in place by entry_id, preserving its queue position.";
+
 pub const FILESYSTEM_GRANT_ID: &str = "harness::filesystem::grant";
 pub const FILESYSTEM_GRANT_DESC: &str =
     "Internal control-plane: grant a session access to an additional filesystem root.";
@@ -169,6 +173,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, UNQUEUE_ID, UNQUEUE_DESC, |d, r| async move {
         send::unqueue(&d, r).await
     });
+    register(
+        iii,
+        deps,
+        EDIT_QUEUED_ID,
+        EDIT_QUEUED_DESC,
+        |d, r| async move { send::edit_queued(&d, r).await },
+    );
 
     // Internal filesystem grant controls — registered for trusted callers, kept
     // off the model-facing catalog.

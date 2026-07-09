@@ -105,6 +105,25 @@ export function buildTurnMetadata(
 }
 
 /**
+ * The wire message for a user send: a plain string when there are no
+ * attachment blocks (keeps the payload byte-identical for the common case),
+ * else the structured `{ role, content }` form with the `#file(...)`
+ * mention expansions appended. Shared by the send/queue path and the
+ * edit-queued path so an edit rebuilds content exactly as the original did.
+ */
+function buildMessageInput(prompt: string, attachedBlocks: string[]) {
+  if (attachedBlocks.length === 0) return prompt
+  return {
+    role: 'user' as const,
+    content: [prompt, ...attachedBlocks].map((text) => ({
+      type: 'text' as const,
+      text,
+    })),
+    timestamp: Date.now(),
+  }
+}
+
+/**
  * Assemble the `harness::send` request shared by the stream kickoff and the
  * mid-stream queue path — model/provider resolution, thinking level, the
  * approval-gate structural floor, and the string-sugar vs structured message
@@ -133,21 +152,7 @@ async function buildSendRequest(
     }
   }
 
-  // Attachment blocks (file-mention expansions) upgrade the message to the
-  // structured MessageInput form; plain sends keep the string sugar so the
-  // wire payload stays byte-identical for the common case.
-  const attachedBlocks = opts?.attachedBlocks ?? []
-  const message =
-    attachedBlocks.length > 0
-      ? {
-          role: 'user' as const,
-          content: [prompt, ...attachedBlocks].map((text) => ({
-            type: 'text' as const,
-            text,
-          })),
-          timestamp: Date.now(),
-        }
-      : prompt
+  const message = buildMessageInput(prompt, opts?.attachedBlocks ?? [])
 
   return {
     session_id: sessionId,
@@ -349,6 +354,25 @@ async function realRemoveQueued(
 }
 
 /**
+ * `harness::edit_queued` — replace a still-parked message's content in place,
+ * preserving its queue position. Rebuilds the message the same way a send
+ * does (string sugar, or structured with `#file(...)` expansions).
+ */
+async function realEditQueued(
+  sessionId: string,
+  entryId: string,
+  prompt: string,
+  opts?: { attachedBlocks?: string[] },
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('harness::edit_queued', {
+    session_id: sessionId,
+    entry_id: entryId,
+    message: buildMessageInput(prompt, opts?.attachedBlocks ?? []),
+  })
+}
+
+/**
  * `harness::message-queued` subscription: fires when any client's message
  * parks in the queue mid-stream. Sync-return unsubscribe over the async
  * client bootstrap — if disposed before the client resolves, never binds.
@@ -538,6 +562,7 @@ export const realBackend: ChatBackend = {
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
   removeQueued: realRemoveQueued,
+  editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
   unregisterTrigger: realUnregisterTrigger,
