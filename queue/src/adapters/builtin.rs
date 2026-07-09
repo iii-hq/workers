@@ -159,12 +159,9 @@ impl QueueAdapter for BuiltinAdapter {
         &self,
         topic: &str,
         data: Value,
-        _traceparent: Option<String>,
-        _baggage: Option<String>,
-    ) {
-        // This store's `Job` carries no trace context yet, so traceparent/
-        // baggage are accepted (for trait parity) but dropped.
-        //
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> anyhow::Result<()> {
         // Fan-out mirrors `adapter.rs:196-219`: a topic with subscribers
         // gets a separate copy pushed onto EACH subscriber's own internal
         // queue (broadcast); a topic with none enqueues straight onto the
@@ -174,13 +171,23 @@ impl QueueAdapter for BuiltinAdapter {
             Some(function_ids) if !function_ids.is_empty() => {
                 for function_id in &function_ids {
                     let queue_name = internal_queue_name(topic, function_id);
-                    let _ = self.store.enqueue(&queue_name, data.clone()).await;
+                    self.store
+                        .enqueue(
+                            &queue_name,
+                            data.clone(),
+                            traceparent.clone(),
+                            baggage.clone(),
+                        )
+                        .await?;
                 }
             }
             _ => {
-                let _ = self.store.enqueue(topic, data).await;
+                self.store
+                    .enqueue(topic, data, traceparent, baggage)
+                    .await?;
             }
         }
+        Ok(())
     }
 
     async fn subscribe(
@@ -504,6 +511,8 @@ async fn process_job(
         &cfg.function_id,
         cfg.condition_function_id.as_deref(),
         job.payload.clone(),
+        job.traceparent.clone(),
+        job.baggage.clone(),
     )
     .await;
 
@@ -527,21 +536,34 @@ async fn invoke(
     function_id: &str,
     condition_function_id: Option<&str>,
     payload: Value,
+    traceparent: Option<String>,
+    baggage: Option<String>,
 ) -> Result<(), String> {
     if let Some(condition_id) = condition_function_id {
-        match invoker.call(condition_id, payload.clone()).await {
+        match invoker
+            .call(
+                condition_id,
+                payload.clone(),
+                traceparent.clone(),
+                baggage.clone(),
+            )
+            .await
+        {
             Ok(Some(Value::Bool(false))) => return Ok(()),
             Ok(_) => {}
             Err(err) => return Err(err),
         }
     }
-    invoker.call(function_id, payload).await.map(|_| ())
+    invoker
+        .call(function_id, payload, traceparent, baggage)
+        .await
+        .map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::InMemoryStore;
+    use crate::store::{FileStore, InMemoryStore};
     use serde_json::json;
     use std::future::Future;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -572,26 +594,34 @@ mod tests {
         (x % 15) + 1
     }
 
+    type RecordedCall = (String, Value, Option<String>, Option<String>);
+
     #[derive(Default)]
     struct FakeInvoker {
-        calls: Mutex<Vec<(String, Value)>>,
+        calls: Mutex<Vec<RecordedCall>>,
         fail_backend: AtomicBool,
         condition_value: Mutex<Option<Value>>,
     }
 
     impl FakeInvoker {
-        async fn calls(&self) -> Vec<(String, Value)> {
+        async fn calls(&self) -> Vec<RecordedCall> {
             self.calls.lock().await.clone()
         }
     }
 
     #[async_trait]
     impl Invoker for FakeInvoker {
-        async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
+        async fn call(
+            &self,
+            function_id: &str,
+            payload: Value,
+            traceparent: Option<String>,
+            baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
             self.calls
                 .lock()
                 .await
-                .push((function_id.to_string(), payload));
+                .push((function_id.to_string(), payload, traceparent, baggage));
             if function_id == "condition" {
                 return Ok(self.condition_value.lock().await.clone());
             }
@@ -627,7 +657,13 @@ mod tests {
 
     #[async_trait]
     impl Invoker for ConcurrencyGateInvoker {
-        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_seen.fetch_max(now, Ordering::SeqCst);
             sleep(Duration::from_millis(self.hold_ms)).await;
@@ -652,7 +688,13 @@ mod tests {
 
     #[async_trait]
     impl Invoker for OrderRecordingInvoker {
-        async fn call(&self, _function_id: &str, payload: Value) -> Result<Option<Value>, String> {
+        async fn call(
+            &self,
+            _function_id: &str,
+            payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
             let n = payload.as_i64().unwrap_or_default();
             sleep(Duration::from_millis(jitter_ms(n as u64))).await;
             self.order.lock().await.push(n);
@@ -676,7 +718,8 @@ mod tests {
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
-            .await;
+            .await
+            .unwrap();
 
         wait_until(|| {
             let invoker = invoker.clone();
@@ -685,6 +728,57 @@ mod tests {
         .await;
         assert_eq!(adapter.topic_stats("demo").await.unwrap().delivered, 1);
         adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn delivery_restores_persisted_trace_context_for_the_invocation() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = BuiltinAdapter::with_poll_interval_ms(store, invoker.clone(), 5);
+
+        adapter
+            .subscribe("demo", "sub1", "backend", None, None)
+            .await;
+        adapter
+            .enqueue(
+                "demo",
+                json!({"hello": "world"}),
+                Some("00-trace-parent-01".to_string()),
+                Some("tenant=motia".to_string()),
+            )
+            .await
+            .unwrap();
+
+        wait_until(|| {
+            let invoker = invoker.clone();
+            async move { invoker.calls().await.len() == 1 }
+        })
+        .await;
+        let calls = invoker.calls().await;
+        let call = &calls[0];
+        assert_eq!(call.2.as_deref(), Some("00-trace-parent-01"));
+        assert_eq!(call.3.as_deref(), Some("tenant=motia"));
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn enqueue_propagates_file_store_persistence_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("queue-failing-store-{}", uuid::Uuid::new_v4()));
+        let store = FileStore::open(&dir, 5).await.unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(&dir, b"blocks directory recreation").unwrap();
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = BuiltinAdapter::with_poll_interval_ms(Arc::new(store), invoker, 5);
+
+        let error = adapter
+            .enqueue("demo", json!({"hello": "world"}), None, None)
+            .await
+            .unwrap_err();
+
+        assert!(!error.to_string().is_empty());
+        adapter.shutdown().await;
+        std::fs::remove_file(dir).unwrap();
     }
 
     // (g) enqueue fans out a separate copy to EVERY subscriber on the same
@@ -700,7 +794,7 @@ mod tests {
         adapter.subscribe("demo", "sub-b", "fn-b", None, None).await;
 
         for i in 0..3 {
-            adapter.enqueue("demo", json!(i), None, None).await;
+            adapter.enqueue("demo", json!(i), None, None).await.unwrap();
         }
 
         wait_until(|| {
@@ -710,8 +804,8 @@ mod tests {
         .await;
 
         let calls = invoker.calls().await;
-        let fn_a_calls = calls.iter().filter(|(f, _)| f == "fn-a").count();
-        let fn_b_calls = calls.iter().filter(|(f, _)| f == "fn-b").count();
+        let fn_a_calls = calls.iter().filter(|(f, _, _, _)| f == "fn-a").count();
+        let fn_b_calls = calls.iter().filter(|(f, _, _, _)| f == "fn-b").count();
         assert_eq!(fn_a_calls, 3, "fn-a should receive every enqueued message");
         assert_eq!(fn_b_calls, 3, "fn-b should receive every enqueued message");
         adapter.shutdown().await;
@@ -728,7 +822,8 @@ mod tests {
 
         adapter
             .enqueue("demo", json!("no subscribers yet"), None, None)
-            .await;
+            .await
+            .unwrap();
 
         assert_eq!(store.topic_stats("demo").await.depth, 1);
         let job = store
@@ -760,7 +855,8 @@ mod tests {
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
-            .await;
+            .await
+            .unwrap();
 
         sleep(Duration::from_millis(200)).await;
         assert!(
@@ -790,7 +886,7 @@ mod tests {
             )
             .await;
         for i in 0..12 {
-            adapter.enqueue("demo", json!(i), None, None).await;
+            adapter.enqueue("demo", json!(i), None, None).await.unwrap();
         }
 
         wait_until(|| {
@@ -827,7 +923,7 @@ mod tests {
             )
             .await;
         for i in 0..20 {
-            adapter.enqueue("demo", json!(i), None, None).await;
+            adapter.enqueue("demo", json!(i), None, None).await.unwrap();
         }
 
         wait_until(|| {
@@ -865,7 +961,10 @@ mod tests {
                 }),
             )
             .await;
-        adapter.enqueue("demo", json!("job"), None, None).await;
+        adapter
+            .enqueue("demo", json!("job"), None, None)
+            .await
+            .unwrap();
 
         wait_until(|| async { adapter.dlq_count("demo").await.unwrap_or(0) > 0 }).await;
 
@@ -900,7 +999,10 @@ mod tests {
             .subscribe("demo", "sub-b", "fn-b", None, retry_cfg())
             .await;
 
-        adapter.enqueue("demo", json!("job"), None, None).await;
+        adapter
+            .enqueue("demo", json!("job"), None, None)
+            .await
+            .unwrap();
 
         // Both subscribers get their own copy and both fail straight to
         // their own DLQ (max_retries: 1) -> dlq_count aggregates both.
@@ -932,7 +1034,10 @@ mod tests {
             .subscribe("demo", "sub1", "backend", None, None)
             .await;
         adapter.unsubscribe("demo", "sub1").await;
-        store.enqueue("demo", json!("after")).await.unwrap();
+        store
+            .enqueue("demo", json!("after"), None, None)
+            .await
+            .unwrap();
         sleep(Duration::from_millis(120)).await;
         assert!(invoker.calls().await.is_empty());
     }
@@ -956,7 +1061,8 @@ mod tests {
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
-            .await;
+            .await
+            .unwrap();
 
         wait_until(|| {
             let invoker = invoker.clone();
@@ -992,7 +1098,10 @@ mod tests {
         let invoker = Arc::new(FakeInvoker::default());
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker, 3);
 
-        store.enqueue("demo", json!("job")).await.unwrap();
+        store
+            .enqueue("demo", json!("job"), None, None)
+            .await
+            .unwrap();
         let job = store.dequeue("demo").await.unwrap();
         store.nack("demo", job, 1, 1).await;
 

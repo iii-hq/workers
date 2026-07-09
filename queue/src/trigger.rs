@@ -30,7 +30,13 @@ const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
-    async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String>;
+    async fn call(
+        &self,
+        function_id: &str,
+        payload: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> Result<Option<Value>, String>;
 }
 
 #[derive(Clone)]
@@ -46,7 +52,17 @@ impl IiiInvoker {
 
 #[async_trait]
 impl Invoker for IiiInvoker {
-    async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
+    async fn call(
+        &self,
+        function_id: &str,
+        payload: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> Result<Option<Value>, String> {
+        use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
+
+        let context =
+            iii_helpers::observability::extract_context(traceparent.as_deref(), baggage.as_deref());
         self.iii
             .trigger(TriggerRequest {
                 function_id: function_id.to_string(),
@@ -54,6 +70,7 @@ impl Invoker for IiiInvoker {
                 action: None,
                 timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
             })
+            .with_context(context)
             .await
             .map(Some)
             .map_err(|e| e.to_string())
@@ -258,7 +275,8 @@ mod tests {
             _data: Value,
             _traceparent: Option<String>,
             _baggage: Option<String>,
-        ) {
+        ) -> anyhow::Result<()> {
+            Ok(())
         }
 
         async fn subscribe(

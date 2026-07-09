@@ -309,8 +309,8 @@ A sub-agent is an ordinary harness run in a **child session**, spawned as a func
 parent turn. Each child gets its own goal (the spawn `task`), its own policy, and — via the
 [output contract](#output-contract) — its own typed deliverable: free text, JSON, or
 schema-validated JSON. The model calls `harness::spawn` through `agent_trigger`; the dispatch
-reports the call **pending**, the parent parks, the child runs its own turns on the `harness-turn`
-queue (parallel across sessions by construction — spawn three children and they run concurrently),
+reports the call **pending**, the parent parks, the child runs its own turns on the
+`harness-subagent` queue (independent from root and reactive capacity),
 and the child's completion resolves the parent's call with the child's result.
 
 The spawn dispatch, step by step:
@@ -823,11 +823,12 @@ allowed. The child's transcript is a normal session — bind `session::message-u
 
 ### `harness::turn`
 
-Internal durable loop step. Documented for completeness; consumers do not call it. Enqueued onto the
-`harness-turn` queue (FIFO per session, parallel across sessions — see
-[Dependencies](#dependencies)); each run advances one step of [the loop](#the-loop).
+Internal durable loop step. Documented for completeness; consumers do not call it. Published to the
+turn record's durable topic (`harness-turn`, `harness-subagent`, or `harness-reactive`); each run
+advances one step of [the loop](#the-loop).
 
-- Invocation: **enqueue** (`TriggerAction.Enqueue({ queue: "harness-turn" })`)
+- Invocation: **sync publish** (`iii::durable::publish`); the queue subscriber invokes
+  `harness::turn`.
 
 ```typescript
 type TurnStepPayload = {
@@ -1002,7 +1003,7 @@ the default trace row reflects descendant failures rather than only the root spa
 
 | Scope | Key | Value | Purpose |
 |---|---|---|---|
-| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, per-send options (incl. output contract), per-call checkpoints `(`triggered` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). |
+| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, depth, lane?, abort?, watermark_entry_id?, stream_request_id?, options, calls, parent?, result?, result_error? }` | Loop progress, frozen queue lane, per-send options (incl. output contract), per-call checkpoints `(`triggered` / `pending` / `done` + child linkage + `held_by` for [hook](#hooks) holds), steering watermark, sub-agent linkage, turn result; survives restart. Seeded by CAS from `harness::send` / `harness::spawn` (see [Concurrency & steering](#concurrency--steering)). Legacy records infer the lane from reactive metadata, then depth/parent linkage, then root. |
 | `harness_idem` | `<idempotency_key>` | `{ session_id, turn_id, entry_id, ts }` | `harness::send` webhook dedupe (TTL ~24h). |
 
 Transcript truth lives in [session-manager](session-manager.md); the harness keeps only loop
@@ -1017,10 +1018,14 @@ pattern [approval-gate](approval-gate.md#state-lifecycle) mandates for its own s
   and set status. Required.
 - `llm-router` (`router::chat`) — generation. Required.
 - `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.
-- `iii-queue` — the durable `harness-turn` loop. The queue MUST provide per-session ordering with
-  cross-session parallelism (partition by `session_id`); a single global FIFO would head-of-line
-  block every session behind one long stream step. Sub-agent turns are ordinary entries on this
-  queue under their child `session_id` — which is what makes spawned children run in parallel.
+- standalone `queue` worker — provides `iii::durable::publish` and the `durable:subscriber`
+  trigger type. Harness boot owns three standard-mode subscribers: `harness-turn` (root),
+  `harness-subagent` (direct and nested sub-agents), and `harness-reactive` (reactions). Each has
+  concurrency 10, three attempts, and 1000ms exponential backoff, for independent lane capacity
+  and an aggregate ceiling of 30 active steps. Boot waits up to 10 seconds for all three topics and
+  fails closed if consumers are unavailable. Installing harness brings this worker as a manifest
+  dependency; the engine built-in `iii-queue` must be disabled because both own the same trigger
+  type.
 - iii engine — `iii.trigger` for function dispatch (`agent_trigger` unwrap → target function);
   registry reads (`engine::functions::list` / `engine::functions::info`) for runtime discovery and
   `expose: "native"` schema mapping; custom trigger-type registration (`registerTriggerType`) for

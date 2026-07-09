@@ -232,15 +232,7 @@ async fn persist_and_maybe_resume(
     record.status = TurnStatus::Running;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    crate::turn_loop::enqueue_step(
-        &deps.iii,
-        &record.session_id,
-        &record.turn_id,
-        record.step,
-        record.message_preview.as_deref(),
-        record.depth,
-    )
-    .await?;
+    crate::turn_loop::enqueue_step(&deps.iii, record, cfg.session_timeout_ms).await?;
     Ok(true)
 }
 

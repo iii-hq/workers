@@ -28,6 +28,7 @@ test-adapters = []
 
 [dependencies]
 iii-sdk = "=0.20.0"
+iii-helpers = "=0.20.0"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

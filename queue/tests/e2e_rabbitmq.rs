@@ -127,7 +127,13 @@ struct NoopInvoker;
 
 #[async_trait]
 impl Invoker for NoopInvoker {
-    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+    async fn call(
+        &self,
+        _function_id: &str,
+        _payload: Value,
+        _traceparent: Option<String>,
+        _baggage: Option<String>,
+    ) -> Result<Option<Value>, String> {
         panic!("NoopInvoker::call should never be invoked in this test")
     }
 }
@@ -176,7 +182,8 @@ async fn basic_delivery_connect_or_skip() {
 
     adapter
         .enqueue(&topic, json!({"hello": "world"}), None, None)
-        .await;
+        .await
+        .unwrap();
 
     wait_until(
         || {
@@ -377,7 +384,8 @@ async fn priority_ordering_connect_or_skip() {
     for p in [1u64, 9, 5] {
         adapter
             .enqueue(&topic, json!({"marker": p, "priority": p}), None, None)
-            .await;
+            .await
+            .unwrap();
     }
 
     // No consumer exists yet at this point -- all three publishes above were
@@ -475,7 +483,10 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     for n in 0..10u64 {
-        adapter.enqueue(&topic, json!({"n": n}), None, None).await;
+        adapter
+            .enqueue(&topic, json!({"n": n}), None, None)
+            .await
+            .unwrap();
     }
 
     wait_until(

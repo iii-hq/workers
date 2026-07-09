@@ -6,8 +6,5 @@
 # there at boot and hot-reloads on change.
 
 workers:
-  - name: iii-queue
-    # 'iii-queue': value now lives in the configuration worker at ./config/iii-queue.yaml. Edit at runtime via 'iii config set iii-queue' (or 'configuration::set'); this block is no longer read.
-
   - name: iii-state
     # 'iii-state': value now lives in the configuration worker at ./config/iii-state.yaml. Edit at runtime via 'iii config set iii-state' (or 'configuration::set'); this block is no longer read.

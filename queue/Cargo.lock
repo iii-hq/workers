@@ -1244,6 +1244,7 @@ dependencies = [
  "async-trait",
  "clap",
  "futures",
+ "iii-helpers",
  "iii-queue",
  "iii-sdk",
  "lapin",

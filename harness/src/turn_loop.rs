@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
 use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, TriggerAction};
+use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -26,8 +26,6 @@ use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
 };
 
-pub const TURN_QUEUE: &str = "default";
-
 #[derive(Clone, Copy)]
 struct FailureInfo {
     code: &'static str,
@@ -40,7 +38,6 @@ const INTERNAL_FAILURE: FailureInfo = FailureInfo {
     phase: "execution",
     retryable: false,
 };
-
 /// The enqueued `harness::turn` step payload.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TurnStepPayload {
@@ -71,31 +68,53 @@ pub struct TurnStepResult {
     pub skipped: bool,
 }
 
-/// Enqueue the next durable loop step onto the engine's `default` queue.
+fn build_publish_request(record: &TurnRecord) -> TriggerRequest {
+    let payload = TurnStepPayload {
+        session_id: record.session_id.clone(),
+        turn_id: record.turn_id.clone(),
+        step: record.step,
+        message_preview: record.message_preview.clone(),
+        depth: record.depth,
+    };
+    TriggerRequest {
+        function_id: "iii::durable::publish".to_string(),
+        payload: json!({
+            "queue": crate::turn_queues::topic_for_lane(record.effective_lane()),
+            "data": payload,
+        }),
+        action: None,
+        timeout_ms: None,
+    }
+}
+
+/// Publish the next durable loop step to the record's frozen execution lane.
+/// If publication fails, mark the already-persisted record failed so a send
+/// cannot remain indefinitely `running` without a queued continuation.
 pub async fn enqueue_step(
     iii: &IIIClient,
-    session_id: &str,
-    turn_id: &str,
-    step: u64,
-    message_preview: Option<&str>,
-    depth: u32,
+    record: &TurnRecord,
+    session_timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    let mut payload =
-        json!({ "session_id": session_id, "turn_id": turn_id, "step": step, "depth": depth });
-    if let Some(preview) = message_preview {
-        payload["message_preview"] = json!(preview);
+    match iii.trigger(build_publish_request(record)).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let failed = failed_after_publish(record, &error.to_string());
+            let message = failed
+                .result_error
+                .clone()
+                .expect("failed publish records always carry an error");
+            crate::state::put_turn(iii, &failed, session_timeout_ms).await?;
+            Err(HarnessError::Dependency(message))
+        }
     }
-    iii.trigger(TriggerRequest {
-        function_id: "harness::turn".to_string(),
-        payload,
-        action: Some(TriggerAction::Enqueue {
-            queue: TURN_QUEUE.to_string(),
-        }),
-        timeout_ms: None,
-    })
-    .await
-    .map(|_| ())
-    .map_err(|e| HarnessError::Dependency(format!("enqueue harness::turn: {e}")))
+}
+
+fn failed_after_publish(record: &TurnRecord, error: &str) -> TurnRecord {
+    let mut failed = record.clone();
+    failed.status = TurnStatus::Failed;
+    failed.result_error = Some(format!("publish harness::turn: {error}"));
+    failed.updated_at = AgentMessage::now_ms();
+    failed
 }
 
 fn origin(turn_id: &str) -> Value {
@@ -985,15 +1004,7 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
     record.status = TurnStatus::Running;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    enqueue_step(
-        &deps.iii,
-        &record.session_id,
-        &record.turn_id,
-        next,
-        record.message_preview.as_deref(),
-        record.depth,
-    )
-    .await?;
+    enqueue_step(&deps.iii, record, cfg.session_timeout_ms).await?;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Running,
@@ -1872,6 +1883,65 @@ mod tests {
     use super::{cancel_requested, transient_resume_allowed};
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
+
+    #[test]
+    fn durable_publish_keeps_turn_step_payload_under_data() {
+        let record: crate::types::turn::TurnRecord = serde_json::from_value(serde_json::json!({
+            "turn_id": "t_1",
+            "session_id": "s_1",
+            "status": "running",
+            "step": 4,
+            "turn_count": 1,
+            "depth": 0,
+            "lane": "root",
+            "message_preview": "hello",
+            "options": { "model": "m", "max_turns": 16 },
+            "created_at": 1,
+            "updated_at": 1
+        }))
+        .unwrap();
+
+        let request = super::build_publish_request(&record);
+        assert_eq!(request.function_id, "iii::durable::publish");
+        assert!(request.action.is_none());
+        assert_eq!(request.payload["queue"], "harness-turn");
+        assert_eq!(
+            request.payload["data"],
+            serde_json::json!({
+                "session_id": "s_1",
+                "turn_id": "t_1",
+                "step": 4,
+                "message_preview": "hello",
+                "depth": 0
+            })
+        );
+    }
+
+    #[test]
+    fn publish_failure_terminally_fails_the_turn_record() {
+        let record: crate::types::turn::TurnRecord = serde_json::from_value(serde_json::json!({
+            "turn_id": "t_1",
+            "session_id": "s_1",
+            "status": "running",
+            "step": 0,
+            "turn_count": 1,
+            "depth": 0,
+            "lane": "root",
+            "options": { "model": "m", "max_turns": 16 },
+            "created_at": 1,
+            "updated_at": 1
+        }))
+        .unwrap();
+
+        let failed = super::failed_after_publish(&record, "queue unavailable");
+        assert_eq!(failed.status, crate::types::turn::TurnStatus::Failed);
+        assert_eq!(
+            failed.result_error.as_deref(),
+            Some("publish harness::turn: queue unavailable")
+        );
+        assert_eq!(failed.turn_id, record.turn_id);
+        assert_eq!(failed.step, record.step);
+    }
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {

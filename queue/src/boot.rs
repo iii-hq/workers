@@ -1,11 +1,13 @@
 //! Worker boot and shutdown wiring.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterTriggerType};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::Instant;
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::adapters::builtin::BuiltinAdapter;
@@ -18,6 +20,8 @@ use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec};
 use crate::TRIGGER_TYPE;
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
+const LIST_TOPICS_FUNCTION_ID: &str = "engine::queue::list_topics";
+const QUEUE_INTERFACE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const BUILTIN_III_QUEUE_WORKER_ID: &str = "iii-queue";
 
 pub type ConfigCell = Arc<RwLock<Arc<QueueConfig>>>;
@@ -60,12 +64,37 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
         .trigger_request_format::<SubscriberSpec>(),
     );
 
+    wait_for_queue_interface(&iii).await?;
+
     Ok(BootHandle {
         adapter,
         trigger_handler,
         config,
         apply_lock,
     })
+}
+
+async fn wait_for_queue_interface(iii: &IIIClient) -> anyhow::Result<()> {
+    let deadline = Instant::now() + QUEUE_INTERFACE_TIMEOUT;
+    let mut last_error = "queue interface did not respond".to_string();
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            anyhow::bail!("queue interface registration timed out after 5 seconds: {last_error}");
+        }
+        let request = iii.trigger(TriggerRequest {
+            function_id: LIST_TOPICS_FUNCTION_ID.to_string(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: Some(500),
+        });
+        match tokio::time::timeout(deadline.saturating_duration_since(now), request).await {
+            Ok(Ok(_)) => return Ok(()),
+            Ok(Err(error)) => last_error = error.to_string(),
+            Err(_) => last_error = "queue interface request timed out".to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Adapter factory: resolves `config`'s effective adapter name to a live
@@ -262,7 +291,10 @@ mod tests {
     async fn build_store_defaults_to_in_memory_without_adapter() {
         let config = QueueConfig::default();
         let store = build_store(&config).await.unwrap();
-        store.enqueue("demo", json!({"ok": true})).await.unwrap();
+        store
+            .enqueue("demo", json!({"ok": true}), None, None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -274,7 +306,10 @@ mod tests {
             }),
         };
         let store = build_store(&config).await.unwrap();
-        store.enqueue("demo", json!({"ok": true})).await.unwrap();
+        store
+            .enqueue("demo", json!({"ok": true}), None, None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -291,7 +326,10 @@ mod tests {
             }),
         };
         let store = build_store(&config).await.unwrap();
-        store.enqueue("demo", json!({"ok": true})).await.unwrap();
+        store
+            .enqueue("demo", json!({"ok": true}), None, None)
+            .await
+            .unwrap();
         assert!(dir.join("queue_store.json").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -304,6 +342,8 @@ mod tests {
             &self,
             _function_id: &str,
             _payload: serde_json::Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
         ) -> Result<Option<serde_json::Value>, String> {
             Ok(None)
         }
@@ -320,7 +360,8 @@ mod tests {
             .unwrap();
         adapter
             .enqueue("demo", json!({"ok": true}), None, None)
-            .await;
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -413,7 +454,8 @@ mod tests {
         let adapter = build_adapter(&config, noop_invoker()).await.unwrap();
         adapter
             .enqueue("demo", json!({"ok": true}), None, None)
-            .await;
+            .await
+            .unwrap();
     }
 
     #[test]

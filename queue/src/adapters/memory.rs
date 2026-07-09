@@ -51,8 +51,8 @@ impl QueueAdapter for MemoryAdapter {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    ) {
-        self.inner.enqueue(topic, data, traceparent, baggage).await;
+    ) -> anyhow::Result<()> {
+        self.inner.enqueue(topic, data, traceparent, baggage).await
     }
 
     async fn subscribe(
@@ -187,7 +187,13 @@ mod tests {
 
     #[async_trait]
     impl Invoker for RecordingInvoker {
-        async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
+        async fn call(
+            &self,
+            function_id: &str,
+            payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
             self.calls
                 .lock()
                 .await
@@ -204,7 +210,8 @@ mod tests {
         adapter.subscribe("demo", "sub-1", "fn-1", None, None).await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
-            .await;
+            .await
+            .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
