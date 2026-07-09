@@ -1380,35 +1380,22 @@ export function ChatView({
               className="mb-1 border border-rule bg-bg"
               aria-label="queued messages"
             >
-              {queuedStrip.map((row) => {
-                const editing = row.id === browsedQueuedId
-                return (
+              {/* The message being edited is pulled out of the queue and lives
+                  only in the composer — hidden here until it's saved back (in
+                  place, so it reappears at its spot) or removed. */}
+              {queuedStrip
+                .filter((row) => row.id !== browsedQueuedId)
+                .map((row) => (
                   <div
                     key={row.id}
-                    className={cn(
-                      'flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0',
-                      editing && 'bg-accent/10',
-                    )}
+                    className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0"
                   >
-                    <span
-                      className={cn(
-                        'min-w-0 flex-1 truncate',
-                        editing && 'text-accent',
-                      )}
-                    >
-                      {row.text}
-                    </span>
-                    <span
-                      className={cn(
-                        'shrink-0 lowercase',
-                        editing ? 'text-accent' : 'text-ink-ghost',
-                      )}
-                    >
-                      {editing ? 'editing' : 'queued'}
+                    <span className="min-w-0 flex-1 truncate">{row.text}</span>
+                    <span className="shrink-0 lowercase text-ink-ghost">
+                      queued
                     </span>
                   </div>
-                )
-              })}
+                ))}
               {backend.editQueued && queuedDrafts.length > 0 ? (
                 <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
                   {browsedQueuedId
