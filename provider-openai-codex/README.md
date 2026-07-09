@@ -87,7 +87,7 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `not configured: sign in with ChatGPT …` | no vault credential and no readable `~/.codex/auth.json` | run the `oauth-openai-codex` sign-in, or `codex login` so `~/.codex/auth.json` exists |
-| `vault import failed (function_not_found: auth::set_token)` | `auth-credentials` vault not running | start the vault, or rely on the local `~/.codex/auth.json` fallback |
+| local fallback is used on each request | `auth-credentials` vault not running | start the vault for shared/refreshing credentials, or keep relying on the local `~/.codex/auth.json` fallback |
 | `requires a ChatGPT OAuth login … API keys belong on provider-openai` | credential is an API key | this provider is OAuth-only; use `provider-openai` for keys |
 | `missing ChatGPT account id` | token lacks the account claim | sign in again with a ChatGPT account |
 | backend `Unsupported parameter` / shape errors | Codex backend contract drifted | update this worker's request/SSE mapping against the current backend |

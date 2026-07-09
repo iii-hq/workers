@@ -112,6 +112,9 @@ pub fn read_codex_home_credential() -> Option<Value> {
 /// vault — only when the vault has no credential yet (so a fresher, rotated
 /// vault token is never downgraded). Never writes back to auth.json.
 pub async fn import_codex_home_if_absent(iii: &IIIClient) {
+    if !router_client::auth_get_token_available(iii).await {
+        return;
+    }
     // Don't clobber a credential the vault already holds.
     if matches!(
         router_client::get_token(iii, PROVIDER_ID).await,
@@ -139,11 +142,12 @@ pub async fn import_codex_home_if_absent(iii: &IIIClient) {
         );
         return;
     };
-    match router_client::set_token(iii, PROVIDER_ID, cred).await {
-        Ok(()) => println!(
+    match router_client::set_token_if_available(iii, PROVIDER_ID, cred).await {
+        Ok(true) => println!(
             "[provider-openai-codex] imported ChatGPT credential from {} into the vault",
             path.display()
         ),
+        Ok(false) => {}
         Err(e) => eprintln!("[provider-openai-codex] vault import failed ({e})"),
     }
 }
