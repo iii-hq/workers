@@ -116,16 +116,19 @@ async fn run_stream_call(
         return;
     }
 
-    let body = build_body(&BodyArgs {
-        model: cfg.model.clone(),
-        max_tokens: cfg.max_tokens,
-        system_prompt: input.system_prompt.unwrap_or_default(),
-        messages: input.messages,
-        tools: input.tools.unwrap_or_default(),
-        thinking: thinking_build.config,
-        effort: thinking_build.effort,
-        cache_enabled: cache_enabled(),
-    });
+    let body = build_body(
+        &BodyArgs {
+            model: cfg.model.clone(),
+            max_tokens: cfg.max_tokens,
+            system_prompt: input.system_prompt.unwrap_or_default(),
+            messages: input.messages,
+            tools: input.tools.unwrap_or_default(),
+            thinking: thinking_build.config,
+            effort: thinking_build.effort,
+            cache_enabled: cache_enabled(),
+        },
+        &mut warnings,
+    );
     let headers = build_headers(&cfg);
 
     let rx = spawn_upstream(

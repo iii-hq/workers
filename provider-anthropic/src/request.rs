@@ -26,8 +26,31 @@ pub struct BodyArgs {
 }
 
 /// No `temperature`: the API default applies (required when thinking is on).
-pub fn build_body(args: &BodyArgs) -> Value {
+pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
     let mut wire_messages = to_wire_messages(&args.messages);
+    // Claude 4.6+/Sonnet 5/Fable/Mythos reject any request whose final message
+    // is an assistant turn — "Prefilling assistant messages is not supported
+    // for this model" — with or without thinking. A trailing call-less
+    // assistant here is always a dead partial from an aborted stream (a
+    // tool_use turn always gets a tool_result/placeholder user flushed after
+    // it), so drop it instead of failing the whole turn.
+    let mut dropped_prefill = false;
+    while wire_messages
+        .last()
+        .and_then(|m| m.get("role"))
+        .and_then(Value::as_str)
+        == Some("assistant")
+    {
+        wire_messages.pop();
+        dropped_prefill = true;
+    }
+    if dropped_prefill {
+        warnings.push(
+            "trailing partial assistant message dropped: assistant prefill is not supported \
+             (conversation must end with a user message)"
+                .to_string(),
+        );
+    }
     apply_messages_cache_anchor(&mut wire_messages, args.cache_enabled);
     let mut wire_tools = functions_to_wire(&args.tools);
     apply_tools_cache_control(&mut wire_tools, args.cache_enabled);
@@ -103,7 +126,7 @@ mod tests {
 
     #[test]
     fn body_has_required_fields_and_stream_true() {
-        let body = build_body(&args());
+        let body = build_body(&args(), &mut Vec::new());
         assert_eq!(body["model"], "claude-sonnet-4-6");
         assert_eq!(body["max_tokens"], 4096);
         assert_eq!(body["stream"], true);
@@ -117,7 +140,7 @@ mod tests {
     fn empty_system_prompt_omits_the_field() {
         let mut a = args();
         a.system_prompt = String::new();
-        assert!(build_body(&a).get("system").is_none());
+        assert!(build_body(&a, &mut Vec::new()).get("system").is_none());
     }
 
     #[test]
@@ -125,11 +148,82 @@ mod tests {
         let mut a = args();
         a.thinking = Some(crate::thinking::ADAPTIVE);
         a.effort = Some("xhigh");
-        let body = build_body(&a);
+        let body = build_body(&a, &mut Vec::new());
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
         assert!(body["thinking"].get("budget_tokens").is_none());
         assert_eq!(body["output_config"]["effort"], "xhigh");
+    }
+
+    fn assistant_msg(content: Vec<ContentBlock>) -> AgentMessage {
+        use llm_router::types::events::StopReason;
+        use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
+        AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content,
+            stop_reason: StopReason::End,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "m".into(),
+            provider: "anthropic".into(),
+            timestamp: 2,
+        })
+    }
+
+    #[test]
+    fn trailing_assistant_prefill_is_dropped_with_warning_and_thinking_kept() {
+        // Claude 4.6+/Sonnet 5/Fable/Mythos 400 on assistant prefill with or
+        // without thinking, so the dead partial tail (aborted-stream retry)
+        // must be dropped — and thinking must survive.
+        let mut a = args();
+        a.thinking = Some(crate::thinking::ADAPTIVE);
+        a.effort = Some("high");
+        a.messages.push(assistant_msg(vec![ContentBlock::Text {
+            text: "the answer is".into(),
+        }]));
+        let mut warnings = Vec::new();
+        let body = build_body(&a, &mut warnings);
+        assert_eq!(
+            body["messages"].as_array().unwrap().last().unwrap()["role"],
+            "user"
+        );
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert_eq!(warnings.len(), 1, "one warning expected: {warnings:?}");
+        assert!(warnings[0].contains("prefill"));
+    }
+
+    #[test]
+    fn trailing_tool_use_assistant_survives_the_prefill_drop() {
+        // A tool_use turn is always followed by a flushed tool_result /
+        // placeholder user message, so the prefill drop never eats it and
+        // signed-thinking-before-tool_use replay stays intact.
+        let mut a = args();
+        a.thinking = Some(crate::thinking::ADAPTIVE);
+        a.messages.push(assistant_msg(vec![
+            ContentBlock::Thinking {
+                text: "plan".into(),
+                signature: Some("sig".into()),
+            },
+            ContentBlock::FunctionCall {
+                id: "t1".into(),
+                function_id: "shell::exec".into(),
+                arguments: json!({ "cmd": "ls" }),
+            },
+        ]));
+        let mut warnings = Vec::new();
+        let body = build_body(&a, &mut warnings);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.last().unwrap()["role"], "user");
+        let assistant = &msgs[msgs.len() - 2];
+        assert_eq!(assistant["role"], "assistant");
+        assert_eq!(assistant["content"][0]["type"], "thinking");
+        assert_eq!(assistant["content"][1]["type"], "tool_use");
+        assert!(warnings.is_empty(), "no warning expected: {warnings:?}");
+        assert_eq!(body["thinking"]["type"], "adaptive");
     }
 
     #[test]
