@@ -1,5 +1,6 @@
 //! Queue and DLQ service function registration.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -11,6 +12,7 @@ use serde_json::Value;
 
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, SwappableAdapter};
 use crate::boot::{ApplyLock, ConfigCell};
+use crate::function_queue_id::function_queue_adapter_key;
 use crate::function_queues::FunctionQueueRuntime;
 use crate::store::Job;
 
@@ -37,14 +39,15 @@ pub struct PublishInput {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct EnsureFunctionQueueInput {
-    pub queue: String,
+    pub function_id: String,
     pub config: FunctionQueueConfig,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct EnsureFunctionQueueResult {
+    pub function_id: String,
     pub queue: String,
-    pub created: bool,
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -109,6 +112,8 @@ pub struct TopicInfo {
     pub name: String,
     pub broker_type: String,
     pub subscriber_count: u64,
+    pub function_id: Option<String>,
+    pub healthy: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -123,6 +128,8 @@ pub struct TopicStatsOutput {
     pub consumer_count: u64,
     pub dlq_depth: u64,
     pub config: Option<Value>,
+    pub function_id: Option<String>,
+    pub healthy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
@@ -200,75 +207,89 @@ pub fn register_all(
     );
 
     let redrive_adapter = adapter.clone();
+    let redrive_config = config.clone();
     iii.register_function(
         REDRIVE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveInput| {
             let adapter = redrive_adapter.clone();
-            async move { redrive(adapter, input).await }
+            let config = redrive_config.clone();
+            async move { redrive(adapter, config, input).await }
         })
         .description("Redrive all DLQ messages back to the main queue"),
     );
 
     let redrive_message_adapter = adapter.clone();
+    let redrive_message_config = config.clone();
     iii.register_function(
         REDRIVE_MESSAGE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveSingleInput| {
             let adapter = redrive_message_adapter.clone();
-            async move { redrive_message(adapter, input).await }
+            let config = redrive_message_config.clone();
+            async move { redrive_message(adapter, config, input).await }
         })
         .description("Redrive a single DLQ message by ID back to the main queue"),
     );
 
     let discard_adapter = adapter.clone();
+    let discard_config = config.clone();
     iii.register_function(
         DISCARD_MESSAGE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveSingleInput| {
             let adapter = discard_adapter.clone();
-            async move { discard_message(adapter, input).await }
+            let config = discard_config.clone();
+            async move { discard_message(adapter, config, input).await }
         })
         .description("Discard (purge) a single DLQ message by ID"),
     );
 
     let list_adapter = adapter.clone();
     let list_config = config.clone();
+    let list_runtime = function_queues.clone();
     iii.register_function(
         LIST_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: ListTopicsInput| {
             let adapter = list_adapter.clone();
             let config = list_config.clone();
-            async move { list_topics(adapter, config).await }
+            let runtime = list_runtime.clone();
+            async move { list_topics(adapter, config, runtime).await }
         })
         .description("List all queue topics"),
     );
 
     let stats_adapter = adapter.clone();
     let stats_config = config.clone();
+    let stats_runtime = function_queues.clone();
     iii.register_function(
         TOPIC_STATS_FN_ID,
         RegisterFunction::new_async(move |input: TopicStatsInput| {
             let adapter = stats_adapter.clone();
             let config = stats_config.clone();
-            async move { topic_stats(adapter, config, input).await }
+            let runtime = stats_runtime.clone();
+            async move { topic_stats(adapter, config, runtime, input).await }
         })
         .description("Get stats for a queue topic"),
     );
 
     let dlq_topics_adapter = adapter.clone();
+    let dlq_topics_config = config.clone();
     iii.register_function(
         DLQ_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: DlqTopicsInput| {
             let adapter = dlq_topics_adapter.clone();
-            async move { dlq_topics(adapter).await }
+            let config = dlq_topics_config.clone();
+            async move { dlq_topics(adapter, config).await }
         })
         .description("List DLQ topics with counts"),
     );
 
     let dlq_messages_adapter = adapter;
+    let dlq_messages_config = config;
     iii.register_function(
         DLQ_MESSAGES_FN_ID,
         RegisterFunction::new_async(move |input: DlqMessagesInput| {
             let adapter = dlq_messages_adapter.clone();
-            async move { dlq_messages(adapter, input).await }
+            let config = dlq_messages_config.clone();
+            async move { dlq_messages(adapter, config, input).await }
         })
         .description("Browse DLQ messages"),
     );
@@ -281,8 +302,8 @@ async fn ensure_function_queue(
     runtime: Arc<FunctionQueueRuntime>,
     input: EnsureFunctionQueueInput,
 ) -> Result<EnsureFunctionQueueResult, Error> {
-    if input.queue.trim().is_empty() {
-        return Err(Error::Handler("queue is required".to_string()));
+    if input.function_id.trim().is_empty() {
+        return Err(Error::Handler("function_id is required".to_string()));
     }
     input
         .config
@@ -291,34 +312,47 @@ async fn ensure_function_queue(
 
     let _apply = apply_lock.lock().await;
     let current = config_cell.read().await.as_ref().clone();
-    if let Some(existing) = current.queue_configs.get(&input.queue) {
+    if let Some(existing) = current.queue_configs.get(&input.function_id) {
         if existing == &input.config {
+            let healthy = runtime
+                .status(&input.function_id)
+                .await
+                .is_some_and(|status| status.healthy);
+            if !healthy {
+                runtime
+                    .reconcile(&current.queue_configs)
+                    .await
+                    .map_err(|error| {
+                        Error::Handler(format!(
+                            "could not restart function queue '{}': {error}",
+                            input.function_id
+                        ))
+                    })?;
+            }
             return Ok(EnsureFunctionQueueResult {
-                queue: input.queue,
-                created: false,
+                function_id: input.function_id.clone(),
+                queue: input.function_id,
+                changed: !healthy,
             });
         }
-        return Err(Error::Handler(format!(
-            "function queue '{}' already exists with a different configuration",
-            input.queue
-        )));
     }
 
     let mut next = current.clone();
     next.queue_configs
-        .insert(input.queue.clone(), input.config.clone());
+        .insert(input.function_id.clone(), input.config.clone());
     persist_config(&iii, &next).await?;
     if let Err(error) = runtime.reconcile(&next.queue_configs).await {
         let _ = persist_config(&iii, &current).await;
         return Err(Error::Handler(format!(
             "could not start function queue '{}': {error}",
-            input.queue
+            input.function_id
         )));
     }
     *config_cell.write().await = Arc::new(next);
     Ok(EnsureFunctionQueueResult {
-        queue: input.queue,
-        created: true,
+        function_id: input.function_id.clone(),
+        queue: input.function_id,
+        changed: true,
     })
 }
 
@@ -389,13 +423,15 @@ pub async fn publish(
 
 pub async fn redrive(
     adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
     input: RedriveInput,
 ) -> Result<RedriveResult, Error> {
     if input.queue.is_empty() {
         return Err(Error::Handler("Queue name is required".to_string()));
     }
+    let storage_topic = resolve_storage_topic(&config, &input.queue).await;
     let redriven = adapter
-        .redrive_dlq(&input.queue)
+        .redrive_dlq(&storage_topic)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(RedriveResult {
@@ -406,11 +442,13 @@ pub async fn redrive(
 
 pub async fn redrive_message(
     adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
     input: RedriveSingleInput,
 ) -> Result<RedriveSingleResult, Error> {
     validate_single_input(&input)?;
+    let storage_topic = resolve_storage_topic(&config, &input.queue).await;
     let found = adapter
-        .redrive_dlq_message(&input.queue, &input.message_id)
+        .redrive_dlq_message(&storage_topic, &input.message_id)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(RedriveSingleResult {
@@ -422,11 +460,13 @@ pub async fn redrive_message(
 
 pub async fn discard_message(
     adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
     input: RedriveSingleInput,
 ) -> Result<RedriveSingleResult, Error> {
     validate_single_input(&input)?;
+    let storage_topic = resolve_storage_topic(&config, &input.queue).await;
     let found = adapter
-        .discard_dlq_message(&input.queue, &input.message_id)
+        .discard_dlq_message(&storage_topic, &input.message_id)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(RedriveSingleResult {
@@ -439,6 +479,7 @@ pub async fn discard_message(
 pub async fn list_topics(
     adapter: Arc<SwappableAdapter>,
     config: ConfigCell,
+    runtime: Arc<FunctionQueueRuntime>,
 ) -> Result<Vec<TopicInfo>, Error> {
     let broker_type = adapter.current_name().await;
     let topics = adapter
@@ -447,19 +488,39 @@ pub async fn list_topics(
         .map_err(|e| Error::Handler(e.to_string()))?;
     let mut listed = topics
         .into_iter()
+        .filter(|topic| !topic.name.starts_with("__fn_queue::"))
         .map(|topic| TopicInfo {
             name: topic.name,
             broker_type: broker_type.clone(),
             subscriber_count: 0,
+            function_id: None,
+            healthy: true,
         })
         .collect::<Vec<_>>();
     let configs = config.read().await.queue_configs.clone();
+    let statuses = runtime
+        .statuses()
+        .await
+        .into_iter()
+        .map(|status| (status.function_id.clone(), status))
+        .collect::<HashMap<_, _>>();
     for (name, queue_config) in configs {
-        if !listed.iter().any(|topic| topic.name == name) {
+        let status = statuses.get(&name);
+        if let Some(topic) = listed.iter_mut().find(|topic| topic.name == name) {
+            topic.function_id = Some(name.clone());
+            topic.subscriber_count = status.map_or(u64::from(queue_config.concurrency), |status| {
+                u64::from(status.consumer_count)
+            });
+            topic.healthy = status.is_some_and(|status| status.healthy);
+        } else {
             listed.push(TopicInfo {
-                name,
+                name: name.clone(),
                 broker_type: broker_type.clone(),
-                subscriber_count: u64::from(queue_config.concurrency),
+                subscriber_count: status.map_or(u64::from(queue_config.concurrency), |status| {
+                    u64::from(status.consumer_count)
+                }),
+                function_id: Some(name),
+                healthy: status.is_some_and(|status| status.healthy),
             });
         }
     }
@@ -470,28 +531,36 @@ pub async fn list_topics(
 pub async fn topic_stats(
     adapter: Arc<SwappableAdapter>,
     config: ConfigCell,
+    runtime: Arc<FunctionQueueRuntime>,
     input: TopicStatsInput,
 ) -> Result<TopicStatsOutput, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("topic is required".to_string()));
     }
     let queue_config = config.read().await.queue_configs.get(&input.topic).cloned();
-    let storage_topic = if queue_config.is_some() {
-        format!("__fn_queue::{}", input.topic)
-    } else {
-        input.topic.clone()
-    };
+    let storage_topic = resolve_storage_topic(&config, &input.topic).await;
     let stats = adapter
         .topic_stats(&storage_topic)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
+    let status = runtime.status(&input.topic).await;
     Ok(TopicStatsOutput {
         depth: stats.depth,
-        consumer_count: queue_config
-            .as_ref()
-            .map_or(0, |cfg| u64::from(cfg.concurrency)),
+        consumer_count: queue_config.as_ref().map_or(0, |cfg| {
+            status
+                .as_ref()
+                .map_or(u64::from(cfg.concurrency), |status| {
+                    u64::from(status.consumer_count)
+                })
+        }),
         dlq_depth: stats.dlq_depth,
         config: queue_config.and_then(|cfg| serde_json::to_value(cfg).ok()),
+        function_id: if status.is_some() {
+            Some(input.topic)
+        } else {
+            None
+        },
+        healthy: status.is_none_or(|status| status.healthy),
     })
 }
 
@@ -501,8 +570,12 @@ pub async fn topic_stats(
 /// dead-lettered messages. A per-topic `dlq_count` failure is treated as
 /// zero (matching the engine's `unwrap_or(0)`) rather than failing the
 /// whole call.
-pub async fn dlq_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<DlqTopicInfo>, Error> {
+pub async fn dlq_topics(
+    adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
+) -> Result<Vec<DlqTopicInfo>, Error> {
     let broker_type = adapter.current_name().await;
+    let configs = config.read().await.queue_configs.clone();
     let topics = adapter
         .list_topics()
         .await
@@ -510,6 +583,9 @@ pub async fn dlq_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<DlqTopicIn
 
     let mut dlq_topics = Vec::new();
     for topic in topics {
+        if topic.name.starts_with("__fn_queue::") {
+            continue;
+        }
         let dlq_count = adapter.dlq_count(&topic.name).await.unwrap_or(0);
         if dlq_count > 0 {
             dlq_topics.push(DlqTopicInfo {
@@ -519,19 +595,33 @@ pub async fn dlq_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<DlqTopicIn
             });
         }
     }
+    for function_id in configs.keys() {
+        let storage_topic = function_queue_adapter_key(function_id);
+        let dlq_count = adapter.dlq_count(&storage_topic).await.unwrap_or(0);
+        if dlq_count > 0 {
+            dlq_topics.push(DlqTopicInfo {
+                topic: function_id.clone(),
+                broker_type: broker_type.clone(),
+                message_count: dlq_count,
+            });
+        }
+    }
+    dlq_topics.sort_by(|left, right| left.topic.cmp(&right.topic));
     Ok(dlq_topics)
 }
 
 pub async fn dlq_messages(
     adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
     input: DlqMessagesInput,
 ) -> Result<Vec<DlqMessage>, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("topic is required".to_string()));
     }
     let count = input.offset.saturating_add(input.limit) as usize;
+    let storage_topic = resolve_storage_topic(&config, &input.topic).await;
     let values = adapter
-        .dlq_messages(&input.topic, count)
+        .dlq_messages(&storage_topic, count)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
     let messages = values
@@ -552,6 +642,15 @@ fn validate_single_input(input: &RedriveSingleInput) -> Result<(), Error> {
         return Err(Error::Handler("Message ID is required".to_string()));
     }
     Ok(())
+}
+
+async fn resolve_storage_topic(config: &ConfigCell, logical_topic: &str) -> String {
+    let config = config.read().await;
+    if config.queue_configs.contains_key(logical_topic) {
+        function_queue_adapter_key(logical_topic)
+    } else {
+        logical_topic.to_string()
+    }
 }
 
 fn dlq_message_from_job(job: Job) -> DlqMessage {
@@ -750,6 +849,40 @@ mod tests {
         (Arc::new(SwappableAdapter::new(dyn_adapter, "mock")), mock)
     }
 
+    fn config() -> crate::boot::ConfigCell {
+        crate::configuration::new_cell(crate::config::QueueConfig::default())
+    }
+
+    fn function_config(function_id: &str) -> crate::boot::ConfigCell {
+        let mut queue_config = crate::config::QueueConfig::default();
+        queue_config
+            .queue_configs
+            .insert(function_id.to_string(), FunctionQueueConfig::default());
+        crate::configuration::new_cell(queue_config)
+    }
+
+    struct NoopInvoker;
+
+    #[async_trait::async_trait]
+    impl crate::trigger::Invoker for NoopInvoker {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+    }
+
+    fn runtime(adapter: &Arc<SwappableAdapter>) -> Arc<FunctionQueueRuntime> {
+        Arc::new(FunctionQueueRuntime::new(
+            adapter.clone(),
+            Arc::new(NoopInvoker),
+        ))
+    }
+
     fn job_value(id: &str, payload: Value, attempts: u32) -> Value {
         serde_json::to_value(Job {
             id: id.to_string(),
@@ -854,11 +987,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enqueue_rejects_mismatched_queue_and_function_before_runtime() {
+        let (adapter, mock) = adapter();
+        let error = enqueue_function_queue(
+            runtime(&adapter),
+            EnqueueFunctionInput {
+                queue: "orders::create".to_string(),
+                function_id: "orders::update".to_string(),
+                data: json!({"id": 1}),
+                message_receipt_id: "receipt-1".to_string(),
+            },
+        )
+        .await
+        .expect_err("mismatched function queue should be rejected");
+        assert!(error.to_string().contains("queue to equal function_id"));
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn redrive_returns_adapter_count() {
         let (adapter, mock) = adapter();
         *mock.redrive_dlq_result.lock().unwrap() = Some(Ok(3));
         let result = redrive(
             adapter,
+            config(),
             RedriveInput {
                 queue: "demo".to_string(),
             },
@@ -875,12 +1027,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn function_queue_dlq_operations_use_internal_storage_key() {
+        let (adapter, mock) = adapter();
+        *mock.redrive_dlq_result.lock().unwrap() = Some(Ok(2));
+        let result = redrive(
+            adapter,
+            function_config("orders::create"),
+            RedriveInput {
+                queue: "orders::create".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.queue, "orders::create");
+        assert_eq!(
+            mock.calls(),
+            vec![Call::RedriveDlq {
+                topic: crate::function_queue_id::function_queue_adapter_key("orders::create")
+            }]
+        );
+    }
+
+    #[tokio::test]
     async fn redrive_propagates_adapter_error() {
         let (adapter, mock) = adapter();
         *mock.redrive_dlq_result.lock().unwrap() =
             Some(Err(anyhow::anyhow!("redis does not support DLQ")));
         let err = redrive(
             adapter,
+            config(),
             RedriveInput {
                 queue: "demo".to_string(),
             },
@@ -896,6 +1071,7 @@ mod tests {
         *mock.redrive_dlq_message_result.lock().unwrap() = Some(Ok(true));
         let result = redrive_message(
             adapter,
+            config(),
             RedriveSingleInput {
                 queue: "demo".to_string(),
                 message_id: "m1".to_string(),
@@ -919,6 +1095,7 @@ mod tests {
         *mock.discard_dlq_message_result.lock().unwrap() = Some(Ok(true));
         let result = discard_message(
             adapter,
+            config(),
             RedriveSingleInput {
                 queue: "demo".to_string(),
                 message_id: "m1".to_string(),
@@ -938,38 +1115,37 @@ mod tests {
 
     #[tokio::test]
     async fn list_and_stats_return_adapter_state() {
-        let (adapter, _mock) = adapter();
+        let (adapter, mock) = adapter();
         {
-            let mock = _mock.clone();
             *mock.list_topics_result.lock().unwrap() = Some(Ok(vec![AdapterTopicInfo {
                 name: "demo".to_string(),
                 depth: 1,
             }]));
         }
-        let topics = list_topics(
-            adapter.clone(),
-            crate::configuration::new_cell(crate::config::QueueConfig::default()),
-        )
-        .await
-        .unwrap();
+        let topics = list_topics(adapter.clone(), config(), runtime(&adapter))
+            .await
+            .unwrap();
         assert_eq!(
             topics[0],
             TopicInfo {
                 name: "demo".to_string(),
                 broker_type: "mock".to_string(),
                 subscriber_count: 0,
+                function_id: None,
+                healthy: true,
             }
         );
 
-        *_mock.topic_stats_result.lock().unwrap() = Some(Ok(TopicStats {
+        *mock.topic_stats_result.lock().unwrap() = Some(Ok(TopicStats {
             depth: 1,
             dlq_depth: 1,
             delivered: 0,
             failed: 1,
         }));
         let stats = topic_stats(
-            adapter,
-            crate::configuration::new_cell(crate::config::QueueConfig::default()),
+            adapter.clone(),
+            config(),
+            runtime(&adapter),
             TopicStatsInput {
                 topic: "demo".to_string(),
             },
@@ -978,6 +1154,29 @@ mod tests {
         .unwrap();
         assert_eq!(stats.depth, 1);
         assert_eq!(stats.dlq_depth, 1);
+    }
+
+    #[tokio::test]
+    async fn list_topics_reports_unhealthy_configured_function_queue() {
+        let (adapter, mock) = adapter();
+        *mock.list_topics_result.lock().unwrap() = Some(Ok(vec![]));
+        let topics = list_topics(
+            adapter.clone(),
+            function_config("orders::create"),
+            runtime(&adapter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            topics,
+            vec![TopicInfo {
+                name: "orders::create".to_string(),
+                broker_type: "mock".to_string(),
+                subscriber_count: 10,
+                function_id: Some("orders::create".to_string()),
+                healthy: false,
+            }]
+        );
     }
 
     #[tokio::test]
@@ -996,7 +1195,7 @@ mod tests {
         // dlq_count is called once per topic in list order; queue the "demo"
         // answer first, then "empty"'s.
         *mock.dlq_count_result.lock().unwrap() = Some(Ok(1));
-        let result = dlq_topics(adapter.clone()).await.unwrap();
+        let result = dlq_topics(adapter.clone(), config()).await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].topic, "demo");
         assert_eq!(result[0].message_count, 1);
@@ -1010,6 +1209,7 @@ mod tests {
             Some(Ok(vec![job_value("m1", json!({"dead": true}), 1)]));
         let messages = dlq_messages(
             adapter,
+            config(),
             DlqMessagesInput {
                 topic: "demo".to_string(),
                 offset: 0,
@@ -1034,6 +1234,7 @@ mod tests {
         let (adapter, _mock) = adapter();
         let err = dlq_messages(
             adapter,
+            config(),
             DlqMessagesInput {
                 topic: String::new(),
                 offset: 0,
