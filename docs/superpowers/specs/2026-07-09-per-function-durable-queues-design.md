@@ -22,10 +22,10 @@ share one concurrency budget. That is lane-based scheduling, not a dedicated
 queue per function.
 
 The queue implementation is moving out of the engine and into this workers
-repository. The existing `TriggerAction::Enqueue` wire shape and registered
-`engine::queue::*` compatibility functions remain available while that
-migration completes; this change only updates their workers-side ownership and
-behavior. No engine source change or engine release is part of this work.
+repository. The existing `TriggerAction::Enqueue` wire shape remains for
+legacy callers, while migrated workers call the registered
+`engine::queue::enqueue` provider directly. No engine source change or engine
+release is part of this work.
 
 ## 1. Invariants
 
@@ -44,18 +44,19 @@ behavior. No engine source change or engine release is part of this work.
    making later deployments fail.
 
 The existing `TriggerAction::Enqueue { queue }` protocol remains on the wire so
-current SDKs continue to deserialize it. For the standalone per-function
-provider, callers set `queue` to the target `function_id`; the workers-side
-provider validates that equality. The engine is treated as an external
-compatibility surface and is not modified here.
+current SDKs continue to deserialize it, but migrated workers do not use it.
+They call `engine::queue::enqueue` directly with `queue`, `function_id`,
+`data`, and `messageReceiptId`; the workers-side provider validates
+`queue == function_id`. The engine is treated as an external compatibility
+surface and is not modified here.
 
 ## 2. Migration boundary
 
 The standalone worker owns queue configuration, persistence, consumers, and
-function dispatch. Existing engine callers may still reach the worker through
-the registered `engine::queue::*` functions and the current enqueue wire
-action, but this workers change must not add a second engine implementation or
-depend on an engine-side fallback commit.
+function dispatch. Harness reaches it through the registered
+`engine::queue::*` functions rather than the legacy enqueue wire action. This
+workers change must not add a second engine implementation or depend on an
+engine-side fallback commit.
 
 ## 3. Standalone queue control plane
 
@@ -176,8 +177,9 @@ non-enqueued compatibility alias during the pre-release transition but new
 jobs never target it.
 
 At boot, harness calls `engine::queue::ensure` once per lane function and waits
-for healthy status. `build_enqueue_request` uses the selected lane function for
-both `function_id` and `TriggerAction::Enqueue.queue`.
+for healthy status. `build_enqueue_request` calls `engine::queue::enqueue`
+directly, placing the selected lane function ID in both `queue` and
+`function_id` and adding a fresh `messageReceiptId`.
 
 ## 6. Existing consumers
 
@@ -195,7 +197,7 @@ shared `default` queues for the standalone provider.
 
 ## 7. Failure handling
 
-- If engine-to-provider enqueue fails, harness marks the persisted turn failed
+- If direct provider enqueue fails, harness marks the persisted turn failed
   using its existing `enqueue_step` failure path.
 - If a function invocation fails, the adapter retries with the configured
   exponential backoff and dead-letters after the configured attempt budget.
@@ -236,5 +238,5 @@ workers implementation so PR CI is green.
 
 One workers change enforces per-function queues, splits the harness execution
 endpoints, and updates durability, health, parity, tests, and documentation.
-It consumes the existing engine compatibility path without requiring an engine
+It calls the existing standalone provider surface without requiring an engine
 commit or release.

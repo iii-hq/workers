@@ -26,7 +26,7 @@ pub const DLQ_TOPICS_FN_ID: &str = "engine::queue::dlq_topics";
 pub const DLQ_MESSAGES_FN_ID: &str = "engine::queue::dlq_messages";
 /// Idempotently creates a named function queue owned by this worker.
 pub const ENSURE_FUNCTION_QUEUE_FN_ID: &str = "engine::queue::ensure";
-/// Internal provider invoked by the engine for `TriggerAction::Enqueue`.
+/// Function-bound enqueue provider used by workers such as harness.
 pub const ENQUEUE_FUNCTION_QUEUE_FN_ID: &str = "engine::queue::enqueue";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

@@ -1,4 +1,4 @@
-//! Runtime for named function queues used by engine `TriggerAction::Enqueue`.
+//! Runtime for function-bound queues used by the standalone enqueue provider.
 //!
 //! Unlike durable topics, a function queue carries its target function id with
 //! each job. The queue worker owns its consumers; callers only provision a

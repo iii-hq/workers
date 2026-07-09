@@ -2,7 +2,7 @@
 //!
 //! The standalone `queue` worker owns their durable configuration and
 //! consumers. Harness only ensures its three workload lanes at boot, then
-//! uses `TriggerAction::Enqueue` for every durable turn step.
+//! calls the standalone enqueue provider for every durable turn step.
 
 use std::time::Duration;
 

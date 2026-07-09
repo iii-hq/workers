@@ -98,10 +98,11 @@ accepting sends:
 Each queue is standard mode with concurrency 10, three attempts, and 1000ms
 exponential backoff. They have independent capacity (up to 30 active steps in
 aggregate), so a saturated sub-agent lane does not block a new root turn. Each
-turn step uses `TriggerAction::Enqueue`; the engine delegates persistence and
-delivery to the standalone queue worker. Control-plane calls such as send,
-status, stop, and resolution remain synchronous. The standalone worker is
-required; do not enable the engine's built-in `iii-queue` at the same time.
+turn step calls the standalone `engine::queue::enqueue` provider directly,
+using the lane function ID as both target and queue identity. Control-plane
+calls such as send, status, stop, and resolution remain synchronous. The
+standalone worker is required; do not enable the engine's built-in `iii-queue`
+at the same time.
 
 The compatibility function `harness::turn` remains registered for direct
 legacy callers, but new durable jobs target the lane function ID as both the

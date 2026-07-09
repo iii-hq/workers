@@ -200,19 +200,18 @@ On boot, this worker queries `engine::workers::list` and refuses to start if
 | Restart survival | file-backed store | same (`file_based`) |
 | In-memory mode | jobs lost on restart/swap | same |
 | Transports | builtin (memory/file), redis (pub/sub, no DLQ), rabbitmq (full: retry/DLQ/priority/fifo) | same as builtin |
-| bridge adapter | engine-internal (`TriggerAction::Enqueue`) | standalone worker owns the provider behind the existing engine compatibility path |
+| function-bound enqueue | engine-internal (`TriggerAction::Enqueue`) | workers call `engine::queue::enqueue` directly |
 | Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly with `enqueue_error` |
 | Latency benchmark | legacy engine baseline | standalone-worker benchmark is tracked separately |
 
-The full engine `TriggerAction::Enqueue` path reaches this worker through the
-existing engine compatibility surface. Queue ownership and function-bound
-dispatch are implemented here; this migration does not add or modify engine
-queue code.
+Queue ownership and function-bound dispatch are implemented here. Harness and
+other migrated workers call `engine::queue::enqueue` directly, so this
+migration does not add or modify engine queue code.
 
 ## Known Gaps / Parity Notes
 
-- **`bridge` adapter — not ported.** Engine enqueue actions use the existing
-  compatibility path to reach the registered standalone provider.
+- **`bridge` adapter — not ported.** Migrated workers call the registered
+  standalone enqueue provider directly.
 - **No grouped-fifo.** The engine's `GroupedFifoWorker` partitions `fifo`
   delivery by `job.group_id` when `concurrency > 1`, running each group
   serially but different groups concurrently. This worker's `fifo` mode is

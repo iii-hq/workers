@@ -33,8 +33,7 @@ the same `durable:subscriber` trigger type.
   `redis` (pub/sub only, no DLQ), and `rabbitmq` (full: retry/DLQ/priority/fifo).
   The `bridge` adapter is not ported — it was engine-internal and is superseded
   by the standalone worker migration.
-- Engine `TriggerAction.Enqueue` / named function queues use the existing
-  engine compatibility path to reach this worker. Queue ownership and
+- Migrated workers call `engine::queue::enqueue` directly. Queue ownership and
   per-function dispatch live here; no new engine queue implementation is
   required.
 - File-backed mode survives worker restarts. In-memory mode loses pending jobs

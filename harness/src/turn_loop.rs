@@ -6,9 +6,10 @@
 
 use async_trait::async_trait;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, TriggerAction};
+use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::clients::router::{ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
@@ -63,11 +64,14 @@ fn build_enqueue_request(record: &TurnRecord) -> TriggerRequest {
     };
     let function_id = record.effective_lane().function_id();
     TriggerRequest {
-        function_id: function_id.to_string(),
-        payload: json!(payload),
-        action: Some(TriggerAction::Enqueue {
-            queue: function_id.to_string(),
+        function_id: "engine::queue::enqueue".to_string(),
+        payload: json!({
+            "queue": function_id,
+            "function_id": function_id,
+            "data": payload,
+            "messageReceiptId": format!("harness-turn-{}", Uuid::new_v4()),
         }),
+        action: None,
         timeout_ms: None,
     }
 }
@@ -1548,7 +1552,7 @@ mod tests {
     use crate::types::event::StopReason;
 
     #[test]
-    fn enqueue_action_uses_the_record_lane_and_direct_turn_payload() {
+    fn enqueue_provider_uses_the_record_lane_and_turn_payload() {
         let record: crate::types::turn::TurnRecord = serde_json::from_value(serde_json::json!({
             "turn_id": "t_1",
             "session_id": "s_1",
@@ -1565,15 +1569,15 @@ mod tests {
         .unwrap();
 
         let request = super::build_enqueue_request(&record);
-        assert_eq!(request.function_id, "harness::turn::root");
-        match request.action {
-            Some(iii_sdk::TriggerAction::Enqueue { queue }) => {
-                assert_eq!(queue, "harness::turn::root");
-            }
-            other => panic!("expected enqueue action, got {other:?}"),
-        }
+        assert_eq!(request.function_id, "engine::queue::enqueue");
+        assert!(request.action.is_none());
+        assert_eq!(request.payload["queue"], "harness::turn::root");
+        assert_eq!(request.payload["function_id"], "harness::turn::root");
+        assert!(request.payload["messageReceiptId"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("harness-turn-")));
         assert_eq!(
-            request.payload,
+            request.payload["data"],
             serde_json::json!({
                 "session_id": "s_1",
                 "turn_id": "t_1",
@@ -1582,7 +1586,6 @@ mod tests {
                 "depth": 0
             })
         );
-        assert!(request.payload.get("data").is_none());
 
         for (lane, function_id) in [
             (
@@ -1597,13 +1600,10 @@ mod tests {
             let mut lane_record = record.clone();
             lane_record.lane = Some(lane);
             let request = super::build_enqueue_request(&lane_record);
-            assert_eq!(request.function_id, function_id);
-            match request.action {
-                Some(iii_sdk::TriggerAction::Enqueue { queue: actual }) => {
-                    assert_eq!(actual, function_id);
-                }
-                other => panic!("expected enqueue action, got {other:?}"),
-            }
+            assert_eq!(request.function_id, "engine::queue::enqueue");
+            assert!(request.action.is_none());
+            assert_eq!(request.payload["queue"], function_id);
+            assert_eq!(request.payload["function_id"], function_id);
         }
     }
 
