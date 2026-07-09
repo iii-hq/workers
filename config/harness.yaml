@@ -1,0 +1,45 @@
+id: harness
+name: Harness
+description: 'Durable turn-loop settings: default turn cap and pending-call timeout, sub-agent depth/fan-out budgets, output-contract validation retries, the webhook-dedupe TTL, per-dependency RPC timeouts, stream coalescing, and the pending-sweep cron schedule.'
+value:
+  context_timeout_ms: 320000
+  default_functions:
+    allow:
+    - engine::functions::list
+    - engine::functions::info
+    - engine::triggers::list
+    - engine::triggers::info
+    - engine::workers::list
+    - engine::workers::info
+    - engine::registered-triggers::list
+    - engine::registered-triggers::info
+    - engine::register_trigger
+    - engine::unregister_trigger
+    - state::get
+    - state::list
+    - router::models::list
+    - router::models::get
+    - router::models::supports
+    - harness::status
+    - worker::list
+    - directory::registry::workers::list
+    - directory::registry::workers::info
+    - coder::info
+    - coder::read-file
+    - coder::search
+    - coder::list-folder
+    - coder::tree
+    - web::fetch
+    deny: []
+    expose: agent_trigger
+  default_max_turns: 500
+  default_pending_timeout_ms: 1800000
+  dispatch_timeout_ms: 300000
+  idem_ttl_secs: 86400
+  max_children: 5
+  max_depth: 3
+  max_validation_retries: 2
+  router_timeout_ms: 320000
+  session_timeout_ms: 10000
+  stream_coalesce_ms: 150
+  sweep_expression: 0 0 0 * * *

@@ -1,0 +1,10 @@
+id: iii-http
+name: HTTP
+description: HTTP server settings — host/port binding, CORS, request timeout, concurrency limit, and global middleware.
+value:
+  concurrency_request_limit: 1024
+  cors: null
+  default_timeout: 30000
+  host: 0.0.0.0
+  middleware: []
+  port: 3111

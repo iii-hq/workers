@@ -6,20 +6,20 @@ import {
   useState,
 } from 'react'
 import {
-  type ConversationsApi,
-  useConversations,
-} from '@/hooks/use-conversations'
-import {
   isApprovalGateAvailable,
   useApprovalGateStatus,
 } from '@/hooks/use-approval-gate-status'
+import {
+  type ConversationsApi,
+  useConversations,
+} from '@/hooks/use-conversations'
 import {
   type HarnessStatus,
   isHarnessAvailable,
   useHarnessStatus,
 } from '@/hooks/use-harness-status'
-import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
+import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import {

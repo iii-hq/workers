@@ -1,0 +1,4 @@
+id: llm-router
+name: LLM Router
+description: Provider credentials, routing heuristics, and stream budgets for llm-router.
+value: null

@@ -1,0 +1,9 @@
+id: iii-state
+name: State
+description: State worker settings — storage adapter selection (restart-tier) plus live trigger fan-out (triggers_enabled), per-write size guard (max_value_bytes), and the file-backed kv save cadence (save_interval_ms).
+value:
+  adapter:
+    config:
+      file_path: ./data/state_store.db
+      store_method: file_based
+    name: kv

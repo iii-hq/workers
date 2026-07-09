@@ -122,7 +122,9 @@ export function discriminator(variants: JsonSchema[]): Discriminator | null {
 }
 
 /** The lone string value a schema is pinned to (`enum: [X]` or `const: X`). */
-export function singleEnumString(schema: JsonSchema | undefined): string | null {
+export function singleEnumString(
+  schema: JsonSchema | undefined,
+): string | null {
   if (!schema) return null
   if (Array.isArray(schema.enum) && schema.enum.length === 1) {
     const first = (schema.enum as unknown[])[0]

@@ -1,0 +1,4 @@
+id: iii-cron
+name: Cron
+description: Cron worker settings — the distributed-lock backend (adapter/transport) used to coordinate scheduled job execution across engine instances.
+value: {}

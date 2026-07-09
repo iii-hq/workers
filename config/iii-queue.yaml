@@ -1,0 +1,12 @@
+id: iii-queue
+name: Queue
+description: Queue worker settings — the backing adapter/transport and per-queue config (retries, concurrency, FIFO ordering, backoff).
+value:
+  queue_configs:
+    default:
+      backoff_ms: 1000
+      concurrency: 10
+      max_retries: 3
+      message_group_field: null
+      poll_interval_ms: 100
+      type: standard

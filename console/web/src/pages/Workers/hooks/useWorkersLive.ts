@@ -4,10 +4,7 @@ import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
 import { getDefaultBackend } from '@/lib/backend'
 import { stopSupervisorWorker } from '../api/workers'
 import { fetchMergedWorkers } from '../lib/merge-workers'
-import {
-  filterWorkerRows,
-  type WorkersFilterState,
-} from '../types'
+import { filterWorkerRows, type WorkersFilterState } from '../types'
 
 export const workersKeys = {
   all: ['workers'] as const,

@@ -1,0 +1,7 @@
+id: iii-stream
+name: Stream
+description: WebSocket stream server settings — host/port binding, connection auth function, and the pub/sub adapter backend.
+value:
+  auth_function: null
+  host: 0.0.0.0
+  port: 3112
