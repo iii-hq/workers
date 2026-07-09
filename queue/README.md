@@ -33,11 +33,13 @@ compatibility, including `maxRetries` and `backoffDelayMs`.
 | Function id | Input | Output |
 |---|---|---|
 | `iii::durable::publish` | `{ "queue" \| "topic", "data" }` | `null` |
+| `engine::queue::ensure` | `{ "function_id", "config" }` | `{ "function_id", "queue", "changed" }` |
+| `engine::queue::enqueue` | `{ "queue", "function_id", "data", "messageReceiptId" }` | `null` |
 | `iii::queue::redrive` | `{ "queue" \| "topic" }` | `{ "queue", "redriven" }` |
 | `iii::queue::redrive_message` | `{ "queue" \| "topic", "message_id" }` | `{ "queue", "message_id", "redriven" }` |
 | `iii::queue::discard_message` | `{ "queue" \| "topic", "message_id" }` | `{ "queue", "message_id", "redriven" }` |
 | `engine::queue::list_topics` | `{}` | topic list |
-| `engine::queue::topic_stats` | `{ "topic" \| "queue" }` | `{ "depth", "consumer_count", "dlq_depth", "config" }` |
+| `engine::queue::topic_stats` | `{ "topic" \| "queue" }` | `{ "depth", "consumer_count", "dlq_depth", "config", "function_id", "healthy" }` |
 | `engine::queue::dlq_topics` | `{}` | DLQ topic list |
 | `engine::queue::dlq_messages` | `{ "topic" \| "queue", "offset", "limit" }` | DLQ messages |
 
@@ -53,6 +55,12 @@ restarts every consumer — the new adapter is built first, so a bad config
 leaves the previous adapter serving. Pending in-memory jobs are lost on
 swap/restart; file-backed jobs survive. An unreachable `redis`/`rabbitmq`
 target at boot fails the boot itself (no fallback to `builtin`).
+
+Standalone function queues are keyed by the registered function ID. Provision
+one with `engine::queue::ensure`; the standalone enqueue provider requires
+`queue == function_id`. The public APIs show the original function ID while
+the adapters derive a hidden stable broker name. A configured function queue
+is ready only when its consumer reports `healthy: true`.
 
 ### Adapters
 
@@ -75,8 +83,8 @@ adapter:
 
 | Field | Default | Description |
 |---|---|---|
-| `adapter.config.store_method` | `in_memory` | `in_memory` or `file_based`. |
-| `adapter.config.file_path` | `queue_store_data` | Directory used by `file_based`. |
+| `adapter.config.store_method` | `file_based` | `in_memory` or `file_based`. Use `in_memory` explicitly for development. |
+| `adapter.config.file_path` | `./data/queue` | Directory used by `file_based`; relative paths are resolved from the worker's startup directory. |
 | `adapter.config.save_interval_ms` | `5000` | Accepted for parity; this worker persists on mutation rather than on an interval. |
 
 #### `redis`
@@ -128,6 +136,24 @@ adapter:
 | `adapter.config.queue_mode` | `standard` | `standard` or `fifo`. Unrecognized values fall back to `standard`. |
 | `adapter.config.priority_field` | none | JSON field read from each published message's payload to set the AMQP message priority. Only applies to subscribers whose `queue_config.maxPriority` declares the queue as a priority queue (`x-max-priority`). |
 
+### Named function queue configuration
+
+`engine::queue::ensure` accepts the engine-compatible shape below. `type` is
+`standard` or `fifo`; FIFO requires `message_group_field`. RabbitMQ uses
+`max_priority` and `priority_field`; builtin preserves the fields but ignores
+broker priority. `poll_interval_ms` applies to polling adapters.
+
+| Field | Default | Description |
+|---|---|---|
+| `type` | `standard` | Concurrent standard delivery or serial FIFO delivery. |
+| `concurrency` | `10` | Consumer concurrency; FIFO uses an effective prefetch of one. |
+| `max_retries` | `3` | Attempts before DLQ. |
+| `backoff_ms` | `1000` | Exponential retry base delay. |
+| `poll_interval_ms` | `100` | Poll interval for builtin/file-backed delivery. |
+| `message_group_field` | — | Required payload field for FIFO. |
+| `max_priority` | — | RabbitMQ priority levels, 1-255. |
+| `priority_field` | — | Payload integer field used for RabbitMQ priority. |
+
 Per-subscriber queue tuning uses the trigger's `queue_config` below;
 `maxPriority` is RabbitMQ-only and ignored by the other adapters.
 
@@ -174,8 +200,8 @@ On boot, this worker queries `engine::workers::list` and refuses to start if
 | Restart survival | file-backed store | same (`file_based`) |
 | In-memory mode | jobs lost on restart/swap | same |
 | Transports | builtin (memory/file), redis (pub/sub, no DLQ), rabbitmq (full: retry/DLQ/priority/fifo) | same as builtin |
-| bridge adapter | engine-internal (`TriggerAction::Enqueue`) | N/A — engine `QueueEnqueuer` cut (MOT-3829) |
-| Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly once the engine remote-enqueue cut lands |
+| bridge adapter | engine-internal (`TriggerAction::Enqueue`) | registered `engine::queue::enqueue` provider when no in-process module is loaded |
+| Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly with `enqueue_error` |
 | Latency benchmark | in-process baseline required | final budget is a pre-deprecation gate (tracked in the migration master plan) |
 
 The full engine `TriggerAction::Enqueue` path depends on the separate
@@ -183,9 +209,8 @@ The full engine `TriggerAction::Enqueue` path depends on the separate
 
 ## Known Gaps / Parity Notes
 
-- **`bridge` adapter — not ported.** It was engine-internal plumbing for
-  `TriggerAction::Enqueue`; that whole path is superseded by the engine's
-  `QueueEnqueuer` cut (MOT-3829), which is out of scope for this worker.
+- **`bridge` adapter — not ported.** Engine enqueue actions use the local
+  queue module when present and the registered standalone provider otherwise.
 - **No grouped-fifo.** The engine's `GroupedFifoWorker` partitions `fifo`
   delivery by `job.group_id` when `concurrency > 1`, running each group
   serially but different groups concurrently. This worker's `fifo` mode is

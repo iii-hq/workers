@@ -1,7 +1,7 @@
 # Per-function durable queues design
 
 **Date:** 2026-07-09
-**Status:** approved concept, written-spec review pending
+**Status:** approved; implementation in progress
 **Ticket:** MOT-3944
 **Repositories:** `iii-hq/iii` engine and `iii-hq/workers` queue/harness
 **Scope decisions (locked):** one logical queue per registered function id;

@@ -87,12 +87,13 @@ Until a provider is configured the picker is empty and chat will not generate.
 
 `iii worker add harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one or configure turn queues manually. At
-boot the harness provisions three named function queues through the standalone
-`queue` worker and waits until all three are ready before accepting sends:
+boot the harness provisions three function-bound queues through the standalone
+`queue` worker and waits until all three report a live healthy consumer before
+accepting sends:
 
-- `harness-turn` for root turns
-- `harness-subagent` for direct and nested sub-agents
-- `harness-reactive` for reaction-triggered turns
+- `harness::turn::root` for root turns
+- `harness::turn::subagent` for direct and nested sub-agents
+- `harness::turn::reactive` for reaction-triggered turns
 
 Each queue is standard mode with concurrency 10, three attempts, and 1000ms
 exponential backoff. They have independent capacity (up to 30 active steps in
@@ -101,6 +102,10 @@ turn step uses `TriggerAction::Enqueue`; the engine delegates persistence and
 delivery to the standalone queue worker. Control-plane calls such as send,
 status, stop, and resolution remain synchronous. The standalone worker is
 required; do not enable the engine's built-in `iii-queue` at the same time.
+
+The compatibility function `harness::turn` remains registered for direct
+legacy callers, but new durable jobs target the lane function ID as both the
+invocation target and logical queue identity.
 
 Every turn, sub-agent spawn, and provider call is one correlated trace: the
 harness turn waterfall in the console.
