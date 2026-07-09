@@ -805,7 +805,11 @@ impl QueueAdapter for RabbitMQAdapter {
 
         let payload = match serde_json::to_vec(&data) {
             Ok(p) => p,
-            Err(e) => return Err(anyhow::anyhow!("failed to serialize function queue data: {e}")),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to serialize function queue data: {e}"
+                ))
+            }
         };
 
         let mut headers = lapin::types::FieldTable::default();

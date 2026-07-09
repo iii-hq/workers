@@ -482,7 +482,9 @@ pub async fn topic_stats(
         .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(TopicStatsOutput {
         depth: stats.depth,
-        consumer_count: queue_config.as_ref().map_or(0, |cfg| u64::from(cfg.concurrency)),
+        consumer_count: queue_config
+            .as_ref()
+            .map_or(0, |cfg| u64::from(cfg.concurrency)),
         dlq_depth: stats.dlq_depth,
         config: queue_config.and_then(|cfg| serde_json::to_value(cfg).ok()),
     })

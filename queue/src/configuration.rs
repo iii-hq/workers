@@ -122,15 +122,7 @@ async fn on_config_change(
     let old = config.read().await.clone();
     if swap_needed(&old, &next) {
         let invoker = Arc::new(IiiInvoker::new(iii.clone()));
-        match swap_adapter(
-            &adapter,
-            &trigger_handler,
-            &function_queues,
-            invoker,
-            &next,
-        )
-        .await
-        {
+        match swap_adapter(&adapter, &trigger_handler, &function_queues, invoker, &next).await {
             Ok(()) => {
                 *config.write().await = Arc::new(next);
                 tracing::info!("queue transport hot-swapped after configuration change");
@@ -408,8 +400,8 @@ mod tests {
             noop_invoker(),
             &bad_config,
         )
-            .await
-            .unwrap_err();
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("not implemented"));
 
         // The old adapter must never be shut down, and it must still be the

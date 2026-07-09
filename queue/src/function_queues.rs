@@ -212,9 +212,8 @@ fn spawn_consumer(
                 };
                 match result {
                     Ok(()) => {
-                        if let Err(error) = adapter
-                            .ack_function_queue(&queue_name, delivery_id)
-                            .await
+                        if let Err(error) =
+                            adapter.ack_function_queue(&queue_name, delivery_id).await
                         {
                             tracing::error!(queue = %queue_name, delivery_id, error = %error, "failed to acknowledge function queue message");
                         }
