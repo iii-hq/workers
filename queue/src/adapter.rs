@@ -625,25 +625,35 @@ mod tests {
 
     #[test]
     fn function_queue_config_validation_matches_engine_constraints() {
-        let mut zero_concurrency = FunctionQueueConfig::default();
-        zero_concurrency.concurrency = 0;
+        let zero_concurrency = FunctionQueueConfig {
+            concurrency: 0,
+            ..Default::default()
+        };
         assert!(zero_concurrency.validate().is_err());
 
-        let mut unknown_type = FunctionQueueConfig::default();
-        unknown_type.r#type = "priority".to_string();
+        let unknown_type = FunctionQueueConfig {
+            r#type: "priority".to_string(),
+            ..Default::default()
+        };
         assert!(unknown_type.validate().is_err());
 
-        let mut fifo_without_group = FunctionQueueConfig::default();
-        fifo_without_group.r#type = "fifo".to_string();
+        let fifo_without_group = FunctionQueueConfig {
+            r#type: "fifo".to_string(),
+            ..Default::default()
+        };
         assert!(fifo_without_group.validate().is_err());
 
-        let mut empty_group = FunctionQueueConfig::default();
-        empty_group.r#type = "fifo".to_string();
-        empty_group.message_group_field = Some("  ".to_string());
+        let empty_group = FunctionQueueConfig {
+            r#type: "fifo".to_string(),
+            message_group_field: Some("  ".to_string()),
+            ..Default::default()
+        };
         assert!(empty_group.validate().is_err());
 
-        let mut zero_priority = FunctionQueueConfig::default();
-        zero_priority.max_priority = Some(0);
+        let zero_priority = FunctionQueueConfig {
+            max_priority: Some(0),
+            ..Default::default()
+        };
         assert!(zero_priority.validate().is_err());
     }
 

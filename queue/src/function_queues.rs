@@ -337,10 +337,9 @@ mod tests {
         }
     }
 
-    fn runtime() -> (
-        Arc<FunctionQueueRuntime>,
-        Arc<StdMutex<Vec<(String, Value)>>>,
-    ) {
+    type Calls = Arc<StdMutex<Vec<(String, Value)>>>;
+
+    fn runtime() -> (Arc<FunctionQueueRuntime>, Calls) {
         let calls = Arc::new(StdMutex::new(Vec::new()));
         let invoker = Arc::new(RecordingInvoker {
             calls: calls.clone(),
