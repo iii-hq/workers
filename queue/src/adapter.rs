@@ -149,6 +149,33 @@ impl FunctionQueueConfig {
         }
         Ok(())
     }
+
+    /// Validate payload fields used by FIFO ordering and priority delivery,
+    /// returning the clamped RabbitMQ priority when configured.
+    pub fn validate_payload(&self, data: &Value) -> anyhow::Result<Option<u8>> {
+        self.validate()?;
+        if self.r#type == "fifo" {
+            let field = self
+                .message_group_field
+                .as_deref()
+                .expect("FIFO config validation requires a group field");
+            let value = data.get(field).ok_or_else(|| {
+                anyhow::anyhow!("FIFO function queue requires field '{field}' in data")
+            })?;
+            if value.is_null() {
+                anyhow::bail!("FIFO function queue field '{field}' must not be null");
+            }
+        }
+
+        let Some(field) = self.priority_field.as_deref() else {
+            return Ok(None);
+        };
+        let Some(raw) = data.get(field).and_then(Value::as_u64) else {
+            return Ok(None);
+        };
+        let maximum = self.max_priority.unwrap_or(u8::MAX) as u64;
+        Ok(Some(raw.min(maximum) as u8))
+    }
 }
 
 /// Transport abstraction implemented by every queue backend adapter
@@ -649,5 +676,38 @@ mod tests {
             .map(str::to_string)
             .collect()
         );
+    }
+
+    #[test]
+    fn function_queue_payload_validation_extracts_group_and_priority() {
+        let config = FunctionQueueConfig {
+            r#type: "fifo".to_string(),
+            message_group_field: Some("session_id".to_string()),
+            max_priority: Some(10),
+            priority_field: Some("priority".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            config
+                .validate_payload(&serde_json::json!({
+                    "session_id": "s1",
+                    "priority": 99
+                }))
+                .unwrap(),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn function_queue_payload_validation_rejects_missing_fifo_group() {
+        let config = FunctionQueueConfig {
+            r#type: "fifo".to_string(),
+            message_group_field: Some("session_id".to_string()),
+            ..Default::default()
+        };
+        let error = config
+            .validate_payload(&serde_json::json!({"priority": 1}))
+            .expect_err("missing FIFO group should be rejected");
+        assert!(error.to_string().contains("session_id"));
     }
 }

@@ -13,11 +13,21 @@ use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, SwappableAdapter};
+use crate::function_queue_id::physical_function_queue_name;
 use crate::trigger::Invoker;
 
 struct ActiveConsumer {
+    function_id: String,
+    physical_name: String,
     config: FunctionQueueConfig,
     task: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionQueueStatus {
+    pub function_id: String,
+    pub consumer_count: u32,
+    pub healthy: bool,
 }
 
 /// Owns one delivery loop per configured named function queue.
@@ -61,7 +71,7 @@ impl FunctionQueueRuntime {
         for name in removed {
             if let Some(previous) = self.active.lock().await.remove(&name) {
                 previous.task.abort();
-                tracing::info!(queue = %name, "stopped removed function queue consumer");
+                tracing::info!(function_id = %name, "stopped removed function queue consumer");
             }
         }
 
@@ -71,7 +81,7 @@ impl FunctionQueueRuntime {
                 .lock()
                 .await
                 .get(name)
-                .is_some_and(|active| active.config == *config);
+                .is_some_and(|active| active.config == *config && !active.task.is_finished());
             if !unchanged {
                 self.start_consumer(name, config).await?;
             }
@@ -100,28 +110,37 @@ impl FunctionQueueRuntime {
 
     async fn start_consumer(
         &self,
-        queue_name: &str,
+        function_id: &str,
         config: &FunctionQueueConfig,
     ) -> anyhow::Result<()> {
+        let physical_name = physical_function_queue_name(function_id);
         self.adapter
-            .setup_function_queue(queue_name, config)
+            .setup_function_queue(&physical_name, config)
             .await
-            .with_context(|| format!("setting up function queue '{queue_name}'"))?;
+            .with_context(|| format!("setting up function queue '{function_id}'"))?;
+        let prefetch = if config.r#type == "fifo" {
+            1
+        } else {
+            config.concurrency
+        };
         let receiver = self
             .adapter
-            .consume_function_queue(queue_name, config.concurrency)
+            .consume_function_queue(&physical_name, prefetch)
             .await
-            .with_context(|| format!("starting consumer for function queue '{queue_name}'"))?;
+            .with_context(|| format!("starting consumer for function queue '{function_id}'"))?;
         let task = spawn_consumer(
             self.adapter.clone(),
             self.invoker.clone(),
-            queue_name.to_string(),
+            function_id.to_string(),
+            physical_name.clone(),
             config.clone(),
             receiver,
         );
         let previous = self.active.lock().await.insert(
-            queue_name.to_string(),
+            function_id.to_string(),
             ActiveConsumer {
+                function_id: function_id.to_string(),
+                physical_name,
                 config: config.clone(),
                 task,
             },
@@ -130,33 +149,33 @@ impl FunctionQueueRuntime {
             previous.task.abort();
         }
         tracing::info!(
-            queue = %queue_name,
+            function_id = %function_id,
             concurrency = config.concurrency,
             max_retries = config.max_retries,
-            "started named function queue consumer"
+            "started function-bound queue consumer"
         );
         Ok(())
     }
 
     pub async fn enqueue(
         &self,
-        queue_name: &str,
         function_id: &str,
         data: Value,
         message_id: &str,
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> anyhow::Result<()> {
-        let config = self
+        let (config, physical_name) = self
             .active
             .lock()
             .await
-            .get(queue_name)
-            .map(|active| active.config.clone())
-            .ok_or_else(|| anyhow::anyhow!("function queue '{queue_name}' is not provisioned"))?;
+            .get(function_id)
+            .map(|active| (active.config.clone(), active.physical_name.clone()))
+            .ok_or_else(|| anyhow::anyhow!("function queue '{function_id}' is not provisioned"))?;
+        let priority = config.validate_payload(&data)?;
         self.adapter
             .publish_to_function_queue(
-                queue_name,
+                &physical_name,
                 function_id,
                 data,
                 message_id,
@@ -164,10 +183,38 @@ impl FunctionQueueRuntime {
                 config.backoff_ms,
                 traceparent,
                 baggage,
-                None,
+                priority,
             )
             .await
-            .with_context(|| format!("persisting message in function queue '{queue_name}'"))
+            .with_context(|| format!("persisting message in function queue '{function_id}'"))
+    }
+
+    pub async fn statuses(&self) -> Vec<FunctionQueueStatus> {
+        let mut statuses = self
+            .active
+            .lock()
+            .await
+            .values()
+            .map(|active| FunctionQueueStatus {
+                function_id: active.function_id.clone(),
+                consumer_count: active.config.concurrency,
+                healthy: !active.task.is_finished(),
+            })
+            .collect::<Vec<_>>();
+        statuses.sort_by(|left, right| left.function_id.cmp(&right.function_id));
+        statuses
+    }
+
+    pub async fn status(&self, function_id: &str) -> Option<FunctionQueueStatus> {
+        self.active
+            .lock()
+            .await
+            .get(function_id)
+            .map(|active| FunctionQueueStatus {
+                function_id: active.function_id.clone(),
+                consumer_count: active.config.concurrency,
+                healthy: !active.task.is_finished(),
+            })
     }
 
     pub async fn shutdown(&self) {
@@ -181,7 +228,8 @@ impl FunctionQueueRuntime {
 fn spawn_consumer(
     adapter: Arc<SwappableAdapter>,
     invoker: Arc<dyn Invoker>,
-    queue_name: String,
+    function_id: String,
+    physical_name: String,
     config: FunctionQueueConfig,
     mut receiver: mpsc::Receiver<QueueMessage>,
 ) -> JoinHandle<()> {
@@ -193,16 +241,20 @@ fn spawn_consumer(
             };
             let adapter = adapter.clone();
             let invoker = invoker.clone();
-            let queue_name = queue_name.clone();
+            let function_id = function_id.clone();
+            let physical_name = physical_name.clone();
             let max_retries = config.max_retries;
             tokio::spawn(async move {
                 let delivery_id = message.delivery_id;
-                let result = if message.function_id.is_empty() {
-                    Err("function queue message has no function id".to_string())
+                let result = if message.function_id != function_id {
+                    Err(format!(
+                        "function queue envelope target '{}' does not match bound function '{}'",
+                        message.function_id, function_id
+                    ))
                 } else {
                     invoker
                         .call(
-                            &message.function_id,
+                            &function_id,
                             message.data,
                             message.traceparent,
                             message.baggage,
@@ -212,16 +264,18 @@ fn spawn_consumer(
                 };
                 match result {
                     Ok(()) => {
-                        if let Err(error) =
-                            adapter.ack_function_queue(&queue_name, delivery_id).await
+                        if let Err(error) = adapter
+                            .ack_function_queue(&physical_name, delivery_id)
+                            .await
                         {
-                            tracing::error!(queue = %queue_name, delivery_id, error = %error, "failed to acknowledge function queue message");
+                            tracing::error!(queue = %physical_name, delivery_id, error = %error, "failed to acknowledge function queue message");
                         }
                     }
                     Err(error) => {
                         tracing::warn!(
-                            queue = %queue_name,
-                            function_id = %message.function_id,
+                            function_id = %function_id,
+                            queue = %physical_name,
+                            envelope_function_id = %message.function_id,
                             attempt = message.attempt,
                             max_retries,
                             error = %error,
@@ -229,20 +283,24 @@ fn spawn_consumer(
                         );
                         if let Err(nack_error) = adapter
                             .nack_function_queue(
-                                &queue_name,
+                                &physical_name,
                                 delivery_id,
                                 message.attempt,
-                                max_retries,
+                                if message.function_id == function_id {
+                                    max_retries
+                                } else {
+                                    message.attempt
+                                },
                             )
                             .await
                         {
-                            tracing::error!(queue = %queue_name, delivery_id, error = %nack_error, "failed to nack function queue message");
+                            tracing::error!(queue = %physical_name, delivery_id, error = %nack_error, "failed to nack function queue message");
                         }
                     }
                 }
                 drop(permit);
             });
         }
-        tracing::warn!(queue = %queue_name, "function queue consumer ended");
+        tracing::warn!(function_id = %function_id, queue = %physical_name, "function queue consumer ended");
     })
 }

@@ -506,6 +506,7 @@ impl QueueAdapter for BuiltinAdapter {
         let deliveries = self.function_deliveries.clone();
         let delivery_counter = self.function_delivery_counter.clone();
         let internal_name = function_queue_name(queue_name);
+        let poll_interval_ms = config.poll_interval_ms;
 
         tokio::spawn(async move {
             loop {
@@ -514,7 +515,7 @@ impl QueueAdapter for BuiltinAdapter {
                 }
 
                 let Some(job) = store.dequeue(&internal_name).await else {
-                    tokio::time::sleep(Duration::from_millis(DEFAULT_POLL_INTERVAL_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(poll_interval_ms)).await;
                     continue;
                 };
 

@@ -344,6 +344,12 @@ pub async fn enqueue_function_queue(
     if input.function_id.trim().is_empty() {
         return Err(Error::Handler("function_id is required".to_string()));
     }
+    if input.queue != input.function_id {
+        return Err(Error::Handler(format!(
+            "standalone function queues require queue to equal function_id: queue='{}', function_id='{}'",
+            input.queue, input.function_id
+        )));
+    }
     if input.message_receipt_id.trim().is_empty() {
         return Err(Error::Handler("messageReceiptId is required".to_string()));
     }
@@ -351,7 +357,6 @@ pub async fn enqueue_function_queue(
     let baggage = iii_helpers::observability::inject_baggage();
     runtime
         .enqueue(
-            &input.queue,
             &input.function_id,
             input.data,
             &input.message_receipt_id,
