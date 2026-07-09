@@ -3,13 +3,14 @@
 **Date:** 2026-07-09
 **Status:** approved; implementation in progress
 **Ticket:** MOT-3944
-**Repositories:** `iii-hq/iii` engine and `iii-hq/workers` queue/harness
+**Repository:** `iii-hq/workers` queue/harness. The `iii` engine is an
+existing compatibility boundary for the migration, not a target of this
+change.
 **Scope decisions (locked):** one logical queue per registered function id;
 function id is the canonical queue identity; existing `TriggerAction::Enqueue {
 queue }` wire shape stays compatible; harness lanes become three internal
 function ids backed by one handler; standalone queue configuration defaults to
-restart-safe file storage; engine support lands before the workers change is
-released.
+restart-safe file storage; no new engine-side queue behavior is introduced.
 
 ## Context
 
@@ -20,15 +21,11 @@ arbitrary `function_id` in each job, so one queue can mix several functions and
 share one concurrency budget. That is lane-based scheduling, not a dedicated
 queue per function.
 
-The current engine also routes `TriggerAction::Enqueue` only through its
-in-process `QueueEnqueuer`. PR #464 removes the built-in `iii-queue` worker and
-registers a remote `engine::queue::enqueue` function, but the engine does not
-call that provider when its in-process queue module is absent. Against the
-current engine, the first harness turn therefore fails with `QueueModule not
-loaded`.
-
-This design closes the engine/worker seam and removes queue/function states
-that cannot be valid under the new model.
+The queue implementation is moving out of the engine and into this workers
+repository. The existing `TriggerAction::Enqueue` wire shape and registered
+`engine::queue::*` compatibility functions remain available while that
+migration completes; this change only updates their workers-side ownership and
+behavior. No engine source change or engine release is part of this work.
 
 ## 1. Invariants
 
@@ -48,39 +45,17 @@ that cannot be valid under the new model.
 
 The existing `TriggerAction::Enqueue { queue }` protocol remains on the wire so
 current SDKs continue to deserialize it. For the standalone per-function
-provider, callers set `queue` to the target `function_id`. The provider validates
-that equality. The engine's built-in queue module keeps its existing named-queue
-behavior until it is separately deprecated.
+provider, callers set `queue` to the target `function_id`; the workers-side
+provider validates that equality. The engine is treated as an external
+compatibility surface and is not modified here.
 
-## 2. Engine delegation
+## 2. Migration boundary
 
-The engine keeps the in-process `QueueEnqueuer` as the first choice. When no
-in-process queue module is loaded, the enqueue branch invokes the registered
-remote function `engine::queue::enqueue` synchronously with:
-
-```json
-{
-  "queue": "harness::turn::root",
-  "function_id": "harness::turn::root",
-  "data": {},
-  "messageReceiptId": "<engine-generated UUID>"
-}
-```
-
-The call uses `action: null`, preserves the originating traceparent and baggage,
-and waits for the remote result before returning `{ "messageReceiptId": ... }`
-to the original caller. A missing provider, provider disconnect, timeout, or
-provider error returns `enqueue_error`; it never reports a false success.
-
-The engine change adds integration coverage for:
-
-- remote provider receives the exact target function, payload, receipt id, and
-  trace context;
-- provider success returns the same receipt id to the caller;
-- provider absence and provider failure return `enqueue_error`;
-- an installed in-process queue module still wins, preserving compatibility.
-
-No SDK protocol change is required for this cut.
+The standalone worker owns queue configuration, persistence, consumers, and
+function dispatch. Existing engine callers may still reach the worker through
+the registered `engine::queue::*` functions and the current enqueue wire
+action, but this workers change must not add a second engine implementation or
+depend on an engine-side fallback commit.
 
 ## 3. Standalone queue control plane
 
@@ -231,14 +206,7 @@ shared `default` queues for the standalone provider.
   reconciliation/readiness pass.
 - A failed config replacement does not discard the prior healthy consumer.
 
-## 8. Verification and delivery order
-
-### Engine repository
-
-1. Unit-test the local-versus-remote enqueuer selection.
-2. Integration-test the remote function call and receipt/error propagation.
-3. Run engine formatting, clippy, and focused enqueue tests.
-4. Land and release the engine change before publishing the workers change.
+## 8. Verification and delivery
 
 ### Workers repository
 
@@ -247,9 +215,9 @@ shared `default` queues for the standalone provider.
 2. Adapter-test standard, FIFO, priority, retry, DLQ, and trace propagation.
 3. Harness-test the three function registrations, lane routing, legacy-record
    inference, enqueue-failure terminal state, and healthy boot barrier.
-4. Run queue and harness formatting, clippy, unit tests, engine-backed tests,
-   interface boot smoke, and one live harness turn through the standalone
-   provider.
+4. Run queue and harness formatting, clippy, unit tests, compatibility-path
+   tests, interface boot smoke, and one live harness turn through the
+   standalone provider.
 
 The current uncommitted queue test fixes (`QueueConfig::default()` completion,
 the required queue `type`, and handling the publish result) are included in the
@@ -257,7 +225,7 @@ workers implementation so PR CI is green.
 
 ## 9. Non-goals
 
-- Removing the engine's built-in queue module in this change.
+- Changing the `iii` engine or SDK wire protocol in this change.
 - Changing the public `TriggerAction` wire representation across SDKs.
 - Automatically provisioning queues for every registered function regardless
   of whether it is ever enqueued.
@@ -266,13 +234,7 @@ workers implementation so PR CI is green.
 
 ## Delivery
 
-Two coordinated changes:
-
-1. An `iii-hq/iii` engine PR adds remote enqueue-provider fallback and releases
-   it.
-2. Workers PR #464 consumes that engine behavior, enforces per-function queues,
-   splits the harness execution endpoints, and updates durability, health,
-   parity, tests, and documentation.
-
-PR #464 remains draft until the engine dependency is released and the live
-standalone-provider smoke test passes.
+One workers change enforces per-function queues, splits the harness execution
+endpoints, and updates durability, health, parity, tests, and documentation.
+It consumes the existing engine compatibility path without requiring an engine
+commit or release.

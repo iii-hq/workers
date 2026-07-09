@@ -32,10 +32,11 @@ the same `durable:subscriber` trigger type.
 - Three transports ship today: `builtin` (in-process, full DLQ/retry/fifo),
   `redis` (pub/sub only, no DLQ), and `rabbitmq` (full: retry/DLQ/priority/fifo).
   The `bridge` adapter is not ported — it was engine-internal and is superseded
-  by the engine's `QueueEnqueuer` cut (MOT-3829).
-- Engine `TriggerAction.Enqueue` / named function queues require the separate
-  `QueueEnqueuer` engine cut. Until that lands, use `iii::durable::publish` and
-  `durable:subscriber` triggers for this standalone worker.
+  by the standalone worker migration.
+- Engine `TriggerAction.Enqueue` / named function queues use the existing
+  engine compatibility path to reach this worker. Queue ownership and
+  per-function dispatch live here; no new engine queue implementation is
+  required.
 - File-backed mode survives worker restarts. In-memory mode loses pending jobs
   on restart or transport hot-swap. An unreachable `redis`/`rabbitmq` target at
   boot fails the boot (no fallback to `builtin`).
