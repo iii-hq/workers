@@ -17,8 +17,8 @@
 //!   factory can hand owned clones around before wrapping in `Arc`); this
 //!   worker always shares the adapter via `Arc<dyn QueueAdapter>` /
 //!   `SwappableAdapter`, so it isn't needed.
-//! - Telemetry (OTel spans) dropped, same as every other adapter port in
-//!   this crate.
+//! - Stored OTel headers are restored by the shared invoker contract; adapter
+//!   tracing events are kept.
 //! - Return-type shape deviations, forced by this worker's simpler
 //!   `crate::adapter::TopicInfo` (`{name, depth}` vs the engine's `{name,
 //!   broker_type, subscriber_count}`) and `crate::store::TopicStats`
@@ -269,7 +269,7 @@ impl QueueAdapter for RabbitMQAdapter {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    ) {
+    ) -> anyhow::Result<()> {
         // Topic fanout publishes one message to every bound subscriber queue, so
         // the priority is resolved once here from the adapter-level
         // `priority_field`. Each subscriber queue honors it only if declared with
@@ -278,28 +278,20 @@ impl QueueAdapter for RabbitMQAdapter {
         let job = Job::new(topic, data, self.config.max_attempts, traceparent, baggage)
             .with_priority(priority);
 
-        if let Err(e) = self.topology.setup_topic(topic).await {
-            tracing::error!(
-                error = ?e,
-                topic = %topic,
-                "Failed to setup RabbitMQ topology"
-            );
-            return;
-        }
-
-        if let Err(e) = self.publisher.publish(topic, &job).await {
-            tracing::error!(
-                error = ?e,
-                topic = %topic,
-                "Failed to publish to RabbitMQ"
-            );
-        } else {
-            tracing::debug!(
-                topic = %topic,
-                job_id = %job.id,
-                "Published to RabbitMQ queue"
-            );
-        }
+        self.topology
+            .setup_topic(topic)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to setup RabbitMQ topic {topic}: {e}"))?;
+        self.publisher
+            .publish(topic, &job)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to publish to RabbitMQ topic {topic}: {e}"))?;
+        tracing::debug!(
+            topic = %topic,
+            job_id = %job.id,
+            "Published to RabbitMQ queue"
+        );
+        Ok(())
     }
 
     async fn subscribe(

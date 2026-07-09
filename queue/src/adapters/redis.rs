@@ -7,17 +7,14 @@
 //! message to at most one subscriber connection per topic. Seams applied
 //! for the standalone worker:
 //! - `Arc<Engine>` + `engine.call(...)` inside the pubsub task ->
-//!   `Arc<dyn crate::trigger::Invoker>` + `invoker.call(function_id, payload)`.
+//!   `Arc<dyn crate::trigger::Invoker>` + a context-aware invocation call.
 //! - The engine's `check_condition` helper (`engine/src/condition.rs`) is
 //!   reimplemented locally against `Invoker` with identical semantics:
 //!   `Ok(Some(v))` -> proceed unless `v` is the JSON boolean `false`,
 //!   `Ok(None)` -> proceed (with a warn log), `Err` -> skip the message
 //!   (logged), condition_function_id handling is otherwise untouched.
-//! - Telemetry spans (the engine's `tracing::info_span!` + OTel
-//!   `with_parent_headers`) are dropped; the `__trace` envelope
-//!   (`traceparent`/`baggage`) is still built on `enqueue` and unwrapped on
-//!   `subscribe` exactly like the engine, so a future consumer could still
-//!   read it, it just isn't used to parent a span here.
+//! - The `__trace` envelope is restored into the subscriber invocation so
+//!   queue delivery remains in the publisher's trace.
 //! - `QueueAdapter::shutdown` (required by this worker's trait, absent from
 //!   the engine's) aborts every subscription task, mirroring the engine's
 //!   "abort consumer tasks in place" behavior at process teardown.
@@ -131,8 +128,13 @@ async fn check_condition(
     invoker: &dyn Invoker,
     condition_function_id: &str,
     data: Value,
+    traceparent: Option<String>,
+    baggage: Option<String>,
 ) -> Result<bool, String> {
-    match invoker.call(condition_function_id, data).await {
+    match invoker
+        .call(condition_function_id, data, traceparent, baggage)
+        .await
+    {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -143,6 +145,16 @@ async fn check_condition(
         }
         Err(e) => Err(e),
     }
+}
+
+async fn invoke_target(
+    invoker: &dyn Invoker,
+    function_id: &str,
+    data: Value,
+    traceparent: Option<String>,
+    baggage: Option<String>,
+) -> Result<Option<Value>, String> {
+    invoker.call(function_id, data, traceparent, baggage).await
 }
 
 /// The unsubscribe decision table, given the already write-locked map.
@@ -171,15 +183,14 @@ impl QueueAdapter for RedisAdapter {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    ) {
+    ) -> anyhow::Result<()> {
         let topic = topic.to_string();
         let publisher = Arc::clone(&self.publisher);
 
         tracing::debug!(topic = %topic, data = %data, "Publishing to Redis queue");
 
-        // Wrap data in an envelope that includes trace context — kept
-        // exactly like the engine even though nothing here parents a span
-        // off of it (see module doc).
+        // Wrap data in an envelope that includes the context restored by the
+        // subscriber delivery path.
         let envelope = serde_json::json!({
             "__trace": {
                 "traceparent": traceparent,
@@ -188,21 +199,16 @@ impl QueueAdapter for RedisAdapter {
             "data": data,
         });
 
-        let json = match serde_json::to_string(&envelope) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, topic = %topic, "Failed to serialize queue data");
-                return;
-            }
-        };
+        let json = serde_json::to_string(&envelope)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize queue data for {topic}: {e}"))?;
 
         let mut conn = publisher.lock().await;
 
-        if let Err(e) = conn.publish::<_, _, ()>(&topic, &json).await {
-            tracing::error!(error = %e, topic = %topic, "Failed to publish to Redis queue");
-        } else {
-            tracing::debug!(topic = %topic, "Published to Redis queue");
-        }
+        conn.publish::<_, _, ()>(&topic, &json)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to publish to Redis queue {topic}: {e}"))?;
+        tracing::debug!(topic = %topic, "Published to Redis queue");
+        Ok(())
     }
 
     async fn subscribe(
@@ -315,7 +321,15 @@ impl QueueAdapter for RedisAdapter {
                         condition_function_id = %condition_id,
                         "Checking trigger conditions"
                     );
-                    match check_condition(invoker.as_ref(), condition_id, data.clone()).await {
+                    match check_condition(
+                        invoker.as_ref(),
+                        condition_id,
+                        data.clone(),
+                        traceparent.clone(),
+                        baggage.clone(),
+                    )
+                    .await
+                    {
                         Ok(true) => {}
                         Ok(false) => {
                             tracing::debug!(
@@ -340,7 +354,10 @@ impl QueueAdapter for RedisAdapter {
                 let topic_for_call = topic_for_task.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = invoker.call(&function_id, data).await {
+                    if let Err(e) =
+                        invoke_target(invoker.as_ref(), &function_id, data, traceparent, baggage)
+                            .await
+                    {
                         tracing::error!(
                             error = %e,
                             function_id = %function_id,
@@ -472,6 +489,48 @@ impl QueueAdapter for RedisAdapter {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingInvoker {
+        calls: Mutex<Vec<(Option<String>, Option<String>)>>,
+    }
+
+    #[async_trait]
+    impl Invoker for RecordingInvoker {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            traceparent: Option<String>,
+            baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
+            self.calls.lock().await.push((traceparent, baggage));
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn subscriber_invocation_passes_stored_trace_context() {
+        let invoker = RecordingInvoker::default();
+        invoke_target(
+            &invoker,
+            "backend",
+            json!({"ok": true}),
+            Some("00-trace-parent-01".to_string()),
+            Some("tenant=motia".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *invoker.calls.lock().await,
+            vec![(
+                Some("00-trace-parent-01".to_string()),
+                Some("tenant=motia".to_string())
+            )]
+        );
+    }
 
     #[test]
     fn resolve_redis_url_defaults_when_absent() {

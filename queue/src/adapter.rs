@@ -6,8 +6,8 @@
 //! standalone worker: the engine trait is invoked from `Arc<Engine>`
 //! call sites; here adapters are driven by the worker's own trigger loop
 //! and invoke functions through `Arc<dyn crate::trigger::Invoker>` instead.
-//! Telemetry/tracing spans present on the engine's trait methods are
-//! dropped — the worker emits its own `tracing` events at call sites.
+//! Trace headers travel through adapter jobs and are restored by the worker's
+//! invoker; adapters also emit their own `tracing` events at call sites.
 
 use std::sync::Arc;
 
@@ -92,7 +92,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    );
+    ) -> anyhow::Result<()>;
 
     /// Register a subscriber (`id`) on `topic` that invokes `function_id`
     /// for each delivered message.
@@ -266,11 +266,11 @@ impl QueueAdapter for SwappableAdapter {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    ) {
+    ) -> anyhow::Result<()> {
         self.current()
             .await
             .enqueue(topic, data, traceparent, baggage)
-            .await;
+            .await
     }
 
     async fn subscribe(
@@ -422,8 +422,9 @@ mod tests {
             _data: Value,
             _traceparent: Option<String>,
             _baggage: Option<String>,
-        ) {
+        ) -> anyhow::Result<()> {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
 
         async fn subscribe(
@@ -469,12 +470,18 @@ mod tests {
     async fn current_reflects_replace() {
         let first = Arc::new(CountingAdapter::default());
         let swappable = SwappableAdapter::new(first.clone(), "first");
-        swappable.enqueue("demo", Value::Null, None, None).await;
+        swappable
+            .enqueue("demo", Value::Null, None, None)
+            .await
+            .unwrap();
         assert_eq!(first.enqueue_calls.load(Ordering::SeqCst), 1);
 
         let second = Arc::new(CountingAdapter::default());
         swappable.replace(second.clone(), "second").await;
-        swappable.enqueue("demo", Value::Null, None, None).await;
+        swappable
+            .enqueue("demo", Value::Null, None, None)
+            .await
+            .unwrap();
 
         assert_eq!(first.enqueue_calls.load(Ordering::SeqCst), 1);
         assert_eq!(second.enqueue_calls.load(Ordering::SeqCst), 1);

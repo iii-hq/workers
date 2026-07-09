@@ -263,8 +263,9 @@ mod tests {
             _data: Value,
             _traceparent: Option<String>,
             _baggage: Option<String>,
-        ) {
+        ) -> anyhow::Result<()> {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
 
         async fn subscribe(
@@ -321,7 +322,13 @@ mod tests {
 
     #[async_trait]
     impl Invoker for NoopInvoker {
-        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
             Ok(None)
         }
     }
@@ -368,7 +375,10 @@ mod tests {
         // one live behind the `SwappableAdapter`.
         assert_eq!(mock.shutdown_calls.load(Ordering::SeqCst), 0);
         assert_eq!(adapter.current_name().await, "mock");
-        adapter.enqueue("demo", Value::Null, None, None).await;
+        adapter
+            .enqueue("demo", Value::Null, None, None)
+            .await
+            .unwrap();
         assert_eq!(mock.enqueue_calls.load(Ordering::SeqCst), 1);
     }
 

@@ -15,7 +15,8 @@
 //!      so native exposure reads a live snapshot instead of listing per turn.
 //!   8. LAST: bind the configuration-change trigger so its handler closes over
 //!      the fully-built snapshot cell + the cron handle.
-//!   9. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!   9. Provision and verify the three durable turn queue subscribers.
+//!  10. Sleep on Ctrl+C, unregister queue bindings, then `shutdown_async`.
 
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
+use harness::turn_queues::TurnQueueBindings;
 use harness::{config, discovery, functions, manifest, subscriptions};
 
 #[derive(Parser, Debug)]
@@ -138,9 +140,11 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!(
-        "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
-    );
+    let queue_bindings = TurnQueueBindings::bind(&iii)
+        .await
+        .context("provisioning harness execution queues")?;
+
+    tracing::info!("harness ready: root, sub-agent, and reactive execution queues are active");
 
     // Background GC of durable react bindings orphaned across restarts (their
     // in-memory session tracking is gone; their owner session may have been
@@ -152,6 +156,7 @@ async fn main() -> Result<()> {
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("harness shutting down");
+    queue_bindings.shutdown();
     iii.shutdown_async().await;
     Ok(())
 }

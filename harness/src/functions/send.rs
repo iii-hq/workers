@@ -15,7 +15,9 @@ use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
-use crate::types::turn::{FunctionPolicy, IdemRecord, TurnOptions, TurnRecord, TurnStatus};
+use crate::types::turn::{
+    FunctionPolicy, IdemRecord, TurnLane, TurnOptions, TurnRecord, TurnStatus,
+};
 
 /// `message` is either a plain string (sugar for a user text message) or a
 /// full `AgentMessage`.
@@ -559,6 +561,7 @@ async fn seed_new(
         step: 0,
         turn_count: 0,
         depth: 0,
+        lane: Some(TurnLane::Root),
         message_preview,
         abort: false,
         watermark_entry_id: None,
@@ -577,15 +580,7 @@ async fn seed_new(
         updated_at: now,
     };
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    turn_loop::enqueue_step(
-        &deps.iii,
-        session_id,
-        &turn_id,
-        0,
-        record.message_preview.as_deref(),
-        0,
-    )
-    .await?;
+    turn_loop::enqueue_step(&deps.iii, &record, cfg.session_timeout_ms).await?;
     Ok(StartOutcome {
         session_id: session_id.to_string(),
         turn_id,

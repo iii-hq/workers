@@ -214,7 +214,12 @@ pub async fn publish(
     if input.topic.is_empty() {
         return Err(Error::Handler("Topic is not set".to_string()));
     }
-    adapter.enqueue(&input.topic, input.data, None, None).await;
+    let traceparent = iii_helpers::observability::inject_traceparent();
+    let baggage = iii_helpers::observability::inject_baggage();
+    adapter
+        .enqueue(&input.topic, input.data, traceparent, baggage)
+        .await
+        .map_err(|e| Error::Handler(e.to_string()))?;
     // Always `None` → `null` on the wire, matching the engine builtin's
     // `Success(None)`. The `PublishAck` type only exists to keep the
     // registered response schema typed.
@@ -387,14 +392,34 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
-        Enqueue { topic: String, data: Value },
-        RedriveDlq { topic: String },
-        RedriveDlqMessage { topic: String, message_id: String },
-        DiscardDlqMessage { topic: String, message_id: String },
-        DlqCount { topic: String },
+        Enqueue {
+            topic: String,
+            data: Value,
+            traceparent: Option<String>,
+            baggage: Option<String>,
+        },
+        RedriveDlq {
+            topic: String,
+        },
+        RedriveDlqMessage {
+            topic: String,
+            message_id: String,
+        },
+        DiscardDlqMessage {
+            topic: String,
+            message_id: String,
+        },
+        DlqCount {
+            topic: String,
+        },
         ListTopics,
-        TopicStats { topic: String },
-        DlqMessages { topic: String, count: usize },
+        TopicStats {
+            topic: String,
+        },
+        DlqMessages {
+            topic: String,
+            count: usize,
+        },
     }
 
     /// Records every call and lets a test script canned return values (an
@@ -404,6 +429,7 @@ mod tests {
     #[derive(Default)]
     struct MockAdapter {
         calls: StdMutex<Vec<Call>>,
+        enqueue_error: StdMutex<Option<anyhow::Error>>,
         redrive_dlq_result: StdMutex<Option<anyhow::Result<u64>>>,
         redrive_dlq_message_result: StdMutex<Option<anyhow::Result<bool>>>,
         discard_dlq_message_result: StdMutex<Option<anyhow::Result<bool>>>,
@@ -425,13 +451,19 @@ mod tests {
             &self,
             topic: &str,
             data: Value,
-            _traceparent: Option<String>,
-            _baggage: Option<String>,
-        ) {
+            traceparent: Option<String>,
+            baggage: Option<String>,
+        ) -> anyhow::Result<()> {
             self.calls.lock().unwrap().push(Call::Enqueue {
                 topic: topic.to_string(),
                 data,
+                traceparent,
+                baggage,
             });
+            if let Some(error) = self.enqueue_error.lock().unwrap().take() {
+                return Err(error);
+            }
+            Ok(())
         }
 
         async fn subscribe(
@@ -540,6 +572,8 @@ mod tests {
             attempts,
             enqueued_at_ms: 0,
             ready_at_ms: 0,
+            traceparent: None,
+            baggage: None,
         })
         .unwrap()
     }
@@ -561,8 +595,59 @@ mod tests {
             vec![Call::Enqueue {
                 topic: "demo".to_string(),
                 data: json!({"hello": "world"}),
+                traceparent: None,
+                baggage: None,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn publish_captures_current_trace_context() {
+        use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
+
+        let (adapter, mock) = adapter();
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let context =
+            iii_helpers::observability::extract_context(Some(traceparent), Some("tenant=motia"));
+
+        publish(
+            adapter,
+            PublishInput {
+                topic: "demo".to_string(),
+                data: json!({"hello": "world"}),
+            },
+        )
+        .with_context(context)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            mock.calls(),
+            vec![Call::Enqueue {
+                topic: "demo".to_string(),
+                data: json!({"hello": "world"}),
+                traceparent: Some(traceparent.to_string()),
+                baggage: Some("tenant=motia".to_string()),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_propagates_adapter_enqueue_failure() {
+        let (adapter, mock) = adapter();
+        *mock.enqueue_error.lock().unwrap() = Some(anyhow::anyhow!("transport unavailable"));
+
+        let error = publish(
+            adapter,
+            PublishInput {
+                topic: "demo".to_string(),
+                data: json!({"hello": "world"}),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("transport unavailable"));
     }
 
     #[tokio::test]

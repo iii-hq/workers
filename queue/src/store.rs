@@ -28,6 +28,10 @@ pub struct Job {
     pub enqueued_at_ms: u64,
     #[serde(default)]
     pub(crate) ready_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baggage: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +44,13 @@ pub struct TopicStats {
 
 #[async_trait]
 pub trait QueueStore: Send + Sync + 'static {
-    async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String>;
+    async fn enqueue(
+        &self,
+        topic: &str,
+        payload: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> anyhow::Result<String>;
     async fn dequeue(&self, topic: &str) -> Option<Job>;
     async fn ack(&self, topic: &str, job_id: &str);
     async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64);
@@ -109,8 +119,14 @@ impl FileStore {
 
 #[async_trait]
 impl QueueStore for InMemoryStore {
-    async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String> {
-        enqueue(&self.shared, topic, payload).await
+    async fn enqueue(
+        &self,
+        topic: &str,
+        payload: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> anyhow::Result<String> {
+        enqueue(&self.shared, topic, payload, traceparent, baggage).await
     }
 
     async fn dequeue(&self, topic: &str) -> Option<Job> {
@@ -156,8 +172,14 @@ impl QueueStore for InMemoryStore {
 
 #[async_trait]
 impl QueueStore for FileStore {
-    async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String> {
-        enqueue(&self.shared, topic, payload).await
+    async fn enqueue(
+        &self,
+        topic: &str,
+        payload: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> anyhow::Result<String> {
+        enqueue(&self.shared, topic, payload, traceparent, baggage).await
     }
 
     async fn dequeue(&self, topic: &str) -> Option<Job> {
@@ -201,7 +223,13 @@ impl QueueStore for FileStore {
     }
 }
 
-async fn enqueue(shared: &SharedStore, topic: &str, payload: Value) -> anyhow::Result<String> {
+async fn enqueue(
+    shared: &SharedStore,
+    topic: &str,
+    payload: Value,
+    traceparent: Option<String>,
+    baggage: Option<String>,
+) -> anyhow::Result<String> {
     let now = now_ms();
     let job = Job {
         id: Uuid::new_v4().to_string(),
@@ -209,6 +237,8 @@ async fn enqueue(shared: &SharedStore, topic: &str, payload: Value) -> anyhow::R
         attempts: 0,
         enqueued_at_ms: now,
         ready_at_ms: now,
+        traceparent,
+        baggage,
     };
     let id = job.id.clone();
 
@@ -458,7 +488,10 @@ mod tests {
     async fn enqueue_dequeue_ack_removes_ready_job() {
         for_each_backend(|store| {
             Box::pin(async move {
-                let id = store.enqueue("demo", json!({"x": 1})).await.unwrap();
+                let id = store
+                    .enqueue("demo", json!({"x": 1}), None, None)
+                    .await
+                    .unwrap();
                 let job = store.dequeue("demo").await.unwrap();
                 assert_eq!(job.id, id);
                 assert_eq!(job.payload, json!({"x": 1}));
@@ -475,7 +508,10 @@ mod tests {
     async fn nack_requeues_after_exponential_backoff() {
         for_each_backend(|store| {
             Box::pin(async move {
-                store.enqueue("demo", json!("job")).await.unwrap();
+                store
+                    .enqueue("demo", json!("job"), None, None)
+                    .await
+                    .unwrap();
                 let job = store.dequeue("demo").await.unwrap();
                 store.nack("demo", job, 3, 30).await;
                 assert!(store.dequeue("demo").await.is_none());
@@ -492,7 +528,10 @@ mod tests {
     async fn exhausted_nack_moves_to_dlq() {
         for_each_backend(|store| {
             Box::pin(async move {
-                store.enqueue("demo", json!("job")).await.unwrap();
+                store
+                    .enqueue("demo", json!("job"), None, None)
+                    .await
+                    .unwrap();
                 let job = store.dequeue("demo").await.unwrap();
                 store.nack("demo", job, 1, 1).await;
                 assert!(store.dequeue("demo").await.is_none());
@@ -513,7 +552,7 @@ mod tests {
         for_each_backend(|store| {
             Box::pin(async move {
                 for n in 0..2 {
-                    store.enqueue("demo", json!(n)).await.unwrap();
+                    store.enqueue("demo", json!(n), None, None).await.unwrap();
                     let job = store.dequeue("demo").await.unwrap();
                     store.nack("demo", job, 1, 1).await;
                 }
@@ -533,7 +572,7 @@ mod tests {
     async fn redrive_single_dlq_message_operates_by_id() {
         for_each_backend(|store| {
             Box::pin(async move {
-                store.enqueue("demo", json!("a")).await.unwrap();
+                store.enqueue("demo", json!("a"), None, None).await.unwrap();
                 let job = store.dequeue("demo").await.unwrap();
                 store.nack("demo", job, 1, 1).await;
                 let id = store.dlq_messages("demo", 10).await[0].id.clone();
@@ -550,7 +589,7 @@ mod tests {
     async fn discard_single_dlq_message_operates_by_id() {
         for_each_backend(|store| {
             Box::pin(async move {
-                store.enqueue("demo", json!("a")).await.unwrap();
+                store.enqueue("demo", json!("a"), None, None).await.unwrap();
                 let job = store.dequeue("demo").await.unwrap();
                 store.nack("demo", job, 1, 1).await;
                 let id = store.dlq_messages("demo", 10).await[0].id.clone();
@@ -567,9 +606,18 @@ mod tests {
     async fn topics_and_stats_reflect_depths() {
         for_each_backend(|store| {
             Box::pin(async move {
-                store.enqueue("demo", json!("ready")).await.unwrap();
-                store.enqueue("demo", json!("still-ready")).await.unwrap();
-                store.enqueue("other", json!("ready")).await.unwrap();
+                store
+                    .enqueue("demo", json!("ready"), None, None)
+                    .await
+                    .unwrap();
+                store
+                    .enqueue("demo", json!("still-ready"), None, None)
+                    .await
+                    .unwrap();
+                store
+                    .enqueue("other", json!("ready"), None, None)
+                    .await
+                    .unwrap();
                 let job = store.dequeue("demo").await.unwrap();
                 store.nack("demo", job, 1, 1).await;
                 assert_eq!(store.list_topics().await, vec!["demo", "other"]);
@@ -589,7 +637,7 @@ mod tests {
         {
             let store = FileStore::open(&dir, 5).await.unwrap();
             store
-                .enqueue("demo", json!({"survives": true}))
+                .enqueue("demo", json!({"survives": true}), None, None)
                 .await
                 .unwrap();
         }
@@ -597,5 +645,43 @@ mod tests {
         let job = reopened.dequeue("demo").await.unwrap();
         assert_eq!(job.payload, json!({"survives": true}));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn trace_context_round_trips_through_memory_and_file_stores() {
+        for_each_backend(|store| {
+            Box::pin(async move {
+                store
+                    .enqueue(
+                        "demo",
+                        json!({"traced": true}),
+                        Some("00-trace-parent-01".to_string()),
+                        Some("tenant=motia".to_string()),
+                    )
+                    .await
+                    .unwrap();
+
+                let job = store.dequeue("demo").await.unwrap();
+                assert_eq!(job.traceparent.as_deref(), Some("00-trace-parent-01"));
+                assert_eq!(job.baggage.as_deref(), Some("tenant=motia"));
+                store
+            })
+        })
+        .await;
+    }
+
+    #[test]
+    fn persisted_jobs_without_trace_context_remain_compatible() {
+        let job: Job = serde_json::from_value(json!({
+            "id": "legacy",
+            "payload": {"old": true},
+            "attempts": 0,
+            "enqueued_at_ms": 1,
+            "ready_at_ms": 1
+        }))
+        .unwrap();
+
+        assert_eq!(job.traceparent, None);
+        assert_eq!(job.baggage, None);
     }
 }
