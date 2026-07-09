@@ -161,7 +161,7 @@ untouched; the compaction entry is loop bookkeeping the harness owns (see
 
 ## Durability & idempotency
 
-The `harness-turn` queue is **at-least-once**: any step may be redelivered after a crash, and every
+Each harness named queue is **at-least-once**: any step may be redelivered after a crash, and every
 step must tolerate it. The rules:
 
 - **Stale-step guard.** Each dequeue compares `payload.step` to the turn record's current `step`; a
@@ -823,12 +823,12 @@ allowed. The child's transcript is a normal session — bind `session::message-u
 
 ### `harness::turn`
 
-Internal durable loop step. Documented for completeness; consumers do not call it. Published to the
-turn record's durable topic (`harness-turn`, `harness-subagent`, or `harness-reactive`); each run
-advances one step of [the loop](#the-loop).
+Internal durable loop step. Documented for completeness; consumers do not call it. Enqueued onto the
+turn record's frozen named queue (`harness-turn`, `harness-subagent`, or `harness-reactive`); each
+run advances one step of [the loop](#the-loop).
 
-- Invocation: **sync publish** (`iii::durable::publish`); the queue subscriber invokes
-  `harness::turn`.
+- Invocation: **enqueue** (`TriggerAction::Enqueue({ queue })`); the engine delegates durable
+  persistence and delivery to the standalone queue worker.
 
 ```typescript
 type TurnStepPayload = {
@@ -1018,14 +1018,14 @@ pattern [approval-gate](approval-gate.md#state-lifecycle) mandates for its own s
   and set status. Required.
 - `llm-router` (`router::chat`) — generation. Required.
 - `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.
-- standalone `queue` worker — provides `iii::durable::publish` and the `durable:subscriber`
-  trigger type. Harness boot owns three standard-mode subscribers: `harness-turn` (root),
-  `harness-subagent` (direct and nested sub-agents), and `harness-reactive` (reactions). Each has
-  concurrency 10, three attempts, and 1000ms exponential backoff, for independent lane capacity
-  and an aggregate ceiling of 30 active steps. Boot waits up to 10 seconds for all three topics and
-  fails closed if consumers are unavailable. Installing harness brings this worker as a manifest
-  dependency; the engine built-in `iii-queue` must be disabled because both own the same trigger
-  type.
+- standalone `queue` worker — provides the engine's named function-queue provider and
+  `engine::queue::ensure`. Harness boot ensures `harness-turn` (root), `harness-subagent` (direct
+  and nested sub-agents), and `harness-reactive` (reactions) with standard mode, concurrency 10,
+  three attempts, and 1000ms exponential backoff. The queues have independent capacity and an
+  aggregate ceiling of 30 active steps. Boot waits up to 10 seconds for all three named queues and
+  fails closed if the provider is unavailable. Installing harness brings this worker as a manifest
+  dependency; the engine built-in `iii-queue` must be disabled because the standalone worker owns
+  enqueue delivery.
 - iii engine — `iii.trigger` for function dispatch (`agent_trigger` unwrap → target function);
   registry reads (`engine::functions::list` / `engine::functions::info`) for runtime discovery and
   `expose: "native"` schema mapping; custom trigger-type registration (`registerTriggerType`) for

@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
         boot.trigger_handler.clone(),
         boot.config.clone(),
         boot.apply_lock.clone(),
+        boot.function_queues.clone(),
     )
     .map_err(anyhow::Error::msg)
     .context("binding queue configuration trigger")?;

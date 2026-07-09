@@ -9,6 +9,7 @@ pub mod boot;
 pub mod config;
 pub mod configuration;
 pub mod functions;
+pub mod function_queues;
 pub mod manifest;
 pub mod store;
 pub mod subscriber_config;

@@ -43,7 +43,7 @@ pub const SPAWN_DESC: &str =
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
-    "Internal durable loop step (delivered from a harness-owned durable topic); not called directly.";
+    "Internal durable loop step (enqueued onto a harness-owned named function queue); not called directly.";
 
 pub const FUNCTION_TRIGGER_ID: &str = "harness::function::trigger";
 pub const FUNCTION_TRIGGER_DESC: &str =

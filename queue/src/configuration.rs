@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::adapter::SwappableAdapter;
 use crate::boot::{self, ApplyLock, ConfigCell};
 use crate::config::QueueConfig;
+use crate::function_queues::FunctionQueueRuntime;
 use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler};
 
 pub const CONFIG_ID: &str = "queue";
@@ -60,6 +61,7 @@ pub fn register_config_trigger(
     trigger_handler: QueueTriggerHandler,
     config: ConfigCell,
     apply_lock: ApplyLock,
+    function_queues: Arc<FunctionQueueRuntime>,
 ) -> Result<(), Error> {
     let engine = iii.clone();
     iii.register_function(
@@ -70,8 +72,17 @@ pub fn register_config_trigger(
             let trigger_handler = trigger_handler.clone();
             let config = config.clone();
             let apply_lock = apply_lock.clone();
+            let function_queues = function_queues.clone();
             async move {
-                on_config_change(engine, adapter, trigger_handler, config, apply_lock).await;
+                on_config_change(
+                    engine,
+                    adapter,
+                    trigger_handler,
+                    config,
+                    apply_lock,
+                    function_queues,
+                )
+                .await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -96,6 +107,7 @@ async fn on_config_change(
     trigger_handler: QueueTriggerHandler,
     config: ConfigCell,
     apply_lock: ApplyLock,
+    function_queues: Arc<FunctionQueueRuntime>,
 ) {
     let _guard = apply_lock.lock().await;
 
@@ -110,7 +122,15 @@ async fn on_config_change(
     let old = config.read().await.clone();
     if swap_needed(&old, &next) {
         let invoker = Arc::new(IiiInvoker::new(iii.clone()));
-        match swap_adapter(&adapter, &trigger_handler, invoker, &next).await {
+        match swap_adapter(
+            &adapter,
+            &trigger_handler,
+            &function_queues,
+            invoker,
+            &next,
+        )
+        .await
+        {
             Ok(()) => {
                 *config.write().await = Arc::new(next);
                 tracing::info!("queue transport hot-swapped after configuration change");
@@ -131,6 +151,13 @@ async fn on_config_change(
         return;
     }
 
+    if let Err(err) = function_queues.reconcile(&next.queue_configs).await {
+        tracing::error!(
+            error = %err,
+            "queue config-change: failed to apply named function queues; keeping previous config"
+        );
+        return;
+    }
     *config.write().await = Arc::new(next);
     tracing::info!("queue configuration reloaded without transport swap");
 }
@@ -146,6 +173,7 @@ async fn on_config_change(
 async fn swap_adapter(
     adapter: &Arc<SwappableAdapter>,
     trigger_handler: &QueueTriggerHandler,
+    function_queues: &Arc<FunctionQueueRuntime>,
     invoker: Arc<dyn Invoker>,
     next: &QueueConfig,
 ) -> anyhow::Result<()> {
@@ -154,8 +182,9 @@ async fn swap_adapter(
     adapter
         .replace(new_adapter, boot::adapter_identity_name(next))
         .await;
-    old_adapter.shutdown().await;
+    function_queues.restart_all(&next.queue_configs).await?;
     trigger_handler.resubscribe_all().await;
+    old_adapter.shutdown().await;
     Ok(())
 }
 
@@ -337,6 +366,10 @@ mod tests {
         Arc::new(NoopInvoker)
     }
 
+    fn function_runtime(adapter: Arc<SwappableAdapter>) -> Arc<FunctionQueueRuntime> {
+        Arc::new(FunctionQueueRuntime::new(adapter, noop_invoker()))
+    }
+
     #[tokio::test]
     async fn swap_adapter_keeps_old_adapter_running_when_build_fails() {
         let mock = Arc::new(MockAdapter::default());
@@ -364,9 +397,17 @@ mod tests {
                 name: "not-a-real-adapter".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
 
-        let err = swap_adapter(&adapter, &trigger_handler, noop_invoker(), &bad_config)
+        let runtime = function_runtime(adapter.clone());
+        let err = swap_adapter(
+            &adapter,
+            &trigger_handler,
+            &runtime,
+            noop_invoker(),
+            &bad_config,
+        )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not implemented"));
@@ -411,9 +452,11 @@ mod tests {
                 name: "in_memory".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
 
-        swap_adapter(&adapter, &trigger_handler, noop_invoker(), &next)
+        let runtime = function_runtime(adapter.clone());
+        swap_adapter(&adapter, &trigger_handler, &runtime, noop_invoker(), &next)
             .await
             .unwrap();
 
@@ -439,6 +482,7 @@ mod tests {
                 name: "builtin".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         assert!(!swap_needed(&old, &new));
     }
@@ -454,6 +498,7 @@ mod tests {
                     "file_path": "./data/queue"
                 })),
             }),
+            ..Default::default()
         };
         assert!(swap_needed(&old, &new));
     }

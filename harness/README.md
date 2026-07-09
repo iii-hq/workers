@@ -41,6 +41,20 @@ alongside it for the full loop.
 
 ## Quickstart
 
+For a clean local smoke test that uses only published workers from the registry,
+run the helper script:
+
+```bash
+./harness/scripts/published-smoke.sh --fresh --open
+```
+
+`--fresh` stops local III engine/worker processes, removes the test workspace
+and local III install artifacts, reinstalls the CLI, starts the engine in tmux,
+then runs `iii worker add harness console` from the test app directory. The
+script prints the matching III processes and a system zombie-process check at
+the end. Omit `--fresh` when you want the script to refuse to reuse a busy port
+instead of tearing down the current local stack.
+
 Install the engine, start it, then add harness and the console from a second
 terminal in the same folder:
 
@@ -73,20 +87,20 @@ Until a provider is configured the picker is empty and chat will not generate.
 
 `iii worker add harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one or configure turn queues manually. At
-boot the harness registers three durable subscribers with the standalone
-`queue` worker and waits until all three topics are ready before accepting
-sends:
+boot the harness provisions three named function queues through the standalone
+`queue` worker and waits until all three are ready before accepting sends:
 
 - `harness-turn` for root turns
 - `harness-subagent` for direct and nested sub-agents
 - `harness-reactive` for reaction-triggered turns
 
-Each topic is standard mode with concurrency 10, three attempts, and 1000ms
+Each queue is standard mode with concurrency 10, three attempts, and 1000ms
 exponential backoff. They have independent capacity (up to 30 active steps in
-aggregate), so a saturated sub-agent lane does not block a new root turn.
-Control-plane calls such as send, status, stop, and resolution remain
-synchronous. The standalone worker is required; do not enable the engine's
-built-in `iii-queue` at the same time.
+aggregate), so a saturated sub-agent lane does not block a new root turn. Each
+turn step uses `TriggerAction::Enqueue`; the engine delegates persistence and
+delivery to the standalone queue worker. Control-plane calls such as send,
+status, stop, and resolution remain synchronous. The standalone worker is
+required; do not enable the engine's built-in `iii-queue` at the same time.
 
 Every turn, sub-agent spawn, and provider call is one correlated trace: the
 harness turn waterfall in the console. Failed descendants stamp the whole trace

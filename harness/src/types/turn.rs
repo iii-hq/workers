@@ -34,13 +34,27 @@ pub enum TurnStatus {
 }
 
 /// Durable execution lane for a turn. The lane is frozen when the record is
-/// created so continuations and resumes cannot drift between queue topics.
+/// created so continuations and resumes cannot drift between named queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnLane {
     Root,
     Subagent,
     Reactive,
+}
+
+impl TurnLane {
+    /// All execution lanes the harness provisions during boot.
+    pub const ALL: [Self; 3] = [Self::Root, Self::Subagent, Self::Reactive];
+
+    /// The named function queue used for this workload class.
+    pub const fn queue_name(self) -> &'static str {
+        match self {
+            Self::Root => "harness-turn",
+            Self::Subagent => "harness-subagent",
+            Self::Reactive => "harness-reactive",
+        }
+    }
 }
 
 impl TurnStatus {
@@ -388,6 +402,27 @@ mod tests {
         let mut reactive = record();
         reactive.spawned_by_subscription_id = Some("sub_1".into());
         assert_eq!(reactive.effective_lane(), TurnLane::Reactive);
+    }
+
+    #[test]
+    fn execution_lanes_map_to_their_named_queues() {
+        assert_eq!(
+            TurnLane::ALL,
+            [TurnLane::Root, TurnLane::Subagent, TurnLane::Reactive]
+        );
+        assert_eq!(TurnLane::Root.queue_name(), "harness-turn");
+        assert_eq!(TurnLane::Subagent.queue_name(), "harness-subagent");
+        assert_eq!(TurnLane::Reactive.queue_name(), "harness-reactive");
+    }
+
+    #[test]
+    fn persisted_lane_wins_over_legacy_routing_metadata() {
+        let mut record = record();
+        record.lane = Some(TurnLane::Root);
+        record.spawned_by_subscription_id = Some("sub_1".into());
+        record.reactive_depth = Some(1);
+
+        assert_eq!(record.effective_lane(), TurnLane::Root);
     }
 
     #[test]

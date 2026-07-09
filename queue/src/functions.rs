@@ -3,12 +3,15 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapter::{QueueAdapter, SwappableAdapter};
+use crate::adapter::{FunctionQueueConfig, QueueAdapter, SwappableAdapter};
+use crate::boot::{ApplyLock, ConfigCell};
+use crate::function_queues::FunctionQueueRuntime;
 use crate::store::Job;
 
 pub const PUBLISH_FN_ID: &str = "iii::durable::publish";
@@ -19,6 +22,10 @@ pub const LIST_TOPICS_FN_ID: &str = "engine::queue::list_topics";
 pub const TOPIC_STATS_FN_ID: &str = "engine::queue::topic_stats";
 pub const DLQ_TOPICS_FN_ID: &str = "engine::queue::dlq_topics";
 pub const DLQ_MESSAGES_FN_ID: &str = "engine::queue::dlq_messages";
+/// Idempotently creates a named function queue owned by this worker.
+pub const ENSURE_FUNCTION_QUEUE_FN_ID: &str = "engine::queue::ensure";
+/// Internal provider invoked by the engine for `TriggerAction::Enqueue`.
+pub const ENQUEUE_FUNCTION_QUEUE_FN_ID: &str = "engine::queue::enqueue";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PublishInput {
@@ -27,6 +34,30 @@ pub struct PublishInput {
     pub topic: String,
     pub data: Value,
 }
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct EnsureFunctionQueueInput {
+    pub queue: String,
+    pub config: FunctionQueueConfig,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct EnsureFunctionQueueResult {
+    pub queue: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct EnqueueFunctionInput {
+    pub queue: String,
+    pub function_id: String,
+    pub data: Value,
+    #[serde(alias = "messageReceiptId")]
+    pub message_receipt_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct EnqueueFunctionResult {}
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RedriveInput {
@@ -125,7 +156,13 @@ pub struct DlqMessage {
     pub size_bytes: u64,
 }
 
-pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
+pub fn register_all(
+    iii: &Arc<IIIClient>,
+    adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
+    apply_lock: ApplyLock,
+    function_queues: Arc<FunctionQueueRuntime>,
+) {
     let publish_adapter = adapter.clone();
     iii.register_function(
         PUBLISH_FN_ID,
@@ -134,6 +171,32 @@ pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
             async move { publish(adapter, input).await }
         })
         .description("Enqueue a message"),
+    );
+
+    let ensure_iii = iii.clone();
+    let ensure_config = config.clone();
+    let ensure_apply_lock = apply_lock.clone();
+    let ensure_runtime = function_queues.clone();
+    iii.register_function(
+        ENSURE_FUNCTION_QUEUE_FN_ID,
+        RegisterFunction::new_async(move |input: EnsureFunctionQueueInput| {
+            let iii = ensure_iii.clone();
+            let config = ensure_config.clone();
+            let apply_lock = ensure_apply_lock.clone();
+            let runtime = ensure_runtime.clone();
+            async move { ensure_function_queue(iii, config, apply_lock, runtime, input).await }
+        })
+        .description("Idempotently provision a named function queue"),
+    );
+
+    let enqueue_runtime = function_queues.clone();
+    iii.register_function(
+        ENQUEUE_FUNCTION_QUEUE_FN_ID,
+        RegisterFunction::new_async(move |input: EnqueueFunctionInput| {
+            let runtime = enqueue_runtime.clone();
+            async move { enqueue_function_queue(runtime, input).await }
+        })
+        .description("Internal engine enqueue provider; persists a named function queue job"),
     );
 
     let redrive_adapter = adapter.clone();
@@ -167,21 +230,25 @@ pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
     );
 
     let list_adapter = adapter.clone();
+    let list_config = config.clone();
     iii.register_function(
         LIST_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: ListTopicsInput| {
             let adapter = list_adapter.clone();
-            async move { list_topics(adapter).await }
+            let config = list_config.clone();
+            async move { list_topics(adapter, config).await }
         })
         .description("List all queue topics"),
     );
 
     let stats_adapter = adapter.clone();
+    let stats_config = config.clone();
     iii.register_function(
         TOPIC_STATS_FN_ID,
         RegisterFunction::new_async(move |input: TopicStatsInput| {
             let adapter = stats_adapter.clone();
-            async move { topic_stats(adapter, input).await }
+            let config = stats_config.clone();
+            async move { topic_stats(adapter, config, input).await }
         })
         .description("Get stats for a queue topic"),
     );
@@ -205,6 +272,95 @@ pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
         })
         .description("Browse DLQ messages"),
     );
+}
+
+async fn ensure_function_queue(
+    iii: Arc<IIIClient>,
+    config_cell: ConfigCell,
+    apply_lock: ApplyLock,
+    runtime: Arc<FunctionQueueRuntime>,
+    input: EnsureFunctionQueueInput,
+) -> Result<EnsureFunctionQueueResult, Error> {
+    if input.queue.trim().is_empty() {
+        return Err(Error::Handler("queue is required".to_string()));
+    }
+    input
+        .config
+        .validate()
+        .map_err(|error| Error::Handler(error.to_string()))?;
+
+    let _apply = apply_lock.lock().await;
+    let current = config_cell.read().await.as_ref().clone();
+    if let Some(existing) = current.queue_configs.get(&input.queue) {
+        if existing == &input.config {
+            return Ok(EnsureFunctionQueueResult {
+                queue: input.queue,
+                created: false,
+            });
+        }
+        return Err(Error::Handler(format!(
+            "function queue '{}' already exists with a different configuration",
+            input.queue
+        )));
+    }
+
+    let mut next = current.clone();
+    next.queue_configs
+        .insert(input.queue.clone(), input.config.clone());
+    persist_config(&iii, &next).await?;
+    if let Err(error) = runtime.reconcile(&next.queue_configs).await {
+        let _ = persist_config(&iii, &current).await;
+        return Err(Error::Handler(format!(
+            "could not start function queue '{}': {error}",
+            input.queue
+        )));
+    }
+    *config_cell.write().await = Arc::new(next);
+    Ok(EnsureFunctionQueueResult {
+        queue: input.queue,
+        created: true,
+    })
+}
+
+async fn persist_config(iii: &IIIClient, config: &crate::config::QueueConfig) -> Result<(), Error> {
+    iii.trigger(TriggerRequest {
+        function_id: "configuration::set".to_string(),
+        payload: serde_json::json!({ "id": crate::configuration::CONFIG_ID, "value": config }),
+        action: None,
+        timeout_ms: Some(10_000),
+    })
+    .await
+    .map(|_| ())
+    .map_err(|error| Error::Handler(format!("persisting queue configuration: {error}")))
+}
+
+pub async fn enqueue_function_queue(
+    runtime: Arc<FunctionQueueRuntime>,
+    input: EnqueueFunctionInput,
+) -> Result<Option<EnqueueFunctionResult>, Error> {
+    if input.queue.trim().is_empty() {
+        return Err(Error::Handler("queue is required".to_string()));
+    }
+    if input.function_id.trim().is_empty() {
+        return Err(Error::Handler("function_id is required".to_string()));
+    }
+    if input.message_receipt_id.trim().is_empty() {
+        return Err(Error::Handler("messageReceiptId is required".to_string()));
+    }
+    let traceparent = iii_helpers::observability::inject_traceparent();
+    let baggage = iii_helpers::observability::inject_baggage();
+    runtime
+        .enqueue(
+            &input.queue,
+            &input.function_id,
+            input.data,
+            &input.message_receipt_id,
+            traceparent,
+            baggage,
+        )
+        .await
+        .map_err(|error| Error::Handler(error.to_string()))?;
+    Ok(None)
 }
 
 pub async fn publish(
@@ -275,38 +431,60 @@ pub async fn discard_message(
     })
 }
 
-pub async fn list_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<TopicInfo>, Error> {
+pub async fn list_topics(
+    adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
+) -> Result<Vec<TopicInfo>, Error> {
     let broker_type = adapter.current_name().await;
     let topics = adapter
         .list_topics()
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
-    Ok(topics
+    let mut listed = topics
         .into_iter()
         .map(|topic| TopicInfo {
             name: topic.name,
             broker_type: broker_type.clone(),
             subscriber_count: 0,
         })
-        .collect())
+        .collect::<Vec<_>>();
+    let configs = config.read().await.queue_configs.clone();
+    for (name, queue_config) in configs {
+        if !listed.iter().any(|topic| topic.name == name) {
+            listed.push(TopicInfo {
+                name,
+                broker_type: broker_type.clone(),
+                subscriber_count: u64::from(queue_config.concurrency),
+            });
+        }
+    }
+    listed.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(listed)
 }
 
 pub async fn topic_stats(
     adapter: Arc<SwappableAdapter>,
+    config: ConfigCell,
     input: TopicStatsInput,
 ) -> Result<TopicStatsOutput, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("topic is required".to_string()));
     }
+    let queue_config = config.read().await.queue_configs.get(&input.topic).cloned();
+    let storage_topic = if queue_config.is_some() {
+        format!("__fn_queue::{}", input.topic)
+    } else {
+        input.topic.clone()
+    };
     let stats = adapter
-        .topic_stats(&input.topic)
+        .topic_stats(&storage_topic)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(TopicStatsOutput {
         depth: stats.depth,
-        consumer_count: 0,
+        consumer_count: queue_config.as_ref().map_or(0, |cfg| u64::from(cfg.concurrency)),
         dlq_depth: stats.dlq_depth,
-        config: None,
+        config: queue_config.and_then(|cfg| serde_json::to_value(cfg).ok()),
     })
 }
 
@@ -574,6 +752,8 @@ mod tests {
             ready_at_ms: 0,
             traceparent: None,
             baggage: None,
+            function_id: None,
+            message_id: None,
         })
         .unwrap()
     }
@@ -759,7 +939,12 @@ mod tests {
                 depth: 1,
             }]));
         }
-        let topics = list_topics(adapter.clone()).await.unwrap();
+        let topics = list_topics(
+            adapter.clone(),
+            crate::configuration::new_cell(crate::config::QueueConfig::default()),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             topics[0],
             TopicInfo {
@@ -777,6 +962,7 @@ mod tests {
         }));
         let stats = topic_stats(
             adapter,
+            crate::configuration::new_cell(crate::config::QueueConfig::default()),
             TopicStatsInput {
                 topic: "demo".to_string(),
             },
