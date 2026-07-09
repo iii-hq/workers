@@ -250,7 +250,9 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
                 max_retries: 1,
                 concurrency: 1,
                 backoff_ms: 200,
+                r#type: "standard".to_string(),
                 max_priority: None,
+                ..Default::default()
             },
         )
         .await
@@ -268,7 +270,8 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
             None,
             None,
         )
-        .await;
+        .await
+        .expect("function queue publish should succeed");
 
     let mut rx = adapter
         .consume_function_queue(&queue_name, 10)
