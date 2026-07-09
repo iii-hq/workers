@@ -2,6 +2,7 @@ id: shell
 name: Shell
 description: Command denylist, timeout & output caps, and the fs jail.
 value:
+  allowlist: []
   code:
     batch_read_budget_bytes: 1048576
     default_exclude_globs:
