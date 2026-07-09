@@ -42,11 +42,23 @@ pub fn build_body(args: &BodyArgs) -> Value {
     if let Some(system) = build_system_field(&args.system_prompt, args.cache_enabled) {
         body["system"] = system;
     }
-    if let Some(t) = &args.thinking {
-        body["thinking"] = serde_json::to_value(t).expect("serializable thinking config");
-    }
-    if let Some(effort) = args.effort {
-        body["output_config"] = json!({ "effort": effort });
+    // Thinking and assistant prefill are mutually exclusive on the Messages API
+    // ("...does not support assistant message prefill. The conversation must end
+    // with a user message."). If the sanitized transcript still ends on an
+    // assistant turn, honor the prefill and drop thinking rather than 400.
+    let is_prefill = body["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .and_then(|m| m.get("role"))
+        .and_then(Value::as_str)
+        == Some("assistant");
+    if !is_prefill {
+        if let Some(t) = &args.thinking {
+            body["thinking"] = serde_json::to_value(t).expect("serializable thinking config");
+        }
+        if let Some(effort) = args.effort {
+            body["output_config"] = json!({ "effort": effort });
+        }
     }
     body
 }
@@ -130,6 +142,43 @@ mod tests {
         assert_eq!(body["thinking"]["display"], "summarized");
         assert!(body["thinking"].get("budget_tokens").is_none());
         assert_eq!(body["output_config"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn thinking_dropped_when_conversation_ends_on_assistant_prefill() {
+        use llm_router::types::events::StopReason;
+        use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
+        let mut a = args();
+        a.thinking = Some(crate::thinking::ADAPTIVE);
+        a.effort = Some("high");
+        // A trailing call-less assistant (aborted-stream partial or an
+        // intentional prefill) makes the wire end on role:assistant. Thinking +
+        // prefill are mutually exclusive, so thinking must be dropped, not 400.
+        a.messages.push(AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "the answer is".into(),
+            }],
+            stop_reason: StopReason::End,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "m".into(),
+            provider: "anthropic".into(),
+            timestamp: 2,
+        }));
+        let body = build_body(&a);
+        assert_eq!(
+            body["messages"].as_array().unwrap().last().unwrap()["role"],
+            "assistant"
+        );
+        assert!(
+            body.get("thinking").is_none(),
+            "prefill request must not carry thinking"
+        );
+        assert!(body.get("output_config").is_none());
     }
 
     #[test]

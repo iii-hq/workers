@@ -159,8 +159,22 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
                 if !pending.is_empty() {
                     out.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
                 }
-                let content: Vec<Value> =
+                let mut content: Vec<Value> =
                     a.content.iter().filter_map(content_block_to_wire).collect();
+                // Anthropic (thinking enabled) 400s when an assistant turn's
+                // final block is `thinking`/`redacted_thinking`. A tail thinking
+                // block is inert for replay — only thinking that PRECEDES a
+                // tool_use is passed back for signature verification, and that
+                // block is never the tail — so strip any trailing thinking.
+                while matches!(
+                    content
+                        .last()
+                        .and_then(|b| b.get("type"))
+                        .and_then(Value::as_str),
+                    Some("thinking") | Some("redacted_thinking")
+                ) {
+                    content.pop();
+                }
                 // Anthropic rejects assistant turns with empty content arrays.
                 if !content.is_empty() {
                     out.push(json!({ "role": "assistant", "content": content }));
@@ -464,13 +478,76 @@ mod tests {
     }
 
     #[test]
-    fn redacted_thinking_replays_on_the_wire() {
+    fn redacted_thinking_replays_before_a_tool_use() {
+        // Mandatory replay is thinking-family that PRECEDES a tool_use; the
+        // tool_use is a non-thinking tail, so the redacted block survives.
+        let wire = to_wire_messages(&[assistant(vec![
+            ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            },
+            call("t1"),
+        ])]);
+        assert_eq!(wire[0]["content"][0]["type"], "redacted_thinking");
+        assert_eq!(wire[0]["content"][0]["data"], "opaque");
+        assert_eq!(wire[0]["content"][1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn trailing_redacted_thinking_is_stripped() {
+        // A lone/trailing redacted_thinking assistant is both an invalid final
+        // block and a prefill under thinking; stripping empties the turn so it
+        // is omitted (Anthropic 400: "final block ... cannot be `thinking`").
         let wire = to_wire_messages(&[assistant(vec![ContentBlock::RedactedThinking {
             data: "opaque".into(),
         }])]);
+        assert!(wire.is_empty());
+    }
+
+    #[test]
+    fn trailing_signed_thinking_is_stripped_keeping_earlier_blocks() {
+        let wire = to_wire_messages(&[assistant(vec![
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+            ContentBlock::Thinking {
+                text: "afterthought".into(),
+                signature: Some("sig".into()),
+            },
+        ])]);
+        let content = wire[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+    }
+
+    #[test]
+    fn signed_thinking_only_trailing_assistant_is_omitted() {
+        // The aborted-stream placeholder shape (harness persists the partial):
+        // a durable trailing assistant holding only a signed thinking block.
+        // Must not reach the wire as a bare thinking assistant — that is both
+        // the final-block-thinking 400 and the prefill 400 from the report.
+        let wire = to_wire_messages(&[
+            user(vec![ContentBlock::Text { text: "hi".into() }]),
+            assistant(vec![ContentBlock::Thinking {
+                text: "partial".into(),
+                signature: Some("sig".into()),
+            }]),
+        ]);
         assert_eq!(wire.len(), 1);
-        assert_eq!(wire[0]["content"][0]["type"], "redacted_thinking");
-        assert_eq!(wire[0]["content"][0]["data"], "opaque");
+        assert_eq!(wire[0]["role"], "user");
+    }
+
+    #[test]
+    fn signed_thinking_before_tool_use_is_preserved() {
+        let wire = to_wire_messages(&[assistant(vec![
+            ContentBlock::Thinking {
+                text: "plan".into(),
+                signature: Some("sig".into()),
+            },
+            call("t1"),
+        ])]);
+        let content = wire[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[1]["type"], "tool_use");
     }
 
     #[test]
