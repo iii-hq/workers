@@ -1,5 +1,6 @@
 //! Worker boot and shutdown wiring.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const LIST_TOPICS_FUNCTION_ID: &str = "engine::queue::list_topics";
 const QUEUE_INTERFACE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const BUILTIN_III_QUEUE_WORKER_ID: &str = "iii-queue";
+pub const DEFAULT_FILE_STORE_PATH: &str = "./data/queue";
 
 pub type ConfigCell = Arc<RwLock<Arc<QueueConfig>>>;
 pub type ApplyLock = Arc<Mutex<()>>;
@@ -193,17 +195,34 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
         _ => BuiltinAdapterConfig::default(),
     };
 
-    let store_method = builtin.store_method.as_deref().unwrap_or(adapter_name);
+    let store_method = builtin
+        .store_method
+        .as_deref()
+        .unwrap_or_else(|| default_store_method(adapter_name));
     match store_method {
         "file_based" => {
-            let path = builtin
+            let configured_path = builtin
                 .file_path
-                .unwrap_or_else(|| "queue_store_data".to_string());
+                .unwrap_or_else(|| DEFAULT_FILE_STORE_PATH.to_string());
+            let path = PathBuf::from(configured_path);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()?.join(path)
+            };
             let save_interval_ms = builtin.save_interval_ms.unwrap_or(5000);
             Ok(Arc::new(FileStore::open(path, save_interval_ms).await?))
         }
         "builtin" | "in_memory" => Ok(Arc::new(InMemoryStore::new())),
         other => anyhow::bail!("unknown builtin queue store_method '{other}'"),
+    }
+}
+
+fn default_store_method(adapter_name: &str) -> &str {
+    if adapter_name == "in_memory" {
+        "in_memory"
+    } else {
+        "file_based"
     }
 }
 
@@ -258,6 +277,7 @@ mod tests {
     use super::*;
     use crate::config::AdapterEntry;
     use serde_json::json;
+    use serial_test::serial;
     use uuid::Uuid;
 
     #[test]
@@ -301,14 +321,33 @@ mod tests {
         assert!(!builtin_iii_queue_active(&json!({})));
     }
 
+    #[test]
+    fn builtin_defaults_to_file_storage_except_for_explicit_in_memory() {
+        assert_eq!(default_store_method("builtin"), "file_based");
+        assert_eq!(default_store_method("file_based"), "file_based");
+        assert_eq!(default_store_method("in_memory"), "in_memory");
+    }
+
     #[tokio::test]
-    async fn build_store_defaults_to_in_memory_without_adapter() {
-        let config = QueueConfig::default();
-        let store = build_store(&config).await.unwrap();
+    #[serial]
+    async fn build_store_defaults_to_file_storage_without_adapter() {
+        let original_dir = std::env::current_dir().unwrap();
+        let temp_dir = std::env::temp_dir().join(format!("queue_boot_default_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
+
+        let store = build_store(&QueueConfig::default()).await.unwrap();
         store
             .enqueue("demo", json!({"ok": true}), None, None)
             .await
             .unwrap();
+        assert!(temp_dir
+            .join(DEFAULT_FILE_STORE_PATH)
+            .join("queue_store.json")
+            .exists());
+
+        std::env::set_current_dir(original_dir).unwrap();
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[tokio::test]
@@ -370,7 +409,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn build_adapter_defaults_to_builtin_without_config() {
+        let original_dir = std::env::current_dir().unwrap();
+        let temp_dir =
+            std::env::temp_dir().join(format!("queue_boot_adapter_default_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
         let adapter = build_adapter(&QueueConfig::default(), noop_invoker())
             .await
             .unwrap();
@@ -378,6 +423,9 @@ mod tests {
             .enqueue("demo", json!({"ok": true}), None, None)
             .await
             .unwrap();
+        adapter.shutdown().await;
+        std::env::set_current_dir(original_dir).unwrap();
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[tokio::test]
