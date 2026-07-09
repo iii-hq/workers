@@ -44,6 +44,9 @@ pub const SPAWN_DESC: &str =
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
     "Internal durable loop step (enqueued onto a harness-owned named function queue); not called directly.";
+pub const TURN_ROOT_ID: &str = "harness::turn::root";
+pub const TURN_SUBAGENT_ID: &str = "harness::turn::subagent";
+pub const TURN_REACTIVE_ID: &str = "harness::turn::reactive";
 
 pub const FUNCTION_TRIGGER_ID: &str = "harness::function::trigger";
 pub const FUNCTION_TRIGGER_DESC: &str =
@@ -146,6 +149,15 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         spawn::handle(&d, r).await
     });
     register(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
+        turn::handle(&d, r).await
+    });
+    register(iii, deps, TURN_ROOT_ID, TURN_DESC, |d, r| async move {
+        turn::handle(&d, r).await
+    });
+    register(iii, deps, TURN_SUBAGENT_ID, TURN_DESC, |d, r| async move {
+        turn::handle(&d, r).await
+    });
+    register(iii, deps, TURN_REACTIVE_ID, TURN_DESC, |d, r| async move {
         turn::handle(&d, r).await
     });
     register(

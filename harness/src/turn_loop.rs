@@ -1,4 +1,4 @@
-//! The durable turn loop (harness.md § The loop). One `harness::turn` step
+//! The durable turn loop (harness.md § The loop). One lane-bound turn step
 //! assembles context, generates one assistant message, dispatches any function
 //! calls, then either re-enqueues (model reacts to results / steering) or
 //! finalises the turn. Steps are at-least-once: the stale-step guard,
@@ -23,7 +23,7 @@ use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
 };
 
-/// The enqueued `harness::turn` step payload.
+/// The enqueued lane-bound turn step payload.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TurnStepPayload {
     pub session_id: String,
@@ -61,11 +61,12 @@ fn build_enqueue_request(record: &TurnRecord) -> TriggerRequest {
         message_preview: record.message_preview.clone(),
         depth: record.depth,
     };
+    let function_id = record.effective_lane().function_id();
     TriggerRequest {
-        function_id: "harness::turn".to_string(),
+        function_id: function_id.to_string(),
         payload: json!(payload),
         action: Some(TriggerAction::Enqueue {
-            queue: record.effective_lane().queue_name().to_string(),
+            queue: function_id.to_string(),
         }),
         timeout_ms: None,
     }
@@ -96,7 +97,10 @@ pub async fn enqueue_step(
 fn failed_after_enqueue(record: &TurnRecord, error: &str) -> TurnRecord {
     let mut failed = record.clone();
     failed.status = TurnStatus::Failed;
-    failed.result_error = Some(format!("enqueue harness::turn: {error}"));
+    failed.result_error = Some(format!(
+        "enqueue {}: {error}",
+        record.effective_lane().function_id()
+    ));
     failed.updated_at = AgentMessage::now_ms();
     failed
 }
@@ -1561,10 +1565,10 @@ mod tests {
         .unwrap();
 
         let request = super::build_enqueue_request(&record);
-        assert_eq!(request.function_id, "harness::turn");
+        assert_eq!(request.function_id, "harness::turn::root");
         match request.action {
             Some(iii_sdk::TriggerAction::Enqueue { queue }) => {
-                assert_eq!(queue, "harness-turn");
+                assert_eq!(queue, "harness::turn::root");
             }
             other => panic!("expected enqueue action, got {other:?}"),
         }
@@ -1580,16 +1584,23 @@ mod tests {
         );
         assert!(request.payload.get("data").is_none());
 
-        for (lane, queue) in [
-            (crate::types::turn::TurnLane::Subagent, "harness-subagent"),
-            (crate::types::turn::TurnLane::Reactive, "harness-reactive"),
+        for (lane, function_id) in [
+            (
+                crate::types::turn::TurnLane::Subagent,
+                "harness::turn::subagent",
+            ),
+            (
+                crate::types::turn::TurnLane::Reactive,
+                "harness::turn::reactive",
+            ),
         ] {
             let mut lane_record = record.clone();
             lane_record.lane = Some(lane);
             let request = super::build_enqueue_request(&lane_record);
+            assert_eq!(request.function_id, function_id);
             match request.action {
                 Some(iii_sdk::TriggerAction::Enqueue { queue: actual }) => {
-                    assert_eq!(actual, queue);
+                    assert_eq!(actual, function_id);
                 }
                 other => panic!("expected enqueue action, got {other:?}"),
             }
@@ -1616,7 +1627,7 @@ mod tests {
         assert_eq!(failed.status, crate::types::turn::TurnStatus::Failed);
         assert_eq!(
             failed.result_error.as_deref(),
-            Some("enqueue harness::turn: queue unavailable")
+            Some("enqueue harness::turn::root: queue unavailable")
         );
         assert_eq!(failed.turn_id, record.turn_id);
         assert_eq!(failed.step, record.step);

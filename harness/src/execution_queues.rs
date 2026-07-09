@@ -1,4 +1,4 @@
-//! Harness-owned named function queues.
+//! Harness-owned function queues.
 //!
 //! The standalone `queue` worker owns their durable configuration and
 //! consumers. Harness only ensures its three workload lanes at boot, then
@@ -26,12 +26,13 @@ fn ensure_requests() -> Vec<TriggerRequest> {
         .map(|lane| TriggerRequest {
             function_id: ENSURE_QUEUE_FUNCTION_ID.to_string(),
             payload: json!({
-                "queue": lane.queue_name(),
+                "function_id": lane.function_id(),
                 "config": {
                     "type": "standard",
                     "concurrency": 10,
                     "max_retries": 3,
-                    "backoff_ms": 1000
+                    "backoff_ms": 1000,
+                    "poll_interval_ms": 100
                 }
             }),
             action: None,
@@ -49,11 +50,11 @@ fn topics_ready(value: &Value) -> bool {
     };
 
     TurnLane::ALL.iter().all(|lane| {
-        let queue = lane.queue_name();
+        let function_id = lane.function_id();
         topics.iter().any(|topic| {
-            topic.as_str() == Some(queue)
-                || topic.get("name").and_then(Value::as_str) == Some(queue)
-                || topic.get("queue").and_then(Value::as_str) == Some(queue)
+            topic.get("name").and_then(Value::as_str) == Some(function_id)
+                && topic.get("function_id").and_then(Value::as_str) == Some(function_id)
+                && topic.get("healthy").and_then(Value::as_bool) == Some(true)
         })
     })
 }
@@ -73,7 +74,7 @@ pub async fn provision(iii: &IIIClient) -> Result<()> {
         let mut all_ensured = true;
 
         for request in ensure_requests() {
-            let queue = request.payload["queue"]
+            let function_id = request.payload["function_id"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
@@ -88,11 +89,11 @@ pub async fn provision(iii: &IIIClient) -> Result<()> {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
                     all_ensured = false;
-                    last_error = format!("ensuring `{queue}`: {error}");
+                    last_error = format!("ensuring `{function_id}`: {error}");
                 }
                 Err(_) => {
                     all_ensured = false;
-                    last_error = format!("ensuring `{queue}` timed out");
+                    last_error = format!("ensuring `{function_id}` timed out");
                 }
             }
         }
@@ -140,11 +141,12 @@ mod tests {
         for (request, lane) in requests.iter().zip(TurnLane::ALL) {
             assert_eq!(request.function_id, ENSURE_QUEUE_FUNCTION_ID);
             assert!(request.action.is_none());
-            assert_eq!(request.payload["queue"], lane.queue_name());
+            assert_eq!(request.payload["function_id"], lane.function_id());
             assert_eq!(request.payload["config"]["type"], "standard");
             assert_eq!(request.payload["config"]["concurrency"], 10);
             assert_eq!(request.payload["config"]["max_retries"], 3);
             assert_eq!(request.payload["config"]["backoff_ms"], 1000);
+            assert_eq!(request.payload["config"]["poll_interval_ms"], 100);
             assert_eq!(request.timeout_ms, Some(1000));
         }
     }
@@ -152,14 +154,21 @@ mod tests {
     #[test]
     fn readiness_requires_every_harness_queue() {
         assert!(!topics_ready(&serde_json::json!([
-            {"name": "harness-turn"},
-            {"name": "harness-subagent"}
+            {"name": "harness::turn::root", "function_id": "harness::turn::root", "healthy": true},
+            {"name": "harness::turn::subagent", "function_id": "harness::turn::subagent", "healthy": true}
         ])));
         assert!(topics_ready(&serde_json::json!({
             "topics": [
-                {"name": "harness-reactive"},
-                {"name": "harness-turn"},
-                {"name": "harness-subagent"}
+                {"name": "harness::turn::reactive", "function_id": "harness::turn::reactive", "healthy": true},
+                {"name": "harness::turn::root", "function_id": "harness::turn::root", "healthy": true},
+                {"name": "harness::turn::subagent", "function_id": "harness::turn::subagent", "healthy": true}
+            ]
+        })));
+        assert!(!topics_ready(&serde_json::json!({
+            "topics": [
+                {"name": "harness::turn::reactive", "function_id": "harness::turn::reactive", "healthy": false},
+                {"name": "harness::turn::root", "function_id": "harness::turn::root", "healthy": true},
+                {"name": "harness::turn::subagent", "function_id": "harness::turn::subagent", "healthy": true}
             ]
         })));
     }

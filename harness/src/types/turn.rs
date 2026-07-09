@@ -47,12 +47,12 @@ impl TurnLane {
     /// All execution lanes the harness provisions during boot.
     pub const ALL: [Self; 3] = [Self::Root, Self::Subagent, Self::Reactive];
 
-    /// The named function queue used for this workload class.
-    pub const fn queue_name(self) -> &'static str {
+    /// The function ID and logical queue identity used for this workload class.
+    pub const fn function_id(self) -> &'static str {
         match self {
-            Self::Root => "harness-turn",
-            Self::Subagent => "harness-subagent",
-            Self::Reactive => "harness-reactive",
+            Self::Root => "harness::turn::root",
+            Self::Subagent => "harness::turn::subagent",
+            Self::Reactive => "harness::turn::reactive",
         }
     }
 }
@@ -390,14 +390,14 @@ mod tests {
     }
 
     #[test]
-    fn execution_lanes_map_to_their_named_queues() {
+    fn execution_lanes_map_to_function_ids() {
         assert_eq!(
             TurnLane::ALL,
             [TurnLane::Root, TurnLane::Subagent, TurnLane::Reactive]
         );
-        assert_eq!(TurnLane::Root.queue_name(), "harness-turn");
-        assert_eq!(TurnLane::Subagent.queue_name(), "harness-subagent");
-        assert_eq!(TurnLane::Reactive.queue_name(), "harness-reactive");
+        assert_eq!(TurnLane::Root.function_id(), "harness::turn::root");
+        assert_eq!(TurnLane::Subagent.function_id(), "harness::turn::subagent");
+        assert_eq!(TurnLane::Reactive.function_id(), "harness::turn::reactive");
     }
 
     #[test]
