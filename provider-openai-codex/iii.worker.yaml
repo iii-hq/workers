@@ -7,5 +7,5 @@ bin: provider-openai-codex
 description: OpenAI Codex (ChatGPT subscription) provider; implements provider::openai-codex::stream and provider::openai-codex::refresh_models behind llm-router, sourcing credentials from the auth-credentials vault.
 
 dependencies:
-  iii-state: "^0.19.0"
+  iii-state: "^0.21.3"
   llm-router: "^1.0.0"
