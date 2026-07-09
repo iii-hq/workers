@@ -121,10 +121,7 @@ async fn seed_child(
         .clone()
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| HarnessError::InvalidRequest("spawn requires a model".into()))?;
-    let provider = req
-        .provider
-        .clone()
-        .or_else(|| parent_record.and_then(|p| p.options.provider.clone()));
+    let provider = child_provider(req, parent_record);
     // Children resolve their own prompt (never inherited); the provider
     // identity prompt is fetched once here and frozen on the child's turn.
     let identity = deps
@@ -303,6 +300,23 @@ async fn seed_child(
     })
 }
 
+/// The child's provider. An explicit request wins; otherwise the parent's
+/// provider is inherited ONLY when the model is inherited too — model and
+/// provider must stay a coherent pair. A spawn that names its own model must
+/// not carry the parent's provider onto a foreign model (a zai::glm parent
+/// spawning `model=claude-*` would pin the claude model to Z.AI, which
+/// rejects it upstream as an unknown model); leaving it unset lets the
+/// router route the model by catalog.
+fn child_provider(req: &SpawnRequest, parent_record: Option<&TurnRecord>) -> Option<String> {
+    req.provider.clone().or_else(|| {
+        if req.model.is_some() {
+            None
+        } else {
+            parent_record.and_then(|p| p.options.provider.clone())
+        }
+    })
+}
+
 /// A child inherits only the parent's filesystem scope, so the session's
 /// picked directory stays reachable from sub-agent shell/coder calls. The rest
 /// of the parent metadata belongs to the parent's turn and must not leak.
@@ -380,6 +394,54 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    fn spawn_request(model: Option<&str>, provider: Option<&str>) -> SpawnRequest {
+        SpawnRequest {
+            task: crate::functions::send::MessageInput::Text("t".into()),
+            model: model.map(str::to_string),
+            provider: provider.map(str::to_string),
+            session_id: None,
+            parent_session_id: None,
+            spawned_by_subscription_id: None,
+            reactive_depth: None,
+            options: None,
+        }
+    }
+
+    #[test]
+    fn provider_is_inherited_only_together_with_the_model() {
+        let mut parent = parent_record(None);
+        parent.options.provider = Some("zai".into());
+
+        // Explicit model, no provider: the parent's provider must NOT ride
+        // along — the router resolves the model's own provider instead.
+        assert_eq!(
+            child_provider(
+                &spawn_request(Some("claude-sonnet-4-6"), None),
+                Some(&parent)
+            ),
+            None
+        );
+        // Neither given: the parent's coherent model+provider pair applies.
+        assert_eq!(
+            child_provider(&spawn_request(None, None), Some(&parent)),
+            Some("zai".into())
+        );
+        // An explicit provider always wins, with or without an explicit model.
+        assert_eq!(
+            child_provider(
+                &spawn_request(Some("glm-5.2"), Some("openai")),
+                Some(&parent)
+            ),
+            Some("openai".into())
+        );
+        assert_eq!(
+            child_provider(&spawn_request(None, Some("openai")), Some(&parent)),
+            Some("openai".into())
+        );
+        // Parentless spawns have nothing to inherit either way.
+        assert_eq!(child_provider(&spawn_request(None, None), None), None);
     }
 
     #[test]
