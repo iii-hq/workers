@@ -7,9 +7,13 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import {
+  $createParagraphNode,
+  $createTextNode,
   $getRoot,
   CLEAR_EDITOR_COMMAND,
   COMMAND_PRIORITY_LOW,
+  KEY_ARROW_DOWN_COMMAND,
+  KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
   type LexicalEditor,
 } from 'lexical'
@@ -96,6 +100,63 @@ function SubmitOnEnterPlugin({
   return null
 }
 
+/** Replace the whole editor with `text` (empty string clears it), caret at end. */
+function loadEditorText(editor: LexicalEditor, text: string) {
+  editor.update(() => {
+    const root = $getRoot()
+    root.clear()
+    const paragraph = $createParagraphNode()
+    if (text.length > 0) paragraph.append($createTextNode(text))
+    root.append(paragraph)
+    paragraph.selectEnd()
+  })
+}
+
+/**
+ * Up / Down browse a message history (the queued messages — "↑ to edit,
+ * ↓ to cycle"). `onNav(direction)` owns the cursor and the pristine-gate
+ * (it only navigates when the editor hasn't been edited, so in-progress text
+ * and caret moves within a real edit are never clobbered); it returns the
+ * text to load ('' clears back to a live draft) or null to let the arrow do
+ * its normal caret move. Defers to an open typeahead (which owns Up/Down for
+ * option navigation).
+ */
+function HistoryNavPlugin({
+  onNav,
+  menuOpenRef,
+}: {
+  onNav?: (direction: 'up' | 'down') => string | null
+  menuOpenRef: React.MutableRefObject<boolean>
+}) {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    if (!onNav) return
+    const handler = (direction: 'up' | 'down') => (event: KeyboardEvent) => {
+      if (menuOpenRef.current) return false
+      const text = onNav(direction)
+      if (text === null) return false
+      event?.preventDefault()
+      loadEditorText(editor, text)
+      return true
+    }
+    const offUp = editor.registerCommand(
+      KEY_ARROW_UP_COMMAND,
+      handler('up'),
+      COMMAND_PRIORITY_LOW,
+    )
+    const offDown = editor.registerCommand(
+      KEY_ARROW_DOWN_COMMAND,
+      handler('down'),
+      COMMAND_PRIORITY_LOW,
+    )
+    return () => {
+      offUp()
+      offDown()
+    }
+  }, [editor, onNav, menuOpenRef])
+  return null
+}
+
 /**
  * Imperatively expose a "clear" so the parent can wipe the editor after submit.
  * We use Lexical's CLEAR_EDITOR_COMMAND, which the ClearEditorPlugin handles.
@@ -131,6 +192,8 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
   functionEntries?: FunctionEntry[]
   /** Enables the `#` file-mention typeahead, scoped to this directory. */
   workingDir?: string | null
+  /** Up/Down browse a message history: return text to load ('' clears), or null. */
+  onHistoryNav?: (direction: 'up' | 'down') => string | null
 }
 
 export function LexicalShell({
@@ -142,6 +205,7 @@ export function LexicalShell({
   initialContent,
   functionEntries,
   workingDir,
+  onHistoryNav,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
      so the initializer callback identity doesn't trigger a remount on re-render. */
@@ -179,6 +243,7 @@ export function LexicalShell({
       <ClearOnDemandPlugin token={clearToken} />
       <ChangePlugin onChange={onChange} />
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
+      <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

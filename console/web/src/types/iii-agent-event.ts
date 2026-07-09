@@ -52,6 +52,19 @@ export interface TurnCompletedEvent {
   parent?: TurnParentLink
 }
 
+/**
+ * `harness::message-queued` — a message parked in the session's server-side
+ * queue while a turn step streams. A refresh signal, not the message itself:
+ * read the queue via `harness::status` → `queued`.
+ */
+export interface MessageQueuedEvent {
+  session_id: string
+  /** Transcript entry id the row lands under when the queue drains. */
+  entry_id: string
+  queued_at: number
+  timestamp: number
+}
+
 /** Outcome of a resolved approval (approval-gate `ResolvedOutcome`). */
 export type ResolvedOutcome = 'allow' | 'deny' | 'timeout' | 'aborted'
 

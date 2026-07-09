@@ -91,6 +91,10 @@ pub struct SendResponse {
     /// True when folded into an in-flight turn (steering).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<bool>,
+    /// True when the message was queued while a step was streaming; it lands
+    /// in the transcript when the stream ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<bool>,
     /// True when `idempotency_key` matched an earlier send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deduplicated: Option<bool>,
@@ -101,6 +105,7 @@ pub struct StartOutcome {
     pub session_id: String,
     pub turn_id: String,
     pub merged: bool,
+    pub queued: bool,
     pub deduplicated: bool,
 }
 
@@ -111,6 +116,7 @@ pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, Harne
         turn_id: out.turn_id,
         accepted: true,
         merged: out.merged.then_some(true),
+        queued: out.queued.then_some(true),
         deduplicated: out.deduplicated.then_some(true),
     })
 }
@@ -141,6 +147,7 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
                 session_id: existing.session_id,
                 turn_id: existing.turn_id,
                 merged: false,
+                queued: false,
                 deduplicated: true,
             });
         }
@@ -162,25 +169,45 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
 
-    // Persist the user message (idempotent entry id when a dedupe key is set).
+    // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key
         .as_ref()
         .map(|k| ids::idem_user_entry_id(k));
-    let appended_entry = session
-        .append(&session_id, &message, entry_id.as_deref(), None, None)
-        .await?;
 
-    // CAS-seed the turn (or take the merge path).
-    let preview = message_preview(&message);
-    let outcome = seed_or_merge(deps, &cfg, &session_id, options, preview).await?;
+    // Queue path: a `Running` step may be streaming — park the message as a
+    // durable queue row the loop drains after the stream ends, instead of
+    // appending mid-transcript.
+    let (outcome, entry) = match try_enqueue(
+        deps,
+        &cfg,
+        &session_id,
+        &message,
+        entry_id.as_deref(),
+        None,
+        &options,
+    )
+    .await?
+    {
+        Some((outcome, row_entry)) => (outcome, row_entry),
+        None => {
+            // Append path (no turn / terminal / parked): persist the message,
+            // then CAS-seed the turn (or take the merge path).
+            let appended_entry = session
+                .append(&session_id, &message, entry_id.as_deref(), None, None)
+                .await?;
+            let preview = message_preview(&message);
+            let outcome = seed_or_merge(deps, &cfg, &session_id, options, preview).await?;
+            (outcome, appended_entry)
+        }
+    };
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
         let rec = IdemRecord {
             session_id: session_id.clone(),
             turn_id: outcome.turn_id.clone(),
-            entry_id: appended_entry,
+            entry_id: entry,
             ts: AgentMessage::now_ms(),
         };
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
@@ -219,11 +246,165 @@ pub async fn inject(
             ))
         })?;
 
+    if let Some((outcome, _)) =
+        try_enqueue(deps, &cfg, session_id, &message, entry_id, origin, &options).await?
+    {
+        return Ok(outcome);
+    }
     let preview = message_preview(&message);
     session
         .append(session_id, &message, entry_id, None, origin)
         .await?;
     seed_or_merge(deps, &cfg, session_id, options, preview).await
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct UnqueueRequest {
+    pub session_id: String,
+    /// The queued row's transcript entry id, as surfaced by `harness::status`
+    /// → `queued[].entry_id`. Stable and client-visible (the internal row id
+    /// is not), so removals target it.
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UnqueueResponse {
+    /// False when no still-parked row matched — already drained or unknown.
+    pub removed: bool,
+}
+
+/// Remove a still-parked message from a session's mid-turn queue so a client
+/// can pull it back (the console's "press ↑ to edit"). Best-effort: a row that
+/// already drained into the turn is simply `removed: false`. The queue is
+/// keyed by an internal row id, so match on the client-visible `entry_id` and
+/// delete by the row's own id.
+pub async fn unqueue(deps: &Deps, req: UnqueueRequest) -> Result<UnqueueResponse, HarnessError> {
+    let cfg = deps.cfg().await;
+    let rows =
+        crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
+    let Some(row) = rows.into_iter().find(|r| r.entry_id == req.entry_id) else {
+        return Ok(UnqueueResponse { removed: false });
+    };
+    crate::state::delete_queued(&deps.iii, &req.session_id, &row.id, cfg.session_timeout_ms)
+        .await?;
+    Ok(UnqueueResponse { removed: true })
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct EditQueuedRequest {
+    pub session_id: String,
+    /// The queued row to edit (its client-visible `entry_id`).
+    pub entry_id: String,
+    /// The replacement message (string sugar or a full user/custom message).
+    pub message: MessageInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EditQueuedResponse {
+    /// False when no still-parked row matched — already drained or unknown.
+    pub updated: bool,
+}
+
+/// Edit a still-parked queued message IN PLACE — the console's "edit queued
+/// message" preserving its delivery position. Replaces the row's `message`
+/// while keeping the same internal id, `entry_id`, `queued_at`, and `origin`,
+/// so re-writing the same state key leaves the message where it was in the
+/// queue order (unlike remove + re-queue, which moves it to the tail). Emits
+/// `harness::message-queued` so other clients refetch the new content.
+pub async fn edit_queued(
+    deps: &Deps,
+    req: EditQueuedRequest,
+) -> Result<EditQueuedResponse, HarnessError> {
+    let cfg = deps.cfg().await;
+    let rows =
+        crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
+    let Some(mut row) = rows.into_iter().find(|r| r.entry_id == req.entry_id) else {
+        return Ok(EditQueuedResponse { updated: false });
+    };
+    row.message = normalize_message(req.message)?;
+    // Same `id` → same state key → overwrite in place (position preserved).
+    crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+    deps.events
+        .emit_queued(&req.session_id, &row.entry_id, row.queued_at)
+        .await;
+    Ok(EditQueuedResponse { updated: true })
+}
+
+/// The queue path: while a turn step is `Running` a stream may be in flight,
+/// so the message parks as a durable `harness_queue` row the loop drains after
+/// the stream ends (harness.md § Concurrency & steering). Returns `None` when
+/// no step is running — the caller appends to the transcript as before.
+///
+/// After the (lock-free, blind-key) enqueue the turn record is re-read: a
+/// still-live turn drains the row at its next step; a turn that went terminal
+/// in the window gets a fresh turn seeded, whose step-0 drain delivers the
+/// row. A row landing after the loop's last queue check is appended by the
+/// finalize drain — queued messages are never silently dropped.
+async fn try_enqueue(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    message: &AgentMessage,
+    entry_id: Option<&str>,
+    origin: Option<&Value>,
+    options: &TurnOptions,
+) -> Result<Option<(StartOutcome, String)>, HarnessError> {
+    let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
+    match existing {
+        Some(rec) if rec.status == TurnStatus::Running => {}
+        _ => return Ok(None),
+    }
+
+    let id = ids::new_queued_id();
+    let entry_id = entry_id
+        .map(str::to_string)
+        .unwrap_or_else(|| ids::queued_entry_id(&id));
+    let row = crate::state::QueuedMessage {
+        id,
+        session_id: session_id.to_string(),
+        message: message.clone(),
+        entry_id: entry_id.clone(),
+        origin: origin.cloned(),
+        queued_at: AgentMessage::now_ms(),
+    };
+    crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+    // Fire-and-forget: lets clients (e.g. the console's queued strip) refresh
+    // `harness::status` → `queued` without polling.
+    deps.events
+        .emit_queued(session_id, &entry_id, row.queued_at)
+        .await;
+
+    let recheck = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    let outcome = match recheck {
+        Some(mut r) if !r.status.is_terminal() => {
+            if r.options.refresh_filesystem_root_from(options) {
+                r.updated_at = AgentMessage::now_ms();
+                crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
+            }
+            StartOutcome {
+                session_id: session_id.to_string(),
+                turn_id: r.turn_id,
+                merged: true,
+                queued: true,
+                deduplicated: false,
+            }
+        }
+        _ => {
+            let mut seeded = seed_new(
+                deps,
+                cfg,
+                session_id,
+                options.clone(),
+                prior_generation,
+                message_preview(message),
+            )
+            .await?;
+            seeded.queued = true;
+            seeded
+        }
+    };
+    Ok(Some((outcome, entry_id)))
 }
 
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
@@ -330,6 +511,7 @@ async fn seed_or_merge(
                         session_id: session_id.to_string(),
                         turn_id: r.turn_id,
                         merged: true,
+                        queued: false,
                         deduplicated: false,
                     })
                 }
@@ -408,6 +590,7 @@ async fn seed_new(
         session_id: session_id.to_string(),
         turn_id,
         merged: false,
+        queued: false,
         deduplicated: false,
     })
 }
@@ -453,6 +636,54 @@ mod tests {
 
         let empty = normalize_message(MessageInput::Text("   ".into())).unwrap();
         assert_eq!(message_preview(&empty), None);
+    }
+
+    #[test]
+    fn unqueue_matches_the_client_visible_entry_id_not_the_row_id() {
+        // The subtlety `unqueue` encodes: the queue is keyed by an internal
+        // `q_*` row id, but clients only see `entry_id` (via harness::status).
+        // Removal must match on entry_id and resolve to the row id to delete.
+        fn row(id: &str, entry: &str) -> crate::state::QueuedMessage {
+            crate::state::QueuedMessage {
+                id: id.into(),
+                session_id: "s_1".into(),
+                message: AgentMessage::user_text("hi"),
+                entry_id: entry.into(),
+                origin: None,
+                queued_at: 0,
+            }
+        }
+        let rows = [row("q_aaa", "e_idem_msg-1"), row("q_bbb", "e_idem_msg-2")];
+        let hit = rows.iter().find(|r| r.entry_id == "e_idem_msg-2");
+        assert_eq!(hit.map(|r| r.id.as_str()), Some("q_bbb"));
+        assert!(rows.iter().all(|r| r.entry_id != "e_idem_msg-3"));
+    }
+
+    #[test]
+    fn edit_queued_preserves_position_fields_and_only_swaps_message() {
+        // Editing in place keeps id / entry_id / queued_at / origin (position
+        // is `(queued_at, id)`) and replaces only the message — so re-writing
+        // the same `session_id:id` state key leaves it where it was in order.
+        let mut row = crate::state::QueuedMessage {
+            id: "q_x".into(),
+            session_id: "s_1".into(),
+            message: AgentMessage::user_text("old text"),
+            entry_id: "e_idem_msg-1".into(),
+            origin: Some(serde_json::json!({ "reaction": true })),
+            queued_at: 4242,
+        };
+        let before = (
+            row.id.clone(),
+            row.entry_id.clone(),
+            row.queued_at,
+            row.origin.clone(),
+        );
+        row.message = normalize_message(MessageInput::Text("new text".into())).unwrap();
+        assert_eq!(
+            (row.id, row.entry_id, row.queued_at, row.origin),
+            before,
+            "only the message changes"
+        );
     }
 
     #[test]

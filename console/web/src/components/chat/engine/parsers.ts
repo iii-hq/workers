@@ -19,6 +19,7 @@ export const ENGINE_FUNCTION_IDS = [
   'engine::functions::list',
   'engine::functions::info',
   'engine::triggers::list',
+  'engine::triggers::info',
   'engine::registered-triggers::list',
   'engine::workers::list',
   'engine::workers::info',
@@ -62,7 +63,9 @@ export type FunctionsListResponse = z.infer<typeof functionsListResponseSchema>
 /* ---------------- engine::functions::info ---------------- */
 
 export const functionInfoRequestSchema = z.object({
-  function_id: z.string(),
+  // Single lookup, or a batch (`function_ids`) — the engine accepts both.
+  function_id: z.string().optional(),
+  function_ids: z.array(z.string()).optional(),
 })
 export type FunctionInfoRequest = z.infer<typeof functionInfoRequestSchema>
 
@@ -87,6 +90,25 @@ export const functionDetailSchema = z.object({
 })
 export type FunctionDetail = z.infer<typeof functionDetailSchema>
 
+export const functionInfoBatchResponseSchema = z.object({
+  functions: z.array(functionDetailSchema),
+})
+
+/**
+ * `engine::functions::info` answers a `function_id` lookup with a bare
+ * detail and a `function_ids` batch with `{ functions: [...] }` — normalize
+ * both to a list. `null` means neither shape parsed; the caller should fall
+ * back to the generic panes rather than render a blank terminal tab.
+ */
+export function parseFunctionInfoResponse(
+  output: unknown,
+): FunctionDetail[] | null {
+  const single = safeParseResponse(functionDetailSchema, output)
+  if (single) return [single]
+  const batch = safeParseResponse(functionInfoBatchResponseSchema, output)
+  return batch ? batch.functions : null
+}
+
 /* ---------------- engine::triggers::list ---------------- */
 
 export const triggersListRequestSchema = z.object({
@@ -108,6 +130,37 @@ export const triggersListResponseSchema = z.object({
   triggers: z.array(triggerTypeSummarySchema),
 })
 export type TriggersListResponse = z.infer<typeof triggersListResponseSchema>
+
+/* ---------------- engine::triggers::info ---------------- */
+
+export const triggerInfoRequestSchema = z.object({
+  id: z.string(),
+})
+export type TriggerInfoRequest = z.infer<typeof triggerInfoRequestSchema>
+
+export const triggerTypeDetailSchema = z.object({
+  id: z.string(),
+  worker_name: z.string(),
+  description: z.string().nullable().optional(),
+  /** Live registrations of this trigger type. */
+  instance_count: z.number().optional(),
+  /** Per-binding `config` shape accepted by `engine::register_trigger`. */
+  configuration_schema: z.unknown().optional(),
+  /** Payload shape delivered to the bound function when the trigger fires. */
+  request_schema: z.unknown().optional(),
+})
+export type TriggerTypeDetail = z.infer<typeof triggerTypeDetailSchema>
+
+/**
+ * `null` means the output didn't parse; the caller should fall back to the
+ * generic panes rather than render a blank terminal tab (same contract as
+ * `parseFunctionInfoResponse`).
+ */
+export function parseTriggerInfoResponse(
+  output: unknown,
+): TriggerTypeDetail | null {
+  return safeParseResponse(triggerTypeDetailSchema, output)
+}
 
 /* ------------- engine::registered-triggers::list ------------- */
 
@@ -302,6 +355,34 @@ export const reactOptionsSchema = z.object({
 })
 export type ReactOptions = z.infer<typeof reactOptionsSchema>
 
+/**
+ * The known filter fields across trigger `config` shapes — state
+ * (`scope`/`key`/`condition_function_id`) and turn events
+ * (`session_id`/`parent_session_id`) — as labeled chips, in a stable order.
+ * `null` when the config carries none of them (the caller shows raw JSON or
+ * "no filter"); unknown fields stay visible in the RAW JSON tab.
+ */
+export function configFilters(
+  config: unknown,
+): { label: string; value: string }[] | null {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return null
+  }
+  const c = config as Record<string, unknown>
+  const pick = (key: string, label: string) =>
+    typeof c[key] === 'string' && c[key]
+      ? { label, value: c[key] as string }
+      : null
+  const chips = [
+    pick('scope', 'scope'),
+    pick('key', 'key'),
+    pick('session_id', 'session'),
+    pick('parent_session_id', 'parent'),
+    pick('condition_function_id', 'if'),
+  ].filter((x): x is { label: string; value: string } => x !== null)
+  return chips.length ? chips : null
+}
+
 /** Engine returns `{ id }`; the harness-intercepted path returns
  * `{ subscription_id, once }`. Model both loosely. */
 export const registerTriggerResponseSchema = z.object({
@@ -314,6 +395,24 @@ export type RegisterTriggerResponse = z.infer<
 >
 
 /* ---------------- generic helpers ---------------- */
+
+/**
+ * Some agents pass a function's whole payload as a JSON *string* (double
+ * encoding), which arrives here as an escaped one-liner the rich views can't
+ * parse. Recover the object/array so schema parsing and the structured views
+ * work; anything that isn't a JSON-object/array string passes through
+ * untouched (a genuine string request is left alone).
+ */
+export function coerceJsonObject(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const t = value.trim()
+  if (!t.startsWith('{') && !t.startsWith('[')) return value
+  try {
+    return JSON.parse(t)
+  } catch {
+    return value
+  }
+}
 
 export function safeParseRequest<T>(
   schema: z.ZodType<T>,

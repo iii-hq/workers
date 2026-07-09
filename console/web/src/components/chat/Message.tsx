@@ -3,6 +3,7 @@ import type { FilesystemAccessAction } from '@/components/permissions/Filesystem
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
 import { Markdown } from '@/lib/markdown'
+import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type {
   AssistantMessage as AssistantMessageType,
@@ -46,6 +47,8 @@ export function Message({
     case 'user':
       return message.notification ? (
         <NotificationMessage message={message} />
+      ) : message.reaction ? (
+        <ReactionTaskMessage message={message} />
       ) : (
         <UserMessage message={message} />
       )
@@ -154,6 +157,66 @@ function NotificationMessage({ message }: { message: UserMessageType }) {
     <article className="border-l-2 border-l-rule pl-3 py-1 font-mono text-[12px] text-ink-faint flex items-start gap-2">
       <span aria-hidden="true">🔔</span>
       <span className="break-words">{message.content}</span>
+    </article>
+  )
+}
+
+/**
+ * The one-line hint for a reaction's collapsed payload: the firing session
+ * and status for an event, the predecessor keys for a join's inputs.
+ */
+function reactionEventHint(event: {
+  label: 'event' | 'inputs'
+  json: string
+}): string | null {
+  try {
+    const v = JSON.parse(event.json) as Record<string, unknown>
+    if (v === null || typeof v !== 'object') return null
+    if (event.label === 'inputs') {
+      const keys = Object.keys(v)
+      return keys.length > 0 ? keys.join(' + ') : null
+    }
+    const parts = [v.session_id, v.status].filter(
+      (x): x is string => typeof x === 'string',
+    )
+    return parts.length > 0 ? parts.join(' · ') : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A react-fired task delivered into this session (`harness::react`): the
+ * turn's input, but machine-sent — labeled "trigger" and left-aligned so it
+ * never reads as something the human typed. The appended firing event (or
+ * join inputs) collapses to a summary line, expandable to highlighted JSON.
+ */
+function ReactionTaskMessage({ message }: { message: UserMessageType }) {
+  const event = message.reactionEvent
+  const hint = event ? reactionEventHint(event) : null
+  return (
+    <article className="flex flex-col items-start gap-2">
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+        <Prompt symbol="⚡">trigger · reaction task</Prompt>
+      </header>
+      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
+        <Markdown>{message.content}</Markdown>
+        {event ? (
+          <details className="mt-2 group">
+            <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
+              {event.label === 'inputs' ? 'join inputs' : 'firing event'}
+              {hint ? ` · ${hint}` : ''}
+              <span className="normal-case tracking-normal text-[10px]">
+                {' '}
+                · show json
+              </span>
+            </summary>
+            <div className="mt-1 max-h-64 overflow-auto border border-rule-2">
+              <JsonHighlight code={event.json} wrap />
+            </div>
+          </details>
+        ) : null}
+      </div>
     </article>
   )
 }

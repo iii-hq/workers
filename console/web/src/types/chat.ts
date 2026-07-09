@@ -61,6 +61,13 @@ export interface UserMessage extends BaseMessage {
   content: string
   attachments?: Attachment[]
   notification?: boolean
+  /** A react-fired task delivered into this session — machine-sent, not typed. */
+  reaction?: boolean
+  /**
+   * The firing event (or join inputs) `harness::react` appended to the task,
+   * split off by the entry mapper: rendered as collapsible JSON, not prose.
+   */
+  reactionEvent?: { label: 'event' | 'inputs'; json: string }
 }
 
 export interface AssistantMessage extends BaseMessage {

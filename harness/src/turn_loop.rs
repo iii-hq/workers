@@ -144,6 +144,11 @@ pub async fn run_step(
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
 
+    // Deliver messages queued while the previous step streamed: append them in
+    // arrival order before the context load, so this generation sees them all
+    // at once (harness.md § Concurrency & steering).
+    drain_queued(deps, &session, &record.session_id).await?;
+
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
     let _ = session
         .set_status(&record.session_id, "working", None)
@@ -641,11 +646,61 @@ pub async fn run_step(
     }
 
     // No function calls: steering check, then finalise per the contract.
-    if has_user_after_watermark(&session, &record).await? {
+    if has_user_after_watermark(&session, &record).await? || has_queued(deps, &record).await? {
         return advance(deps, &mut record).await;
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+/// Whether model-visible messages are parked in the session's queue
+/// (harness.md § Concurrency & steering). Custom-role rows never reach the
+/// model context, so a custom-only queue must not steer — a re-generate over
+/// an assistant-tailed context is a guaranteed provider prefill rejection.
+/// The finalize drain still delivers them to the transcript.
+async fn has_queued(deps: &Deps, record: &TurnRecord) -> Result<bool, HarnessError> {
+    let cfg = deps.cfg().await;
+    let rows =
+        crate::state::list_queued(&deps.iii, &record.session_id, cfg.session_timeout_ms).await?;
+    Ok(rows
+        .iter()
+        .any(|r| !matches!(r.message, AgentMessage::Custom(_))))
+}
+
+/// Drain the session's message queue into the transcript in arrival order.
+/// Idempotent: each row appends under its stored deterministic entry id, and
+/// rows are deleted only after the append lands — a redelivered step re-drains
+/// as a no-op.
+async fn drain_queued(
+    deps: &Deps,
+    session: &SessionClient,
+    session_id: &str,
+) -> Result<usize, HarnessError> {
+    let cfg = deps.cfg().await;
+    let rows = crate::state::list_queued(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    let drained = rows.len();
+    for row in rows {
+        session
+            .append(
+                session_id,
+                &row.message,
+                Some(&row.entry_id),
+                None,
+                row.origin.as_ref(),
+            )
+            .await?;
+        crate::state::delete_queued(&deps.iii, session_id, &row.id, cfg.session_timeout_ms).await?;
+    }
+    Ok(drained)
+}
+
+/// Best-effort finalize drain: a message enqueued after the loop's last queue
+/// check still lands in the transcript (unreacted — the turn is over, same as
+/// a pre-queue merged send racing completion). Never blocks the finalise.
+async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_id: &str) {
+    if let Err(e) = drain_queued(deps, session, session_id).await {
+        tracing::warn!(session_id = %session_id, error = %e, "finalize queue drain failed");
+    }
 }
 
 /// Consume a `submit_result` call: validate its arguments against the
@@ -767,6 +822,7 @@ async fn finalize_completed(
     result: Option<Value>,
     result_error: Option<String>,
 ) -> Result<TurnStepResult, HarnessError> {
+    drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
     record.result = result.clone();
@@ -808,6 +864,7 @@ async fn finalize_failed(
     record: &mut TurnRecord,
     reason: &str,
 ) -> Result<TurnStepResult, HarnessError> {
+    drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Failed;
     record.result_error = Some(reason.to_string());
@@ -858,6 +915,7 @@ async fn finalize_cancelled(
     record: &mut TurnRecord,
     reason: &str,
 ) -> Result<TurnStepResult, HarnessError> {
+    drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();

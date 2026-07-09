@@ -5,6 +5,7 @@ import {
   applyFcallPatch,
   clearTransientFlags,
   entrySegments,
+  splitReactionTask,
   transcriptToMessages,
 } from './entry-mapper'
 import type { AgentMessage, TranscriptItem } from './types'
@@ -119,6 +120,61 @@ describe('entrySegments', () => {
     expect(entrySegments(userItem('e_notify_sub_1', 'wake'))[0]).toMatchObject({
       notification: true,
     })
+  })
+
+  it('splits a reaction task from its appended event block', () => {
+    // The exact format react.rs produces (single_event_task).
+    const content =
+      'Present the results.\n\n<event>\n```json\n{"session_id":"reviewer-1","status":"completed"}\n```\n</event>'
+    const [msg] = entrySegments(userItem('e_react_1', content))
+    expect(msg).toMatchObject({
+      reaction: true,
+      content: 'Present the results.',
+      reactionEvent: {
+        label: 'event',
+        json: JSON.stringify(
+          { session_id: 'reviewer-1', status: 'completed' },
+          null,
+          2,
+        ),
+      },
+    })
+  })
+
+  it('splitReactionTask handles inputs, collapsed whitespace, and bad JSON', () => {
+    // Join variant (gather_inputs_task).
+    expect(
+      splitReactionTask(
+        'Combine.\n\n<inputs>\n```json\n{"a":1}\n```\n</inputs>',
+      ),
+    ).toEqual({
+      task: 'Combine.',
+      appendix: { label: 'inputs', json: '{\n  "a": 1\n}' },
+    })
+    // Whitespace collapsed onto one line (as rendered markdown re-serializes).
+    expect(
+      splitReactionTask('Do it. <event> ```json {"x":1} ``` </event>').appendix
+        ?.label,
+    ).toBe('event')
+    // Invalid JSON stays raw instead of disappearing.
+    expect(
+      splitReactionTask('T\n\n<event>\n```json\nnot-json{\n```\n</event>')
+        .appendix?.json,
+    ).toBe('not-json{')
+    // No appendix → untouched.
+    expect(splitReactionTask('plain task')).toEqual({ task: 'plain task' })
+  })
+
+  it('marks react-fired task entries as reactions', () => {
+    expect(
+      entrySegments(userItem('e-1', 'do the thing', { reaction: true }))[0],
+    ).toMatchObject({ reaction: true })
+    expect(entrySegments(userItem('e_react_ab12', 'do it'))[0]).toMatchObject({
+      reaction: true,
+    })
+    expect(
+      entrySegments(userItem('e-2', 'typed by hand'))[0],
+    ).not.toHaveProperty('reaction')
   })
 
   it('splits an assistant entry into thought/text/function-call segments by block', () => {

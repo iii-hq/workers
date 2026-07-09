@@ -32,6 +32,10 @@ pub struct StatusReport {
     pub depth: u32,
     pub pending_function_calls: Vec<String>,
     pub children: Vec<ChildRef>,
+    /// Messages queued while a step streams, in arrival order; they land in
+    /// the transcript when the stream ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<crate::state::QueuedMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +50,8 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     else {
         return Ok(None);
     };
+    let queued =
+        crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let children = record
         .live_children()
         .into_iter()
@@ -65,6 +71,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         depth: record.depth,
         pending_function_calls: record.pending_call_ids(),
         children,
+        queued,
         result: record.result.clone(),
         result_error: record.result_error.clone(),
     }))

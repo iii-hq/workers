@@ -716,6 +716,13 @@
           "null"
         ]
       },
+      "queued": {
+        "description": "True when the message was queued while a step was streaming; it lands in the transcript when the stream ends.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       },

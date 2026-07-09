@@ -196,6 +196,12 @@ an opaque UUID row in the console; a slug without the random suffix can collide 
 earlier run and silently resume that session; direct `harness::spawn` calls only — in a react
 trigger's `metadata` below, leave `session_id` out unless re-aiming delivery, since a fixed
 id there funnels every firing into one session).
+Children run fail-closed: direct spawns and trigger-fired sub-agents alike start from a
+narrowed read-mostly baseline (discovery, reads, subscriptions), NOT from your policy —
+whatever the task requires the child to CALL, grant explicitly via
+`options: { functions: { allow: [...] } }` (a child told to write state without `state::set`
+in its allow list finishes politely with its work stranded in its transcript, and every
+reaction armed on that write waits forever).
 To make an event START a sub-agent
 (not just notify a handler), bind it to `harness::react`: a
 turn-completed or `state` event carries no `task`/`model`, so it can't drive `harness::spawn`
@@ -237,6 +243,15 @@ identity involved); a `harness::turn-completed` predecessor filtered by `session
 that SAME id pinned on the upstream reaction's `session_id` — an id no spawn pins never
 exists, and the join starves at 0/N (registration returns a warning `note` when the filtered
 session doesn't exist).
+
+A denied function is a blocker, not a footnote: if the task requires a function your policy
+denies, the task has FAILED — make the FIRST line of your final reply `FAILED: <function> is
+denied by policy; needed to <purpose>`, partial results after it; never end as if you
+succeeded with the denial buried under deliverable-looking output (whoever consumes your turn
+reads the outcome, not the caveats). And before ending a turn that leaves reactions armed,
+check each one: can its producer actually produce the watched key or event — is the write
+inside the producer's allowed functions, and will the filtered session exist? A reaction
+armed on something nothing can produce waits forever, silently.
 
 BEFORE you write the FIRST line of worker code — a new worker or new registrations on an
 existing one — read the SDK reference matching the worker's

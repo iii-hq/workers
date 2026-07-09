@@ -22,10 +22,29 @@ pub fn new_call_id() -> String {
     format!("fc_{}", short_uuid())
 }
 
+/// A fresh queued-message id (`q_<uuid>`), minted when a message is enqueued
+/// while a step is streaming.
+pub fn new_queued_id() -> String {
+    format!("q_{}", short_uuid())
+}
+
+/// The deterministic entry id a queued message drains into, so a redelivered
+/// drain is a no-op.
+pub fn queued_entry_id(queued_id: &str) -> String {
+    format!("e_{}", sanitize(queued_id))
+}
+
 /// The deterministic id of the user entry derived from an idempotency key,
 /// so a redelivered webhook append is a no-op.
 pub fn idem_user_entry_id(key: &str) -> String {
     format!("e_idem_{}", sanitize(key))
+}
+
+/// The opening task entry of a react-fired spawn (`e_react_<uuid>`). The
+/// prefix lets transcript reads mark the row as a trigger reaction even
+/// though `session::messages` does not return `origin` (the notify pattern).
+pub fn react_entry_id() -> String {
+    format!("e_react_{}", short_uuid())
 }
 
 /// The assistant message of a generate step: `e_<turn_id>_<step>_assistant`.
@@ -77,6 +96,7 @@ mod tests {
         assert_eq!(assistant_entry_id("t_1", 3), "e_t_1_3_assistant");
         assert_eq!(function_result_entry_id("t_1", "fc_9"), "e_t_1_fc_9");
         assert_eq!(compaction_entry_id("t_1", 4), "e_t_1_4_compaction");
+        assert_eq!(queued_entry_id("q_abc"), "e_q_abc");
     }
 
     #[test]

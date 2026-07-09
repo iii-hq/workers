@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  coerceJsonObject,
+  configFilters,
   ENGINE_FUNCTION_IDS,
   functionDetailSchema,
   functionInfoRequestSchema,
   functionsListRequestSchema,
   functionsListResponseSchema,
   isEngineListFunction,
+  parseFunctionInfoResponse,
+  parseTriggerInfoResponse,
   reactSpecSchema,
   registeredTriggersListRequestSchema,
   registeredTriggersListResponseSchema,
@@ -13,6 +17,7 @@ import {
   registerTriggerResponseSchema,
   safeParseRequest,
   safeParseResponse,
+  triggerInfoRequestSchema,
   triggersListRequestSchema,
   triggersListResponseSchema,
   unwrapEnvelope,
@@ -43,6 +48,24 @@ describe('isEngineListFunction', () => {
     expect(isEngineListFunction('engine::functions')).toBe(false)
     expect(isEngineListFunction('sandbox::exec')).toBe(false)
     expect(isEngineListFunction('engine::triggers::create')).toBe(false)
+  })
+})
+
+describe('coerceJsonObject', () => {
+  it('recovers a double-encoded (stringified) payload', () => {
+    const payload = { trigger_type: 'state', config: { scope: 'wiki' } }
+    expect(coerceJsonObject(JSON.stringify(payload))).toEqual(payload)
+    expect(coerceJsonObject('  [1, 2]  ')).toEqual([1, 2])
+  })
+
+  it('passes non-JSON-object values through untouched', () => {
+    const obj = { already: 'parsed' }
+    expect(coerceJsonObject(obj)).toBe(obj)
+    expect(coerceJsonObject('a plain string request')).toBe(
+      'a plain string request',
+    )
+    expect(coerceJsonObject('{ broken json')).toBe('{ broken json')
+    expect(coerceJsonObject(undefined)).toBeUndefined()
   })
 })
 
@@ -105,8 +128,30 @@ describe('engine::functions::info', () => {
     ).toEqual({ function_id: 'sandbox::fs::write' })
   })
 
-  it('rejects a request missing function_id', () => {
-    expect(safeParseRequest(functionInfoRequestSchema, {})).toBeNull()
+  it('parses a batch request (function_ids)', () => {
+    expect(
+      safeParseRequest(functionInfoRequestSchema, {
+        function_ids: ['state::get', 'state::set'],
+      }),
+    ).toEqual({ function_ids: ['state::get', 'state::set'] })
+  })
+
+  it('normalizes single and batch responses to a detail list', () => {
+    const detail = {
+      function_id: 'state::get',
+      worker_name: 'iii-state',
+      registered_triggers: [],
+    }
+    expect(
+      parseFunctionInfoResponse(detail)?.map((d) => d.function_id),
+    ).toEqual(['state::get'])
+    expect(
+      parseFunctionInfoResponse(
+        wrap({ functions: [detail, { ...detail, function_id: 'state::set' }] }),
+      )?.map((d) => d.function_id),
+    ).toEqual(['state::get', 'state::set'])
+    // Neither shape → null, so the card falls back to the generic panes.
+    expect(parseFunctionInfoResponse({ nonsense: true })).toBeNull()
   })
 
   it('parses a wrapped AnyValue-schema detail (mirrors the screenshot)', () => {
@@ -183,6 +228,34 @@ describe('engine::triggers::list', () => {
   it('rejects payloads missing the `triggers` array', () => {
     const resp = safeParseResponse(triggersListResponseSchema, { foo: [] })
     expect(resp).toBeNull()
+  })
+})
+
+describe('engine::triggers::info', () => {
+  it('parses the request payload', () => {
+    expect(safeParseRequest(triggerInfoRequestSchema, { id: 'state' })).toEqual(
+      { id: 'state' },
+    )
+    expect(safeParseRequest(triggerInfoRequestSchema, {})).toBeNull()
+  })
+
+  it('parses a wrapped trigger-type detail (mirrors the live shape)', () => {
+    const detail = {
+      id: 'state',
+      worker_name: 'iii-state',
+      description: 'State trigger',
+      instance_count: 3,
+      configuration_schema: { type: 'object', title: 'StateTriggerConfig' },
+      request_schema: { type: 'object' },
+    }
+    const parsed = parseTriggerInfoResponse(wrap(detail))
+    expect(parsed?.id).toBe('state')
+    expect(parsed?.instance_count).toBe(3)
+  })
+
+  it('returns null for unknown shapes (card falls back to panes)', () => {
+    expect(parseTriggerInfoResponse({ nonsense: true })).toBeNull()
+    expect(parseTriggerInfoResponse(undefined)).toBeNull()
   })
 })
 
@@ -437,6 +510,50 @@ describe('engine::register_trigger', () => {
         once: false,
       }),
     ).toEqual({ subscription_id: 'sub-1', once: false })
+  })
+
+  it('recovers a double-encoded request through the full render chain', () => {
+    // The exact shape from the screenshot: the whole payload is one JSON
+    // string. index.tsx does coerceJsonObject(unwrapEnvelope(input)).
+    const stringified = JSON.stringify({
+      trigger_type: 'harness::turn-completed',
+      function_id: 'harness::react',
+      config: { session_id: 'analyst-2-deep' },
+      metadata: { model: 'claude-sonnet-5', task: 'deep dive' },
+    })
+    const input = coerceJsonObject(unwrapEnvelope(stringified))
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.trigger_type).toBe('harness::turn-completed')
+    expect(req?.function_id).toBe('harness::react')
+    expect(configFilters(req?.config)).toEqual([
+      { label: 'session', value: 'analyst-2-deep' },
+    ])
+  })
+
+  it('extracts filter chips across state and turn-event configs', () => {
+    // state config
+    expect(
+      configFilters({
+        scope: 'ops',
+        key: 'build',
+        condition_function_id: 'gate::ok',
+      }),
+    ).toEqual([
+      { label: 'scope', value: 'ops' },
+      { label: 'key', value: 'build' },
+      { label: 'if', value: 'gate::ok' },
+    ])
+    // turn-event config (previously fell through to raw JSON)
+    expect(configFilters({ session_id: 'reviewer-cr7k2' })).toEqual([
+      { label: 'session', value: 'reviewer-cr7k2' },
+    ])
+    expect(configFilters({ parent_session_id: 'root-1' })).toEqual([
+      { label: 'parent', value: 'root-1' },
+    ])
+    // no known filters → null (caller shows "no filter" / raw JSON)
+    expect(configFilters({})).toBeNull()
+    expect(configFilters({ unknown_field: 'x' })).toBeNull()
+    expect(configFilters(undefined)).toBeNull()
   })
 })
 

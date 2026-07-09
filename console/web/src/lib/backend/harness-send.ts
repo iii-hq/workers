@@ -95,6 +95,11 @@ export interface HarnessSendResponse {
   accepted: boolean
   /** True when folded into an in-flight turn (steering). */
   merged?: boolean
+  /**
+   * True when the message was queued while a step was streaming; it lands in
+   * the transcript when the stream ends.
+   */
+  queued?: boolean
   /** True when `idempotency_key` matched an earlier send. */
   deduplicated?: boolean
 }
@@ -113,6 +118,23 @@ export interface HarnessChildRef {
   turn_id: string
 }
 
+/**
+ * One message parked in the harness's per-session queue while a step streams
+ * (mirrors `harness_queue` rows surfaced by `harness::status`). `message` is
+ * the wire AgentMessage; only text blocks matter for preview purposes.
+ */
+export interface HarnessQueuedMessage {
+  id: string
+  session_id: string
+  /** Deterministic transcript entry id the drain will append under. */
+  entry_id: string
+  message: {
+    role: string
+    content?: Array<{ type: string; text?: string }>
+  }
+  queued_at: number
+}
+
 export interface HarnessStatusReport {
   session_id: string
   turn_id?: string
@@ -124,6 +146,8 @@ export interface HarnessStatusReport {
   /** function_call_ids parked awaiting a deferred result / approval. */
   pending_function_calls: string[]
   children: HarnessChildRef[]
+  /** Messages queued while a step streams, in arrival order. */
+  queued?: HarnessQueuedMessage[]
   result?: unknown
   result_error?: string | null
 }

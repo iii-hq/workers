@@ -1,4 +1,5 @@
 import type { Mode, ModelId } from '@/types/chat'
+import type { SessionTriggerInfo } from './triggers'
 
 /**
  * The streaming contract every ChatBackend honors. The order is:
@@ -164,6 +165,18 @@ export type CompactResult =
   | { status: 'empty' }
   | { status: 'error'; message: string }
 
+/**
+ * Preview of a message parked in the harness's server-side queue while a step
+ * streams. `id` is the deterministic transcript entry id the drain will
+ * append under — the same id the drained row arrives with, so consumers can
+ * dedupe against local drafts and the transcript.
+ */
+export interface QueuedMessagePreview {
+  id: string
+  text: string
+  queuedAt: number
+}
+
 export interface ChatBackend {
   /** stable identifier used by the playground for telemetry / labels */
   readonly id: string
@@ -187,6 +200,69 @@ export interface ChatBackend {
      */
     opts?: { accessDuration?: 'once' | 'session' | 'always' },
   ): Promise<void>
+  /**
+   * Send a message into a session whose turn is already streaming, WITHOUT
+   * opening a second stream loop. The harness queues it (`queued: true`) and
+   * delivers it after the stream ends; the row then renders via session
+   * events. Backends that don't support mid-stream queueing omit this and the
+   * composer stays locked while streaming.
+   */
+  queueMessage?(
+    prompt: string,
+    mode: Mode,
+    model: ModelId,
+    opts?: ChatStreamOptions,
+  ): Promise<void>
+  /**
+   * The session's server-side message queue (`harness::status` → `queued`):
+   * everything parked while the current step streams — including messages
+   * from other tabs and subagent/subscription notifications, not just this
+   * tab's sends. Empty when idle.
+   */
+  listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
+  /**
+   * Remove a still-parked message from the server-side queue by its entry id
+   * (`harness::unqueue`). Lets the composer pull a queued message back for
+   * editing without the old version also draining into the transcript. A row
+   * that already drained is a harmless no-op.
+   */
+  removeQueued?(sessionId: string, entryId: string): Promise<void>
+  /**
+   * Edit a still-parked queued message in place (`harness::edit_queued`),
+   * preserving its delivery position — unlike remove + re-queue, which moves
+   * it to the tail. `prompt` + `attachedBlocks` rebuild the content exactly
+   * as a send would.
+   */
+  editQueued?(
+    sessionId: string,
+    entryId: string,
+    prompt: string,
+    opts?: { attachedBlocks?: string[] },
+  ): Promise<void>
+  /**
+   * Subscribe to `harness::message-queued` for a session: fires when any
+   * client's message parks in the server-side queue mid-stream — the signal
+   * to refetch `listQueued`. Returns an unsubscribe.
+   */
+  onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
+  /**
+   * The session's registered trigger subscriptions (notify + react bindings
+   * the agent registered via the harness's `engine::register_trigger`
+   * intercept).
+   */
+  listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
+  /** Unregister one of the session's triggers by engine trigger id. */
+  unregisterTrigger?(triggerId: string): Promise<void>
+  /**
+   * Whether a state key currently exists (`state::get` non-null). Lets the
+   * triggers strip mark a `state` binding whose watched key was never
+   * written — the "armed on something nothing produces" stall. `null` =
+   * unknown (call failed).
+   */
+  stateKeyExists?(
+    scope: string | undefined,
+    key: string,
+  ): Promise<boolean | null>
   /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).
    * The client-side AbortSignal only stops rendering; without this the

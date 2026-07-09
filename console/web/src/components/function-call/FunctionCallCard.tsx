@@ -1,4 +1,4 @@
-import { Check, X } from 'lucide-react'
+import { Check, Copy, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
@@ -107,6 +107,48 @@ function formatJson(value: unknown): string {
   } catch {
     return String(value)
   }
+}
+
+/**
+ * Parse a string that IS a JSON object/array — a double-encoded payload
+ * (e.g. a model passing `payload` as a stringified object). Scalars stay
+ * strings on purpose; only structure benefits from re-rendering.
+ */
+export function parseEmbeddedJson(s: string): unknown | undefined {
+  const t = s.trim()
+  if (!t.startsWith('{') && !t.startsWith('[')) return undefined
+  try {
+    return JSON.parse(t) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The iii function-result envelope: `{ content: [{type:"text", text}...],
+ * details? }`. Rendered raw, `content[].text` shows as an escaped one-line
+ * JSON string that usually duplicates `details` — so the pane unwraps it:
+ * texts render as text (or parsed JSON), details as its own section.
+ * Returns null for anything else (extra keys, non-text blocks) so unknown
+ * shapes keep the truthful raw rendering.
+ */
+export function resultEnvelope(
+  v: unknown,
+): { texts: string[]; details: unknown } | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  if (!Array.isArray(o.content)) return null
+  if (Object.keys(o).some((k) => k !== 'content' && k !== 'details'))
+    return null
+  const texts: string[] = []
+  for (const block of o.content) {
+    if (!block || typeof block !== 'object') return null
+    const b = block as Record<string, unknown>
+    if (b.type !== 'text' || typeof b.text !== 'string') return null
+    texts.push(b.text)
+  }
+  if (texts.length === 0 && isEmptyValue(o.details)) return null
+  return { texts, details: o.details }
 }
 
 type Primitive = string | number | boolean | null
@@ -452,10 +494,117 @@ interface ValuePaneProps {
   bordered?: boolean
 }
 
+const TEXT_PRE_CLS =
+  'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words'
+
+/** Rendered lines above which a pane collapses behind a "show all" footer. */
+const CLAMP_LINES = 24
+/** Collapsed body height — ~16 code lines, enough to identify the payload. */
+const CLAMP_MAX_H = 'max-h-[21rem]'
+
+function countLines(s: string): number {
+  let n = 1
+  for (let i = 0; i < s.length; i++) if (s[i] === '\n') n++
+  return n
+}
+
+/**
+ * Shared chrome for one request/response pane: label row with hints and a
+ * copy affordance, and a body that clamps past CLAMP_LINES behind an explicit
+ * "show all · N lines" footer — big payloads stop drowning the chat flow
+ * (PRODUCT.md: hide complexity in collapsible detail, not opaque summaries).
+ */
+function PaneShell({
+  label,
+  hints,
+  copyText,
+  lineCount,
+  bordered,
+  children,
+}: {
+  label: string
+  hints?: string[]
+  copyText: string
+  lineCount: number
+  bordered?: boolean
+  children: React.ReactNode
+}) {
+  const clampable = lineCount > CLAMP_LINES
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const copy = () => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return
+    void navigator.clipboard.writeText(copyText).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }
+
+  return (
+    <div className={cn(bordered && 'border-t border-rule-2')}>
+      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+        <span className="min-w-0 flex-1 truncate">
+          {label}
+          {(hints ?? []).map((hint) => (
+            <span
+              key={hint}
+              className="text-ink-ghost normal-case tracking-normal"
+            >
+              {' '}
+              · {hint}
+            </span>
+          ))}
+        </span>
+        <button
+          type="button"
+          onClick={copy}
+          className="shrink-0 text-ink-ghost hover:text-ink transition-colors"
+          aria-label={copied ? 'copied' : `copy ${label}`}
+          title={copied ? 'copied' : 'copy'}
+        >
+          {copied ? (
+            <Check size={12} aria-hidden />
+          ) : (
+            <Copy size={12} aria-hidden />
+          )}
+        </button>
+      </div>
+      <div
+        className={cn(
+          clampable && !expanded && `${CLAMP_MAX_H} overflow-hidden`,
+        )}
+      >
+        {children}
+      </div>
+      {clampable ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] lowercase text-ink-faint hover:text-ink transition-colors"
+        >
+          {expanded ? '▴ collapse' : `▾ show all · ${lineCount} lines`}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 function ValuePane({ label, value, bordered }: ValuePaneProps) {
   const empty = isEmptyValue(value)
   const primitive = !empty && isPrimitive(value)
   const single = !empty && !primitive ? singlePrimitiveField(value) : null
+  const envelope =
+    !empty && !primitive && !single ? resultEnvelope(value) : null
+  // A string payload that is itself JSON (double-encoded): render the parsed
+  // structure instead of an escaped one-liner, and say so in the header.
+  const embedded =
+    primitive && typeof value === 'string'
+      ? parseEmbeddedJson(value)
+      : single && typeof single.value === 'string'
+        ? parseEmbeddedJson(single.value)
+        : undefined
 
   if (empty) {
     return (
@@ -471,28 +620,83 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
     )
   }
 
-  return (
-    <div className={cn(bordered && 'border-t border-rule-2')}>
-      <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-        {label}
-        {single ? (
-          <span className="text-ink-ghost normal-case tracking-normal">
-            {' '}
-            · {single.key}
-          </span>
+  if (envelope) {
+    const detailsEmpty = isEmptyValue(envelope.details)
+    // A text block that re-serializes `details` verbatim is pure duplication
+    // (the engine returns both display text and structured details) — drop it.
+    const blocks = envelope.texts
+      .map((raw) => ({ raw, parsed: parseEmbeddedJson(raw) }))
+      .filter(
+        (b) =>
+          detailsEmpty ||
+          b.parsed === undefined ||
+          JSON.stringify(b.parsed) !== JSON.stringify(envelope.details),
+      )
+    const detailsJson = detailsEmpty ? null : formatJson(envelope.details)
+    const rendered = blocks.map((b) =>
+      b.parsed !== undefined ? formatJson(b.parsed) : b.raw,
+    )
+    const lineCount =
+      rendered.reduce((n, s) => n + countLines(s), 0) +
+      (detailsJson ? countLines(detailsJson) + 1 : 0)
+    return (
+      <PaneShell
+        label={label}
+        copyText={formatJson(value)}
+        lineCount={lineCount}
+        bordered={bordered}
+      >
+        {blocks.map((b) =>
+          b.parsed !== undefined ? (
+            <JsonHighlight key={b.raw} code={formatJson(b.parsed)} />
+          ) : (
+            <pre key={b.raw} className={TEXT_PRE_CLS}>
+              <code>{b.raw}</code>
+            </pre>
+          ),
+        )}
+        {detailsJson ? (
+          <>
+            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+              details
+            </div>
+            <JsonHighlight code={detailsJson} />
+          </>
         ) : null}
-      </div>
-      {primitive ? (
-        <pre className="bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
-          <code>{formatPrimitive(value)}</code>
-        </pre>
-      ) : single ? (
-        <pre className="bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
-          <code>{formatPrimitive(single.value)}</code>
+      </PaneShell>
+    )
+  }
+
+  const body =
+    embedded !== undefined
+      ? formatJson(embedded)
+      : primitive
+        ? formatPrimitive(value)
+        : single
+          ? formatPrimitive(single.value)
+          : formatJson(value)
+  const hints = [
+    ...(single ? [single.key] : []),
+    ...(embedded !== undefined ? ['json string'] : []),
+  ]
+
+  return (
+    <PaneShell
+      label={label}
+      hints={hints}
+      copyText={body}
+      lineCount={countLines(body)}
+      bordered={bordered}
+    >
+      {embedded !== undefined ? (
+        <JsonHighlight code={body} />
+      ) : primitive || single ? (
+        <pre className={TEXT_PRE_CLS}>
+          <code>{body}</code>
         </pre>
       ) : (
-        <JsonHighlight code={formatJson(value)} />
+        <JsonHighlight code={body} />
       )}
-    </div>
+    </PaneShell>
   )
 }
