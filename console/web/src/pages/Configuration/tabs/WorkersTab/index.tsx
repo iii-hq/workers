@@ -17,12 +17,11 @@ interface WorkersTabProps {
 /**
  * Master-detail layout for worker configurations. The left rail lists
  * every entry from `configuration::list`; the right pane shows the
- * editor for the currently-selected id (URL-driven, see `useConfigurationRoute`).
+ * editor for the currently-selected id.
  *
- * When the operator lands on `#/configuration/workers` with no id, we
- * auto-select the first entry once the list resolves so the editor surface
- * isn't blank by default. The auto-select is a one-shot — clearing the
- * selection later (e.g. by editing the hash) is preserved.
+ * When mounted with no id, we auto-select the first entry once the list
+ * resolves so the editor surface isn't blank by default. The auto-select is
+ * a one-shot — clearing the selection later is preserved.
  *
  * Dirty-state propagation: `onDirtyChange` flows the editor's dirty
  * flag up to the Configuration shell, which uses it to gate tab + URL

@@ -20,6 +20,8 @@ export interface WorkerRow {
   tag: string | null
   managementKind: WorkerManagementKind
   status: WorkerConnectionStatus
+  /** Configuration registry id for rows with editable worker configuration. */
+  configurationId: string | null
   /** When true the stop action is enabled (supervisor-managed + running). */
   stopEnabled: boolean
   /** Shown when stop is disabled. */

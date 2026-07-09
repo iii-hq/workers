@@ -17,10 +17,10 @@ import {
   type ThinkingLevel,
 } from '@/types/chat'
 
-// Deep link to the llm-router configuration entry in the workers/config editor,
+// Deep link to the llm-router configuration entry in the Workers modal editor,
 // where api keys + per-provider settings are now edited (the bespoke
 // per-provider dialog was retired in favour of the schema-driven form).
-const HARNESS_CONFIG_HASH = '#/configuration/workers/llm-router'
+const HARNESS_CONFIG_HASH = '#/workers/configuration/llm-router'
 
 interface ModelPickerProps {
   value: ModelId | null

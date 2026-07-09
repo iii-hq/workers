@@ -124,7 +124,7 @@ function Header({
   // a direct #/worktrees hit still lands on that page's install notice.
   const { worktreeAvailable } = useConversationsCtx()
   const viewOptions = buildViewOptions(worktreeAvailable)
-  const onConfiguration = view === 'configuration'
+  const onConsoleSettings = view === 'configuration'
   return (
     <header className="flex items-center justify-between pl-3 pr-6 h-12 border-b border-rule shrink-0">
       <div className="flex items-center gap-3">
@@ -154,12 +154,12 @@ function Header({
         <button
           type="button"
           onClick={() => onViewChange('configuration')}
-          aria-pressed={onConfiguration}
-          aria-label="configuration"
-          title="configuration"
+          aria-pressed={onConsoleSettings}
+          aria-label="console settings"
+          title="console settings"
           className={cn(
             'font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center border transition-colors',
-            onConfiguration
+            onConsoleSettings
               ? 'bg-ink text-bg border-ink'
               : 'bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink',
           )}

@@ -16,13 +16,28 @@ const STOP_REASON = {
   notRunning: 'worker is not running',
 } as const
 
-function configIdSet(configurations: ConfigurationSchemaView[]): Set<string> {
-  const ids = new Set<string>()
+interface ConfigurationLookup {
+  byId: Map<string, string>
+  byName: Map<string, string>
+}
+
+function configurationLookup(
+  configurations: ConfigurationSchemaView[],
+): ConfigurationLookup {
+  const byId = new Map<string, string>()
+  const byName = new Map<string, string>()
   for (const c of configurations) {
-    ids.add(c.id)
-    if (c.name) ids.add(c.name)
+    byId.set(c.id, c.id)
+    if (c.name) byName.set(c.name, c.id)
   }
-  return ids
+  return { byId, byName }
+}
+
+function resolveConfigurationId(
+  name: string,
+  lookup: ConfigurationLookup,
+): string | null {
+  return lookup.byId.get(name) ?? lookup.byName.get(name) ?? null
 }
 
 function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
@@ -34,13 +49,12 @@ function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
 }
 
 function deriveManagementKind(
-  name: string,
   internal: boolean,
-  configIds: Set<string>,
-  supervisor: WorkerEntry | undefined,
+  configurationId: string | null,
+  supervisor?: WorkerEntry,
 ): WorkerManagementKind {
   if (internal) return 'internal'
-  if (configIds.has(name)) return 'config'
+  if (configurationId) return 'config'
   if (supervisor) return 'supervisor'
   return 'standalone'
 }
@@ -77,7 +91,7 @@ function deriveStopState(
 
 function engineRowToWorkerRow(
   summary: WorkerSummary,
-  configIds: Set<string>,
+  configurations: ConfigurationLookup,
   supervisors: Map<string, WorkerEntry>,
   infoByName: Map<
     string,
@@ -88,10 +102,10 @@ function engineRowToWorkerRow(
   const info = infoByName.get(name)
   const internal = info?.internal ?? false
   const supervisor = supervisors.get(name)
+  const configurationId = resolveConfigurationId(name, configurations)
   const managementKind = deriveManagementKind(
-    name,
     internal,
-    configIds,
+    configurationId,
     supervisor,
   )
   const status = deriveConnectionStatus(summary.status, supervisor)
@@ -107,15 +121,17 @@ function engineRowToWorkerRow(
     tag: info?.tag ?? summary.tag ?? null,
     managementKind,
     status,
+    configurationId,
     ...stop,
   }
 }
 
 function syntheticSupervisorRow(
   entry: WorkerEntry,
-  configIds: Set<string>,
+  configurations: ConfigurationLookup,
 ): WorkerRow {
-  const managementKind = configIds.has(entry.name) ? 'config' : 'supervisor'
+  const configurationId = resolveConfigurationId(entry.name, configurations)
+  const managementKind = configurationId ? 'config' : 'supervisor'
   const status: WorkerConnectionStatus = entry.running ? 'connected' : 'stopped'
   const stop = deriveStopState(managementKind, status, entry)
 
@@ -129,13 +145,14 @@ function syntheticSupervisorRow(
     tag: null,
     managementKind,
     status,
+    configurationId,
     ...stop,
   }
 }
 
 /** Merge engine catalogue, supervisor list, and configuration registry into table rows. */
 export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
-  const configIds = configIdSet(snapshot.configurations)
+  const configurations = configurationLookup(snapshot.configurations)
   const supervisors = supervisorMap(snapshot.supervisorWorkers)
   const seen = new Set<string>()
   const rows: WorkerRow[] = []
@@ -146,7 +163,7 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
     rows.push(
       engineRowToWorkerRow(
         engineWorker,
-        configIds,
+        configurations,
         supervisors,
         snapshot.infoByName,
       ),
@@ -155,7 +172,7 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
 
   for (const [name, entry] of supervisors) {
     if (seen.has(name)) continue
-    rows.push(syntheticSupervisorRow(entry, configIds))
+    rows.push(syntheticSupervisorRow(entry, configurations))
     seen.add(name)
   }
 
