@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "clap",
