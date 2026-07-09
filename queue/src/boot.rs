@@ -57,9 +57,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
     let apply_lock = Arc::new(Mutex::new(()));
     let function_queues = Arc::new(FunctionQueueRuntime::new(adapter.clone(), invoker));
     let configured_queues = config.read().await.queue_configs.clone();
-    function_queues
-        .reconcile(&configured_queues)
-        .await?;
+    function_queues.reconcile(&configured_queues).await?;
 
     crate::functions::register_all(
         &iii,

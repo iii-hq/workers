@@ -556,11 +556,7 @@ impl QueueAdapter for BuiltinAdapter {
         Ok(rx)
     }
 
-    async fn ack_function_queue(
-        &self,
-        _queue_name: &str,
-        delivery_id: u64,
-    ) -> anyhow::Result<()> {
+    async fn ack_function_queue(&self, _queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
         if let Some(delivery) = self.function_deliveries.lock().await.remove(&delivery_id) {
             self.store.ack(&delivery.queue_name, &delivery.job.id).await;
         }

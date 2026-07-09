@@ -436,7 +436,11 @@ impl QueueAdapter for RedisAdapter {
 
         let json = match serde_json::to_string(&envelope) {
             Ok(json) => json,
-            Err(e) => return Err(anyhow::anyhow!("failed to serialize function queue data: {e}")),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to serialize function queue data: {e}"
+                ))
+            }
         };
 
         tracing::debug!(queue = %queue_name, function_id = %function_id, "Publishing to Redis function queue channel");
