@@ -569,14 +569,14 @@ impl QueueAdapter for BuiltinAdapter {
         _queue_name: &str,
         delivery_id: u64,
         _attempt: u32,
-        _max_retries: u32,
+        max_retries: u32,
     ) -> anyhow::Result<()> {
         if let Some(delivery) = self.function_deliveries.lock().await.remove(&delivery_id) {
             self.store
                 .nack(
                     &delivery.queue_name,
                     delivery.job,
-                    delivery.config.max_retries,
+                    max_retries,
                     delivery.config.backoff_ms,
                 )
                 .await;

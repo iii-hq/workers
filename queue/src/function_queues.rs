@@ -304,3 +304,168 @@ fn spawn_consumer(
         tracing::warn!(function_id = %function_id, queue = %physical_name, "function queue consumer ended");
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::QueueAdapter;
+    use crate::adapters::builtin::BuiltinAdapter;
+    use crate::store::InMemoryStore;
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::sync::Mutex as StdMutex;
+    use tokio::time::{Duration, Instant};
+
+    struct RecordingInvoker {
+        calls: Arc<StdMutex<Vec<(String, Value)>>>,
+    }
+
+    #[async_trait]
+    impl Invoker for RecordingInvoker {
+        async fn call(
+            &self,
+            function_id: &str,
+            payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((function_id.to_string(), payload));
+            Ok(Some(json!({"ok": true})))
+        }
+    }
+
+    fn runtime() -> (
+        Arc<FunctionQueueRuntime>,
+        Arc<StdMutex<Vec<(String, Value)>>>,
+    ) {
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let invoker = Arc::new(RecordingInvoker {
+            calls: calls.clone(),
+        });
+        let adapter: Arc<dyn QueueAdapter> = Arc::new(BuiltinAdapter::new(
+            Arc::new(InMemoryStore::new()),
+            Arc::new(NoopInvoker),
+        ));
+        let adapter = Arc::new(SwappableAdapter::new(adapter, "builtin"));
+        (Arc::new(FunctionQueueRuntime::new(adapter, invoker)), calls)
+    }
+
+    struct NoopInvoker;
+
+    #[async_trait]
+    impl Invoker for NoopInvoker {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn each_function_gets_its_own_queue_and_consumer() {
+        let (runtime, calls) = runtime();
+        let mut configs = BTreeMap::new();
+        configs.insert(
+            "harness::turn::root".to_string(),
+            FunctionQueueConfig::default(),
+        );
+        configs.insert(
+            "harness::turn::subagent".to_string(),
+            FunctionQueueConfig {
+                concurrency: 1,
+                ..Default::default()
+            },
+        );
+        runtime.reconcile(&configs).await.unwrap();
+
+        assert_eq!(runtime.statuses().await.len(), 2);
+        assert!(runtime
+            .status("harness::turn::root")
+            .await
+            .is_some_and(|status| status.healthy));
+
+        runtime
+            .enqueue(
+                "harness::turn::root",
+                json!({"lane": "root"}),
+                "root-receipt",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        runtime
+            .enqueue(
+                "harness::turn::subagent",
+                json!({"lane": "subagent"}),
+                "subagent-receipt",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while calls.lock().unwrap().len() < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 2);
+        assert!(recorded
+            .iter()
+            .any(|(id, payload)| { id == "harness::turn::root" && payload["lane"] == "root" }));
+        assert!(recorded.iter().any(|(id, payload)| {
+            id == "harness::turn::subagent" && payload["lane"] == "subagent"
+        }));
+
+        let physical_name = physical_function_queue_name("harness::turn::root");
+        runtime
+            .adapter
+            .publish_to_function_queue(
+                &physical_name,
+                "harness::turn::subagent",
+                json!({"lane": "wrong"}),
+                "wrong-receipt",
+                3,
+                1,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime
+            .adapter
+            .dlq_count(&crate::function_queue_id::function_queue_adapter_key(
+                "harness::turn::root",
+            ))
+            .await
+            .unwrap()
+            == 0
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            runtime
+                .adapter
+                .dlq_count(&crate::function_queue_id::function_queue_adapter_key(
+                    "harness::turn::root"
+                ))
+                .await
+                .unwrap(),
+            1
+        );
+
+        runtime.shutdown().await;
+    }
+}

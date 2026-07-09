@@ -23,7 +23,7 @@ use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
 };
 
-/// The enqueued lane-bound turn step payload.
+/// The enqueued `harness::turn` step payload.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TurnStepPayload {
     pub session_id: String,
