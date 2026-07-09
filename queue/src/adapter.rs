@@ -32,7 +32,8 @@ pub struct TopicInfo {
 /// Ported from the engine builtin's `QueueMessage`
 /// (`engine/src/workers/queue/message.rs`). Only used by the
 /// function-queue transport path (`consume_function_queue` and friends),
-/// which is call-site-less until the engine `QueueEnqueuer` cut lands.
+/// owned by this standalone worker and reached through the existing engine
+/// compatibility surface.
 #[derive(Debug, Clone)]
 pub struct QueueMessage {
     /// Adapter-specific tag for ack/nack (e.g. RabbitMQ delivery tag).
@@ -259,10 +260,9 @@ pub trait QueueAdapter: Send + Sync + 'static {
 
     // -- Function queue transport methods --
     //
-    // Call-site-less until the engine `QueueEnqueuer` cut lands (see
-    // `engine/src/workers/queue/mod.rs:78-158`). Ported here so adapters
-    // implementing this trait have the same surface as the engine builtin;
-    // default bodies match the engine's no-op/unimplemented defaults.
+    // These methods are owned by the standalone worker. The default bodies
+    // preserve the adapter surface for transports that do not support
+    // function-bound queues.
 
     /// Publish a message directly onto a function's dedicated queue.
     #[allow(clippy::too_many_arguments)]

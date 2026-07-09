@@ -203,7 +203,7 @@ pub fn register_all(
             let runtime = enqueue_runtime.clone();
             async move { enqueue_function_queue(runtime, input).await }
         })
-        .description("Internal engine enqueue provider; persists a named function queue job"),
+        .description("Standalone enqueue provider; persists a function-bound queue job"),
     );
 
     let redrive_adapter = adapter.clone();
