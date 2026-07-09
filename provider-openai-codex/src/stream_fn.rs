@@ -87,18 +87,22 @@ fn near_expiry(cred: &Value) -> bool {
 ///    so the `codex` CLI keeps that file fresh). Gated on the vault being
 ///    absent/empty, so it never overrides a real vault credential.
 async fn fetch_fresh_credential(iii: &IIIClient) -> Option<Value> {
-    if let Some(cred) = router_client::get_token(iii, PROVIDER_ID)
+    if let Some(cred) = router_client::get_token_if_available(iii, PROVIDER_ID)
         .await
         .ok()
         .flatten()
     {
         if near_expiry(&cred) {
-            let _ = router_client::refresh(iii, PROVIDER_ID).await; // vault-owned
-            return router_client::get_token(iii, PROVIDER_ID)
-                .await
-                .ok()
-                .flatten()
-                .or(Some(cred));
+            if matches!(
+                router_client::refresh_if_available(iii, PROVIDER_ID).await,
+                Ok(true)
+            ) {
+                return router_client::get_token_if_available(iii, PROVIDER_ID)
+                    .await
+                    .ok()
+                    .flatten()
+                    .or(Some(cred));
+            }
         }
         return Some(cred);
     }
