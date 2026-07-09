@@ -8,6 +8,7 @@ pub mod adapters;
 pub mod boot;
 pub mod config;
 pub mod configuration;
+pub(crate) mod function_queue_id;
 pub mod function_queues;
 pub mod functions;
 pub mod manifest;

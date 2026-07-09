@@ -54,12 +54,8 @@ pub struct QueueMessage {
 /// Per-function-queue transport settings, passed to
 /// [`QueueAdapter::setup_function_queue`].
 ///
-/// Minimal port of the engine builtin's `FunctionQueueConfig`
-/// (`engine/src/workers/queue/config.rs`) — only the fields the
-/// function-queue adapter methods need to compile against. Call-site-less
-/// until the engine `QueueEnqueuer` cut lands; a later task may replace
-/// this with the full config-module port.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionQueueConfig {
     /// Maximum delivery attempts before a message is sent to the
     /// dead-letter queue.
@@ -71,10 +67,13 @@ pub struct FunctionQueueConfig {
     /// Base delay in milliseconds for the exponential retry backoff.
     #[serde(default = "default_backoff_ms")]
     pub backoff_ms: u64,
-    /// Delivery mode. Named function queues currently support standard mode;
-    /// keeping this explicit makes the provisioned contract self-describing.
+    /// Delivery mode: `standard` or `fifo`.
     #[serde(default = "default_queue_type", rename = "type")]
     pub r#type: String,
+    /// For FIFO queues, the payload field whose value identifies the ordering
+    /// group. Required when `type` is `fifo`.
+    #[serde(default)]
+    pub message_group_field: Option<String>,
     /// Declares the queue as a RabbitMQ priority queue with this many
     /// priority levels (`x-max-priority`). `None` means not a priority
     /// queue. RabbitMQ-only; other adapters ignore it. Added (rather than
@@ -83,6 +82,12 @@ pub struct FunctionQueueConfig {
     /// RabbitMQ adapter's topology setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_priority: Option<u8>,
+    /// Payload field whose integer value supplies the RabbitMQ priority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_field: Option<String>,
+    /// Poll interval for polling adapters such as the builtin store.
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
 }
 
 fn default_max_retries() -> u32 {
@@ -101,6 +106,10 @@ fn default_queue_type() -> String {
     "standard".to_string()
 }
 
+fn default_poll_interval_ms() -> u64 {
+    100
+}
+
 impl Default for FunctionQueueConfig {
     fn default() -> Self {
         Self {
@@ -108,7 +117,10 @@ impl Default for FunctionQueueConfig {
             concurrency: default_concurrency(),
             backoff_ms: default_backoff_ms(),
             r#type: default_queue_type(),
+            message_group_field: None,
             max_priority: None,
+            priority_field: None,
+            poll_interval_ms: default_poll_interval_ms(),
         }
     }
 }
@@ -118,11 +130,22 @@ impl FunctionQueueConfig {
         if self.concurrency == 0 {
             anyhow::bail!("function queue concurrency must be at least 1");
         }
-        if self.r#type != "standard" {
+        if self.r#type != "standard" && self.r#type != "fifo" {
             anyhow::bail!(
-                "function queue type '{}' is not supported; expected 'standard'",
+                "function queue type '{}' is not supported; expected 'standard' or 'fifo'",
                 self.r#type
             );
+        }
+        if self.r#type == "fifo"
+            && self
+                .message_group_field
+                .as_deref()
+                .is_none_or(|field| field.trim().is_empty())
+        {
+            anyhow::bail!("FIFO function queues require a non-empty 'message_group_field'");
+        }
+        if self.max_priority == Some(0) {
+            anyhow::bail!("function queue max_priority must be at least 1");
         }
         Ok(())
     }
@@ -547,5 +570,84 @@ mod tests {
         let second = Arc::new(CountingAdapter::default());
         swappable.replace(second, "redis").await;
         assert_eq!(swappable.current_name().await, "redis");
+    }
+
+    #[test]
+    fn function_queue_config_parses_the_full_engine_shape() {
+        let config: FunctionQueueConfig = serde_json::from_value(serde_json::json!({
+            "type": "fifo",
+            "concurrency": 4,
+            "max_retries": 7,
+            "backoff_ms": 250,
+            "poll_interval_ms": 25,
+            "message_group_field": "session_id",
+            "max_priority": 10,
+            "priority_field": "priority"
+        }))
+        .unwrap();
+
+        assert_eq!(config.r#type, "fifo");
+        assert_eq!(config.concurrency, 4);
+        assert_eq!(config.max_retries, 7);
+        assert_eq!(config.backoff_ms, 250);
+        assert_eq!(config.poll_interval_ms, 25);
+        assert_eq!(config.message_group_field.as_deref(), Some("session_id"));
+        assert_eq!(config.max_priority, Some(10));
+        assert_eq!(config.priority_field.as_deref(), Some("priority"));
+    }
+
+    #[test]
+    fn function_queue_config_validation_matches_engine_constraints() {
+        let mut zero_concurrency = FunctionQueueConfig::default();
+        zero_concurrency.concurrency = 0;
+        assert!(zero_concurrency.validate().is_err());
+
+        let mut unknown_type = FunctionQueueConfig::default();
+        unknown_type.r#type = "priority".to_string();
+        assert!(unknown_type.validate().is_err());
+
+        let mut fifo_without_group = FunctionQueueConfig::default();
+        fifo_without_group.r#type = "fifo".to_string();
+        assert!(fifo_without_group.validate().is_err());
+
+        let mut empty_group = FunctionQueueConfig::default();
+        empty_group.r#type = "fifo".to_string();
+        empty_group.message_group_field = Some("  ".to_string());
+        assert!(empty_group.validate().is_err());
+
+        let mut zero_priority = FunctionQueueConfig::default();
+        zero_priority.max_priority = Some(0);
+        assert!(zero_priority.validate().is_err());
+    }
+
+    #[test]
+    fn function_queue_config_schema_is_closed_and_complete() {
+        let schema = schemars::schema_for!(FunctionQueueConfig);
+        let properties = schema
+            .schema
+            .object
+            .as_ref()
+            .expect("config schema should be an object")
+            .properties
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            properties,
+            [
+                "backoff_ms",
+                "concurrency",
+                "max_priority",
+                "max_retries",
+                "message_group_field",
+                "poll_interval_ms",
+                "priority_field",
+                "type"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+        );
     }
 }
