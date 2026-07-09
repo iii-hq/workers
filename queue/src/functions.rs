@@ -554,13 +554,13 @@ pub async fn topic_stats(
                 })
         }),
         dlq_depth: stats.dlq_depth,
-        config: queue_config.and_then(|cfg| serde_json::to_value(cfg).ok()),
-        function_id: if status.is_some() {
-            Some(input.topic)
-        } else {
-            None
-        },
-        healthy: status.is_none_or(|status| status.healthy),
+        config: queue_config
+            .as_ref()
+            .and_then(|cfg| serde_json::to_value(cfg).ok()),
+        function_id: queue_config.as_ref().map(|_| input.topic.clone()),
+        healthy: queue_config
+            .as_ref()
+            .is_none_or(|_| status.is_some_and(|status| status.healthy)),
     })
 }
 
@@ -1175,6 +1175,30 @@ mod tests {
                 subscriber_count: 10,
                 function_id: Some("orders::create".to_string()),
                 healthy: false,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn topic_stats_reports_configured_function_health_without_leaking_storage_name() {
+        let (adapter, mock) = adapter();
+        *mock.topic_stats_result.lock().unwrap() = Some(Ok(TopicStats::default()));
+        let stats = topic_stats(
+            adapter.clone(),
+            function_config("orders::create"),
+            runtime(&adapter),
+            TopicStatsInput {
+                topic: "orders::create".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.function_id.as_deref(), Some("orders::create"));
+        assert!(!stats.healthy);
+        assert_eq!(
+            mock.calls(),
+            vec![Call::TopicStats {
+                topic: crate::function_queue_id::function_queue_adapter_key("orders::create")
             }]
         );
     }
