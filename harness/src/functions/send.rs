@@ -653,7 +653,7 @@ mod tests {
                 queued_at: 0,
             }
         }
-        let rows = vec![row("q_aaa", "e_idem_msg-1"), row("q_bbb", "e_idem_msg-2")];
+        let rows = [row("q_aaa", "e_idem_msg-1"), row("q_bbb", "e_idem_msg-2")];
         let hit = rows.iter().find(|r| r.entry_id == "e_idem_msg-2");
         assert_eq!(hit.map(|r| r.id.as_str()), Some("q_bbb"));
         assert!(rows.iter().all(|r| r.entry_id != "e_idem_msg-3"));
