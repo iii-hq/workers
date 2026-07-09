@@ -35,6 +35,7 @@ on:
           - provider-anthropic
           - provider-llamacpp
           - provider-openai
+          - provider-openai-codex
           - provider-xai
           - provider-zai
           - pubsub
