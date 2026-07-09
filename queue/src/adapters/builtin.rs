@@ -55,15 +55,18 @@
 //!   the "one subscription per (topic, id)" invariant.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::adapter::{QueueAdapter, TopicInfo};
+use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{Job, QueueStore, TopicStats};
 use crate::subscriber_config::SubscriberQueueConfig;
 use crate::trigger::Invoker;
@@ -108,6 +111,12 @@ struct Subscription {
     function_id: String,
 }
 
+struct FunctionQueueDelivery {
+    queue_name: String,
+    job: Job,
+    config: FunctionQueueConfig,
+}
+
 /// Builtin transport adapter: subscriptions are backed by pure in-process
 /// polling tasks over the worker's [`QueueStore`].
 pub struct BuiltinAdapter {
@@ -120,6 +129,9 @@ pub struct BuiltinAdapter {
     /// DLQ/stat ops — mirrors the engine's `topic_functions`
     /// (`adapter.rs:49`).
     topic_functions: Mutex<HashMap<String, HashSet<String>>>,
+    function_queue_configs: Mutex<HashMap<String, FunctionQueueConfig>>,
+    function_deliveries: Arc<Mutex<HashMap<u64, FunctionQueueDelivery>>>,
+    function_delivery_counter: Arc<AtomicU64>,
     poll_interval_ms: u64,
 }
 
@@ -128,6 +140,10 @@ pub struct BuiltinAdapter {
 /// Mirrors the engine's internal-queue naming (`adapter.rs:206,229`).
 fn internal_queue_name(topic: &str, function_id: &str) -> String {
     format!("{topic}::{function_id}")
+}
+
+fn function_queue_name(queue_name: &str) -> String {
+    format!("__fn_queue::{queue_name}")
 }
 
 impl BuiltinAdapter {
@@ -148,6 +164,9 @@ impl BuiltinAdapter {
             invoker,
             subscriptions: Mutex::new(HashMap::new()),
             topic_functions: Mutex::new(HashMap::new()),
+            function_queue_configs: Mutex::new(HashMap::new()),
+            function_deliveries: Arc::new(Mutex::new(HashMap::new())),
+            function_delivery_counter: Arc::new(AtomicU64::new(1)),
             poll_interval_ms,
         }
     }
@@ -427,6 +446,145 @@ impl QueueAdapter for BuiltinAdapter {
             }
             _ => Ok(self.store.topic_stats(topic).await),
         }
+    }
+
+    async fn publish_to_function_queue(
+        &self,
+        queue_name: &str,
+        function_id: &str,
+        data: Value,
+        message_id: &str,
+        _max_retries: u32,
+        _backoff_ms: u64,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+        _priority: Option<u8>,
+    ) -> anyhow::Result<()> {
+        let config = self
+            .function_queue_configs
+            .lock()
+            .await
+            .get(queue_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("function queue '{queue_name}' is not provisioned"))?;
+        config.validate()?;
+        self.store
+            .enqueue_job(
+                &function_queue_name(queue_name),
+                Job::function_queue(function_id, message_id, data, traceparent, baggage),
+            )
+            .await
+    }
+
+    async fn setup_function_queue(
+        &self,
+        queue_name: &str,
+        config: &FunctionQueueConfig,
+    ) -> anyhow::Result<()> {
+        config.validate()?;
+        self.function_queue_configs
+            .lock()
+            .await
+            .insert(queue_name.to_string(), config.clone());
+        Ok(())
+    }
+
+    async fn consume_function_queue(
+        &self,
+        queue_name: &str,
+        prefetch: u32,
+    ) -> anyhow::Result<mpsc::Receiver<QueueMessage>> {
+        let config = self
+            .function_queue_configs
+            .lock()
+            .await
+            .get(queue_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("function queue '{queue_name}' is not provisioned"))?;
+        let (tx, rx) = mpsc::channel(prefetch.max(1) as usize);
+        let store = self.store.clone();
+        let deliveries = self.function_deliveries.clone();
+        let delivery_counter = self.function_delivery_counter.clone();
+        let internal_name = function_queue_name(queue_name);
+
+        tokio::spawn(async move {
+            loop {
+                if tx.is_closed() {
+                    break;
+                }
+
+                let Some(job) = store.dequeue(&internal_name).await else {
+                    tokio::time::sleep(Duration::from_millis(DEFAULT_POLL_INTERVAL_MS)).await;
+                    continue;
+                };
+
+                let delivery_id = delivery_counter.fetch_add(1, Ordering::SeqCst);
+                let message = QueueMessage {
+                    delivery_id,
+                    function_id: job.function_id.clone().unwrap_or_default(),
+                    data: job.payload.clone(),
+                    attempt: job.attempts,
+                    message_id: job.message_id.clone(),
+                    traceparent: job.traceparent.clone(),
+                    baggage: job.baggage.clone(),
+                };
+                deliveries.lock().await.insert(
+                    delivery_id,
+                    FunctionQueueDelivery {
+                        queue_name: internal_name.clone(),
+                        job,
+                        config: config.clone(),
+                    },
+                );
+
+                if tx.send(message).await.is_err() {
+                    if let Some(delivery) = deliveries.lock().await.remove(&delivery_id) {
+                        store
+                            .nack(
+                                &delivery.queue_name,
+                                delivery.job,
+                                delivery.config.max_retries,
+                                delivery.config.backoff_ms,
+                            )
+                            .await;
+                    }
+                    break;
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn ack_function_queue(
+        &self,
+        _queue_name: &str,
+        delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        if let Some(delivery) = self.function_deliveries.lock().await.remove(&delivery_id) {
+            self.store.ack(&delivery.queue_name, &delivery.job.id).await;
+        }
+        Ok(())
+    }
+
+    async fn nack_function_queue(
+        &self,
+        _queue_name: &str,
+        delivery_id: u64,
+        _attempt: u32,
+        _max_retries: u32,
+    ) -> anyhow::Result<()> {
+        if let Some(delivery) = self.function_deliveries.lock().await.remove(&delivery_id) {
+            self.store
+                .nack(
+                    &delivery.queue_name,
+                    delivery.job,
+                    delivery.config.max_retries,
+                    delivery.config.backoff_ms,
+                )
+                .await;
+        }
+        Ok(())
     }
 
     async fn shutdown(&self) {

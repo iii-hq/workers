@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
@@ -58,15 +59,22 @@ pub struct QueueMessage {
 /// function-queue adapter methods need to compile against. Call-site-less
 /// until the engine `QueueEnqueuer` cut lands; a later task may replace
 /// this with the full config-module port.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FunctionQueueConfig {
     /// Maximum delivery attempts before a message is sent to the
     /// dead-letter queue.
+    #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     /// Number of messages processed concurrently.
+    #[serde(default = "default_concurrency")]
     pub concurrency: u32,
     /// Base delay in milliseconds for the exponential retry backoff.
+    #[serde(default = "default_backoff_ms")]
     pub backoff_ms: u64,
+    /// Delivery mode. Named function queues currently support standard mode;
+    /// keeping this explicit makes the provisioned contract self-describing.
+    #[serde(default = "default_queue_type", rename = "type")]
+    pub r#type: String,
     /// Declares the queue as a RabbitMQ priority queue with this many
     /// priority levels (`x-max-priority`). `None` means not a priority
     /// queue. RabbitMQ-only; other adapters ignore it. Added (rather than
@@ -75,6 +83,49 @@ pub struct FunctionQueueConfig {
     /// RabbitMQ adapter's topology setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_priority: Option<u8>,
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_concurrency() -> u32 {
+    10
+}
+
+fn default_backoff_ms() -> u64 {
+    1_000
+}
+
+fn default_queue_type() -> String {
+    "standard".to_string()
+}
+
+impl Default for FunctionQueueConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            concurrency: default_concurrency(),
+            backoff_ms: default_backoff_ms(),
+            r#type: default_queue_type(),
+            max_priority: None,
+        }
+    }
+}
+
+impl FunctionQueueConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.concurrency == 0 {
+            anyhow::bail!("function queue concurrency must be at least 1");
+        }
+        if self.r#type != "standard" {
+            anyhow::bail!(
+                "function queue type '{}' is not supported; expected 'standard'",
+                self.r#type
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Transport abstraction implemented by every queue backend adapter
@@ -178,8 +229,8 @@ pub trait QueueAdapter: Send + Sync + 'static {
         // AMQP message priority (`None` = default). Honored by adapters whose
         // queues are declared as priority queues; others ignore it.
         _priority: Option<u8>,
-    ) {
-        unimplemented!("publish_to_function_queue not implemented for this adapter")
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("function queues are not supported by this adapter")
     }
 
     /// Set up transport topology for a function queue (exchanges, queues,
@@ -344,7 +395,7 @@ impl QueueAdapter for SwappableAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
-    ) {
+    ) -> anyhow::Result<()> {
         self.current()
             .await
             .publish_to_function_queue(
@@ -358,7 +409,7 @@ impl QueueAdapter for SwappableAdapter {
                 baggage,
                 priority,
             )
-            .await;
+            .await
     }
 
     async fn setup_function_queue(

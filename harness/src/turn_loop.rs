@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -53,7 +53,7 @@ pub struct TurnStepResult {
     pub skipped: bool,
 }
 
-fn build_publish_request(record: &TurnRecord) -> TriggerRequest {
+fn build_enqueue_request(record: &TurnRecord) -> TriggerRequest {
     let payload = TurnStepPayload {
         session_id: record.session_id.clone(),
         turn_id: record.turn_id.clone(),
@@ -62,42 +62,41 @@ fn build_publish_request(record: &TurnRecord) -> TriggerRequest {
         depth: record.depth,
     };
     TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({
-            "queue": crate::turn_queues::topic_for_lane(record.effective_lane()),
-            "data": payload,
+        function_id: "harness::turn".to_string(),
+        payload: json!(payload),
+        action: Some(TriggerAction::Enqueue {
+            queue: record.effective_lane().queue_name().to_string(),
         }),
-        action: None,
         timeout_ms: None,
     }
 }
 
-/// Publish the next durable loop step to the record's frozen execution lane.
-/// If publication fails, mark the already-persisted record failed so a send
+/// Enqueue the next durable loop step to the record's frozen execution lane.
+/// If enqueueing fails, mark the already-persisted record failed so a send
 /// cannot remain indefinitely `running` without a queued continuation.
 pub async fn enqueue_step(
     iii: &IIIClient,
     record: &TurnRecord,
     session_timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    match iii.trigger(build_publish_request(record)).await {
+    match iii.trigger(build_enqueue_request(record)).await {
         Ok(_) => Ok(()),
         Err(error) => {
-            let failed = failed_after_publish(record, &error.to_string());
+            let failed = failed_after_enqueue(record, &error.to_string());
             let message = failed
                 .result_error
                 .clone()
-                .expect("failed publish records always carry an error");
+                .expect("failed enqueue records always carry an error");
             crate::state::put_turn(iii, &failed, session_timeout_ms).await?;
             Err(HarnessError::Dependency(message))
         }
     }
 }
 
-fn failed_after_publish(record: &TurnRecord, error: &str) -> TurnRecord {
+fn failed_after_enqueue(record: &TurnRecord, error: &str) -> TurnRecord {
     let mut failed = record.clone();
     failed.status = TurnStatus::Failed;
-    failed.result_error = Some(format!("publish harness::turn: {error}"));
+    failed.result_error = Some(format!("enqueue harness::turn: {error}"));
     failed.updated_at = AgentMessage::now_ms();
     failed
 }
@@ -1545,7 +1544,7 @@ mod tests {
     use crate::types::event::StopReason;
 
     #[test]
-    fn durable_publish_keeps_turn_step_payload_under_data() {
+    fn enqueue_action_uses_the_record_lane_and_direct_turn_payload() {
         let record: crate::types::turn::TurnRecord = serde_json::from_value(serde_json::json!({
             "turn_id": "t_1",
             "session_id": "s_1",
@@ -1561,12 +1560,16 @@ mod tests {
         }))
         .unwrap();
 
-        let request = super::build_publish_request(&record);
-        assert_eq!(request.function_id, "iii::durable::publish");
-        assert!(request.action.is_none());
-        assert_eq!(request.payload["queue"], "harness-turn");
+        let request = super::build_enqueue_request(&record);
+        assert_eq!(request.function_id, "harness::turn");
+        match request.action {
+            Some(iii_sdk::TriggerAction::Enqueue { queue }) => {
+                assert_eq!(queue, "harness-turn");
+            }
+            other => panic!("expected enqueue action, got {other:?}"),
+        }
         assert_eq!(
-            request.payload["data"],
+            request.payload,
             serde_json::json!({
                 "session_id": "s_1",
                 "turn_id": "t_1",
@@ -1575,10 +1578,26 @@ mod tests {
                 "depth": 0
             })
         );
+        assert!(request.payload.get("data").is_none());
+
+        for (lane, queue) in [
+            (crate::types::turn::TurnLane::Subagent, "harness-subagent"),
+            (crate::types::turn::TurnLane::Reactive, "harness-reactive"),
+        ] {
+            let mut lane_record = record.clone();
+            lane_record.lane = Some(lane);
+            let request = super::build_enqueue_request(&lane_record);
+            match request.action {
+                Some(iii_sdk::TriggerAction::Enqueue { queue: actual }) => {
+                    assert_eq!(actual, queue);
+                }
+                other => panic!("expected enqueue action, got {other:?}"),
+            }
+        }
     }
 
     #[test]
-    fn publish_failure_terminally_fails_the_turn_record() {
+    fn enqueue_failure_terminally_fails_the_turn_record() {
         let record: crate::types::turn::TurnRecord = serde_json::from_value(serde_json::json!({
             "turn_id": "t_1",
             "session_id": "s_1",
@@ -1593,11 +1612,11 @@ mod tests {
         }))
         .unwrap();
 
-        let failed = super::failed_after_publish(&record, "queue unavailable");
+        let failed = super::failed_after_enqueue(&record, "queue unavailable");
         assert_eq!(failed.status, crate::types::turn::TurnStatus::Failed);
         assert_eq!(
             failed.result_error.as_deref(),
-            Some("publish harness::turn: queue unavailable")
+            Some("enqueue harness::turn: queue unavailable")
         );
         assert_eq!(failed.turn_id, record.turn_id);
         assert_eq!(failed.step, record.step);

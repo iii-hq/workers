@@ -800,15 +800,12 @@ impl QueueAdapter for RabbitMQAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
-    ) {
+    ) -> anyhow::Result<()> {
         let names = FnQueueNames::new(queue_name);
 
         let payload = match serde_json::to_vec(&data) {
             Ok(p) => p,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize data");
-                return;
-            }
+            Err(e) => return Err(anyhow::anyhow!("failed to serialize function queue data: {e}")),
         };
 
         let mut headers = lapin::types::FieldTable::default();
@@ -849,14 +846,11 @@ impl QueueAdapter for RabbitMQAdapter {
             )
             .await
         {
-            Ok(confirm) => {
-                if let Err(e) = confirm.await {
-                    tracing::error!(error = %e, queue = %queue_name, "Failed to confirm publish to function queue");
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, queue = %queue_name, "Failed to publish to function queue");
-            }
+            Ok(confirm) => confirm
+                .await
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("failed to confirm function queue publish: {e}")),
+            Err(e) => Err(anyhow::anyhow!("failed to publish to function queue: {e}")),
         }
     }
 

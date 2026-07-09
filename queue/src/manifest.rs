@@ -4,8 +4,9 @@ use serde::Serialize;
 
 use crate::config::QueueConfig;
 use crate::functions::{
-    DISCARD_MESSAGE_FN_ID, DLQ_MESSAGES_FN_ID, DLQ_TOPICS_FN_ID, LIST_TOPICS_FN_ID, PUBLISH_FN_ID,
-    REDRIVE_FN_ID, REDRIVE_MESSAGE_FN_ID, TOPIC_STATS_FN_ID,
+    DISCARD_MESSAGE_FN_ID, DLQ_MESSAGES_FN_ID, DLQ_TOPICS_FN_ID, ENQUEUE_FUNCTION_QUEUE_FN_ID,
+    ENSURE_FUNCTION_QUEUE_FN_ID, LIST_TOPICS_FN_ID, PUBLISH_FN_ID, REDRIVE_FN_ID,
+    REDRIVE_MESSAGE_FN_ID, TOPIC_STATS_FN_ID,
 };
 use crate::TRIGGER_TYPE;
 
@@ -38,6 +39,8 @@ pub fn build_manifest() -> ModuleManifest {
             TOPIC_STATS_FN_ID.to_string(),
             DLQ_TOPICS_FN_ID.to_string(),
             DLQ_MESSAGES_FN_ID.to_string(),
+            ENSURE_FUNCTION_QUEUE_FN_ID.to_string(),
+            ENQUEUE_FUNCTION_QUEUE_FN_ID.to_string(),
         ],
         supported_targets: vec![option_env!("TARGET").unwrap_or("unknown").to_string()],
     }

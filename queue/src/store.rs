@@ -32,6 +32,36 @@ pub struct Job {
     pub traceparent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baggage: Option<String>,
+    /// Target function for an engine named-function queue job. Absent on
+    /// legacy topic jobs and old persisted snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    /// Engine-generated acknowledgement id for a named-function queue job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+}
+
+impl Job {
+    pub fn function_queue(
+        function_id: impl Into<String>,
+        message_id: impl Into<String>,
+        payload: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> Self {
+        let now = now_ms();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            payload,
+            attempts: 0,
+            enqueued_at_ms: now,
+            ready_at_ms: now,
+            traceparent,
+            baggage,
+            function_id: Some(function_id.into()),
+            message_id: Some(message_id.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +81,9 @@ pub trait QueueStore: Send + Sync + 'static {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> anyhow::Result<String>;
+    /// Persist a fully formed job. Named function queues use this to preserve
+    /// the engine-selected target function and receipt id alongside the data.
+    async fn enqueue_job(&self, topic: &str, job: Job) -> anyhow::Result<()>;
     async fn dequeue(&self, topic: &str) -> Option<Job>;
     async fn ack(&self, topic: &str, job_id: &str);
     async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64);
@@ -129,6 +162,10 @@ impl QueueStore for InMemoryStore {
         enqueue(&self.shared, topic, payload, traceparent, baggage).await
     }
 
+    async fn enqueue_job(&self, topic: &str, job: Job) -> anyhow::Result<()> {
+        enqueue_job(&self.shared, topic, job).await
+    }
+
     async fn dequeue(&self, topic: &str) -> Option<Job> {
         dequeue(&self.shared, topic).await
     }
@@ -180,6 +217,10 @@ impl QueueStore for FileStore {
         baggage: Option<String>,
     ) -> anyhow::Result<String> {
         enqueue(&self.shared, topic, payload, traceparent, baggage).await
+    }
+
+    async fn enqueue_job(&self, topic: &str, job: Job) -> anyhow::Result<()> {
+        enqueue_job(&self.shared, topic, job).await
     }
 
     async fn dequeue(&self, topic: &str) -> Option<Job> {
@@ -239,9 +280,16 @@ async fn enqueue(
         ready_at_ms: now,
         traceparent,
         baggage,
+        function_id: None,
+        message_id: None,
     };
     let id = job.id.clone();
 
+    enqueue_job(shared, topic, job).await?;
+    Ok(id)
+}
+
+async fn enqueue_job(shared: &SharedStore, topic: &str, job: Job) -> anyhow::Result<()> {
     let snapshot = {
         let mut data = shared.inner.lock().await;
         data.queues
@@ -253,7 +301,7 @@ async fn enqueue(
         data.clone()
     };
     persist_if_needed(shared, &snapshot).await?;
-    Ok(id)
+    Ok(())
 }
 
 async fn dequeue(shared: &SharedStore, topic: &str) -> Option<Job> {

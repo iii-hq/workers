@@ -15,6 +15,7 @@ use crate::adapters::builtin::BuiltinAdapter;
 use crate::adapters::rabbitmq::RabbitMQAdapter;
 use crate::adapters::redis::RedisAdapter;
 use crate::config::{adapter_config_value, QueueConfig};
+use crate::function_queues::FunctionQueueRuntime;
 use crate::store::{FileStore, InMemoryStore, QueueStore};
 use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec};
 use crate::TRIGGER_TYPE;
@@ -32,27 +33,41 @@ pub struct BootHandle {
     pub trigger_handler: QueueTriggerHandler,
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
+    pub function_queues: Arc<FunctionQueueRuntime>,
 }
 
 impl BootHandle {
     pub async fn shutdown(self) {
+        self.function_queues.shutdown().await;
         self.trigger_handler.shutdown().await;
     }
 }
 
 pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
+    config.validate().map_err(anyhow::Error::msg)?;
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(iii.clone()));
     // No fallback to builtin on a bad config: an adapter that fails to build
     // at boot (e.g. redis/rabbitmq unreachable) must fail the boot itself,
     // matching the engine's `make_adapter` behavior for `iii-queue`.
-    let built = build_adapter(&config, invoker).await?;
+    let built = build_adapter(&config, invoker.clone()).await?;
     let adapter = Arc::new(SwappableAdapter::new(built, adapter_identity_name(&config)));
     let config = Arc::new(RwLock::new(Arc::new(config.normalized())));
     let apply_lock = Arc::new(Mutex::new(()));
+    let function_queues = Arc::new(FunctionQueueRuntime::new(adapter.clone(), invoker));
+    let configured_queues = config.read().await.queue_configs.clone();
+    function_queues
+        .reconcile(&configured_queues)
+        .await?;
 
-    crate::functions::register_all(&iii, adapter.clone());
+    crate::functions::register_all(
+        &iii,
+        adapter.clone(),
+        config.clone(),
+        apply_lock.clone(),
+        function_queues.clone(),
+    );
 
     let trigger_handler = QueueTriggerHandler::new(adapter.clone());
     let _ = iii.register_trigger_type(
@@ -71,6 +86,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
         trigger_handler,
         config,
         apply_lock,
+        function_queues,
     })
 }
 
@@ -304,6 +320,7 @@ mod tests {
                 name: "builtin".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         let store = build_store(&config).await.unwrap();
         store
@@ -324,6 +341,7 @@ mod tests {
                     "save_interval_ms": 5
                 })),
             }),
+            ..Default::default()
         };
         let store = build_store(&config).await.unwrap();
         store
@@ -371,6 +389,7 @@ mod tests {
                 name: "in_memory".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         build_adapter(&config, noop_invoker()).await.unwrap();
     }
@@ -386,6 +405,7 @@ mod tests {
                     "save_interval_ms": 5
                 })),
             }),
+            ..Default::default()
         };
         build_adapter(&config, noop_invoker()).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
@@ -398,6 +418,7 @@ mod tests {
                 name: "sqs".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         let err = match build_adapter(&config, noop_invoker()).await {
             Ok(_) => panic!("expected 'sqs' to be rejected"),
@@ -427,6 +448,7 @@ mod tests {
                 name: "rabbitmq".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         let err = match build_adapter(&config, noop_invoker()).await {
             Ok(_) => panic!("expected 'rabbitmq' to be rejected without the feature"),
@@ -450,6 +472,7 @@ mod tests {
                 name: "memory".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         let adapter = build_adapter(&config, noop_invoker()).await.unwrap();
         adapter
@@ -465,12 +488,14 @@ mod tests {
                 name: "in_memory".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         let file_based = QueueConfig {
             adapter: Some(AdapterEntry {
                 name: "file_based".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         assert_eq!(adapter_identity_name(&in_memory), "builtin");
         assert_eq!(adapter_identity_name(&file_based), "builtin");
@@ -484,6 +509,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         assert_eq!(adapter_identity_name(&redis), "redis");
     }

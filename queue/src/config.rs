@@ -2,9 +2,13 @@
 //! Mirrors the builtin's QueueModuleConfig (engine/src/workers/queue/config.rs)
 //! with the default in-process transport named `builtin`.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::adapter::FunctionQueueConfig;
 
 pub const DEFAULT_ADAPTER: &str = "builtin";
 
@@ -21,6 +25,11 @@ pub struct AdapterEntry {
 pub struct QueueConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<AdapterEntry>,
+    /// Named function queues consumed by the standalone queue worker for
+    /// engine `TriggerAction::Enqueue` requests. Queue definitions survive
+    /// worker restarts through this configuration entry.
+    #[serde(default)]
+    pub queue_configs: BTreeMap<String, FunctionQueueConfig>,
 }
 
 impl QueueConfig {
@@ -35,6 +44,18 @@ impl QueueConfig {
         self.clone()
     }
 
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, config) in &self.queue_configs {
+            if name.trim().is_empty() {
+                return Err("function queue name must not be empty".to_string());
+            }
+            config
+                .validate()
+                .map_err(|error| format!("invalid function queue '{name}': {error}"))?;
+        }
+        Ok(())
+    }
+
     pub fn json_schema() -> Value {
         serde_json::to_value(schemars::schema_for!(QueueConfig)).unwrap_or(Value::Null)
     }
@@ -44,8 +65,10 @@ impl QueueConfig {
     }
 
     pub fn from_json(value: &Value) -> Result<Self, String> {
-        serde_json::from_value(value.clone())
-            .map_err(|e| format!("invalid queue configuration: {e}"))
+        let config: Self = serde_json::from_value(value.clone())
+            .map_err(|e| format!("invalid queue configuration: {e}"))?;
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -106,6 +129,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: None,
             }),
+            ..Default::default()
         };
         assert_eq!(adapter_config_value(&c), None);
     }
@@ -117,6 +141,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: Some(serde_json::Value::Null),
             }),
+            ..Default::default()
         };
         assert_eq!(adapter_config_value(&c), None);
     }
@@ -128,6 +153,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: Some(serde_json::json!({"redis_url": "redis://x"})),
             }),
+            ..Default::default()
         };
         assert_eq!(
             adapter_config_value(&c),
