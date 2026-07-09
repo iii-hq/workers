@@ -6,18 +6,69 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // routed views are `traces`, `workers`, `worktrees`, and `configuration`.
 export type View = 'configuration' | 'traces' | 'workers' | 'worktrees'
 
-/**
- * Sub-tab inside the Configuration page. URL-driven so deep links and the
- * back button move between settings surfaces cleanly. `console` covers the
- * existing console-level preferences (theme + provider api keys); `workers`
- * is the worker-config registry surfaced through `configuration::list`.
- */
-export type ConfigurationTab = 'console' | 'workers'
+export interface WorkersConfigurationRoute {
+  configurationId: string | null
+  fieldPath: string[]
+}
 
-export interface ConfigurationRoute {
-  tab: ConfigurationTab
-  /** Selected worker id when `tab === 'workers'`. */
-  workerId: string | null
+const WORKERS_CONFIGURATION_PREFIX = '#/workers/configuration/'
+const LEGACY_WORKERS_CONFIGURATION_PREFIX = '#/configuration/workers/'
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
+function encodePath(segments: string[]): string {
+  return segments.map((segment) => encodeURIComponent(segment)).join('/')
+}
+
+function parseConfigurationRouteWithPrefix(
+  hash: string,
+  prefix: string,
+): WorkersConfigurationRoute | null {
+  if (!hash.startsWith(prefix)) return null
+  const segments = hash
+    .slice(prefix.length)
+    .split('/')
+    .filter(Boolean)
+    .map(decodeSegment)
+  const [configurationId, ...fieldPath] = segments
+  if (!configurationId) return { configurationId: null, fieldPath: [] }
+  return { configurationId, fieldPath }
+}
+
+export function workersConfigurationRouteFromHash(
+  hash: string,
+): WorkersConfigurationRoute {
+  return (
+    parseConfigurationRouteWithPrefix(hash, WORKERS_CONFIGURATION_PREFIX) ??
+    parseConfigurationRouteWithPrefix(
+      hash,
+      LEGACY_WORKERS_CONFIGURATION_PREFIX,
+    ) ?? { configurationId: null, fieldPath: [] }
+  )
+}
+
+export function hashForWorkersConfiguration(
+  configurationId: string,
+  fieldPath: string[] = [],
+): string {
+  const suffix = encodePath([configurationId, ...fieldPath])
+  return `${WORKERS_CONFIGURATION_PREFIX}${suffix}`
+}
+
+export function normalizeWorkersConfigurationHash(hash: string): string | null {
+  if (hash === '#/configuration/workers') return '#/workers'
+  const legacy = parseConfigurationRouteWithPrefix(
+    hash,
+    LEGACY_WORKERS_CONFIGURATION_PREFIX,
+  )
+  if (!legacy?.configurationId) return null
+  return hashForWorkersConfiguration(legacy.configurationId, legacy.fieldPath)
 }
 
 function routeFromHash(hash: string): View | null {
@@ -30,11 +81,17 @@ function routeFromHash(hash: string): View | null {
   // Backwards compat: `#/traces-v2` was the staging route while the rebuilt
   // traces view coexisted with the original; it IS `#/traces` now.
   if (hash === '#/traces-v2') return 'traces'
-  if (hash === '#/workers') {
+  if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
   }
   if (hash === '#/worktrees') {
     return 'worktrees'
+  }
+  if (hash === '#/configuration/workers') {
+    return 'workers'
+  }
+  if (hash.startsWith(LEGACY_WORKERS_CONFIGURATION_PREFIX)) {
+    return 'workers'
   }
   if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
     return 'configuration'
@@ -59,38 +116,6 @@ function hashFor(view: View): string {
     case 'configuration':
       return '#/configuration'
   }
-}
-
-/**
- * Parse the configuration sub-route out of a hash. Returns sensible defaults
- * for legacy or unrecognized values so a typo in the URL bar never strands
- * the operator on an empty page.
- */
-function configRouteFromHash(hash: string): ConfigurationRoute {
-  // Treat bare `#/configuration` and any non-configuration hash as the
-  // default `console` tab. Legacy `#/providers` is funneled here too.
-  if (!hash.startsWith('#/configuration/')) {
-    return { tab: 'console', workerId: null }
-  }
-  const rest = hash.slice('#/configuration/'.length)
-  const segments = rest.split('/').filter(Boolean)
-  const [first, second] = segments
-  if (first === 'workers') {
-    return {
-      tab: 'workers',
-      workerId: second ? decodeURIComponent(second) : null,
-    }
-  }
-  return { tab: 'console', workerId: null }
-}
-
-function hashForConfigRoute(route: ConfigurationRoute): string {
-  if (route.tab === 'workers') {
-    return route.workerId
-      ? `#/configuration/workers/${encodeURIComponent(route.workerId)}`
-      : '#/configuration/workers'
-  }
-  return '#/configuration/console'
 }
 
 export function useHashRoute(): [View, (next: View) => void] {
@@ -122,59 +147,60 @@ export function useHashRoute(): [View, (next: View) => void] {
   return [view, navigate]
 }
 
-/**
- * Sub-routing for the Configuration page. Mirrors `useHashRoute` so the
- * two stay in lockstep when the operator navigates by hash, by tab click,
- * or by selecting a worker from the list.
- *
- * Navigation goes through `window.location.hash` so the browser back/forward
- * buttons traverse the configuration history; falling back to local state
- * when the hash is already at the target lets sibling components react to
- * navigation calls that are no-ops at the URL level (rare, but defensive).
- */
-export function useConfigurationRoute(): [
-  ConfigurationRoute,
-  (next: Partial<ConfigurationRoute>) => void,
+function replaceHash(targetHash: string) {
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${window.location.pathname}${window.location.search}${targetHash}`,
+  )
+}
+
+export function useWorkersConfigurationRoute(): [
+  WorkersConfigurationRoute,
+  (configurationId: string | null, fieldPath?: string[]) => void,
 ] {
-  const [route, setRoute] = useState<ConfigurationRoute>(() => {
-    if (typeof window === 'undefined') return { tab: 'console', workerId: null }
-    return configRouteFromHash(window.location.hash)
+  const [route, setRoute] = useState<WorkersConfigurationRoute>(() => {
+    if (typeof window === 'undefined') {
+      return { configurationId: null, fieldPath: [] }
+    }
+    return workersConfigurationRouteFromHash(window.location.hash)
   })
   const routeRef = useRef(route)
   routeRef.current = route
 
   useEffect(() => {
-    const handle = () => {
-      const next = configRouteFromHash(window.location.hash)
+    const sync = () => {
+      const normalized = normalizeWorkersConfigurationHash(window.location.hash)
+      if (normalized && normalized !== window.location.hash) {
+        replaceHash(normalized)
+      }
+      const next = workersConfigurationRouteFromHash(window.location.hash)
       const cur = routeRef.current
-      if (next.tab !== cur.tab || next.workerId !== cur.workerId) {
+      if (
+        next.configurationId !== cur.configurationId ||
+        next.fieldPath.join('/') !== cur.fieldPath.join('/')
+      ) {
         setRoute(next)
       }
     }
-    window.addEventListener('hashchange', handle)
-    return () => window.removeEventListener('hashchange', handle)
+    sync()
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
   }, [])
 
-  const navigate = useCallback((next: Partial<ConfigurationRoute>) => {
-    const cur = routeRef.current
-    const merged: ConfigurationRoute = {
-      tab: next.tab ?? cur.tab,
-      // Switching to console clears the worker selection so back-navigating
-      // doesn't reopen a previously-edited worker out of context.
-      workerId:
-        next.tab && next.tab !== 'workers'
-          ? null
-          : next.workerId !== undefined
-            ? next.workerId
-            : cur.workerId,
-    }
-    const targetHash = hashForConfigRoute(merged)
-    if (window.location.hash !== targetHash) {
-      window.location.hash = targetHash
-    } else {
-      setRoute(merged)
-    }
-  }, [])
+  const navigate = useCallback(
+    (configurationId: string | null, fieldPath: string[] = []) => {
+      const targetHash = configurationId
+        ? hashForWorkersConfiguration(configurationId, fieldPath)
+        : '#/workers'
+      if (window.location.hash !== targetHash) {
+        window.location.hash = targetHash
+      } else {
+        setRoute(workersConfigurationRouteFromHash(targetHash))
+      }
+    },
+    [],
+  )
 
   return [route, navigate]
 }

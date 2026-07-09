@@ -2,12 +2,16 @@ import { AlertCircle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
 import { cn } from '@/lib/utils'
+import { WorkerConfigurationDialog } from './components/WorkerConfigurationDialog'
 import { WorkersFilters } from './components/WorkersFilters'
 import { WorkersTable } from './components/WorkersTable'
 import { useWorkersLive } from './hooks/useWorkersLive'
 
 export function Workers() {
+  const [configurationRoute, navigateConfiguration] =
+    useWorkersConfigurationRoute()
   const {
     rows,
     allRows,
@@ -80,8 +84,15 @@ export function Workers() {
             isLoading={isLoading}
             stoppingName={stoppingName}
             onStop={stopWorker}
+            onConfigure={(configurationId) =>
+              navigateConfiguration(configurationId)
+            }
           />
         </div>
+        <WorkerConfigurationDialog
+          configurationId={configurationRoute.configurationId}
+          onClose={() => navigateConfiguration(null)}
+        />
       </main>
     </TooltipProvider>
   )

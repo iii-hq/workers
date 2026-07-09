@@ -1,4 +1,4 @@
-import { Square } from 'lucide-react'
+import { Settings, Square } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -17,6 +17,7 @@ interface WorkersTableProps {
   isLoading?: boolean
   stoppingName?: string | null
   onStop?: (name: string) => void
+  onConfigure?: (configurationId: string) => void
   className?: string
 }
 
@@ -55,6 +56,7 @@ export function WorkersTable({
   isLoading,
   stoppingName,
   onStop,
+  onConfigure,
   className,
 }: WorkersTableProps) {
   if (isLoading) {
@@ -115,6 +117,7 @@ export function WorkersTable({
                 row={row}
                 stopping={stoppingName === row.name}
                 onStop={onStop}
+                onConfigure={onConfigure}
               />
             ))}
           </tbody>
@@ -128,9 +131,31 @@ interface WorkerTableRowProps {
   row: WorkerRow
   stopping: boolean
   onStop?: (name: string) => void
+  onConfigure?: (configurationId: string) => void
 }
 
-function WorkerTableRow({ row, stopping, onStop }: WorkerTableRowProps) {
+function WorkerTableRow({
+  row,
+  stopping,
+  onStop,
+  onConfigure,
+}: WorkerTableRowProps) {
+  const configureButton = row.configurationId ? (
+    <Button
+      variant="icon"
+      size="icon"
+      type="button"
+      aria-label={`configure ${row.name}`}
+      title={`configure ${row.name}`}
+      disabled={!onConfigure}
+      onClick={() => {
+        if (row.configurationId) onConfigure?.(row.configurationId)
+      }}
+    >
+      <Settings className="h-3.5 w-3.5" aria-hidden />
+    </Button>
+  ) : null
+
   const stopButton = (
     <Button
       variant="ghost"
@@ -177,16 +202,19 @@ function WorkerTableRow({ row, stopping, onStop }: WorkerTableRowProps) {
         {formatCell(row.tag)}
       </td>
       <td className="py-2.5 text-right">
-        {row.stopEnabled || !row.stopDisabledReason ? (
-          stopButton
-        ) : (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="inline-block">{stopButton}</span>
-            </TooltipTrigger>
-            <TooltipContent>{row.stopDisabledReason}</TooltipContent>
-          </Tooltip>
-        )}
+        <div className="flex items-center justify-end gap-2">
+          {configureButton}
+          {row.stopEnabled || !row.stopDisabledReason ? (
+            stopButton
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">{stopButton}</span>
+              </TooltipTrigger>
+              <TooltipContent>{row.stopDisabledReason}</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       </td>
     </tr>
   )

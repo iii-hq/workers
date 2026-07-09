@@ -15,11 +15,13 @@ function WorkersHarness({
   isLoading,
   initialTag,
   onStop,
+  onConfigure,
 }: {
   rows: WorkerRow[]
   isLoading?: boolean
   initialTag?: string | null
   onStop?: (name: string) => void
+  onConfigure?: (configurationId: string) => void
 }) {
   const [filters, setFilters] = useState<WorkersFilterState>({
     search: '',
@@ -44,7 +46,12 @@ function WorkersHarness({
             onClear={() => setFilters({ search: '', tag: null, runtime: null })}
           />
         ) : null}
-        <WorkersTable rows={filtered} isLoading={isLoading} onStop={onStop} />
+        <WorkersTable
+          rows={filtered}
+          isLoading={isLoading}
+          onStop={onStop}
+          onConfigure={onConfigure}
+        />
       </div>
     </TooltipProvider>
   )
@@ -62,6 +69,7 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   args: {
     rows: WORKERS_FIXTURE_ROWS,
+    onConfigure: () => undefined,
   },
 }
 
@@ -69,6 +77,7 @@ export const FilteredByTag: Story = {
   args: {
     rows: WORKERS_FIXTURE_ROWS,
     initialTag: 'platform',
+    onConfigure: () => undefined,
   },
 }
 
@@ -93,6 +102,7 @@ export const StopEnabled: Story = {
   args: {
     rows: supervisorRows,
     onStop: () => undefined,
+    onConfigure: () => undefined,
   },
 }
 

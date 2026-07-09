@@ -23,7 +23,7 @@ const INITIAL_VALUES: Record<string, JsonValue> = Object.fromEntries(
 const SAVE_LATENCY_MS = 600
 
 /**
- * Self-contained reproduction of the workers tab's master-detail editor.
+ * Self-contained reproduction of the worker-configuration master-detail editor.
  * Composes the real presentational pieces — `WorkersList`, `SchemaForm`,
  * `SaveBar`, `EditorEmptyState` — over local state and the
  * `WORKER_CONFIG_FIXTURES`, so the full edit / dirty / reset / save / error

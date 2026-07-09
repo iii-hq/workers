@@ -21,11 +21,11 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 
 // Provider credentials + settings now live in the llm-router `configuration`
-// entry, edited via the schema-driven form on the workers tab.
-const HARNESS_CONFIG_HASH = '#/configuration/workers/llm-router'
+// entry, edited via the schema-driven form in the Workers modal.
+const HARNESS_CONFIG_HASH = '#/workers/configuration/llm-router'
 // Shell's permanent `fs.host_roots` list — do NOT build a second editor for
 // it here; deep-link to the existing schema-driven form instead.
-const SHELL_CONFIG_HASH = '#/configuration/workers/shell'
+const SHELL_CONFIG_HASH = '#/workers/configuration/shell'
 
 interface ConsoleSettingsTabProps {
   theme: Theme
@@ -239,7 +239,7 @@ export function ConsoleSettingsTab({
                 open provider settings
               </a>
             }
-            meta="credentials + settings live in the harness configuration (workers tab). the form's shape grows with each provider that registers; api keys are masked."
+            meta="credentials + settings live in the harness configuration. the form's shape grows with each provider that registers; api keys are masked."
           />
         </Section>
 

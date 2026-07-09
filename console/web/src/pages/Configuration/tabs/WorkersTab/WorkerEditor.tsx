@@ -19,10 +19,10 @@ interface WorkerEditorProps {
 }
 
 /**
- * Right-pane shell for the workers tab. Loads the raw value (templates
- * preserved) for the selected entry, hands the schema + value to the
- * `SchemaForm`, and owns the save lifecycle (mutation + status + dirty
- * tracking + error mapping).
+ * Editor shell for a worker configuration entry. Loads the raw value
+ * (templates preserved), hands the schema + value to the `SchemaForm`, and
+ * owns the save lifecycle (mutation + status + dirty tracking + error
+ * mapping).
  *
  * Draft state: the editor holds the working copy locally so field edits
  * are responsive (no round-trip per keystroke). The draft is re-seeded
@@ -287,8 +287,13 @@ export function WorkerEditorEmptySelection({
 
 function fieldPathFromHash(workerId: string): Path | null {
   if (typeof window === 'undefined') return null
-  const prefix = `#/configuration/workers/${encodeURIComponent(workerId)}/`
-  if (!window.location.hash.startsWith(prefix)) return null
+  const encodedWorkerId = encodeURIComponent(workerId)
+  const prefixes = [
+    `#/workers/configuration/${encodedWorkerId}/`,
+    `#/configuration/workers/${encodedWorkerId}/`,
+  ]
+  const prefix = prefixes.find((p) => window.location.hash.startsWith(p))
+  if (!prefix) return null
   const rest = window.location.hash.slice(prefix.length)
   const path = rest
     .split('/')

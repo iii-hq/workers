@@ -218,7 +218,7 @@ function resolveEmptyState(
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,
     onConfigureProvider: () => {
-      window.location.hash = '#/configuration/workers/llm-router'
+      window.location.hash = '#/workers/configuration/llm-router'
     },
   }
 

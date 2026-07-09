@@ -11,6 +11,7 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     tag: 'agent',
     managementKind: 'config',
     status: 'connected',
+    configurationId: 'harness',
     stopEnabled: false,
     stopDisabledReason:
       'workers declared in config.yaml are managed by the engine',
@@ -25,6 +26,7 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     tag: 'platform',
     managementKind: 'supervisor',
     status: 'connected',
+    configurationId: null,
     stopEnabled: true,
     stopDisabledReason: null,
   },
@@ -38,6 +40,7 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     tag: 'dev',
     managementKind: 'standalone',
     status: 'connected',
+    configurationId: null,
     stopEnabled: false,
     stopDisabledReason:
       'standalone workers must be stopped from the process that started them',
@@ -52,6 +55,7 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     tag: null,
     managementKind: 'internal',
     status: 'connected',
+    configurationId: null,
     stopEnabled: false,
     stopDisabledReason:
       'internal engine workers cannot be stopped from the console',
@@ -66,6 +70,7 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     tag: 'platform',
     managementKind: 'supervisor',
     status: 'stopped',
+    configurationId: null,
     stopEnabled: false,
     stopDisabledReason: 'worker is not running',
   },

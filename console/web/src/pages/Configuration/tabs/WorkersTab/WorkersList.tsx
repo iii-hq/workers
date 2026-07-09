@@ -15,10 +15,9 @@ interface WorkersListProps {
 }
 
 /**
- * Left rail of the workers tab. Lists every registered configuration,
- * filtered by a small inline search field. Selection is fully driven by
- * the URL hash (the parent owns the hash → state binding) so the rail
- * stays a pure presentational view of the route.
+ * Left rail for the worker configuration master-detail editor. Lists every
+ * registered configuration, filtered by a small inline search field. Selection
+ * is fully parent-owned so the rail stays a pure presentational view.
  *
  * Visual vocabulary mirrors the rest of the console: monospace, lowercase,
  * single-pixel rules, no rounded corners. Active row uses the inverse
