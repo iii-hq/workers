@@ -8,6 +8,7 @@ pub mod condition;
 pub mod config;
 pub mod configuration;
 pub mod handler;
+pub mod logging;
 pub mod manifest;
 pub mod middleware;
 pub mod observability;

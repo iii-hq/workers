@@ -32,6 +32,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension,
 };
+use colored::Colorize;
 use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_helpers::observability::opentelemetry::KeyValue;
 use iii_sdk::helpers::create_channel;
@@ -250,6 +251,8 @@ pub async fn dynamic_handler(
     // mirror the span tags: method + matched route (captured here) + status.
     let method_attr = method.as_str().to_string();
     let route_attr = route_path.clone();
+    let called_function_id = matched.as_ref().map(|(route, _)| route.function_id.clone());
+    let started = std::time::Instant::now();
     let record_status = move |response: Response| -> Response {
         let code = response.status().as_u16();
         let span = tracing::Span::current();
@@ -262,6 +265,27 @@ pub async fn dynamic_handler(
                 KeyValue::new("http.route", route_attr.clone()),
                 KeyValue::new("http.response.status_code", i64::from(code)),
             ],
+        );
+
+        let status = code.to_string();
+        let status = match code {
+            200..=299 => status.green(),
+            300..=399 => status.cyan(),
+            400..=499 => status.yellow(),
+            _ => status.red(),
+        };
+        tracing::info!(
+            "{} Endpoint {} → {} {} {}",
+            "[CALLED]".blue(),
+            format!("{} {}", method_attr, route_attr)
+                .bright_yellow()
+                .bold(),
+            called_function_id
+                .as_deref()
+                .unwrap_or("<no route>")
+                .purple(),
+            status,
+            format!("({}ms)", started.elapsed().as_millis()).dimmed()
         );
         response
     };
