@@ -294,6 +294,23 @@ mod tests {
         assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
     }
 
+    // A wrapper call whose arguments carry no resolvable `function` (null —
+    // e.g. a local model emitted unparseable args the provider degraded)
+    // keeps the wrapper name as its target: the dispatch loop matches that
+    // sentinel and fails locally instead of triggering `agent_trigger` on
+    // the engine (a guaranteed function_not_found).
+    #[test]
+    fn wrapper_call_without_target_keeps_wrapper_sentinel() {
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: Value::Null,
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].function_id, AGENT_TRIGGER_NAME);
+        assert_eq!(calls[0].kind, CallKind::Trigger);
+    }
+
     #[test]
     fn flattened_agent_trigger_args_are_hoisted_into_payload() {
         // The model put the target's arguments beside `function` instead of

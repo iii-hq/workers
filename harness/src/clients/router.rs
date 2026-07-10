@@ -143,7 +143,7 @@ impl RouterClient {
         let iii = self.iii.clone();
         let timeout_ms = self.timeout_ms;
         let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
-        let trigger = tokio::spawn(
+        let mut trigger = tokio::spawn(
             async move {
                 iii.trigger(TriggerRequest {
                     function_id: "router::chat".into(),
@@ -162,8 +162,40 @@ impl RouterClient {
             .unwrap_or_else(Instant::now);
         let mut final_message: Option<AssistantMessage> = None;
         let mut terminal_error: Option<String> = None;
+        // Raw in-flight tool-call arguments per call id: providers degrade
+        // incomplete args to a placeholder object (replay safety), so the
+        // delta text accumulated here is the only live view of a long
+        // arguments stream — injected into coalesced partials as
+        // `_streaming` so UIs can show the command being formed.
+        let mut args_acc: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
-        while let Some(frame) = rx.recv().await {
+        // Consume frames until reader EOF — but ALSO watch the held-open
+        // trigger: when it resolves, the router is done (ack) or the dispatch
+        // failed before a writer ever attached (e.g. provider unavailable).
+        // In the failure case the channel never EOFs, so waiting on frames
+        // alone would hang this turn forever with the session stuck "working".
+        // After the trigger resolves, drain already-buffered frames briefly,
+        // then fall through to the outcome handling below.
+        let mut response: Option<Result<Value, iii_sdk::errors::Error>> = None;
+        loop {
+            let frame = if response.is_some() {
+                // timeout elapsed → grace drain over, no writer is coming
+                tokio::time::timeout(Duration::from_millis(750), rx.recv())
+                    .await
+                    .unwrap_or_default()
+            } else {
+                tokio::select! {
+                    f = rx.recv() => f,
+                    r = &mut trigger => {
+                        response = Some(r.map_err(|e| {
+                            HarnessError::Internal(format!("router::chat task: {e}"))
+                        })?);
+                        continue;
+                    }
+                }
+            };
+            let Some(frame) = frame else { break };
             let Ok(event) = serde_json::from_str::<AssistantMessageEvent>(&frame) else {
                 continue;
             };
@@ -186,9 +218,17 @@ impl RouterClient {
                     terminal_error.get_or_insert(msg);
                 }
                 other => {
+                    if let AssistantMessageEvent::FunctioncallDelta { partial, delta } = &other {
+                        if let Some(id) = open_call_id(partial) {
+                            args_acc.entry(id.to_string()).or_default().push_str(delta);
+                        }
+                    }
                     if let Some(partial) = partial_of(&other) {
                         if last_emit.elapsed() >= coalesce {
-                            sink.on_update(partial).await;
+                            match enrich_streaming_args(partial, &args_acc) {
+                                Some(enriched) => sink.on_update(&enriched).await,
+                                None => sink.on_update(partial).await,
+                            }
                             last_emit = Instant::now();
                         }
                     }
@@ -199,9 +239,12 @@ impl RouterClient {
         // Stream drained; stop the pump and collect the trigger ack.
         cancel.notify_waiters();
         let _ = pump.await;
-        let response = trigger
-            .await
-            .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?;
+        let response = match response {
+            Some(r) => r,
+            None => trigger
+                .await
+                .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
+        };
 
         let (ok, response_error) = match &response {
             Ok(v) => {
@@ -223,7 +266,14 @@ impl RouterClient {
                 .clone()
                 .or_else(|| terminal_error.clone())
                 .or_else(|| Some("router produced no terminal frame".to_string()));
-            m.error_kind = Some(crate::types::event::ErrorKind::Transient);
+            // A dispatch/ack rejection (e.g. provider unavailable) is
+            // authoritative — retrying in-turn cannot help. Only a
+            // frame-less-but-acked stream stays classified transient.
+            m.error_kind = Some(if response_error.is_some() {
+                crate::types::event::ErrorKind::Permanent
+            } else {
+                crate::types::event::ErrorKind::Transient
+            });
             m
         });
 
@@ -366,6 +416,65 @@ impl StreamSink for CapturingSink {
     }
 }
 
+/// The call currently receiving argument deltas: blocks stream in order, so
+/// it is the last function_call block of the partial.
+fn open_call_id(partial: &AssistantMessage) -> Option<&str> {
+    partial.content.iter().rev().find_map(|b| match b {
+        crate::types::content::ContentBlock::FunctionCall { id, .. } => Some(id.as_str()),
+        _ => None,
+    })
+}
+
+/// Inject the in-flight raw-arguments tail into a coalesced partial as a
+/// `_streaming` field beside the provider's placeholder, so UIs can render
+/// the command being formed. Injected only while the accumulated text does
+/// not yet parse — once it parses, the provider partial already carries the
+/// real arguments. Returns None when nothing was injected.
+fn enrich_streaming_args(
+    partial: &AssistantMessage,
+    acc: &std::collections::HashMap<String, String>,
+) -> Option<AssistantMessage> {
+    use crate::types::content::ContentBlock;
+    if acc.is_empty() {
+        return None;
+    }
+    let mut out: Option<AssistantMessage> = None;
+    for (i, block) in partial.content.iter().enumerate() {
+        let ContentBlock::FunctionCall { id, arguments, .. } = block else {
+            continue;
+        };
+        let Some(raw) = acc.get(id) else { continue };
+        if raw.is_empty() || serde_json::from_str::<Value>(raw).is_ok() {
+            continue;
+        }
+        // Degraded placeholders are always objects; anything else is final.
+        let Value::Object(map) = arguments else {
+            continue;
+        };
+        let mut map = map.clone();
+        map.insert(
+            "_streaming".into(),
+            Value::String(utf8_tail(raw, 1500).to_string()),
+        );
+        let msg = out.get_or_insert_with(|| partial.clone());
+        if let ContentBlock::FunctionCall { arguments, .. } = &mut msg.content[i] {
+            *arguments = Value::Object(map);
+        }
+    }
+    out
+}
+
+fn utf8_tail(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
 fn partial_of(event: &AssistantMessageEvent) -> Option<&AssistantMessage> {
     match event {
         AssistantMessageEvent::Start { partial }
@@ -379,5 +488,68 @@ fn partial_of(event: &AssistantMessageEvent) -> Option<&AssistantMessage> {
         | AssistantMessageEvent::FunctioncallDelta { partial, .. }
         | AssistantMessageEvent::FunctioncallEnd { partial } => Some(partial),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod streaming_args_tests {
+    use super::*;
+    use crate::types::content::ContentBlock;
+    use std::collections::HashMap;
+
+    #[test]
+    fn enrich_injects_tail_only_while_args_are_unparsed() {
+        let mut m = empty_assistant("p", "m");
+        m.content = vec![ContentBlock::FunctionCall {
+            id: "c1".into(),
+            function_id: "agent_trigger".into(),
+            arguments: json!({ "function": "state::set" }),
+        }];
+
+        // No accumulated raw args → forwarded untouched.
+        assert!(enrich_streaming_args(&m, &HashMap::new()).is_none());
+
+        // Incomplete raw args → the live tail rides beside the salvaged
+        // fields so the UI can show the command being formed.
+        let mut acc = HashMap::new();
+        acc.insert(
+            "c1".to_string(),
+            r#"{"function":"state::set","payload":{"value":"grow"#.to_string(),
+        );
+        let enriched = enrich_streaming_args(&m, &acc).unwrap();
+        let ContentBlock::FunctionCall { arguments, .. } = &enriched.content[0] else {
+            panic!("want function_call");
+        };
+        assert_eq!(arguments["function"], "state::set");
+        assert!(arguments["_streaming"].as_str().unwrap().ends_with("grow"));
+
+        // Complete raw args → the provider partial already carries them.
+        acc.insert(
+            "c1".to_string(),
+            r#"{"function":"state::set","payload":{}}"#.to_string(),
+        );
+        assert!(enrich_streaming_args(&m, &acc).is_none());
+    }
+
+    #[test]
+    fn open_call_id_is_the_last_call_block_and_tail_is_char_safe() {
+        let mut m = empty_assistant("p", "m");
+        m.content = vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "a".into(),
+                arguments: json!({}),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "b".into(),
+                arguments: json!({}),
+            },
+        ];
+        assert_eq!(open_call_id(&m), Some("c2"));
+        // Tail never slices mid-codepoint.
+        let s = format!("{}é", "x".repeat(1499));
+        assert!(utf8_tail(&s, 1500).len() <= 1500);
+        assert!(utf8_tail(&s, 1500).ends_with('é'));
     }
 }

@@ -135,6 +135,25 @@ pub fn denied_result(function_id: &str) -> ResultData {
     }
 }
 
+/// The `is_error` result for an `agent_trigger` call with no resolvable
+/// target — arguments were empty, null, or unparseable (local models emit
+/// malformed JSON args). Dispatching the wrapper name to the engine would
+/// only return a cryptic `function_not_found: agent_trigger`.
+pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
+    let mut got = arguments.to_string();
+    got.truncate(200);
+    let msg = format!(
+        "agent_trigger was called without a usable target (arguments were {got}); expected \
+         {{\"function\": \"<function id>\", \"payload\": {{...}}}}. Re-issue the call with the \
+         target function id."
+    );
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": "agent_trigger_no_target", "message": msg }),
+    }
+}
+
 /// Normalise an arbitrary function return into content blocks. `details`
 /// always carries the raw value; content is a string render, an explicit
 /// `content` block array, or a compact JSON fallback.
