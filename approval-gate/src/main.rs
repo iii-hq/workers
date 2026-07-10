@@ -168,6 +168,7 @@ async fn main() -> Result<()> {
 
     configuration::bind_hook(&iii);
     configuration::bind_filesystem_access_watch_hook(&iii);
+    configuration::retry_hook_bindings(iii.as_ref().clone());
 
     // These two carry no config and are never re-bound — best-effort only.
     bind_best_effort(
