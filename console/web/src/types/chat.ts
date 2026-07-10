@@ -243,6 +243,12 @@ export interface Conversation {
   statusReason?: string
   /** Local-only until the first send creates the session server-side. */
   draft?: boolean
+  /**
+   * Unsent composer input restored from `SessionMeta.draft` (persisted via
+   * `session::set-draft`, so a page refresh doesn't lose what was typed).
+   * Distinct from `draft` above, which marks a not-yet-created session.
+   */
+  draftText?: string
   /** Transcript fetched from session-manager at least once. */
   hydrated?: boolean
   createdAt: number

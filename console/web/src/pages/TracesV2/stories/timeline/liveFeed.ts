@@ -4,16 +4,16 @@
  * scheduler keeps spawning spans, completing them at their planned end,
  * and pruning ones that scrolled out.
  *
- * Shared by Timeline.stories (raw component lab) and TimelineStrip.stories
- * (the masthead composition) — CSF treats named exports as stories, so the
- * sim lives here instead of inside a .stories file.
+ * Feeds TimelineStrip.stories (the masthead lab) — CSF treats named
+ * exports as stories, so the sim lives here instead of inside the
+ * .stories file.
  */
 
 import { useEffect, useState } from 'react'
 import type {
   TimelineSpan,
   TimelineSpanKind,
-} from '../../components/timeline/Timeline'
+} from '../../components/timeline/layout'
 
 export interface Scenario {
   /** random delay range between spawns */

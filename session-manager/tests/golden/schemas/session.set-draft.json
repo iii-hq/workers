@@ -1,0 +1,37 @@
+{
+  "function_id": "session::set-draft",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "draft": {
+        "description": "The unsent input to park. Omit, or send empty/whitespace-only text, to clear the stored draft.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SetDraftRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "draft": {
+        "description": "The draft as stored after this call (`null` when cleared).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "SetDraftResponse",
+    "type": "object"
+  }
+}

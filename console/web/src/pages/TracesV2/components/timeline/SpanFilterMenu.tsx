@@ -1,10 +1,13 @@
 /**
  * The trace detail views' filter: a funnel button that expands on hover
  * into a dropdown menu (also opens on click/keyboard — hover is sugar, not
- * the only path). Two sections: "workers" hides everything a worker ran,
- * "spans" hides one span group; both list entries most-populated first and
- * hide the matched spans together with their subtrees. Built on the
- * design-system `DropdownMenu` (the shadcn anatomy over Radix).
+ * the only path). Three sections: "workers" hides a worker's own spans,
+ * "spans" hides one span group, and "internal" toggles the call-site-tagged
+ * plumbing families (`iii.tag.hidden` — hidden by DEFAULT, so entries start
+ * checked). All list entries most-populated first. Hiding removes ONLY the
+ * matched spans — their children stay visible, re-attached to the hidden
+ * span's parent (see `spanVisibility.ts`). Built on the design-system
+ * `DropdownMenu` (the shadcn anatomy over Radix).
  */
 
 import { EyeOff, Funnel } from 'lucide-react'
@@ -57,7 +60,7 @@ function FilterSection({
           title={
             hiddenKeys.has(group.key)
               ? `hidden — click to show ${group.key}`
-              : `hide ${group.key} and everything under it`
+              : `hide ${group.key} spans (their children stay, re-attached to the parent)`
           }
         >
           <span className="min-w-0 flex-1 truncate">{group.key}</span>
@@ -75,14 +78,21 @@ export interface SpanFilterMenuProps {
   groups: readonly SpanGroup[]
   /** Worker entries, already ranked (`deriveSpanGroups` + `workerGroupKey`). */
   workerGroups: readonly SpanGroup[]
+  /** Internal-family entries (`iii.tag.hidden` values), already ranked.
+   *  Hidden by DEFAULT — an entry renders unchecked only when its family
+   *  is in `shownInternalKeys`. */
+  internalGroups?: readonly SpanGroup[]
   /** Span-group keys currently hidden. */
   hiddenKeys: ReadonlySet<string>
   /** Worker names currently hidden. */
   hiddenWorkerKeys: ReadonlySet<string>
+  /** Internal families the user revealed. */
+  shownInternalKeys?: ReadonlySet<string>
   /** Spans removed from the view right now (badge on the funnel). */
   hiddenSpanCount: number
   onToggle: (key: string) => void
   onToggleWorker: (key: string) => void
+  onToggleInternal?: (family: string) => void
   onClear: () => void
   className?: string
 }
@@ -90,11 +100,14 @@ export interface SpanFilterMenuProps {
 export function SpanFilterMenu({
   groups,
   workerGroups,
+  internalGroups = [],
   hiddenKeys,
   hiddenWorkerKeys,
+  shownInternalKeys,
   hiddenSpanCount,
   onToggle,
   onToggleWorker,
+  onToggleInternal,
   onClear,
   className,
 }: SpanFilterMenuProps) {
@@ -126,9 +139,25 @@ export function SpanFilterMenu({
     [],
   )
 
+  // Internal families are hidden unless explicitly shown — derive the
+  // checked (hidden) set for the section.
+  const hiddenInternalKeys = new Set(
+    internalGroups
+      .map((g) => g.key)
+      .filter((key) => !(shownInternalKeys?.has(key) ?? false)),
+  )
+
   const filtering = hiddenSpanCount > 0
-  const anyHidden = hiddenKeys.size > 0 || hiddenWorkerKeys.size > 0
-  if (groups.length === 0 && workerGroups.length === 0 && !filtering)
+  const anyHidden =
+    hiddenKeys.size > 0 ||
+    hiddenWorkerKeys.size > 0 ||
+    hiddenInternalKeys.size > 0
+  if (
+    groups.length === 0 &&
+    workerGroups.length === 0 &&
+    internalGroups.length === 0 &&
+    !filtering
+  )
     return null
 
   return (
@@ -172,6 +201,19 @@ export function SpanFilterMenu({
           hiddenKeys={hiddenKeys}
           onToggle={onToggle}
         />
+        {internalGroups.length > 0 &&
+          onToggleInternal &&
+          (workerGroups.length > 0 || groups.length > 0) && (
+            <DropdownMenuSeparator />
+          )}
+        {onToggleInternal && (
+          <FilterSection
+            label="internal"
+            groups={internalGroups}
+            hiddenKeys={hiddenInternalKeys}
+            onToggle={onToggleInternal}
+          />
+        )}
         {anyHidden && (
           <>
             <DropdownMenuSeparator />

@@ -24,7 +24,8 @@ session-manager is a **pure storage + notification surface** for
 conversations. A session is an append-only log of typed message entries
 (user / assistant / function_result / custom) linked by a parent chain that
 supports branching and copy-on-fork, plus a small metadata record (title,
-description, coarse status, app-defined metadata). Fourteen `session::*`
+description, coarse status, app-defined metadata, parked composer draft).
+Fifteen `session::*`
 functions mutate and read it; six custom trigger types announce every
 mutation so consumers render live without polling. It runs no agent logic,
 calls no LLMs, and binds no triggers of its own. Storage is pluggable behind
@@ -42,7 +43,7 @@ flowchart LR
     subs[trigger subscribers]
   end
   subgraph worker [session-manager]
-    fns["14 session::* functions"]
+    fns["15 session::* functions"]
     svc["SessionService (domain logic, per-session locks)"]
     emit["Emitter (6 trigger types, per-binding filters)"]
     storeTrait[SessionStore trait]

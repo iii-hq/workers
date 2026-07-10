@@ -19,7 +19,7 @@ use crate::configuration::{
 };
 use crate::functions::{
     append, append_many, create, delete, ensure, fork, get, get_message, list, messages,
-    set_active_leaf, set_meta, set_status, store_protocol, update_message,
+    set_active_leaf, set_draft, set_meta, set_status, store_protocol, update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
 
@@ -73,6 +73,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<get::GetRequest, Option<get::GetResponse>>("session::get"),
         spec::<list::ListRequest, list::ListResponse>("session::list"),
         spec::<set_meta::SetMetaRequest, set_meta::SetMetaResponse>("session::set-meta"),
+        spec::<set_draft::SetDraftRequest, set_draft::SetDraftResponse>("session::set-draft"),
         spec::<set_status::SetStatusRequest, set_status::SetStatusResponse>("session::set-status"),
         spec::<delete::DeleteRequest, delete::DeleteResponse>("session::delete"),
         spec::<append::AppendRequest, append::AppendResponse>("session::append"),

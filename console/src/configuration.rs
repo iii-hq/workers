@@ -54,8 +54,32 @@ fn schema() -> Value {
     })
 }
 
+/// Out-of-the-box preferences seeded when the entry has never been
+/// configured.
+///
+/// - `views`: `view-sessions` groups traces by session and labels rows with
+///   the tag message; the frontend selects it by default in browsers that
+///   never made an explicit view choice (`DEFAULT_VIEW_ID` in web
+///   tracesViews.ts — keep the id in sync).
+/// - `spanFilters`: detail-view funnel defaults — hide the chatty
+///   `harness::send` span group and the session/context bookkeeping workers.
 fn default_value() -> Value {
-    json!({ "traces": { "views": [] } })
+    json!({
+        "traces": {
+            "views": [{
+                "id": "view-sessions",
+                "name": "sessions",
+                "groupBy": "iii.session.name",
+                "hiddenFunctions": [],
+                "label": { "mode": "attribute", "attribute": "iii.tag.message" },
+                "filters": {}
+            }],
+            "spanFilters": {
+                "hiddenGroups": ["harness::send"],
+                "hiddenWorkers": ["context-manager", "session-manager"]
+            }
+        }
+    })
 }
 
 /// Best-effort registration of the `console` configuration entry. Seeds the

@@ -352,7 +352,7 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
              changes — rebuilds the storage adapter and event plumbing on an adapter change \
              (replaying current state to subscribers) and swaps the list limits otherwise.",
         )
-        .metadata(json!({ "internal": true })),
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {
@@ -390,7 +390,7 @@ pub fn register_config_status(iii: &IIIClient, state: AppState) {
              count means a stored config was refused and the active storage adapter diverged from \
              the central store. Takes no arguments.",
         )
-        .metadata(json!({ "internal": true })),
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 }
 

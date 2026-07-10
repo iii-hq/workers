@@ -15,10 +15,12 @@ name = "harness"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.2-next.1"
+iii-sdk = "=0.21.3"
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
-iii-helpers = "=0.21.2-next.1"
+# 0.21.3 adds the live span-start push (`LiveSpanStartProcessor`), so the
+# console renders `harness::turn step` while it runs instead of on close.
+iii-helpers = "=0.21.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

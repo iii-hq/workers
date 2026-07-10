@@ -60,8 +60,9 @@ State per session (logical model, independent of backend):
 
 - `SessionMeta` — `session_id`, `title`, `description`, `status`
   (idle/working/done/error), optional `status_reason`, optional app `metadata`
-  (the tenancy hook), optional `forked_from`, `created_at`, `updated_at`,
-  `message_count`.
+  (the tenancy hook), optional `forked_from`, optional `draft` (unsent
+  composer input, written only by the event-silent `session::set-draft`),
+  `created_at`, `updated_at`, `message_count`.
 - Entries — `SessionEntry::Message { id, parent_id, timestamp, revision, origin, message }`
   or `SessionEntry::Custom { ..., custom_type, data }`.
 - Active leaf — entry id the active path ends at.

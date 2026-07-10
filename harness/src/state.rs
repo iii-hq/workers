@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::HarnessError;
+use crate::trace_tags::run_hidden;
 use crate::types::message::AgentMessage;
 use crate::types::turn::{IdemRecord, TurnRecord};
 
@@ -22,18 +23,26 @@ pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
 pub const QUEUE_SCOPE: &str = "harness_queue";
 
+/// Every `state::*` call below is loop bookkeeping that fires several times
+/// per turn step — tagged `iii.tag.hidden` so trace UIs stack the spans into
+/// the span filter's internal section, hidden by default.
+const HIDDEN_FAMILY: &str = "harness state";
+
 pub(crate) async fn state_get(
     iii: &IIIClient,
     scope: &str,
     key: &str,
     timeout_ms: u64,
 ) -> Result<Value, HarnessError> {
-    iii.trigger(TriggerRequest {
-        function_id: "state::get".into(),
-        payload: json!({ "scope": scope, "key": key }),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    })
+    run_hidden(
+        HIDDEN_FAMILY,
+        iii.trigger(TriggerRequest {
+            function_id: "state::get".into(),
+            payload: json!({ "scope": scope, "key": key }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
+    )
     .await
     .map_err(|e| HarnessError::State(format!("state::get {scope}/{key}: {e}")))
 }
@@ -45,12 +54,15 @@ pub(crate) async fn state_set(
     value: Value,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    iii.trigger(TriggerRequest {
-        function_id: "state::set".into(),
-        payload: json!({ "scope": scope, "key": key, "value": value }),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    })
+    run_hidden(
+        HIDDEN_FAMILY,
+        iii.trigger(TriggerRequest {
+            function_id: "state::set".into(),
+            payload: json!({ "scope": scope, "key": key, "value": value }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
+    )
     .await
     .map(|_| ())
     .map_err(|e| HarnessError::State(format!("state::set {scope}/{key}: {e}")))
@@ -62,12 +74,15 @@ pub(crate) async fn state_delete(
     key: &str,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    iii.trigger(TriggerRequest {
-        function_id: "state::delete".into(),
-        payload: json!({ "scope": scope, "key": key }),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    })
+    run_hidden(
+        HIDDEN_FAMILY,
+        iii.trigger(TriggerRequest {
+            function_id: "state::delete".into(),
+            payload: json!({ "scope": scope, "key": key }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
+    )
     .await
     .map(|_| ())
     .map_err(|e| HarnessError::State(format!("state::delete {scope}/{key}: {e}")))
@@ -115,12 +130,15 @@ pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnReco
 }
 
 async fn state_list(iii: &IIIClient, scope: &str, timeout_ms: u64) -> Result<Value, HarnessError> {
-    iii.trigger(TriggerRequest {
-        function_id: "state::list".into(),
-        payload: json!({ "scope": scope }),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    })
+    run_hidden(
+        HIDDEN_FAMILY,
+        iii.trigger(TriggerRequest {
+            function_id: "state::list".into(),
+            payload: json!({ "scope": scope }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
+    )
     .await
     .map_err(|e| HarnessError::State(format!("state::list {scope}: {e}")))
 }

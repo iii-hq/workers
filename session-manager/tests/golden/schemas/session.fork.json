@@ -40,6 +40,13 @@
           "description": {
             "type": "string"
           },
+          "draft": {
+            "description": "Unsent composer input parked on the session (`session::set-draft`), so a client reload restores what the user was typing. Never set by `session::set-meta`; absent when nothing is parked.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "forked_from": {
             "description": "Source session id when created by `session::fork`.",
             "type": [

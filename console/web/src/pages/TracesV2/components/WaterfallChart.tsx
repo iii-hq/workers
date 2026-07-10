@@ -33,8 +33,9 @@
  *
  * Filtering: the toolbar hosts the same funnel menu as the timeline view
  * (`SpanFilterMenu` over `deriveSpanGroups` / `applyHiddenSpanFilters`),
- * with a workers section and a span-groups section — hiding an entry
- * removes its spans and their subtrees without rescaling the time window.
+ * with workers, span-groups, and internal sections — hiding an entry
+ * removes ONLY its spans (children re-attach to the hidden span's parent)
+ * without rescaling the time window.
  * What a span group IS comes from the caller via `spanGroupKey` (the page
  * groups by owning function id); the SELECTION comes from the caller via
  * `spanFilter`, shared with the timeline and persisted in the console
@@ -71,7 +72,11 @@ import {
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import type { SpanFilterControls } from '../lib/spanFilters'
-import { formatSpanLabel, getSpanKindIndicator } from '../lib/spanLabel'
+import {
+  formatSpanLabel,
+  getSpanKindIndicator,
+  internalFamilyOf,
+} from '../lib/spanLabel'
 import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
 import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
@@ -335,6 +340,7 @@ interface ToolbarProps {
   collapseAll: () => void
   spanGroups: readonly SpanGroup[]
   workerGroups: readonly SpanGroup[]
+  internalGroups: readonly SpanGroup[]
   spanFilter?: SpanFilterControls
   hiddenSpanCount: number
   visibleCount: number
@@ -347,6 +353,7 @@ function Toolbar(props: ToolbarProps) {
     collapseAll,
     spanGroups,
     workerGroups,
+    internalGroups,
     spanFilter,
     hiddenSpanCount,
     visibleCount,
@@ -384,18 +391,24 @@ function Toolbar(props: ToolbarProps) {
         {spanFilter &&
           (spanGroups.length > 0 ||
             workerGroups.length > 0 ||
+            internalGroups.length > 0 ||
             hiddenSpanCount > 0) && (
             <>
               <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
               <SpanFilterMenu
                 groups={spanGroups}
                 workerGroups={workerGroups}
+                internalGroups={internalGroups}
                 hiddenKeys={spanFilter.hiddenGroups}
                 hiddenWorkerKeys={spanFilter.hiddenWorkers}
+                shownInternalKeys={spanFilter.shownInternal}
                 hiddenSpanCount={hiddenSpanCount}
                 onToggle={spanFilter.toggleGroup}
                 onToggleWorker={spanFilter.toggleWorker}
-                onClear={spanFilter.clear}
+                onToggleInternal={spanFilter.toggleInternal}
+                onClear={() =>
+                  spanFilter.clear(internalGroups.map((g) => g.key))
+                }
                 className="h-7"
               />
             </>
@@ -448,13 +461,38 @@ export function WaterfallChart({
   const filterEnabled = !!spanGroupKey && !!spanFilter
 
   // Menu entries against the FULL data (an already-hidden group must
-  // keep its row so it can be turned back on), busiest first.
+  // keep its row so it can be turned back on), busiest first. The group
+  // key gets the whole trace by id so parent-dependent grouping (tag
+  // roots) agrees with what `applyHiddenSpanFilters` hides.
+  const spansById = useMemo(
+    () => new Map(data.spans.map((s) => [s.span_id, s])),
+    [data.spans],
+  )
   const spanGroups = useMemo(
-    () => (filterEnabled ? deriveSpanGroups(data.spans, spanGroupKey) : []),
-    [data.spans, spanGroupKey, filterEnabled],
+    () =>
+      filterEnabled && spanGroupKey
+        ? deriveSpanGroups(data.spans, (s) =>
+            internalFamilyOf(s.attributes) ? null : spanGroupKey(s, spansById),
+          )
+        : [],
+    [data.spans, spanGroupKey, spansById, filterEnabled],
   )
   const workerGroups = useMemo(
-    () => (filterEnabled ? deriveSpanGroups(data.spans, workerGroupKey) : []),
+    () =>
+      filterEnabled
+        ? deriveSpanGroups(data.spans, (s) =>
+            internalFamilyOf(s.attributes) ? null : workerGroupKey(s),
+          )
+        : [],
+    [data.spans, filterEnabled],
+  )
+  // Call-site-tagged plumbing (`iii.tag.hidden`): its own menu section,
+  // hidden by default.
+  const internalGroups = useMemo(
+    () =>
+      filterEnabled
+        ? deriveSpanGroups(data.spans, (s) => internalFamilyOf(s.attributes))
+        : [],
     [data.spans, filterEnabled],
   )
 
@@ -671,6 +709,7 @@ export function WaterfallChart({
     collapseAll,
     spanGroups,
     workerGroups,
+    internalGroups,
     spanFilter,
     hiddenSpanCount: data.spans.length - visibleData.spans.length,
     visibleCount: visibleSpans.length,

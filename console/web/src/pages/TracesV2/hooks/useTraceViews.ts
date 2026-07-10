@@ -19,6 +19,7 @@ import {
 } from '@/lib/console-config'
 import { loadActiveTracesViewId, saveActiveTracesViewId } from '@/lib/storage'
 import {
+  DEFAULT_VIEW_ID,
   newViewId,
   parseViews,
   type TracesView,
@@ -43,9 +44,13 @@ export interface UseTraceViewsReturn {
 
 export function useTraceViews(): UseTraceViewsReturn {
   const qc = useQueryClient()
-  const [activeViewId, setActiveViewIdState] = useState<string | null>(() =>
-    loadActiveTracesViewId(),
-  )
+  const [activeViewId, setActiveViewIdState] = useState<string | null>(() => {
+    const stored = loadActiveTracesViewId()
+    // Fresh browser (no recorded choice): default to the seeded sessions
+    // view. TracesV2's initial-apply effect clears the selection if that
+    // view doesn't exist on this engine.
+    return stored === undefined ? DEFAULT_VIEW_ID : stored
+  })
 
   const { data, isLoading } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,

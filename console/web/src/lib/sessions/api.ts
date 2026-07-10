@@ -60,6 +60,22 @@ export async function setSessionMeta(input: {
   return client.trigger('session::set-meta', input)
 }
 
+/**
+ * Park (or clear, with `null`/empty text) the session's unsent composer
+ * input. Event-silent and `updated_at`-neutral server-side, so it is safe
+ * at keystroke cadence; reads back as `SessionMeta.draft`.
+ */
+export async function setSessionDraft(
+  sessionId: string,
+  draft: string | null,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('session::set-draft', {
+    session_id: sessionId,
+    ...(draft ? { draft } : {}),
+  })
+}
+
 export async function deleteSession(
   sessionId: string,
 ): Promise<{ deleted: boolean }> {

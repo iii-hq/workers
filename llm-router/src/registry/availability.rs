@@ -3,24 +3,26 @@ use std::sync::Arc;
 
 use crate::types::router::{ProviderInfo, ProviderListRequest, ProviderListResponse};
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::errors::Error;
 
+use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::resolve::resolve_provider_config;
 use crate::registry::store::RegistryStore;
 
 pub fn make_provider_list(
-    iii: IIIClient,
+    config: ConfigCell,
     registry: Arc<RegistryStore>,
 ) -> impl Fn(ProviderListRequest) -> BoxFuture<'static, Result<ProviderListResponse, Error>>
        + Send
        + Sync
        + 'static {
     move |_req: ProviderListRequest| {
-        let (iii, registry) = (iii.clone(), registry.clone());
+        let (config, registry) = (config.clone(), registry.clone());
         Box::pin(async move {
+            let config = snapshot(&config);
             let mut providers = Vec::new();
             for rec in registry.list().await {
-                let resolved = resolve_provider_config(&iii, &rec.declaration).await;
+                let resolved = resolve_provider_config(&config, &rec.declaration);
                 providers.push(ProviderInfo {
                     id: rec.declaration.id.clone(),
                     display_name: rec

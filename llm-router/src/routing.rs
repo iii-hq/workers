@@ -4,14 +4,14 @@
 //! consumers that need the provider before streaming (prompt selection,
 //! provisioning metadata) can pin it as the explicit `provider` on
 //! `router::chat` — preview and execution can never diverge.
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 
 use crate::catalog::store::CatalogStore;
+use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::store::RegistryStore;
-use crate::settings::RouterSettings;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{RouteRequest, RouteResponse};
 
@@ -101,21 +101,20 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
 pub fn make_route(
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
-    settings: Arc<RwLock<RouterSettings>>,
+    config: ConfigCell,
 ) -> impl Fn(RouteRequest) -> BoxFuture<'static, Result<RouteResponse, Error>> + Send + Sync + 'static
 {
     move |req: RouteRequest| {
-        let (registry, catalog, settings) = (registry.clone(), catalog.clone(), settings.clone());
+        let (registry, catalog, config) = (registry.clone(), catalog.clone(), config.clone());
         Box::pin(async move {
             if req.model.is_empty() {
                 return Err(
                     RouterError::new(RouterCode::InvalidRequest, "model is required").into(),
                 );
             }
-            let (heuristics, default_provider) = {
-                let s = settings.read().unwrap();
-                (s.routing_heuristics.clone(), s.default_provider.clone())
-            };
+            let config = snapshot(&config);
+            let heuristics = config.settings().routing_heuristics.clone();
+            let default_provider = config.settings().default_provider.clone();
             let candidates = decide(&DecideInput {
                 model: req.model,
                 provider: req.provider,
