@@ -94,7 +94,13 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
         let arguments = if fc.args_json.is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::from_str(&fc.args_json).unwrap_or(Value::Null)
+            // Unparseable args (mid-stream partials, malformed JSON) degrade
+            // to the salvaged leading fields or `{"_raw": …}` — always an
+            // object (replay-safe) that preserves the evidence.
+            serde_json::from_str(&fc.args_json)
+                .ok()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| llm_router::types::messages::degraded_arguments(&fc.args_json))
         };
         out.push(ContentBlock::FunctionCall {
             id: fc.id.clone(),

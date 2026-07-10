@@ -106,11 +106,26 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     }
 }
 
+/// Upstream read-silence bound, overridable via `PROVIDER_READ_TIMEOUT_SECS`:
+/// a fixed 120s cap must not undercut router idle/stream budgets deliberately
+/// raised for slow endpoints (long prompt eval on self-hosted gateways).
+fn read_timeout() -> Duration {
+    std::env::var("PROVIDER_READ_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(120))
+}
+
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
-    // Streaming uses no total timeout (the router owns stream budgets);
-    // connect failures surface fast.
+    // Streaming uses no total timeout (the router owns stream budgets), but
+    // reads are silence-bounded: a stalled upstream otherwise pings the router
+    // past its idle guard until the engine kills the call at stream_timeout
+    // ("stream ended without a terminal frame"). Healthy streams emit SSE
+    // pings, so prolonged socket silence means a dead connection.
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .read_timeout(read_timeout())
         .build()
         .expect("reqwest client");
 

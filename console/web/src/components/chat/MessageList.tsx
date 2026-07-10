@@ -16,6 +16,10 @@ interface MessageListProps {
       visible outputs (after submit, or between fcall-end and the next
       turn's first token). */
   isThinking?: boolean
+  /** Under-the-hood context shown as the waiting shimmer (e.g. "dispatching
+      zai::glm-5.2" or the session's status_reason). Falls back to "thinking…"
+      when absent. */
+  thinkingDetail?: string
   density?: 'route' | 'dock'
   onResolveApproval?: (
     sessionId: string,
@@ -84,6 +88,7 @@ function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
 export function MessageList({
   messages,
   isThinking,
+  thinkingDetail,
   density = 'route',
   onResolveApproval,
   onAlwaysAllow,
@@ -187,7 +192,7 @@ export function MessageList({
         )}
         {isThinking ? (
           <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
-            thinking…
+            {thinkingDetail ?? 'thinking…'}
           </div>
         ) : null}
         <div ref={bottomRef} />

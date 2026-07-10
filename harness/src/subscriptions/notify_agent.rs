@@ -112,14 +112,53 @@ async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
         }
     };
 
+    // Read the engine trigger id BEFORE claim_fire removes a once entry, so the
+    // fired record can dedup against a still-registered recurring panel row.
+    let engine_trigger_id = deps.subscriptions.trigger_id_of(&meta.subscription_id);
+
     let Some(claim) =
         deps.subscriptions
             .claim_fire(&meta.subscription_id, &meta.session_id, meta.once)
     else {
         return;
     };
+    // `retired` reflects the actual teardown outcome: a failed unregister
+    // leaves the trigger live engine-side, and recording `true` would give
+    // the console a dismiss-only ghost for a trigger that can still fire.
+    let mut retired = false;
     if let Some(trigger_id) = claim.trigger_id.as_deref() {
-        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+        retired = crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    }
+
+    // Durable, turn-less UI signal: the console renders a "trigger fired" notice
+    // and keeps a fired `once` binding visible after the engine unregisters it.
+    // Written before the notification inject so the fire is recorded even if the
+    // wake path errors.
+    {
+        use crate::subscriptions::fired;
+        let (scope, key) = fired::event_state_watch(&event);
+        let session = deps.session().await;
+        fired::emit(
+            &session,
+            &meta.session_id,
+            &fired::entry_id_from_notify(&claim.entry_id),
+            fired::TriggerFired {
+                subscription_id: &meta.subscription_id,
+                trigger_id: engine_trigger_id.as_deref(),
+                target: "notify",
+                label: meta.label.as_deref(),
+                model: None,
+                once: meta.once,
+                retired,
+                scope,
+                key,
+                child_session_id: None,
+                join: None,
+                note: None,
+                fired_at: fired::now_ms(),
+            },
+        )
+        .await;
     }
 
     let (message, origin) = notification_message(&meta, &event);

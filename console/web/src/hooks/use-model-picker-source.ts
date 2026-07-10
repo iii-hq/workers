@@ -6,6 +6,7 @@ import {
   fetchProviderList,
   type ProviderListEntry,
   subscribeModelChanges,
+  subscribeProviderChanges,
 } from '@/lib/models-catalog'
 import type { ModelOption } from '@/types/chat'
 
@@ -85,7 +86,7 @@ export function useModelPickerSource(
   useEffect(() => {
     if (backendId !== 'real' || !harnessAvailable) return
     let disposed = false
-    let dispose: (() => void) | undefined
+    const disposers: (() => void)[] = []
     let timer: ReturnType<typeof setTimeout> | null = null
 
     const onChange = () => {
@@ -96,18 +97,23 @@ export function useModelPickerSource(
       }, 150)
     }
 
-    void subscribeModelChanges(onChange).then((d) => {
-      if (disposed) {
-        d()
-        return
-      }
-      dispose = d
-    })
+    // Catalog changes AND provider availability flips — a provider going
+    // down/up keeps its catalog models, so only provider::changed re-greys
+    // or re-enables its picker group without a manual refresh.
+    for (const subscribe of [subscribeModelChanges, subscribeProviderChanges]) {
+      void subscribe(onChange).then((d) => {
+        if (disposed) {
+          d()
+          return
+        }
+        disposers.push(d)
+      })
+    }
 
     return () => {
       disposed = true
       if (timer !== null) clearTimeout(timer)
-      dispose?.()
+      for (const d of disposers) d()
     }
   }, [backendId, harnessAvailable, refresh])
 

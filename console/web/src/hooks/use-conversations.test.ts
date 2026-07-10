@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionMeta } from '@/lib/sessions/types'
+import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
+import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  markBackgroundedStale,
   mergeConversationMeta,
+  mergeHydratedTranscript,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -120,6 +123,96 @@ describe('mergeConversationMeta', () => {
     expect(next.parentId).toBe('console-parent')
     expect(next.messages).toBe(existing.messages)
     expect(next.hydrated).toBe(true)
+  })
+
+  it('maps metadata.spawned_by to the sidebar origin discriminant', () => {
+    const spawned = (v: unknown) =>
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({
+          metadata: { parent_session_id: 'console-parent', spawned_by: v },
+        }),
+      ).spawnedBy
+    expect(spawned('trigger')).toBe('trigger')
+    expect(spawned('agent')).toBe('agent')
+    // Unknown/absent values (pre-stamp sessions) stay undefined.
+    expect(spawned('something-else')).toBeUndefined()
+    expect(spawned(undefined)).toBeUndefined()
+  })
+})
+
+describe('markBackgroundedStale', () => {
+  // Regression: transcript events subscribe for the ACTIVE session only, so
+  // a session backgrounded mid-turn misses entry updates (a function call
+  // freezes as `ƒ …` with empty request/response). Staling it on switch
+  // makes re-activation re-hydrate from durable truth.
+  it('marks hydrated backgrounded sessions stale, leaves the active one', () => {
+    const sessions = [
+      conversation({ id: 'active', hydrated: true }),
+      conversation({ id: 'backgrounded', hydrated: true }),
+      conversation({ id: 'draft', draft: true, hydrated: true }),
+      conversation({ id: 'never-opened', hydrated: false }),
+    ]
+
+    const next = markBackgroundedStale(sessions, 'active')
+
+    expect(next.find((c) => c.id === 'active')?.hydrated).toBe(true)
+    expect(next.find((c) => c.id === 'backgrounded')?.hydrated).toBe(false)
+    // Drafts are local-only (no server transcript to refetch).
+    expect(next.find((c) => c.id === 'draft')?.hydrated).toBe(true)
+    expect(next.find((c) => c.id === 'never-opened')?.hydrated).toBe(false)
+  })
+
+  it('returns the same array when nothing needs staling', () => {
+    const sessions = [
+      conversation({ id: 'active', hydrated: true }),
+      conversation({ id: 'never-opened', hydrated: false }),
+    ]
+    expect(markBackgroundedStale(sessions, 'active')).toBe(sessions)
+  })
+})
+
+describe('mergeHydratedTranscript', () => {
+  const opts = { sessionId: 'console-1', working: false }
+
+  function assistantItem(entryId: string, text: string): TranscriptItem {
+    return {
+      entry_id: entryId,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text }],
+        stop_reason: 'end',
+        model: 'm',
+        provider: 'p',
+        timestamp: 2,
+      },
+    }
+  }
+  const toMessages = (items: TranscriptItem[]) =>
+    transcriptToMessages(items, 'console-1', { working: false })
+
+  // Regression: an update landing while the hydration fetch was in flight is
+  // newer than the snapshot; without the replay the older read wins and
+  // `hydrated: true` pins the stale text until the next session switch.
+  it('replays a mid-fetch upsert over the older fetched snapshot', () => {
+    const merged = mergeHydratedTranscript(
+      toMessages([assistantItem('e1', 'old partial')]),
+      [],
+      [{ item: assistantItem('e1', 'final text'), updated: true }],
+      opts,
+    )
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({ id: 'e1:0', content: 'final text' })
+  })
+
+  it('keeps live-only messages the read did not return', () => {
+    const merged = mergeHydratedTranscript(
+      toMessages([assistantItem('e1', 'a')]),
+      toMessages([assistantItem('local-1', 'pending')]),
+      [],
+      opts,
+    )
+    expect(merged.map((m) => m.id)).toEqual(['e1:0', 'local-1:0'])
   })
 })
 

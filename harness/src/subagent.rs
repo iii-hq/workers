@@ -159,17 +159,27 @@ async fn seed_child(
     // trigger-fired spawn has no parent turn, but a caller-supplied
     // `parent_session_id` still writes a display-only link so the console nests
     // the child (no policy inheritance, no parent-call resolution).
+    // `spawned_by` tells the console tree WHO created the child — a trigger
+    // reaction (`reactive_depth` is stamped only by `harness::react`) or an
+    // agent's direct `harness::spawn` — so the sidebar can differentiate them.
+    let spawned_by = if req.reactive_depth.is_some() {
+        "trigger"
+    } else {
+        "agent"
+    };
     let linkage = match parent {
         Some(p) => Some(json!({
             "parent_session_id": p.session_id,
             "parent_turn_id": p.turn_id,
             "function_call_id": p.function_call_id,
             "depth": depth,
+            "spawned_by": spawned_by,
         })),
         None => req.parent_session_id.as_ref().map(|psid| {
             json!({
                 "parent_session_id": psid,
                 "depth": depth,
+                "spawned_by": spawned_by,
             })
         }),
     };
@@ -191,12 +201,11 @@ async fn seed_child(
         None => session.create(None, linkage.as_ref()).await?,
     };
 
-    // The task is the child's opening user message. React-fired spawns
-    // (`reactive_depth` is stamped only by `harness::react`) mark the entry —
-    // `{ reaction: true }` origin plus an `e_react_` id, the notify pattern —
-    // so clients render the task as a trigger reaction, not as something the
-    // human typed (a reaction delivered into a chat looks user-authored
-    // otherwise).
+    // The task is the child's opening user message — machine-sent either way,
+    // so every spawn marks the entry (origin + a readable id prefix, the
+    // notify pattern) or clients would render it as something the human typed.
+    // React-fired spawns mark `{ reaction: true }` / `e_react_`; direct
+    // agent spawns mark `{ spawn: true }` / `e_spawn_`.
     let task = normalize_message(req.task.clone())?;
     let (entry_id, origin) = if req.reactive_depth.is_some() {
         let mut origin = json!({ "reaction": true });
@@ -205,7 +214,7 @@ async fn seed_child(
         }
         (Some(ids::react_entry_id()), Some(origin))
     } else {
-        (None, None)
+        (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })))
     };
     session
         .append(

@@ -82,7 +82,10 @@ pub fn auth_header(auth_mode: AuthMode, credential_value: &str) -> (&'static str
     }
 }
 
-/// No thinking beta header: adaptive thinking interleaves natively.
+/// No beta headers: adaptive thinking interleaves natively, and incremental
+/// tool-input streaming is the GA per-tool `eager_input_streaming` flag
+/// (stamped in `wire::tools`), not the retired fine-grained-tool-streaming
+/// beta header some gateways now reject.
 pub fn build_headers(cfg: &AnthropicConfig) -> Vec<(&'static str, String)> {
     vec![
         auth_header(cfg.auth_mode, &cfg.credential_value),
@@ -231,6 +234,9 @@ mod tests {
         let h = build_headers(&cfg(AuthMode::ApiKey));
         assert!(h.contains(&("x-api-key", "sk-test".to_string())));
         assert!(h.contains(&("anthropic-version", ANTHROPIC_VERSION.to_string())));
+        // Tool-input streaming is the per-tool eager_input_streaming flag
+        // (wire::tools), NOT a beta header — stale beta values get rejected
+        // by some gateways.
         assert!(!h.iter().any(|(k, _)| *k == "anthropic-beta"));
 
         let h = build_headers(&cfg(AuthMode::OauthBearer));

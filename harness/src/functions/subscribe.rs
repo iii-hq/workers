@@ -619,8 +619,10 @@ async fn handle_react(
     })
 }
 
-pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) {
-    if let Err(e) = deps
+/// Best-effort engine-side teardown; `true` when the engine accepted it, so
+/// callers recording a fired-trigger `retired` flag report the real outcome.
+pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) -> bool {
+    match deps
         .iii
         .trigger(TriggerRequest {
             function_id: UNREGISTER_TRIGGER_ID.to_string(),
@@ -630,7 +632,11 @@ pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) {
         })
         .await
     {
-        tracing::warn!(trigger_id, error = %e, "subscription trigger unregister failed");
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(trigger_id, error = %e, "subscription trigger unregister failed");
+            false
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
@@ -217,6 +217,32 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
 
     // 7. ready — providers re-declare on this
     events.emit(crate::triggers::READY, json!({})).await;
+
+    // The ready fan-out only reaches providers whose `router::ready` binding
+    // still exists — and the engine drops those bindings when THIS worker
+    // (the trigger type's owner) disconnects, so providers that outlived a
+    // router restart never hear it. Nudge every restored provider directly:
+    // `provider::<id>::on_router_ready` is the deterministic per-provider
+    // handler (same one the fan-out targets), a live provider re-declares —
+    // flipping the boot-reset availability back up — and a dead one is
+    // function_not_found, which is exactly the right answer. Detached: boot
+    // must not block on provider round-trips.
+    {
+        let iii = iii.clone();
+        let ids = registry.ids().await;
+        tokio::spawn(async move {
+            for id in ids {
+                let _ = iii
+                    .trigger(TriggerRequest {
+                        function_id: format!("provider::{id}::on_router_ready"),
+                        payload: json!({}),
+                        action: None,
+                        timeout_ms: Some(10_000),
+                    })
+                    .await;
+            }
+        });
+    }
 
     Ok(RouterRefs {
         registry,

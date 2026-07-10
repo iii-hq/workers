@@ -24,6 +24,7 @@
 //! intercepts the agent's `engine::register_trigger` call, never trusted from
 //! model arguments.
 
+pub mod fired;
 pub mod notify_agent;
 pub mod reconcile;
 pub mod registry;

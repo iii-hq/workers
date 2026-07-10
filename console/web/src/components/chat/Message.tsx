@@ -49,6 +49,8 @@ export function Message({
         <NotificationMessage message={message} />
       ) : message.reaction ? (
         <ReactionTaskMessage message={message} />
+      ) : message.spawn ? (
+        <SpawnTaskMessage message={message} />
       ) : (
         <UserMessage message={message} />
       )
@@ -92,6 +94,8 @@ export function Message({
     case 'system':
       return message.kind === 'compaction' ? (
         <CompactionMarker message={message} />
+      ) : message.kind === 'trigger-fired' ? (
+        <TriggerFiredNotice message={message} />
       ) : (
         <SystemNotice message={message} />
       )
@@ -162,6 +166,26 @@ function NotificationMessage({ message }: { message: UserMessageType }) {
 }
 
 /**
+ * A subscription fire (`kind: 'trigger-fired'`): a turn-less notice that a
+ * registered trigger fired — a state/cron spawn, a notify wake, or a join
+ * edge. `message.content` is the pre-rendered one-liner (name · action).
+ */
+function TriggerFiredNotice({ message }: { message: SystemMessageType }) {
+  return (
+    <article className="border-l-2 border-l-rule pl-3 py-1 font-mono text-[12px] text-ink-faint flex items-start gap-2">
+      <span aria-hidden="true">⚡</span>
+      <span className="break-words">
+        <span className="uppercase tracking-[0.04em] text-ink-ghost">
+          trigger fired
+        </span>
+        {' · '}
+        {message.content}
+      </span>
+    </article>
+  )
+}
+
+/**
  * The one-line hint for a reaction's collapsed payload: the firing session
  * and status for an event, the predecessor keys for a join's inputs.
  */
@@ -216,6 +240,24 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
             </div>
           </details>
         ) : null}
+      </div>
+    </article>
+  )
+}
+
+/**
+ * A direct `harness::spawn` seed task (`spawn: true`): the sub-agent's opening
+ * input, but sent by the PARENT agent — labeled and left-aligned like a
+ * reaction task so it never reads as something the human typed.
+ */
+function SpawnTaskMessage({ message }: { message: UserMessageType }) {
+  return (
+    <article className="flex flex-col items-start gap-2">
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+        <Prompt symbol="⚙">spawn · sub-agent task</Prompt>
+      </header>
+      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
+        <Markdown>{message.content}</Markdown>
       </div>
     </article>
   )

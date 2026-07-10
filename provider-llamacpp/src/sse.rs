@@ -95,7 +95,13 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
         let arguments = if fc.args_json.is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::from_str(&fc.args_json).unwrap_or(Value::Null)
+            // Unparseable args (mid-stream partials, local models misquoting
+            // JSON) degrade to the salvaged leading fields or `{"_raw": …}` —
+            // always an object (replay-safe) that preserves the evidence.
+            serde_json::from_str(&fc.args_json)
+                .ok()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| llm_router::types::messages::degraded_arguments(&fc.args_json))
         };
         out.push(ContentBlock::FunctionCall {
             id: fc.id.clone(),
@@ -456,6 +462,47 @@ mod tests {
                 assert_eq!(id, "call_1");
                 assert_eq!(function_id, "shell::exec");
                 assert_eq!(arguments["cmd"], "ls");
+            }
+            other => panic!("want function_call, got {other:?}"),
+        }
+    }
+
+    // Local models misquote JSON args; the malformed text must survive as
+    // `{"_raw": …}` evidence (a null would erase what the model actually
+    // sent, leaving an undiagnosable empty call — and the harness turns
+    // null wrapper args into a literal `agent_trigger` dispatch).
+    #[test]
+    fn malformed_args_survive_as_raw_evidence() {
+        let (state, _) = run(&[
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"id":"call_1","type":"function","function":{"name":"state__set","arguments":"{'key':"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"function":{"arguments":"'v'}"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+        ]);
+        let final_msg = build_final(&state, "llama-test");
+        match &final_msg.content[0] {
+            ContentBlock::FunctionCall { arguments, .. } => {
+                assert_eq!(arguments, &json!({ "_raw": "{'key':'v'}" }));
+            }
+            other => panic!("want function_call, got {other:?}"),
+        }
+    }
+
+    // A wrapper call cut mid-payload keeps its already-known leading fields —
+    // the console can show `ƒ state::set` while a huge payload streams.
+    #[test]
+    fn partial_args_salvage_leading_fields() {
+        let (state, _) = run(&[json!({"choices":[{"index":0,"delta":{"tool_calls":[
+            {"index":0,"id":"call_1","type":"function","function":{"name":"agent_trigger",
+             "arguments":"{\"function\":\"state::set\",\"payload\":{\"key\":\"article\",\"value\":\"long"}}]}}]})]);
+        let partial = build_partial(&state, "llama-test");
+        match &partial.content[0] {
+            ContentBlock::FunctionCall { arguments, .. } => {
+                assert_eq!(arguments["function"], "state::set");
+                // Salvage marker: the harness refuses to execute partial
+                // intent, so it must survive the provider boundary.
+                assert_eq!(arguments["_partial"], true);
             }
             other => panic!("want function_call, got {other:?}"),
         }

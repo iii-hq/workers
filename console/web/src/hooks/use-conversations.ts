@@ -44,7 +44,7 @@ import {
   subscribeSessionDirectory,
   subscribeSessionTranscript,
 } from '@/lib/sessions/events'
-import type { SessionMeta } from '@/lib/sessions/types'
+import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import {
   loadActiveId,
   loadLastModel,
@@ -143,6 +143,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
         ? md.parent_session_id
         : undefined,
     depth: typeof md.depth === 'number' ? md.depth : undefined,
+    spawnedBy:
+      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
+        ? md.spawned_by
+        : undefined,
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,
@@ -167,6 +171,27 @@ export function applyCatalogModelFallback(
     if (!c.model && !c.draft) return c
     changed = true
     return { ...c, model: fallbackModel }
+  })
+  return changed ? next : conversations
+}
+
+/**
+ * Mark every backgrounded server-backed conversation stale so the next
+ * activation re-hydrates it. A transcript subscription exists only for the
+ * ACTIVE session, so entry events emitted while a session is backgrounded
+ * are lost — a function call caught mid-snapshot freezes as `ƒ …` with an
+ * empty request/response until durable truth is re-fetched. Returns the
+ * same array when nothing changed.
+ */
+export function markBackgroundedStale(
+  conversations: Conversation[],
+  activeId: string | null,
+): Conversation[] {
+  let changed = false
+  const next = conversations.map((c) => {
+    if (c.id === activeId || c.draft || !c.hydrated) return c
+    changed = true
+    return { ...c, hydrated: false }
   })
   return changed ? next : conversations
 }
@@ -244,6 +269,36 @@ export interface ConversationsApi {
  *   `catalogReady` gates it so a stale placeholder catalog can't clobber picks.
  * @param serverEnabled Wire the store to session-manager (real backend only).
  */
+/** Live entry upsert captured while a hydration fetch was in flight. */
+export type HydrationUpsert = { item: TranscriptItem; updated: boolean }
+
+/** Fold a hydration read together with what the live feed did meanwhile:
+    replay the buffered upserts on top (same entry id → live wins, the
+    fetched snapshot predates them), then re-append live-only messages the
+    read didn't return. Without the replay, an update landing mid-fetch is
+    clobbered by the older snapshot and `hydrated: true` pins it stale. */
+export function mergeHydratedTranscript(
+  fetched: Message[],
+  live: Message[],
+  upserts: HydrationUpsert[],
+  opts: { sessionId: string; working: boolean },
+): Message[] {
+  let messages = fetched
+  for (const u of upserts) {
+    messages = applyEntryUpsert(messages, u.item, {
+      sessionId: opts.sessionId,
+      streaming: u.updated ? opts.working : undefined,
+      working: opts.working,
+    })
+  }
+  for (const m of live) {
+    if (!messages.some((existing) => existing.id === m.id)) {
+      messages = [...messages, m]
+    }
+  }
+  return messages
+}
+
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
@@ -264,6 +319,13 @@ export function useConversations(
 
   /** Highest seen `message-updated` revision per (session, entry). */
   const revisionsRef = useRef(new Map<string, Map<string, number>>())
+
+  /** Upserts received while a hydration fetch is in flight; replayed over
+      the fetched snapshot so the older read can't clobber a newer entry. */
+  const hydrationBufferRef = useRef<{
+    sessionId: string
+    upserts: HydrationUpsert[]
+  } | null>(null)
 
   const patchConversation = useCallback(
     (id: string, patch: (c: Conversation) => Conversation) => {
@@ -365,6 +427,10 @@ export function useConversations(
                   ? md.parent_session_id
                   : c.parentId,
               depth: typeof md.depth === 'number' ? md.depth : c.depth,
+              spawnedBy:
+                md.spawned_by === 'trigger' || md.spawned_by === 'agent'
+                  ? md.spawned_by
+                  : c.spawnedBy,
               updatedAt: event.timestamp,
             }
           })
@@ -425,18 +491,22 @@ export function useConversations(
       if (cancelled) return
       off = subscribeSessionTranscript(client, sessionId, {
         onMessageAdded: (event) => {
+          const item = {
+            entry_id: event.entry_id,
+            message: event.message,
+            custom: event.custom,
+            origin: event.origin,
+          }
+          const buf = hydrationBufferRef.current
+          if (buf && buf.sessionId === sessionId) {
+            buf.upserts.push({ item, updated: false })
+          }
           patchConversation(sessionId, (c) => ({
             ...c,
-            messages: applyEntryUpsert(
-              c.messages,
-              {
-                entry_id: event.entry_id,
-                message: event.message,
-                custom: event.custom,
-                origin: event.origin,
-              },
-              { sessionId, working: c.status === 'working' },
-            ),
+            messages: applyEntryUpsert(c.messages, item, {
+              sessionId,
+              working: c.status === 'working',
+            }),
             updatedAt: event.timestamp,
           }))
         },
@@ -445,21 +515,22 @@ export function useConversations(
           const prev = revs.get(event.entry_id) ?? -1
           if (event.revision <= prev) return
           revs.set(event.entry_id, event.revision)
+          const item = {
+            entry_id: event.entry_id,
+            message: event.message,
+            origin: event.origin,
+          }
+          const buf = hydrationBufferRef.current
+          if (buf && buf.sessionId === sessionId) {
+            buf.upserts.push({ item, updated: true })
+          }
           patchConversation(sessionId, (c) => ({
             ...c,
-            messages: applyEntryUpsert(
-              c.messages,
-              {
-                entry_id: event.entry_id,
-                message: event.message,
-                origin: event.origin,
-              },
-              {
-                sessionId,
-                streaming: c.status === 'working',
-                working: c.status === 'working',
-              },
-            ),
+            messages: applyEntryUpsert(c.messages, item, {
+              sessionId,
+              streaming: c.status === 'working',
+              working: c.status === 'working',
+            }),
             updatedAt: event.timestamp,
           }))
         },
@@ -475,27 +546,47 @@ export function useConversations(
   /* Hydrate the active conversation's transcript once (read-back, then the
      live subscription above keeps it current). Folding through
      applyEntryUpsert makes the read idempotent against events that raced in
-     while the fetch was in flight. */
+     while the fetch was in flight.
+
+     Keyed on the active conversation's `hydrated` FLAG, not the
+     conversations array: every live message-added/updated rebuilds the
+     array, and an array dep would cancel + restart the in-flight fetch on
+     each event — under a fast stream the paginated read never lands and
+     hammers the backend. The flag stays false for the whole fetch, so live
+     events don't disturb it. */
+  const activeNeedsHydration =
+    activeIsServerBacked &&
+    !!activeId &&
+    conversations.some((c) => c.id === activeId && !c.hydrated)
   useEffect(() => {
-    if (!activeIsServerBacked || !activeId) return
-    const conv = conversations.find((c) => c.id === activeId)
-    if (!conv || conv.hydrated) return
+    if (!activeNeedsHydration || !activeId) return
     const sessionId = activeId
     let cancelled = false
+    /* Buffer live upserts for the fetch window: for the same entry id they
+       are newer than the snapshot, and replaying them after the merge keeps
+       the read from clobbering a revision that landed mid-flight. */
+    const upserts: HydrationUpsert[] = []
+    hydrationBufferRef.current = { sessionId, upserts }
+    const releaseBuffer = () => {
+      if (hydrationBufferRef.current?.upserts === upserts) {
+        hydrationBufferRef.current = null
+      }
+    }
     void fetchTranscript(sessionId)
       .then((items) => {
         if (cancelled) return
         patchConversation(sessionId, (c) => {
-          let messages = transcriptToMessages(items, sessionId, {
-            working: c.status === 'working',
-          })
-          // Re-apply anything the live feed already reconciled on top.
-          for (const m of c.messages) {
-            if (!messages.some((existing) => existing.id === m.id)) {
-              messages = [...messages, m]
-            }
+          const working = c.status === 'working'
+          return {
+            ...c,
+            messages: mergeHydratedTranscript(
+              transcriptToMessages(items, sessionId, { working }),
+              c.messages,
+              upserts,
+              { sessionId, working },
+            ),
+            hydrated: true,
           }
-          return { ...c, messages, hydrated: true }
         })
       })
       .catch((err) => {
@@ -507,10 +598,22 @@ export function useConversations(
           )
         }
       })
+      .finally(releaseBuffer)
     return () => {
       cancelled = true
+      releaseBuffer()
     }
-  }, [activeIsServerBacked, activeId, conversations, patchConversation])
+  }, [activeNeedsHydration, activeId, patchConversation])
+
+  /* Backgrounded sessions receive no transcript events (the subscription
+     above is active-only), so anything that changed while away is missing
+     from their in-memory messages. Mark them stale on every activation
+     switch; the hydration effect above then refetches on return, folding
+     durable truth over frozen mid-stream snapshots. */
+  useEffect(() => {
+    if (!serverEnabled) return
+    setConversations((prev) => markBackgroundedStale(prev, activeId))
+  }, [serverEnabled, activeId])
 
   /* Migrate model ids once catalog-backed keys are known (local-only; the
      server metadata is rewritten on the next explicit model change). Gated
