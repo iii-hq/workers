@@ -1050,12 +1050,13 @@ export function ChatView({
               break
             }
             case 'stop-reason': {
-              const noticeContent = formatStopReason(
-                event.reason,
-                event.message,
-              )
+              let noticeContent = formatStopReason(event.reason, event.message)
+              if (event.partialResultAvailable) {
+                noticeContent +=
+                  ' Partial output above was preserved and may be incomplete.'
+              }
               const notice: SystemMessage = {
-                id: uid(),
+                id: event.entryId ?? uid(),
                 role: 'system',
                 kind: 'notice',
                 content: noticeContent,

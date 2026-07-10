@@ -5,6 +5,8 @@
 //! deterministic entry ids, and per-call checkpoints make redelivery safe.
 
 use async_trait::async_trait;
+use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
+use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
@@ -18,12 +20,26 @@ use crate::ids;
 use crate::policy::{self, CallKind, CompiledPolicy};
 use crate::trigger;
 use crate::types::content::ContentBlock;
+use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
 };
 
 pub const TURN_QUEUE: &str = "default";
+
+#[derive(Clone, Copy)]
+struct FailureInfo {
+    code: &'static str,
+    phase: &'static str,
+    retryable: bool,
+}
+
+const INTERNAL_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.turn_internal",
+    phase: "execution",
+    retryable: false,
+};
 
 /// The enqueued `harness::turn` step payload.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -172,6 +188,11 @@ pub async fn run_step(
                 &session,
                 &mut record,
                 &format!("pre_turn hook denied: {reason}"),
+                FailureInfo {
+                    code: "harness.pre_turn_denied",
+                    phase: "pre_turn",
+                    retryable: false,
+                },
             )
             .await;
         }
@@ -193,7 +214,7 @@ pub async fn run_step(
             )
             .await;
         let text = json!(notice);
-        return finalize_completed(deps, &session, &mut record, Some(text), None).await;
+        return finalize_completed(deps, &session, &mut record, Some(text)).await;
     }
 
     // Load the active path (custom entries carry the compaction record).
@@ -264,6 +285,11 @@ pub async fn run_step(
                 &session,
                 &mut record,
                 &format!("pre_generate hook denied: {reason}"),
+                FailureInfo {
+                    code: "harness.pre_generate_denied",
+                    phase: "pre_generate",
+                    retryable: false,
+                },
             )
             .await;
         }
@@ -296,6 +322,11 @@ pub async fn run_step(
             &session,
             &mut record,
             "assembled context is empty; refusing to call the provider with no messages",
+            FailureInfo {
+                code: "harness.empty_context",
+                phase: "context_assembly",
+                retryable: false,
+            },
         )
         .await;
     }
@@ -405,6 +436,32 @@ pub async fn run_step(
             record.options.max_turns,
         ) {
             let attempt = record.transient_resumes + 1;
+            record_recovery_telemetry(&record, &reason, attempt);
+            let _ = session
+                .append_custom(
+                    &record.session_id,
+                    "recovery",
+                    json!({
+                        "status": "recovering",
+                        "summary": format!(
+                            "Stream interrupted; preserved partial output and resuming ({attempt}/{}).",
+                            record.options.max_transient_resumes
+                        ),
+                        "reason": reason,
+                        "phase": "generation",
+                        "attempt": attempt,
+                        "max_attempts": record.options.max_transient_resumes,
+                        "partial_result_available": record.result.is_some(),
+                        "timestamp": AgentMessage::now_ms(),
+                    }),
+                    &ids::transient_recovery_entry_id(
+                        &record.turn_id,
+                        attempt,
+                        "recovering",
+                    ),
+                    Some(&origin(&record.turn_id)),
+                )
+                .await;
             let nudge = AgentMessage::user_text(format!(
                 "The provider/router ended transiently after streaming the previous partial \
                  response: {reason}. Resume from the transcript and return the complete deliverable, \
@@ -426,7 +483,38 @@ pub async fn run_step(
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
         }
-        return finalize_failed(deps, &session, &mut record, &reason).await;
+        return finalize_failed(
+            deps,
+            &session,
+            &mut record,
+            &reason,
+            llm_failure_info(outcome.message.error_kind),
+        )
+        .await;
+    }
+
+    if record.transient_resumes > 0 {
+        let attempt = record.transient_resumes;
+        let _ = session
+            .append_custom(
+                &record.session_id,
+                "recovery",
+                json!({
+                    "status": "recovered",
+                    "summary": format!(
+                        "Generation recovered after transient interruption ({attempt}/{}).",
+                        record.options.max_transient_resumes
+                    ),
+                    "phase": "generation",
+                    "attempt": attempt,
+                    "max_attempts": record.options.max_transient_resumes,
+                    "partial_result_available": record.result.is_some(),
+                    "timestamp": AgentMessage::now_ms(),
+                }),
+                &ids::transient_recovery_entry_id(&record.turn_id, attempt, "recovered"),
+                Some(&origin(&record.turn_id)),
+            )
+            .await;
     }
 
     // Trigger any function calls in content order.
@@ -789,7 +877,7 @@ async fn handle_submit(
 ) -> Result<TurnStepResult, HarnessError> {
     let value = submit.arguments.clone();
     match crate::contract::validate_json(&value, strategy.schema()) {
-        Ok(()) => finalize_completed(deps, session, record, Some(value), None).await,
+        Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
         Err(msg) => retry_or_giveup(deps, session, record, &msg, value).await,
     }
 }
@@ -806,12 +894,12 @@ async fn finalize_with_contract(
     let text = ContentBlock::join_text(&message.content);
     match strategy {
         crate::contract::OutputStrategy::Text => {
-            finalize_completed(deps, session, record, Some(json!(text)), None).await
+            finalize_completed(deps, session, record, Some(json!(text))).await
         }
         crate::contract::OutputStrategy::ProviderNativeJson { schema } => {
             match crate::contract::parse_json_text(&text) {
                 Ok(value) => match crate::contract::validate_json(&value, schema.as_ref()) {
-                    Ok(()) => finalize_completed(deps, session, record, Some(value), None).await,
+                    Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
                     Err(msg) => retry_or_giveup(deps, session, record, &msg, json!(text)).await,
                 },
                 Err(msg) => retry_or_giveup(deps, session, record, &msg, json!(text)).await,
@@ -854,12 +942,17 @@ async fn retry_or_giveup(
         record.validation_retries = attempt;
         advance(deps, record).await
     } else {
-        finalize_completed(
+        record.result = Some(fallback_result);
+        finalize_failed(
             deps,
             session,
             record,
-            Some(fallback_result),
-            Some(error.to_string()),
+            error,
+            FailureInfo {
+                code: "harness.output_contract_invalid",
+                phase: "output_validation",
+                retryable: false,
+            },
         )
         .await
     }
@@ -895,13 +988,12 @@ async fn finalize_completed(
     session: &SessionClient,
     record: &mut TurnRecord,
     result: Option<Value>,
-    result_error: Option<String>,
 ) -> Result<TurnStepResult, HarnessError> {
     drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
     record.result = result.clone();
-    record.result_error = result_error.clone();
+    record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     let _ = session.set_status(&record.session_id, "done", None).await;
@@ -911,7 +1003,7 @@ async fn finalize_completed(
             &record.turn_id,
             "completed",
             result.as_ref(),
-            result_error.as_deref(),
+            None,
             None,
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
@@ -938,12 +1030,14 @@ async fn finalize_failed(
     session: &SessionClient,
     record: &mut TurnRecord,
     reason: &str,
+    failure: FailureInfo,
 ) -> Result<TurnStepResult, HarnessError> {
     drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Failed;
     record.result_error = Some(reason.to_string());
     record.updated_at = AgentMessage::now_ms();
+    record_failure_telemetry(record, reason, failure);
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     let _ = session
         .append_custom(
@@ -953,7 +1047,16 @@ async fn finalize_failed(
                 "status": "error",
                 "summary": reason,
                 "reason": reason,
+                "code": failure.code,
+                "message": reason,
+                "retryable": failure.retryable,
+                "phase": failure.phase,
                 "partial_result_available": record.result.is_some(),
+                "recovery": {
+                    "attempted": record.transient_resumes,
+                    "max_attempts": record.options.max_transient_resumes,
+                    "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
+                },
                 "next_actions": [
                     "inspect the failure reason",
                     "retry only after correcting the dependency or request"
@@ -962,6 +1065,7 @@ async fn finalize_failed(
                     "session_id": record.session_id,
                     "turn_id": record.turn_id,
                 },
+                "timestamp": AgentMessage::now_ms(),
             }),
             &format!("e_{}_error", record.turn_id),
             Some(&origin(&record.turn_id)),
@@ -976,7 +1080,7 @@ async fn finalize_failed(
             &record.turn_id,
             "failed",
             record.result.as_ref(),
-            None,
+            Some(reason),
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
@@ -1002,6 +1106,92 @@ async fn finalize_failed(
         next_step: None,
         skipped: false,
     })
+}
+
+fn llm_failure_info(error_kind: Option<ErrorKind>) -> FailureInfo {
+    match error_kind {
+        Some(ErrorKind::AuthExpired) => FailureInfo {
+            code: "llm.auth_expired",
+            phase: "generation",
+            retryable: false,
+        },
+        Some(ErrorKind::RateLimited) => FailureInfo {
+            code: "llm.rate_limited",
+            phase: "generation",
+            retryable: true,
+        },
+        Some(ErrorKind::ContextOverflow) => FailureInfo {
+            code: "llm.context_overflow",
+            phase: "generation",
+            retryable: false,
+        },
+        Some(ErrorKind::Transient) => FailureInfo {
+            code: "llm.transient",
+            phase: "generation",
+            retryable: true,
+        },
+        Some(ErrorKind::Permanent) => FailureInfo {
+            code: "llm.permanent",
+            phase: "generation",
+            retryable: false,
+        },
+        None => FailureInfo {
+            code: "llm.generation_failed",
+            phase: "generation",
+            retryable: false,
+        },
+    }
+}
+
+fn record_recovery_telemetry(record: &TurnRecord, reason: &str, attempt: u32) {
+    let cx = Context::current();
+    let span = cx.span();
+    if !span.span_context().is_valid() {
+        return;
+    }
+    span.set_attribute(KeyValue::new("iii.turn.recovery_attempt", attempt as i64));
+    span.set_attribute(KeyValue::new(
+        "iii.turn.recovery_max",
+        record.options.max_transient_resumes as i64,
+    ));
+    span.set_attribute(KeyValue::new(
+        "iii.turn.partial_result_available",
+        record.result.is_some(),
+    ));
+    span.add_event(
+        "harness.turn.recovery",
+        vec![
+            KeyValue::new("attempt", attempt as i64),
+            KeyValue::new("max_attempts", record.options.max_transient_resumes as i64),
+            KeyValue::new("reason", reason.to_string()),
+        ],
+    );
+}
+
+fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureInfo) {
+    let cx = Context::current();
+    let span = cx.span();
+    if !span.span_context().is_valid() {
+        return;
+    }
+    span.set_attribute(KeyValue::new("error.type", failure.code));
+    span.set_attribute(KeyValue::new("error.message", reason.to_string()));
+    span.set_attribute(KeyValue::new("iii.turn.failure_phase", failure.phase));
+    span.set_attribute(KeyValue::new("iii.turn.retryable", failure.retryable));
+    span.set_attribute(KeyValue::new(
+        "iii.turn.partial_result_available",
+        record.result.is_some(),
+    ));
+    span.set_attribute(KeyValue::new(
+        "iii.turn.transient_resumes",
+        record.transient_resumes as i64,
+    ));
+    span.set_attribute(KeyValue::new(
+        "iii.turn.max_transient_resumes",
+        record.options.max_transient_resumes as i64,
+    ));
+    span.set_attribute(KeyValue::new("iii.tag.outcome", "failed"));
+    span.set_status(Status::error(reason.to_string()));
 }
 
 /// Keep a streamed partial available to failure observers without turning it
@@ -1093,7 +1283,7 @@ pub async fn fail_turn(
         .flatten();
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
-            finalize_failed(deps, &session, &mut rec, reason)
+            finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE)
                 .await
                 .unwrap_or_else(|_| skipped(session_id))
         }

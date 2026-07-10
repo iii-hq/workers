@@ -77,7 +77,9 @@ above); you do not add them one by one. The harness enqueues turn steps on the
 [`engine.config.yaml`](engine.config.yaml)).
 
 Every turn, sub-agent spawn, and provider call is one correlated trace: the
-harness turn waterfall in the console.
+harness turn waterfall in the console. Failed descendants stamp the whole trace
+as failed and carry standard error attributes. The session transcript keeps the
+same recovery, partial-output, and blocked-reaction explanation after refresh.
 
 <p align="center">
   <img src="https://iii.dev/blog/_astro/harness-turn-waterfall.CVg_Sl12_23G6C5.webp" alt="Harness turn waterfall in the iii console" width="100%">

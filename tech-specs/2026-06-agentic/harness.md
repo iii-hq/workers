@@ -619,7 +619,7 @@ type TurnCompletedEvent = {
   turn_id: string;
   status: "completed" | "cancelled" | "failed";
   result?: unknown;        // output-contract result (see Output contract)
-  result_error?: string;   // set when the contract could not be satisfied
+  result_error?: string;   // set when status is "failed"
   reason?: string;         // failure cause when status is "failed"
   parent?: { session_id: string; turn_id: string; function_call_id: string };
   timestamp: number;
@@ -627,8 +627,8 @@ type TurnCompletedEvent = {
 ```
 
 `harness::react` treats these as success-path events by default: only
-`status: "completed"` without `result_error` spawns the downstream sub-agent. Failed,
-cancelled, or contract-invalid completions are recorded by joins but stop the normal downstream
+`status: "completed"` spawns the downstream sub-agent. Contract exhaustion is a failed turn with
+its best-effort result preserved; failed or cancelled completions are recorded by joins but stop the normal downstream
 spawn. An explicit error handler opts in with `metadata.continue_on_error: true`. Simple
 non-cron reactions default to one-shot; `once: false` creates a standing watcher, while joins
 own predecessor retirement and use `join.rearm` for recurring barriers.
@@ -972,6 +972,11 @@ type StatusResponse = {
   step: number;
   turn_count: number;
   max_turns: number;
+  validation_retries: number;
+  max_validation_retries: number;
+  transient_resumes: number;
+  max_transient_resumes: number;
+  partial_result_available: boolean;
   depth: number;                      // 0 for top-level turns; >0 for sub-agents
   pending_function_calls: string[];   // function_call ids awaiting results (incl. parked children)
   children: Array<{                   // live spawned children of the current turn
@@ -983,6 +988,13 @@ type StatusResponse = {
   result_error?: string;
 } | null;                          // null for unknown sessions
 ```
+
+The transcript also records user-visible lifecycle entries. `recovery` entries identify the
+interruption reason and attempt budget; `error` entries carry a stable code, phase, retryability,
+partial-result state, and exhausted recovery count; `reaction` entries report spawned, waiting,
+blocked, and failed downstream edges. These entries are durable and must render after refresh.
+Failed turn and router spans record `error.type`, `error.message`, and `iii.tag.outcome=failed` so
+the default trace row reflects descendant failures rather than only the root span status.
 
 ---
 

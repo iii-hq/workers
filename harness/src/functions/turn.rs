@@ -102,6 +102,7 @@ fn record_step_status(result: &TurnStepResult) {
     }
     span.set_attribute(KeyValue::new("iii.turn.status", status));
     if result.status == TurnStatus::Failed {
+        span.set_attribute(KeyValue::new("iii.tag.outcome", "failed"));
         span.set_status(Status::error("harness turn failed"));
     }
 }

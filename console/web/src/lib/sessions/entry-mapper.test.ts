@@ -190,6 +190,17 @@ describe('entrySegments', () => {
     ).not.toHaveProperty('spawn')
   })
 
+  it('hides the machine-authored transient recovery prompt', () => {
+    expect(
+      entrySegments(
+        userItem(
+          'e_t-1_transient_resume_1',
+          'Resume from the previous partial response',
+        ),
+      ),
+    ).toEqual([])
+  })
+
   it('splits an assistant entry into thought/text/function-call segments by block', () => {
     const segments = entrySegments(
       assistantItem('e-a', [
@@ -419,6 +430,57 @@ describe('entrySegments', () => {
         fired_at: 0,
       }),
     ).toBe('ping · notified this chat · unregistered')
+
+  it('renders a persisted failure with partial-output and recovery context', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-t-1-error',
+      custom: {
+        custom_type: 'error',
+        data: {
+          status: 'error',
+          code: 'llm.transient',
+          summary: 'stream ended without a terminal frame',
+          partial_result_available: true,
+          recovery: { attempted: 1, max_attempts: 1, outcome: 'exhausted' },
+          timestamp: 42,
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      id: 'e-t-1-error',
+      role: 'system',
+      tone: 'error',
+      createdAt: 42,
+    })
+    if (notice.role !== 'system') throw new Error('expected a system notice')
+    expect(notice.content).toContain('turn failed [llm.transient]')
+    expect(notice.content).toContain('partial output above was preserved')
+    expect(notice.content).toContain('recovery exhausted (1/1)')
+  })
+
+  it('renders recovery and blocked reaction lifecycle entries', () => {
+    expect(
+      entrySegments({
+        entry_id: 'e-recovery',
+        custom: {
+          custom_type: 'recovery',
+          data: { status: 'recovering', summary: 'resuming (1/1)' },
+        },
+      })[0],
+    ).toMatchObject({ tone: 'warn', content: 'resuming (1/1)' })
+
+    expect(
+      entrySegments({
+        entry_id: 'e-reaction',
+        custom: {
+          custom_type: 'reaction',
+          data: { status: 'blocked', summary: 'facts stage failed' },
+        },
+      })[0],
+    ).toMatchObject({
+      tone: 'error',
+      content: 'reaction blocked — facts stage failed',
+    })
   })
 
   it('flags an agent_trigger whose target is not resolvable yet', () => {

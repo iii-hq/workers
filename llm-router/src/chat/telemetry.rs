@@ -11,6 +11,7 @@ use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt a
 use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 
 use crate::types::events::{StopReason, Usage};
+use crate::types::router::ErrorShape;
 
 /// Wire value of the terminal stop reason (matches `StopReason`'s serde
 /// snake_case encoding).
@@ -70,6 +71,7 @@ pub fn record_llm_call(
     model: &str,
     stop_reason: Option<StopReason>,
     usage: Option<&Usage>,
+    error: Option<&ErrorShape>,
 ) {
     let cx = Context::current();
     let span = cx.span();
@@ -80,7 +82,14 @@ pub fn record_llm_call(
         span.set_attribute(attr);
     }
     if stop_reason == Some(StopReason::Error) {
-        span.set_status(Status::error("LLM stream ended with an error"));
+        let error_type = error.map(|e| e.code.as_str()).unwrap_or("llm.stream_error");
+        let error_message = error
+            .map(|e| e.message.as_str())
+            .unwrap_or("LLM stream ended with an error");
+        span.set_attribute(KeyValue::new("error.type", error_type.to_string()));
+        span.set_attribute(KeyValue::new("error.message", error_message.to_string()));
+        span.set_attribute(KeyValue::new("iii.tag.outcome", "failed"));
+        span.set_status(Status::error(error_message.to_string()));
     }
 }
 
@@ -192,6 +201,6 @@ mod tests {
 
     #[test]
     fn record_llm_call_is_safe_without_a_span() {
-        record_llm_call("openai", "gpt-5", Some(StopReason::End), None);
+        record_llm_call("openai", "gpt-5", Some(StopReason::End), None, None);
     }
 }

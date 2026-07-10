@@ -143,6 +143,11 @@ export interface HarnessStatusReport {
   turn_count: number
   depth: number
   max_turns: number
+  validation_retries: number
+  max_validation_retries: number
+  transient_resumes: number
+  max_transient_resumes: number
+  partial_result_available: boolean
   /** function_call_ids parked awaiting a deferred result / approval. */
   pending_function_calls: string[]
   children: HarnessChildRef[]

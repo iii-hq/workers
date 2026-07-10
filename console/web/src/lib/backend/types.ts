@@ -98,6 +98,10 @@ export type StreamEvent =
       reason: 'length' | 'error' | 'aborted' | 'function_call'
       /** Optional explanatory text, e.g. the provider's error_message. */
       message?: string
+      /** Stable transcript id when this notice also has a persisted entry. */
+      entryId?: string
+      /** The assistant output above is preserved evidence, not a successful result. */
+      partialResultAvailable?: boolean
     }
 
 export interface ChatStreamOptions {

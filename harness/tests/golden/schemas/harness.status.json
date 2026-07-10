@@ -421,10 +421,23 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "max_transient_resumes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "max_turns": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "max_validation_retries": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "partial_result_available": {
+            "type": "boolean"
           },
           "pending_function_calls": {
             "items": {
@@ -457,6 +470,11 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "transient_resumes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "turn_count": {
             "format": "uint32",
             "minimum": 0.0,
@@ -467,17 +485,27 @@
               "string",
               "null"
             ]
+          },
+          "validation_retries": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           }
         },
         "required": [
           "children",
           "depth",
+          "max_transient_resumes",
           "max_turns",
+          "max_validation_retries",
+          "partial_result_available",
           "pending_function_calls",
           "session_id",
           "status",
           "step",
-          "turn_count"
+          "transient_resumes",
+          "turn_count",
+          "validation_retries"
         ],
         "type": "object"
       },

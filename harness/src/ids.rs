@@ -84,6 +84,14 @@ pub fn transient_resume_nudge_entry_id(turn_id: &str, attempt: u32) -> String {
     format!("e_{turn_id}_transient_resume_{attempt}")
 }
 
+/// User-visible lifecycle entries for one transient recovery attempt.
+pub fn transient_recovery_entry_id(turn_id: &str, attempt: u32, outcome: &str) -> String {
+    format!(
+        "e_{turn_id}_transient_recovery_{attempt}_{}",
+        sanitize(outcome)
+    )
+}
+
 fn short_uuid() -> String {
     Uuid::new_v4().simple().to_string()
 }
@@ -114,6 +122,10 @@ mod tests {
         assert_eq!(
             transient_resume_nudge_entry_id("t_1", 2),
             "e_t_1_transient_resume_2"
+        );
+        assert_eq!(
+            transient_recovery_entry_id("t_1", 2, "recovered"),
+            "e_t_1_transient_recovery_2_recovered"
         );
     }
 
