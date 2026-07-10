@@ -5,8 +5,31 @@
 use llm_router::types::credential::Credential;
 use llm_router::types::router::ProviderResolveResponse;
 
-pub const DEFAULT_API_URL: &str = "https://api.openai.com/v1/chat/completions";
+pub const DEFAULT_API_URL: &str = "https://api.openai.com/v1/responses";
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiMode {
+    Responses,
+    ChatCompletions,
+}
+
+impl ApiMode {
+    /// The endpoint is the compatibility switch: official OpenAI defaults to
+    /// Responses, while an explicitly configured Chat Completions URL keeps
+    /// working for gateways that have not implemented Responses.
+    pub fn from_url(api_url: &str) -> Self {
+        let path = reqwest::Url::parse(api_url)
+            .ok()
+            .map(|url| url.path().trim_end_matches('/').to_string())
+            .unwrap_or_default();
+        if path.ends_with("/responses") {
+            Self::Responses
+        } else {
+            Self::ChatCompletions
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OpenaiConfig {
@@ -14,6 +37,7 @@ pub struct OpenaiConfig {
     pub model: String,
     pub max_tokens: u64,
     pub api_url: String,
+    pub api_mode: ApiMode,
 }
 
 /// Why an effective config could not be built — the caller turns each into a
@@ -78,6 +102,7 @@ pub fn config_from_resolve(
         Ok(u) if matches!(u.scheme(), "http" | "https") => {}
         _ => return Err(ConfigError::InvalidApiUrl(api_url)),
     }
+    let api_mode = ApiMode::from_url(&api_url);
     Ok(OpenaiConfig {
         credential_value,
         model: model.to_string(),
@@ -85,6 +110,7 @@ pub fn config_from_resolve(
             .or(resolved.max_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS),
         api_url,
+        api_mode,
     })
 }
 
@@ -157,6 +183,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.api_url, "https://h/v1");
+        assert_eq!(cfg.api_mode, ApiMode::ChatCompletions);
     }
 
     #[test]
@@ -164,6 +191,23 @@ mod tests {
         let cfg =
             config_from_resolve("m", None, &resolved_with_url(some_key(), Some("   "))).unwrap();
         assert_eq!(cfg.api_url, DEFAULT_API_URL);
+        assert_eq!(cfg.api_mode, ApiMode::Responses);
+    }
+
+    #[test]
+    fn endpoint_path_selects_transport() {
+        assert_eq!(
+            ApiMode::from_url("https://api.openai.com/v1/responses"),
+            ApiMode::Responses
+        );
+        assert_eq!(
+            ApiMode::from_url("https://gateway.test/v1/responses/"),
+            ApiMode::Responses
+        );
+        assert_eq!(
+            ApiMode::from_url("https://gateway.test/v1/chat/completions"),
+            ApiMode::ChatCompletions
+        );
     }
 
     #[test]

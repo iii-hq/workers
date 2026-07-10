@@ -1,4 +1,5 @@
-//! thinking_level → Chat Completions `reasoning_effort`, per model family.
+//! thinking_level → the selected OpenAI transport's reasoning effort, per
+//! model family.
 //! Each ladder branch traces to a documented 400 from the API — a wrong
 //! effort string fails the whole request.
 use llm_router::types::model::ThinkingLevel;

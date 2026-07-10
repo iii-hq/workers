@@ -1,7 +1,8 @@
 //! thinking_level → Chat Completions `reasoning_effort`, per model family.
 //! Each ladder branch traces to a documented 400 from the API — a wrong
 //! effort string fails the whole request.
-use llm_router::types::model::ThinkingLevel;
+use llm_router::types::model::{Model, ThinkingLevel};
+use serde_json::Value;
 
 /// Full effort vocabulary in ascending order (superset across families).
 const EFFORT_ORDER: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -99,6 +100,38 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
         .copied()
 }
 
+/// Read and validate an exact provider-native effort from this provider's
+/// `provider_options` slice. When catalog metadata is available it is the
+/// authority; an absent catalog keeps the option permissive for cold starts.
+pub fn native_reasoning_effort(
+    provider_options: Option<&Value>,
+    model_meta: Option<&Model>,
+) -> Result<Option<String>, String> {
+    let Some(value) = provider_options.and_then(|options| options.get("reasoning_effort")) else {
+        return Ok(None);
+    };
+    let Some(effort) = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err("reasoning_effort must be a non-empty string".into());
+    };
+    if let Some(supported) = model_meta.and_then(|model| model.reasoning_efforts.as_ref()) {
+        if !supported.iter().any(|option| option.effort == effort) {
+            let allowed = supported
+                .iter()
+                .map(|option| option.effort.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "reasoning effort {effort:?} is not supported by this model; choose one of: {allowed}"
+            ));
+        }
+    }
+    Ok(Some(effort.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +208,44 @@ mod tests {
     #[test]
     fn absent_level_omits_the_param() {
         assert_eq!(reasoning_effort_for(None, "gpt-5.2"), None);
+    }
+
+    #[test]
+    fn native_effort_uses_model_specific_catalog() {
+        use llm_router::types::model::ReasoningEffort;
+
+        let model = Model {
+            id: "codex/gpt-5.6-sol".into(),
+            provider: "openai-codex".into(),
+            display_name: None,
+            context_window: 128_000,
+            max_output_tokens: 128_000,
+            input_limit: None,
+            supports_thinking: Some(true),
+            supports_xhigh: Some(true),
+            reasoning_efforts: Some(vec![ReasoningEffort {
+                effort: "ultra".into(),
+                description: Some("Maximum reasoning with delegation".into()),
+            }]),
+            supports_tools: Some(true),
+            supports_vision: Some(true),
+            supports_cache: Some(true),
+            supports_structured_output: None,
+            thinking_budgets: None,
+            pricing: None,
+        };
+        assert_eq!(
+            native_reasoning_effort(
+                Some(&serde_json::json!({ "reasoning_effort": "ultra" })),
+                Some(&model),
+            ),
+            Ok(Some("ultra".into()))
+        );
+        assert!(native_reasoning_effort(
+            Some(&serde_json::json!({ "reasoning_effort": "minimal" })),
+            Some(&model),
+        )
+        .unwrap_err()
+        .contains("choose one of: ultra"));
     }
 }

@@ -1,6 +1,6 @@
 import { makeCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
-import type { ModelOption } from '@/types/chat'
+import type { ModelOption, ReasoningEffortOption } from '@/types/chat'
 
 /** Wire shape returned by `router::models::list` over the iii bus. */
 export interface CatalogModelRow {
@@ -9,6 +9,28 @@ export interface CatalogModelRow {
   display_name: string
   context_window?: number
   supports_thinking?: boolean
+  reasoning_efforts?: ReasoningEffortOption[]
+}
+
+function parseReasoningEfforts(
+  value: unknown,
+): ReasoningEffortOption[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  const efforts: ReasoningEffortOption[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const row = raw as Record<string, unknown>
+    const effort = typeof row.effort === 'string' ? row.effort.trim() : ''
+    if (!effort || seen.has(effort)) continue
+    seen.add(effort)
+    const description =
+      typeof row.description === 'string' && row.description.trim()
+        ? row.description.trim()
+        : undefined
+    efforts.push({ effort, description })
+  }
+  return efforts.length > 0 ? efforts : undefined
 }
 
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
@@ -33,8 +55,16 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
         : undefined
     const supports_thinking =
       typeof o.supports_thinking === 'boolean' ? o.supports_thinking : undefined
+    const reasoning_efforts = parseReasoningEfforts(o.reasoning_efforts)
     if (!id || !provider) continue
-    out.push({ id, provider, display_name, context_window, supports_thinking })
+    out.push({
+      id,
+      provider,
+      display_name,
+      context_window,
+      supports_thinking,
+      reasoning_efforts,
+    })
   }
   return out
 }
@@ -50,6 +80,7 @@ export function catalogRowsToModelOptions(
     label: m.display_name.toLowerCase(),
     contextWindow: m.context_window,
     supportsThinking: m.supports_thinking === true,
+    reasoningEfforts: m.reasoning_efforts,
   }))
 }
 
@@ -83,15 +114,15 @@ const PROVIDERS_CHANGED_TRIGGER = 'router::provider::changed'
 async function subscribeRouterTrigger(
   fnId: string,
   triggerType: string,
-  onChange: () => void,
+  onChange: (payload: unknown) => void,
 ): Promise<() => void> {
   const client = await getIiiClient()
   let offHandler: (() => void) | undefined
   let offTrigger: (() => void) | undefined
   try {
     // `on()` registers `<fn>::<browserId>`; the trigger targets the same id.
-    offHandler = client.on(fnId, () => {
-      onChange()
+    offHandler = client.on(fnId, (payload) => {
+      onChange(payload)
     })
     offTrigger = client.registerTrigger({
       type: triggerType,
@@ -129,27 +160,34 @@ async function subscribeRouterTrigger(
 export async function subscribeModelChanges(
   onChange: () => void,
 ): Promise<() => void> {
-  return subscribeRouterTrigger(
-    MODELS_CHANGED_FN,
-    MODELS_CHANGED_TRIGGER,
-    onChange,
+  return subscribeRouterTrigger(MODELS_CHANGED_FN, MODELS_CHANGED_TRIGGER, () =>
+    onChange(),
   )
+}
+
+export interface ProviderChangedEvent {
+  provider: string
+  op: string
 }
 
 /**
  * Subscribe to `router::provider::changed` — availability flips (a provider
  * worker (re)registered, or a dispatch discovered it gone). Model catalogs
- * survive a provider going down, so ONLY this trigger tells the picker to
- * re-read `router::provider::list` and grey/un-grey the group without a
- * manual refresh.
+ * survive a provider going down, so this trigger updates the existing
+ * provider snapshot and greys/un-greys the group without another list request.
  */
 export async function subscribeProviderChanges(
-  onChange: () => void,
+  onChange: (event: ProviderChangedEvent) => void,
 ): Promise<() => void> {
   return subscribeRouterTrigger(
     PROVIDERS_CHANGED_FN,
     PROVIDERS_CHANGED_TRIGGER,
-    onChange,
+    (payload) => {
+      if (!payload || typeof payload !== 'object') return
+      const row = payload as Record<string, unknown>
+      if (typeof row.provider !== 'string' || typeof row.op !== 'string') return
+      onChange({ provider: row.provider, op: row.op })
+    },
   )
 }
 

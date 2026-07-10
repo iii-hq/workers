@@ -77,6 +77,8 @@ pub struct TurnOptions {
     pub max_turns: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<BTreeMap<String, Value>>,
     #[serde(default)]
     pub output: OutputContract,
     /// The dispatch policy; `None` denies every call.
@@ -293,6 +295,7 @@ mod tests {
                 mode: None,
                 max_turns: 16,
                 thinking_level: None,
+                provider_options: None,
                 output: OutputContract::Text,
                 functions: None,
                 metadata: None,

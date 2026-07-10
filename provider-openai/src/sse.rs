@@ -1,6 +1,5 @@
-//! Chat Completions chunk → AssistantMessageEvent state machine. Pure:
-//! consumes one parsed chunk at a time, threads it through PartialState,
-//! returns 0+ events. [DONE] is the upstream pump's concern.
+//! OpenAI Chat Completions chunks and Responses events →
+//! AssistantMessageEvent state machine. [DONE] is the upstream pump's concern.
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
@@ -12,6 +11,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenBlock {
     Text,
+    Thinking,
     Call(usize),
 }
 
@@ -24,6 +24,7 @@ struct PartialFunctionCall {
 
 pub struct PartialState {
     text: String,
+    thinking: String,
     function_calls: Vec<PartialFunctionCall>,
     open_block: Option<OpenBlock>,
     usage: Usage,
@@ -38,6 +39,7 @@ impl PartialState {
     pub fn new(warnings: Vec<String>) -> Self {
         PartialState {
             text: String::new(),
+            thinking: String::new(),
             function_calls: Vec::new(),
             open_block: None,
             usage: Usage::default(),
@@ -51,6 +53,10 @@ impl PartialState {
 
     pub fn stop_reason(&self) -> StopReason {
         self.stop_reason
+    }
+
+    pub fn has_content(&self) -> bool {
+        !self.text.is_empty() || !self.thinking.is_empty() || !self.function_calls.is_empty()
     }
 }
 
@@ -72,6 +78,12 @@ pub fn empty_assistant(model: &str) -> AssistantMessage {
 
 fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     let mut out = Vec::new();
+    if !state.thinking.is_empty() {
+        out.push(ContentBlock::Thinking {
+            text: state.thinking.clone(),
+            signature: None,
+        });
+    }
     if !state.text.is_empty() {
         out.push(ContentBlock::Text {
             text: state.text.clone(),
@@ -159,6 +171,7 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
     }
     if let Some(v) = raw
         .pointer("/completion_tokens_details/reasoning_tokens")
+        .or_else(|| raw.pointer("/output_tokens_details/reasoning_tokens"))
         .and_then(Value::as_u64)
     {
         into.reasoning = Some(v);
@@ -187,6 +200,9 @@ fn close_open_block(
         Some(OpenBlock::Text) => events.push(AssistantMessageEvent::TextEnd {
             partial: build_partial(state, model),
         }),
+        Some(OpenBlock::Thinking) => events.push(AssistantMessageEvent::ThinkingEnd {
+            partial: build_partial(state, model),
+        }),
         Some(OpenBlock::Call(_)) => events.push(AssistantMessageEvent::FunctioncallEnd {
             partial: build_partial(state, model),
         }),
@@ -200,6 +216,9 @@ pub fn handle_chunk(
     state: &mut PartialState,
     model: &str,
 ) -> Vec<AssistantMessageEvent> {
+    if chunk.get("type").and_then(Value::as_str).is_some() {
+        return handle_responses_event(chunk, state, model);
+    }
     let mut events = Vec::new();
 
     // Mid-stream error envelope (some gateways send {"error": {...}} as a
@@ -295,6 +314,215 @@ pub fn handle_chunk(
                 .push("openai filtered the completion (finish_reason: content_filter)".to_string());
         }
         close_open_block(state, model, &mut events);
+    }
+    events
+}
+
+fn string_delta(event: &Value) -> &str {
+    event
+        .get("delta")
+        .and_then(|delta| {
+            delta
+                .as_str()
+                .or_else(|| delta.get("text").and_then(Value::as_str))
+        })
+        .or_else(|| event.get("text").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+fn responses_usage(event: &Value, state: &mut PartialState) {
+    let usage = event
+        .get("usage")
+        .or_else(|| event.pointer("/response/usage"));
+    if let Some(usage) = usage.filter(|usage| usage.is_object()) {
+        merge_usage(usage, &mut state.usage);
+        state.usage_seen = true;
+    }
+}
+
+fn ensure_function_call(state: &mut PartialState, index: usize) -> &mut PartialFunctionCall {
+    while state.function_calls.len() <= index {
+        state.function_calls.push(PartialFunctionCall::default());
+    }
+    &mut state.function_calls[index]
+}
+
+fn handle_responses_event(
+    event: &Value,
+    state: &mut PartialState,
+    model: &str,
+) -> Vec<AssistantMessageEvent> {
+    let mut events = Vec::new();
+    let name = event.get("type").and_then(Value::as_str).unwrap_or("");
+
+    match name {
+        "response.created" | "response.in_progress" => {}
+        "response.output_item.added" => {
+            let Some(item) = event.get("item").or_else(|| event.get("output_item")) else {
+                return events;
+            };
+            if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                return events;
+            }
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(state.function_calls.len() as u64) as usize;
+            let call = ensure_function_call(state, index);
+            call.id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            call.function_id = item
+                .get("name")
+                .and_then(Value::as_str)
+                .map(decode_tool_name)
+                .unwrap_or_default();
+            close_open_block(state, model, &mut events);
+            state.open_block = Some(OpenBlock::Call(index));
+            events.push(AssistantMessageEvent::FunctioncallStart {
+                partial: build_partial(state, model),
+            });
+        }
+        "response.output_text.delta" => {
+            let delta = string_delta(event);
+            if delta.is_empty() {
+                return events;
+            }
+            if state.open_block != Some(OpenBlock::Text) {
+                close_open_block(state, model, &mut events);
+                state.open_block = Some(OpenBlock::Text);
+                events.push(AssistantMessageEvent::TextStart {
+                    partial: build_partial(state, model),
+                });
+            }
+            state.text.push_str(delta);
+            events.push(AssistantMessageEvent::TextDelta {
+                partial: build_partial(state, model),
+                delta: delta.to_string(),
+            });
+        }
+        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+            let delta = string_delta(event);
+            if delta.is_empty() {
+                return events;
+            }
+            if state.open_block != Some(OpenBlock::Thinking) {
+                close_open_block(state, model, &mut events);
+                state.open_block = Some(OpenBlock::Thinking);
+                events.push(AssistantMessageEvent::ThinkingStart {
+                    partial: build_partial(state, model),
+                });
+            }
+            state.thinking.push_str(delta);
+            events.push(AssistantMessageEvent::ThinkingDelta {
+                partial: build_partial(state, model),
+                delta: delta.to_string(),
+            });
+        }
+        "response.function_call_arguments.delta" => {
+            let delta = string_delta(event);
+            if delta.is_empty() {
+                return events;
+            }
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| state.function_calls.len().saturating_sub(1) as u64)
+                as usize;
+            if state.open_block != Some(OpenBlock::Call(index)) {
+                close_open_block(state, model, &mut events);
+                state.open_block = Some(OpenBlock::Call(index));
+                events.push(AssistantMessageEvent::FunctioncallStart {
+                    partial: build_partial(state, model),
+                });
+            }
+            let call = ensure_function_call(state, index);
+            call.args_json.push_str(delta);
+            let id = call.id.clone();
+            events.push(AssistantMessageEvent::FunctioncallDelta {
+                partial: build_partial(state, model),
+                delta: delta.to_string(),
+                id,
+            });
+        }
+        "response.output_item.done" => {
+            if let Some(item) = event
+                .get("item")
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+            {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| state.function_calls.len().saturating_sub(1) as u64)
+                    as usize;
+                let call = ensure_function_call(state, index);
+                if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                    call.args_json = arguments.to_string();
+                }
+            }
+        }
+        "response.completed" => {
+            responses_usage(event, state);
+            state.stop_reason = if state.function_calls.is_empty() {
+                StopReason::End
+            } else {
+                StopReason::FunctionCall
+            };
+            close_open_block(state, model, &mut events);
+            events.push(AssistantMessageEvent::Stop {
+                stop_reason: state.stop_reason,
+                error_message: None,
+                error_kind: None,
+            });
+            events.push(AssistantMessageEvent::Done {
+                message: build_final(state, model),
+            });
+        }
+        "response.incomplete" => {
+            responses_usage(event, state);
+            let reason = event
+                .pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str)
+                .unwrap_or("incomplete");
+            if reason == "max_output_tokens" {
+                state.stop_reason = StopReason::Length;
+                state.native_stop_reason = Some(reason.to_string());
+                close_open_block(state, model, &mut events);
+                events.push(AssistantMessageEvent::Stop {
+                    stop_reason: StopReason::Length,
+                    error_message: None,
+                    error_kind: None,
+                });
+                events.push(AssistantMessageEvent::Done {
+                    message: build_final(state, model),
+                });
+            } else {
+                let message = format!("OpenAI response incomplete: {reason}");
+                state.stop_reason = StopReason::Error;
+                state.error_message = Some(message.clone());
+                let mut error = build_final(state, model);
+                error.error_kind = Some(classify(None, &message));
+                events.push(AssistantMessageEvent::Error { error });
+            }
+        }
+        "error" | "response.failed" => {
+            let message = event
+                .pointer("/error/message")
+                .or_else(|| event.pointer("/response/error/message"))
+                .and_then(Value::as_str)
+                .or_else(|| event.get("message").and_then(Value::as_str))
+                .unwrap_or("OpenAI response failed")
+                .to_string();
+            state.stop_reason = StopReason::Error;
+            state.error_message = Some(message.clone());
+            let mut error = build_final(state, model);
+            error.error_kind = Some(classify(None, &message));
+            events.push(AssistantMessageEvent::Error { error });
+        }
+        _ => {}
     }
     events
 }
@@ -529,5 +757,82 @@ mod tests {
             }
             other => panic!("want error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn responses_text_and_usage_complete_the_stream() {
+        let (state, events) = run(&[
+            json!({"type":"response.created"}),
+            json!({"type":"response.output_text.delta","delta":"Hello"}),
+            json!({"type":"response.completed","response":{"usage":{
+                "input_tokens":12,
+                "output_tokens":2,
+                "input_tokens_details":{"cached_tokens":4},
+                "output_tokens_details":{"reasoning_tokens":1}
+            }}}),
+        ]);
+        assert!(matches!(
+            events.last(),
+            Some(AssistantMessageEvent::Done { .. })
+        ));
+        assert_eq!(events.iter().filter(|event| event.is_terminal()).count(), 1);
+        let final_message = build_final(&state, "gpt-test");
+        assert!(
+            matches!(&final_message.content[0], ContentBlock::Text { text } if text == "Hello")
+        );
+        let usage = final_message.usage.unwrap();
+        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.output, Some(2));
+        assert_eq!(usage.cache_read, Some(4));
+        assert_eq!(usage.reasoning, Some(1));
+    }
+
+    #[test]
+    fn responses_function_call_uses_output_index_and_call_id() {
+        let (state, events) = run(&[
+            json!({"type":"response.output_item.added","output_index":0,"item":{
+                "type":"function_call","call_id":"call_1","name":"shell__exec"
+            }}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"cmd\":"}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"ls\"}"}),
+            json!({"type":"response.completed"}),
+        ]);
+        assert!(matches!(
+            events.last(),
+            Some(AssistantMessageEvent::Done { .. })
+        ));
+        let final_message = build_final(&state, "gpt-test");
+        assert_eq!(final_message.stop_reason, StopReason::FunctionCall);
+        match &final_message.content[0] {
+            ContentBlock::FunctionCall {
+                id,
+                function_id,
+                arguments,
+            } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(function_id, "shell::exec");
+                assert_eq!(arguments["cmd"], "ls");
+            }
+            other => panic!("want function call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn responses_max_output_tokens_maps_to_length() {
+        let (state, events) = run(&[
+            json!({"type":"response.output_text.delta","delta":"partial"}),
+            json!({"type":"response.incomplete","response":{
+                "incomplete_details":{"reason":"max_output_tokens"}
+            }}),
+        ]);
+        assert!(matches!(
+            events.last(),
+            Some(AssistantMessageEvent::Done { .. })
+        ));
+        assert_eq!(state.stop_reason, StopReason::Length);
+        assert_eq!(
+            state.native_stop_reason.as_deref(),
+            Some("max_output_tokens")
+        );
     }
 }

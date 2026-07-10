@@ -182,7 +182,7 @@ async fn consumer_channel(
 
 /// Routes by request line; loops over connections until dropped.
 struct StubUpstream {
-    url: String, // http://addr/v1/chat/completions — what goes in the config slice
+    url: String, // generation endpoint written into the router config slice
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -194,11 +194,17 @@ impl Drop for StubUpstream {
 
 const STUB_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\ndata: [DONE]\n\n";
 
+const STUB_RESPONSES_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello from Responses\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n";
+
 const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
 
 const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"gpt-5.2\",\"object\":\"model\"},{\"id\":\"gpt-5.2-2025-12-11\",\"object\":\"model\"},{\"id\":\"gpt-5.4-2026-03-05\",\"object\":\"model\"},{\"id\":\"o3-mini\",\"object\":\"model\"},{\"id\":\"text-embedding-3-large\",\"object\":\"model\"}]}";
 
 async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
+    stub_upstream_at(messages_response, "/v1/chat/completions").await
+}
+
+async fn stub_upstream_at(messages_response: &'static str, endpoint: &str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -222,7 +228,7 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
         }
     });
     StubUpstream {
-        url: format!("http://{addr}/v1/chat/completions"),
+        url: format!("http://{addr}{endpoint}"),
         handle,
     }
 }
@@ -388,6 +394,52 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     assert_eq!(last["message"]["content"][0]["text"], "Hello");
     assert_eq!(last["message"]["native_stop_reason"], "stop");
     assert_eq!(last["message"]["usage"]["cache_read"], 4);
+
+    consumer.shutdown();
+    router_iii.shutdown();
+    provider_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn responses_streams_end_to_end() {
+    let engine = engine_or_skip!();
+    let stub = stub_upstream_at(STUB_RESPONSES_SSE, "/v1/responses").await;
+    let (router_iii, provider_iii) = boot_stack(&engine.url).await;
+    configure_stub_key(&router_iii, &stub.url).await;
+    refresh_and_wait(&router_iii, &provider_iii, "gpt-5.2").await;
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let response = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "model": "gpt-5.2",
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                    "timestamp": 1
+                }],
+            }),
+            action: None,
+            timeout_ms: Some(30_000),
+        })
+        .await
+        .expect("Responses chat succeeds");
+    assert_eq!(response["ok"], true, "chat response: {response}");
+    assert_eq!(response["provider"], "openai");
+    assert_eq!(response["stop_reason"], "end");
+
+    let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
+    let frames = frames.lock().unwrap();
+    let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+    assert_eq!(last["type"], "done");
+    assert_eq!(
+        last["message"]["content"][0]["text"],
+        "Hello from Responses"
+    );
+    assert_eq!(last["message"]["usage"]["input"], 12);
 
     consumer.shutdown();
     router_iii.shutdown();

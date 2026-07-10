@@ -332,6 +332,11 @@ pub async fn run_step(
         tools,
         response_format: strategy.response_format(),
         thinking_level: record.options.thinking_level,
+        provider_options: record
+            .options
+            .provider_options
+            .as_ref()
+            .and_then(|options| serde_json::to_value(options).ok()),
     };
     record.stream_request_id = Some(params.request_id.clone());
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;

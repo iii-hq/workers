@@ -46,6 +46,8 @@ export interface HarnessSendOptions {
   mode?: HarnessSendMode
   max_turns?: number
   thinking_level?: HarnessThinkingLevel
+  /** Provider-native options, namespaced by provider id. */
+  provider_options?: Record<string, unknown>
   output?: HarnessOutputContract
   functions?: HarnessFunctionPolicy
   /** Tracing passthrough (session_id / message_id propagate as baggage). */

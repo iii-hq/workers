@@ -318,6 +318,7 @@ pub fn handle_chunk(
                         events.push(AssistantMessageEvent::FunctioncallDelta {
                             partial: build_partial(state, model),
                             delta: args.to_string(),
+                            id: state.function_calls[index].id.clone(),
                         });
                     }
                 }

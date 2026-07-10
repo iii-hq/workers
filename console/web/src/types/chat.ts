@@ -10,6 +10,12 @@ export interface ModelOption {
   label: string
   contextWindow?: number
   supportsThinking?: boolean
+  reasoningEfforts?: ReasoningEffortOption[]
+}
+
+export interface ReasoningEffortOption {
+  effort: string
+  description?: string
 }
 
 export const MODES: { id: Mode; label: string }[] = [
@@ -20,17 +26,12 @@ export const MODES: { id: Mode; label: string }[] = [
 
 export const DEFAULT_MODE: Mode = 'agent'
 
-/** Reasoning effort sent to harness::send as `thinking_level`; 'off' is omitted. */
-export type ThinkingLevel =
-  | 'off'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
+/** Model-selected reasoning effort. `default` omits every effort override. */
+export type ThinkingLevel = string
 
+/** Compatibility choices for providers that only advertise a thinking flag. */
 export const THINKING_LEVELS: ThinkingLevel[] = [
-  'off',
+  'default',
   'minimal',
   'low',
   'medium',
@@ -38,7 +39,7 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
   'xhigh',
 ]
 
-export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'off'
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
 
 export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
 

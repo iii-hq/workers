@@ -3,7 +3,13 @@ import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical'
 import { useState } from 'react'
 import { fn } from 'storybook/test'
 import { STATIC_FUNCTIONS } from '@/lib/functions'
-import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
+import type {
+  Attachment,
+  Mode,
+  ModelId,
+  ModelOption,
+  ThinkingLevel,
+} from '@/types/chat'
 
 const STORY_MODEL_OPTIONS: ModelOption[] = [
   {
@@ -11,6 +17,15 @@ const STORY_MODEL_OPTIONS: ModelOption[] = [
     label: 'gpt-5',
     contextWindow: 400_000,
     supportsThinking: true,
+    reasoningEfforts: [
+      { effort: 'none', description: 'fastest responses without reasoning' },
+      { effort: 'minimal', description: 'minimal reasoning overhead' },
+      { effort: 'low', description: 'quick reasoning for routine tasks' },
+      { effort: 'medium', description: 'balanced reasoning and latency' },
+      { effort: 'high', description: 'deeper reasoning for complex tasks' },
+      { effort: 'xhigh', description: 'extended reasoning for hard tasks' },
+      { effort: 'ultra', description: 'maximum model-native reasoning' },
+    ],
   },
   {
     id: 'anthropic::claude-opus-4-7',
@@ -23,6 +38,12 @@ const STORY_MODEL_OPTIONS: ModelOption[] = [
     label: 'gpt-5 mini',
     contextWindow: 400_000,
     supportsThinking: true,
+  },
+  {
+    id: 'openai::gpt-4.1',
+    label: 'gpt-4.1',
+    contextWindow: 1_000_000,
+    supportsThinking: false,
   },
 ]
 
@@ -73,6 +94,7 @@ function ComposerHarness({
 }) {
   const [mode, setMode] = useState<Mode>(initialMode)
   const [model, setModel] = useState<ModelId>(initialModel)
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('default')
   return (
     <Composer
       mode={mode}
@@ -80,8 +102,8 @@ function ComposerHarness({
       modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
       permissionMode="manual"
-      thinkingLevel="off"
-      onThinkingLevelChange={fn()}
+      thinkingLevel={thinkingLevel}
+      onThinkingLevelChange={setThinkingLevel}
       onModeChange={setMode}
       onModelChange={setModel}
       onPermissionModeChange={fn()}

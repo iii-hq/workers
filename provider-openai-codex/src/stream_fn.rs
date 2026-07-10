@@ -4,7 +4,7 @@
 //! live in the oauth-openai-codex worker / auth-credentials vault — this
 //! provider only *triggers* a refresh when the token is near expiry.
 use crate::config::build_config;
-use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
+use crate::reasoning::{is_reasoning_model, native_reasoning_effort, reasoning_effort_for};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
@@ -94,7 +94,20 @@ async fn run_stream_call(
         Some(m) => Some(m),
         None => router_client::models_get(iii, &model).await,
     };
-    let reasoning_effort = if is_reasoning_model(
+    let native_effort =
+        match native_reasoning_effort(input.provider_options.as_ref(), model_meta.as_ref()) {
+            Ok(effort) => effort,
+            Err(message) => {
+                let _ = send_event(
+                    sink,
+                    &synthetic_error_event(&message, &model, ErrorKind::Permanent),
+                );
+                return;
+            }
+        };
+    let reasoning_effort = if native_effort.is_some() {
+        native_effort
+    } else if is_reasoning_model(
         &cfg.model,
         model_meta.as_ref().and_then(|m| m.supports_thinking),
     ) {
@@ -105,7 +118,7 @@ async fn run_stream_call(
                 cfg.model
             ));
         }
-        effort
+        effort.map(str::to_string)
     } else {
         if input.thinking_level.is_some() {
             warnings.push(format!(

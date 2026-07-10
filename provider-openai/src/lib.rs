@@ -1,4 +1,5 @@
-//! provider-openai: OpenAI Chat Completions provider behind llm-router.
+//! provider-openai: OpenAI Responses provider behind llm-router, with a
+//! Chat Completions compatibility path for custom gateways.
 //! Spec: tech-specs/2026-06-agentic/llm-router.md § The provider protocol.
 
 pub mod config;

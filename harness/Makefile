@@ -16,7 +16,7 @@ ENGINE_CONFIG ?= $(MAKEFILE_DIR)engine.config.yaml
 STACK := iii-directory llm-router session-manager context-manager \
          provider-anthropic provider-openai provider-openai-codex shell web harness approval-gate console
 
-GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean dev-up dev-down dev-restart \
+GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
                     engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
                     ensure-session require-engine where,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
@@ -28,7 +28,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install-iii-next build install-local clean dev-up dev-down dev-restart engine wait-engine \
+.PHONY: help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart engine wait-engine \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session require-engine where $(STACK)
 
 help:
@@ -48,6 +48,7 @@ help:
 	  '  make where                          print source roots, refs, and tmux panes' \
 	  '  make logs                           attach to the tmux session' \
 	  '  make build [workers...]             cargo build stack or selected workers' \
+	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers'
 
 install-iii-next:
@@ -76,6 +77,19 @@ install-local: build
 
 clean:
 	@for w in $(STACK); do rm -f "$(III_WORKERS)/$$w"; done
+
+cargo-clean:
+	@if [ -n "$(UNKNOWN_WORKERS)" ]; then \
+	  echo "unknown worker(s): $(UNKNOWN_WORKERS)"; \
+	  echo "valid workers: $(STACK)"; \
+	  exit 2; \
+	fi
+	@for w in $(ACTIVE_WORKERS); do \
+	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
+	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
+	  echo "cleaning cargo artifacts for $$w from $(WORKTREE_ROOT_ABS)"; \
+	  cargo clean --manifest-path "$$manifest" || exit 1; \
+	done
 
 dev-up: engine wait-engine
 	@$(MAKE) --no-print-directory restart $(STACK)

@@ -16,7 +16,7 @@ pub use message::{
     empty_assistant, AgentMessage, AssistantMessage, AssistantRoleTag, CustomMessage,
     CustomRoleTag, FunctionResultMessage, FunctionResultRoleTag, UserMessage, UserRoleTag,
 };
-pub use model::{AgentFunction, Model, Pricing, ThinkingLevel};
+pub use model::{AgentFunction, Model, Pricing, ReasoningEffort, ThinkingLevel};
 pub use output::OutputContract;
 pub use turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, IdemRecord, ParentLink, TurnOptions,
