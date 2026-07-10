@@ -114,7 +114,7 @@ async fn end_to_end_http_and_ws_proxy() {
     assert!(
         body.contains("id=\"root\""),
         "GET / did not include the SPA mount point; body starts with: {}",
-        &body.chars().take(200).collect::<String>(),
+        body.chars().take(200).collect::<String>(),
     );
 
     // 2. Pluck the first asset href out of index.html and GET it.
