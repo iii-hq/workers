@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
@@ -124,6 +124,24 @@ export function ConversationRow({
         ) : (
           <span aria-hidden className="size-4 shrink-0" />
         )
+      ) : null}
+      {/* Sub-agent origin: ⚡ a trigger reaction spawned it, 🤖 an agent's
+          direct harness::spawn did. Absent on roots and pre-stamp sessions. */}
+      {depth > 0 && conversation.spawnedBy ? (
+        <span
+          className="flex items-center shrink-0 text-ink-ghost"
+          title={
+            conversation.spawnedBy === 'trigger'
+              ? 'spawned by a trigger'
+              : 'spawned by an agent'
+          }
+        >
+          {conversation.spawnedBy === 'trigger' ? (
+            <Zap aria-label="spawned by a trigger" className="size-3" />
+          ) : (
+            <Bot aria-label="spawned by an agent" className="size-3" />
+          )}
+        </span>
       ) : null}
       <div className="flex-1 min-w-0">
         {editing ? (

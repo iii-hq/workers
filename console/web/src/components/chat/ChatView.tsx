@@ -19,7 +19,10 @@ import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
-import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import {
+  mergeFiredTriggers,
+  type SessionTriggerInfo,
+} from '@/lib/backend/triggers'
 import type { CompactResult, QueuedMessagePreview } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
@@ -54,6 +57,7 @@ import {
   type SystemMessage,
   type ThinkingLevel,
   type ThoughtMessage,
+  type TriggerFiredData,
   type UserMessage,
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
@@ -232,15 +236,24 @@ export function ChatView({
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
+  // Every full row this tab has EVER polled, by engine trigger id. When a
+  // once/join binding fires and retires, the poll drops it — this cache lets
+  // the fired ghost keep its full metadata (join grouping, spawn pin, task)
+  // so the workflow strip and flow DAG survive the pipeline completing.
+  const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
   const refreshTriggers = useCallback(() => {
     const listTriggers = backend.listTriggers
     if (!listTriggers) return
     listTriggers(conversation.id)
-      .then(setSessionTriggers)
+      .then((rows) => {
+        for (const row of rows) seenTriggersRef.current.set(row.id, row)
+        setSessionTriggers(rows)
+      })
       .catch(() => {})
   }, [backend.listTriggers, conversation.id])
   useEffect(() => {
     if (!backend.listTriggers) return
+    seenTriggersRef.current = new Map()
     setSessionTriggers([])
     refreshTriggers()
     const timer = window.setInterval(refreshTriggers, 5000)
@@ -294,6 +307,28 @@ export function ChatView({
     onAppendMessage,
     refreshTriggers,
   ])
+
+  // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
+  // system messages). Drives the panel's fired/unregistered ghost rows so a
+  // once-trigger stays visible after the engine drops it from the poll.
+  const firedTriggers = useMemo<TriggerFiredData[]>(() => {
+    const out: TriggerFiredData[] = []
+    for (const m of conversation.messages) {
+      if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
+        out.push(m.trigger)
+      }
+    }
+    return out
+  }, [conversation.messages])
+  const mergedTriggers = useMemo(
+    () =>
+      mergeFiredTriggers(
+        sessionTriggers,
+        firedTriggers,
+        seenTriggersRef.current,
+      ),
+    [sessionTriggers, firedTriggers],
+  )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
@@ -1088,6 +1123,17 @@ export function ChatView({
     void backend.abortRun?.(sessionId).catch(() => {})
   }, [backend, sessionId])
 
+  // Rescue a parked stream loop: the session hit a terminal error server-side
+  // (status-changed arrives on the session-directory subscription) but the
+  // local `for await` is still waiting on a turn-completed that may never
+  // come. Abort locally — the generator returns silently on abort, and the
+  // red notice renders from the transcript's durable `error` entry.
+  useEffect(() => {
+    if (isStreaming && conversation.status === 'error') {
+      abortRef.current?.abort()
+    }
+  }, [isStreaming, conversation.status])
+
   // Covers the gap between submit / fcall-end and the next streamed content,
   // where the assistant/thought shimmer hasn't yet rendered.
   const isThinking =
@@ -1315,6 +1361,13 @@ export function ChatView({
       <MessageList
         messages={conversation.messages}
         isThinking={isThinking}
+        thinkingDetail={
+          conversation.status === 'working' && conversation.statusReason
+            ? conversation.statusReason
+            : effectiveModel
+              ? `dispatching ${effectiveModel}`
+              : undefined
+        }
         density={density}
         onResolveApproval={resolveApproval}
         onAlwaysAllow={handleAlwaysAllow}
@@ -1368,7 +1421,7 @@ export function ChatView({
             </div>
           ) : null}
           <SessionTriggers
-            triggers={sessionTriggers}
+            triggers={mergedTriggers}
             onUnregister={handleUnregisterTrigger}
             onClearAll={
               backend.unregisterTrigger ? handleClearAllTriggers : undefined

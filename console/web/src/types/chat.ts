@@ -63,6 +63,8 @@ export interface UserMessage extends BaseMessage {
   notification?: boolean
   /** A react-fired task delivered into this session — machine-sent, not typed. */
   reaction?: boolean
+  /** A direct `harness::spawn` task seeding this session — machine-sent, not typed. */
+  spawn?: boolean
   /**
    * The firing event (or join inputs) `harness::react` appended to the task,
    * split off by the entry mapper: rendered as collapsible JSON, not prose.
@@ -117,17 +119,49 @@ export interface FunctionCallMessage extends BaseMessage {
 }
 
 /**
+ * A subscription fire, mirrored from the harness `trigger_fired` custom entry
+ * (`subscriptions/fired.rs`). Drives the turn-less "trigger fired" chat notice
+ * and lets the panel keep a fired `once` trigger visible after it unregisters.
+ */
+export interface TriggerFiredData {
+  subscription_id: string
+  /** Engine trigger id — correlates to a live panel row's `id`. */
+  trigger_id?: string
+  target: 'notify' | 'spawn'
+  label?: string
+  model?: string
+  once: boolean
+  /** This fire unregistered the binding (once teardown / join predecessor GC). */
+  retired: boolean
+  scope?: string
+  key?: string
+  child_session_id?: string
+  join?: {
+    id: string
+    key: string
+    arrived: number
+    expected: number
+    completed: boolean
+  }
+  note?: string
+  fired_at: number
+}
+
+/**
  * `kind: 'compaction'` renders the collapsed-history marker in the
  * transcript. The session-manager transcript is the single source of truth
  * for what the provider sees, so this marker is purely presentational.
+ * `kind: 'trigger-fired'` renders a turn-less subscription-fire notice.
  */
 export interface SystemMessage extends BaseMessage {
   role: 'system'
   content: string
   tone?: 'info' | 'warn' | 'error'
-  kind?: 'notice' | 'compaction'
+  kind?: 'notice' | 'compaction' | 'trigger-fired'
   summaryText?: string
   tokensBefore?: number
+  /** Present on `kind: 'trigger-fired'`. */
+  trigger?: TriggerFiredData
 }
 
 export type Message =
@@ -197,6 +231,12 @@ export interface Conversation {
   parentId?: string
   /** Spawn depth: 0 = root orchestrator (from `metadata.depth`). */
   depth?: number
+  /**
+   * Who created this child session (from `metadata.spawned_by`, stamped by the
+   * harness): a trigger reaction or an agent's direct `harness::spawn`.
+   * Absent on root chats and pre-existing sessions. Drives the sidebar icon.
+   */
+  spawnedBy?: 'trigger' | 'agent'
   /** Driver-owned session status (spinner + sidebar indicator). */
   status?: ConversationStatus
   statusReason?: string

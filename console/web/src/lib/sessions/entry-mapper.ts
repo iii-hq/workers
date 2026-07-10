@@ -28,11 +28,108 @@ import type {
   FunctionCallMessage,
   Message,
   SystemMessage,
+  TriggerFiredData,
   UserMessage,
 } from '@/types/chat'
 import type { AgentMessage, ContentBlock, TranscriptItem } from './types'
 
 export const COMPACTION_CUSTOM_TYPE = 'compaction'
+export const TRIGGER_FIRED_CUSTOM_TYPE = 'trigger_fired'
+/** Harness turn-failure record (`{ reason }`) — `finalize_failed`. */
+export const ERROR_CUSTOM_TYPE = 'error'
+/** Harness informational record (`{ reason, message }`) — e.g. max_turns. */
+export const NOTICE_CUSTOM_TYPE = 'notice'
+
+/**
+ * Map one typed custom record (however it arrived — `item.custom` on events,
+ * a `role: 'custom'` message on `session::messages` read-backs) to its UI
+ * segments. `null` means "not a typed record" so the caller can fall back.
+ */
+function customSegments(
+  entryId: string,
+  customType: string,
+  data: unknown,
+  timestamp: number,
+): Message[] | null {
+  switch (customType) {
+    case COMPACTION_CUSTOM_TYPE:
+      return [compactionMarker(entryId, data, timestamp)]
+    case TRIGGER_FIRED_CUSTOM_TYPE:
+      return [triggerFiredMessage(entryId, data, timestamp)]
+    // Harness failure/notice records: without these the turn can end in an
+    // error the chat never shows (the session flips to "error" silently).
+    case ERROR_CUSTOM_TYPE:
+      return [customNotice(entryId, data, 'error', 'turn failed', timestamp)]
+    case NOTICE_CUSTOM_TYPE:
+      return [customNotice(entryId, data, 'info', 'notice', timestamp)]
+    default:
+      return null
+  }
+}
+
+function customNotice(
+  entryId: string,
+  data: unknown,
+  tone: 'info' | 'error',
+  fallback: string,
+  timestamp: number,
+): SystemMessage {
+  const d = (data ?? {}) as { reason?: unknown; message?: unknown }
+  const content =
+    typeof d.message === 'string'
+      ? d.message
+      : typeof d.reason === 'string'
+        ? tone === 'error'
+          ? `turn failed — ${d.reason}`
+          : d.reason
+        : fallback
+  return {
+    id: entryId,
+    role: 'system',
+    kind: 'notice',
+    content,
+    tone,
+    createdAt: timestamp,
+  }
+}
+
+/** The trigger's display name: label, else join id, else state scope/key. */
+export function triggerFiredName(t: TriggerFiredData): string {
+  if (t.label) return t.label
+  if (t.join) return `join ${t.join.id}`
+  if (t.key) return t.scope ? `${t.scope}/${t.key}` : t.key
+  return 'trigger'
+}
+
+/** Plain one-liner for the fired notice (also the a11y/fallback content). */
+export function triggerFiredSummary(t: TriggerFiredData): string {
+  const name = triggerFiredName(t)
+  if (t.join && !t.join.completed) {
+    return `${name} · ${t.join.arrived}/${t.join.expected} arrived`
+  }
+  const action =
+    t.target === 'spawn'
+      ? `spawned${t.model ? ` ${t.model}` : ''}`
+      : 'notified this chat'
+  return `${name} · ${action}${t.retired ? ' · unregistered' : ''}`
+}
+
+function triggerFiredMessage(
+  entryId: string,
+  data: unknown,
+  timestamp: number,
+): SystemMessage {
+  const t = (data ?? {}) as TriggerFiredData
+  return {
+    id: entryId,
+    role: 'system',
+    kind: 'trigger-fired',
+    content: triggerFiredSummary(t),
+    tone: 'info',
+    trigger: t,
+    createdAt: typeof t.fired_at === 'number' ? t.fired_at : timestamp,
+  }
+}
 
 /** The harness wraps every tool call in agent_trigger; unwrap for display. */
 function unwrapFunctionCall(
@@ -44,9 +141,28 @@ function unwrapFunctionCall(
 } {
   if (block.function_id === 'agent_trigger') {
     if (block.arguments && typeof block.arguments === 'object') {
-      const args = block.arguments as { function?: unknown; payload?: unknown }
+      const args = block.arguments as {
+        function?: unknown
+        payload?: unknown
+        _streaming?: unknown
+      }
+      // Mid-stream, the harness rides the raw in-flight arguments tail on
+      // `_streaming` (providers degrade the incomplete JSON itself), so the
+      // command can be watched forming in the request pane.
+      const streaming =
+        typeof args._streaming === 'string' ? args._streaming : undefined
       if (typeof args.function === 'string' && args.function.length > 0) {
+        if (streaming !== undefined) {
+          return { functionId: args.function, input: { _streaming: streaming } }
+        }
         return { functionId: args.function, input: args.payload ?? {} }
+      }
+      if (streaming !== undefined) {
+        return {
+          functionId: block.function_id,
+          input: { _streaming: streaming },
+          unresolvedTarget: true,
+        }
       }
     }
     // The target is unknown while the wrapper's arguments are still
@@ -163,10 +279,14 @@ export function entrySegments(
   sessionId?: string,
 ): Message[] {
   if (item.custom) {
-    if (item.custom.custom_type === COMPACTION_CUSTOM_TYPE) {
-      return [compactionMarker(item.entry_id, item.custom.data, Date.now())]
-    }
-    return []
+    return (
+      customSegments(
+        item.entry_id,
+        item.custom.custom_type,
+        item.custom.data,
+        Date.now(),
+      ) ?? []
+    )
   }
   const message = item.message
   if (!message) return []
@@ -174,7 +294,7 @@ export function entrySegments(
   switch (message.role) {
     case 'user': {
       const origin = item.origin as
-        | { notification?: unknown; reaction?: unknown }
+        | { notification?: unknown; reaction?: unknown; spawn?: unknown }
         | undefined
       const isNotif =
         origin?.notification === true || item.entry_id.startsWith('e_notify_')
@@ -182,6 +302,9 @@ export function entrySegments(
       // `e_react_` prefix on reads — session::messages carries no origin).
       const isReaction =
         origin?.reaction === true || item.entry_id.startsWith('e_react_')
+      // A direct `harness::spawn` seed task — same pattern, `e_spawn_` prefix.
+      const isSpawn =
+        origin?.spawn === true || item.entry_id.startsWith('e_spawn_')
       const { text, attachments } = splitUserContent(message.content)
       const split = isReaction ? splitReactionTask(text) : { task: text }
       const msg: UserMessage = {
@@ -192,6 +315,7 @@ export function entrySegments(
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
         ...(isReaction ? { reaction: true } : {}),
+        ...(isSpawn ? { spawn: true } : {}),
         ...(split.appendix ? { reactionEvent: split.appendix } : {}),
       }
       return [msg]
@@ -201,6 +325,18 @@ export function entrySegments(
     case 'function_result':
       return []
     case 'custom': {
+      // `session::messages` read-backs surface kind:custom entries as a
+      // `role: 'custom'` message (`custom_type` + `details`) — the same
+      // records some paths deliver as `item.custom`. Dispatch typed records
+      // through the shared mapper first; anything unrecognized falls back to
+      // its display text.
+      const typed = customSegments(
+        item.entry_id,
+        message.custom_type,
+        message.details,
+        message.timestamp,
+      )
+      if (typed) return typed
       const content = message.display ?? textOf(message.content)
       if (!content) return []
       const msg: SystemMessage = {

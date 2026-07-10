@@ -82,6 +82,13 @@ export function ModelPicker({
 
   const presentIds = ctx?.presentProviders.map((p) => p.id) ?? []
   const presentSet = new Set<string>(presentIds)
+  // Providers the router declares but whose worker is not loaded — their
+  // catalog models would only fail with `provider_unavailable` at dispatch.
+  const unavailableSet = new Set(
+    (ctx?.presentProviders ?? [])
+      .filter((p) => p.available === false)
+      .map((p) => p.id),
+  )
 
   const optionsById = useMemo(
     () => new Map(options.map((o) => [o.id, o])),
@@ -163,7 +170,8 @@ export function ModelPicker({
           >
             <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
               {groups.map((g) => {
-                const unconfigured = g.options.length === 0
+                const unavailable = unavailableSet.has(g.label)
+                const unconfigured = !unavailable && g.options.length === 0
                 return (
                   <SelectPrimitive.Group key={g.label}>
                     <div className="flex items-center justify-between gap-2 pr-2 pt-2 pb-1">
@@ -171,7 +179,11 @@ export function ModelPicker({
                         <SelectPrimitive.Label className="px-3 text-[11px] uppercase tracking-[0.12em] text-ink-faint">
                           {g.label}
                         </SelectPrimitive.Label>
-                        {unconfigured ? (
+                        {unavailable ? (
+                          <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
+                            not loaded
+                          </span>
+                        ) : unconfigured ? (
                           <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
                             not configured
                           </span>
@@ -202,10 +214,12 @@ export function ModelPicker({
                           <div className="group/model relative flex items-center">
                             <SelectPrimitive.Item
                               value={opt.id}
+                              disabled={unavailable}
                               className={cn(
                                 'relative flex flex-1 min-w-0 items-center pl-7 pr-12 py-1.5 cursor-pointer outline-none select-none',
                                 'data-[highlighted]:bg-rule data-[highlighted]:text-ink',
                                 'data-[state=checked]:text-ink',
+                                'data-[disabled]:opacity-40 data-[disabled]:cursor-default',
                               )}
                             >
                               <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">

@@ -180,7 +180,9 @@ function TriggerRow({
   const task = reactTask(trigger)
   const name = memberKey ?? trigger.label ?? null
   return (
-    <div className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0">
+    <div
+      className={`flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0${trigger.fired ? ' opacity-55' : ''}`}
+    >
       {connector ? (
         <span className="shrink-0 pl-1 text-ink-ghost" aria-hidden>
           {connector}
@@ -208,7 +210,11 @@ function TriggerRow({
             </>
           ) : null}
           {stateNote ? ` · ${stateNote}` : ''}
-          {trigger.once ? ' · once' : ''}
+          {trigger.fired
+            ? ' · fired · unregistered'
+            : trigger.once
+              ? ' · once'
+              : ''}
         </span>
       </button>
       <button
@@ -216,7 +222,8 @@ function TriggerRow({
         disabled={busy}
         onClick={onUnregister}
         className="shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors disabled:opacity-50"
-        aria-label={`unregister ${name ?? trigger.triggerType}`}
+        aria-label={`${trigger.fired ? 'dismiss' : 'unregister'} ${name ?? trigger.triggerType}`}
+        title={trigger.fired ? 'dismiss' : 'unregister'}
       >
         {busy ? '…' : '✕'}
       </button>
@@ -245,6 +252,22 @@ export function SessionTriggers({
   const [flowOpen, setFlowOpen] = useState(false)
   const [clearArming, setClearArming] = useState(false)
   const [clearing, setClearing] = useState(false)
+  // Fired ghost rows the user dismissed — local per-tab view state; they
+  // resurrect from the transcript on reload, so no persistence needed.
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
+
+  const visibleTriggers = useMemo(
+    () => triggers.filter((t) => !dismissed.has(t.id)),
+    [triggers, dismissed],
+  )
+  // Still-registered bindings only — the flow DAG and the counts must not
+  // include fired ghosts, which are history, not pipeline structure.
+  const liveTriggers = useMemo(
+    () => visibleTriggers.filter((t) => !t.fired),
+    [visibleTriggers],
+  )
+  const registeredCount = liveTriggers.length
+  const firedCount = visibleTriggers.length - registeredCount
 
   // The DAG probes presence for every state binding, not just the visible
   // rows, so the flow view can color unwritten roots even while collapsed.
@@ -257,7 +280,7 @@ export function SessionTriggers({
   useEffect(() => {
     if (!probeKeys || !checkStateKey) return
     let alive = true
-    for (const trigger of triggers) {
+    for (const trigger of visibleTriggers) {
       const watch = stateWatch(trigger)
       if (!watch) continue
       void checkStateKey(watch.scope, watch.key).then((present) => {
@@ -268,7 +291,7 @@ export function SessionTriggers({
     return () => {
       alive = false
     }
-  }, [probeKeys, checkStateKey, triggers])
+  }, [probeKeys, checkStateKey, visibleTriggers])
 
   const stateNote = (trigger: SessionTriggerInfo): string | null => {
     const watch = stateWatch(trigger)
@@ -278,8 +301,11 @@ export function SessionTriggers({
     if (present === undefined) return `on ${label}`
     return present ? `on ${label} — written` : `on ${label} — not written yet`
   }
-  const workflow = useMemo(() => buildTriggerWorkflow(triggers), [triggers])
-  const selected = triggers.find((t) => t.id === selectedId) ?? null
+  const workflow = useMemo(
+    () => buildTriggerWorkflow(visibleTriggers),
+    [visibleTriggers],
+  )
+  const selected = visibleTriggers.find((t) => t.id === selectedId) ?? null
   const selectedIsReact = selected?.functionId === 'harness::react'
   const selectedMetadata = selected
     ? remainingMetadata(selected.metadata, selectedIsReact)
@@ -294,7 +320,7 @@ export function SessionTriggers({
       ? selected.metadata.provider
       : null
 
-  if (triggers.length === 0) return null
+  if (visibleTriggers.length === 0) return null
 
   const unregister = async (id: string) => {
     setBusyId(id)
@@ -306,10 +332,27 @@ export function SessionTriggers({
     }
   }
 
+  const dismiss = (id: string) => {
+    setDismissed((prev) => new Set(prev).add(id))
+    setSelectedId((current) => (current === id ? null : current))
+  }
+
+  // A fired ghost row has no engine handle — its ✕ dismisses locally; a live
+  // row's ✕ unregisters the engine trigger.
+  const rowAction = (t: SessionTriggerInfo) =>
+    t.fired ? dismiss(t.id) : void unregister(t.id)
+
   const clearAll = async () => {
     setClearing(true)
     try {
       await onClearAll?.()
+      // Live bindings are unregistered by onClearAll; fired ghosts have no
+      // engine handle, so sweep them from view here too.
+      setDismissed((prev) => {
+        const next = new Set(prev)
+        for (const t of visibleTriggers) if (t.fired) next.add(t.id)
+        return next
+      })
       setSelectedId(null)
     } finally {
       setClearing(false)
@@ -327,7 +370,7 @@ export function SessionTriggers({
           <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
             <Trash2 size={12} className="shrink-0 text-alert" aria-hidden />
             <span className="min-w-0 flex-1 truncate">
-              unregister all {triggers.length} triggers?
+              unregister all {registeredCount} triggers?
               <span className="text-ink-ghost">
                 {' '}
                 this tears down the pipeline.
@@ -360,12 +403,13 @@ export function SessionTriggers({
             >
               <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
               <span className="min-w-0 flex-1 truncate text-left">
-                {triggers.length} trigger{triggers.length === 1 ? '' : 's'}{' '}
+                {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
                 registered
                 <span className="text-ink-ghost">
                   {workflow.hasStructure && workflow.levels.length > 1
                     ? ` · ${workflow.levels.length} stages`
                     : ''}
+                  {firedCount > 0 ? ` · ${firedCount} fired` : ''}
                 </span>
               </span>
             </button>
@@ -460,7 +504,7 @@ export function SessionTriggers({
                                 memberKey={joinMeta(member)?.key}
                                 busy={busyId === member.id}
                                 onOpen={() => setSelectedId(member.id)}
-                                onUnregister={() => void unregister(member.id)}
+                                onUnregister={() => rowAction(member)}
                               />
                             ))}
                           </div>
@@ -472,23 +516,21 @@ export function SessionTriggers({
                             stateNote={stateNote(unit.members[0])}
                             busy={busyId === unit.members[0].id}
                             onOpen={() => setSelectedId(unit.members[0].id)}
-                            onUnregister={() =>
-                              void unregister(unit.members[0].id)
-                            }
+                            onUnregister={() => rowAction(unit.members[0])}
                           />
                         ),
                       )}
                     </div>
                   )
                 })
-              : triggers.map((trigger) => (
+              : visibleTriggers.map((trigger) => (
                   <TriggerRow
                     key={trigger.id}
                     trigger={trigger}
                     stateNote={stateNote(trigger)}
                     busy={busyId === trigger.id}
                     onOpen={() => setSelectedId(trigger.id)}
-                    onUnregister={() => void unregister(trigger.id)}
+                    onUnregister={() => rowAction(trigger)}
                   />
                 ))}
           </div>
@@ -571,9 +613,11 @@ export function SessionTriggers({
                 ) : null}
                 <dt className="lowercase text-ink-ghost">lifetime</dt>
                 <dd className="text-ink">
-                  {selected.once
-                    ? 'once — retires after first fire'
-                    : 'until unregistered'}
+                  {selected.fired
+                    ? 'fired — already unregistered'
+                    : selected.once
+                      ? 'once — retires after first fire'
+                      : 'until unregistered'}
                 </dd>
                 {selectedSubscription ? (
                   <>
@@ -608,15 +652,28 @@ export function SessionTriggers({
                 />
               ) : null}
               <div className="flex justify-end">
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="sm"
-                  disabled={busyId === selected.id}
-                  onClick={() => void unregister(selected.id)}
-                >
-                  {busyId === selected.id ? 'unregistering…' : 'unregister'}
-                </Button>
+                {/* A fired row has no engine binding left to unregister —
+                    offering it would only produce a guaranteed error. */}
+                {selected.fired ? (
+                  <Button
+                    type="button"
+                    variant="pill"
+                    size="sm"
+                    onClick={() => dismiss(selected.id)}
+                  >
+                    dismiss
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="pill"
+                    size="sm"
+                    disabled={busyId === selected.id}
+                    onClick={() => void unregister(selected.id)}
+                  >
+                    {busyId === selected.id ? 'unregistering…' : 'unregister'}
+                  </Button>
+                )}
               </div>
             </div>
           ) : null}
@@ -635,12 +692,12 @@ export function SessionTriggers({
             pipeline flow
           </DialogTitle>
           <DialogDescription className="mt-1">
-            the reactive graph these {triggers.length} bindings form — state
-            writes and completions on the left, the sub-agents they spawn
-            flowing right.
+            the reactive graph these {visibleTriggers.length} bindings form —
+            state writes and completions on the left, the sub-agents they spawn
+            flowing right. fired bindings stay in the graph as pipeline history.
           </DialogDescription>
           <div className="mt-4">
-            <TriggerDag triggers={triggers} keyPresence={keyPresence} />
+            <TriggerDag triggers={visibleTriggers} keyPresence={keyPresence} />
           </div>
           <DagLegend />
         </DialogContent>

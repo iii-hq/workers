@@ -143,6 +143,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
         ? md.parent_session_id
         : undefined,
     depth: typeof md.depth === 'number' ? md.depth : undefined,
+    spawnedBy:
+      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
+        ? md.spawned_by
+        : undefined,
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,
@@ -167,6 +171,27 @@ export function applyCatalogModelFallback(
     if (!c.model && !c.draft) return c
     changed = true
     return { ...c, model: fallbackModel }
+  })
+  return changed ? next : conversations
+}
+
+/**
+ * Mark every backgrounded server-backed conversation stale so the next
+ * activation re-hydrates it. A transcript subscription exists only for the
+ * ACTIVE session, so entry events emitted while a session is backgrounded
+ * are lost — a function call caught mid-snapshot freezes as `ƒ …` with an
+ * empty request/response until durable truth is re-fetched. Returns the
+ * same array when nothing changed.
+ */
+export function markBackgroundedStale(
+  conversations: Conversation[],
+  activeId: string | null,
+): Conversation[] {
+  let changed = false
+  const next = conversations.map((c) => {
+    if (c.id === activeId || c.draft || !c.hydrated) return c
+    changed = true
+    return { ...c, hydrated: false }
   })
   return changed ? next : conversations
 }
@@ -365,6 +390,10 @@ export function useConversations(
                   ? md.parent_session_id
                   : c.parentId,
               depth: typeof md.depth === 'number' ? md.depth : c.depth,
+              spawnedBy:
+                md.spawned_by === 'trigger' || md.spawned_by === 'agent'
+                  ? md.spawned_by
+                  : c.spawnedBy,
               updatedAt: event.timestamp,
             }
           })
@@ -511,6 +540,16 @@ export function useConversations(
       cancelled = true
     }
   }, [activeIsServerBacked, activeId, conversations, patchConversation])
+
+  /* Backgrounded sessions receive no transcript events (the subscription
+     above is active-only), so anything that changed while away is missing
+     from their in-memory messages. Mark them stale on every activation
+     switch; the hydration effect above then refetches on return, folding
+     durable truth over frozen mid-stream snapshots. */
+  useEffect(() => {
+    if (!serverEnabled) return
+    setConversations((prev) => markBackgroundedStale(prev, activeId))
+  }, [serverEnabled, activeId])
 
   /* Migrate model ids once catalog-backed keys are known (local-only; the
      server metadata is rewritten on the next explicit model change). Gated

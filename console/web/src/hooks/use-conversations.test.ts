@@ -4,6 +4,7 @@ import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  markBackgroundedStale,
   mergeConversationMeta,
 } from './use-conversations'
 
@@ -120,6 +121,52 @@ describe('mergeConversationMeta', () => {
     expect(next.parentId).toBe('console-parent')
     expect(next.messages).toBe(existing.messages)
     expect(next.hydrated).toBe(true)
+  })
+
+  it('maps metadata.spawned_by to the sidebar origin discriminant', () => {
+    const spawned = (v: unknown) =>
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({
+          metadata: { parent_session_id: 'console-parent', spawned_by: v },
+        }),
+      ).spawnedBy
+    expect(spawned('trigger')).toBe('trigger')
+    expect(spawned('agent')).toBe('agent')
+    // Unknown/absent values (pre-stamp sessions) stay undefined.
+    expect(spawned('something-else')).toBeUndefined()
+    expect(spawned(undefined)).toBeUndefined()
+  })
+})
+
+describe('markBackgroundedStale', () => {
+  // Regression: transcript events subscribe for the ACTIVE session only, so
+  // a session backgrounded mid-turn misses entry updates (a function call
+  // freezes as `ƒ …` with empty request/response). Staling it on switch
+  // makes re-activation re-hydrate from durable truth.
+  it('marks hydrated backgrounded sessions stale, leaves the active one', () => {
+    const sessions = [
+      conversation({ id: 'active', hydrated: true }),
+      conversation({ id: 'backgrounded', hydrated: true }),
+      conversation({ id: 'draft', draft: true, hydrated: true }),
+      conversation({ id: 'never-opened', hydrated: false }),
+    ]
+
+    const next = markBackgroundedStale(sessions, 'active')
+
+    expect(next.find((c) => c.id === 'active')?.hydrated).toBe(true)
+    expect(next.find((c) => c.id === 'backgrounded')?.hydrated).toBe(false)
+    // Drafts are local-only (no server transcript to refetch).
+    expect(next.find((c) => c.id === 'draft')?.hydrated).toBe(true)
+    expect(next.find((c) => c.id === 'never-opened')?.hydrated).toBe(false)
+  })
+
+  it('returns the same array when nothing needs staling', () => {
+    const sessions = [
+      conversation({ id: 'active', hydrated: true }),
+      conversation({ id: 'never-opened', hydrated: false }),
+    ]
+    expect(markBackgroundedStale(sessions, 'active')).toBe(sessions)
   })
 })
 

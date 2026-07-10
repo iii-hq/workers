@@ -7,6 +7,7 @@ import {
   entrySegments,
   splitReactionTask,
   transcriptToMessages,
+  triggerFiredSummary,
 } from './entry-mapper'
 import type { AgentMessage, TranscriptItem } from './types'
 
@@ -177,6 +178,18 @@ describe('entrySegments', () => {
     ).not.toHaveProperty('reaction')
   })
 
+  it('marks direct-spawn seed tasks (origin on events, prefix on reads)', () => {
+    expect(
+      entrySegments(userItem('e-1', 'build the report', { spawn: true }))[0],
+    ).toMatchObject({ spawn: true })
+    expect(
+      entrySegments(userItem('e_spawn_ab12', 'build it'))[0],
+    ).toMatchObject({ spawn: true })
+    expect(
+      entrySegments(userItem('e-2', 'typed by hand'))[0],
+    ).not.toHaveProperty('spawn')
+  })
+
   it('splits an assistant entry into thought/text/function-call segments by block', () => {
     const segments = entrySegments(
       assistantItem('e-a', [
@@ -208,6 +221,45 @@ describe('entrySegments', () => {
     expect(entrySegments(assistantItem('e-a', []))).toEqual([])
   })
 
+  // Mid-stream, the harness rides the raw in-flight args tail on
+  // `_streaming` beside the salvaged fields — the request pane shows the
+  // command forming instead of `empty` for the whole stream.
+  it('surfaces the streaming arguments tail while wrapper args form', () => {
+    const withTarget = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'state::set',
+            _streaming: '"payload":{"value":"grow',
+          },
+        },
+      ]),
+    )[0]
+    expect(withTarget).toMatchObject({
+      functionId: 'state::set',
+      input: { _streaming: '"payload":{"value":"grow' },
+    })
+    expect(withTarget).not.toMatchObject({ unresolvedTarget: true })
+
+    const noTarget = entrySegments(
+      assistantItem('e-b', [
+        {
+          type: 'function_call',
+          id: 'fc-2',
+          function_id: 'agent_trigger',
+          arguments: { _streaming: '{"fun' },
+        },
+      ]),
+    )[0]
+    expect(noTarget).toMatchObject({
+      unresolvedTarget: true,
+      input: { _streaming: '{"fun' },
+    })
+  })
+
   it('maps a compaction custom entry to the compaction marker', () => {
     const [marker] = entrySegments({
       entry_id: 'e-c',
@@ -223,6 +275,150 @@ describe('entrySegments', () => {
       summaryText: 'older turns',
       tokensBefore: 1200,
     })
+  })
+
+  it('maps role:custom read-back messages through the same typed dispatch', () => {
+    // The exact `session::messages` wire shape: kind:custom entries come back
+    // as a `role: 'custom'` MESSAGE (custom_type + details), not `item.custom`.
+    const [err] = entrySegments({
+      entry_id: 'e_t_faa6_error',
+      message: {
+        role: 'custom',
+        custom_type: 'error',
+        content: [],
+        details: {
+          reason:
+            'remote error (router/provider_unavailable): provider zai unavailable',
+        },
+        timestamp: 9,
+      },
+    })
+    expect(err).toMatchObject({
+      role: 'system',
+      tone: 'error',
+      content:
+        'turn failed — remote error (router/provider_unavailable): provider zai unavailable',
+      createdAt: 9,
+    })
+    const [fired] = entrySegments({
+      entry_id: 'e_trigfired_sub_9',
+      message: {
+        role: 'custom',
+        custom_type: 'trigger_fired',
+        content: [],
+        details: {
+          subscription_id: 'sub_9',
+          target: 'spawn',
+          once: true,
+          retired: true,
+          fired_at: 4,
+        },
+        timestamp: 4,
+      },
+    })
+    expect(fired).toMatchObject({ role: 'system', kind: 'trigger-fired' })
+    // Unknown custom types still fall back to their display text.
+    const [note] = entrySegments({
+      entry_id: 'e-x',
+      message: {
+        role: 'custom',
+        custom_type: 'someother',
+        content: [],
+        display: 'hello from a worker',
+        timestamp: 5,
+      },
+    })
+    expect(note).toMatchObject({
+      role: 'system',
+      content: 'hello from a worker',
+    })
+  })
+
+  it('maps harness error/notice custom entries to visible system notices', () => {
+    const [err] = entrySegments({
+      entry_id: 'e_t1_error',
+      custom: {
+        custom_type: 'error',
+        data: { reason: 'provider zai unavailable' },
+      },
+    })
+    expect(err).toMatchObject({
+      role: 'system',
+      kind: 'notice',
+      tone: 'error',
+      content: 'turn failed — provider zai unavailable',
+    })
+    const [notice] = entrySegments({
+      entry_id: 'e_t1_max_turns',
+      custom: {
+        custom_type: 'notice',
+        data: { reason: 'max_turns', message: 'max_turns (8) reached' },
+      },
+    })
+    expect(notice).toMatchObject({
+      role: 'system',
+      tone: 'info',
+      content: 'max_turns (8) reached',
+    })
+  })
+
+  it('maps a trigger_fired custom entry to a turn-less notice carrying its record', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e_trigfired_sub_1',
+      custom: {
+        custom_type: 'trigger_fired',
+        data: {
+          subscription_id: 'sub_1',
+          trigger_id: 't-1',
+          target: 'spawn',
+          model: 'claude-sonnet-4-6',
+          once: true,
+          retired: true,
+          scope: 'cache-repl-pipeline',
+          key: 'facts',
+          fired_at: 42,
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      id: 'e_trigfired_sub_1',
+      role: 'system',
+      kind: 'trigger-fired',
+      createdAt: 42,
+      trigger: { subscription_id: 'sub_1', target: 'spawn', retired: true },
+    })
+    expect((notice as { content: string }).content).toBe(
+      'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · unregistered',
+    )
+  })
+
+  it('triggerFiredSummary reads join progress and notify targets', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'spawn',
+        once: false,
+        retired: false,
+        join: {
+          id: 'J1',
+          key: 'insights',
+          arrived: 1,
+          expected: 2,
+          completed: false,
+        },
+        fired_at: 0,
+      }),
+    ).toBe('join J1 · 1/2 arrived')
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'notify',
+        label: 'ping',
+        once: true,
+        retired: true,
+        fired_at: 0,
+      }),
+    ).toBe('ping · notified this chat · unregistered')
   })
 
   it('flags an agent_trigger whose target is not resolvable yet', () => {

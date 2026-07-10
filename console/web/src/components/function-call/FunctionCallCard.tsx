@@ -252,6 +252,15 @@ export function FunctionCallCard({
 }: FunctionCallCardProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
+  // Raw in-flight arguments tail (`_streaming`, injected by the harness
+  // while a call's arguments are still forming) — rendered as a live pane.
+  const streamingTail =
+    running &&
+    message.input &&
+    typeof message.input === 'object' &&
+    typeof (message.input as { _streaming?: unknown })._streaming === 'string'
+      ? (message.input as { _streaming: string })._streaming
+      : undefined
   const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
@@ -294,7 +303,7 @@ export function FunctionCallCard({
   const showRequestPaneAbove = pending
     ? !customPreview
     : running
-      ? !hasCustomTerminal
+      ? !hasCustomTerminal && streamingTail === undefined
       : false
 
   const runResolve = async (kind: 'approve' | 'deny' | 'always_allow') => {
@@ -401,7 +410,9 @@ export function FunctionCallCard({
             <ValuePane label="request" value={message.input} />
           ) : null}
           {running && !pending ? (
-            hasCustomTerminal ? (
+            streamingTail !== undefined ? (
+              <StreamingArgsPane text={streamingTail} />
+            ) : hasCustomTerminal ? (
               <div className="border-t border-rule-2">{customTerminal}</div>
             ) : (
               <ValuePane label="response" value={message.output} bordered />
@@ -587,6 +598,30 @@ function PaneShell({
           {expanded ? '▴ collapse' : `▾ show all · ${lineCount} lines`}
         </button>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * Live view of a call's arguments while they stream — the harness rides the
+ * raw tail on `_streaming` (providers degrade the incomplete JSON itself).
+ * Column-reverse pins the newest text to the bottom, terminal-style.
+ */
+function StreamingArgsPane({ text }: { text: string }) {
+  return (
+    <div>
+      <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+        request
+        <span className="text-ink-ghost normal-case tracking-normal">
+          {' '}
+          · streaming…
+        </span>
+      </div>
+      <div className="max-h-48 overflow-y-auto flex flex-col-reverse">
+        <pre className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-all text-ink-faint">
+          {text}
+        </pre>
+      </div>
     </div>
   )
 }
