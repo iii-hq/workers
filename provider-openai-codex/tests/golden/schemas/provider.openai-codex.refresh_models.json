@@ -1,5 +1,5 @@
 {
-  "description": "Reconcile the static, namespaced Codex catalog slice through the router; returns the model count written.",
+  "description": "Fetch the authenticated Codex model catalog and replace this provider's namespaced router slice; returns the active model count.",
   "function_id": "provider::openai-codex::refresh_models",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1,11 +1,13 @@
 //! Boot wiring: function surface, the router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
-use crate::discovery::{make_refresh_models, refresh_models};
+use crate::discovery::{
+    make_refresh_models, refresh_models, refresh_models_periodically, CatalogRefreshState,
+};
 use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
 use crate::surface;
-use crate::{auth, curated, router_client, state, PROVIDER_ID};
+use crate::{auth, router_client, state, PROVIDER_ID};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
@@ -14,6 +16,7 @@ use llm_router::types::router::{
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub fn declaration() -> ProviderDeclaration {
@@ -29,9 +32,10 @@ pub fn declaration() -> ProviderDeclaration {
             extra: BTreeMap::new(),
         }),
         config_schema: None,
-        // Static, namespaced slice (the ChatGPT backend has no /v1/models).
-        supports_model_listing: Some(false),
-        models: Some(curated::static_models()),
+        // The authenticated Codex `/models` endpoint is reconciled after
+        // registration and periodically while the worker is running.
+        supports_model_listing: Some(true),
+        models: None,
         // Identity prompt served to agents via router::system_prompt::get;
         // operators can override or disable it in the llm-router config slice.
         system_prompt: Some(include_str!("../prompts/identity.txt").to_string()),
@@ -93,13 +97,19 @@ pub async fn declare_with_backoff(iii: IIIClient) {
 }
 
 /// Register, seed the vault from `~/.codex/auth.json` if it has no credential
-/// yet (best-effort, read-only), then reconcile the static catalog slice.
-pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
+/// yet (best-effort, read-only), then reconcile the dynamic backend catalog.
+pub async fn declare_and_refresh(
+    iii: IIIClient,
+    http: reqwest::Client,
+    refresh_state: Arc<CatalogRefreshState>,
+) {
     declare_with_backoff(iii.clone()).await;
     auth::import_codex_home_if_absent(&iii).await;
-    match refresh_models(&iii, &http).await {
+    match refresh_models(&iii, &http, &refresh_state, true).await {
         Ok(count) => println!("[provider-openai-codex] catalog reconciled: {count} models"),
-        Err(e) => eprintln!("[provider-openai-codex] post-register reconcile failed ({e})"),
+        Err(e) => eprintln!(
+            "[provider-openai-codex] post-register reconcile failed ({e}); keeping last known catalog"
+        ),
     }
 }
 
@@ -122,6 +132,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .read_timeout(read_timeout())
         .build()
         .expect("reqwest client");
+    let refresh_state = Arc::new(CatalogRefreshState::default());
 
     iii.register_function(
         surface::STREAM_ID,
@@ -133,19 +144,28 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
-        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone()))
-            .description(surface::REFRESH_MODELS_DESC),
+        RegisterFunction::new_async(make_refresh_models(
+            iii.clone(),
+            http.clone(),
+            refresh_state.clone(),
+        ))
+        .description(surface::REFRESH_MODELS_DESC),
     );
 
     {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
+        let refresh_state_ready = refresh_state.clone();
         iii.register_function(
             surface::ON_ROUTER_READY_ID,
             RegisterFunction::new_async(move |_event: RouterReadyEvent| {
-                let (iii, http) = (iii_ready.clone(), http_ready.clone());
+                let (iii, http, refresh_state) = (
+                    iii_ready.clone(),
+                    http_ready.clone(),
+                    refresh_state_ready.clone(),
+                );
                 async move {
-                    tokio::spawn(declare_and_refresh(iii, http));
+                    tokio::spawn(declare_and_refresh(iii, http, refresh_state));
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
@@ -159,7 +179,12 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         metadata: None,
     });
 
-    tokio::spawn(declare_and_refresh(iii, http));
+    tokio::spawn(declare_and_refresh(
+        iii.clone(),
+        http.clone(),
+        refresh_state.clone(),
+    ));
+    tokio::spawn(refresh_models_periodically(iii, http, refresh_state));
     Ok(())
 }
 
@@ -171,10 +196,16 @@ mod tests {
     /// keeps the invariants the harness pins on its default prompt.
     #[test]
     fn declaration_ships_the_identity_prompt() {
-        let prompt = declaration().system_prompt.expect("declared prompt");
+        let declaration = declaration();
+        let prompt = declaration
+            .system_prompt
+            .as_deref()
+            .expect("declared prompt");
         assert_eq!(prompt, include_str!("../prompts/identity.txt"));
         assert!(prompt.starts_with("You are an iii agent worker."));
         assert!(prompt.contains("agent_trigger"));
         assert!(prompt.contains("## Autonomy and persistence"));
+        assert_eq!(declaration.supports_model_listing, Some(true));
+        assert!(declaration.models.is_none());
     }
 }

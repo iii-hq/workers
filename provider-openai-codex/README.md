@@ -9,7 +9,7 @@ backend.
 Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`:
 `provider::openai-codex::stream` (Responses SSE → `AssistantMessageEvent` frames
 into a router-owned channel) and `provider::openai-codex::refresh_models`
-(reconciles a static, namespaced catalog slice).
+(fetches and reconciles the authenticated Codex model catalog).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
 > personal ChatGPT subscription through the undocumented
@@ -41,19 +41,21 @@ provider id `openai`.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with backoff,
-  and re-declares on the `router::ready` trigger. The declaration ships a static,
-  **namespaced** `models` slice and `credential_env_var: None`. Identity binds
-  via the `registration_token` persisted in iii-state (scope
-  `provider-openai-codex`).
-- **Models:** the ChatGPT backend has no usable `GET /v1/models`, so the catalog
-  is a static slice with **namespaced** router ids (`codex/gpt-5.5`,
-  `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5-codex`) mapped to the
-  upstream ids on the wire. Namespacing guarantees no `AmbiguousModel` collision
-  with `provider-openai`'s `gpt-5.*` catalog. Select a Codex model by its
-  `codex/*` id (or pin `provider: "openai-codex"`).
+  and re-declares on the `router::ready` trigger. It advertises dynamic model
+  listing and `credential_env_var: None`; identity binds via the
+  `registration_token` persisted in iii-state (scope `provider-openai-codex`).
+- **Models:** fetches the account-scoped Codex catalog from authenticated
+  `GET /backend-api/codex/models?client_version=…` at startup, on explicit
+  refresh, after router readiness, and every three minutes. Picker-visible
+  results become **namespaced** router ids (`codex/<upstream-id>`). Each
+  successful non-empty response replaces the complete provider slice, adding
+  new models and removing retired ones. Failed or empty refreshes preserve the
+  router's persisted last-known-good slice. Namespacing prevents
+  `AmbiguousModel` collisions with `provider-openai`.
 - **Request:** Responses API — `input` items, `stream: true`, `store: false`,
   optional `tools` and `reasoning: { effort }`. Headers: `Authorization: Bearer`,
-  `chatgpt-account-id`, `openai-beta: responses=experimental`,
+  `chatgpt-account-id`, Codex compatibility `version`,
+  `openai-beta: responses=experimental`,
   `originator: codex_cli_rs`.
 - **SSE:** `response.output_text.delta` → text, `response.reasoning_*` →
   thinking, `response.function_call_arguments.delta` → tool calls,
@@ -77,7 +79,7 @@ cargo run -- --url ws://127.0.0.1:49134
 ## Tests
 
 ```bash
-cargo test    # unit modules (config/auth/wire/sse/curated), upstream TCP stubs, schema goldens
+cargo test    # unit modules, model-discovery/upstream TCP stubs, schema goldens
 ```
 
 Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
@@ -91,4 +93,5 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | `requires a ChatGPT OAuth login … API keys belong on provider-openai` | credential is an API key | this provider is OAuth-only; use `provider-openai` for keys |
 | `missing ChatGPT account id` | token lacks the account claim | sign in again with a ChatGPT account |
 | backend `Unsupported parameter` / shape errors | Codex backend contract drifted | update this worker's request/SSE mapping against the current backend |
+| model refresh fails or returns no visible models | auth/network/backend catalog problem | the last known catalog is retained; fix the underlying error and call `provider::openai-codex::refresh_models` |
 | model routes ambiguously | a `codex/*` id collided with another provider | keep codex ids namespaced; or pin `provider: "openai-codex"` |
