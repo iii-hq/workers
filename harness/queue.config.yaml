@@ -1,0 +1,8 @@
+# Seed for direct local `queue` startup from harness/Makefile. The
+# configuration worker remains authoritative after the first registration.
+adapter:
+  name: builtin
+  config:
+    store_method: file_based
+    file_path: ./data/harness-queue
+    save_interval_ms: 5000

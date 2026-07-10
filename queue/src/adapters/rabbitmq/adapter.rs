@@ -17,8 +17,8 @@
 //!   factory can hand owned clones around before wrapping in `Arc`); this
 //!   worker always shares the adapter via `Arc<dyn QueueAdapter>` /
 //!   `SwappableAdapter`, so it isn't needed.
-//! - Stored OTel headers are restored by the shared invoker contract; adapter
-//!   tracing events are kept.
+//! - Telemetry (OTel spans) dropped, same as every other adapter port in
+//!   this crate.
 //! - Return-type shape deviations, forced by this worker's simpler
 //!   `crate::adapter::TopicInfo` (`{name, depth}` vs the engine's `{name,
 //!   broker_type, subscriber_count}`) and `crate::store::TopicStats`
@@ -49,7 +49,7 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -57,7 +57,10 @@ use std::{
 use async_trait::async_trait;
 use lapin::{message::Delivery, options::*, Channel, Connection, ConnectionProperties};
 use serde_json::Value;
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::{
+    sync::{Mutex, RwLock},
+    task::JoinHandle,
+};
 use uuid::Uuid;
 
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
@@ -73,6 +76,7 @@ use super::types::{priority_from_data, Job, QueueMode, RabbitMQConfig};
 use super::worker::Worker;
 
 pub struct RabbitMQAdapter {
+    connection: Arc<Connection>,
     publisher: Arc<Publisher>,
     retry_handler: Arc<RetryHandler>,
     topology: Arc<TopologyManager>,
@@ -80,8 +84,28 @@ pub struct RabbitMQAdapter {
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
     invoker: Arc<dyn Invoker>,
     config: RabbitMQConfig,
-    delivery_map: Arc<RwLock<HashMap<u64, Delivery>>>,
+    delivery_map: Arc<RwLock<HashMap<u64, Arc<FunctionQueueDelivery>>>>,
     delivery_counter: Arc<AtomicU64>,
+    function_consumer_counter: AtomicU64,
+    function_consumer_tasks: RwLock<Vec<FunctionConsumerHandle>>,
+    function_queue_configs: RwLock<HashMap<String, FunctionQueueConfig>>,
+}
+
+struct FunctionQueueDelivery {
+    delivery_id: u64,
+    consumer_id: u64,
+    queue_name: String,
+    delivery: Delivery,
+    operation: Mutex<()>,
+    settled: AtomicBool,
+}
+
+struct FunctionConsumerHandle {
+    queue_name: String,
+    consumer_id: u64,
+    consumer_tag: String,
+    cancelled: Arc<AtomicBool>,
+    task: JoinHandle<()>,
 }
 
 struct SubscriptionInfo {
@@ -188,20 +212,27 @@ impl RabbitMQAdapter {
     }
 
     pub async fn new(config: RabbitMQConfig, invoker: Arc<dyn Invoker>) -> anyhow::Result<Self> {
-        let connection = Connection::connect(&config.amqp_url, ConnectionProperties::default())
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to connect to RabbitMQ at {}: {}",
-                    config.amqp_url,
-                    e
-                )
-            })?;
+        let connection = Arc::new(
+            Connection::connect(&config.amqp_url, ConnectionProperties::default())
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to RabbitMQ at {}: {}",
+                        config.amqp_url,
+                        e
+                    )
+                })?,
+        );
 
         let channel = connection
             .create_channel()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create RabbitMQ channel: {}", e))?;
+
+        channel
+            .confirm_select(ConfirmSelectOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to enable RabbitMQ publisher confirms: {}", e))?;
 
         let effective_prefetch = match config.queue_mode {
             QueueMode::Fifo => 1,
@@ -219,6 +250,7 @@ impl RabbitMQAdapter {
         let retry_handler = Arc::new(RetryHandler::new(Arc::clone(&publisher)));
 
         Ok(Self {
+            connection,
             publisher,
             retry_handler,
             topology,
@@ -228,6 +260,9 @@ impl RabbitMQAdapter {
             config,
             delivery_map: Arc::new(RwLock::new(HashMap::new())),
             delivery_counter: Arc::new(AtomicU64::new(0)),
+            function_consumer_counter: AtomicU64::new(1),
+            function_consumer_tasks: RwLock::new(Vec::new()),
+            function_queue_configs: RwLock::new(HashMap::new()),
         })
     }
 
@@ -269,7 +304,7 @@ impl QueueAdapter for RabbitMQAdapter {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    ) -> anyhow::Result<()> {
+    ) {
         // Topic fanout publishes one message to every bound subscriber queue, so
         // the priority is resolved once here from the adapter-level
         // `priority_field`. Each subscriber queue honors it only if declared with
@@ -278,20 +313,28 @@ impl QueueAdapter for RabbitMQAdapter {
         let job = Job::new(topic, data, self.config.max_attempts, traceparent, baggage)
             .with_priority(priority);
 
-        self.topology
-            .setup_topic(topic)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to setup RabbitMQ topic {topic}: {e}"))?;
-        self.publisher
-            .publish(topic, &job)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to publish to RabbitMQ topic {topic}: {e}"))?;
-        tracing::debug!(
-            topic = %topic,
-            job_id = %job.id,
-            "Published to RabbitMQ queue"
-        );
-        Ok(())
+        if let Err(e) = self.topology.setup_topic(topic).await {
+            tracing::error!(
+                error = ?e,
+                topic = %topic,
+                "Failed to setup RabbitMQ topology"
+            );
+            return;
+        }
+
+        if let Err(e) = self.publisher.publish(topic, &job).await {
+            tracing::error!(
+                error = ?e,
+                topic = %topic,
+                "Failed to publish to RabbitMQ"
+            );
+        } else {
+            tracing::debug!(
+                topic = %topic,
+                job_id = %job.id,
+                "Published to RabbitMQ queue"
+            );
+        }
     }
 
     async fn subscribe(
@@ -803,14 +846,9 @@ impl QueueAdapter for RabbitMQAdapter {
     ) -> anyhow::Result<()> {
         let names = FnQueueNames::new(queue_name);
 
-        let payload = match serde_json::to_vec(&data) {
-            Ok(p) => p,
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "failed to serialize function queue data: {e}"
-                ))
-            }
-        };
+        let payload = serde_json::to_vec(&data).map_err(|err| {
+            anyhow::anyhow!("failed to serialize function queue message for '{queue_name}': {err}")
+        })?;
 
         let mut headers = lapin::types::FieldTable::default();
         headers.insert(
@@ -839,7 +877,7 @@ impl QueueAdapter for RabbitMQAdapter {
             properties = properties.with_priority(p);
         }
 
-        match self
+        let confirmation = self
             .channel
             .basic_publish(
                 &names.exchange(),
@@ -849,13 +887,19 @@ impl QueueAdapter for RabbitMQAdapter {
                 properties,
             )
             .await
-        {
-            Ok(confirm) => confirm
-                .await
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("failed to confirm function queue publish: {e}")),
-            Err(e) => Err(anyhow::anyhow!("failed to publish to function queue: {e}")),
+            .map_err(|err| {
+                anyhow::anyhow!("failed to publish to function queue '{queue_name}': {err}")
+            })?
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!("failed to confirm publish to function queue '{queue_name}': {err}")
+            })?;
+
+        if !confirmation.is_ack() {
+            anyhow::bail!("RabbitMQ did not acknowledge publish to function queue '{queue_name}'");
         }
+
+        Ok(())
     }
 
     async fn setup_function_queue(
@@ -863,10 +907,24 @@ impl QueueAdapter for RabbitMQAdapter {
         queue_name: &str,
         config: &FunctionQueueConfig,
     ) -> anyhow::Result<()> {
-        self.topology
+        // Queue arguments such as x-max-priority are immutable in RabbitMQ.
+        // Provision named queues on a disposable channel so a conflicting
+        // declaration closes only that channel, not the shared channel used
+        // by every live publisher and consumer in this adapter.
+        let channel = self
+            .connection
+            .create_channel()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create topology channel: {e}"))?;
+        TopologyManager::new(Arc::new(channel))
             .setup_function_queue(queue_name, config.backoff_ms, config.max_priority)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to setup function queue topology: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to setup function queue topology: {}", e))?;
+        self.function_queue_configs
+            .write()
+            .await
+            .insert(queue_name.to_string(), config.clone());
+        Ok(())
     }
 
     async fn consume_function_queue(
@@ -895,12 +953,28 @@ impl QueueAdapter for RabbitMQAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create consumer: {}", e))?;
 
-        let (tx, rx) = tokio::sync::mpsc::channel(prefetch as usize);
+        let (tx, rx) = tokio::sync::mpsc::channel(prefetch.max(1) as usize);
         let delivery_map = Arc::clone(&self.delivery_map);
         let delivery_counter = Arc::clone(&self.delivery_counter);
+        let consumer_id = self
+            .function_consumer_counter
+            .fetch_add(1, Ordering::Relaxed);
+        let queue_name = queue_name.to_string();
+        let task_queue_name = queue_name.clone();
+        let task_consumer_tag = consumer_tag.clone();
+        let channel = Arc::clone(&self.channel);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let task_cancelled = cancelled.clone();
 
-        tokio::spawn(async move {
-            while let Some(delivery_result) = consumer.next().await {
+        let task = tokio::spawn(async move {
+            loop {
+                let delivery_result = tokio::select! {
+                    _ = tx.closed() => break,
+                    delivery = consumer.next() => delivery,
+                };
+                let Some(delivery_result) = delivery_result else {
+                    break;
+                };
                 match delivery_result {
                     Ok(delivery) => {
                         let delivery_id = delivery_counter.fetch_add(1, Ordering::SeqCst);
@@ -958,7 +1032,17 @@ impl QueueAdapter for RabbitMQAdapter {
                             .as_ref()
                             .map(|s| s.to_string());
 
-                        delivery_map.write().await.insert(delivery_id, delivery);
+                        delivery_map.write().await.insert(
+                            delivery_id,
+                            Arc::new(FunctionQueueDelivery {
+                                delivery_id,
+                                consumer_id,
+                                queue_name: task_queue_name.clone(),
+                                delivery,
+                                operation: Mutex::new(()),
+                                settled: AtomicBool::new(false),
+                            }),
+                        );
 
                         let msg = QueueMessage {
                             delivery_id,
@@ -971,16 +1055,6 @@ impl QueueAdapter for RabbitMQAdapter {
                         };
 
                         if tx.send(msg).await.is_err() {
-                            // Receiver dropped -- nack the delivery we just stored so
-                            // RabbitMQ requeues it rather than leaving it stranded.
-                            if let Some(d) = delivery_map.write().await.remove(&delivery_id) {
-                                let _ = d
-                                    .nack(BasicNackOptions {
-                                        requeue: true,
-                                        ..Default::default()
-                                    })
-                                    .await;
-                            }
                             break;
                         }
                     }
@@ -989,19 +1063,114 @@ impl QueueAdapter for RabbitMQAdapter {
                     }
                 }
             }
+            if task_cancelled
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if let Err(err) = channel
+                    .basic_cancel(&task_consumer_tag, BasicCancelOptions::default())
+                    .await
+                {
+                    task_cancelled.store(false, Ordering::Release);
+                    tracing::warn!(queue = %task_queue_name, error = %err, "failed to cancel RabbitMQ function queue consumer");
+                }
+            }
+            if let Err(err) = requeue_rabbitmq_deliveries(&delivery_map, Some(consumer_id)).await {
+                tracing::error!(queue = %task_queue_name, error = %err, "failed to requeue RabbitMQ function queue deliveries after consumer stopped");
+            }
         });
+        self.function_consumer_tasks
+            .write()
+            .await
+            .push(FunctionConsumerHandle {
+                queue_name,
+                consumer_id,
+                consumer_tag,
+                cancelled,
+                task,
+            });
 
         Ok(rx)
     }
 
-    async fn ack_function_queue(&self, _queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
-        let delivery = self.delivery_map.write().await.remove(&delivery_id);
-        if let Some(delivery) = delivery {
-            delivery
-                .ack(BasicAckOptions::default())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to ack: {}", e))?;
+    async fn stop_function_queue_consumer(&self, queue_name: &str) -> anyhow::Result<()> {
+        let matching = {
+            let mut active = self.function_consumer_tasks.write().await;
+            let mut matching = Vec::new();
+            let mut retained = Vec::with_capacity(active.len());
+            for handle in active.drain(..) {
+                if handle.queue_name == queue_name {
+                    matching.push(handle);
+                } else {
+                    retained.push(handle);
+                }
+            }
+            *active = retained;
+            matching
+        };
+
+        let mut errors = Vec::new();
+        for handle in &matching {
+            if handle
+                .cancelled
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if let Err(err) = self
+                    .channel
+                    .basic_cancel(&handle.consumer_tag, BasicCancelOptions::default())
+                    .await
+                {
+                    handle.cancelled.store(false, Ordering::Release);
+                    errors.push(format!(
+                        "failed to cancel RabbitMQ function queue consumer '{}': {err}",
+                        handle.consumer_tag
+                    ));
+                }
+            }
+            handle.task.abort();
         }
+
+        for handle in matching {
+            let _ = handle.task.await;
+            if let Err(err) =
+                requeue_rabbitmq_deliveries(&self.delivery_map, Some(handle.consumer_id)).await
+            {
+                errors.push(err.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(errors.join("; "))
+        }
+    }
+
+    async fn forget_function_queue(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.function_queue_configs.write().await.remove(queue_name);
+        Ok(())
+    }
+
+    async fn ack_function_queue(&self, queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
+        let delivery = self.delivery_map.read().await.get(&delivery_id).cloned();
+        let Some(delivery) = delivery else {
+            return Ok(());
+        };
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if delivery.queue_name != queue_name {
+            anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
+        }
+        delivery
+            .delivery
+            .ack(BasicAckOptions::default())
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("Failed to ack: {}", e))?;
+        delivery.settled.store(true, Ordering::Release);
+        self.delivery_map.write().await.remove(&delivery_id);
         Ok(())
     }
 
@@ -1012,25 +1181,27 @@ impl QueueAdapter for RabbitMQAdapter {
         attempt: u32,
         max_retries: u32,
     ) -> anyhow::Result<()> {
-        let delivery = self.delivery_map.write().await.remove(&delivery_id);
-        let delivery = match delivery {
-            Some(d) => d,
-            None => return Ok(()),
+        let delivery = self.delivery_map.read().await.get(&delivery_id).cloned();
+        let Some(delivery) = delivery else {
+            return Ok(());
         };
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if delivery.queue_name != queue_name {
+            anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
+        }
+        let broker_delivery = &delivery.delivery;
 
         if attempt < max_retries {
-            // Retry: ack the original delivery, republish to the retry exchange.
-            // The retry queue has a TTL; after expiry RabbitMQ dead-letters the
-            // message back to the main exchange (configured via
-            // x-dead-letter-exchange on the retry queue).
-            delivery
-                .ack(BasicAckOptions::default())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to ack for retry: {}", e))?;
-
             let names = FnQueueNames::new(queue_name);
 
-            let mut headers = delivery.properties.headers().clone().unwrap_or_default();
+            let mut headers = broker_delivery
+                .properties
+                .headers()
+                .clone()
+                .unwrap_or_default();
 
             // Increment our own attempt counter so classic queues (which do not
             // populate x-delivery-count) can still track retry depth.
@@ -1053,22 +1224,69 @@ impl QueueAdapter for RabbitMQAdapter {
                 .with_headers(headers);
 
             // Preserve message_id through retries so DLQ messages remain identifiable
-            if let Some(mid) = delivery.properties.message_id() {
+            if let Some(mid) = broker_delivery.properties.message_id() {
                 properties = properties.with_message_id(mid.clone());
             }
+            if let Some(priority) = broker_delivery.properties.priority() {
+                properties = properties.with_priority(*priority);
+            }
 
-            self.channel
-                .basic_publish(
-                    &names.retry_exchange(),
-                    queue_name,
-                    BasicPublishOptions::default(),
-                    &delivery.data,
-                    properties,
-                )
+            let base_backoff_ms = self
+                .function_queue_configs
+                .read()
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to publish to retry exchange: {}", e))?
+                .get(queue_name)
+                .map_or(1_000, |config| config.backoff_ms);
+            let delay_ms = base_backoff_ms.saturating_mul(2_u64.saturating_pow(attempt));
+            properties = properties.with_expiration(delay_ms.to_string().into());
+
+            let publish_result: anyhow::Result<_> = async {
+                let confirmation = self
+                    .channel
+                    .basic_publish(
+                        &names.retry_exchange(),
+                        queue_name,
+                        BasicPublishOptions::default(),
+                        &broker_delivery.data,
+                        properties,
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to publish to retry exchange: {}", e))?
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to confirm retry publish: {}", e))?;
+                if !confirmation.is_ack() {
+                    anyhow::bail!("RabbitMQ did not acknowledge retry publish");
+                }
+                Ok(confirmation)
+            }
+            .await;
+
+            if let Err(publish_err) = publish_result {
+                let requeue_result = broker_delivery
+                    .nack(BasicNackOptions {
+                        requeue: true,
+                        ..Default::default()
+                    })
+                    .await;
+                return match requeue_result {
+                    Ok(_) => {
+                        delivery.settled.store(true, Ordering::Release);
+                        self.delivery_map.write().await.remove(&delivery_id);
+                        Err(publish_err)
+                    }
+                    Err(requeue_err) => Err(anyhow::anyhow!(
+                        "{publish_err}; also failed to requeue original delivery: {requeue_err}"
+                    )),
+                };
+            }
+
+            // Publish and confirm the retry copy before acknowledging the
+            // original. This chooses a possible duplicate over message loss
+            // when the broker fails between the two operations.
+            broker_delivery
+                .ack(BasicAckOptions::default())
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to confirm retry publish: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to ack for retry: {}", e))?;
 
             tracing::debug!(
                 queue = %queue_name,
@@ -1079,7 +1297,7 @@ impl QueueAdapter for RabbitMQAdapter {
         } else {
             // Exhausted: nack without requeue. The main queue's DLX points to the
             // DLQ exchange, so RabbitMQ routes the message there automatically.
-            delivery
+            broker_delivery
                 .nack(BasicNackOptions {
                     requeue: false,
                     ..Default::default()
@@ -1095,6 +1313,8 @@ impl QueueAdapter for RabbitMQAdapter {
             );
         }
 
+        delivery.settled.store(true, Ordering::Release);
+        self.delivery_map.write().await.remove(&delivery_id);
         Ok(())
     }
 
@@ -1171,6 +1391,25 @@ impl QueueAdapter for RabbitMQAdapter {
                 *topics.entry(topic.to_string()).or_insert(0u64) += 1;
             }
         }
+        drop(subs);
+        let function_queues = self
+            .function_queue_configs
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for queue_name in function_queues {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                topics.entry(queue_name.clone())
+            {
+                let depth = self
+                    .topic_stats(&format!("__fn_queue::{queue_name}"))
+                    .await?
+                    .depth;
+                entry.insert(depth);
+            }
+        }
         Ok(topics
             .into_iter()
             .map(|(name, count)| TopicInfo { name, depth: count })
@@ -1186,5 +1425,76 @@ impl QueueAdapter for RabbitMQAdapter {
                 .await;
             sub.task_handle.abort();
         }
+        drop(subs);
+
+        let tasks = self
+            .function_consumer_tasks
+            .write()
+            .await
+            .drain(..)
+            .collect::<Vec<_>>();
+        for handle in &tasks {
+            if handle
+                .cancelled
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let _ = self
+                    .channel
+                    .basic_cancel(&handle.consumer_tag, BasicCancelOptions::default())
+                    .await;
+            }
+            handle.task.abort();
+        }
+        for handle in tasks {
+            let _ = handle.task.await;
+        }
+        if let Err(err) = requeue_rabbitmq_deliveries(&self.delivery_map, None).await {
+            tracing::error!(error = %err, "failed to requeue RabbitMQ function queue deliveries during shutdown");
+        }
+    }
+}
+
+async fn requeue_rabbitmq_deliveries(
+    delivery_map: &Arc<RwLock<HashMap<u64, Arc<FunctionQueueDelivery>>>>,
+    consumer_id: Option<u64>,
+) -> anyhow::Result<()> {
+    let deliveries = {
+        let active = delivery_map.read().await;
+        active
+            .values()
+            .filter(|delivery| {
+                consumer_id.is_none_or(|consumer_id| delivery.consumer_id == consumer_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    let mut errors = Vec::new();
+    for delivery in deliveries {
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            delivery_map.write().await.remove(&delivery.delivery_id);
+            continue;
+        }
+        if let Err(err) = delivery
+            .delivery
+            .nack(BasicNackOptions {
+                requeue: true,
+                ..Default::default()
+            })
+            .await
+        {
+            tracing::error!(queue = %delivery.queue_name, error = %err, "failed to requeue unacknowledged RabbitMQ function queue delivery");
+            errors.push(err.to_string());
+            continue;
+        }
+        delivery.settled.store(true, Ordering::Release);
+        delivery_map.write().await.remove(&delivery.delivery_id);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(errors.join("; "))
     }
 }

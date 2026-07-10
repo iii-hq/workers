@@ -16,22 +16,12 @@ use crate::prompt;
 use crate::trigger::{PendingInfo, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{
-    fs_scope_metadata, ParentLink, TurnLane, TurnOptions, TurnRecord, TurnStatus,
-};
+use crate::types::turn::{fs_scope_metadata, ParentLink, TurnOptions, TurnRecord, TurnStatus};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
     pub session_id: String,
     pub turn_id: String,
-}
-
-fn lane_for_spawn(req: &SpawnRequest) -> TurnLane {
-    if req.spawned_by_subscription_id.is_some() || req.reactive_depth.is_some() {
-        TurnLane::Reactive
-    } else {
-        TurnLane::Subagent
-    }
 }
 
 /// Dispatch-path spawn: enforce guards, subset the policy, seed the child, and
@@ -246,7 +236,6 @@ async fn seed_child(
         step: 0,
         turn_count: 0,
         depth,
-        lane: Some(lane_for_spawn(req)),
         message_preview,
         abort: false,
         watermark_entry_id: None,
@@ -307,7 +296,15 @@ async fn seed_child(
         updated_at: now,
     };
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    crate::turn_loop::enqueue_step(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    crate::turn_loop::enqueue_step(
+        &deps.iii,
+        &child_session_id,
+        &turn_id,
+        0,
+        record.message_preview.as_deref(),
+        depth,
+    )
+    .await?;
 
     Ok(ChildIds {
         session_id: child_session_id,
@@ -373,23 +370,6 @@ mod tests {
     use super::*;
     use crate::types::output::OutputContract;
 
-    #[test]
-    fn direct_nested_and_reactive_spawns_select_their_execution_lane() {
-        let direct: SpawnRequest = serde_json::from_value(json!({ "task": "do work" })).unwrap();
-        assert_eq!(lane_for_spawn(&direct), TurnLane::Subagent);
-        // Nested spawns use the same lane; parent linkage changes depth, not
-        // the workload class.
-        assert_eq!(lane_for_spawn(&direct), TurnLane::Subagent);
-
-        let reactive: SpawnRequest = serde_json::from_value(json!({
-            "task": "react",
-            "spawned_by_subscription_id": "sub_1",
-            "reactive_depth": 1
-        }))
-        .unwrap();
-        assert_eq!(lane_for_spawn(&reactive), TurnLane::Reactive);
-    }
-
     fn parent_record(metadata: Option<Value>) -> TurnRecord {
         TurnRecord {
             turn_id: "t_parent".into(),
@@ -398,7 +378,6 @@ mod tests {
             step: 1,
             turn_count: 1,
             depth: 0,
-            lane: Some(TurnLane::Root),
             message_preview: None,
             abort: false,
             watermark_entry_id: None,

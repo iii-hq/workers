@@ -127,13 +127,7 @@ struct NoopInvoker;
 
 #[async_trait]
 impl Invoker for NoopInvoker {
-    async fn call(
-        &self,
-        _function_id: &str,
-        _payload: Value,
-        _traceparent: Option<String>,
-        _baggage: Option<String>,
-    ) -> Result<Option<Value>, String> {
+    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
         panic!("NoopInvoker::call should never be invoked in this test")
     }
 }
@@ -182,8 +176,7 @@ async fn basic_delivery_connect_or_skip() {
 
     adapter
         .enqueue(&topic, json!({"hello": "world"}), None, None)
-        .await
-        .unwrap();
+        .await;
 
     wait_until(
         || {
@@ -250,7 +243,7 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
                 max_retries: 1,
                 concurrency: 1,
                 backoff_ms: 200,
-                max_priority: None,
+                ..FunctionQueueConfig::default()
             },
         )
         .await
@@ -268,7 +261,8 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
             None,
             None,
         )
-        .await;
+        .await
+        .expect("publish_to_function_queue should succeed");
 
     let mut rx = adapter
         .consume_function_queue(&queue_name, 10)
@@ -384,8 +378,7 @@ async fn priority_ordering_connect_or_skip() {
     for p in [1u64, 9, 5] {
         adapter
             .enqueue(&topic, json!({"marker": p, "priority": p}), None, None)
-            .await
-            .unwrap();
+            .await;
     }
 
     // No consumer exists yet at this point -- all three publishes above were
@@ -483,10 +476,7 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     for n in 0..10u64 {
-        adapter
-            .enqueue(&topic, json!({"n": n}), None, None)
-            .await
-            .unwrap();
+        adapter.enqueue(&topic, json!({"n": n}), None, None).await;
     }
 
     wait_until(

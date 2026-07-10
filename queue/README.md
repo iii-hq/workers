@@ -32,6 +32,8 @@ compatibility, including `maxRetries` and `backoffDelayMs`.
 
 | Function id | Input | Output |
 |---|---|---|
+| `queue::define` | `{ "queue", "config" }` | `{ "queue", "changed" }` |
+| `engine::queue::enqueue` | `{ "queue", "function_id", "data", "messageReceiptId", "traceparent"?, "baggage"? }` | `{ "messageReceiptId" }` |
 | `iii::durable::publish` | `{ "queue" \| "topic", "data" }` | `null` |
 | `iii::queue::redrive` | `{ "queue" \| "topic" }` | `{ "queue", "redriven" }` |
 | `iii::queue::redrive_message` | `{ "queue" \| "topic", "message_id" }` | `{ "queue", "message_id", "redriven" }` |
@@ -46,6 +48,27 @@ compatibility, including `maxRetries` and `backoffDelayMs`.
 Configuration is owned by the `configuration` worker under id `queue`.
 Seed it once with `--config <file>.yaml`; runtime edits come from the
 configuration worker after that.
+
+Named queues live under `queue_configs` and can also be converged at runtime
+with `queue::define`. Definitions are durable: the worker recreates their
+topology and consumers on restart. A definition succeeds only after its
+consumer is ready and the merged configuration has been persisted.
+
+```yaml
+queue_configs:
+  harness-turn:
+    type: fifo
+    message_group_field: session_id
+    concurrency: 10
+    max_retries: 3
+    backoff_ms: 1000
+    poll_interval_ms: 100
+```
+
+For FIFO named queues, messages with the same group-field value run in order;
+different groups run concurrently up to `concurrency`.
+After a restart, a delivery waits until its target function is registered and
+does not consume retry budget while the target worker is still booting.
 
 `adapter.name` selects the transport: `builtin` (default), `redis`, or
 `rabbitmq`. Changing the adapter config hot-swaps the transport and
@@ -75,7 +98,7 @@ adapter:
 
 | Field | Default | Description |
 |---|---|---|
-| `adapter.config.store_method` | `in_memory` | `in_memory` or `file_based`. |
+| `adapter.config.store_method` | `file_based` | `in_memory` or `file_based`. |
 | `adapter.config.file_path` | `queue_store_data` | Directory used by `file_based`. |
 | `adapter.config.save_interval_ms` | `5000` | Accepted for parity; this worker persists on mutation rather than on an interval. |
 
@@ -84,6 +107,8 @@ adapter:
 Pub/sub only — 1:1 port of the engine builtin's `RedisAdapter`, including
 its limitations. There is no DLQ, no retries, and no message durability: a
 message published with no subscriber connected is lost.
+Redis does not currently support named function-queue consumers, so a
+persisted `queue_configs` entry fails boot with an explicit unsupported error.
 
 ```yaml
 adapter:
@@ -108,6 +133,10 @@ standard and FIFO queue modes. On by default (the `rabbitmq` cargo feature
 is feature-default-on); building with `--no-default-features` drops it,
 and selecting `adapter.name: rabbitmq` in that build fails boot with an
 error naming the missing feature.
+
+RabbitMQ's `x-max-priority` queue argument is immutable. An existing named
+queue cannot change `max_priority` in place; delete and recreate its broker
+topology first.
 
 ```yaml
 adapter:
@@ -154,11 +183,12 @@ The `durable:subscriber` trigger's `queue_config` accepts the full builtin
 | `backoffDelayMs` | `1000` | Base retry delay; exponential backoff. |
 | `maxPriority` | none | RabbitMQ-only: declares the subscriber's queue as an AMQP priority queue with this many levels (1-255). |
 
-## Requires Removing The Built-In `iii-queue` Worker
+## Engine Compatibility
 
-The built-in `iii-queue` worker also owns `durable:subscriber`. Two owners of
-the same trigger type on one engine collide, so this worker requires
-`iii-queue` to be absent from the engine config.
+Current engines route `TriggerAction::Enqueue` through this worker's
+`engine::queue::enqueue` provider and no longer load `iii-queue` by default.
+When connecting to an older engine, remove `iii-queue` from its config first;
+two owners of `durable:subscriber` cannot run together.
 
 On boot, this worker queries `engine::workers::list` and refuses to start if
 `iii-queue` is active.
@@ -168,29 +198,27 @@ On boot, this worker queries `engine::workers::list` and refuses to start if
 | Behavior | Builtin | This worker |
 |---|---|---|
 | Trigger type | `durable:subscriber` | same |
-| Function ids | 8 public ids listed above | same, verbatim |
+| Function ids | 8 legacy public ids | same 8 plus `queue::define` and the engine enqueue provider |
 | Retry | `max_retries` + exponential `backoff_ms * 2^(attempts - 1)` | same |
 | DLQ | after retries exhausted; redrive/redrive_message/discard | same |
 | Restart survival | file-backed store | same (`file_based`) |
 | In-memory mode | jobs lost on restart/swap | same |
 | Transports | builtin (memory/file), redis (pub/sub, no DLQ), rabbitmq (full: retry/DLQ/priority/fifo) | same as builtin |
-| bridge adapter | engine-internal (`TriggerAction::Enqueue`) | N/A — engine `QueueEnqueuer` cut (MOT-3829) |
-| Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly once the engine remote-enqueue cut lands |
+| bridge adapter | engine-internal (`TriggerAction::Enqueue`) | replaced by `engine::queue::enqueue` |
+| Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly through the engine provider route |
 | Latency benchmark | in-process baseline required | final budget is a pre-deprecation gate (tracked in the migration master plan) |
 
-The full engine `TriggerAction::Enqueue` path depends on the separate
-`QueueEnqueuer` engine cut tracked in the migration master plan.
+The `TriggerAction::Enqueue` path requires an engine version that routes named
+enqueue actions through the registered `engine::queue::enqueue` provider.
 
 ## Known Gaps / Parity Notes
 
 - **`bridge` adapter — not ported.** It was engine-internal plumbing for
-  `TriggerAction::Enqueue`; that whole path is superseded by the engine's
-  `QueueEnqueuer` cut (MOT-3829), which is out of scope for this worker.
-- **No grouped-fifo.** The engine's `GroupedFifoWorker` partitions `fifo`
-  delivery by `job.group_id` when `concurrency > 1`, running each group
-  serially but different groups concurrently. This worker's `fifo` mode is
-  strictly serial regardless of `concurrency` — there is no group
-  partitioning.
+  `TriggerAction::Enqueue`; the registered `engine::queue::enqueue` provider
+  supersedes that path.
+- **Subscriber FIFO remains global.** Grouped FIFO is implemented for named
+  function queues created by `queue::define`; `durable:subscriber` keeps its
+  existing strictly serial FIFO behavior.
 - **`resolve_dlq_name` bare-topic behavior ported verbatim, bug and all.**
   DLQ operations (`redrive`, `dlq_count`, `topic_stats`, `dlq_peek`)
   address a bare topic name and, on the builtin adapter, aggregate across

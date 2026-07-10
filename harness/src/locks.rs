@@ -1,9 +1,8 @@
-//! Per-session in-process serialization. Standard-mode turn topics are not
-//! per-session ordered, so the per-session lock serializes all turn-record
-//! writers. `harness::function::resolve` and the pending sweep also run off the
-//! turn topics (child completion, approval decisions, cron). Guarding both with
-//! one per-session lock closes the read-modify-write race on the turn record
-//! within a single process.
+//! Per-session in-process serialization. The `harness-turn` queue orders queued
+//! steps by session, while `harness::function::resolve` and the pending sweep
+//! also write turn records OFF the queue (child completion, approval decisions,
+//! cron). Guarding every writer with one per-session lock closes their
+//! read-modify-write race within a single process.
 //!
 //! NOTE: this is single-process correctness. A multi-process deployment needs
 //! an engine-level compare-and-set on the turn record; the fail-safe is the

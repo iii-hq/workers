@@ -1,6 +1,4 @@
-//! Worker configuration: which queue transport adapter this worker uses.
-//! Mirrors the builtin's QueueModuleConfig (engine/src/workers/queue/config.rs)
-//! with the default in-process transport named `builtin`.
+//! Worker configuration: queue transport plus durable named function queues.
 
 use std::collections::BTreeMap;
 
@@ -25,9 +23,9 @@ pub struct AdapterEntry {
 pub struct QueueConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<AdapterEntry>,
-    /// Named function queues consumed by the standalone queue worker for
-    /// engine `TriggerAction::Enqueue` requests. Queue definitions survive
-    /// worker restarts through this configuration entry.
+    /// Durable function queues keyed by the name used by
+    /// `TriggerAction::Enqueue`. Definitions are persisted through the
+    /// configuration worker and restored when this worker restarts.
     #[serde(default)]
     pub queue_configs: BTreeMap<String, FunctionQueueConfig>,
 }
@@ -40,18 +38,29 @@ impl QueueConfig {
             .unwrap_or(DEFAULT_ADAPTER)
     }
 
+    /// Registry/install seed. Direct library construction keeps the lightweight
+    /// in-memory default, while installed workers persist accepted jobs.
+    pub fn packaged_default() -> Self {
+        Self {
+            adapter: Some(AdapterEntry {
+                name: DEFAULT_ADAPTER.to_string(),
+                config: Some(serde_json::json!({
+                    "store_method": "file_based",
+                    "file_path": "./data/queue",
+                    "save_interval_ms": 5000
+                })),
+            }),
+            queue_configs: BTreeMap::new(),
+        }
+    }
+
     pub fn normalized(&self) -> Self {
         self.clone()
     }
 
     pub fn validate(&self) -> Result<(), String> {
         for (name, config) in &self.queue_configs {
-            if name.trim().is_empty() {
-                return Err("function queue name must not be empty".to_string());
-            }
-            config
-                .validate()
-                .map_err(|error| format!("invalid function queue '{name}': {error}"))?;
+            config.validate(name)?;
         }
         Ok(())
     }
@@ -96,6 +105,16 @@ mod tests {
     }
 
     #[test]
+    fn packaged_default_is_file_backed() {
+        let config = QueueConfig::packaged_default();
+        assert_eq!(config.effective_adapter_name(), "builtin");
+        assert_eq!(
+            config.adapter.unwrap().config.unwrap()["store_method"],
+            "file_based"
+        );
+    }
+
+    #[test]
     fn deserializes_adapter_entry() {
         let c: QueueConfig =
             serde_yaml::from_str("{adapter: {name: file_based, config: {path: './data/queue'}}}")
@@ -129,7 +148,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: None,
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
         assert_eq!(adapter_config_value(&c), None);
     }
@@ -141,7 +160,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: Some(serde_json::Value::Null),
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
         assert_eq!(adapter_config_value(&c), None);
     }
@@ -153,11 +172,27 @@ mod tests {
                 name: "redis".to_string(),
                 config: Some(serde_json::json!({"redis_url": "redis://x"})),
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
         assert_eq!(
             adapter_config_value(&c),
             Some(serde_json::json!({"redis_url": "redis://x"}))
         );
+    }
+
+    #[test]
+    fn named_queue_config_roundtrips() {
+        let c: QueueConfig = serde_yaml::from_str(
+            "queue_configs:\n  harness-turn:\n    type: fifo\n    message_group_field: session_id\n",
+        )
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(
+            c.queue_configs["harness-turn"]
+                .message_group_field
+                .as_deref(),
+            Some("session_id")
+        );
+        assert_eq!(QueueConfig::from_json(&c.to_json()).unwrap(), c);
     }
 }

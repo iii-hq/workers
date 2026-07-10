@@ -33,30 +33,6 @@ pub enum TurnStatus {
     Failed,
 }
 
-/// Durable execution lane for a turn. The lane is frozen when the record is
-/// created so continuations and resumes cannot drift between named queues.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnLane {
-    Root,
-    Subagent,
-    Reactive,
-}
-
-impl TurnLane {
-    /// All execution lanes the harness provisions during boot.
-    pub const ALL: [Self; 3] = [Self::Root, Self::Subagent, Self::Reactive];
-
-    /// The named function queue used for this workload class.
-    pub const fn queue_name(self) -> &'static str {
-        match self {
-            Self::Root => "harness-turn",
-            Self::Subagent => "harness-subagent",
-            Self::Reactive => "harness-reactive",
-        }
-    }
-}
-
 impl TurnStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -223,11 +199,6 @@ pub struct TurnRecord {
     pub turn_count: u32,
     /// Sub-agent depth; 0 for top-level turns.
     pub depth: u32,
-    /// Explicit lane for records created by queue-aware harness versions.
-    /// `None` is retained for backward-compatible deserialization and inferred
-    /// from the legacy linkage fields by [`Self::effective_lane`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lane: Option<TurnLane>,
     /// First ~30 chars of the user message that started the turn, stamped
     /// into OTel baggage as the `iii.tag.message` trace tag on every step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,18 +245,6 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
-    pub fn effective_lane(&self) -> TurnLane {
-        self.lane.unwrap_or_else(|| {
-            if self.spawned_by_subscription_id.is_some() || self.reactive_depth.is_some() {
-                TurnLane::Reactive
-            } else if self.depth > 0 || self.parent.is_some() {
-                TurnLane::Subagent
-            } else {
-                TurnLane::Root
-            }
-        })
-    }
-
     /// Function_call ids still awaiting a result (`triggered` or `pending`).
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
@@ -335,7 +294,6 @@ mod tests {
             step: 2,
             turn_count: 1,
             depth: 0,
-            lane: None,
             message_preview: None,
             abort: false,
             watermark_entry_id: None,
@@ -380,49 +338,6 @@ mod tests {
             pending_timeout_ms: None,
             pending_at: None,
         }
-    }
-
-    #[test]
-    fn legacy_records_infer_their_execution_lane() {
-        let root = record();
-        assert_eq!(root.effective_lane(), TurnLane::Root);
-
-        let mut nested = record();
-        nested.depth = 1;
-        assert_eq!(nested.effective_lane(), TurnLane::Subagent);
-
-        let mut direct_spawn = record();
-        direct_spawn.parent = Some(ParentLink {
-            session_id: "s_parent".into(),
-            turn_id: "t_parent".into(),
-            function_call_id: "call_1".into(),
-        });
-        assert_eq!(direct_spawn.effective_lane(), TurnLane::Subagent);
-
-        let mut reactive = record();
-        reactive.spawned_by_subscription_id = Some("sub_1".into());
-        assert_eq!(reactive.effective_lane(), TurnLane::Reactive);
-    }
-
-    #[test]
-    fn execution_lanes_map_to_their_named_queues() {
-        assert_eq!(
-            TurnLane::ALL,
-            [TurnLane::Root, TurnLane::Subagent, TurnLane::Reactive]
-        );
-        assert_eq!(TurnLane::Root.queue_name(), "harness-turn");
-        assert_eq!(TurnLane::Subagent.queue_name(), "harness-subagent");
-        assert_eq!(TurnLane::Reactive.queue_name(), "harness-reactive");
-    }
-
-    #[test]
-    fn persisted_lane_wins_over_legacy_routing_metadata() {
-        let mut record = record();
-        record.lane = Some(TurnLane::Root);
-        record.spawned_by_subscription_id = Some("sub_1".into());
-        record.reactive_depth = Some(1);
-
-        assert_eq!(record.effective_lane(), TurnLane::Root);
     }
 
     #[test]

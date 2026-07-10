@@ -5,12 +5,15 @@
 //! Port of `engine/src/workers/queue/adapters/rabbitmq/worker.rs`. Seams
 //! applied for the standalone worker:
 //! - `Arc<Engine>` and `engine.call(...)` become `Arc<dyn
-//!   crate::trigger::Invoker>` and a context-aware invocation call
+//!   crate::trigger::Invoker>` and `invoker.call(function_id, payload)`
 //!   (same seam as every other adapter in this crate, e.g.
 //!   `adapters/redis.rs`).
-//! - The engine's `condition::check_condition` helper is reimplemented locally
-//!   against `Invoker` with identical semantics; stored trace headers are
-//!   restored for both condition and target calls.
+//! - The engine's `condition::check_condition` helper and its telemetry span
+//!   (`tracing::info_span!` + OTel `SpanExt::with_parent_headers` +
+//!   `Instrument`) are dropped; `check_condition` is reimplemented locally
+//!   against `Invoker` with identical semantics (same duplication pattern as
+//!   `adapters/redis.rs::check_condition`) and the worker emits plain
+//!   `tracing` events instead of a parented span.
 
 #![cfg(feature = "rabbitmq")]
 
@@ -36,13 +39,8 @@ async fn check_condition(
     invoker: &dyn Invoker,
     condition_function_id: &str,
     data: Value,
-    traceparent: Option<String>,
-    baggage: Option<String>,
 ) -> Result<bool, String> {
-    match invoker
-        .call(condition_function_id, data, traceparent, baggage)
-        .await
-    {
+    match invoker.call(condition_function_id, data).await {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -53,16 +51,6 @@ async fn check_condition(
         }
         Err(e) => Err(e),
     }
-}
-
-async fn invoke_target(
-    invoker: &dyn Invoker,
-    function_id: &str,
-    data: Value,
-    traceparent: Option<String>,
-    baggage: Option<String>,
-) -> Result<Option<Value>, String> {
-    invoker.call(function_id, data, traceparent, baggage).await
 }
 
 pub struct Worker {
@@ -264,15 +252,7 @@ impl Worker {
                 condition_function_id = %condition_path,
                 "Checking trigger conditions"
             );
-            match check_condition(
-                invoker.as_ref(),
-                condition_path,
-                data.clone(),
-                job.traceparent.clone(),
-                job.baggage.clone(),
-            )
-            .await
-            {
+            match check_condition(invoker.as_ref(), condition_path, data.clone()).await {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::debug!(
@@ -292,15 +272,7 @@ impl Worker {
             }
         }
 
-        match invoke_target(
-            invoker.as_ref(),
-            function_id,
-            data,
-            job.traceparent.clone(),
-            job.baggage.clone(),
-        )
-        .await
-        {
+        match invoker.call(function_id, data).await {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())
@@ -310,53 +282,5 @@ impl Worker {
                 Err(format!("Job processing error: {:?}", e).into())
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use tokio::sync::Mutex;
-
-    #[derive(Default)]
-    struct RecordingInvoker {
-        calls: Mutex<Vec<(Option<String>, Option<String>)>>,
-    }
-
-    #[async_trait]
-    impl Invoker for RecordingInvoker {
-        async fn call(
-            &self,
-            _function_id: &str,
-            _payload: Value,
-            traceparent: Option<String>,
-            baggage: Option<String>,
-        ) -> Result<Option<Value>, String> {
-            self.calls.lock().await.push((traceparent, baggage));
-            Ok(None)
-        }
-    }
-
-    #[tokio::test]
-    async fn subscriber_invocation_passes_stored_trace_context() {
-        let invoker = RecordingInvoker::default();
-        invoke_target(
-            &invoker,
-            "backend",
-            serde_json::json!({"ok": true}),
-            Some("00-trace-parent-01".to_string()),
-            Some("tenant=motia".to_string()),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            *invoker.calls.lock().await,
-            vec![(
-                Some("00-trace-parent-01".to_string()),
-                Some("tenant=motia".to_string())
-            )]
-        );
     }
 }

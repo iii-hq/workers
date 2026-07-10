@@ -3,15 +3,13 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapter::{FunctionQueueConfig, QueueAdapter, SwappableAdapter};
-use crate::boot::{ApplyLock, ConfigCell};
-use crate::function_queues::FunctionQueueRuntime;
+use crate::adapter::{QueueAdapter, SwappableAdapter};
+use crate::runtime::{DefineQueueInput, EnqueueInput, FunctionQueueRuntime};
 use crate::store::Job;
 
 pub const PUBLISH_FN_ID: &str = "iii::durable::publish";
@@ -22,10 +20,8 @@ pub const LIST_TOPICS_FN_ID: &str = "engine::queue::list_topics";
 pub const TOPIC_STATS_FN_ID: &str = "engine::queue::topic_stats";
 pub const DLQ_TOPICS_FN_ID: &str = "engine::queue::dlq_topics";
 pub const DLQ_MESSAGES_FN_ID: &str = "engine::queue::dlq_messages";
-/// Idempotently creates a named function queue owned by this worker.
-pub const ENSURE_FUNCTION_QUEUE_FN_ID: &str = "engine::queue::ensure";
-/// Internal provider invoked by the engine for `TriggerAction::Enqueue`.
-pub const ENQUEUE_FUNCTION_QUEUE_FN_ID: &str = "engine::queue::enqueue";
+pub const DEFINE_QUEUE_FN_ID: &str = "queue::define";
+pub const ENQUEUE_FUNCTION_FN_ID: &str = "engine::queue::enqueue";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PublishInput {
@@ -34,30 +30,6 @@ pub struct PublishInput {
     pub topic: String,
     pub data: Value,
 }
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct EnsureFunctionQueueInput {
-    pub queue: String,
-    pub config: FunctionQueueConfig,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
-pub struct EnsureFunctionQueueResult {
-    pub queue: String,
-    pub created: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct EnqueueFunctionInput {
-    pub queue: String,
-    pub function_id: String,
-    pub data: Value,
-    #[serde(alias = "messageReceiptId")]
-    pub message_receipt_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
-pub struct EnqueueFunctionResult {}
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RedriveInput {
@@ -159,10 +131,27 @@ pub struct DlqMessage {
 pub fn register_all(
     iii: &Arc<IIIClient>,
     adapter: Arc<SwappableAdapter>,
-    config: ConfigCell,
-    apply_lock: ApplyLock,
-    function_queues: Arc<FunctionQueueRuntime>,
+    runtime: FunctionQueueRuntime,
 ) {
+    let define_runtime = runtime.clone();
+    iii.register_function(
+        DEFINE_QUEUE_FN_ID,
+        RegisterFunction::new_async(move |input: DefineQueueInput| {
+            let runtime = define_runtime.clone();
+            async move { runtime.define(input).await }
+        })
+        .description("Define and start a durable named function queue"),
+    );
+
+    iii.register_function(
+        ENQUEUE_FUNCTION_FN_ID,
+        RegisterFunction::new_async(move |input: EnqueueInput| {
+            let runtime = runtime.clone();
+            async move { runtime.enqueue(input).await }
+        })
+        .description("Internal provider for TriggerAction::Enqueue"),
+    );
+
     let publish_adapter = adapter.clone();
     iii.register_function(
         PUBLISH_FN_ID,
@@ -171,32 +160,6 @@ pub fn register_all(
             async move { publish(adapter, input).await }
         })
         .description("Enqueue a message"),
-    );
-
-    let ensure_iii = iii.clone();
-    let ensure_config = config.clone();
-    let ensure_apply_lock = apply_lock.clone();
-    let ensure_runtime = function_queues.clone();
-    iii.register_function(
-        ENSURE_FUNCTION_QUEUE_FN_ID,
-        RegisterFunction::new_async(move |input: EnsureFunctionQueueInput| {
-            let iii = ensure_iii.clone();
-            let config = ensure_config.clone();
-            let apply_lock = ensure_apply_lock.clone();
-            let runtime = ensure_runtime.clone();
-            async move { ensure_function_queue(iii, config, apply_lock, runtime, input).await }
-        })
-        .description("Idempotently provision a named function queue"),
-    );
-
-    let enqueue_runtime = function_queues.clone();
-    iii.register_function(
-        ENQUEUE_FUNCTION_QUEUE_FN_ID,
-        RegisterFunction::new_async(move |input: EnqueueFunctionInput| {
-            let runtime = enqueue_runtime.clone();
-            async move { enqueue_function_queue(runtime, input).await }
-        })
-        .description("Internal engine enqueue provider; persists a named function queue job"),
     );
 
     let redrive_adapter = adapter.clone();
@@ -230,25 +193,21 @@ pub fn register_all(
     );
 
     let list_adapter = adapter.clone();
-    let list_config = config.clone();
     iii.register_function(
         LIST_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: ListTopicsInput| {
             let adapter = list_adapter.clone();
-            let config = list_config.clone();
-            async move { list_topics(adapter, config).await }
+            async move { list_topics(adapter).await }
         })
         .description("List all queue topics"),
     );
 
     let stats_adapter = adapter.clone();
-    let stats_config = config.clone();
     iii.register_function(
         TOPIC_STATS_FN_ID,
         RegisterFunction::new_async(move |input: TopicStatsInput| {
             let adapter = stats_adapter.clone();
-            let config = stats_config.clone();
-            async move { topic_stats(adapter, config, input).await }
+            async move { topic_stats(adapter, input).await }
         })
         .description("Get stats for a queue topic"),
     );
@@ -274,95 +233,6 @@ pub fn register_all(
     );
 }
 
-async fn ensure_function_queue(
-    iii: Arc<IIIClient>,
-    config_cell: ConfigCell,
-    apply_lock: ApplyLock,
-    runtime: Arc<FunctionQueueRuntime>,
-    input: EnsureFunctionQueueInput,
-) -> Result<EnsureFunctionQueueResult, Error> {
-    if input.queue.trim().is_empty() {
-        return Err(Error::Handler("queue is required".to_string()));
-    }
-    input
-        .config
-        .validate()
-        .map_err(|error| Error::Handler(error.to_string()))?;
-
-    let _apply = apply_lock.lock().await;
-    let current = config_cell.read().await.as_ref().clone();
-    if let Some(existing) = current.queue_configs.get(&input.queue) {
-        if existing == &input.config {
-            return Ok(EnsureFunctionQueueResult {
-                queue: input.queue,
-                created: false,
-            });
-        }
-        return Err(Error::Handler(format!(
-            "function queue '{}' already exists with a different configuration",
-            input.queue
-        )));
-    }
-
-    let mut next = current.clone();
-    next.queue_configs
-        .insert(input.queue.clone(), input.config.clone());
-    persist_config(&iii, &next).await?;
-    if let Err(error) = runtime.reconcile(&next.queue_configs).await {
-        let _ = persist_config(&iii, &current).await;
-        return Err(Error::Handler(format!(
-            "could not start function queue '{}': {error}",
-            input.queue
-        )));
-    }
-    *config_cell.write().await = Arc::new(next);
-    Ok(EnsureFunctionQueueResult {
-        queue: input.queue,
-        created: true,
-    })
-}
-
-async fn persist_config(iii: &IIIClient, config: &crate::config::QueueConfig) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
-        function_id: "configuration::set".to_string(),
-        payload: serde_json::json!({ "id": crate::configuration::CONFIG_ID, "value": config }),
-        action: None,
-        timeout_ms: Some(10_000),
-    })
-    .await
-    .map(|_| ())
-    .map_err(|error| Error::Handler(format!("persisting queue configuration: {error}")))
-}
-
-pub async fn enqueue_function_queue(
-    runtime: Arc<FunctionQueueRuntime>,
-    input: EnqueueFunctionInput,
-) -> Result<Option<EnqueueFunctionResult>, Error> {
-    if input.queue.trim().is_empty() {
-        return Err(Error::Handler("queue is required".to_string()));
-    }
-    if input.function_id.trim().is_empty() {
-        return Err(Error::Handler("function_id is required".to_string()));
-    }
-    if input.message_receipt_id.trim().is_empty() {
-        return Err(Error::Handler("messageReceiptId is required".to_string()));
-    }
-    let traceparent = iii_helpers::observability::inject_traceparent();
-    let baggage = iii_helpers::observability::inject_baggage();
-    runtime
-        .enqueue(
-            &input.queue,
-            &input.function_id,
-            input.data,
-            &input.message_receipt_id,
-            traceparent,
-            baggage,
-        )
-        .await
-        .map_err(|error| Error::Handler(error.to_string()))?;
-    Ok(None)
-}
-
 pub async fn publish(
     adapter: Arc<SwappableAdapter>,
     input: PublishInput,
@@ -370,12 +240,7 @@ pub async fn publish(
     if input.topic.is_empty() {
         return Err(Error::Handler("Topic is not set".to_string()));
     }
-    let traceparent = iii_helpers::observability::inject_traceparent();
-    let baggage = iii_helpers::observability::inject_baggage();
-    adapter
-        .enqueue(&input.topic, input.data, traceparent, baggage)
-        .await
-        .map_err(|e| Error::Handler(e.to_string()))?;
+    adapter.enqueue(&input.topic, input.data, None, None).await;
     // Always `None` → `null` on the wire, matching the engine builtin's
     // `Success(None)`. The `PublishAck` type only exists to keep the
     // registered response schema typed.
@@ -431,62 +296,38 @@ pub async fn discard_message(
     })
 }
 
-pub async fn list_topics(
-    adapter: Arc<SwappableAdapter>,
-    config: ConfigCell,
-) -> Result<Vec<TopicInfo>, Error> {
+pub async fn list_topics(adapter: Arc<SwappableAdapter>) -> Result<Vec<TopicInfo>, Error> {
     let broker_type = adapter.current_name().await;
     let topics = adapter
         .list_topics()
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
-    let mut listed = topics
+    Ok(topics
         .into_iter()
         .map(|topic| TopicInfo {
             name: topic.name,
             broker_type: broker_type.clone(),
             subscriber_count: 0,
         })
-        .collect::<Vec<_>>();
-    let configs = config.read().await.queue_configs.clone();
-    for (name, queue_config) in configs {
-        if !listed.iter().any(|topic| topic.name == name) {
-            listed.push(TopicInfo {
-                name,
-                broker_type: broker_type.clone(),
-                subscriber_count: u64::from(queue_config.concurrency),
-            });
-        }
-    }
-    listed.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(listed)
+        .collect())
 }
 
 pub async fn topic_stats(
     adapter: Arc<SwappableAdapter>,
-    config: ConfigCell,
     input: TopicStatsInput,
 ) -> Result<TopicStatsOutput, Error> {
     if input.topic.is_empty() {
         return Err(Error::Handler("topic is required".to_string()));
     }
-    let queue_config = config.read().await.queue_configs.get(&input.topic).cloned();
-    let storage_topic = if queue_config.is_some() {
-        format!("__fn_queue::{}", input.topic)
-    } else {
-        input.topic.clone()
-    };
     let stats = adapter
-        .topic_stats(&storage_topic)
+        .topic_stats(&input.topic)
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
     Ok(TopicStatsOutput {
         depth: stats.depth,
-        consumer_count: queue_config
-            .as_ref()
-            .map_or(0, |cfg| u64::from(cfg.concurrency)),
+        consumer_count: 0,
         dlq_depth: stats.dlq_depth,
-        config: queue_config.and_then(|cfg| serde_json::to_value(cfg).ok()),
+        config: None,
     })
 }
 
@@ -572,34 +413,14 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
-        Enqueue {
-            topic: String,
-            data: Value,
-            traceparent: Option<String>,
-            baggage: Option<String>,
-        },
-        RedriveDlq {
-            topic: String,
-        },
-        RedriveDlqMessage {
-            topic: String,
-            message_id: String,
-        },
-        DiscardDlqMessage {
-            topic: String,
-            message_id: String,
-        },
-        DlqCount {
-            topic: String,
-        },
+        Enqueue { topic: String, data: Value },
+        RedriveDlq { topic: String },
+        RedriveDlqMessage { topic: String, message_id: String },
+        DiscardDlqMessage { topic: String, message_id: String },
+        DlqCount { topic: String },
         ListTopics,
-        TopicStats {
-            topic: String,
-        },
-        DlqMessages {
-            topic: String,
-            count: usize,
-        },
+        TopicStats { topic: String },
+        DlqMessages { topic: String, count: usize },
     }
 
     /// Records every call and lets a test script canned return values (an
@@ -609,7 +430,6 @@ mod tests {
     #[derive(Default)]
     struct MockAdapter {
         calls: StdMutex<Vec<Call>>,
-        enqueue_error: StdMutex<Option<anyhow::Error>>,
         redrive_dlq_result: StdMutex<Option<anyhow::Result<u64>>>,
         redrive_dlq_message_result: StdMutex<Option<anyhow::Result<bool>>>,
         discard_dlq_message_result: StdMutex<Option<anyhow::Result<bool>>>,
@@ -631,19 +451,13 @@ mod tests {
             &self,
             topic: &str,
             data: Value,
-            traceparent: Option<String>,
-            baggage: Option<String>,
-        ) -> anyhow::Result<()> {
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+        ) {
             self.calls.lock().unwrap().push(Call::Enqueue {
                 topic: topic.to_string(),
                 data,
-                traceparent,
-                baggage,
             });
-            if let Some(error) = self.enqueue_error.lock().unwrap().take() {
-                return Err(error);
-            }
-            Ok(())
         }
 
         async fn subscribe(
@@ -752,10 +566,6 @@ mod tests {
             attempts,
             enqueued_at_ms: 0,
             ready_at_ms: 0,
-            traceparent: None,
-            baggage: None,
-            function_id: None,
-            message_id: None,
         })
         .unwrap()
     }
@@ -777,59 +587,8 @@ mod tests {
             vec![Call::Enqueue {
                 topic: "demo".to_string(),
                 data: json!({"hello": "world"}),
-                traceparent: None,
-                baggage: None,
             }]
         );
-    }
-
-    #[tokio::test]
-    async fn publish_captures_current_trace_context() {
-        use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
-
-        let (adapter, mock) = adapter();
-        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
-        let context =
-            iii_helpers::observability::extract_context(Some(traceparent), Some("tenant=motia"));
-
-        publish(
-            adapter,
-            PublishInput {
-                topic: "demo".to_string(),
-                data: json!({"hello": "world"}),
-            },
-        )
-        .with_context(context)
-        .await
-        .unwrap();
-
-        assert_eq!(
-            mock.calls(),
-            vec![Call::Enqueue {
-                topic: "demo".to_string(),
-                data: json!({"hello": "world"}),
-                traceparent: Some(traceparent.to_string()),
-                baggage: Some("tenant=motia".to_string()),
-            }]
-        );
-    }
-
-    #[tokio::test]
-    async fn publish_propagates_adapter_enqueue_failure() {
-        let (adapter, mock) = adapter();
-        *mock.enqueue_error.lock().unwrap() = Some(anyhow::anyhow!("transport unavailable"));
-
-        let error = publish(
-            adapter,
-            PublishInput {
-                topic: "demo".to_string(),
-                data: json!({"hello": "world"}),
-            },
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("transport unavailable"));
     }
 
     #[tokio::test]
@@ -941,12 +700,7 @@ mod tests {
                 depth: 1,
             }]));
         }
-        let topics = list_topics(
-            adapter.clone(),
-            crate::configuration::new_cell(crate::config::QueueConfig::default()),
-        )
-        .await
-        .unwrap();
+        let topics = list_topics(adapter.clone()).await.unwrap();
         assert_eq!(
             topics[0],
             TopicInfo {
@@ -964,7 +718,6 @@ mod tests {
         }));
         let stats = topic_stats(
             adapter,
-            crate::configuration::new_cell(crate::config::QueueConfig::default()),
             TopicStatsInput {
                 topic: "demo".to_string(),
             },

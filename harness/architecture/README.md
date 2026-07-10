@@ -26,12 +26,8 @@ hooks) than the integration contract needs to be.
 The harness is the thin worker that wires the other three into an agent loop:
 take an incoming message, persist it, assemble a context, stream a completion,
 run any function calls the model requests, and repeat until the turn stops —
-all as durable, queued steps so a crash or restart resumes mid-turn. At boot it
-provisions independent root (`harness-turn`), sub-agent (`harness-subagent`),
-and reactive (`harness-reactive`) named function queues through the standalone
-`queue` worker; consumers do not configure them. It owns sequencing and
-nothing else.
-Consumers are deliberately thin: they **kick off**
+all as durable, enqueued steps so a crash or restart resumes mid-turn. It owns
+sequencing and nothing else. Consumers are deliberately thin: they **kick off**
 a turn (`harness::send` / `harness::run`), **render** the conversation by
 binding `session-manager`'s transcript events, and **react** to boundaries
 (`harness::turn-completed`) and human-gated calls (approval-gate's
@@ -52,13 +48,11 @@ flowchart LR
   session["session-manager"]
   ctx["context-manager"]
   router["llm-router"]
-  queue["queue<br/>three named function queues"]
   gate["approval-gate"]
   fns["iii functions"]
 
   consumer -->|"trigger harness::send / run"| entry
-  entry -->|"enqueue by turn lane"| queue
-  queue --> loopStep
+  entry --> loopStep
   loopStep -->|"append / update-message"| session
   loopStep -->|"assemble"| ctx
   loopStep -->|"chat"| router
@@ -76,8 +70,7 @@ flowchart LR
 | Term | Meaning |
 |---|---|
 | **Turn** | One run of the loop for a session: one or more generate steps until the model stops, with a coarse `TurnStatus` (`running` / `awaiting_functions` / `completed` / `cancelled` / `failed`). |
-| **Step** | One durable `harness::turn` iteration: assemble → generate → dispatch. Continuations enqueue back to the lane frozen on the turn record. |
-| **Turn lane** | Root, sub-agent, or reactive workload class. Each maps to its own standard queue with concurrency 10, so one class cannot consume another class's capacity. |
+| **Step** | One durable, enqueued `harness::turn` iteration: assemble → generate → dispatch. Re-enqueued until the turn finalises. |
 | **Steering / merge** | A `harness::send` for a session that already has a running turn folds the new message into it instead of starting a second turn (the response carries `merged: true`). |
 | **Dispatch policy** | The fail-closed `options.functions.allow` / `deny` globs deciding which functions the model may call. Absent or empty `allow` → a plain chat loop. |
 | **Exposure mode** | How allowed functions reach the model: one generic `agent_trigger` schema (default) or one schema per allowed function (`native`). |

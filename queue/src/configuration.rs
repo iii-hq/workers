@@ -8,11 +8,12 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
-use crate::adapter::SwappableAdapter;
-use crate::boot::{self, ApplyLock, ConfigCell};
+use crate::boot::ConfigCell;
 use crate::config::QueueConfig;
-use crate::function_queues::FunctionQueueRuntime;
-use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler};
+use crate::runtime::FunctionQueueRuntime;
+use crate::trigger::QueueTriggerHandler;
+#[cfg(test)]
+use crate::{adapter::SwappableAdapter, boot, trigger::Invoker};
 
 pub const CONFIG_ID: &str = "queue";
 pub const CONFIG_FN_ID: &str = "queue::on-config-change";
@@ -28,11 +29,14 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&QueueConfig>) -> Res
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Queue",
-        "description": "Durable queue worker settings: in-process/file-backed transport persistence.",
+        "description": "Durable queue worker settings: transport persistence and named function queues.",
         "schema": QueueConfig::json_schema(),
     });
     if should_seed_initial_value(iii).await? {
-        let seed = seed.cloned().unwrap_or_default().normalized();
+        let seed = seed
+            .cloned()
+            .unwrap_or_else(QueueConfig::packaged_default)
+            .normalized();
         payload["initial_value"] = seed.to_json();
     }
     trigger_with_retry(
@@ -49,40 +53,41 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<QueueConfig, String> {
     match try_get_config_value(iii).await? {
         Some(value) if !value.is_null() => QueueConfig::from_json(&value).map(|c| c.normalized()),
         _ => {
-            tracing::info!("no `{CONFIG_ID}` configuration value stored; using built-in default");
-            Ok(QueueConfig::default())
+            tracing::info!(
+                "no `{CONFIG_ID}` configuration value stored; using durable packaged default"
+            );
+            Ok(QueueConfig::packaged_default())
         }
     }
 }
 
+/// Replace the authoritative queue configuration. `configuration::set`
+/// replaces the whole value, so callers must merge against their current
+/// snapshot before invoking this helper.
+pub async fn persist_config(iii: &IIIClient, config: &QueueConfig) -> Result<(), String> {
+    config.validate()?;
+    trigger_with_retry(
+        iii,
+        "configuration::set",
+        json!({ "id": CONFIG_ID, "value": config.to_json() }),
+        CONFIG_BUS_TIMEOUT_MS,
+    )
+    .await?;
+    Ok(())
+}
+
 pub fn register_config_trigger(
     iii: &Arc<IIIClient>,
-    adapter: Arc<SwappableAdapter>,
+    runtime: FunctionQueueRuntime,
     trigger_handler: QueueTriggerHandler,
-    config: ConfigCell,
-    apply_lock: ApplyLock,
-    function_queues: Arc<FunctionQueueRuntime>,
 ) -> Result<(), Error> {
-    let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
-            let engine = engine.clone();
-            let adapter = adapter.clone();
+            let runtime = runtime.clone();
             let trigger_handler = trigger_handler.clone();
-            let config = config.clone();
-            let apply_lock = apply_lock.clone();
-            let function_queues = function_queues.clone();
             async move {
-                on_config_change(
-                    engine,
-                    adapter,
-                    trigger_handler,
-                    config,
-                    apply_lock,
-                    function_queues,
-                )
-                .await;
+                on_config_change(runtime, trigger_handler).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -101,83 +106,10 @@ pub fn register_config_trigger(
     Ok(())
 }
 
-async fn on_config_change(
-    iii: Arc<IIIClient>,
-    adapter: Arc<SwappableAdapter>,
-    trigger_handler: QueueTriggerHandler,
-    config: ConfigCell,
-    apply_lock: ApplyLock,
-    function_queues: Arc<FunctionQueueRuntime>,
-) {
-    let _guard = apply_lock.lock().await;
-
-    let next = match fetch_config(&iii).await {
-        Ok(config) => config.normalized(),
-        Err(err) => {
-            tracing::error!(error = %err, "queue config-change: fetch failed; keeping previous config");
-            return;
-        }
-    };
-
-    let old = config.read().await.clone();
-    if swap_needed(&old, &next) {
-        let invoker = Arc::new(IiiInvoker::new(iii.clone()));
-        match swap_adapter(&adapter, &trigger_handler, &function_queues, invoker, &next).await {
-            Ok(()) => {
-                *config.write().await = Arc::new(next);
-                tracing::info!("queue transport hot-swapped after configuration change");
-            }
-            Err(err) => {
-                // Mirrors the engine's policy (`engine/src/workers/queue/queue.rs:1002-1019`
-                // builds the replacement adapter first and only swaps in the
-                // successful result): a failed hot-swap must never kill a
-                // live worker, so the previous adapter and config are left
-                // running untouched on error.
-                tracing::error!(
-                    error = %err,
-                    "queue config-change: failed to build replacement adapter; keeping the \
-                     previous adapter running"
-                );
-            }
-        }
-        return;
+async fn on_config_change(runtime: FunctionQueueRuntime, trigger_handler: QueueTriggerHandler) {
+    if let Err(err) = runtime.refresh_config(&trigger_handler).await {
+        tracing::error!(error = %err, "queue config-change: apply failed; keeping previous live configuration");
     }
-
-    if let Err(err) = function_queues.reconcile(&next.queue_configs).await {
-        tracing::error!(
-            error = %err,
-            "queue config-change: failed to apply named function queues; keeping previous config"
-        );
-        return;
-    }
-    *config.write().await = Arc::new(next);
-    tracing::info!("queue configuration reloaded without transport swap");
-}
-
-/// Fallible core of a transport hot-swap. Builds the new adapter for `next`
-/// via [`crate::boot::build_adapter`] *before* touching anything else: only
-/// once that succeeds does this replace the live adapter and re-subscribe
-/// every tracked trigger registration onto it. A `build_adapter` failure
-/// returns `Err` with the old adapter, its subscriptions, and the config
-/// cell completely untouched -- same policy as the engine's `apply_config`
-/// (`engine/src/workers/queue/queue.rs:1002-1019`): never tear down a live
-/// transport for a replacement that didn't pan out.
-async fn swap_adapter(
-    adapter: &Arc<SwappableAdapter>,
-    trigger_handler: &QueueTriggerHandler,
-    function_queues: &Arc<FunctionQueueRuntime>,
-    invoker: Arc<dyn Invoker>,
-    next: &QueueConfig,
-) -> anyhow::Result<()> {
-    let new_adapter = boot::build_adapter(next, invoker).await?;
-    let old_adapter = adapter.current().await;
-    adapter
-        .replace(new_adapter, boot::adapter_identity_name(next))
-        .await;
-    function_queues.restart_all(&next.queue_configs).await?;
-    trigger_handler.resubscribe_all().await;
-    old_adapter.shutdown().await;
-    Ok(())
 }
 
 pub fn swap_needed(old: &QueueConfig, new: &QueueConfig) -> bool {
@@ -193,6 +125,23 @@ fn effective_adapter(config: &QueueConfig) -> (String, Value) {
             .and_then(|adapter| adapter.config.clone())
             .unwrap_or(Value::Null),
     )
+}
+
+#[cfg(test)]
+async fn swap_adapter(
+    adapter: &Arc<SwappableAdapter>,
+    trigger_handler: &QueueTriggerHandler,
+    invoker: Arc<dyn Invoker>,
+    next: &QueueConfig,
+) -> anyhow::Result<()> {
+    let new_adapter = boot::build_adapter(next, invoker).await?;
+    let old_adapter = adapter.current().await;
+    adapter
+        .replace(new_adapter, boot::adapter_identity_name(next))
+        .await;
+    old_adapter.shutdown().await;
+    trigger_handler.resubscribe_all().await;
+    Ok(())
 }
 
 async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
@@ -284,9 +233,8 @@ mod tests {
             _data: Value,
             _traceparent: Option<String>,
             _baggage: Option<String>,
-        ) -> anyhow::Result<()> {
+        ) {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
         }
 
         async fn subscribe(
@@ -343,23 +291,13 @@ mod tests {
 
     #[async_trait]
     impl Invoker for NoopInvoker {
-        async fn call(
-            &self,
-            _function_id: &str,
-            _payload: Value,
-            _traceparent: Option<String>,
-            _baggage: Option<String>,
-        ) -> Result<Option<Value>, String> {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
             Ok(None)
         }
     }
 
     fn noop_invoker() -> Arc<dyn Invoker> {
         Arc::new(NoopInvoker)
-    }
-
-    fn function_runtime(adapter: Arc<SwappableAdapter>) -> Arc<FunctionQueueRuntime> {
-        Arc::new(FunctionQueueRuntime::new(adapter, noop_invoker()))
     }
 
     #[tokio::test]
@@ -389,29 +327,19 @@ mod tests {
                 name: "not-a-real-adapter".to_string(),
                 config: None,
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
 
-        let runtime = function_runtime(adapter.clone());
-        let err = swap_adapter(
-            &adapter,
-            &trigger_handler,
-            &runtime,
-            noop_invoker(),
-            &bad_config,
-        )
-        .await
-        .unwrap_err();
+        let err = swap_adapter(&adapter, &trigger_handler, noop_invoker(), &bad_config)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not implemented"));
 
         // The old adapter must never be shut down, and it must still be the
         // one live behind the `SwappableAdapter`.
         assert_eq!(mock.shutdown_calls.load(Ordering::SeqCst), 0);
         assert_eq!(adapter.current_name().await, "mock");
-        adapter
-            .enqueue("demo", Value::Null, None, None)
-            .await
-            .unwrap();
+        adapter.enqueue("demo", Value::Null, None, None).await;
         assert_eq!(mock.enqueue_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -444,11 +372,10 @@ mod tests {
                 name: "in_memory".to_string(),
                 config: None,
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
 
-        let runtime = function_runtime(adapter.clone());
-        swap_adapter(&adapter, &trigger_handler, &runtime, noop_invoker(), &next)
+        swap_adapter(&adapter, &trigger_handler, noop_invoker(), &next)
             .await
             .unwrap();
 
@@ -474,7 +401,7 @@ mod tests {
                 name: "builtin".to_string(),
                 config: None,
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
         assert!(!swap_needed(&old, &new));
     }
@@ -490,7 +417,7 @@ mod tests {
                     "file_path": "./data/queue"
                 })),
             }),
-            ..Default::default()
+            ..QueueConfig::default()
         };
         assert!(swap_needed(&old, &new));
     }

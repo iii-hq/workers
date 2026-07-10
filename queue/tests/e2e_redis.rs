@@ -84,8 +84,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
 
     adapter
         .enqueue(&topic, json!({"hello": "world"}), None, None)
-        .await
-        .unwrap();
+        .await;
     wait_for_fires(&fires, 1).await;
 
     let seen = seen.lock().await;

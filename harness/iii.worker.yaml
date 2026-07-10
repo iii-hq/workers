@@ -8,7 +8,7 @@ description: Thin durable turn loop that wires session-manager, context-manager,
 
 dependencies:
   iii-state: "^0.21.3"
-  queue: "^0.1.2"
+  queue: "^0.2.0"
   iii-cron: "^0.21.3"
   configuration: "^0.21.3"
   iii-observability: "^0.21.3"

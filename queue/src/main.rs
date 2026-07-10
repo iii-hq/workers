@@ -37,9 +37,15 @@ fn worker_metadata() -> WorkerMetadata {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    use tracing_subscriber::prelude::*;
+
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(iii_queue::observability::otel_layer())
+        .init();
 
     let cli = Cli::parse();
     if cli.manifest {
@@ -85,18 +91,22 @@ async fn main() -> Result<()> {
         .context("loading queue configuration")?;
 
     let boot = iii_queue::boot::start(iii.clone(), config).await?;
-    tracing::info!("queue worker ready");
-
     configuration::register_config_trigger(
         &iii,
-        boot.adapter.clone(),
+        boot.runtime.clone(),
         boot.trigger_handler.clone(),
-        boot.config.clone(),
-        boot.apply_lock.clone(),
-        boot.function_queues.clone(),
     )
     .map_err(anyhow::Error::msg)
     .context("binding queue configuration trigger")?;
+
+    // Reconcile once after binding the trigger so an update made between the
+    // initial fetch and trigger registration cannot be missed indefinitely.
+    boot.runtime
+        .refresh_config(&boot.trigger_handler)
+        .await
+        .context("reconciling queue configuration after trigger binding")?;
+
+    tracing::info!("queue worker ready");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("queue worker shutting down");

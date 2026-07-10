@@ -16,11 +16,6 @@
 # config below.
 
 workers:
-  - name: iii-queue
-    config:
-      adapter:
-        name: builtin
-
   - name: iii-observability
     config:
       enabled: true

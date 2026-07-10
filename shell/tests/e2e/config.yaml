@@ -6,11 +6,6 @@
 # managed-worker setup, which is overkill for a test harness.
 
 workers:
-  - name: iii-queue
-    config:
-      adapter:
-        name: builtin
-
   - name: iii-observability
     config:
       enabled: true

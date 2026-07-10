@@ -51,8 +51,8 @@ impl QueueAdapter for MemoryAdapter {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-    ) -> anyhow::Result<()> {
-        self.inner.enqueue(topic, data, traceparent, baggage).await
+    ) {
+        self.inner.enqueue(topic, data, traceparent, baggage).await;
     }
 
     async fn subscribe(
@@ -154,6 +154,14 @@ impl QueueAdapter for MemoryAdapter {
             .await
     }
 
+    async fn stop_function_queue_consumer(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.inner.stop_function_queue_consumer(queue_name).await
+    }
+
+    async fn forget_function_queue(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.inner.forget_function_queue(queue_name).await
+    }
+
     async fn ack_function_queue(&self, queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
         self.inner.ack_function_queue(queue_name, delivery_id).await
     }
@@ -187,13 +195,7 @@ mod tests {
 
     #[async_trait]
     impl Invoker for RecordingInvoker {
-        async fn call(
-            &self,
-            function_id: &str,
-            payload: Value,
-            _traceparent: Option<String>,
-            _baggage: Option<String>,
-        ) -> Result<Option<Value>, String> {
+        async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
             self.calls
                 .lock()
                 .await
@@ -210,8 +212,7 @@ mod tests {
         adapter.subscribe("demo", "sub-1", "fn-1", None, None).await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
-            .await
-            .unwrap();
+            .await;
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
