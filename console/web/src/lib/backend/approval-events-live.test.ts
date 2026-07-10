@@ -5,6 +5,7 @@ import type {
   PendingResolvedEvent,
 } from '@/types/iii-agent-event'
 import {
+  approvalBelongsToConversationTree,
   listPendingApprovals,
   startApprovalEventsSubscription,
 } from './approval-events-live'
@@ -112,6 +113,15 @@ describe('startApprovalEventsSubscription', () => {
     expect(offHandler).toHaveBeenCalledTimes(2)
     expect(triggerUnregister).toHaveBeenCalledTimes(2)
   })
+
+  it('can bind unscoped events for a parent chat that filters descendants client-side', () => {
+    const { client, triggers } = fakeClient()
+    startApprovalEventsSubscription(client, undefined, {
+      onCreated: () => {},
+      onResolved: () => {},
+    })
+    expect(triggers.map((trigger) => trigger.config)).toEqual([{}, {}])
+  })
 })
 
 describe('listPendingApprovals', () => {
@@ -126,5 +136,59 @@ describe('listPendingApprovals', () => {
   it('returns [] when the response carries no pending list', async () => {
     const { client } = fakeClient({})
     expect(await listPendingApprovals(client, 'sess-1')).toEqual([])
+  })
+
+  it('reads the full pending inbox when descendant filtering is client-side', async () => {
+    const { client, trigger } = fakeClient({ pending: [record] })
+    expect(await listPendingApprovals(client)).toEqual([record])
+    expect(trigger).toHaveBeenCalledWith('approval::list-pending', {
+      limit: 500,
+    })
+  })
+})
+
+describe('approvalBelongsToConversationTree', () => {
+  const conversations = [
+    { id: 'root' },
+    { id: 'child', parentId: 'root' },
+    { id: 'grandchild', parentId: 'child' },
+    { id: 'other' },
+  ]
+
+  it('includes the root, direct children during creation, and known deeper descendants', () => {
+    expect(
+      approvalBelongsToConversationTree(
+        { session_id: 'root', session_metadata: null },
+        'root',
+        conversations,
+      ),
+    ).toBe(true)
+    expect(
+      approvalBelongsToConversationTree(
+        {
+          session_id: 'new-child',
+          session_metadata: { parent_session_id: 'root' },
+        },
+        'root',
+        conversations,
+      ),
+    ).toBe(true)
+    expect(
+      approvalBelongsToConversationTree(
+        { session_id: 'grandchild', session_metadata: null },
+        'root',
+        conversations,
+      ),
+    ).toBe(true)
+  })
+
+  it('excludes unrelated sessions', () => {
+    expect(
+      approvalBelongsToConversationTree(
+        { session_id: 'other', session_metadata: null },
+        'root',
+        conversations,
+      ),
+    ).toBe(false)
   })
 })

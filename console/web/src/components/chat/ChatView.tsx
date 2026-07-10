@@ -18,12 +18,17 @@ import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
+import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
 } from '@/lib/backend/triggers'
-import type { CompactResult, QueuedMessagePreview } from '@/lib/backend/types'
+import type {
+  ApprovalStreamEvent,
+  CompactResult,
+  QueuedMessagePreview,
+} from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
@@ -350,6 +355,29 @@ export function ChatView({
   // created here). Matches iii.session.id on every span so the traces UI can
   // group by it.
   const sessionId = conversation.id
+  const approvalConversationsRef = useRef(
+    conversationsCtx?.conversations ?? [conversation],
+  )
+  approvalConversationsRef.current = conversationsCtx?.conversations ?? [
+    conversation,
+  ]
+  const approvalSessionMatcher = useCallback(
+    (approval: {
+      session_id: string
+      session_metadata?: Record<string, unknown> | null
+    }) =>
+      approvalBelongsToConversationTree(
+        approval,
+        sessionId,
+        approvalConversationsRef.current,
+      ),
+    [sessionId],
+  )
+  const approvalTreeRevision = (
+    conversationsCtx?.conversations ?? [conversation]
+  )
+    .map((item) => `${item.id}:${item.parentId ?? ''}`)
+    .join('|')
 
   // ↑/↓ browse this tab's queued messages for editing (oldest→newest). The
   // composer owns navigation; ChatView just supplies the list and the id of
@@ -493,6 +521,81 @@ export function ChatView({
         conversationsCtx.approvalGateAvailable
       : false)
   const approvalSettings = useApprovalSettings(sessionId, approvalEnabled)
+
+  const handleApprovalEvent = useCallback(
+    (event: ApprovalStreamEvent) => {
+      if (event.kind === 'fcall-start') {
+        const existing = event.functionCallId
+          ? messagesRef.current.find(
+              (message) =>
+                message.role === 'function-call' &&
+                message.functionCallId === event.functionCallId,
+            )
+          : undefined
+        if (existing) {
+          onPatchMessage(conversation.id, existing.id, {
+            pendingApproval: true,
+            running: false,
+            functionCallId: event.functionCallId,
+            sessionId: event.sessionId,
+            filesystemAccess: event.filesystemAccess,
+          })
+          return
+        }
+        const message: FunctionCallMessage = {
+          id: uid(),
+          role: 'function-call',
+          functionId: event.functionId,
+          input: event.input,
+          running: false,
+          pendingApproval: true,
+          functionCallId: event.functionCallId,
+          sessionId: event.sessionId,
+          filesystemAccess: event.filesystemAccess,
+          createdAt: Date.now(),
+        }
+        onAppendMessage(conversation.id, message)
+        return
+      }
+
+      const existing = messagesRef.current.find(
+        (message) =>
+          message.role === 'function-call' &&
+          message.functionCallId === event.functionCallId,
+      )
+      if (existing) {
+        onPatchMessage(conversation.id, existing.id, {
+          pendingApproval: false,
+          ...(event.running ? { running: true } : {}),
+        })
+      }
+    },
+    [conversation.id, onAppendMessage, onPatchMessage],
+  )
+
+  // Subagent approvals may arrive after the parent `harness::spawn` turn has
+  // completed. Keep this watcher alive for the selected conversation, with a
+  // catch-up read whenever its child-session tree changes.
+  useEffect(() => {
+    const watchApprovals = backend.watchApprovals
+    if (!approvalEnabled || !watchApprovals) return
+    return watchApprovals(
+      {
+        sessionId,
+        approvalGateAvailable: approvalEnabled,
+        approvalSessionMatcher,
+        refreshKey: approvalTreeRevision,
+      },
+      handleApprovalEvent,
+    )
+  }, [
+    approvalEnabled,
+    approvalSessionMatcher,
+    approvalTreeRevision,
+    backend.watchApprovals,
+    handleApprovalEvent,
+    sessionId,
+  ])
 
   // The working-directory picker + banner only make sense with the `shell`
   // worker connected: the picker browses via shell-served `coder::*` functions
@@ -866,6 +969,8 @@ export function ChatView({
             thinkingLevel,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
+            approvalSessionMatcher,
+            approvalEventsExternallyManaged: true,
             ...(attachedBlocks && attachedBlocks.length > 0
               ? { attachedBlocks }
               : {}),
@@ -1109,6 +1214,7 @@ export function ChatView({
       contextWindow,
       backend,
       approvalEnabled,
+      approvalSessionMatcher,
       announcer,
       ensureSession,
       isStreaming,

@@ -155,6 +155,40 @@ export interface ChatStreamOptions {
    * haven't been updated keep the approval surface.
    */
   approvalGateAvailable?: boolean
+  /**
+   * Whether a pending approval belongs on this chat surface. The real backend
+   * uses an unscoped approval subscription when provided, then applies this
+   * live predicate so approvals held by newly-created subagent sessions can be
+   * mirrored into their parent chat while retaining the child session id for
+   * resolution.
+   */
+  approvalSessionMatcher?: (approval: {
+    session_id: string
+    session_metadata?: Record<string, unknown> | null
+  }) => boolean
+  /**
+   * ChatView keeps approval events subscribed for the lifetime of the selected
+   * conversation. Set this on a turn stream to avoid a second subscription
+   * delivering the same pending card while that watcher is active.
+   */
+  approvalEventsExternallyManaged?: boolean
+}
+
+/** Events that an approval watcher can deliver outside a running turn. */
+export type ApprovalStreamEvent = Extract<
+  StreamEvent,
+  { kind: 'fcall-start' | 'fcall-approval-cleared' }
+>
+
+export interface ApprovalWatchOptions {
+  /** Root session displayed by the chat surface. */
+  sessionId: string
+  /** Skip all approval RPCs when the optional gate worker is absent. */
+  approvalGateAvailable?: boolean
+  /** Filters global approval events to this conversation and its descendants. */
+  approvalSessionMatcher?: ChatStreamOptions['approvalSessionMatcher']
+  /** Changes when the visible child-session tree changes, forcing a catch-up. */
+  refreshKey?: string
 }
 
 export type CompactResult =
@@ -190,6 +224,14 @@ export interface ChatBackend {
     model: ModelId,
     opts?: ChatStreamOptions,
   ): AsyncGenerator<StreamEvent>
+  /**
+   * Watch approvals independently of a parent turn. This keeps subagent
+   * approvals actionable after `harness::spawn` has returned to the parent.
+   */
+  watchApprovals?(
+    opts: ApprovalWatchOptions,
+    onEvent: (event: ApprovalStreamEvent) => void,
+  ): () => void
   /**
    * Resolve a pending approval. Returns when the iii bus accepts the
    * decision; the actual session resume happens asynchronously via
