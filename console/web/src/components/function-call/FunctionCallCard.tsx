@@ -372,7 +372,7 @@ export function FunctionCallCard({
                 <span>
                   {filesystemAccess
                     ? 'needs filesystem access to run'
-                    : 'permission to trigger'}
+                    : 'waiting for your approval to run'}
                 </span>{' '}
               </>
             ) : null}
@@ -459,6 +459,9 @@ export function FunctionCallCard({
         />
       ) : pending ? (
         <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
+          <p className="font-mono text-[12px] text-ink-faint">
+            execution is paused until you approve or deny this call.
+          </p>
           <div className="flex items-center gap-2">
             <Button
               variant="primary"

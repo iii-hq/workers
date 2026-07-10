@@ -42,9 +42,21 @@ export function PermissionModePicker({
         variant="radio"
         aria-label="permission mode"
         options={[
-          { value: 'manual', label: 'manual' },
-          { value: 'auto', label: 'auto' },
-          { value: 'full', label: 'full' },
+          {
+            value: 'manual',
+            label: 'manual',
+            title: 'manual: pause every function call until you approve or deny it',
+          },
+          {
+            value: 'auto',
+            label: 'auto',
+            title: 'auto: use configured safe functions automatically; ask for the rest',
+          },
+          {
+            value: 'full',
+            label: 'full',
+            title: 'full: run every function without asking',
+          },
         ]}
       />
       <FullModeConfirmDialog
