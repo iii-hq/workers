@@ -99,7 +99,9 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             // JSON) degrade to the salvaged leading fields or `{"_raw": …}` —
             // always an object (replay-safe) that preserves the evidence.
             serde_json::from_str(&fc.args_json)
-                .unwrap_or_else(|_| llm_router::types::messages::degraded_arguments(&fc.args_json))
+                .ok()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| llm_router::types::messages::degraded_arguments(&fc.args_json))
         };
         out.push(ContentBlock::FunctionCall {
             id: fc.id.clone(),
@@ -498,6 +500,9 @@ mod tests {
         match &partial.content[0] {
             ContentBlock::FunctionCall { arguments, .. } => {
                 assert_eq!(arguments["function"], "state::set");
+                // Salvage marker: the harness refuses to execute partial
+                // intent, so it must survive the provider boundary.
+                assert_eq!(arguments["_partial"], true);
             }
             other => panic!("want function_call, got {other:?}"),
         }

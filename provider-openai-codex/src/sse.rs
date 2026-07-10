@@ -102,7 +102,9 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             // to the salvaged leading fields or `{"_raw": …}` — always an
             // object (replay-safe) that preserves the evidence.
             serde_json::from_str(&tc.args_json)
-                .unwrap_or_else(|_| llm_router::types::messages::degraded_arguments(&tc.args_json))
+                .ok()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| llm_router::types::messages::degraded_arguments(&tc.args_json))
         };
         out.push(ContentBlock::FunctionCall {
             id: tc.id.clone(),

@@ -457,6 +457,29 @@ pub async fn run_step(
                 continue;
             }
 
+            // Provider-degraded arguments: a stream that died or was cut by
+            // max_tokens mid-args arrives as a salvaged `"_partial": true`
+            // prefix or a raw `{"_raw": …}` evidence object (the router's
+            // degraded_arguments). Executing partial intent is worse than
+            // failing — the complete-looking leading fields may be missing
+            // the constraints the model was still writing.
+            if call.arguments.get("_partial").is_some() || call.arguments.get("_raw").is_some() {
+                let data = trigger::truncated_arguments_result(&call.function_id, &call.arguments);
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {

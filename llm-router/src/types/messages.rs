@@ -149,11 +149,15 @@ pub fn reorder_displaced_results(messages: &[AgentMessage]) -> Vec<&AgentMessage
 ///    mid-stream (`{"function":"state::set","payload":{"key":`) keeps its
 ///    known prefix (`{"function":"state::set"}`), so long-streaming calls
 ///    stay identifiable in UIs instead of rendering as an anonymous `{}`.
+///    The salvaged object is stamped `"_partial": true` so dispatch layers
+///    can refuse to execute partial intent (a truncated call must surface a
+///    teachable error, not run with whatever fields happened to complete).
 /// 2. Otherwise carry the malformed text as `{"_raw": <text ≤2KB>}` so the
 ///    evidence of what the model actually sent survives for rendering and
 ///    for the harness's teachable no-target error.
 pub fn degraded_arguments(args_json: &str) -> serde_json::Value {
-    if let Some(map) = salvage_leading_object_fields(args_json) {
+    if let Some(mut map) = salvage_leading_object_fields(args_json) {
+        map.insert("_partial".to_string(), serde_json::Value::Bool(true));
         return serde_json::Value::Object(map);
     }
     serde_json::json!({ "_raw": utf8_head(args_json, 2048) })
@@ -220,17 +224,18 @@ mod tests {
 
     #[test]
     fn degraded_arguments_salvages_leading_fields_or_keeps_raw() {
-        // Mid-stream cut: the known prefix survives as a real object.
+        // Mid-stream cut: the known prefix survives as a real object, marked
+        // partial so it renders but never executes.
         assert_eq!(
             degraded_arguments(r#"{"function":"state::set","payload":{"key":"art"#),
-            serde_json::json!({ "function": "state::set" })
+            serde_json::json!({ "function": "state::set", "_partial": true })
         );
         // Longest complete prefix wins, nested commas/strings don't cut.
         assert_eq!(
             degraded_arguments(
                 r#"{"function":"a::b","payload":{"x":"1,2","y":[3,4]},"extra":{"cut":"#
             ),
-            serde_json::json!({ "function": "a::b", "payload": { "x": "1,2", "y": [3, 4] } })
+            serde_json::json!({ "function": "a::b", "payload": { "x": "1,2", "y": [3, 4] }, "_partial": true })
         );
         // Nothing salvageable (no complete top-level field yet, or not JSON):
         // the raw text survives as evidence, always inside an object.
