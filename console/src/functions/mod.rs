@@ -40,6 +40,9 @@ fn register_status(iii: &Arc<IIIClient>, config: &Arc<ConsoleConfig>, engine_url
         })
         .description(
             "Return the console worker's runtime knobs: http_port, engine_url, and version.",
-        ),
+        )
+        // console-only plumbing; no other worker (e.g. harness) needs to
+        // discover or call it.
+        .metadata(serde_json::json!({ "internal": true })),
     );
 }

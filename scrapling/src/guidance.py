@@ -208,6 +208,7 @@ def setup(iii: Any) -> None:
         ),
         request_format=PRE_GENERATE_REQUEST,
         response_format=PRE_GENERATE_RESPONSE,
+        metadata={"internal": True},
     )
 
     async def on_registry_changed(_payload: Any) -> dict[str, Any]:
@@ -223,6 +224,7 @@ def setup(iii: Any) -> None:
         ),
         request_format=REGISTRY_CHANGED_REQUEST,
         response_format=REGISTRY_CHANGED_RESPONSE,
+        metadata={"internal": True},
     )
 
     # Arm the event-driven retries BEFORE the warm-start probe, so a harness that

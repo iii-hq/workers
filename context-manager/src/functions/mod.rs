@@ -71,12 +71,15 @@ pub(crate) async fn resolve_model(
 }
 
 /// Register one typed handler under `id`, mapping `ContextError` into
-/// the bus error shape (`code: message`).
+/// the bus error shape (`code: message`). `internal` hides the function
+/// from the discoverable `engine::functions::list` (trigger/config plumbing
+/// stays callable by id); see harness's iii-permissions.yaml.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
     id: &str,
     description: &str,
+    internal: bool,
     handler: F,
 ) where
     Req: DeserializeOwned + JsonSchema + Send + 'static,
@@ -85,25 +88,28 @@ fn register<Req, Resp, F, Fut>(
     Fut: Future<Output = Result<Resp, ContextError>> + Send + 'static,
 {
     let deps = deps.clone();
-    iii.register_function(
-        id,
-        RegisterFunction::new_async(move |req: Req| {
-            let deps = deps.clone();
-            let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(Error::from) }
-        })
-        .description(description),
-    );
+    let reg = RegisterFunction::new_async(move |req: Req| {
+        let deps = deps.clone();
+        let handler = handler.clone();
+        async move { handler(deps, req).await.map_err(Error::from) }
+    })
+    .description(description);
+    let reg = if internal {
+        reg.metadata(serde_json::json!({ "internal": true }))
+    } else {
+        reg
+    };
+    iii.register_function(id, reg);
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    register(iii, deps, ASSEMBLE_ID, ASSEMBLE_DESC, |d, r| async move {
+    register(iii, deps, ASSEMBLE_ID, ASSEMBLE_DESC, true, |d, r| async move {
         assemble::handle(&d, r).await
     });
-    register(iii, deps, COMPACT_ID, COMPACT_DESC, |d, r| async move {
+    register(iii, deps, COMPACT_ID, COMPACT_DESC, true, |d, r| async move {
         compact::handle(&d, r).await
     });
-    register(iii, deps, PRUNE_ID, PRUNE_DESC, |d, r| async move {
+    register(iii, deps, PRUNE_ID, PRUNE_DESC, false, |d, r| async move {
         prune::handle(&d, r).await
     });
     register(
@@ -111,6 +117,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         COUNT_TOKENS_ID,
         COUNT_TOKENS_DESC,
+        false,
         |d, r| async move { count_tokens::handle(&d, r).await },
     );
 

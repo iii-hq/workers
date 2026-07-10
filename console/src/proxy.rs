@@ -6,9 +6,13 @@
 //! between [`axum::extract::ws::Message`] and
 //! [`tokio_tungstenite::tungstenite::Message`].
 //!
-//! The proxy is intentionally dumb: no buffering, no rewriting, no auth.
-//! The engine WebSocket and the iii-browser-sdk client on the page do
-//! all the framing — this module just shuttles bytes.
+//! The proxy is intentionally dumb — no buffering, no auth — with ONE
+//! exception: browser→engine `registerfunction` messages get
+//! `metadata.internal = true` stamped on (see
+//! [`stamp_internal_registration`]). Everything a console page registers
+//! is a live-update delivery target for that page, never a discoverable
+//! API, and stamping here (not just in the SPA) means stale/cached
+//! bundles can't pollute `engine::functions::list` either.
 
 use std::sync::Arc;
 
@@ -62,6 +66,13 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
                 }
             };
             let is_close = matches!(msg, AxumMessage::Close(_));
+            let msg = match msg {
+                AxumMessage::Text(t) => match stamp_internal_registration(&t) {
+                    Some(stamped) => AxumMessage::Text(stamped),
+                    None => AxumMessage::Text(t),
+                },
+                other => other,
+            };
             if let Some(out) = axum_to_tungstenite(msg) {
                 if let Err(e) = engine_tx.send(out).await {
                     tracing::debug!(error = %e, "browser -> engine: engine send error");
@@ -102,6 +113,37 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
         _ = client_to_engine => {}
         _ = engine_to_client => {}
     }
+}
+
+/// If `text` is a wire `registerfunction` message, return a copy with
+/// `metadata.internal = true` merged in; `None` means "forward the
+/// original untouched" (not a registration, unparseable, or a metadata
+/// shape we don't understand).
+pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
+    // Fast path: skip the JSON parse for the overwhelming majority of
+    // frames (invocations, results, stream sends).
+    if !text.contains("\"registerfunction\"") {
+        return None;
+    }
+    let mut msg: serde_json::Value = serde_json::from_str(text).ok()?;
+    if msg.get("type").and_then(|t| t.as_str()) != Some("registerfunction") {
+        return None;
+    }
+    let obj = msg.as_object_mut()?;
+    match obj.get_mut("metadata") {
+        Some(serde_json::Value::Object(meta)) => {
+            meta.insert("internal".into(), serde_json::Value::Bool(true));
+        }
+        // Unexpected metadata shape — don't rewrite what we don't understand.
+        Some(_) => return None,
+        None => {
+            obj.insert(
+                "metadata".into(),
+                serde_json::json!({ "internal": true }),
+            );
+        }
+    }
+    serde_json::to_string(&msg).ok()
 }
 
 /// Convert an axum `Message` into a tungstenite `Message`. Returns
@@ -188,6 +230,40 @@ mod tests {
             }
             _ => panic!("expected close"),
         }
+    }
+
+    #[test]
+    fn stamp_adds_internal_metadata_when_absent() {
+        let wire = r#"{"type":"registerfunction","id":"console::harness-watch::r0::console-abc"}"#;
+        let out = stamp_internal_registration(wire).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
+        assert_eq!(v["id"], "console::harness-watch::r0::console-abc");
+    }
+
+    #[test]
+    fn stamp_merges_into_existing_metadata() {
+        let wire = r#"{"type":"registerfunction","id":"x","metadata":{"tenant":"acme"}}"#;
+        let out = stamp_internal_registration(wire).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
+        assert_eq!(v["metadata"]["tenant"], "acme");
+    }
+
+    #[test]
+    fn stamp_ignores_other_messages_and_bad_input() {
+        // Different message type — even one that mentions registerfunction in a payload.
+        assert!(stamp_internal_registration(
+            r#"{"type":"invokefunction","payload":"\"registerfunction\""}"#
+        )
+        .is_none());
+        // Not JSON.
+        assert!(stamp_internal_registration("registerfunction{").is_none());
+        // Metadata of an unexpected shape is left alone.
+        assert!(stamp_internal_registration(
+            r#"{"type":"registerfunction","id":"x","metadata":"weird"}"#
+        )
+        .is_none());
     }
 
     #[test]

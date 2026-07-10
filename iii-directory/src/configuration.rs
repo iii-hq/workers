@@ -161,7 +161,8 @@ pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<()
         .description(
             "Internal: reload tunable iii-directory settings from the authoritative \
              configuration when it changes.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {

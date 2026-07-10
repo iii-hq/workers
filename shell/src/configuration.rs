@@ -336,7 +336,8 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
-        .description("Internal: reload the security policy + fs backend on configuration change."),
+        .description("Internal: reload the security policy + fs backend on configuration change.")
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {

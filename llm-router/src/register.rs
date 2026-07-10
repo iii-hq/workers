@@ -35,6 +35,14 @@ use crate::surface;
 use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
 
+/// `metadata.internal = true` keeps a registration out of the default
+/// `engine::functions::list`: orchestrator/provider plumbing, invoked by id.
+/// Agent-discoverable reads (models::list/get/supports, provider::list) stay
+/// visible.
+fn internal_meta() -> Value {
+    json!({ "internal": true })
+}
+
 pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
@@ -81,7 +89,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                 },
                 invalid_request_from_serde,
             )
-            .description(surface::CHAT_DESC),
+            .description(surface::CHAT_DESC)
+            .metadata(internal_meta()),
         );
     }
     iii.register_function(
@@ -90,11 +99,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             make_complete(iii.clone(), pipeline.clone()),
             invalid_request_from_serde,
         )
-        .description(surface::COMPLETE_DESC),
+        .description(surface::COMPLETE_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async(make_abort(inflight.clone())).description(surface::ABORT_DESC),
+        RegisterFunction::new_async(make_abort(inflight.clone()))
+            .description(surface::ABORT_DESC)
+            .metadata(internal_meta()),
     );
     iii.register_function(
         surface::MODELS_LIST_ID,
@@ -122,7 +134,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             iii.clone(),
             registry.clone(),
         ))
-        .description(surface::SYSTEM_PROMPT_GET_DESC),
+        .description(surface::SYSTEM_PROMPT_GET_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::ROUTE_ID,
@@ -131,7 +144,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             catalog.clone(),
             settings.clone(),
         ))
-        .description(surface::ROUTE_DESC),
+        .description(surface::ROUTE_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::PROVIDER_REGISTER_ID,
@@ -145,12 +159,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             ),
             invalid_request_from_serde,
         )
-        .description(surface::PROVIDER_REGISTER_DESC),
+        .description(surface::PROVIDER_REGISTER_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::PROVIDER_RESOLVE_ID,
         RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone()))
-            .description(surface::PROVIDER_RESOLVE_DESC),
+            .description(surface::PROVIDER_RESOLVE_DESC)
+            .metadata(internal_meta()),
     );
     iii.register_function(
         surface::UPDATE_CREDENTIAL_ID,
@@ -159,7 +175,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             registry.clone(),
             entry_lock,
         ))
-        .description(surface::UPDATE_CREDENTIAL_DESC),
+        .description(surface::UPDATE_CREDENTIAL_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
@@ -167,7 +184,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             make_models_reconcile(registry.clone(), catalog.clone(), events.clone()),
             invalid_request_from_serde,
         )
-        .description(surface::MODELS_RECONCILE_DESC),
+        .description(surface::MODELS_RECONCILE_DESC)
+        .metadata(internal_meta()),
     );
 
     // 5. bound trigger: configuration change (paste-a-key)
@@ -192,7 +210,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                 settings.clone(),
                 2000,
             ))
-            .description(surface::ON_CONFIG_CHANGED_DESC),
+            .description(surface::ON_CONFIG_CHANGED_DESC)
+            .metadata(internal_meta()),
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {

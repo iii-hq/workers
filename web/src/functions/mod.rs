@@ -17,6 +17,7 @@ pub fn register_all(iii: &Arc<IIIClient>, shared: &SharedConfig) {
         RegisterFunction::new_async(move |event: inject_guidance::PreGenerateEvent| async move {
             inject_guidance::handle(event).await
         })
-        .description(inject_guidance::GUIDANCE_HOOK_DESC),
+        .description(inject_guidance::GUIDANCE_HOOK_DESC)
+        .metadata(serde_json::json!({ "internal": true })),
     );
 }
