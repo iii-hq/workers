@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use colored::Colorize;
 use iii_sdk::errors::Error;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use tokio::sync::RwLock;
@@ -119,10 +120,9 @@ impl RouteTable {
         Ok(())
     }
 
-    /// Removes the route registered under `id`, if any. Returns whether a
-    /// route was actually removed.
-    pub fn remove_by_trigger_id(&mut self, id: &str) -> bool {
-        self.by_id.remove(id).is_some()
+    /// Removes and returns the route registered under `id`, if any.
+    pub fn remove_by_trigger_id(&mut self, id: &str) -> Option<Route> {
+        self.by_id.remove(id)
     }
 
     /// Finds the registered route whose method matches (case insensitive) and
@@ -209,14 +209,33 @@ impl TriggerHandler for HttpTriggerHandler {
         self.routes
             .write()
             .await
-            .insert(route)
-            .map_err(Error::Handler)
+            .insert(route.clone())
+            .map_err(Error::Handler)?;
+        // Same registration line as the engine's builtin iii-http (api_core.rs).
+        tracing::info!(
+            "{} Endpoint {} → {}",
+            "[REGISTERED]".green(),
+            format!("{} {}", route.http_method, route.http_path)
+                .bright_yellow()
+                .bold(),
+            route.function_id.purple()
+        );
+        Ok(())
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         // The SDK only populates `id` for unregister -- function_id/config
         // are stubs -- so the table must be (and is) keyed by trigger id.
-        self.routes.write().await.remove_by_trigger_id(&config.id);
+        if let Some(route) = self.routes.write().await.remove_by_trigger_id(&config.id) {
+            tracing::info!(
+                "{} Endpoint {} → {}",
+                "[UNREGISTERED]".yellow(),
+                format!("{} {}", route.http_method, route.http_path)
+                    .bright_yellow()
+                    .bold(),
+                route.function_id.purple()
+            );
+        }
         Ok(())
     }
 }
@@ -378,8 +397,8 @@ mod tests {
         let mut table = RouteTable::default();
         table.insert(route("t1", "GET", "/users/:id")).unwrap();
 
-        assert!(table.remove_by_trigger_id("t1"));
-        assert!(!table.remove_by_trigger_id("t1"));
+        assert!(table.remove_by_trigger_id("t1").is_some());
+        assert!(table.remove_by_trigger_id("t1").is_none());
         assert!(table.match_route("GET", "/users/42").is_none());
     }
 

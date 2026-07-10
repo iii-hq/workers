@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().event_format(iii_http::logging::IIILogFormatter))
         .with(iii_http::observability::otel_layer())
         .init();
 
