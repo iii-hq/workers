@@ -47,6 +47,13 @@ pub fn react_entry_id() -> String {
     format!("e_react_{}", short_uuid())
 }
 
+/// The opening task entry of a direct (agent-called) spawn (`e_spawn_<uuid>`).
+/// Same pattern as `e_react_`: the prefix survives transcript reads so the
+/// console renders the task as machine-sent, not something the human typed.
+pub fn spawn_entry_id() -> String {
+    format!("e_spawn_{}", short_uuid())
+}
+
 /// The assistant message of a generate step: `e_<turn_id>_<step>_assistant`.
 /// A resumed step streams into this same entry rather than appending a second.
 pub fn assistant_entry_id(turn_id: &str, step: u64) -> String {

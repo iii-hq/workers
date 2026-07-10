@@ -384,8 +384,38 @@ pub async fn handle(
                 spawn_depth,
             )
             .await;
-            if spec.once && matches!(&res, Ok(r) if r.spawned) {
-                once_unregister(deps, &spec).await;
+            if let Ok(r) = &res {
+                if r.spawned {
+                    let sub = spec.subscription_id.as_deref().unwrap_or("sub");
+                    let entry_id = if spec.once {
+                        format!("e_trigfired_{sub}")
+                    } else {
+                        // Recurring: the child session id is unique per spawn.
+                        // ponytail: falls back to `spawn` when the spawn returned
+                        // no child id, so two child-less recurring fires dedup to
+                        // one record — acceptable, bounded by the fire-rate gate.
+                        format!(
+                            "e_trigfired_{sub}_{}",
+                            r.child_session_id.as_deref().unwrap_or("spawn")
+                        )
+                    };
+                    // Record with the binding still live (so its engine trigger
+                    // id resolves) BEFORE the once teardown below.
+                    emit_fired(
+                        deps,
+                        &spec,
+                        &event,
+                        &entry_id,
+                        r.child_session_id.as_deref(),
+                        spec.once,
+                        None,
+                        None,
+                    )
+                    .await;
+                    if spec.once {
+                        once_unregister(deps, &spec).await;
+                    }
+                }
             }
             res
         }
@@ -424,6 +454,28 @@ async fn join_edge(
     let arrived = arrived_count(&rec);
     let expected = join.expect.len();
     if arrived < expected {
+        let note = format!("{arrived}/{expected} arrived");
+        // ponytail: these join entry ids are cycle-invariant, so a re-armed
+        // join's cycle ≥2 records dedup away (append_custom is idempotent on
+        // entry_id — the same property that absorbs engine redelivery). Key in
+        // a cycle counter if later cycles ever need their own notices.
+        emit_fired(
+            deps,
+            spec,
+            &event,
+            &format!("e_trigfired_join_{}_{}", join.id, join.key),
+            None,  // nothing spawned yet
+            false, // predecessor stays registered until the join completes
+            Some(crate::subscriptions::fired::JoinProgress {
+                id: &join.id,
+                key: &join.key,
+                arrived,
+                expected,
+                completed: false,
+            }),
+            Some(&note),
+        )
+        .await;
         return Ok(ReactResult::note(format!(
             "join {}: {arrived}/{expected} arrived",
             join.id
@@ -465,6 +517,36 @@ async fn join_edge(
     // is already resolved by the caller. Joins fire once, so this cannot spam.
     let task = gather_inputs_task(&spec.task, &rec);
     let res = spawn_reaction(deps, task, spec, parent, spawn_depth).await;
+
+    // The join committed: the downstream spawned and (unless re-armed) every
+    // predecessor was just auto-unregistered above. One completion record lets
+    // the console mark the whole join fired + retired and post the notice.
+    // Gated on `spawned` like the simple edge — spawn_reaction swallows
+    // dispatch errors into `spawned: false`, and a record claiming "spawned"
+    // for a spawn that never happened would mislead the chat.
+    if let Ok(r) = &res {
+        if r.spawned {
+            let note = format!("{expected}/{expected} arrived — spawned");
+            emit_fired(
+                deps,
+                spec,
+                &event,
+                &format!("e_trigfired_join_{}_done", join.id),
+                r.child_session_id.as_deref(),
+                !join.rearm,
+                Some(crate::subscriptions::fired::JoinProgress {
+                    id: &join.id,
+                    key: &join.key,
+                    arrived: expected,
+                    expected,
+                    completed: true,
+                }),
+                Some(&note),
+            )
+            .await;
+        }
+    }
+
     // The delete is the cycle reset: a stale record (fire=1, all keys arrived)
     // makes the next cycle's fire-guard land on 2 and refuse forever — for a
     // rearmed join that is a permanent, silent wedge. Retry transient state
@@ -648,6 +730,56 @@ async fn once_unregister(deps: &Deps, spec: &ReactSpec) {
     if let Err(e) = retire_binding(deps, id).await {
         tracing::warn!(error = %e, subscription = %id, "harness::react: once-binding auto-unregister failed; retrying on the next fire");
     }
+}
+
+/// Append a durable `trigger_fired` record into the owner (registering) chat so
+/// the console renders a turn-less notice and keeps a fired binding visible in
+/// the panel after teardown. Best-effort; owner-less raw registrations (no chat
+/// to surface into) are skipped. Read the engine trigger id BEFORE any
+/// retirement so a still-live binding resolves.
+#[allow(clippy::too_many_arguments)]
+async fn emit_fired(
+    deps: &Deps,
+    spec: &ReactSpec,
+    event: &Value,
+    entry_id: &str,
+    child_session_id: Option<&str>,
+    retired: bool,
+    join: Option<crate::subscriptions::fired::JoinProgress<'_>>,
+    note: Option<&str>,
+) {
+    use crate::subscriptions::fired;
+    let Some(owner) = spec.owner_session_id.as_deref() else {
+        return;
+    };
+    let sub = spec.subscription_id.as_deref().unwrap_or("");
+    let trigger_id = spec
+        .subscription_id
+        .as_deref()
+        .and_then(|s| deps.subscriptions.trigger_id_of(s));
+    let (scope, key) = fired::event_state_watch(event);
+    let session = deps.session().await;
+    fired::emit(
+        &session,
+        owner,
+        entry_id,
+        fired::TriggerFired {
+            subscription_id: sub,
+            trigger_id: trigger_id.as_deref(),
+            target: "spawn",
+            label: None,
+            model: Some(&spec.model),
+            once: spec.once,
+            retired,
+            scope,
+            key,
+            child_session_id,
+            join,
+            note,
+            fired_at: fired::now_ms(),
+        },
+    )
+    .await;
 }
 
 async fn unregister_subscription(deps: &Deps, id: &str) -> Result<(), HarnessError> {
