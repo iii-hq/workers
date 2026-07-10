@@ -233,8 +233,14 @@ impl RouterClient {
                     terminal_error.get_or_insert(msg);
                 }
                 other => {
-                    if let AssistantMessageEvent::FunctioncallDelta { partial, delta } = &other {
-                        if let Some(id) = open_call_id(partial) {
+                    if let AssistantMessageEvent::FunctioncallDelta { partial, delta, id } = &other
+                    {
+                        let id = if id.is_empty() {
+                            open_call_id(partial) // pre-id producers: guess
+                        } else {
+                            Some(id.as_str())
+                        };
+                        if let Some(id) = id {
                             args_acc.entry(id.to_string()).or_default().push_str(delta);
                         }
                     }
@@ -443,8 +449,8 @@ impl StreamSink for CapturingSink {
     }
 }
 
-/// The call currently receiving argument deltas: blocks stream in order, so
-/// it is the last function_call block of the partial.
+/// Fallback attribution for id-less delta frames (pre-id producers): blocks
+/// stream in order, so guess the last function_call block of the partial.
 fn open_call_id(partial: &AssistantMessage) -> Option<&str> {
     partial.content.iter().rev().find_map(|b| match b {
         crate::types::content::ContentBlock::FunctionCall { id, .. } => Some(id.as_str()),
@@ -578,5 +584,23 @@ mod streaming_args_tests {
         let s = format!("{}é", "x".repeat(1499));
         assert!(utf8_tail(&s, 1500).len() <= 1500);
         assert!(utf8_tail(&s, 1500).ends_with('é'));
+    }
+
+    #[test]
+    fn functioncall_delta_frames_parse_with_and_without_id() {
+        // Pre-id producers stream id-less deltas — they must still parse
+        // (frames that fail to parse are silently dropped by the read loop).
+        let partial = serde_json::to_value(empty_assistant("p", "m")).unwrap();
+        let old = format!(r#"{{"type":"functioncall_delta","partial":{partial},"delta":"x"}}"#);
+        match serde_json::from_str::<AssistantMessageEvent>(&old).unwrap() {
+            AssistantMessageEvent::FunctioncallDelta { id, .. } => assert_eq!(id, ""),
+            other => panic!("want functioncall_delta, got {other:?}"),
+        }
+        let new =
+            format!(r#"{{"type":"functioncall_delta","partial":{partial},"delta":"x","id":"c1"}}"#);
+        match serde_json::from_str::<AssistantMessageEvent>(&new).unwrap() {
+            AssistantMessageEvent::FunctioncallDelta { id, .. } => assert_eq!(id, "c1"),
+            other => panic!("want functioncall_delta, got {other:?}"),
+        }
     }
 }

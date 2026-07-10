@@ -328,6 +328,11 @@ pub fn handle_chunk(
             events.push(AssistantMessageEvent::FunctioncallDelta {
                 partial: build_partial(state, model),
                 delta,
+                id: state
+                    .tool_calls
+                    .last()
+                    .map(|c| c.id.clone())
+                    .unwrap_or_default(),
             });
         }
         n if n.contains("completed") => {

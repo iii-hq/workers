@@ -84,6 +84,9 @@ pub enum AssistantMessageEvent {
     FunctioncallDelta {
         partial: AssistantMessage,
         delta: String,
+        /// Call id receiving this delta; empty from pre-id producers.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        id: String,
     },
     FunctioncallEnd {
         partial: AssistantMessage,

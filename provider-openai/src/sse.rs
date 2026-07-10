@@ -278,6 +278,7 @@ pub fn handle_chunk(
                         events.push(AssistantMessageEvent::FunctioncallDelta {
                             partial: build_partial(state, model),
                             delta: args.to_string(),
+                            id: state.function_calls[index].id.clone(),
                         });
                     }
                 }
@@ -435,6 +436,28 @@ mod tests {
         assert_eq!(starts, 2);
         let final_msg = build_final(&state, "gpt-test");
         assert_eq!(final_msg.content.len(), 2);
+    }
+
+    #[test]
+    fn interleaved_tool_call_deltas_carry_their_call_id() {
+        let (_, events) = run(&[
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"id":"call_a","function":{"name":"f__a","arguments":"{\"x\":"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":1,"id":"call_b","function":{"name":"f__b","arguments":"{}"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"function":{"arguments":"1}"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+        ]);
+        let ids: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                AssistantMessageEvent::FunctioncallDelta { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The last delta belongs to call_a even though call_b opened after it.
+        assert_eq!(ids, vec!["call_a", "call_b", "call_a"]);
     }
 
     #[test]
