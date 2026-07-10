@@ -95,6 +95,7 @@ mod tests {
             input_limit: None,
             supports_thinking: thinking,
             supports_xhigh: xhigh,
+            reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: Some(true),
             supports_cache: Some(true),

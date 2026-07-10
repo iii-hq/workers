@@ -10,7 +10,7 @@ use crate::{auth, router_client, state as registration_state, PROVIDER_ID};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
-use llm_router::types::model::Model;
+use llm_router::types::model::{Model, ReasoningEffort};
 use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, RefreshModelsRequest, RefreshModelsResponse,
 };
@@ -74,6 +74,8 @@ struct CodexModel {
 #[derive(Debug, Deserialize)]
 struct ReasoningLevel {
     effort: String,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 fn provider_error(code: &str, message: impl Into<String>) -> Error {
@@ -122,6 +124,16 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 .supported_reasoning_levels
                 .iter()
                 .any(|level| level.effort == "xhigh");
+            let reasoning_efforts = (!model.supported_reasoning_levels.is_empty()).then(|| {
+                model
+                    .supported_reasoning_levels
+                    .iter()
+                    .map(|level| ReasoningEffort {
+                        effort: level.effort.clone(),
+                        description: level.description.clone(),
+                    })
+                    .collect()
+            });
             let supports_vision = model
                 .input_modalities
                 .iter()
@@ -138,6 +150,7 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 input_limit: None,
                 supports_thinking: Some(supports_thinking),
                 supports_xhigh: Some(supports_xhigh),
+                reasoning_efforts,
                 supports_tools: Some(true),
                 supports_vision: Some(supports_vision),
                 supports_cache: Some(true),
@@ -284,6 +297,7 @@ mod tests {
             max_output_tokens: None,
             supported_reasoning_levels: vec![ReasoningLevel {
                 effort: "xhigh".into(),
+                description: Some("Extra high reasoning depth".into()),
             }],
             input_modalities: vec!["text".into(), "image".into()],
         }
@@ -291,10 +305,15 @@ mod tests {
 
     #[test]
     fn dynamic_mapping_filters_hidden_sorts_and_namespaces() {
+        let mut first = model("new-first", "list", 1);
+        first.supported_reasoning_levels.push(ReasoningLevel {
+            effort: "ultra".into(),
+            description: Some("Maximum reasoning with delegation".into()),
+        });
         let models = map_models(vec![
             model("old-hidden", "hide", 0),
             model("new-second", "list", 2),
-            model("new-first", "list", 1),
+            first,
         ]);
         assert_eq!(
             models
@@ -306,6 +325,22 @@ mod tests {
         assert_eq!(models[0].context_window, 272_000);
         assert_eq!(models[0].supports_xhigh, Some(true));
         assert_eq!(models[0].supports_vision, Some(true));
+        assert_eq!(
+            models[0].reasoning_efforts.as_deref(),
+            Some(
+                [
+                    ReasoningEffort {
+                        effort: "xhigh".into(),
+                        description: Some("Extra high reasoning depth".into()),
+                    },
+                    ReasoningEffort {
+                        effort: "ultra".into(),
+                        description: Some("Maximum reasoning with delegation".into()),
+                    },
+                ]
+                .as_slice(),
+            )
+        );
     }
 
     #[test]

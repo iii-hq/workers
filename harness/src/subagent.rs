@@ -255,6 +255,7 @@ async fn seed_child(
             mode: req.options.as_ref().and_then(|o| o.mode),
             max_turns,
             thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
+            provider_options: None,
             output: req
                 .options
                 .as_ref()
@@ -386,6 +387,7 @@ mod tests {
                 mode: None,
                 max_turns: 16,
                 thinking_level: None,
+                provider_options: None,
                 output: OutputContract::Text,
                 functions: None,
                 metadata,

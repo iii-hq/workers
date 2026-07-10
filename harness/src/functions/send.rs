@@ -2,6 +2,8 @@
 //! user message, and CAS-seed the first turn step (or merge into a running
 //! turn). Returns fast (harness.md § `harness::send`).
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +43,9 @@ pub struct SendOptions {
     pub max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
+    /// Provider-native per-call options, namespaced by provider id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<BTreeMap<String, Value>>,
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
@@ -452,6 +457,7 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) 
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
         thinking_level: opts.thinking_level,
+        provider_options: opts.provider_options,
         output: opts.output.unwrap_or_default(),
         functions: opts.functions,
         metadata: opts.metadata,

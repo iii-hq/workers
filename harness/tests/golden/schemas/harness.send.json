@@ -473,6 +473,14 @@
             ],
             "description": "The turn's deliverable; default `{ type: \"text\" }`."
           },
+          "provider_options": {
+            "additionalProperties": true,
+            "description": "Provider-native per-call options, namespaced by provider id.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",

@@ -552,6 +552,10 @@ strings, each mapping to a field on `Model`:
   a budget tier (mapped to the provider's native knob; see `thinking_budgets`).
 - `thinking:xhigh` -> `supports_xhigh` — the model supports the extra-high reasoning tier specifically
   (a separate flag because not every thinking-capable model offers it).
+- `reasoning_efforts` carries the exact provider-native effort values advertised for a model, plus
+  optional descriptions for picker UX. Consumers should use this list when present instead of
+  assuming the generic `ThinkingLevel` ladder. Native overrides travel through the namespaced
+  `provider_options` field on `router::chat`.
 
 Unknown strings return `{ supported: false }` and match no models.
 

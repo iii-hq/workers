@@ -84,11 +84,29 @@ function resolveRunParams(model: ModelId): RunParams {
   return { provider, model }
 }
 
-/** The harness omits `thinking_level` entirely when the user picks 'off'. */
-function toThinkingLevel(
+/** Generic compatibility value for providers that consume `thinking_level`. */
+export function toThinkingLevel(
   level: ChatStreamOptions['thinkingLevel'],
 ): HarnessThinkingLevel | undefined {
-  return level && level !== 'off' ? level : undefined
+  switch (level) {
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+      return level
+    default:
+      return undefined
+  }
+}
+
+/** Exact model-native effort, routed only to the selected provider. */
+export function toProviderOptions(
+  provider: string,
+  effort: ChatStreamOptions['thinkingLevel'],
+): Record<string, unknown> | undefined {
+  if (!effort || effort === 'default') return undefined
+  return { [provider]: { reasoning_effort: effort } }
 }
 
 /** Build `harness::send` `options.metadata` for filesystem scope. */
@@ -139,6 +157,7 @@ async function buildSendRequest(
 ): Promise<HarnessSendRequest> {
   const { provider, model: modelId } = resolveRunParams(model)
   const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
+  const providerOptions = toProviderOptions(provider, opts?.thinkingLevel)
 
   let functionPolicy = FALLBACK_FUNCTION_POLICY
   try {
@@ -165,6 +184,7 @@ async function buildSendRequest(
       mode,
       functions: functionPolicy,
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+      ...(providerOptions ? { provider_options: providerOptions } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
     },
   }

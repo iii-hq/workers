@@ -20,7 +20,7 @@ pub struct BodyArgs {
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
     /// Pre-resolved reasoning effort; None omits the param.
-    pub reasoning_effort: Option<&'static str>,
+    pub reasoning_effort: Option<String>,
 }
 
 /// Responses body: `input` items, `stream`, `store:false` (stateless — the
@@ -40,7 +40,7 @@ pub fn build_body(args: &BodyArgs) -> Value {
     if !wire_tools.is_empty() {
         body["tools"] = Value::Array(wire_tools);
     }
-    if let Some(effort) = args.reasoning_effort {
+    if let Some(effort) = &args.reasoning_effort {
         body["reasoning"] = json!({ "effort": effort });
     }
     body
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn reasoning_and_tools_serialize_when_present() {
         let mut a = args();
-        a.reasoning_effort = Some("high");
+        a.reasoning_effort = Some("high".into());
         a.tools = vec![AgentFunction {
             name: "agent::trigger".into(),
             description: "d".into(),

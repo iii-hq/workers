@@ -6,13 +6,14 @@ import {
   RefreshCw,
   Settings,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import {
   CATALOG_MODEL_KEY_SEP,
   type ModelId,
   type ModelOption,
+  type ReasoningEffortOption,
   THINKING_LEVELS,
   type ThinkingLevel,
 } from '@/types/chat'
@@ -21,6 +22,11 @@ import {
 // where api keys + per-provider settings are now edited (the bespoke
 // per-provider dialog was retired in favour of the schema-driven form).
 const HARNESS_CONFIG_HASH = '#/workers/configuration/llm-router'
+
+const DEFAULT_EFFORT: ReasoningEffortOption = {
+  effort: 'default',
+  description: 'use the model default',
+}
 
 interface ModelPickerProps {
   value: ModelId | null
@@ -51,19 +57,97 @@ function groupByProvider(options: ModelOption[]): ModelGroup[] {
     .map(([label, opts]) => ({ label, options: opts }))
 }
 
-function formatThinkingLevel(level: ThinkingLevel): string {
-  return level === 'off' ? 'thinking off' : `thinking ${level}`
+function effortOptionsFor(
+  model: ModelOption | undefined,
+): ReasoningEffortOption[] {
+  if (!model) return []
+  if (model.reasoningEfforts && model.reasoningEfforts.length > 0) {
+    return [
+      DEFAULT_EFFORT,
+      ...model.reasoningEfforts.filter((option) => option.effort !== 'default'),
+    ]
+  }
+  if (!model.supportsThinking) return []
+  return THINKING_LEVELS.map((effort) => ({ effort }))
 }
 
-function triggerLabel(
-  model: ModelOption | undefined,
-  thinkingLevel: ThinkingLevel,
-): string | undefined {
-  if (!model) return undefined
-  if (model.supportsThinking && thinkingLevel !== 'off') {
-    return `${model.label} · ${formatThinkingLevel(thinkingLevel)}`
-  }
-  return model.label
+function effortSupported(
+  options: ReasoningEffortOption[],
+  effort: ThinkingLevel,
+): boolean {
+  return options.some((option) => option.effort === effort)
+}
+
+function EffortPicker({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: ThinkingLevel
+  options: ReasoningEffortOption[]
+  onChange: (next: ThinkingLevel) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <SelectPrimitive.Root
+      value={value}
+      open={open}
+      onOpenChange={setOpen}
+      onValueChange={onChange}
+      disabled={disabled}
+    >
+      <SelectPrimitive.Trigger
+        aria-label={`reasoning effort: ${value}`}
+        className={cn(
+          'inline-flex h-9 min-w-0 items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[state=open]:border-ink',
+          disabled && 'pointer-events-none opacity-40',
+        )}
+      >
+        <span className="truncate text-left">effort: {value}</span>
+        <SelectPrimitive.Icon asChild>
+          {open ? (
+            <ChevronUp size={12} aria-hidden />
+          ) : (
+            <ChevronDown size={12} aria-hidden />
+          )}
+        </SelectPrimitive.Icon>
+      </SelectPrimitive.Trigger>
+
+      <SelectPrimitive.Portal>
+        <SelectPrimitive.Content
+          position="popper"
+          sideOffset={4}
+          align="end"
+          className="z-50 min-w-[min(360px,calc(100vw-24px))] overflow-hidden border border-rule bg-bg font-mono text-[13px] lowercase text-ink"
+        >
+          <SelectPrimitive.Viewport className="max-h-[60vh] p-1">
+            {options.map((option) => (
+              <SelectPrimitive.Item
+                key={option.effort}
+                value={option.effort}
+                className="relative cursor-pointer select-none py-2 pl-7 pr-3 outline-none data-[highlighted]:bg-panel data-[highlighted]:text-ink"
+              >
+                <SelectPrimitive.ItemIndicator className="absolute left-2 top-2.5 text-ink">
+                  <Check size={12} aria-hidden />
+                </SelectPrimitive.ItemIndicator>
+                <SelectPrimitive.ItemText>
+                  <span className="block text-ink">{option.effort}</span>
+                </SelectPrimitive.ItemText>
+                {option.description ? (
+                  <span className="mt-0.5 block max-w-[42ch] text-[11px] leading-[1.45] text-ink-faint">
+                    {option.description}
+                  </span>
+                ) : null}
+              </SelectPrimitive.Item>
+            ))}
+          </SelectPrimitive.Viewport>
+        </SelectPrimitive.Content>
+      </SelectPrimitive.Portal>
+    </SelectPrimitive.Root>
+  )
 }
 
 export function ModelPicker({
@@ -78,11 +162,11 @@ export function ModelPicker({
 }: ModelPickerProps) {
   const ctx = useConversationsCtxOptional()
   const [open, setOpen] = useState(false)
-  const [expandedModelId, setExpandedModelId] = useState<ModelId | null>(null)
+  const effortByModel = useRef(new Map<ModelId, ThinkingLevel>())
 
   const presentIds = ctx?.presentProviders.map((p) => p.id) ?? []
   const presentSet = new Set<string>(presentIds)
-  // Providers the router declares but whose worker is not loaded — their
+  // Providers the router declares but whose worker is not loaded: their
   // catalog models would only fail with `provider_unavailable` at dispatch.
   const unavailableSet = new Set(
     (ctx?.presentProviders ?? [])
@@ -91,19 +175,20 @@ export function ModelPicker({
   )
 
   const optionsById = useMemo(
-    () => new Map(options.map((o) => [o.id, o])),
+    () => new Map(options.map((option) => [option.id, option])),
     [options],
   )
 
   const pickerOptions = options
   const safeValue =
-    value != null && pickerOptions.some((o) => o.id === value)
+    value != null && pickerOptions.some((option) => option.id === value)
       ? value
       : undefined
   const selected = safeValue ? optionsById.get(safeValue) : undefined
+  const selectedEfforts = useMemo(() => effortOptionsFor(selected), [selected])
 
   const modelGroups = groupByProvider(pickerOptions)
-  const grouped = new Set(modelGroups.map((g) => g.label))
+  const grouped = new Set(modelGroups.map((group) => group.label))
   const emptyGroups: ModelGroup[] = presentIds
     .filter((id) => !grouped.has(id))
     .map((id) => ({ label: id, options: [] }))
@@ -113,32 +198,47 @@ export function ModelPicker({
 
   const pickerDisabled = disabled || loading || groups.length === 0
 
-  function handleThinkingPick(modelId: ModelId, level: ThinkingLevel) {
-    onThinkingLevelChange(level)
-    if (safeValue !== modelId) onChange(modelId)
+  useEffect(() => {
+    if (!safeValue) return
+    if (effortSupported(selectedEfforts, thinkingLevel)) {
+      effortByModel.current.set(safeValue, thinkingLevel)
+      return
+    }
+    if (thinkingLevel !== 'default') onThinkingLevelChange('default')
+    effortByModel.current.set(safeValue, 'default')
+  }, [safeValue, selectedEfforts, thinkingLevel, onThinkingLevelChange])
+
+  function handleModelChange(next: string) {
+    const nextModel = optionsById.get(next)
+    const nextEfforts = effortOptionsFor(nextModel)
+    const remembered = effortByModel.current.get(next) ?? 'default'
+    const nextEffort = effortSupported(nextEfforts, remembered)
+      ? remembered
+      : 'default'
+    onChange(next)
+    if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
+  }
+
+  function handleEffortChange(next: ThinkingLevel) {
+    if (safeValue) effortByModel.current.set(safeValue, next)
+    onThinkingLevelChange(next)
   }
 
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex min-w-0 items-center gap-1">
       <SelectPrimitive.Root
         value={safeValue ?? ''}
         open={open}
-        onOpenChange={(next) => {
-          setOpen(next)
-          if (!next) setExpandedModelId(null)
-        }}
-        onValueChange={(next) => {
-          onChange(next as ModelId)
-          setExpandedModelId(null)
-        }}
+        onOpenChange={setOpen}
+        onValueChange={handleModelChange}
         disabled={pickerDisabled}
       >
         <SelectPrimitive.Trigger
           aria-label={loading ? 'model (loading catalog)' : 'model'}
           aria-busy={loading || undefined}
           className={cn(
-            'inline-flex items-center justify-between gap-x-2 border border-rule bg-bg px-3 h-9 text-ink font-mono text-[13px] lowercase focus:outline-none focus:border-ink data-[state=open]:border-ink transition-colors max-w-full min-w-0 data-[placeholder]:text-ink-faint',
-            pickerDisabled && 'opacity-40 pointer-events-none',
+            'inline-flex h-9 min-w-0 max-w-full items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[placeholder]:text-ink-faint data-[state=open]:border-ink',
+            pickerDisabled && 'pointer-events-none opacity-40',
             className,
           )}
         >
@@ -146,7 +246,7 @@ export function ModelPicker({
             <SelectPrimitive.Value
               placeholder={loading ? 'loading…' : 'no models'}
             >
-              {triggerLabel(selected, thinkingLevel)}
+              {selected?.label}
             </SelectPrimitive.Value>
           </span>
           <SelectPrimitive.Icon asChild>
@@ -162,22 +262,18 @@ export function ModelPicker({
           <SelectPrimitive.Content
             position="popper"
             sideOffset={4}
-            className={cn(
-              'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden border border-rule bg-bg text-ink font-mono text-[13px] lowercase shadow-lg',
-              'data-[state=open]:animate-in data-[state=closed]:animate-out',
-              'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-            )}
+            className="z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden border border-rule bg-bg font-mono text-[13px] lowercase text-ink"
           >
-            <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
-              {groups.map((g) => {
-                const unavailable = unavailableSet.has(g.label)
-                const unconfigured = !unavailable && g.options.length === 0
+            <SelectPrimitive.Viewport className="max-h-[60vh] p-1">
+              {groups.map((group) => {
+                const unavailable = unavailableSet.has(group.label)
+                const unconfigured = !unavailable && group.options.length === 0
                 return (
-                  <SelectPrimitive.Group key={g.label}>
-                    <div className="flex items-center justify-between gap-2 pr-2 pt-2 pb-1">
+                  <SelectPrimitive.Group key={group.label}>
+                    <div className="flex items-center justify-between gap-2 pb-1 pr-2 pt-2">
                       <span className="flex min-w-0 items-baseline gap-1.5">
                         <SelectPrimitive.Label className="px-3 text-[11px] uppercase tracking-[0.12em] text-ink-faint">
-                          {g.label}
+                          {group.label}
                         </SelectPrimitive.Label>
                         {unavailable ? (
                           <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
@@ -189,114 +285,43 @@ export function ModelPicker({
                           </span>
                         ) : null}
                       </span>
-                      {presentSet.has(g.label) ? (
+                      {presentSet.has(group.label) ? (
                         <button
                           type="button"
-                          aria-label={`configure ${g.label}`}
-                          title={`configure ${g.label} in harness configuration`}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.preventDefault()
-                            e.stopPropagation()
+                          aria-label={`configure ${group.label}`}
+                          title={`configure ${group.label} in harness configuration`}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
                             window.location.hash = HARNESS_CONFIG_HASH
                           }}
-                          className="text-ink-faint hover:text-ink transition-colors p-0.5 -mr-0.5"
+                          className="-mr-0.5 p-0.5 text-ink-faint transition-colors hover:text-ink"
                         >
                           <Settings size={12} />
                         </button>
                       ) : null}
                     </div>
-                    {g.options.map((opt) => {
-                      const expanded = expandedModelId === opt.id
-                      // Gates the edit button AND the level panel: picking a
-                      // level calls onChange(opt.id), which must not select a
-                      // model whose row is disabled as unavailable.
-                      const showThinking =
-                        opt.supportsThinking === true && !unavailable
-                      return (
-                        <div key={opt.id}>
-                          <div className="group/model relative flex items-center">
-                            <SelectPrimitive.Item
-                              value={opt.id}
-                              disabled={unavailable}
-                              className={cn(
-                                'relative flex flex-1 min-w-0 items-center pl-7 pr-12 py-1.5 cursor-pointer outline-none select-none',
-                                'data-[highlighted]:bg-rule data-[highlighted]:text-ink',
-                                'data-[state=checked]:text-ink',
-                                'data-[disabled]:opacity-40 data-[disabled]:cursor-default',
-                              )}
-                            >
-                              <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-                                <Check size={12} aria-hidden />
-                              </SelectPrimitive.ItemIndicator>
-                              <SelectPrimitive.ItemText className="truncate">
-                                {opt.label}
-                              </SelectPrimitive.ItemText>
-                            </SelectPrimitive.Item>
-                            {showThinking ? (
-                              <button
-                                type="button"
-                                aria-label={`edit thinking for ${opt.label}`}
-                                aria-expanded={expanded}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  setExpandedModelId((current) =>
-                                    current === opt.id ? null : opt.id,
-                                  )
-                                }}
-                                className={cn(
-                                  'absolute right-2 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[11px] text-ink-ghost transition-opacity',
-                                  'opacity-0 group-hover/model:opacity-100 focus-visible:opacity-100',
-                                  expanded && 'opacity-100 text-ink',
-                                )}
-                              >
-                                edit
-                              </button>
-                            ) : null}
-                          </div>
-                          {expanded && showThinking ? (
-                            <div className="ml-7 border-l border-rule-2 pl-2 pb-1">
-                              {THINKING_LEVELS.map((level) => {
-                                const active =
-                                  safeValue === opt.id &&
-                                  thinkingLevel === level
-                                return (
-                                  <button
-                                    key={level}
-                                    type="button"
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onClick={(e) => {
-                                      e.preventDefault()
-                                      e.stopPropagation()
-                                      handleThinkingPick(opt.id, level)
-                                    }}
-                                    className={cn(
-                                      'flex w-full items-center gap-2 px-2 py-1 text-left text-[12px] transition-colors',
-                                      active
-                                        ? 'text-ink'
-                                        : 'text-ink-faint hover:text-ink hover:bg-rule',
-                                    )}
-                                  >
-                                    <span
-                                      aria-hidden
-                                      className={cn(
-                                        'w-3 text-center',
-                                        active ? 'opacity-100' : 'opacity-0',
-                                      )}
-                                    >
-                                      <Check size={12} aria-hidden />
-                                    </span>
-                                    {formatThinkingLevel(level)}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                      )
-                    })}
+                    {group.options.map((option) => (
+                      <SelectPrimitive.Item
+                        key={option.id}
+                        value={option.id}
+                        disabled={unavailable}
+                        className={cn(
+                          'relative flex min-w-0 cursor-pointer select-none items-center py-1.5 pl-7 pr-3 outline-none',
+                          'data-[highlighted]:bg-panel data-[highlighted]:text-ink',
+                          'data-[state=checked]:text-ink',
+                          'data-[disabled]:cursor-default data-[disabled]:opacity-40',
+                        )}
+                      >
+                        <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
+                          <Check size={12} aria-hidden />
+                        </SelectPrimitive.ItemIndicator>
+                        <SelectPrimitive.ItemText className="truncate">
+                          {option.label}
+                        </SelectPrimitive.ItemText>
+                      </SelectPrimitive.Item>
+                    ))}
                   </SelectPrimitive.Group>
                 )
               })}
@@ -304,6 +329,15 @@ export function ModelPicker({
           </SelectPrimitive.Content>
         </SelectPrimitive.Portal>
       </SelectPrimitive.Root>
+
+      {selectedEfforts.length > 1 ? (
+        <EffortPicker
+          value={thinkingLevel}
+          options={selectedEfforts}
+          onChange={handleEffortChange}
+          disabled={disabled || loading}
+        />
+      ) : null}
 
       {ctx ? (
         <button
@@ -314,7 +348,7 @@ export function ModelPicker({
           onClick={() => {
             void ctx.refreshModels()
           }}
-          className="text-ink-ghost hover:text-ink transition-colors p-1 disabled:opacity-50"
+          className="p-1 text-ink-ghost transition-colors hover:text-ink disabled:opacity-50"
         >
           <RefreshCw
             size={12}

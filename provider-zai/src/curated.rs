@@ -195,6 +195,7 @@ fn to_model(r: &Row) -> Model {
         supports_thinking: Some(true),
         // `reasoning_effort: xhigh` exists on GLM-5.2+ only.
         supports_xhigh: Some(r.id.starts_with("glm-5.2")),
+        reasoning_efforts: None,
         supports_tools: Some(true),
         supports_vision: Some(r.vision),
         // Implicit prompt caching, billed at the cached-input rate.

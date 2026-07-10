@@ -73,6 +73,15 @@
           "provider": {
             "type": "string"
           },
+          "reasoning_efforts": {
+            "items": {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "supports_cache": {
             "type": [
               "boolean",
@@ -172,6 +181,24 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "ReasoningEffort": {
+        "description": "One provider-native reasoning effort advertised for a specific model.\n\nValues intentionally remain strings: provider catalogs can add efforts without requiring a router-wide enum release first.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "effort"
+        ],
         "type": "object"
       }
     },

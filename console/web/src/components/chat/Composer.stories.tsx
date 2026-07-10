@@ -80,7 +80,7 @@ function ComposerHarness({
       modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
       permissionMode="manual"
-      thinkingLevel="off"
+      thinkingLevel="default"
       onThinkingLevelChange={fn()}
       onModeChange={setMode}
       onModelChange={setModel}

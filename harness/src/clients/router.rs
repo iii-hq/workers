@@ -42,6 +42,7 @@ pub struct ChatParams {
     pub tools: Vec<AgentFunction>,
     pub response_format: Option<Value>,
     pub thinking_level: Option<ThinkingLevel>,
+    pub provider_options: Option<Value>,
 }
 
 /// The assembled result of one stream.
@@ -130,6 +131,9 @@ impl RouterClient {
         }
         if let Some(tl) = &params.thinking_level {
             payload["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
+        }
+        if let Some(options) = &params.provider_options {
+            payload["provider_options"] = options.clone();
         }
 
         // Run the held-open trigger concurrently with frame consumption.

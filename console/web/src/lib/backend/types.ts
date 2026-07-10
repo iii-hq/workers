@@ -103,9 +103,8 @@ export type StreamEvent =
 export interface ChatStreamOptions {
   signal?: AbortSignal
   /**
-   * Reasoning/thinking level for the turn. Sent to `harness::send` as
-   * `options.thinking_level`; omitted when 'off' or absent. The provider
-   * degrades with a warning when the model can't honor it.
+   * Reasoning effort for the turn. `default` omits the override; exact native
+   * values also travel through namespaced provider options.
    */
   thinkingLevel?: import('@/types/chat').ThinkingLevel
   /**

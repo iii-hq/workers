@@ -19,6 +19,14 @@ pub enum ThinkingLevel {
     Xhigh,
 }
 
+/// One provider-native reasoning effort advertised for a specific model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReasoningEffort {
+    pub effort: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Pricing {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,6 +53,8 @@ pub struct Model {
     pub supports_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_xhigh: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<Vec<ReasoningEffort>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_tools: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

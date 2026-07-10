@@ -84,6 +84,7 @@ fn model_from_live(row: &Value) -> Option<Model> {
             adaptive.or(thinking)
         },
         supports_xhigh: cap_supported(row, &["effort", "xhigh"]),
+        reasoning_efforts: None,
         supports_tools: Some(true), // uniform across the Messages API
         supports_vision: cap_supported(row, &["image_input"]),
         supports_cache: Some(true),

@@ -373,6 +373,11 @@ The capability record `llm-router` serves and every worker reads to make budget/
 // levels map to provider-native knobs via Model.thinking_budgets.
 type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
+type ReasoningEffort = {
+  effort: string;             // provider-native value, e.g. "xhigh" or "ultra"
+  description?: string;       // provider-supplied picker guidance
+};
+
 type Capability =
   | "thinking" | "thinking:low" | "thinking:medium" | "thinking:high" | "thinking:xhigh"
   | "tools" | "vision" | "cache" | "structured_output";
@@ -386,6 +391,7 @@ type Model = {
   input_limit?: number;       // usable input budget if distinct from context_window
   supports_thinking?: boolean;
   supports_xhigh?: boolean;
+  reasoning_efforts?: ReasoningEffort[];
   supports_tools?: boolean;
   supports_vision?: boolean;
   supports_cache?: boolean;

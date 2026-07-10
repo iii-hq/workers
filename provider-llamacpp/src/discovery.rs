@@ -70,6 +70,7 @@ fn enrich(id: &str, props: &Props) -> Model {
         input_limit: None,
         supports_thinking: None,
         supports_xhigh: None,
+        reasoning_efforts: None,
         // Best-effort: requires the server run with --jinja and a
         // tool-capable chat template, which `/props` doesn't report;
         // llama.cpp silently ignores tools a template can't use, so this
