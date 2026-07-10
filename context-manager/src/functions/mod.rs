@@ -103,12 +103,22 @@ fn register<Req, Resp, F, Fut>(
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    register(iii, deps, ASSEMBLE_ID, ASSEMBLE_DESC, true, |d, r| async move {
-        assemble::handle(&d, r).await
-    });
-    register(iii, deps, COMPACT_ID, COMPACT_DESC, true, |d, r| async move {
-        compact::handle(&d, r).await
-    });
+    register(
+        iii,
+        deps,
+        ASSEMBLE_ID,
+        ASSEMBLE_DESC,
+        true,
+        |d, r| async move { assemble::handle(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        COMPACT_ID,
+        COMPACT_DESC,
+        true,
+        |d, r| async move { compact::handle(&d, r).await },
+    );
     register(iii, deps, PRUNE_ID, PRUNE_DESC, false, |d, r| async move {
         prune::handle(&d, r).await
     });

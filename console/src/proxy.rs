@@ -137,10 +137,7 @@ pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
         // Unexpected metadata shape — don't rewrite what we don't understand.
         Some(_) => return None,
         None => {
-            obj.insert(
-                "metadata".into(),
-                serde_json::json!({ "internal": true }),
-            );
+            obj.insert("metadata".into(), serde_json::json!({ "internal": true }));
         }
     }
     serde_json::to_string(&msg).ok()
