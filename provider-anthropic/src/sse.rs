@@ -357,6 +357,7 @@ pub fn handle_sse_event(
                     events.push(AssistantMessageEvent::FunctioncallDelta {
                         partial: build_partial(state, model),
                         delta: json.to_string(),
+                        id: state.function_calls[idx].id.clone(),
                     });
                 }
                 Some(BlockSlot::Thinking(idx)) if delta_type == "thinking_delta" => {
