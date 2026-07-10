@@ -107,6 +107,17 @@ impl RegistryStore {
         };
         let mut records = self.records.lock().await;
         *records = serde_json::from_value(stored).unwrap_or_default();
+        // Persisted availability is stale across a router restart: a provider
+        // that died while the router was down would be restored as "up" and
+        // stay wrongly listed until a dispatch burned on it (F9: topology
+        // events can't be resolved to providers). Restore every record DOWN
+        // and let the sources of truth flip it up: providers re-declare on
+        // `router::ready` (upsert emits the op:"available" recovery), and a
+        // successful dispatch heals it too (chat.rs `Done` arm). Not persisted
+        // here — flags re-persist on their next real change.
+        for rec in records.values_mut() {
+            rec.available = false;
+        }
         Ok(())
     }
 

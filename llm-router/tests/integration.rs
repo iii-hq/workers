@@ -549,6 +549,14 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
         .await
         .expect("provider list");
     assert_eq!(list["providers"][0]["id"], "real", "list: {list}");
+    // Availability is NOT trusted across a restart: the persisted "up" flag
+    // could belong to a provider that died while the router was down. It is
+    // restored DOWN and only re-declaration / a successful dispatch flip it up.
+    assert_eq!(
+        list["providers"][0]["available"],
+        json!(false),
+        "restored availability must be pessimistic: {list}"
+    );
 
     // re-declare with the original token: idempotent, same token accepted
     let again = call(
@@ -559,6 +567,16 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
     .await
     .expect("re-declare accepted");
     assert_eq!(again["registration_token"], json!(provider.token.clone()));
+
+    // …and the re-declaration is what brings the provider back up.
+    let list = call(&second, "router::provider::list", json!({}))
+        .await
+        .expect("provider list after re-declare");
+    assert_eq!(
+        list["providers"][0]["available"],
+        json!(true),
+        "re-declare restores availability: {list}"
+    );
 
     second.shutdown();
 }

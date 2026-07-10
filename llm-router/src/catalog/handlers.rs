@@ -39,7 +39,10 @@ pub fn make_models_get(
     move |req: ModelGetRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let model = models_get(&catalog, &req.provider, &req.id).await;
+            // provider defaults to "" on the wire — treat empty as unset so
+            // id-only lookups resolve when the id is unambiguous.
+            let provider = (!req.provider.is_empty()).then_some(req.provider.as_str());
+            let model = models_get(&catalog, provider, &req.id).await;
             // null when unregistered (the cold-window signal)
             Ok(model.map(|model| ModelGetResponse { model }))
         })

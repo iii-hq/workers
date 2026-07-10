@@ -329,6 +329,18 @@ impl ChatPipeline {
                     let AssistantMessageEvent::Done { message } = terminal else {
                         unreachable!()
                     };
+                    // A completed stream is definitive proof the provider is
+                    // serving — heal a stale "down" flag (e.g. the boot-time
+                    // reset in `RegistryStore::load`, or a past transient
+                    // function_not_found) without waiting for a re-register.
+                    if self.registry.set_availability(provider, true).await {
+                        self.events
+                            .emit(
+                                triggers::PROVIDER_CHANGED,
+                                json!({ "provider": provider, "op": "available" }),
+                            )
+                            .await;
+                    }
                     return Ok(ChatResponse {
                         ok: true,
                         provider: provider.to_string(),

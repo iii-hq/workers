@@ -110,8 +110,15 @@ fn partial_of(ev: &AssistantMessageEvent) -> Option<&AssistantMessage> {
 }
 
 /// One provider attempt (design § chat flow step 5). Reads provider frames,
-/// enforces the idle budget (any frame incl. ping resets it), fills cost_usd,
-/// forwards in order, tracks the partial, classifies how the stream ended.
+/// enforces the idle budget, fills cost_usd, forwards in order, tracks the
+/// partial, classifies how the stream ended.
+///
+/// Idle semantics: before any content, every frame (incl. ping) resets the
+/// budget — a slow first token behind provider keepalives is legitimate
+/// (local llama.cpp prompt eval). Once content has started, only non-ping
+/// frames reset it: a provider pinging past a dead upstream must trip the
+/// idle guard, not zombie on until the engine's stream_timeout kills the
+/// call ("stream ended without a terminal frame").
 pub async fn relay_frames(
     reader: &mut Box<dyn RelayRead>,
     sink: &dyn FrameSink,
@@ -120,9 +127,20 @@ pub async fn relay_frames(
     let mut forwarded = false; // a non-ping frame reached the caller (gates retry)
     let mut partial: Option<AssistantMessage> = None;
     let mut usage: Option<Usage> = None;
+    let mut content_started = false;
+    let mut last_progress = std::time::Instant::now();
 
     loop {
-        let read = reader.next(opts.idle).await;
+        let budget = if content_started {
+            opts.idle.saturating_sub(last_progress.elapsed())
+        } else {
+            opts.idle
+        };
+        let read = if budget.is_zero() {
+            ReadEvent::Timeout
+        } else {
+            reader.next(budget).await
+        };
 
         if opts.aborted.load(Ordering::SeqCst) {
             reader.close();
@@ -154,6 +172,16 @@ pub async fn relay_frames(
                 let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(&msg) else {
                     continue; // malformed frame: skip, never fatal
                 };
+                if !matches!(ev, AssistantMessageEvent::Ping) {
+                    last_progress = std::time::Instant::now();
+                    // Start carries an empty partial pre-content; it must not
+                    // arm the strict budget or slow-first-token providers trip.
+                    if partial_of(&ev).is_some()
+                        && !matches!(ev, AssistantMessageEvent::Start { .. })
+                    {
+                        content_started = true;
+                    }
+                }
                 if let Some(p) = partial_of(&ev) {
                     partial = Some(p.clone());
                 }
@@ -424,7 +452,8 @@ mod loop_tests {
         assert_eq!(p.unwrap().content.len(), 1);
         assert_eq!(usage.unwrap().input, Some(9));
 
-        // idle: pings reset the clock and are forwarded but never count as content
+        // idle: pre-content pings reset the clock and are forwarded but never
+        // count as content (slow first token behind keepalives is legitimate)
         let provider = FakeChannel::new();
         let caller = FakeChannel::new();
         let (_, o) = opts(80);
@@ -445,6 +474,52 @@ mod loop_tests {
         };
         assert!(matches!(reason, NoTerminalReason::Idle));
         assert!(!forwarded);
+    }
+
+    #[tokio::test]
+    async fn pings_do_not_extend_idle_once_content_started() {
+        // A stalled upstream behind a pinging provider must trip the idle
+        // guard — not zombie on until the engine's stream_timeout kills the
+        // call as "stream ended without a terminal frame".
+        let provider = FakeChannel::new();
+        let caller = FakeChannel::new();
+        send(
+            &provider,
+            &AssistantMessageEvent::Start {
+                partial: partial(""),
+            },
+        );
+        send(
+            &provider,
+            &AssistantMessageEvent::TextDelta {
+                partial: partial("hi"),
+                delta: "hi".into(),
+            },
+        );
+        let writer = provider.writer.clone();
+        let feeder = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                if writer
+                    .send(&serde_json::to_string(&AssistantMessageEvent::Ping).unwrap())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (_, o) = opts(100);
+        let mut reader: Box<dyn RelayRead> = Box::new(provider.reader);
+        let result = relay_frames(&mut reader, &caller.writer.clone(), &o).await;
+        feeder.abort();
+        let RelayResult::NoTerminal {
+            reason, forwarded, ..
+        } = result
+        else {
+            panic!("want no-terminal, got {result:?}")
+        };
+        assert!(matches!(reason, NoTerminalReason::Idle));
+        assert!(forwarded);
     }
 
     #[tokio::test]

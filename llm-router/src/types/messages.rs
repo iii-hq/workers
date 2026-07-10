@@ -139,9 +139,110 @@ pub fn reorder_displaced_results(messages: &[AgentMessage]) -> Vec<&AgentMessage
     out
 }
 
+/// Degrade unparseable tool-call arguments to a safe OBJECT placeholder.
+///
+/// Providers must never emit null or a bare string for a call's arguments —
+/// a non-object `tool_use.input` is a hard Anthropic 400 once the turn is
+/// replayed (sessions switch providers). Two-step recovery:
+///
+/// 1. Salvage the complete leading fields of a partial object — a call cut
+///    mid-stream (`{"function":"state::set","payload":{"key":`) keeps its
+///    known prefix (`{"function":"state::set"}`), so long-streaming calls
+///    stay identifiable in UIs instead of rendering as an anonymous `{}`.
+/// 2. Otherwise carry the malformed text as `{"_raw": <text ≤2KB>}` so the
+///    evidence of what the model actually sent survives for rendering and
+///    for the harness's teachable no-target error.
+pub fn degraded_arguments(args_json: &str) -> serde_json::Value {
+    if let Some(map) = salvage_leading_object_fields(args_json) {
+        return serde_json::Value::Object(map);
+    }
+    serde_json::json!({ "_raw": utf8_head(args_json, 2048) })
+}
+
+/// The complete leading fields of a partial JSON object string, if any.
+/// Scans only the first 4KB (a partial is rebuilt per stream event, so this
+/// must stay O(head); leading fields live in the prefix), cutting at
+/// top-level commas and taking the longest prefix that parses once closed.
+pub fn salvage_leading_object_fields(
+    args: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let head = utf8_head(args, 4096);
+    let bytes = head.as_bytes();
+    let (mut depth, mut in_str, mut esc, mut started) = (0usize, false, false, false);
+    let mut cuts: Vec<usize> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        if esc {
+            esc = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_str => esc = true,
+            b'"' => in_str = !in_str,
+            _ if in_str => {}
+            b'{' | b'[' => {
+                depth += 1;
+                started = true;
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b',' if depth == 1 => cuts.push(i),
+            _ => {}
+        }
+    }
+    if !started {
+        return None;
+    }
+    // Longest salvageable prefix wins; candidates are few (top-level commas).
+    for &cut in cuts.iter().rev() {
+        let candidate = format!("{}}}", &head[..cut]);
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&candidate) {
+            if !map.is_empty() {
+                return Some(map);
+            }
+        }
+    }
+    None
+}
+
+fn utf8_head(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn degraded_arguments_salvages_leading_fields_or_keeps_raw() {
+        // Mid-stream cut: the known prefix survives as a real object.
+        assert_eq!(
+            degraded_arguments(r#"{"function":"state::set","payload":{"key":"art"#),
+            serde_json::json!({ "function": "state::set" })
+        );
+        // Longest complete prefix wins, nested commas/strings don't cut.
+        assert_eq!(
+            degraded_arguments(
+                r#"{"function":"a::b","payload":{"x":"1,2","y":[3,4]},"extra":{"cut":"#
+            ),
+            serde_json::json!({ "function": "a::b", "payload": { "x": "1,2", "y": [3, 4] } })
+        );
+        // Nothing salvageable (no complete top-level field yet, or not JSON):
+        // the raw text survives as evidence, always inside an object.
+        assert_eq!(
+            degraded_arguments(r#"{"function":"state::se"#),
+            serde_json::json!({ "_raw": r#"{"function":"state::se"# })
+        );
+        assert_eq!(
+            degraded_arguments("{'key': 'v'}"),
+            serde_json::json!({ "_raw": "{'key': 'v'}" })
+        );
+    }
     use crate::types::events::StopReason;
 
     fn assistant(content: Vec<ContentBlock>) -> AgentMessage {
