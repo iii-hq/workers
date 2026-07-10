@@ -1,0 +1,10 @@
+# Agent permissions for the provider-kimi worker.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # Direct provider calls bypass the router's accounting, budgets, and retry
+  # policy — never agent-callable. The router invokes these worker-to-worker.
+  - '!provider::kimi::stream'
+  - '!provider::kimi::refresh_models'
+  - '!provider::kimi::on_router_ready'
