@@ -430,6 +430,7 @@ describe('entrySegments', () => {
         fired_at: 0,
       }),
     ).toBe('ping · notified this chat · unregistered')
+  })
 
   it('renders a persisted failure with partial-output and recovery context', () => {
     const [notice] = entrySegments({
