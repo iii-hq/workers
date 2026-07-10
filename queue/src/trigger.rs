@@ -22,6 +22,12 @@ use tokio::sync::Mutex;
 use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::subscriber_config::SubscriberQueueConfig;
 
+/// Queue-delivered functions may run for many minutes (e.g. streaming an LLM
+/// response). The iii SDK defaults an omitted timeout to 30 seconds, which
+/// lets the adapter retry an in-flight delivery while the original invocation
+/// is still running. 30 minutes covers the longest intended job budget.
+const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String>;
@@ -46,7 +52,7 @@ impl Invoker for IiiInvoker {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,
-                timeout_ms: None,
+                timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
             })
             .await
             .map(Some)
