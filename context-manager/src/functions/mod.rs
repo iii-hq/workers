@@ -19,6 +19,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::core::budget::{fallback_model, ResolvedModel};
 use crate::error::ContextError;
@@ -72,6 +73,12 @@ pub(crate) async fn resolve_model(
 
 /// Register one typed handler under `id`, mapping `ContextError` into
 /// the bus error shape (`code: message`).
+///
+/// Every `context::*` function is registered with `trace_hidden: true`
+/// metadata: context assembly runs inside every agent turn and reads as
+/// plumbing in trace timelines, so trace UIs hide these spans by default
+/// (users can unhide them from the span filter). See
+/// workers/docs/sops/trace-hidden-functions.md.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
@@ -92,7 +99,8 @@ fn register<Req, Resp, F, Fut>(
             let handler = handler.clone();
             async move { handler(deps, req).await.map_err(Error::from) }
         })
-        .description(description),
+        .description(description)
+        .metadata(json!({ "trace_hidden": true })),
     );
 }
 

@@ -61,6 +61,11 @@ export type SessionMeta = {
   /** App-defined; the console stores { surface, model, mode, title_manual }. */
   metadata?: Record<string, unknown>
   forked_from?: string
+  /**
+   * Unsent composer input parked via `session::set-draft` (event-silent,
+   * never bumps `updated_at`); absent when nothing is parked.
+   */
+  draft?: string
   created_at: number
   updated_at: number
   message_count: number

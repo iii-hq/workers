@@ -1,21 +1,20 @@
 //! `router::system_prompt::get`: serve the effective per-provider identity
-//! prompt. Reads the configuration entry live per request (same freshness
-//! contract as `router::provider::resolve`) — precedence: operator override
-//! (slice `system_prompt`, when set and non-empty) → provider-declared
-//! (`ProviderDeclaration.system_prompt`) → null. An unset/null override means
-//! "use the provider's default"; an unknown provider or no resolvable
-//! provider yields null; callers fall back to their own default prompt.
-//! Never errors: prompt lookup must not take a turn down.
+//! prompt from the reactive in-memory configuration snapshot. Precedence:
+//! operator override (slice `system_prompt`, when set and non-empty) →
+//! provider-declared (`ProviderDeclaration.system_prompt`) → null. An
+//! unset/null override means "use the provider's default"; an unknown
+//! provider or no resolvable provider yields null; callers fall back to their
+//! own default prompt. Never errors: prompt lookup must not take a turn down.
 //!
 //! Engine-backed coverage: tests/integration.rs (declared / override /
 //! unset / default_provider resolution).
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::errors::Error;
 use serde_json::Value;
 
-use crate::config::entry::read_entry_value;
+use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::store::RegistryStore;
 use crate::settings::provider_slices;
 use crate::types::router::{SystemPromptGetRequest, SystemPromptGetResponse};
@@ -33,22 +32,19 @@ fn effective_prompt(entry: &Value, provider: &str, declared: Option<String>) -> 
 }
 
 pub fn make_system_prompt_get(
-    iii: IIIClient,
+    config: ConfigCell,
     registry: Arc<RegistryStore>,
 ) -> impl Fn(SystemPromptGetRequest) -> BoxFuture<'static, Result<SystemPromptGetResponse, Error>>
        + Send
        + Sync
        + 'static {
     move |req: SystemPromptGetRequest| {
-        let (iii, registry) = (iii.clone(), registry.clone());
+        let (config, registry) = (config.clone(), registry.clone());
         Box::pin(async move {
-            let entry = read_entry_value(&iii).await;
-            let provider = req.provider.or_else(|| {
-                entry
-                    .get("default_provider")
-                    .and_then(Value::as_str)
-                    .map(String::from)
-            });
+            let config = snapshot(&config);
+            let provider = req
+                .provider
+                .or_else(|| config.settings().default_provider.clone());
             let Some(provider) = provider else {
                 return Ok(SystemPromptGetResponse::default());
             };
@@ -57,7 +53,7 @@ pub fn make_system_prompt_get(
                 .await
                 .and_then(|r| r.declaration.system_prompt);
             Ok(SystemPromptGetResponse {
-                system_prompt: effective_prompt(&entry, &provider, declared),
+                system_prompt: effective_prompt(config.value(), &provider, declared),
                 provider: Some(provider),
             })
         })

@@ -23,7 +23,15 @@ import type {
 } from '../components/timeline/layout'
 import type { TraceActivityMap } from '../hooks/useTraceActivity'
 import type { TraceListItem } from '../hooks/useTraceData'
-import { isEngineRoutingSpan, resolveSpanLabel, tagKindOf } from './spanLabel'
+import { explicitFunctionId } from './functionCallFromSpan'
+import {
+  inheritedTags,
+  internalFamilyOf,
+  isEngineRoutingSpan,
+  resolveSpanLabel,
+  tagKindOf,
+  tagRootKind,
+} from './spanLabel'
 import { getWorkerColor } from './traceColors'
 import { normalizeSpanAttributes } from './traceListItem'
 import {
@@ -134,24 +142,57 @@ export function isTraceLive(
   )
 }
 
-/** The waterfall's span-group identity (`traceTimelineFilters.ts`): owning
- *  function id from the explicit/baggage attrs, span name fallback — so the
- *  strip's funnel entries line up with the detail views'. */
-const FUNCTION_ID_ATTRS = [
-  'faas.invoked_name',
-  'function_id',
-  'iii.function.id',
-] as const
-
+/** The waterfall's span-group identity, mirroring
+ *  `traceTimelineFilters.ts` so the strip's funnel entries line up with the
+ *  detail views': explicit identity (attrs or `execute <fn>` name) first,
+ *  then tag ROOTS under their own span name (a producer's scope span like
+ *  `harness::turn step` is a first-class segment, not machinery of the
+ *  function whose baggage it inherits), then the baggage-stamped
+ *  `iii.function.id`, then the span name. */
 function storedSpanGroupKey(
   span: StoredSpan,
   attrs: Record<string, unknown>,
+  inheritedKind: string | undefined,
 ): string {
-  for (const key of FUNCTION_ID_ATTRS) {
-    const value = attrs[key]
-    if (typeof value === 'string' && value !== '') return value
-  }
+  const explicit = explicitFunctionId({ name: span.name, attributes: attrs })
+  if (explicit) return explicit
+  if (tagRootKind(attrs, inheritedKind)) return span.name
+  const baggage = attrs['iii.function.id']
+  if (typeof baggage === 'string' && baggage !== '') return baggage
   return span.name
+}
+
+interface ShapedStoredSpan {
+  span: StoredSpan
+  attrs: Record<string, unknown>
+  shaped: {
+    name: string
+    service_name?: string
+    attributes: Record<string, unknown>
+  }
+  routing: boolean
+}
+
+/**
+ * The span that TRIGGERED this one, hopping over skipped routing wrappers:
+ * walk the parent chain until it leaves the routing layer. An id that isn't
+ * in the feed at all is kept as-is — the parent may simply not have arrived
+ * yet (self-heals on the next mapping pass), and layouts already treat
+ * unresolvable parents as roots.
+ */
+function resolveTriggerParent(
+  span: StoredSpan,
+  byId: ReadonlyMap<string, ShapedStoredSpan>,
+): string | undefined {
+  let pid = span.parent_span_id
+  const seen = new Set<string>()
+  while (pid && !seen.has(pid)) {
+    const entry = byId.get(pid)
+    if (!entry?.routing) return pid
+    seen.add(pid)
+    pid = entry.span.parent_span_id
+  }
+  return pid || undefined
 }
 
 /**
@@ -160,16 +201,21 @@ function storedSpanGroupKey(
  * Engine ROUTING wrappers (`handle_invocation X` / `call X`) are skipped:
  * every invocation would otherwise stack three near-identical bars around
  * the worker's own `execute` span, and the detail views collapse those
- * wrappers too. Labels follow the waterfall's rules (producer
- * `iii.tag.display_name` override, else the verb-stripped span name), a
- * pending span is a LIVE bar (`endTime: null`, grows along the now-edge),
- * and every bar carries the shared filter keys so the funnel menu can hide
- * the same function families the waterfall hides.
+ * wrappers too. Each bar's `parentId` is the nearest NON-routing ancestor
+ * (the hierarchy stays connected across the skipped wrappers — this is the
+ * V2 strip's "what triggered what" edge). Labels follow the waterfall's
+ * rules (producer `iii.tag.display_name` override, else the verb-stripped
+ * span name), a pending span is a LIVE bar (`endTime: null`, grows along
+ * the now-edge), and every bar carries the shared filter keys so the funnel
+ * menu can hide the same function families the waterfall hides.
  */
 export function storedSpansToTimelineSpans(
   spans: readonly StoredSpan[],
 ): TimelineSpan[] {
-  const out: TimelineSpan[] = []
+  // Pass 1: shape + classify everything (routing wrappers included) so
+  // parent chains can be walked across the spans this function skips.
+  // Keyed by span_id — the feed already dedupes (`useAllSpans`).
+  const byId = new Map<string, ShapedStoredSpan>()
   for (const span of spans) {
     const attrs = normalizeSpanAttributes(span.attributes)
     const shaped = {
@@ -177,12 +223,33 @@ export function storedSpansToTimelineSpans(
       service_name: span.service_name,
       attributes: attrs,
     }
-    if (isEngineRoutingSpan(shaped)) continue
+    byId.set(span.span_id, {
+      span,
+      attrs,
+      shaped,
+      routing: isEngineRoutingSpan(shaped),
+    })
+  }
+
+  // Pass 2: emit bars for the non-routing spans, in feed order. Tag
+  // identity (labels, tag-root grouping) compares against the tags
+  // INHERITED from the ancestry, walked over pass 1's index.
+  const lookupCarrier = (id: string) => {
+    const entry = byId.get(id)
+    return entry
+      ? { attributes: entry.attrs, parent_span_id: entry.span.parent_span_id }
+      : undefined
+  }
+  const out: TimelineSpan[] = []
+  for (const { span, attrs, shaped, routing } of byId.values()) {
+    if (routing) continue
     const pending = isPendingSpan(span)
     const worker = getWorkerName(shaped)
+    const inherited = inheritedTags(span.parent_span_id, lookupCarrier)
     out.push({
       id: span.span_id,
       traceId: span.trace_id,
+      parentId: resolveTriggerParent(span, byId),
       startTime: toMs(span.start_time_unix_nano),
       endTime: pending ? null : toMs(span.end_time_unix_nano),
       status:
@@ -192,10 +259,11 @@ export function storedSpansToTimelineSpans(
             ? 'pending'
             : 'ok',
       kind: kindForOtelSpan({ ...shaped, kind: span.kind }),
-      label: resolveSpanLabel(shaped),
+      label: resolveSpanLabel(shaped, inherited.displayName),
       meta: `${worker} · ${span.trace_id.slice(0, 8)}`,
-      groupKey: storedSpanGroupKey(span, attrs),
+      groupKey: storedSpanGroupKey(span, attrs, inherited.kind),
       workerKey: worker,
+      internalKey: internalFamilyOf(attrs) ?? undefined,
     })
   }
   return out
@@ -219,9 +287,13 @@ export function waterfallToTimelineSpans(
   data: WaterfallData,
 ): TraceDetailTimeline {
   const total = data.total_duration_ms
+  // Filled BEFORE the mapping pass: label resolution walks the ancestry
+  // (display-name echo suppression), and feed order does not guarantee
+  // parents precede children.
   const byId = new Map<string, VisualizationSpan>()
+  for (const span of data.spans) byId.set(span.span_id, span)
+  const lookupById = (id: string) => byId.get(id)
   const spans: TimelineSpan[] = data.spans.map((span) => {
-    byId.set(span.span_id, span)
     const start = (span.start_percent / 100) * total
     return {
       id: span.span_id,
@@ -235,8 +307,12 @@ export function waterfallToTimelineSpans(
       color: getWorkerColor(getWorkerName(span)),
       // Verb prefixes (`execute `, `call `, ...) are stripped for display —
       // the bar/hover label reads as the function, not the SDK span name —
-      // unless a producer set an `iii.tag.display_name` override.
-      label: resolveSpanLabel(span),
+      // unless a producer set an `iii.tag.display_name` override (applied
+      // only where the name is new, not on baggage echoes).
+      label: resolveSpanLabel(
+        span,
+        inheritedTags(span.parent_span_id, lookupById).displayName,
+      ),
       meta: getWorkerName(span),
     }
   })

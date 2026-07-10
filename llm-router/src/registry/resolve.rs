@@ -17,17 +17,16 @@ use iii_sdk::{errors::Error, IIIClient};
 use serde_json::{json, Value};
 
 use crate::config::entry::{read_entry_value, write_entry_value, EntryWriteLock};
+use crate::config::state::{apply_config, snapshot, ConfigCell, ConfigSnapshot};
 use crate::registry::store::RegistryStore;
-use crate::settings::provider_slices;
 
 /// Core resolution — shared by the resolve handler, provider::list, and chat.
-pub async fn resolve_provider_config(
-    iii: &IIIClient,
+pub fn resolve_provider_config(
+    config: &ConfigSnapshot,
     declaration: &ProviderDeclaration,
 ) -> ProviderResolveResponse {
-    let entry = read_entry_value(iii).await;
-    let slice = provider_slices(&entry)
-        .get(&declaration.id)
+    let slice = config
+        .provider_slice(&declaration.id)
         .cloned()
         .unwrap_or(Value::Null);
 
@@ -85,20 +84,21 @@ pub async fn resolve_provider_config(
 }
 
 pub fn make_provider_resolve(
-    iii: IIIClient,
+    config: ConfigCell,
     registry: Arc<RegistryStore>,
 ) -> impl Fn(ProviderResolveRequest) -> BoxFuture<'static, Result<ProviderResolveResponse, Error>>
        + Send
        + Sync
        + 'static {
     move |req: ProviderResolveRequest| {
-        let (iii, registry) = (iii.clone(), registry.clone());
+        let (config, registry) = (config.clone(), registry.clone());
         Box::pin(async move {
             let record = registry
                 .verify_token(&req.id, req.token.as_deref())
                 .await
                 .map_err(Error::from)?;
-            Ok(resolve_provider_config(&iii, &record.declaration).await)
+            let config = snapshot(&config);
+            Ok(resolve_provider_config(&config, &record.declaration))
         })
     }
 }
@@ -108,13 +108,19 @@ pub fn make_provider_resolve(
 pub fn make_update_credential(
     iii: IIIClient,
     registry: Arc<RegistryStore>,
+    config: ConfigCell,
     entry_lock: EntryWriteLock,
 ) -> impl Fn(UpdateCredentialRequest) -> BoxFuture<'static, Result<UpdateCredentialResponse, Error>>
        + Send
        + Sync
        + 'static {
     move |req: UpdateCredentialRequest| {
-        let (iii, registry, entry_lock) = (iii.clone(), registry.clone(), entry_lock.clone());
+        let (iii, registry, config, entry_lock) = (
+            iii.clone(),
+            registry.clone(),
+            config.clone(),
+            entry_lock.clone(),
+        );
         Box::pin(async move {
             registry
                 .verify_token(&req.id, req.token.as_deref())
@@ -129,7 +135,7 @@ pub fn make_update_credential(
                 .into());
             }
             let _guard = entry_lock.lock().await;
-            let mut entry = read_entry_value(&iii).await;
+            let mut entry = read_entry_value(&iii).await?;
             if !entry.is_object() {
                 entry = json!({});
             }
@@ -144,7 +150,11 @@ pub fn make_update_credential(
                 .entry(&req.id)
                 .or_insert_with(|| json!({}));
             slice["credential"] = credential;
-            write_entry_value(&iii, entry).await?;
+            write_entry_value(&iii, entry.clone()).await?;
+            // Make this worker-originated write visible immediately; the
+            // asynchronous configuration trigger will subsequently re-fetch
+            // the same authoritative value and drive model discovery.
+            apply_config(&config, entry);
             Ok(UpdateCredentialResponse { ok: true })
         })
     }

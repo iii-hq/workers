@@ -39,6 +39,7 @@ use crate::functions::get_message::{GetMessageRequest, GetMessageResponse};
 use crate::functions::list::{ListOrder, ListRequest, ListResponse};
 use crate::functions::messages::{MessageItem, MessagesRequest, MessagesResponse};
 use crate::functions::set_active_leaf::{SetActiveLeafRequest, SetActiveLeafResponse};
+use crate::functions::set_draft::{SetDraftRequest, SetDraftResponse};
 use crate::functions::set_meta::{SetMetaRequest, SetMetaResponse};
 use crate::functions::set_status::{SetStatusRequest, SetStatusResponse};
 use crate::functions::update_message::{UpdateMessageRequest, UpdateMessageResponse};
@@ -186,6 +187,7 @@ impl SessionService {
             status_reason: None,
             metadata: req.metadata,
             forked_from: None,
+            draft: None,
             created_at: now,
             updated_at: now,
             message_count: 0,
@@ -229,6 +231,7 @@ impl SessionService {
             status_reason: None,
             metadata: req.metadata,
             forked_from: None,
+            draft: None,
             created_at: now,
             updated_at: now,
             message_count: 0,
@@ -343,6 +346,26 @@ impl SessionService {
             session_metadata: meta.metadata.clone(),
         };
         Ok((SetMetaResponse { meta }, vec![event]))
+    }
+
+    pub async fn set_draft(&self, req: SetDraftRequest) -> ServiceResult<SetDraftResponse> {
+        let _guard = self.lock_session(&req.session_id).await;
+        let mut meta = self.meta_or_not_found(&req.session_id).await?;
+
+        // Whitespace-only input is "nothing worth keeping" — normalize to a
+        // cleared draft so an emptied composer removes the stored record.
+        let draft = req.draft.filter(|d| !d.trim().is_empty());
+        if meta.draft == draft {
+            return Ok((SetDraftResponse { draft: meta.draft }, vec![]));
+        }
+
+        // Deliberately no `updated_at` bump and no event: drafts are saved at
+        // keystroke cadence, and a save must neither re-order `session::list`
+        // nor spam meta-updated subscribers. Consumers read the draft back
+        // from `session::get` / `session::list`.
+        meta.draft = draft;
+        self.store.put_meta(&meta).await?;
+        Ok((SetDraftResponse { draft: meta.draft }, vec![]))
     }
 
     pub async fn set_status(&self, req: SetStatusRequest) -> ServiceResult<SetStatusResponse> {
@@ -926,6 +949,8 @@ impl SessionService {
             // Tenancy propagates: the fork belongs to the same owner.
             metadata: source.metadata.clone(),
             forked_from: Some(req.session_id.clone()),
+            // The draft is the SOURCE session's unsent input, not history.
+            draft: None,
             created_at: now,
             updated_at: now,
             message_count,

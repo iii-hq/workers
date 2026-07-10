@@ -15,9 +15,21 @@
  * readable even when a child starts on the same instant as its parent.
  *
  * The lines stack as tall as they need; when they outgrow the viewport
- * it pans vertically by mouse drag (wheel scrolling works too — the grab
- * cursor signals the affordance). A press only becomes a pan after a few
- * px of movement, so bar clicks stay clicks.
+ * it pans by mouse drag (wheel scrolling works too — the grab cursor
+ * signals the affordance). A press only becomes a pan after a few px of
+ * movement, so bar clicks stay clicks.
+ *
+ * The canvas also grows HORIZONTALLY when the bars need more room than
+ * the time axis offers: min-width inflation, sibling gaps and hierarchy
+ * indents accumulate (hundreds of sequential ms-scale spans on one line),
+ * and clamping them into the viewport used to crush the tail of dense
+ * traces into an unreadable pile at the right edge. Instead the content
+ * takes the width the packed bars actually need and the viewport scrolls
+ * on both axes; the ruler is sticky (pinned while panning down, gliding
+ * with the bars while panning right) and the time grid scrolls with the
+ * content it measures. Bars past the 100% gridline are the structural
+ * spill — time-wise they live at the trace tail, the hover card carries
+ * the honest numbers.
  *
  * Hovering a bar shows the shared SpanHoverCard (with % of trace);
  * clicking selects the underlying `VisualizationSpan` (opens the span
@@ -27,6 +39,7 @@
 import { Fragment, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { SpanFilterControls } from '../../lib/spanFilters'
+import { internalFamilyOf } from '../../lib/spanLabel'
 import { waterfallToTimelineSpans } from '../../lib/timelineSpans'
 import type { VisualizationSpan, WaterfallData } from '../../lib/traceTransform'
 import { formatDuration } from '../../lib/traceUtils'
@@ -54,9 +67,10 @@ export interface TraceTimelineProps {
   className?: string
   /**
    * Grouping for the filter menu's spans section: the menu lists groups
-   * most-populated first, and hiding a group hides its spans with their
-   * subtrees. WHAT a group is stays the caller's business — see
-   * `lib/traceTimelineFilters.ts` for the page's grouping.
+   * most-populated first, and hiding a group hides ONLY its spans — their
+   * children re-attach to the hidden span's parent. WHAT a group is stays
+   * the caller's business — see `lib/traceTimelineFilters.ts` for the
+   * page's grouping.
    */
   spanGroupKey?: SpanGroupKey
   /**
@@ -71,6 +85,8 @@ export interface TraceTimelineProps {
 
 const PADDING_X = 16
 const RULER_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const
+/** height of the sticky time ruler row inside the scrollport (h-5) */
+const RULER_H = 20
 /** vertical rhythm of the stacked lines */
 const ROW_PITCH = 22
 const CONTENT_PAD_Y = 8
@@ -126,7 +142,9 @@ interface HoverState {
 
 interface DragState {
   pointerId: number
+  startX: number
   startY: number
+  startScrollLeft: number
   startScrollTop: number
   active: boolean
 }
@@ -327,13 +345,38 @@ export function TraceTimeline({
   const filterEnabled = !!spanGroupKey && !!spanFilter
 
   // Menu entries against the FULL data (an already-hidden group must keep
-  // its row so it can be turned back on), busiest first.
+  // its row so it can be turned back on), busiest first. The group key
+  // gets the whole trace by id so parent-dependent grouping (tag roots)
+  // agrees with what `applyHiddenSpanFilters` hides.
+  const spansById = useMemo(
+    () => new Map(data.spans.map((s) => [s.span_id, s])),
+    [data.spans],
+  )
   const spanGroups = useMemo(
-    () => (filterEnabled ? deriveSpanGroups(data.spans, spanGroupKey) : []),
-    [data.spans, spanGroupKey, filterEnabled],
+    () =>
+      filterEnabled && spanGroupKey
+        ? deriveSpanGroups(data.spans, (s) =>
+            internalFamilyOf(s.attributes) ? null : spanGroupKey(s, spansById),
+          )
+        : [],
+    [data.spans, spanGroupKey, spansById, filterEnabled],
   )
   const workerGroups = useMemo(
-    () => (filterEnabled ? deriveSpanGroups(data.spans, workerGroupKey) : []),
+    () =>
+      filterEnabled
+        ? deriveSpanGroups(data.spans, (s) =>
+            internalFamilyOf(s.attributes) ? null : workerGroupKey(s),
+          )
+        : [],
+    [data.spans, filterEnabled],
+  )
+  // Call-site-tagged plumbing (`iii.tag.hidden`): its own menu section,
+  // hidden by default.
+  const internalGroups = useMemo(
+    () =>
+      filterEnabled
+        ? deriveSpanGroups(data.spans, (s) => internalFamilyOf(s.attributes))
+        : [],
     [data.spans, filterEnabled],
   )
 
@@ -377,9 +420,13 @@ export function TraceTimeline({
   // the small hierarchy padding that keeps the cascade readable when
   // starts (nearly) coincide. Bars sharing a line additionally never
   // overlap the previous bar (MIN_BAR_WIDTH can inflate tiny spans).
-  const rects = useMemo(() => {
+  // Bars are NEVER clamped to the viewport: a dense line simply runs past
+  // the time axis and the canvas widens to `maxRight` (the horizontal
+  // scroll), instead of piling the tail into the right edge.
+  const { rects, maxRight } = useMemo(() => {
     const out: BarRect[] = []
     const lineRight = new Map<number, number>()
+    let maxRight = 0
     for (const p of layout.placed) {
       const end = p.span.endTime ?? total
       let left = PADDING_X + p.span.startTime * pxPerMs
@@ -389,12 +436,12 @@ export function TraceTimeline({
       const prevRight = lineRight.get(p.line)
       if (prevRight != null) left = Math.max(left, prevRight + SIBLING_GAP)
       const width = Math.max(PADDING_X + end * pxPerMs - left, MIN_BAR_WIDTH)
-      left = Math.min(left, Math.max(PADDING_X + innerWidth - width, PADDING_X))
       out.push({ left, width })
       lineRight.set(p.line, left + width)
+      if (left + width > maxRight) maxRight = left + width
     }
-    return out
-  }, [layout, pxPerMs, innerWidth, total])
+    return { rects: out, maxRight }
+  }, [layout, pxPerMs, total])
 
   // Elbow connectors: one rail dropping from each parent's left edge down
   // to its lowest child line, and one horizontal stub reaching the FIRST
@@ -452,7 +499,11 @@ export function TraceTimeline({
   }, [layout])
 
   const contentHeight = layout.lineCount * ROW_PITCH + CONTENT_PAD_Y * 2
-  const scrollable = contentHeight > stage.height + 1
+  /** the packed bars' real extent — wider than the stage on dense traces */
+  const contentWidth = Math.max(stage.width, maxRight + PADDING_X)
+  const scrollableY = contentHeight + RULER_H > stage.height + 1
+  const scrollableX = contentWidth > stage.width + 1
+  const scrollable = scrollableY || scrollableX
 
   const trackHover = (id: string) => (e: React.MouseEvent) => {
     if (dragRef.current?.active) return
@@ -467,15 +518,17 @@ export function TraceTimeline({
   }
 
   // Drag-to-pan: a press only becomes a pan after DRAG_THRESHOLD_PX of
-  // vertical movement (so bar clicks stay clicks); from then on pointer
-  // capture routes the gesture to the viewport and the trailing click is
-  // swallowed in the capture phase.
+  // movement on either axis (so bar clicks stay clicks); from then on
+  // pointer capture routes the gesture to the viewport and the trailing
+  // click is swallowed in the capture phase.
   const onPointerDown = (e: React.PointerEvent) => {
     suppressClickRef.current = false
     if (e.button !== 0 || !viewportRef.current || !scrollable) return
     dragRef.current = {
       pointerId: e.pointerId,
+      startX: e.clientX,
       startY: e.clientY,
+      startScrollLeft: viewportRef.current.scrollLeft,
       startScrollTop: viewportRef.current.scrollTop,
       active: false,
     }
@@ -484,15 +537,17 @@ export function TraceTimeline({
     const drag = dragRef.current
     const viewport = viewportRef.current
     if (!drag || !viewport || e.pointerId !== drag.pointerId) return
+    const dx = e.clientX - drag.startX
     const dy = e.clientY - drag.startY
     if (!drag.active) {
-      if (Math.abs(dy) < DRAG_THRESHOLD_PX) return
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < DRAG_THRESHOLD_PX) return
       drag.active = true
       suppressClickRef.current = true
       viewport.setPointerCapture(drag.pointerId)
       setDragging(true)
       setHover(null)
     }
+    viewport.scrollLeft = drag.startScrollLeft - dx
     viewport.scrollTop = drag.startScrollTop - dy
   }
   const onPointerEnd = (e: React.PointerEvent) => {
@@ -520,47 +575,24 @@ export function TraceTimeline({
 
   return (
     <div className={cn('flex h-full w-full min-h-[120px] flex-col', className)}>
-      {/* proportional time ruler — pinned above the lines, never scrolls */}
-      <div className="relative h-5 shrink-0">
-        {stage.width > 0 &&
-          RULER_FRACTIONS.map((f) => (
-            <div
-              key={f}
-              className={cn(
-                'absolute bottom-0.5 font-mono text-[10px] text-ink-ghost tabular-nums whitespace-nowrap',
-                f === 1 ? '-translate-x-full pr-1' : 'pl-1',
-              )}
-              style={{ left: x(total * f) }}
-            >
-              {formatDuration(detail.totalDurationMs * f)}
-            </div>
-          ))}
-      </div>
-
       <div ref={stageRef} className="relative min-h-0 flex-1">
-        {/* time grid, pinned behind the scrolling lines */}
-        {stage.width > 0 &&
-          RULER_FRACTIONS.map((f) => (
-            <div
-              key={f}
-              className="absolute inset-y-0 w-px bg-rule-2"
-              style={{ left: x(total * f) }}
-            />
-          ))}
-
-        {/* filter menu, floating over the canvas: funnel expands on hover
-            into the workers + span-group lists (busiest first). */}
+        {/* filter menu, floating over the canvas below the ruler row:
+            funnel expands on hover into the workers + span-group lists
+            (busiest first). */}
         {spanFilter && (
-          <div className="absolute top-1.5 right-2 z-10">
+          <div className="absolute right-2 z-10" style={{ top: RULER_H + 6 }}>
             <SpanFilterMenu
               groups={spanGroups}
               workerGroups={workerGroups}
+              internalGroups={internalGroups}
               hiddenKeys={spanFilter.hiddenGroups}
               hiddenWorkerKeys={spanFilter.hiddenWorkers}
+              shownInternalKeys={spanFilter.shownInternal}
               hiddenSpanCount={data.spans.length - visibleData.spans.length}
               onToggle={spanFilter.toggleGroup}
               onToggleWorker={spanFilter.toggleWorker}
-              onClear={spanFilter.clear}
+              onToggleInternal={spanFilter.toggleInternal}
+              onClear={() => spanFilter.clear(internalGroups.map((g) => g.key))}
             />
           </div>
         )}
@@ -569,7 +601,7 @@ export function TraceTimeline({
           ref={viewportRef}
           key={data.spans[0]?.trace_id ?? 'trace'}
           className={cn(
-            'absolute inset-0 select-none overflow-y-auto',
+            'absolute inset-0 select-none overflow-auto',
             dragging ? 'cursor-grabbing' : scrollable && 'cursor-grab',
           )}
           onPointerDown={onPointerDown}
@@ -578,10 +610,42 @@ export function TraceTimeline({
           onPointerCancel={onPointerEnd}
           onClickCapture={onClickCapture}
         >
+          {/* proportional time ruler — sticky: pinned while panning down,
+              gliding with the bars while panning right */}
+          <div
+            className="sticky top-0 z-[6] bg-bg"
+            style={{ height: RULER_H, width: contentWidth }}
+          >
+            {stage.width > 0 &&
+              RULER_FRACTIONS.map((f) => (
+                <div
+                  key={f}
+                  className={cn(
+                    'absolute bottom-0.5 font-mono text-[10px] text-ink-ghost tabular-nums whitespace-nowrap',
+                    f === 1 ? '-translate-x-full pr-1' : 'pl-1',
+                  )}
+                  style={{ left: x(total * f) }}
+                >
+                  {formatDuration(detail.totalDurationMs * f)}
+                </div>
+              ))}
+          </div>
+
           <div
             className={cn('relative', dragging && 'pointer-events-none')}
-            style={{ height: contentHeight }}
+            style={{ height: contentHeight, width: contentWidth }}
           >
+            {/* time grid — scrolls with the bars it measures */}
+            {stage.width > 0 &&
+              RULER_FRACTIONS.map((f) => (
+                <div
+                  key={f}
+                  aria-hidden
+                  className="absolute inset-y-0 w-px bg-rule-2"
+                  style={{ left: x(total * f) }}
+                />
+              ))}
+
             {stage.width > 0 && (
               <>
                 {/* parent → child elbow connectors */}
@@ -629,7 +693,7 @@ export function TraceTimeline({
                   const spillBound =
                     nextIdx != null
                       ? rects[nextIdx].left - 4
-                      : PADDING_X + innerWidth
+                      : contentWidth - PADDING_X
                   const spillWidth = spillBound - spillLeft
                   const spillLabel =
                     !fitsInBar && spillWidth >= MIN_SPILL_LABEL_PX
@@ -661,6 +725,9 @@ export function TraceTimeline({
                           width: rect.width,
                           backgroundColor: color,
                           boxShadow: ringFor(selected, hovered),
+                          border: selected
+                            ? '1px solid var(--color-bg)'
+                            : '1px solid transparent',
                           zIndex: selected || hovered ? 5 : undefined,
                         }}
                       >

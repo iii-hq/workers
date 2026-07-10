@@ -80,8 +80,8 @@ pub const MODELS_RECONCILE_DESC: &str =
 
 pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
-    "Internal: configuration-change handler (paste-a-key) that \
-     refreshes settings and fans out provider model discovery.";
+    "Internal: reactively reload the in-memory configuration snapshot and \
+     fan out provider model discovery after configuration changes.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

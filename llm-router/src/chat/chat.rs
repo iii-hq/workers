@@ -6,7 +6,7 @@
 //! Engine-backed coverage: tests/integration.rs (happy path, cancellation,
 //! abort, retry).
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
@@ -24,10 +24,10 @@ use uuid::Uuid;
 use crate::catalog::queries::model_supports;
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
-use crate::config::entry::read_entry_value;
+use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::store::RegistryStore;
 use crate::routing::{decide, DecideInput};
-use crate::settings::{provider_slices, RouterSettings};
+use crate::settings::RouterSettings;
 use crate::triggers::{self, RouterEvents};
 
 use super::inflight::InflightMap;
@@ -85,7 +85,7 @@ pub struct ChatPipeline {
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
     pub inflight: Arc<InflightMap>,
-    pub settings: Arc<RwLock<RouterSettings>>,
+    pub config: ConfigCell,
     pub events: Arc<RouterEvents>,
 }
 
@@ -145,7 +145,8 @@ impl ChatPipeline {
             ));
         }
 
-        let settings = self.settings.read().unwrap().clone();
+        let config = snapshot(&self.config);
+        let settings = config.settings().clone();
         let candidates = decide(&DecideInput {
             model: call.model.clone(),
             provider: call.provider.clone(),
@@ -182,14 +183,12 @@ impl ChatPipeline {
             }
         }
 
-        let entry = read_entry_value(&self.iii).await;
-        let slice = provider_slices(&entry)
-            .get(&provider)
-            .cloned()
-            .unwrap_or(Value::Null);
         let max_output_tokens = resolve_max_output_tokens(
             call.max_output_tokens,
-            slice.get("max_tokens").and_then(Value::as_u64),
+            config
+                .provider_slice(&provider)
+                .and_then(|slice| slice.get("max_tokens"))
+                .and_then(Value::as_u64),
             model_meta.as_ref().map(|m| m.max_output_tokens),
             record
                 .declaration
@@ -581,11 +580,10 @@ mod tests {
         use crate::catalog::store::CatalogStore;
         use crate::chat::inflight::InflightMap;
         use crate::chat::relay::{ReadEvent, RelayRead};
+        use crate::config::state::new_config_cell;
         use crate::registry::store::RegistryStore;
-        use crate::settings::RouterSettings;
         use crate::testkit::fake_channels::FakeChannel;
         use crate::triggers::RouterEvents;
-        use std::sync::RwLock;
         use std::time::Duration;
 
         // empty registry + empty catalog → nothing routes "ghost-model".
@@ -596,7 +594,7 @@ mod tests {
             registry: Arc::new(RegistryStore::new(iii.clone())),
             catalog: Arc::new(CatalogStore::new(iii.clone())),
             inflight: Arc::new(InflightMap::default()),
-            settings: Arc::new(RwLock::new(RouterSettings::default())),
+            config: new_config_cell(Value::Null),
             events,
         };
 

@@ -8,7 +8,7 @@
  * - LIST mode (no trace selected): filter bar → trace list → pagination.
  * - DETAIL mode (trace selected): the detail fills the entire canvas — no
  *   list, no filter bar (the chat view keeps horizontal space scarce). The
- *   view switcher offers the lane timeline (default) and the waterfall;
+ *   view switcher offers the timeline (default) and the waterfall;
  *   clicking a span opens the resizable span panel on the right. The strip
  *   stays live up top; clicking another bar switches traces, Esc walks back
  *   (span panel first, then the detail).
@@ -28,7 +28,9 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
+import { loadFollowTurns, saveFollowTurns } from '@/lib/storage'
 import { startTraceSpansStream } from '@/lib/traces-stream'
 import { cn } from '@/lib/utils'
 import { fetchTraces, type StoredSpan } from './api/traces'
@@ -44,6 +46,7 @@ import { ViewsDropdown } from './components/ViewsDropdown'
 import { WaterfallChart } from './components/WaterfallChart'
 import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
+import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
 import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
@@ -235,8 +238,25 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   const traceActivity = useTraceActivity(isPaused)
 
   // The masthead strip's data: every span across all traces (seed + the
-  // engine's all-spans stream), one bar per span.
-  const allSpans = useAllSpans(isPaused, showSystem)
+  // engine's all-spans stream), one bar per span. Internal spans that are
+  // part of a real trace (built-in calls inside a turn) are included —
+  // hiding them is the funnel/trace_hidden layer's job; `showSystem` only
+  // governs the trace LIST's internal ROOT rows.
+  const allSpans = useAllSpans(isPaused)
+
+  // Follow toggle (strip header): auto-open the trace of the ACTIVE chat's
+  // live turn, so sending a message lands the canvas on the work as it runs.
+  // Scoped to user interactions — the active conversation's top-level
+  // `harness.turn` steps; sub-agent turns never steal the view. Null outside
+  // the app shell (Storybook), which also hides the strip's toggle.
+  const conversationsCtx = useConversationsCtxOptional()
+  const [followTurns, setFollowTurns] = useState(loadFollowTurns)
+  const toggleFollowTurns = useCallback(() => {
+    setFollowTurns((on) => {
+      saveFollowTurns(!on)
+      return !on
+    })
+  }, [])
 
   const totalPages = Math.max(
     1,
@@ -388,6 +408,16 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     [loadTraceSpans],
   )
 
+  // The follow toggle's engine: opens the newest live turn trace of the
+  // active conversation (once per trace — closing it mid-turn is respected).
+  useFollowLiveTurn({
+    enabled: followTurns && !isPaused,
+    activeSessionId: conversationsCtx?.activeId ?? null,
+    spans: allSpans,
+    selectedTraceId,
+    onOpenTrace: selectTrace,
+  })
+
   // Deep-link seed: mount straight into a trace's detail (used by stories).
   const initialAppliedRef = useRef(false)
   useEffect(() => {
@@ -419,7 +449,8 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
         onTraceClick={(traceId) =>
           selectTrace(traceId === selectedTraceId ? null : traceId)
         }
-        selectedTraceId={selectedTraceId}
+        followTurns={followTurns}
+        onToggleFollowTurns={conversationsCtx ? toggleFollowTurns : undefined}
       />
 
       {/* the filter bar only steers the list — hidden while a detail fills

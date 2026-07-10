@@ -379,6 +379,7 @@ mod tests {
             status_reason: None,
             metadata: None,
             forked_from: None,
+            draft: None,
             created_at: 1,
             updated_at: 1,
             message_count: 0,
@@ -436,14 +437,17 @@ mod tests {
                 .put_entry("s_1", &entry("e_2", Some("e_1"), "two edited", 3))
                 .await
                 .unwrap();
-            // Meta rewrite: title refined later.
-            store.put_meta(&meta("s_1", "renamed")).await.unwrap();
+            // Meta rewrite: title refined later, a composer draft parked.
+            let mut renamed = meta("s_1", "renamed");
+            renamed.draft = Some("unsent input".into());
+            store.put_meta(&renamed).await.unwrap();
         }
 
         // Fresh store over the same directory = worker restart.
         let store = FsStore::new(dir.path()).unwrap();
         let m = store.get_meta("s_1").await.unwrap().unwrap();
         assert_eq!(m.title, "renamed");
+        assert_eq!(m.draft.as_deref(), Some("unsent input"));
         let e2 = store.get_entry("s_1", "e_2").await.unwrap().unwrap();
         assert_eq!(e2.revision(), 3);
         assert_eq!(

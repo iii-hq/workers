@@ -59,10 +59,29 @@ function mergeSpans(
   return next
 }
 
-export function useAllSpans(
-  isPaused: boolean,
-  showSystem: boolean,
-): readonly StoredSpan[] {
+/**
+ * The engine's live all-spans feed excludes exactly one internal class: the
+ * engine's own machinery spans — internal (`iii.function.kind: internal` /
+ * `engine::*`) AND parentless (context-free). Parented internal spans are
+ * built-in calls made inside a real trace (a turn's `configuration::list`)
+ * and DO stream. The seed must mirror that split, so it fetches with
+ * `include_internal: true` and re-applies the machinery exclusion here —
+ * otherwise builtin bars would flip in and out across a reseed.
+ * Mirrors `is_context_free_internal_span` in
+ * `iii/engine/src/workers/observability/mod.rs`.
+ */
+export function isContextFreeInternalSpan(span: StoredSpan): boolean {
+  if (span.parent_span_id) return false
+  return span.attributes.some(
+    ([k, v]) =>
+      (k === 'iii.function.kind' && v === 'internal') ||
+      (k === 'function_id' &&
+        typeof v === 'string' &&
+        v.startsWith('engine::')),
+  )
+}
+
+export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
   const [spans, setSpans] = useState<ReadonlyMap<string, StoredSpan>>(new Map())
 
   const isPausedRef = useRef(isPaused)
@@ -70,24 +89,30 @@ export function useAllSpans(
     isPausedRef.current = isPaused
   }, [isPaused])
 
-  // Seed read — run on mount / showSystem flips, and re-run on reconnect and
-  // on unpause (the stream dropped frames while away). REPLACES the map; see
-  // the module docstring.
+  // Seed read — run on mount, and re-run on reconnect and on unpause (the
+  // stream dropped frames while away). REPLACES the map; see the module
+  // docstring.
   const seed = useCallback(async () => {
     try {
       const res = await fetchTraces({
         search_all_spans: true,
-        include_internal: showSystem,
+        include_internal: true,
         sort_by: 'start_time',
         sort_order: 'desc',
         limit: SEED_LIMIT,
       })
-      setSpans(mergeSpans(new Map(), res.spans, Date.now()))
+      setSpans(
+        mergeSpans(
+          new Map(),
+          res.spans.filter((s) => !isContextFreeInternalSpan(s)),
+          Date.now(),
+        ),
+      )
     } catch {
       // Traces unavailable (memory exporter off, transient error) — the
       // strip simply renders empty until data arrives.
     }
-  }, [showSystem])
+  }, [])
   const seedRef = useRef(seed)
   useEffect(() => {
     seedRef.current = seed

@@ -1,8 +1,8 @@
 /**
- * Shared visual vocabulary for timeline spans — used by both the live
- * Timeline strip and the static TraceTimeline so a span reads identically
- * wherever it renders: same kind icon, same chromatic worker color, same
- * in-bar label, same hover (ink) / selection (accent) ring recipe.
+ * Shared visual vocabulary for timeline spans — the live TimelineStrip and
+ * the static TraceTimeline resolve a span's color the same way, so a span
+ * reads identically wherever it renders. The detail-view extras (kind
+ * icons, in-bar labels, the hover/selection ring recipe) live here too.
  */
 
 import { Flame, Sparkle, SquareFunction, Zap } from 'lucide-react'
@@ -20,8 +20,6 @@ export const KIND_ICONS: Record<
   lambda: SquareFunction,
 }
 
-export const CHIP_SIZE = 16
-
 /** ink shades that are too light to carry a bg-colored icon (legacy
  * `span.color` overrides — the default palette is always mid-tone) */
 const LIGHT_BAR_COLORS = new Set([
@@ -38,24 +36,14 @@ export function iconColorFor(barColor: string): string {
   return LIGHT_BAR_COLORS.has(barColor) ? 'var(--color-ink)' : 'var(--color-bg)'
 }
 
-/**
- * Ring stack for bars and chips: selection (accent) beats hover (ink).
- * `base` is the chip's permanent 1.5px paper gap ring; bars pass none.
- */
+/** Ring stack for bars: selection (accent) beats hover (ink). */
 export function ringFor(
   selected: boolean,
   hovered: boolean,
-  base?: string,
 ): string | undefined {
-  if (selected) {
-    return base
-      ? '0 0 0 1.5px var(--color-accent)'
-      : '0 0 0 2px var(--color-accent)'
-  }
-  if (hovered) {
-    return base ? '0 0 0 1.5px var(--color-ink)' : '0 0 0 1px var(--color-ink)'
-  }
-  return base
+  if (selected) return '0 0 0 1px var(--color-accent)'
+  if (hovered) return '0 0 0 1px var(--color-ink)'
+  return undefined
 }
 
 /** LRM mark: pins the label's edge punctuation to LTR inside the RTL clip. */

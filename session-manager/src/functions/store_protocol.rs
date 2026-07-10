@@ -15,6 +15,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::configuration::AppState;
 use crate::events::{Emitter, EventEnvelope};
@@ -127,6 +128,10 @@ async fn fs_emitter(state: &AppState) -> Result<Arc<Emitter>, Error> {
 /// Register the raw store surface plus the `publish-events` ingest. Both read
 /// the live runtime per call (see [`fs_store`] / [`fs_emitter`]) and reject when
 /// the instance is in bridge mode, so the protocol follows adapter hot-reloads.
+///
+/// All of these carry `trace_hidden: true` metadata — bridged setups route
+/// every session mutation through this protocol, so trace UIs hide the spans
+/// by default (see workers/docs/sops/trace-hidden-functions.md).
 pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
     let st = state.clone();
     iii.register_function(
@@ -138,7 +143,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 store.get_meta(&req.session_id).await.map_err(storage_err)
             }
         })
-        .description("Internal store protocol: read one SessionMeta (null when unknown)."),
+        .description("Internal store protocol: read one SessionMeta (null when unknown).")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -152,7 +158,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: write one SessionMeta."),
+        .description("Internal store protocol: write one SessionMeta.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -169,7 +176,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: delete one SessionMeta."),
+        .description("Internal store protocol: delete one SessionMeta.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -183,7 +191,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(ListMetasResponse { metas })
             }
         })
-        .description("Internal store protocol: list every SessionMeta."),
+        .description("Internal store protocol: list every SessionMeta.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -199,7 +208,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                     .map_err(storage_err)
             }
         })
-        .description("Internal store protocol: read one SessionEntry (null when unknown)."),
+        .description("Internal store protocol: read one SessionEntry (null when unknown).")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -216,7 +226,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: write one SessionEntry."),
+        .description("Internal store protocol: write one SessionEntry.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -233,7 +244,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(ListEntriesResponse { entries })
             }
         })
-        .description("Internal store protocol: list every entry of a session."),
+        .description("Internal store protocol: list every entry of a session.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -250,7 +262,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: delete every entry of a session."),
+        .description("Internal store protocol: delete every entry of a session.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -267,7 +280,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(ActiveLeafResponse { entry_id })
             }
         })
-        .description("Internal store protocol: read a session's active leaf pointer."),
+        .description("Internal store protocol: read a session's active leaf pointer.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -284,7 +298,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: move a session's active leaf pointer."),
+        .description("Internal store protocol: move a session's active leaf pointer.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -301,7 +316,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: clear a session's active leaf pointer."),
+        .description("Internal store protocol: clear a session's active leaf pointer.")
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     let st = state.clone();
@@ -318,7 +334,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
         .description(
             "Internal store protocol: ingest a bridged instance's event envelopes and fan them \
              out to local subscribers and every attached bridge.",
-        ),
+        )
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     tracing::info!("session::store::* protocol registered (12 functions)");

@@ -99,16 +99,55 @@ fn register<Req, Resp, F, Fut>(
     F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
 {
+    register_meta(iii, deps, id, description, None, handler);
+}
+
+/// Like [`register`], but tags the function `trace_hidden: true` so trace UIs
+/// hide its spans by default (users can unhide them from the span filter).
+/// Used for dispatch machinery whose spans duplicate a better span — the
+/// `harness::turn` wrappers stack three near-identical bars around the
+/// `harness::turn step` scope span that actually carries the turn (and, for
+/// sub-agents, the task title). See workers/docs/sops/trace-hidden-functions.md.
+fn register_trace_hidden<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
+{
+    let meta = serde_json::json!({ "trace_hidden": true });
+    register_meta(iii, deps, id, description, Some(meta), handler);
+}
+
+fn register_meta<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    metadata: Option<Value>,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
+{
     let deps = deps.clone();
-    iii.register_function(
-        id,
-        RegisterFunction::new_async(move |req: Req| {
-            let deps = deps.clone();
-            let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(Error::from) }
-        })
-        .description(description),
-    );
+    let mut registration = RegisterFunction::new_async(move |req: Req| {
+        let deps = deps.clone();
+        let handler = handler.clone();
+        async move { handler(deps, req).await.map_err(Error::from) }
+    })
+    .description(description);
+    if let Some(meta) = metadata {
+        registration = registration.metadata(meta);
+    }
+    iii.register_function(id, registration);
 }
 
 /// Like [`register`], but the handler also receives the per-invocation
@@ -145,7 +184,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
     });
-    register(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
+    register_trace_hidden(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
         turn::handle(&d, r).await
     });
     register(

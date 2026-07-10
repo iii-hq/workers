@@ -154,7 +154,8 @@ pub fn register_config_trigger(
             "Internal: hot-reload context-manager from the authoritative configuration when it \
              changes — rebuilds the compaction lease store on a lease_dir change and swaps the \
              per-call tuning snapshot otherwise.",
-        ),
+        )
+        .metadata(json!({ "trace_hidden": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {

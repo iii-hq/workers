@@ -117,6 +117,55 @@ const WATERFALL_DEEP = toWaterfallData(
   DEEP_TRACE_ID,
 ) as WaterfallData
 
+/**
+ * A streaming-storm trace: a 3s root with 180 SEQUENTIAL sub-millisecond
+ * children (one shared line, like the session::update-message bursts a
+ * streaming turn writes). Each bar inflates to MIN_BAR_WIDTH, so the line
+ * needs ~3600px against an 840px frame — the case that used to crush the
+ * tail into the right edge and now grows the canvas into a horizontal
+ * scroll (ruler and grid glide along; drag pans on both axes).
+ */
+const DENSE_TRACE_ID = 'trace-dense-000000000000000a'
+const DENSE_TRACE_SPANS: StoredSpan[] = (() => {
+  const spans: StoredSpan[] = [
+    {
+      trace_id: DENSE_TRACE_ID,
+      span_id: 'root',
+      name: 'harness::turn step',
+      kind: 'internal',
+      service_name: 'harness',
+      start_time_unix_nano: T0,
+      end_time_unix_nano: T0 + 3000,
+      status: 'OK',
+      attributes: [],
+      events: [],
+      links: [],
+    },
+  ]
+  for (let i = 0; i < 180; i++) {
+    const start = T0 + 100 + i * 16
+    spans.push({
+      trace_id: DENSE_TRACE_ID,
+      span_id: `upd-${String(i).padStart(3, '0')}`,
+      parent_span_id: 'root',
+      name: 'session::update-message',
+      kind: 'client',
+      service_name: 'session-manager',
+      start_time_unix_nano: start,
+      end_time_unix_nano: start + 1,
+      status: 'OK',
+      attributes: [],
+      events: [],
+      links: [],
+    })
+  }
+  return spans
+})()
+const WATERFALL_DENSE = toWaterfallData(
+  DENSE_TRACE_SPANS,
+  DENSE_TRACE_ID,
+) as WaterfallData
+
 const meta = {
   title: 'TracesV2/TraceTimeline',
   component: TraceTimeline,
@@ -160,6 +209,15 @@ export const DeepTraceDragToScroll: Story = {
   args: { data: WATERFALL_DEEP },
 }
 
+/**
+ * 180 sequential ms-scale spans on one line: min-width bars overflow the
+ * time axis, the canvas widens and scrolls horizontally instead of
+ * crushing the tail against the right edge.
+ */
+export const DenseTraceHorizontalScroll: Story = {
+  args: { data: WATERFALL_DENSE },
+}
+
 /** Stateful: click bars to move the selection, like in the detail. */
 export const Selectable: Story = {
   render: function SelectableStory(args) {
@@ -197,6 +255,9 @@ export const WithSpanFilterMenu: Story = {
     const [hiddenWorkers, setHiddenWorkers] = useState<ReadonlySet<string>>(
       () => new Set(),
     )
+    const [shownInternal, setShownInternal] = useState<ReadonlySet<string>>(
+      () => new Set(),
+    )
     const toggle =
       (set: (updater: (prev: ReadonlySet<string>) => Set<string>) => void) =>
       (key: string) =>
@@ -211,11 +272,14 @@ export const WithSpanFilterMenu: Story = {
         spanFilter={{
           hiddenGroups,
           hiddenWorkers,
+          shownInternal,
           toggleGroup: toggle(setHiddenGroups),
           toggleWorker: toggle(setHiddenWorkers),
-          clear: () => {
+          toggleInternal: toggle(setShownInternal),
+          clear: (visibleInternal) => {
             setHiddenGroups(new Set())
             setHiddenWorkers(new Set())
+            setShownInternal(new Set(visibleInternal ?? []))
           },
         }}
       />

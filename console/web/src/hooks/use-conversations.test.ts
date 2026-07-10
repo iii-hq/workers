@@ -86,6 +86,22 @@ describe('applyCatalogModelFallback', () => {
 })
 
 describe('mergeConversationMeta', () => {
+  it('restores the parked composer draft from SessionMeta.draft', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({ draft: 'half-typed thought' }),
+    )
+    expect(next.draftText).toBe('half-typed thought')
+
+    // Absent / empty server drafts map to "nothing to restore".
+    expect(mergeConversationMeta(undefined, sessionMeta({})).draftText).toBe(
+      undefined,
+    )
+    expect(
+      mergeConversationMeta(undefined, sessionMeta({ draft: '' })).draftText,
+    ).toBe(undefined)
+  })
+
   it('repairs a stale idle row from authoritative session metadata', () => {
     const existing = conversation({
       status: 'idle',

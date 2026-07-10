@@ -27,7 +27,7 @@ use session_manager::error::SessionError;
 use session_manager::events::{Emitter, TriggerSets};
 use session_manager::functions::{
     append, append_many, create, delete, ensure, fork, get, get_message, list, messages,
-    set_active_leaf, set_meta, set_status, update_message, Deps,
+    set_active_leaf, set_draft, set_meta, set_status, update_message, Deps,
 };
 use session_manager::service::SessionService;
 use session_manager::store::FsStore;
@@ -254,6 +254,7 @@ pub async fn dispatch(deps: &Deps, function: &str, payload: Value) -> Result<Val
         "session::get" => out(get::handle(deps, parse(payload)?).await),
         "session::list" => out(list::handle(deps, parse(payload)?).await),
         "session::set-meta" => out(set_meta::handle(deps, parse(payload)?).await),
+        "session::set-draft" => out(set_draft::handle(deps, parse(payload)?).await),
         "session::set-status" => out(set_status::handle(deps, parse(payload)?).await),
         "session::delete" => out(delete::handle(deps, parse(payload)?).await),
         "session::append" => out(append::handle(deps, parse(payload)?).await),

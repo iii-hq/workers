@@ -50,8 +50,10 @@ flowchart TB
   end
   decl -->|"register declaration"| reg[router registry]
   reg -->|"configuration::register entry=llm-router"| cfg[(configuration worker)]
+  reg -->|"configuration::get (boot + change only)"| cfg
+  cfg -->|"configuration:updated"| cache[router config snapshot]
+  reg -->|"credentials + settings"| cache
   stream -->|"router::provider::resolve (per request)"| reg
-  reg -->|"configuration::get entry=llm-router"| cfg
   consumer["any consumer / harness"] -->|"router::chat"| route[router routing]
   route -->|"provider::id::stream"| stream
   refresh -->|"router::models::reconcile"| cat[router catalog]
@@ -224,12 +226,14 @@ iii.registerTrigger({
   when its bound worker is connected **and** its registration is complete.
 
 - **`router::on_config_changed`** bound to the `configuration` worker's change trigger for the
-  `llm-router` entry. The handler fingerprints each provider's config slice, diffs against the last
-  seen fingerprint, and — debounced (~2s) — calls `provider::<id>::refresh_models` for each provider
-  whose slice changed and that declared `supports_model_listing`. This is the **paste-a-key flow**:
-  an operator adds an API key in the config UI → discovery runs → `router::models::reconcile` →
-  `router::models::changed` → the picker populates within seconds, with no worker restart. Without
-  this binding a key added at runtime would populate nothing until the provider worker restarts.
+  `llm-router` entry. The handler re-fetches the authoritative value, atomically replaces the
+  router's in-memory snapshot, then fingerprints each provider's config slice, diffs against the
+  last seen fingerprint, and — debounced (~2s) — calls `provider::<id>::refresh_models` for each
+  provider whose slice changed and that declared `supports_model_listing`. This is the
+  **paste-a-key flow**: an operator adds an API key in the config UI → discovery runs →
+  `router::models::reconcile` → `router::models::changed` → the picker populates within seconds,
+  with no worker restart. Without this binding a key added at runtime would populate nothing until
+  the provider worker restarts.
 
 ---
 

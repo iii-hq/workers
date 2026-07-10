@@ -1,4 +1,4 @@
-//! The 14 `session::*` functions.
+//! The 15 `session::*` functions.
 //!
 //! Each `<verb>.rs` holds the request/response types (serde +
 //! `schemars::JsonSchema`, so the SDK emits request/response schemas)
@@ -18,6 +18,7 @@ pub mod get_message;
 pub mod list;
 pub mod messages;
 pub mod set_active_leaf;
+pub mod set_draft;
 pub mod set_meta;
 pub mod set_status;
 pub mod store_protocol;
@@ -31,6 +32,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::configuration::AppState;
 use crate::error::SessionError;
@@ -51,6 +53,12 @@ pub struct Deps {
 /// the bus error shape (`code: message`). Each call snapshots the live
 /// runtime's `service` + `sink` from [`AppState`], so handlers never capture a
 /// stale adapter across a hot-reload.
+///
+/// Every `session::*` function is registered with `trace_hidden: true`
+/// metadata: session bookkeeping fires on every agent turn and would drown
+/// trace timelines, so trace UIs hide these spans by default (users can
+/// unhide them from the span filter). See
+/// workers/docs/sops/trace-hidden-functions.md.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     state: &AppState,
@@ -80,7 +88,8 @@ fn register<Req, Resp, F, Fut>(
                 handler(deps, req).await.map_err(Error::from)
             }
         })
-        .description(description),
+        .description(description)
+        .metadata(json!({ "trace_hidden": true })),
     );
 }
 
@@ -119,6 +128,13 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         "session::set-meta",
         "Update a session's title/description/metadata; fires session::meta-updated.",
         |d, r| async move { set_meta::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::set-draft",
+        "Park (or clear) the session's unsent composer input; event-silent, read back on SessionMeta.draft.",
+        |d, r| async move { set_draft::handle(&d, r).await },
     );
     register(
         iii,

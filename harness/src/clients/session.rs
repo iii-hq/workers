@@ -182,6 +182,11 @@ impl SessionClient {
 
     /// Replace a message entry's content (streaming + final write). Returns
     /// the new revision.
+    ///
+    /// Fires once per stream batch — dozens of calls per turn — so the call
+    /// site is tagged `iii.tag.hidden`: its spans (and the session-manager
+    /// handler span behind them) stack into the trace UI's internal section,
+    /// hidden by default.
     pub async fn update_message(
         &self,
         session_id: &str,
@@ -201,7 +206,11 @@ impl SessionClient {
         if let Some(o) = origin {
             payload["origin"] = o.clone();
         }
-        let resp = self.call("session::update-message", payload).await?;
+        let resp = crate::trace_tags::run_hidden(
+            "session updates",
+            self.call("session::update-message", payload),
+        )
+        .await?;
         Ok(resp.get("revision").and_then(Value::as_u64).unwrap_or(0))
     }
 

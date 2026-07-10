@@ -1,8 +1,12 @@
-import type { LexicalEditor } from 'lexical'
+import {
+  $createParagraphNode,
+  $createTextNode,
+  $getRoot,
+  type LexicalEditor,
+} from 'lexical'
 import { ArrowUp, Square } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
-import { Button } from '@/components/ui/Button'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
@@ -82,6 +86,18 @@ interface ComposerProps {
   blockedPlaceholder?: string
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
+  /**
+   * Plain-text sugar for `initialContent` (applied once on mount): seeds the
+   * editor AND the internal text state, so a restored draft submits without
+   * requiring a keystroke first. Ignored when `initialContent` is given.
+   */
+  initialText?: string
+  /**
+   * Live text of the user's draft, fired on every editor change EXCEPT while
+   * a queued message is being browsed/edited (that text is not the draft).
+   * Powers the per-session draft persistence.
+   */
+  onTextChange?: (text: string) => void
   /** Initial attachment chips (applied once on mount). */
   initialAttachments?: Attachment[]
   functionEntries?: FunctionEntry[]
@@ -131,6 +147,8 @@ export function Composer({
   blocked,
   blockedPlaceholder = 'chat unavailable…',
   initialContent,
+  initialText,
+  onTextChange,
   initialAttachments,
   functionEntries,
   queuedForEdit,
@@ -141,14 +159,35 @@ export function Composer({
     initialAttachments ?? [],
   )
   const [clearToken, setClearToken] = useState(0)
-  const textRef = useRef('')
+  const textRef = useRef(initialContent ? '' : (initialText ?? ''))
+
+  // One-shot mount initializer: seed the editor with the restored draft text.
+  // Runs inside Lexical's initial-state update, so $-functions apply directly.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initializer, matching LexicalShell's one-shot initialConfig semantics.
+  const resolvedInitialContent = useMemo(() => {
+    if (initialContent) return initialContent
+    const text = initialText
+    if (!text) return undefined
+    return () => {
+      const root = $getRoot()
+      root.clear()
+      const paragraph = $createParagraphNode()
+      paragraph.append($createTextNode(text))
+      root.append(paragraph)
+    }
+  }, [])
 
   // ↑/↓ browse the queued messages for editing. `browseId` is the message the
   // editor currently holds (null = a live draft). Navigation is non-destructive
   // — the message is removed from the queue only when the edit is submitted.
+  // The ref mirror gates `onTextChange` synchronously: `setBrowse` runs before
+  // the loaded text echoes back through the editor's change event, so browsed
+  // queue text is never reported as the live draft.
   const [browseId, setBrowseId] = useState<string | null>(null)
+  const browseIdRef = useRef<string | null>(null)
   const setBrowse = useCallback(
     (id: string | null) => {
+      browseIdRef.current = id
       setBrowseId(id)
       onBrowseChange?.(id)
     },
@@ -201,9 +240,20 @@ export function Composer({
       onSubmit({ text, attachments })
     }
     textRef.current = ''
+    // The submitted text is no longer a draft; report the clear even if the
+    // editor-clear update below is tag-filtered by the change plugin.
+    onTextChange?.('')
     setAttachments([])
     setClearToken((t) => t + 1)
-  }, [inputDisabled, attachments, onSubmit, browseId, onEditQueued, setBrowse])
+  }, [
+    inputDisabled,
+    attachments,
+    onSubmit,
+    browseId,
+    onEditQueued,
+    setBrowse,
+    onTextChange,
+  ])
 
   const handleAttach = useCallback((next: Attachment[]) => {
     setAttachments((current) => [...current, ...next])
@@ -231,6 +281,7 @@ export function Composer({
         <LexicalShell
           onChange={(text) => {
             textRef.current = text
+            if (browseIdRef.current === null) onTextChange?.(text)
           }}
           onSubmit={handleSubmit}
           clearToken={clearToken}
@@ -244,7 +295,7 @@ export function Composer({
                 : 'send a message…'
           }
           disabled={inputDisabled}
-          initialContent={initialContent}
+          initialContent={resolvedInitialContent}
           functionEntries={functionEntries}
           workingDir={workingDir}
           onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
@@ -282,19 +333,6 @@ export function Composer({
         />
         <div className="flex-1 min-w-0" />
         <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
-        {isStreaming && queueWhileStreaming ? (
-          <Button
-            type="button"
-            variant="primary"
-            size="sm"
-            onClick={handleSubmit}
-            disabled={blocked}
-            aria-label="queue message"
-          >
-            send
-            <span aria-hidden>→</span>
-          </Button>
-        ) : null}
         {isStreaming ? (
           <button
             type="button"
