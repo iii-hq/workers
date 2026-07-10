@@ -1174,20 +1174,20 @@ mod tests {
 
     use crate::store::TopicStats;
 
+    type PublishedMessage = (
+        String,
+        String,
+        Value,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+
     #[derive(Default)]
     struct RecordingAdapter {
         acked: StdMutex<Vec<u64>>,
         nacked: StdMutex<Vec<(u64, u32, u32)>>,
-        published: StdMutex<
-            Vec<(
-                String,
-                String,
-                Value,
-                String,
-                Option<String>,
-                Option<String>,
-            )>,
-        >,
+        published: StdMutex<Vec<PublishedMessage>>,
     }
 
     #[async_trait]
