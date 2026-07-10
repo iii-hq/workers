@@ -111,6 +111,35 @@ fn register<Req, Resp, F, Fut>(
     );
 }
 
+/// Like [`register`], but tags the registration `metadata.internal = true` so
+/// the default `engine::functions::list` hides it: trusted control-plane /
+/// loop plumbing, invoked by id, never meant for agent discovery (mirrors the
+/// deny rules in iii-permissions.yaml).
+fn register_internal<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
+{
+    let deps = deps.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new_async(move |req: Req| {
+            let deps = deps.clone();
+            let handler = handler.clone();
+            async move { handler(deps, req).await.map_err(Error::from) }
+        })
+        .description(description)
+        .metadata(serde_json::json!({ "internal": true })),
+    );
+}
+
 /// Like [`register`], but the handler also receives the per-invocation
 /// `metadata` sidecar (`engine::register_trigger`'s `metadata`). Used by the
 /// trigger-bridge target `harness::react`.
@@ -139,30 +168,30 @@ fn register_with_metadata<Req, Resp, F, Fut>(
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    register(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
+    register_internal(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
         send::handle(&d, r).await
     });
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
     });
-    register(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
+    register_internal(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
         turn::handle(&d, r).await
     });
-    register(
+    register_internal(
         iii,
         deps,
         FUNCTION_TRIGGER_ID,
         FUNCTION_TRIGGER_DESC,
         |d, r| async move { function_trigger::handle(&d, r).await },
     );
-    register(
+    register_internal(
         iii,
         deps,
         FUNCTION_RESOLVE_ID,
         FUNCTION_RESOLVE_DESC,
         |d, r| async move { function_resolve::handle(&d, r).await },
     );
-    register(iii, deps, STOP_ID, STOP_DESC, |d, r| async move {
+    register_internal(iii, deps, STOP_ID, STOP_DESC, |d, r| async move {
         stop::handle(&d, r).await
     });
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
@@ -170,10 +199,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     });
 
     // Trusted control-plane (console) — registered, kept off the agent catalog.
-    register(iii, deps, UNQUEUE_ID, UNQUEUE_DESC, |d, r| async move {
+    register_internal(iii, deps, UNQUEUE_ID, UNQUEUE_DESC, |d, r| async move {
         send::unqueue(&d, r).await
     });
-    register(
+    register_internal(
         iii,
         deps,
         EDIT_QUEUED_ID,
@@ -183,28 +212,28 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 
     // Internal filesystem grant controls — registered for trusted callers, kept
     // off the model-facing catalog.
-    register(
+    register_internal(
         iii,
         deps,
         FILESYSTEM_GRANT_ID,
         FILESYSTEM_GRANT_DESC,
         |d, r| async move { filesystem::grant(&d, r).await },
     );
-    register(
+    register_internal(
         iii,
         deps,
         FILESYSTEM_GRANTS_ID,
         FILESYSTEM_GRANTS_DESC,
         |d, r| async move { filesystem::grants(&d, r).await },
     );
-    register(
+    register_internal(
         iii,
         deps,
         FILESYSTEM_REVOKE_ID,
         FILESYSTEM_REVOKE_DESC,
         |d, r| async move { filesystem::revoke(&d, r).await },
     );
-    register(
+    register_internal(
         iii,
         deps,
         FILESYSTEM_INFO_ID,
@@ -213,7 +242,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
 
     // Internal cron target — registered, but kept off the public catalog.
-    register(
+    register_internal(
         iii,
         deps,
         sweep_pending::SWEEP_PENDING_ID,
@@ -222,7 +251,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
 
     // Internal session::deleted cleanup — registered, kept off the catalog.
-    register(
+    register_internal(
         iii,
         deps,
         crate::subscriptions::ON_SESSION_DELETED_ID,

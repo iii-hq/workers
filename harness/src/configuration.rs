@@ -278,7 +278,8 @@ pub fn register_config_trigger(
             "Internal: hot-reload harness from the authoritative configuration when it changes — \
              re-binds the cron pending-sweep on a sweep_expression change and swaps the per-call \
              tuning snapshot otherwise.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {

@@ -235,7 +235,8 @@ fn setup_auto_download(
                 Ok::<_, Error>(WorkerAddedAck { ok: true })
             }
         })
-        .description("Internal: auto-download skills on worker add event."),
+        .description("Internal: auto-download skills on worker add event.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     // Subscribe to the `worker` trigger type with a retry backoff.

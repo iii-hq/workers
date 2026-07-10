@@ -89,7 +89,8 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
             "type": "object",
             "properties": { "ok": { "type": "boolean" } },
         }))
-        .description("Internal: reload provider-xai configuration when it changes."),
+        .description("Internal: reload provider-xai configuration when it changes.")
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {

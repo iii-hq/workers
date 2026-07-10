@@ -21,6 +21,7 @@
 import {
   type IIIConnectionState,
   type ISdk,
+  type RegisterFunctionOptions,
   type RegisterTriggerInput,
   type RemoteFunctionHandler,
   registerWorker,
@@ -42,6 +43,7 @@ export interface IiiClient {
   on<P = unknown>(
     functionId: string,
     handler: (payload: P) => void | Promise<void>,
+    options?: RegisterFunctionOptions,
   ): () => void
   /**
    * Register an engine trigger bound to a function id. Thin passthrough to
@@ -141,6 +143,7 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   function on<P>(
     functionId: string,
     handler: (payload: P) => void | Promise<void>,
+    options?: RegisterFunctionOptions,
   ): () => void {
     const id = `${functionId}::${browserId}`
     // Wrap to satisfy the SDK's RemoteFunctionHandler signature (returns
@@ -149,7 +152,14 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
       await handler(data as P)
       return null
     }
-    const ref = sdk.registerFunction(id, wrapped)
+    // Every handler registered here is a browser-local console plumbing fn
+    // (traces, sessions, worktree events, ...) — none are meant for other
+    // workers (e.g. harness) to discover, so default them out of
+    // `engine::functions::list`. Callers can still override via `options`.
+    const ref = sdk.registerFunction(id, wrapped, {
+      metadata: { internal: true },
+      ...options,
+    })
     let active = true
     const unregister = () => {
       if (!active) return

@@ -50,12 +50,15 @@ pub struct Deps {
 /// Register one typed handler under `id`, mapping `SessionError` into
 /// the bus error shape (`code: message`). Each call snapshots the live
 /// runtime's `service` + `sink` from [`AppState`], so handlers never capture a
-/// stale adapter across a hot-reload.
+/// stale adapter across a hot-reload. `internal` hides the function from the
+/// discoverable `engine::functions::list` (mutating/plumbing surface stays
+/// callable by id); see harness's iii-permissions.yaml.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     state: &AppState,
     id: &str,
     description: &str,
+    internal: bool,
     handler: F,
 ) where
     Req: DeserializeOwned + JsonSchema + Send + 'static,
@@ -64,24 +67,27 @@ fn register<Req, Resp, F, Fut>(
     Fut: Future<Output = Result<Resp, SessionError>> + Send + 'static,
 {
     let state = state.clone();
-    iii.register_function(
-        id,
-        RegisterFunction::new_async(move |req: Req| {
-            let state = state.clone();
-            let handler = handler.clone();
-            async move {
-                let deps = {
-                    let rt = state.runtime.read().await;
-                    Arc::new(Deps {
-                        service: rt.service.clone(),
-                        sink: rt.sink.clone(),
-                    })
-                };
-                handler(deps, req).await.map_err(Error::from)
-            }
-        })
-        .description(description),
-    );
+    let reg = RegisterFunction::new_async(move |req: Req| {
+        let state = state.clone();
+        let handler = handler.clone();
+        async move {
+            let deps = {
+                let rt = state.runtime.read().await;
+                Arc::new(Deps {
+                    service: rt.service.clone(),
+                    sink: rt.sink.clone(),
+                })
+            };
+            handler(deps, req).await.map_err(Error::from)
+        }
+    })
+    .description(description);
+    let reg = if internal {
+        reg.metadata(serde_json::json!({ "internal": true }))
+    } else {
+        reg
+    };
+    iii.register_function(id, reg);
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
@@ -90,6 +96,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::create",
         "Create a session at status idle; fires session::created.",
+        true,
         |d, r| async move { create::handle(&d, r).await },
     );
     register(
@@ -97,6 +104,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::ensure",
         "Idempotently ensure a session with a given id exists; fires session::created only when it creates.",
+        true,
         |d, r| async move { ensure::handle(&d, r).await },
     );
     register(
@@ -104,6 +112,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::get",
         "Read one session's metadata (null when unknown).",
+        false,
         |d, r| async move { get::handle(&d, r).await },
     );
     register(
@@ -111,6 +120,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::list",
         "List sessions with pagination, ordering, and status/metadata filters.",
+        false,
         |d, r| async move { list::handle(&d, r).await },
     );
     register(
@@ -118,6 +128,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::set-meta",
         "Update a session's title/description/metadata; fires session::meta-updated.",
+        true,
         |d, r| async move { set_meta::handle(&d, r).await },
     );
     register(
@@ -125,6 +136,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::set-status",
         "Set status idle/working/done/error; fires session::status-changed (no-op when unchanged).",
+        true,
         |d, r| async move { set_status::handle(&d, r).await },
     );
     register(
@@ -132,6 +144,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::delete",
         "Delete a session and its entries; fires session::deleted.",
+        true,
         |d, r| async move { delete::handle(&d, r).await },
     );
     register(
@@ -139,6 +152,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::append",
         "Append one entry (idempotent on entry_id); fires session::message-added.",
+        true,
         |d, r| async move { append::handle(&d, r).await },
     );
     register(
@@ -146,6 +160,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::append-many",
         "Append several message entries in order; fires session::message-added per entry.",
+        true,
         |d, r| async move { append_many::handle(&d, r).await },
     );
     register(
@@ -153,6 +168,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::update-message",
         "Replace a message entry's content (optimistic concurrency via expected_revision); fires session::message-updated.",
+        true,
         |d, r| async move { update_message::handle(&d, r).await },
     );
     register(
@@ -160,6 +176,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::messages",
         "Load the active path as messages with entry ids, oldest first; pagination and role filtering.",
+        false,
         |d, r| async move { messages::handle(&d, r).await },
     );
     register(
@@ -167,6 +184,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::get-message",
         "Read a single entry by id (null when unknown).",
+        false,
         |d, r| async move { get_message::handle(&d, r).await },
     );
     register(
@@ -174,6 +192,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::fork",
         "Copy history up to an entry into a new session (copy-on-fork); fires session::created.",
+        true,
         |d, r| async move { fork::handle(&d, r).await },
     );
     register(
@@ -181,6 +200,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         state,
         "session::set-active-leaf",
         "Move the active path to end at a given entry (branch switch).",
+        true,
         |d, r| async move { set_active_leaf::handle(&d, r).await },
     );
 

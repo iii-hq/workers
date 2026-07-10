@@ -401,7 +401,8 @@ async fn main() -> Result<()> {
                  boot). A rejected outcome or non-zero count means a stored config \
                  was refused and shell is enforcing an older policy than the central \
                  store. Takes no arguments.",
-            ),
+            )
+            .metadata(serde_json::json!({ "internal": true })),
         );
     }
 

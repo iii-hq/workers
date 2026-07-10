@@ -138,7 +138,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 store.get_meta(&req.session_id).await.map_err(storage_err)
             }
         })
-        .description("Internal store protocol: read one SessionMeta (null when unknown)."),
+        .description("Internal store protocol: read one SessionMeta (null when unknown).")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -152,7 +153,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: write one SessionMeta."),
+        .description("Internal store protocol: write one SessionMeta.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -169,7 +171,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: delete one SessionMeta."),
+        .description("Internal store protocol: delete one SessionMeta.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -183,7 +186,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(ListMetasResponse { metas })
             }
         })
-        .description("Internal store protocol: list every SessionMeta."),
+        .description("Internal store protocol: list every SessionMeta.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -199,7 +203,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                     .map_err(storage_err)
             }
         })
-        .description("Internal store protocol: read one SessionEntry (null when unknown)."),
+        .description("Internal store protocol: read one SessionEntry (null when unknown).")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -216,7 +221,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: write one SessionEntry."),
+        .description("Internal store protocol: write one SessionEntry.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -233,7 +239,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(ListEntriesResponse { entries })
             }
         })
-        .description("Internal store protocol: list every entry of a session."),
+        .description("Internal store protocol: list every entry of a session.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -250,7 +257,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: delete every entry of a session."),
+        .description("Internal store protocol: delete every entry of a session.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -267,7 +275,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(ActiveLeafResponse { entry_id })
             }
         })
-        .description("Internal store protocol: read a session's active leaf pointer."),
+        .description("Internal store protocol: read a session's active leaf pointer.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -284,7 +293,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: move a session's active leaf pointer."),
+        .description("Internal store protocol: move a session's active leaf pointer.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -301,7 +311,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
                 Ok::<_, Error>(OkResponse { ok: true })
             }
         })
-        .description("Internal store protocol: clear a session's active leaf pointer."),
+        .description("Internal store protocol: clear a session's active leaf pointer.")
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     let st = state.clone();
@@ -318,7 +329,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
         .description(
             "Internal store protocol: ingest a bridged instance's event envelopes and fan them \
              out to local subscribers and every attached bridge.",
-        ),
+        )
+        .metadata(serde_json::json!({ "internal": true })),
     );
 
     tracing::info!("session::store::* protocol registered (12 functions)");

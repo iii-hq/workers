@@ -166,12 +166,14 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             make_stream(iii.clone(), http.clone(), cell.clone()),
             invalid_request_from_serde,
         )
-        .description(surface::STREAM_DESC),
+        .description(surface::STREAM_DESC)
+        .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
         RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone()))
-            .description(surface::REFRESH_MODELS_DESC),
+            .description(surface::REFRESH_MODELS_DESC)
+            .metadata(json!({ "internal": true })),
     );
 
     // Re-declare when the router restarts: bind to the router::ready trigger type.
@@ -187,7 +189,8 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
-            .description(surface::ON_ROUTER_READY_DESC),
+            .description(surface::ON_ROUTER_READY_DESC)
+            .metadata(json!({ "internal": true })),
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {

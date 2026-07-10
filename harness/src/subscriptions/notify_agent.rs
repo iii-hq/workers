@@ -95,7 +95,8 @@ pub fn register(deps: Arc<Deps>) {
         })
         .description(NOTIFY_AGENT_DESC)
         .request_format(schema_value::<NotifyAgentEvent>())
-        .response_format(schema_value::<NotifyAgentResponse>()),
+        .response_format(schema_value::<NotifyAgentResponse>())
+        .metadata(json!({ "internal": true })),
     );
 }
 

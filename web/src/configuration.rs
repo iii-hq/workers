@@ -159,7 +159,8 @@ pub async fn setup_harness_hooks(iii: &Arc<IIIClient>) {
              trigger type. Not called directly.",
         )
         .request_format(registry_changed_request_schema())
-        .response_format(registry_changed_response_schema()),
+        .response_format(registry_changed_response_schema())
+        .metadata(json!({ "internal": true })),
     );
 
     // Arm the event-driven retries BEFORE the initial probe, so a harness that comes up
@@ -275,7 +276,8 @@ pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<()
         })
         .description(
             "Internal: reload web settings from the authoritative configuration on change.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput {
