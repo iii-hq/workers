@@ -42,7 +42,13 @@ function bind<P>(
   onEvent: (payload: P) => void,
 ): () => void {
   const off = client.on(handlerFn, (payload: unknown) => {
-    if (payload && typeof payload === 'object') onEvent(payload as P)
+    if (!payload || typeof payload !== 'object') return
+    // The handler id is shared by every live stream (client.on fans out);
+    // the engine-side trigger filter is per-binding, so another session's
+    // events also land here — drop them.
+    const sid = (payload as { session_id?: unknown }).session_id
+    if (typeof sid === 'string' && sid !== sessionId) return
+    onEvent(payload as P)
   })
   // `on()` registers under `<fn>::<browserId>`; the trigger targets that id.
   const offTrigger = client.registerTrigger({

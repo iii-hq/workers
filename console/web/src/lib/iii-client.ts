@@ -122,7 +122,7 @@ async function bootstrap(deps: Deps): Promise<IiiClient> {
   return wrapSdk(sdk, browserId)
 }
 
-function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
+export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // Track per-functionId unregister fns so dispose() can clean them all up
   // even if individual `on()` callers forgot.
   const handlerUnregisters = new Set<() => void>()
@@ -140,35 +140,68 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     })
   }
 
+  // One SDK registration per function id, fanned out to every attached
+  // listener. The SDK throws on a duplicate id, but two live streams
+  // legitimately bind the same constant handler id (e.g. a still-streaming
+  // session's turn-completed handler alongside a new session's) — letting
+  // that throw killed the new session's send silently. The SDK registration
+  // is released when the last listener detaches.
+  const fanouts = new Map<
+    string,
+    {
+      listeners: Set<(data: unknown) => void | Promise<void>>
+      release: () => void
+    }
+  >()
+
   function on<P>(
     functionId: string,
     handler: (payload: P) => void | Promise<void>,
     options?: RegisterFunctionOptions,
   ): () => void {
     const id = `${functionId}::${browserId}`
-    // Wrap to satisfy the SDK's RemoteFunctionHandler signature (returns
-    // Promise<unknown>). We never want to send a result back.
-    const wrapped: RemoteFunctionHandler = async (data: unknown) => {
-      await handler(data as P)
-      return null
+    let entry = fanouts.get(id)
+    if (!entry) {
+      const listeners = new Set<(data: unknown) => void | Promise<void>>()
+      // Wrap to satisfy the SDK's RemoteFunctionHandler signature (returns
+      // Promise<unknown>). We never want to send a result back, and one
+      // listener's failure must not starve the others.
+      const wrapped: RemoteFunctionHandler = async (data: unknown) => {
+        await Promise.allSettled([...listeners].map(async (fn) => fn(data)))
+        return null
+      }
+      // Every handler registered here is a browser-local console plumbing fn
+      // (traces, sessions, worktree events, ...) — none are meant for other
+      // workers (e.g. harness) to discover, so default them out of
+      // `engine::functions::list`. Callers can still override via `options`.
+      const ref = sdk.registerFunction(id, wrapped, {
+        metadata: { internal: true },
+        ...options,
+      })
+      entry = {
+        listeners,
+        release: () => {
+          try {
+            ref.unregister()
+          } catch {
+            // SDK already disposed; nothing to do.
+          }
+        },
+      }
+      fanouts.set(id, entry)
     }
-    // Every handler registered here is a browser-local console plumbing fn
-    // (traces, sessions, worktree events, ...) — none are meant for other
-    // workers (e.g. harness) to discover, so default them out of
-    // `engine::functions::list`. Callers can still override via `options`.
-    const ref = sdk.registerFunction(id, wrapped, {
-      metadata: { internal: true },
-      ...options,
-    })
+    const fanout = entry
+    const listener = (data: unknown) => handler(data as P)
+    fanout.listeners.add(listener)
     let active = true
     const unregister = () => {
       if (!active) return
       active = false
       handlerUnregisters.delete(unregister)
-      try {
-        ref.unregister()
-      } catch {
-        // SDK already disposed; nothing to do.
+      fanout.listeners.delete(listener)
+      if (fanout.listeners.size === 0) {
+        fanouts.delete(id)
+        fanout.release()
       }
     }
     handlerUnregisters.add(unregister)

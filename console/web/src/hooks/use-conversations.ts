@@ -806,11 +806,17 @@ export function useConversations(
         })
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
-            { ...c, draft: false, hydrated: true },
+            { ...c, draft: false, hydrated: false },
             resp.meta,
           ),
           draft: false,
-          hydrated: true,
+          // Leave the session un-hydrated: the transcript subscription only
+          // mounts after this patch re-renders, so the first server events
+          // can fire before the binding exists (at-most-once, no replay).
+          // The hydration read-back then recovers anything missed; it folds
+          // through applyEntryUpsert, so the optimistic user row and any
+          // events that race the fetch survive.
+          hydrated: false,
         }))
       } catch (err) {
         if (import.meta.env.DEV) {

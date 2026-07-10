@@ -1082,6 +1082,20 @@ export function ChatView({
       } catch (err) {
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
+          // A dead send must never be silent: without this notice the user
+          // sees only their message and an eternal shimmer.
+          const detail = err instanceof Error ? err.message : String(err)
+          const noticeContent = `send failed — ${detail}`
+          const notice: SystemMessage = {
+            id: uid(),
+            role: 'system',
+            kind: 'notice',
+            content: noticeContent,
+            tone: 'error',
+            createdAt: Date.now(),
+          }
+          onAppendMessage(conversationId, notice)
+          announcer.announceAssertive(noticeContent)
         }
       } finally {
         if (thoughtId) {
