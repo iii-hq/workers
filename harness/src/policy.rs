@@ -181,7 +181,7 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 });
                 continue;
             }
-            let (target, payload) =
+            let (target, mut payload) =
                 if function_id == AGENT_TRIGGER_NAME || expose == ExposeMode::AgentTrigger {
                     let target = arguments
                         .get("function")
@@ -219,6 +219,20 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 } else {
                     (function_id.clone(), arguments.clone())
                 };
+            // Truncation markers on the wrapper must survive the unwrap: a
+            // max_tokens cut landing after a complete `payload` salvages to
+            // `{function, payload, _partial: true}`, and unwrapping the
+            // payload verbatim would shed the marker — bypassing the turn
+            // loop's refusal to execute provider-degraded arguments.
+            if let Value::Object(p) = &mut payload {
+                for marker in ["_partial", "_raw"] {
+                    if let Some(v) = arguments.get(marker) {
+                        if !p.contains_key(marker) {
+                            p.insert(marker.to_string(), v.clone());
+                        }
+                    }
+                }
+            }
             out.push(PlannedCall {
                 id: id.clone(),
                 function_id: target,
@@ -309,6 +323,26 @@ mod tests {
         let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
         assert_eq!(calls[0].function_id, AGENT_TRIGGER_NAME);
         assert_eq!(calls[0].kind, CallKind::Trigger);
+    }
+
+    #[test]
+    fn wrapper_truncation_marker_survives_payload_unwrap() {
+        // Salvage of a max_tokens-cut wrapper can keep a complete `payload`
+        // beside the `_partial` marker; the unwrapped call must still carry
+        // it so the dispatch loop refuses to execute possibly-partial intent.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({
+                "function": "state::set",
+                "payload": { "scope": "s", "key": "k" },
+                "_partial": true
+            }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].function_id, "state::set");
+        assert_eq!(calls[0].arguments["_partial"], true);
+        assert_eq!(calls[0].arguments["scope"], "s");
     }
 
     #[test]

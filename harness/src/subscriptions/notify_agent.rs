@@ -122,8 +122,12 @@ async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
     else {
         return;
     };
+    // `retired` reflects the actual teardown outcome: a failed unregister
+    // leaves the trigger live engine-side, and recording `true` would give
+    // the console a dismiss-only ghost for a trigger that can still fire.
+    let mut retired = false;
     if let Some(trigger_id) = claim.trigger_id.as_deref() {
-        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+        retired = crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
     }
 
     // Durable, turn-less UI signal: the console renders a "trigger fired" notice
@@ -145,7 +149,7 @@ async fn on_fire(deps: &Deps, event: Value, metadata: Option<Value>) {
                 label: meta.label.as_deref(),
                 model: None,
                 once: meta.once,
-                retired: claim.trigger_id.is_some(),
+                retired,
                 scope,
                 key,
                 child_session_id: None,

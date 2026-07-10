@@ -519,11 +519,13 @@ async fn join_edge(
     // when the agent registered through the engine::register_trigger
     // interceptor) so fired joins don't leak the session's subscription cap.
     // Best-effort — a failed unregister never blocks the downstream spawn.
+    let mut retired = !join.rearm;
     if join.rearm {
         tracing::info!(join = %join.id, "harness::react: join re-armed; predecessor subscriptions stay registered");
     } else {
         for id in join_binding_ids(&rec) {
             if let Err(e) = retire_binding(deps, &id).await {
+                retired = false;
                 tracing::warn!(error = %e, join = %join.id, subscription = %id, "harness::react: join predecessor auto-unregister failed");
             }
         }
@@ -535,12 +537,13 @@ async fn join_edge(
     let task = gather_inputs_task(&spec.task, &rec);
     let res = spawn_reaction(deps, task, spec, parent, spawn_depth).await;
 
-    // The join committed: the downstream spawned and (unless re-armed) every
-    // predecessor was just auto-unregistered above. One completion record lets
-    // the console mark the whole join fired + retired and post the notice.
-    // Gated on `spawned` like the simple edge — spawn_reaction swallows
-    // dispatch errors into `spawned: false`, and a record claiming "spawned"
-    // for a spawn that never happened would mislead the chat.
+    // The join committed: the downstream spawned and (unless re-armed) the
+    // predecessors were torn down above — `retired` carries the real outcome,
+    // so a failed unregister is never reported as gone. One completion record
+    // lets the console mark the whole join fired + retired and post the
+    // notice. Gated on `spawned` like the simple edge — spawn_reaction
+    // swallows dispatch errors into `spawned: false`, and a record claiming
+    // "spawned" for a spawn that never happened would mislead the chat.
     if let Ok(r) = &res {
         if r.spawned {
             let note = format!("{expected}/{expected} arrived — spawned");
@@ -550,7 +553,7 @@ async fn join_edge(
                 &event,
                 &format!("e_trigfired_join_{}_done", join.id),
                 r.child_session_id.as_deref(),
-                !join.rearm,
+                retired,
                 None, // predecessors already retired; sub-keyed ghost is right
                 Some(crate::subscriptions::fired::JoinProgress {
                     id: &join.id,

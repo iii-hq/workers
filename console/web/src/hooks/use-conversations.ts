@@ -44,7 +44,7 @@ import {
   subscribeSessionDirectory,
   subscribeSessionTranscript,
 } from '@/lib/sessions/events'
-import type { SessionMeta } from '@/lib/sessions/types'
+import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import {
   loadActiveId,
   loadLastModel,
@@ -269,6 +269,36 @@ export interface ConversationsApi {
  *   `catalogReady` gates it so a stale placeholder catalog can't clobber picks.
  * @param serverEnabled Wire the store to session-manager (real backend only).
  */
+/** Live entry upsert captured while a hydration fetch was in flight. */
+export type HydrationUpsert = { item: TranscriptItem; updated: boolean }
+
+/** Fold a hydration read together with what the live feed did meanwhile:
+    replay the buffered upserts on top (same entry id → live wins, the
+    fetched snapshot predates them), then re-append live-only messages the
+    read didn't return. Without the replay, an update landing mid-fetch is
+    clobbered by the older snapshot and `hydrated: true` pins it stale. */
+export function mergeHydratedTranscript(
+  fetched: Message[],
+  live: Message[],
+  upserts: HydrationUpsert[],
+  opts: { sessionId: string; working: boolean },
+): Message[] {
+  let messages = fetched
+  for (const u of upserts) {
+    messages = applyEntryUpsert(messages, u.item, {
+      sessionId: opts.sessionId,
+      streaming: u.updated ? opts.working : undefined,
+      working: opts.working,
+    })
+  }
+  for (const m of live) {
+    if (!messages.some((existing) => existing.id === m.id)) {
+      messages = [...messages, m]
+    }
+  }
+  return messages
+}
+
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
@@ -289,6 +319,13 @@ export function useConversations(
 
   /** Highest seen `message-updated` revision per (session, entry). */
   const revisionsRef = useRef(new Map<string, Map<string, number>>())
+
+  /** Upserts received while a hydration fetch is in flight; replayed over
+      the fetched snapshot so the older read can't clobber a newer entry. */
+  const hydrationBufferRef = useRef<{
+    sessionId: string
+    upserts: HydrationUpsert[]
+  } | null>(null)
 
   const patchConversation = useCallback(
     (id: string, patch: (c: Conversation) => Conversation) => {
@@ -454,18 +491,22 @@ export function useConversations(
       if (cancelled) return
       off = subscribeSessionTranscript(client, sessionId, {
         onMessageAdded: (event) => {
+          const item = {
+            entry_id: event.entry_id,
+            message: event.message,
+            custom: event.custom,
+            origin: event.origin,
+          }
+          const buf = hydrationBufferRef.current
+          if (buf && buf.sessionId === sessionId) {
+            buf.upserts.push({ item, updated: false })
+          }
           patchConversation(sessionId, (c) => ({
             ...c,
-            messages: applyEntryUpsert(
-              c.messages,
-              {
-                entry_id: event.entry_id,
-                message: event.message,
-                custom: event.custom,
-                origin: event.origin,
-              },
-              { sessionId, working: c.status === 'working' },
-            ),
+            messages: applyEntryUpsert(c.messages, item, {
+              sessionId,
+              working: c.status === 'working',
+            }),
             updatedAt: event.timestamp,
           }))
         },
@@ -474,21 +515,22 @@ export function useConversations(
           const prev = revs.get(event.entry_id) ?? -1
           if (event.revision <= prev) return
           revs.set(event.entry_id, event.revision)
+          const item = {
+            entry_id: event.entry_id,
+            message: event.message,
+            origin: event.origin,
+          }
+          const buf = hydrationBufferRef.current
+          if (buf && buf.sessionId === sessionId) {
+            buf.upserts.push({ item, updated: true })
+          }
           patchConversation(sessionId, (c) => ({
             ...c,
-            messages: applyEntryUpsert(
-              c.messages,
-              {
-                entry_id: event.entry_id,
-                message: event.message,
-                origin: event.origin,
-              },
-              {
-                sessionId,
-                streaming: c.status === 'working',
-                working: c.status === 'working',
-              },
-            ),
+            messages: applyEntryUpsert(c.messages, item, {
+              sessionId,
+              streaming: c.status === 'working',
+              working: c.status === 'working',
+            }),
             updatedAt: event.timestamp,
           }))
         },
@@ -520,20 +562,31 @@ export function useConversations(
     if (!activeNeedsHydration || !activeId) return
     const sessionId = activeId
     let cancelled = false
+    /* Buffer live upserts for the fetch window: for the same entry id they
+       are newer than the snapshot, and replaying them after the merge keeps
+       the read from clobbering a revision that landed mid-flight. */
+    const upserts: HydrationUpsert[] = []
+    hydrationBufferRef.current = { sessionId, upserts }
+    const releaseBuffer = () => {
+      if (hydrationBufferRef.current?.upserts === upserts) {
+        hydrationBufferRef.current = null
+      }
+    }
     void fetchTranscript(sessionId)
       .then((items) => {
         if (cancelled) return
         patchConversation(sessionId, (c) => {
-          let messages = transcriptToMessages(items, sessionId, {
-            working: c.status === 'working',
-          })
-          // Re-apply anything the live feed already reconciled on top.
-          for (const m of c.messages) {
-            if (!messages.some((existing) => existing.id === m.id)) {
-              messages = [...messages, m]
-            }
+          const working = c.status === 'working'
+          return {
+            ...c,
+            messages: mergeHydratedTranscript(
+              transcriptToMessages(items, sessionId, { working }),
+              c.messages,
+              upserts,
+              { sessionId, working },
+            ),
+            hydrated: true,
           }
-          return { ...c, messages, hydrated: true }
         })
       })
       .catch((err) => {
@@ -545,8 +598,10 @@ export function useConversations(
           )
         }
       })
+      .finally(releaseBuffer)
     return () => {
       cancelled = true
+      releaseBuffer()
     }
   }, [activeNeedsHydration, activeId, patchConversation])
 
