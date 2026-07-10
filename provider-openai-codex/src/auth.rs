@@ -1,9 +1,10 @@
 //! OAuth token helpers. This provider is a *dumb consumer*: login and refresh
 //! live in the `oauth-openai-codex` worker + `auth-credentials` vault. The only
 //! token work here is (a) decoding the unsigned JWT payload for the ChatGPT
-//! account id / expiry, and (b) an optional one-time, READ-ONLY import of an
-//! existing `~/.codex/auth.json` into the vault (never written back, so the
-//! running `codex` CLI's rotating refresh token is never clobbered).
+//! account id / expiry, (b) resolving a fresh credential for backend calls,
+//! and (c) an optional one-time, READ-ONLY import of an existing
+//! `~/.codex/auth.json` into the vault (never written back, so the running
+//! `codex` CLI's rotating refresh token is never clobbered).
 use crate::{router_client, PROVIDER_ID};
 use base64::Engine as _;
 use iii_sdk::IIIClient;
@@ -11,6 +12,9 @@ use serde_json::{json, Value};
 
 /// The ChatGPT account-id claim namespace in Codex OAuth JWTs.
 const AUTH_CLAIM: &str = "https://api.openai.com/auth";
+
+/// Refresh proactively when the token expires within this margin.
+const EXPIRY_MARGIN_SECS: i64 = 60;
 
 /// Function id the vault stores in the credential record and triggers on
 /// refresh-when-expiring.
@@ -50,6 +54,22 @@ pub fn expires_at_from_access_token(token: &str) -> Option<i64> {
     decode_jwt_payload(token)?
         .get("exp")
         .and_then(Value::as_i64)
+}
+
+/// Token expiry (seconds) from the credential's `expires_at`, else its JWT.
+fn credential_expires_at(cred: &Value) -> Option<i64> {
+    cred.get("expires_at").and_then(Value::as_i64).or_else(|| {
+        cred.get("access_token")
+            .and_then(Value::as_str)
+            .and_then(expires_at_from_access_token)
+    })
+}
+
+fn near_expiry(cred: &Value) -> bool {
+    match credential_expires_at(cred) {
+        Some(exp) => exp <= crate::now_ms() / 1000 + EXPIRY_MARGIN_SECS,
+        None => false, // unknown expiry: let the vault decide, don't force
+    }
 }
 
 /// `${CODEX_HOME:-$HOME/.codex}/auth.json`.
@@ -106,6 +126,40 @@ pub fn read_codex_home_credential() -> Option<Value> {
     let contents = std::fs::read_to_string(&path).ok()?;
     let root: Value = serde_json::from_str(&contents).ok()?;
     credential_from_auth_json(&root)
+}
+
+/// Fetch a usable credential for either streaming or model discovery.
+///
+/// The vault is authoritative when present. A near-expiry vault token triggers
+/// the vault-owned refresh. Local development falls back to the Codex CLI's
+/// read-only `auth.json` when no vault credential is available.
+pub async fn fetch_fresh_credential(iii: &IIIClient) -> Option<Value> {
+    if let Some(cred) = router_client::get_token_if_available(iii, PROVIDER_ID)
+        .await
+        .ok()
+        .flatten()
+    {
+        if near_expiry(&cred)
+            && matches!(
+                router_client::refresh_if_available(iii, PROVIDER_ID).await,
+                Ok(true)
+            )
+        {
+            return router_client::get_token_if_available(iii, PROVIDER_ID)
+                .await
+                .ok()
+                .flatten()
+                .or(Some(cred));
+        }
+        return Some(cred);
+    }
+    if let Some(cred) = read_codex_home_credential() {
+        eprintln!(
+            "[provider-openai-codex] no auth-credentials vault — using local ~/.codex/auth.json (dev fallback)"
+        );
+        return Some(cred);
+    }
+    None
 }
 
 /// One-time, best-effort READ-ONLY import of `~/.codex/auth.json` into the
@@ -181,6 +235,17 @@ mod tests {
     fn exp_is_read_in_seconds() {
         let t = jwt_with(json!({ "exp": 1_900_000_000i64 }));
         assert_eq!(expires_at_from_access_token(&t), Some(1_900_000_000));
+    }
+
+    #[test]
+    fn near_expiry_uses_margin() {
+        let past = serde_json::json!({ "access_token": "a", "expires_at": 1 });
+        assert!(near_expiry(&past));
+        let far =
+            serde_json::json!({ "access_token": "a", "expires_at": crate::now_ms() / 1000 + 3600 });
+        assert!(!near_expiry(&far));
+        let unknown = serde_json::json!({ "access_token": "no-exp" });
+        assert!(!near_expiry(&unknown));
     }
 
     #[test]

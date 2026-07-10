@@ -19,8 +19,8 @@ pub const STREAM_DESC: &str = "Stream an OpenAI Codex completion: resolve a Chat
      writer_ref.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::openai-codex::refresh_models";
-pub const REFRESH_MODELS_DESC: &str = "Reconcile the static, namespaced Codex catalog slice \
-     through the router; returns the model count written.";
+pub const REFRESH_MODELS_DESC: &str = "Fetch the authenticated Codex model catalog and replace \
+     this provider's namespaced router slice; returns the active model count.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openai-codex::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =

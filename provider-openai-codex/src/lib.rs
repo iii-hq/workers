@@ -3,7 +3,6 @@
 
 pub mod auth;
 pub mod config;
-pub mod curated;
 pub mod discovery;
 pub mod errors;
 pub mod manifest;

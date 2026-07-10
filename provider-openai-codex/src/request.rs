@@ -1,11 +1,17 @@
 //! OpenAI Responses request assembly: body (input items, tools, reasoning) +
 //! headers (Bearer + ChatGPT account id + Codex originator).
-use crate::config::CodexConfig;
+use crate::config::{CodexBackendConfig, CodexConfig};
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use serde_json::{json, Value};
+
+/// Codex client version whose Responses contract this worker mirrors.
+///
+/// The ChatGPT backend uses this header to gate newly released models. Omitting
+/// it makes supported models such as GPT-5.6 Luna fail as "Model not found".
+pub(crate) const CODEX_COMPAT_VERSION: &str = "0.144.1";
 
 pub struct BodyArgs {
     pub model: String, // upstream model id
@@ -40,18 +46,32 @@ pub fn build_body(args: &BodyArgs) -> Value {
     body
 }
 
-/// Headers for the ChatGPT/Codex backend. `openai-beta` and `originator` are
-/// verified against the codex CLI; `chatgpt-account-id` scopes the request to
-/// the signed-in ChatGPT account.
-pub fn build_headers(cfg: &CodexConfig) -> Vec<(&'static str, String)> {
+/// Headers shared by every authenticated ChatGPT/Codex backend request.
+pub fn build_backend_headers(cfg: &CodexBackendConfig) -> Vec<(&'static str, String)> {
     vec![
         ("authorization", format!("Bearer {}", cfg.access_token)),
         ("chatgpt-account-id", cfg.account_id.clone()),
-        ("openai-beta", "responses=experimental".to_string()),
+        ("version", CODEX_COMPAT_VERSION.to_string()),
         ("originator", "codex_cli_rs".to_string()),
+    ]
+}
+
+/// Headers for streaming Responses calls. `openai-beta` and SSE negotiation
+/// are endpoint-specific; auth, account, version, and originator are shared
+/// with model discovery.
+pub fn build_headers(cfg: &CodexConfig) -> Vec<(&'static str, String)> {
+    let backend = CodexBackendConfig {
+        access_token: cfg.access_token.clone(),
+        account_id: cfg.account_id.clone(),
+        api_url: cfg.api_url.clone(),
+    };
+    let mut headers = build_backend_headers(&backend);
+    headers.extend([
+        ("openai-beta", "responses=experimental".to_string()),
         ("accept", "text/event-stream".to_string()),
         ("content-type", "application/json".to_string()),
-    ]
+    ]);
+    headers
 }
 
 #[cfg(test)]
@@ -124,8 +144,22 @@ mod tests {
         let h = build_headers(&cfg);
         assert!(h.contains(&("authorization", "Bearer at".to_string())));
         assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
+        assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
         assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
         assert!(h.iter().any(|(k, _)| *k == "openai-beta"));
         assert!(h.contains(&("accept", "text/event-stream".to_string())));
+    }
+
+    #[test]
+    fn backend_headers_omit_stream_only_fields() {
+        let cfg = CodexBackendConfig {
+            access_token: "at".into(),
+            account_id: "acc-1".into(),
+            api_url: crate::config::DEFAULT_API_URL.into(),
+        };
+        let h = build_backend_headers(&cfg);
+        assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
+        assert!(!h.iter().any(|(key, _)| *key == "openai-beta"));
+        assert!(!h.iter().any(|(key, _)| *key == "accept"));
     }
 }

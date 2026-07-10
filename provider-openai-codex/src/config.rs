@@ -3,7 +3,6 @@
 //! `auth-credentials` vault (`auth::get_token`); the api_url/max_tokens come
 //! from the router's `resolve`. This provider is OAuth-only — API keys belong
 //! on `provider-openai`.
-use crate::curated::upstream_model_id;
 use llm_router::types::router::ProviderResolveResponse;
 use serde_json::Value;
 
@@ -11,12 +10,28 @@ use serde_json::Value;
 pub const DEFAULT_API_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
 
+/// Map a namespaced router id to the upstream Codex model id.
+fn upstream_model_id(router_id: &str) -> String {
+    router_id
+        .strip_prefix("codex/")
+        .unwrap_or(router_id)
+        .to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexConfig {
     pub access_token: String,
     pub account_id: String,
     pub model: String, // upstream model id (router id mapped)
     pub max_tokens: u64,
+    pub api_url: String,
+}
+
+/// Authenticated Codex backend settings shared by streaming and model discovery.
+#[derive(Debug, Clone)]
+pub struct CodexBackendConfig {
+    pub access_token: String,
+    pub account_id: String,
     pub api_url: String,
 }
 
@@ -90,13 +105,11 @@ fn extract_account_id(cred: &Value, access_token: &str) -> Option<String> {
         .or_else(|| crate::auth::account_id_from_access_token(access_token))
 }
 
-/// Build the effective config from the vault credential + router resolve.
-pub fn build_config(
-    router_model: &str,
-    effective_max_tokens: Option<u64>,
+/// Build the authenticated backend config from the credential + router resolve.
+pub fn build_backend_config(
     resolved: &ProviderResolveResponse,
     credential: Option<&Value>,
-) -> Result<CodexConfig, ConfigError> {
+) -> Result<CodexBackendConfig, ConfigError> {
     let cred = credential.ok_or(ConfigError::NotConfigured)?;
     if looks_like_api_key(cred) {
         return Err(ConfigError::ApiKeyRejected);
@@ -114,14 +127,29 @@ pub fn build_config(
         _ => return Err(ConfigError::InvalidApiUrl(api_url)),
     }
 
-    Ok(CodexConfig {
+    Ok(CodexBackendConfig {
         access_token,
         account_id,
+        api_url,
+    })
+}
+
+/// Build the effective streaming config from the shared backend config.
+pub fn build_config(
+    router_model: &str,
+    effective_max_tokens: Option<u64>,
+    resolved: &ProviderResolveResponse,
+    credential: Option<&Value>,
+) -> Result<CodexConfig, ConfigError> {
+    let backend = build_backend_config(resolved, credential)?;
+    Ok(CodexConfig {
+        access_token: backend.access_token,
+        account_id: backend.account_id,
         model: upstream_model_id(router_model),
         max_tokens: effective_max_tokens
             .or(resolved.max_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS),
-        api_url,
+        api_url: backend.api_url,
     })
 }
 
@@ -177,6 +205,25 @@ mod tests {
         assert_eq!(cfg.model, "gpt-5.5");
         assert_eq!(cfg.max_tokens, 1000);
         assert_eq!(cfg.api_url, DEFAULT_API_URL);
+    }
+
+    #[test]
+    fn backend_config_is_reusable_without_a_model() {
+        let cred = json!({
+            "type": "oauth",
+            "access_token": "at",
+            "provider_extra": { "account_id": "acc-1" }
+        });
+        let cfg = build_backend_config(&resolved(None, None), Some(&cred)).unwrap();
+        assert_eq!(cfg.access_token, "at");
+        assert_eq!(cfg.account_id, "acc-1");
+        assert_eq!(cfg.api_url, DEFAULT_API_URL);
+    }
+
+    #[test]
+    fn namespaced_router_ids_map_to_upstream() {
+        assert_eq!(upstream_model_id("codex/gpt-5.6-luna"), "gpt-5.6-luna");
+        assert_eq!(upstream_model_id("gpt-5.6-luna"), "gpt-5.6-luna");
     }
 
     #[test]
