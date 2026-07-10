@@ -7,7 +7,7 @@
 //! `gen_ai.usage.cost_usd` and the cache/reasoning token counts are
 //! extensions — the conventions define no cost attribute yet.
 
-use iii_helpers::observability::opentelemetry::trace::TraceContextExt as _;
+use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
 use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 
 use crate::types::events::{StopReason, Usage};
@@ -78,6 +78,9 @@ pub fn record_llm_call(
     }
     for attr in genai_attributes(provider, model, stop_reason, usage) {
         span.set_attribute(attr);
+    }
+    if stop_reason == Some(StopReason::Error) {
+        span.set_status(Status::error("LLM stream ended with an error"));
     }
 }
 

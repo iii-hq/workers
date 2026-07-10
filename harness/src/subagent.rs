@@ -268,6 +268,7 @@ async fn seed_child(
                 parent_record,
             )?,
             max_validation_retries: cfg.max_validation_retries,
+            max_transient_resumes: cfg.max_transient_resumes,
         },
         calls: Default::default(),
         parent: parent.cloned(),
@@ -289,6 +290,7 @@ async fn seed_child(
         result: None,
         result_error: None,
         validation_retries: 0,
+        transient_resumes: 0,
         created_at: now,
         updated_at: now,
     };
@@ -390,6 +392,7 @@ mod tests {
                 functions: None,
                 metadata,
                 max_validation_retries: 2,
+                max_transient_resumes: 1,
             },
             calls: Default::default(),
             parent: None,
@@ -400,6 +403,7 @@ mod tests {
             result: None,
             result_error: None,
             validation_retries: 0,
+            transient_resumes: 0,
             created_at: 1,
             updated_at: 1,
         }

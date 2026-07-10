@@ -77,6 +77,13 @@ pub fn validation_nudge_entry_id(turn_id: &str, attempt: u32) -> String {
     format!("e_{turn_id}_nudge_{attempt}")
 }
 
+/// A synthetic user entry that asks the model to resume after a transient
+/// provider/router failure. Distinct from output-validation nudges so both
+/// retry loops remain idempotent when they occur in the same turn.
+pub fn transient_resume_nudge_entry_id(turn_id: &str, attempt: u32) -> String {
+    format!("e_{turn_id}_transient_resume_{attempt}")
+}
+
 fn short_uuid() -> String {
     Uuid::new_v4().simple().to_string()
 }
@@ -104,6 +111,10 @@ mod tests {
         assert_eq!(function_result_entry_id("t_1", "fc_9"), "e_t_1_fc_9");
         assert_eq!(compaction_entry_id("t_1", 4), "e_t_1_4_compaction");
         assert_eq!(queued_entry_id("q_abc"), "e_q_abc");
+        assert_eq!(
+            transient_resume_nudge_entry_id("t_1", 2),
+            "e_t_1_transient_resume_2"
+        );
     }
 
     #[test]

@@ -396,6 +396,36 @@ pub async fn run_step(
             .error
             .clone()
             .unwrap_or_else(|| "generation failed".to_string());
+        preserve_assistant_partial(&mut record.result, &outcome.message);
+        if transient_resume_allowed(
+            outcome.message.error_kind,
+            record.transient_resumes,
+            record.options.max_transient_resumes,
+            record.turn_count,
+            record.options.max_turns,
+        ) {
+            let attempt = record.transient_resumes + 1;
+            let nudge = AgentMessage::user_text(format!(
+                "The provider/router ended transiently after streaming the previous partial \
+                 response: {reason}. Resume from the transcript and return the complete deliverable, \
+                 incorporating the previous partial even if it was already nearly complete. Do not \
+                 repeat function calls that already have successful results."
+            ));
+            let _ = session
+                .append(
+                    &record.session_id,
+                    &nudge,
+                    Some(&ids::transient_resume_nudge_entry_id(
+                        &record.turn_id,
+                        attempt,
+                    )),
+                    None,
+                    Some(&origin(&record.turn_id)),
+                )
+                .await?;
+            record.transient_resumes = attempt;
+            return advance(deps, &mut record).await;
+        }
         return finalize_failed(deps, &session, &mut record, &reason).await;
     }
 
@@ -919,7 +949,20 @@ async fn finalize_failed(
         .append_custom(
             &record.session_id,
             "error",
-            json!({ "reason": reason }),
+            json!({
+                "status": "error",
+                "summary": reason,
+                "reason": reason,
+                "partial_result_available": record.result.is_some(),
+                "next_actions": [
+                    "inspect the failure reason",
+                    "retry only after correcting the dependency or request"
+                ],
+                "artifacts": {
+                    "session_id": record.session_id,
+                    "turn_id": record.turn_id,
+                },
+            }),
             &format!("e_{}_error", record.turn_id),
             Some(&origin(&record.turn_id)),
         )
@@ -932,7 +975,7 @@ async fn finalize_failed(
             &record.session_id,
             &record.turn_id,
             "failed",
-            None,
+            record.result.as_ref(),
             None,
             Some(reason),
             record.parent.as_ref(),
@@ -944,7 +987,14 @@ async fn finalize_failed(
         )
         .await;
     if let Some(parent) = record.parent.clone() {
-        crate::deferred::resolve_parent(deps, &parent, "failed", None, Some(reason)).await;
+        crate::deferred::resolve_parent(
+            deps,
+            &parent,
+            "failed",
+            record.result.as_ref(),
+            Some(reason),
+        )
+        .await;
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -952,6 +1002,39 @@ async fn finalize_failed(
         next_step: None,
         skipped: false,
     })
+}
+
+/// Keep a streamed partial available to failure observers without turning it
+/// into a successful turn result. Text stays ergonomic; non-text blocks retain
+/// their typed wire shape.
+fn assistant_partial_result(message: &AssistantMessage) -> Option<Value> {
+    if message.content.is_empty() {
+        return None;
+    }
+    let text = ContentBlock::join_text(&message.content);
+    if !text.trim().is_empty() {
+        Some(json!(text))
+    } else {
+        serde_json::to_value(&message.content).ok()
+    }
+}
+
+fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMessage) {
+    if let Some(partial) = assistant_partial_result(message) {
+        *current = Some(partial);
+    }
+}
+
+fn transient_resume_allowed(
+    error_kind: Option<crate::types::event::ErrorKind>,
+    resumes: u32,
+    max_resumes: u32,
+    turn_count: u32,
+    max_turns: u32,
+) -> bool {
+    error_kind.is_some_and(|kind| kind.is_retryable())
+        && resumes < max_resumes
+        && turn_count < max_turns
 }
 
 async fn finalize_cancelled(
@@ -1348,9 +1431,12 @@ fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
         format!(" Deny-listed on top: {}.", p.deny.join(", "))
     };
     Some(format!(
-        "Your dispatch policy allows ONLY these functions: {shown}{ellipsis}.{deny} Anything \
-         else — including discovery (engine::functions::list / ::info) unless listed above — is \
-         denied. Do not probe: if the task needs a function not allowed here, say so and finish."
+        "Your dispatch policy allows ONLY these functions: {shown}{ellipsis}.{deny} This \
+         narrowed-policy instruction OVERRIDES the general discovery requirement for this turn: \
+         call the listed target ids directly when the task already supplies their arguments. \
+         Anything else — including discovery (engine::functions::list / ::info) unless listed \
+         above — is denied. Do not probe: if the task genuinely needs an unlisted function or an \
+         unknown contract, report that blocker and finish."
     ))
 }
 
@@ -1574,8 +1660,9 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
-    use super::cancel_requested;
-    use crate::types::event::StopReason;
+    use super::{cancel_requested, transient_resume_allowed};
+    use crate::types::content::ContentBlock;
+    use crate::types::event::{ErrorKind, StopReason};
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
@@ -1612,6 +1699,7 @@ mod tests {
         assert!(aid.contains("ONLY these functions: state::get, state::set"));
         assert!(aid.contains("Deny-listed on top: state::delete"));
         assert!(aid.contains("engine::functions::list"));
+        assert!(aid.contains("OVERRIDES the general discovery requirement"));
         // Long allow-lists are capped, not dumped.
         let long = FunctionPolicy {
             allow: (0..40).map(|i| format!("w{i:02}::fn")).collect(),
@@ -1621,6 +1709,61 @@ mod tests {
         assert!(aid.contains("w00::fn"));
         assert!(!aid.contains("w39::fn"));
         assert!(aid.contains("…"));
+    }
+
+    #[test]
+    fn transient_resume_is_bounded_and_only_for_retryable_midstream_failures() {
+        assert!(transient_resume_allowed(
+            Some(ErrorKind::Transient),
+            0,
+            1,
+            1,
+            16
+        ));
+        assert!(transient_resume_allowed(
+            Some(ErrorKind::RateLimited),
+            0,
+            1,
+            1,
+            16
+        ));
+        assert!(!transient_resume_allowed(
+            Some(ErrorKind::Permanent),
+            0,
+            1,
+            1,
+            16
+        ));
+        assert!(!transient_resume_allowed(
+            Some(ErrorKind::Transient),
+            1,
+            1,
+            1,
+            16
+        ));
+        assert!(!transient_resume_allowed(
+            Some(ErrorKind::Transient),
+            0,
+            1,
+            16,
+            16
+        ));
+    }
+
+    #[test]
+    fn failed_stream_preserves_text_partial_as_observer_result() {
+        let mut message = crate::types::message::empty_assistant("openai-codex", "gpt-5");
+        message.content = vec![ContentBlock::text("usable partial")];
+        assert_eq!(
+            super::assistant_partial_result(&message),
+            Some(serde_json::json!("usable partial"))
+        );
+        message.content.clear();
+        assert_eq!(super::assistant_partial_result(&message), None);
+
+        let mut preserved = Some(serde_json::json!("first partial"));
+        super::preserve_assistant_partial(&mut preserved, &message);
+        assert_eq!(preserved, Some(serde_json::json!("first partial")));
     }
 
     mod rotate_mid_generation_users {

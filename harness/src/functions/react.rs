@@ -182,6 +182,12 @@ pub struct ReactSpec {
     /// specific root.
     #[serde(default)]
     pub parent_session_id: Option<String>,
+    /// By default, a failed/cancelled turn completion (or a completed turn
+    /// carrying `result_error`) does not start the success-path reaction.
+    /// Set true only for an explicit error-handler/reviewer stage that needs
+    /// the failed event and any preserved partial result.
+    #[serde(default)]
+    pub continue_on_error: bool,
     /// When present, this subscription is one predecessor of a join barrier.
     #[serde(default)]
     pub join: Option<JoinSpec>,
@@ -190,10 +196,10 @@ pub struct ReactSpec {
     /// auto-unregister its predecessor subscriptions.
     #[serde(default, rename = "__subscription_id")]
     pub subscription_id: Option<String>,
-    /// Stamped by the registration interceptor when the agent asked `once:
-    /// true` (never caller-supplied): retire this binding after its first
-    /// successful spawn. Meaningless on join edges — the join lifecycle owns
-    /// predecessor bindings.
+    /// Effective one-shot policy stamped by the registration interceptor
+    /// (never caller-supplied): retire this binding after its first successful
+    /// spawn or gated upstream failure. Meaningless on join edges — the join
+    /// lifecycle owns predecessor bindings.
     #[serde(default, rename = "__once")]
     pub once: bool,
     /// Stamped by the interceptor at registration (never caller-supplied): the
@@ -382,7 +388,17 @@ pub async fn handle(
     let mut spec = spec;
     spec.session_id = reaction_delivery_session(&spec);
 
+    let completion_failure = turn_completion_failure(&event);
     match spec.join.clone() {
+        None if completion_failure.is_some() && !spec.continue_on_error => {
+            if spec.once {
+                once_unregister(deps, &spec).await;
+            }
+            Ok(ReactResult::note(format!(
+                "upstream turn did not complete successfully; reaction stopped: {}",
+                completion_failure.as_deref().unwrap_or("unknown failure")
+            )))
+        }
         None => {
             let res = spawn_reaction(
                 deps,
@@ -435,7 +451,14 @@ pub async fn handle(
             }
             res
         }
-        Some(join) => join_edge(deps, event, &spec, &join, parent, spawn_depth).await,
+        Some(join) => {
+            let blocked_by = if spec.continue_on_error {
+                None
+            } else {
+                completion_failure.as_deref()
+            };
+            join_edge(deps, event, &spec, &join, parent, spawn_depth, blocked_by).await
+        }
     }
 }
 
@@ -448,6 +471,7 @@ async fn join_edge(
     join: &JoinSpec,
     parent: Option<String>,
     spawn_depth: u32,
+    blocked_by: Option<&str>,
 ) -> Result<ReactResult, HarnessError> {
     // Step 1 — record this predecessor idempotently (Merge, so re-delivery of
     // the same key overwrites its own slot and never inflates the count), and
@@ -458,6 +482,9 @@ async fn join_edge(
     ];
     if let Some(sid) = &spec.subscription_id {
         ops.push(merge_op("bindings", json!({ &join.key: sid })));
+    }
+    if let Some(reason) = blocked_by {
+        ops.push(merge_op("failures", json!({ &join.key: reason })));
     }
     let rec = match state_update(deps, &join.id, ops).await {
         Ok(v) => v,
@@ -531,6 +558,16 @@ async fn join_edge(
         }
     }
 
+    let failed = join_failure_keys(&rec);
+    if !failed.is_empty() {
+        cleanup_join_record(deps, join).await;
+        return Ok(ReactResult::note(format!(
+            "join {} stopped because predecessors failed: {}",
+            join.id,
+            failed.join(", ")
+        )));
+    }
+
     // Fire the downstream sub-agent fed ALL predecessors' results, then GC the
     // accumulator record. The delivery session (owner fallback when unpinned)
     // is already resolved by the caller. Joins fire once, so this cannot spam.
@@ -574,6 +611,11 @@ async fn join_edge(
     // errors before giving up.
     // ponytail: 3 fixed retries; a generation-stamped fire guard if state
     // outages ever outlast them.
+    cleanup_join_record(deps, join).await;
+    res
+}
+
+async fn cleanup_join_record(deps: &Deps, join: &JoinSpec) {
     let mut cleanup = state_delete(deps, &join.id).await;
     for _ in 0..2 {
         if cleanup.is_ok() {
@@ -589,7 +631,6 @@ async fn join_edge(
             tracing::warn!(error = %e, join = %join.id, "harness::react: join record cleanup failed after retries (one-shot join; record is orphaned, not blocking)");
         }
     }
-    res
 }
 
 /// Build + fire the `harness::spawn`. Fire-and-forget; swallow errors so one bad
@@ -941,6 +982,37 @@ fn event_reactive_depth(event: &Value) -> u32 {
         .unwrap_or(0) as u32
 }
 
+/// Classify only harness turn-completed payloads. Arbitrary state/cron events
+/// may also contain a `status` field, so the session + turn identity is the
+/// guard that keeps success gating specific to turn reactions.
+fn turn_completion_failure(event: &Value) -> Option<String> {
+    event.get("session_id").and_then(Value::as_str)?;
+    event.get("turn_id").and_then(Value::as_str)?;
+    let status = event.get("status").and_then(Value::as_str)?;
+    let result_error = event.get("result_error").and_then(Value::as_str);
+    if status == "completed" && result_error.is_none() {
+        return None;
+    }
+    Some(
+        event
+            .get("reason")
+            .and_then(Value::as_str)
+            .or(result_error)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("status={status}")),
+    )
+}
+
+fn join_failure_keys(rec: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = rec
+        .get("failures")
+        .and_then(Value::as_object)
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    keys.sort();
+    keys
+}
+
 fn build_spawn_payload(task: String, spec: &ReactSpec, parent_session_id: Option<&str>) -> Value {
     let mut payload = json!({ "task": task, "model": spec.model });
     if let Some(sid) = &spec.session_id {
@@ -1034,6 +1106,7 @@ mod tests {
             provider: None,
             options: None,
             parent_session_id: None,
+            continue_on_error: false,
             join: None,
             subscription_id: None,
             once: false,
@@ -1048,6 +1121,17 @@ mod tests {
         let s: ReactSpec =
             serde_json::from_value(json!({ "model": "m", "task": "t", "__once": true })).unwrap();
         assert!(s.once);
+    }
+
+    #[test]
+    fn continue_on_error_is_explicit_and_defaults_off() {
+        let s: ReactSpec = serde_json::from_value(json!({ "model": "m", "task": "t" })).unwrap();
+        assert!(!s.continue_on_error);
+        let s: ReactSpec = serde_json::from_value(json!({
+            "model": "m", "task": "t", "continue_on_error": true
+        }))
+        .unwrap();
+        assert!(s.continue_on_error);
     }
 
     #[test]
@@ -1147,6 +1231,42 @@ mod tests {
         let rec = json!({ "arrived": { "x1": true, "x2": true }, "results": {} });
         assert_eq!(arrived_count(&rec), 2);
         assert_eq!(arrived_count(&json!({})), 0);
+    }
+
+    #[test]
+    fn turn_completion_failure_gates_failed_and_invalid_results_only() {
+        assert_eq!(
+            turn_completion_failure(&json!({
+                "session_id": "s", "turn_id": "t", "status": "failed",
+                "reason": "provider stream ended"
+            }))
+            .as_deref(),
+            Some("provider stream ended")
+        );
+        assert_eq!(
+            turn_completion_failure(&json!({
+                "session_id": "s", "turn_id": "t", "status": "completed",
+                "result_error": "schema mismatch"
+            }))
+            .as_deref(),
+            Some("schema mismatch")
+        );
+        assert!(turn_completion_failure(&json!({
+            "session_id": "s", "turn_id": "t", "status": "completed",
+            "result": "ok"
+        }))
+        .is_none());
+        // A state payload with its own status field is not a turn completion.
+        assert!(turn_completion_failure(&json!({ "status": "failed" })).is_none());
+    }
+
+    #[test]
+    fn join_failure_keys_are_sorted_and_optional() {
+        assert_eq!(
+            join_failure_keys(&json!({ "failures": { "fetch": "timeout", "cache": "denied" } })),
+            vec!["cache".to_string(), "fetch".to_string()]
+        );
+        assert!(join_failure_keys(&json!({})).is_empty());
     }
 
     #[test]

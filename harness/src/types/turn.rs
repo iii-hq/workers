@@ -88,10 +88,18 @@ pub struct TurnOptions {
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
     pub max_validation_retries: u32,
+    /// Mid-stream transient failures that may resume from the preserved
+    /// transcript before this turn fails.
+    #[serde(default = "default_max_transient_resumes")]
+    pub max_transient_resumes: u32,
 }
 
 fn default_max_validation_retries() -> u32 {
     2
+}
+
+fn default_max_transient_resumes() -> u32 {
+    1
 }
 
 impl TurnOptions {
@@ -228,6 +236,8 @@ pub struct TurnRecord {
     pub result_error: Option<String>,
     #[serde(default)]
     pub validation_retries: u32,
+    #[serde(default)]
+    pub transient_resumes: u32,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -297,6 +307,7 @@ mod tests {
                 functions: None,
                 metadata: None,
                 max_validation_retries: 2,
+                max_transient_resumes: 1,
             },
             calls: Default::default(),
             parent: None,
@@ -307,6 +318,7 @@ mod tests {
             result: None,
             result_error: None,
             validation_retries: 0,
+            transient_resumes: 0,
             created_at: 1,
             updated_at: 1,
         }
@@ -395,6 +407,8 @@ mod tests {
         assert!(!r.abort);
         assert!(r.calls.is_empty());
         assert_eq!(r.options.max_validation_retries, 2);
+        assert_eq!(r.options.max_transient_resumes, 1);
+        assert_eq!(r.transient_resumes, 0);
         assert_eq!(r.options.output, OutputContract::Text);
     }
 

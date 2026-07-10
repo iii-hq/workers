@@ -626,6 +626,13 @@ type TurnCompletedEvent = {
 };
 ```
 
+`harness::react` treats these as success-path events by default: only
+`status: "completed"` without `result_error` spawns the downstream sub-agent. Failed,
+cancelled, or contract-invalid completions are recorded by joins but stop the normal downstream
+spawn. An explicit error handler opts in with `metadata.continue_on_error: true`. Simple
+non-cron reactions default to one-shot; `once: false` creates a standing watcher, while joins
+own predecessor retirement and use `join.rearm` for recurring barriers.
+
 A backend worker that chains agents binds `harness::turn_completed` and calls `harness::send`
 from the handler — that is the supported way to build event-driven loops. **The
 loop guard is the consumer's:** `max_turns` bounds one turn, not a chain of turns; an event loop
@@ -839,9 +846,12 @@ Failure handling: an unexpected throw marks the turn `failed`, appends a `custom
 (`custom_type: "error"`) entry so the UI sees the reason, sets `session::set-status error` with a
 short `reason`, and emits [`harness::turn_completed`](#trigger-types-emitted)
 (`status: "failed"`) — resolving the parent's pending call with `is_error: true` when the turn is a
-sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). A step may opt into queue retry/backoff for
-transient provider errors instead of failing the turn (subject to
-[Durability & idempotency](#durability--idempotency)).
+sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). A mid-stream transient provider failure
+preserves its partial assistant output and may run a bounded recovery generation from that
+transcript (`max_transient_resumes`, default 1). This is not a transport retry: llm-router remains
+the only owner of provider request retries, and only before the first frame is forwarded. After
+the recovery budget is exhausted, the failed event carries the partial as `result` alongside
+`reason`; consumers must not interpret it as success.
 
 ### `harness::function::trigger`
 

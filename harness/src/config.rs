@@ -41,6 +41,12 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_validation_retries")]
     pub max_validation_retries: u32,
 
+    /// Mid-stream transient provider/router failures to resume from the
+    /// preserved transcript before the turn is marked failed. Transport
+    /// retries remain owned by llm-router.
+    #[serde(default = "default_max_transient_resumes")]
+    pub max_transient_resumes: u32,
+
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
     pub idem_ttl_secs: u64,
@@ -200,6 +206,9 @@ fn default_max_children() -> u32 {
 fn default_max_validation_retries() -> u32 {
     2
 }
+fn default_max_transient_resumes() -> u32 {
+    1
+}
 fn default_idem_ttl_secs() -> u64 {
     86_400
 }
@@ -297,6 +306,7 @@ impl Default for WorkerConfig {
             max_depth: default_max_depth(),
             max_children: default_max_children(),
             max_validation_retries: default_max_validation_retries(),
+            max_transient_resumes: default_max_transient_resumes(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),
@@ -321,6 +331,7 @@ mod tests {
         assert_eq!(cfg.default_max_turns, 500);
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 5);
+        assert_eq!(cfg.max_transient_resumes, 1);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
     }
 

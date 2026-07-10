@@ -142,6 +142,7 @@ default_max_turns: 16            # per-turn generate-step cap when a send omits 
 default_pending_timeout_ms: 1800000  # parked pending-call (sub-agent / hold) wait guard
 max_depth: 3                     # sub-agent depth budget
 max_children: 5                  # sub-agent fan-out budget
+max_transient_resumes: 1         # recovery generations after a partial stream failure
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 
