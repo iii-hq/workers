@@ -178,12 +178,26 @@ impl RouterClient {
         // After the trigger resolves, drain already-buffered frames briefly,
         // then fall through to the outcome handling below.
         let mut response: Option<Result<Value, iii_sdk::errors::Error>> = None;
+        let mut drain_deadline = Instant::now();
         loop {
             let frame = if response.is_some() {
-                // timeout elapsed → grace drain over, no writer is coming
-                tokio::time::timeout(Duration::from_millis(750), rx.recv())
-                    .await
-                    .unwrap_or_default()
+                match tokio::time::timeout(Duration::from_millis(750), rx.recv()).await {
+                    Ok(f) => f,
+                    // A lull after the ack means "no writer is coming" only
+                    // for failed dispatches. A successful response is always
+                    // followed by a terminal frame, so keep draining for it —
+                    // treating the lull as EOF would synthesize a no-terminal
+                    // error over an ok stream (the forwarder can lag the ack).
+                    // ponytail: 10s cap; a writer lagging past it is a wedge.
+                    Err(_) => {
+                        let ok_ack = matches!(&response, Some(Ok(v))
+                            if v.get("ok").and_then(Value::as_bool).unwrap_or(true));
+                        if ok_ack && final_message.is_none() && Instant::now() < drain_deadline {
+                            continue;
+                        }
+                        None
+                    }
+                }
             } else {
                 tokio::select! {
                     f = rx.recv() => f,
@@ -191,6 +205,7 @@ impl RouterClient {
                         response = Some(r.map_err(|e| {
                             HarnessError::Internal(format!("router::chat task: {e}"))
                         })?);
+                        drain_deadline = Instant::now() + Duration::from_secs(10);
                         continue;
                     }
                 }
@@ -278,11 +293,23 @@ impl RouterClient {
         });
 
         let stop_reason = Some(message.stop_reason);
+        // A frame-less-but-acked stream synthesizes an Error message above
+        // with no terminal_error/response_error set — derive the outcome
+        // error from it so the turn fails instead of completing "ok" around
+        // an empty error-stopped message.
         let error = terminal_error
             .or(response_error)
+            .or_else(|| {
+                (message.stop_reason == StopReason::Error).then(|| {
+                    message
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "router produced no terminal frame".to_string())
+                })
+            })
             .filter(|_| !ok || message.stop_reason == StopReason::Error);
         Ok(ChatOutcome {
-            ok: ok && error.is_none(),
+            ok: ok && message.stop_reason != StopReason::Error && error.is_none(),
             message,
             stop_reason,
             error,

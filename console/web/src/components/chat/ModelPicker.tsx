@@ -208,7 +208,11 @@ export function ModelPicker({
                     </div>
                     {g.options.map((opt) => {
                       const expanded = expandedModelId === opt.id
-                      const showThinking = opt.supportsThinking === true
+                      // Gates the edit button AND the level panel: picking a
+                      // level calls onChange(opt.id), which must not select a
+                      // model whose row is disabled as unavailable.
+                      const showThinking =
+                        opt.supportsThinking === true && !unavailable
                       return (
                         <div key={opt.id}>
                           <div className="group/model relative flex items-center">

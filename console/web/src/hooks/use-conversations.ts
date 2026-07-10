@@ -504,11 +504,20 @@ export function useConversations(
   /* Hydrate the active conversation's transcript once (read-back, then the
      live subscription above keeps it current). Folding through
      applyEntryUpsert makes the read idempotent against events that raced in
-     while the fetch was in flight. */
+     while the fetch was in flight.
+
+     Keyed on the active conversation's `hydrated` FLAG, not the
+     conversations array: every live message-added/updated rebuilds the
+     array, and an array dep would cancel + restart the in-flight fetch on
+     each event — under a fast stream the paginated read never lands and
+     hammers the backend. The flag stays false for the whole fetch, so live
+     events don't disturb it. */
+  const activeNeedsHydration =
+    activeIsServerBacked &&
+    !!activeId &&
+    conversations.some((c) => c.id === activeId && !c.hydrated)
   useEffect(() => {
-    if (!activeIsServerBacked || !activeId) return
-    const conv = conversations.find((c) => c.id === activeId)
-    if (!conv || conv.hydrated) return
+    if (!activeNeedsHydration || !activeId) return
     const sessionId = activeId
     let cancelled = false
     void fetchTranscript(sessionId)
@@ -539,7 +548,7 @@ export function useConversations(
     return () => {
       cancelled = true
     }
-  }, [activeIsServerBacked, activeId, conversations, patchConversation])
+  }, [activeNeedsHydration, activeId, patchConversation])
 
   /* Backgrounded sessions receive no transcript events (the subscription
      above is active-only), so anything that changed while away is missing
