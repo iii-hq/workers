@@ -104,8 +104,11 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
 }
 
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
+    // Reads are silence-bounded: a stalled upstream otherwise pings the router
+    // past its idle guard until the engine kills the call at stream_timeout.
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(120))
         .build()
         .expect("reqwest client");
 

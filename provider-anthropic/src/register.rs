@@ -107,10 +107,14 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
 }
 
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
-    // Streaming uses no total timeout (the router owns stream budgets);
-    // connect failures surface fast.
+    // Streaming uses no total timeout (the router owns stream budgets), but
+    // reads are silence-bounded: a stalled upstream otherwise pings the router
+    // past its idle guard until the engine kills the call at stream_timeout
+    // ("stream ended without a terminal frame"). Healthy streams emit SSE
+    // pings, so 120s of socket silence means a dead connection.
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(120))
         .build()
         .expect("reqwest client");
 

@@ -109,18 +109,21 @@ fn push_block_content(
         }
         BlockKind::ToolUse => {
             if let Some(tc) = state.function_calls.get(idx) {
-                // An interrupted stream leaves `args_json` as a partial,
-                // unparseable blob (e.g. `{"cmd":`). A tool_use input must be a
-                // JSON object, so degrade anything that fails to parse to `{}`
-                // rather than null — a null input is a hard Anthropic 400 once
-                // the aborted turn is replayed.
+                // An interrupted/in-flight stream leaves `args_json` as a
+                // partial, unparseable blob (e.g. `{"cmd":`). A tool_use
+                // input must be a JSON object (null/string is a hard 400 on
+                // replay), so degrade to the salvaged leading fields — long-
+                // streaming calls keep their known prefix (`function` target)
+                // instead of an anonymous `{}` — else `{"_raw": …}`.
                 let arguments = if tc.args_json.is_empty() {
                     serde_json::json!({})
                 } else {
                     serde_json::from_str(&tc.args_json)
                         .ok()
                         .filter(Value::is_object)
-                        .unwrap_or_else(|| serde_json::json!({}))
+                        .unwrap_or_else(|| {
+                            llm_router::types::messages::degraded_arguments(&tc.args_json)
+                        })
                 };
                 out.push(ContentBlock::FunctionCall {
                     id: tc.id.clone(),
