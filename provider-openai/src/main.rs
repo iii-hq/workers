@@ -14,7 +14,7 @@ use provider_openai::register::register_provider;
 #[derive(Parser, Debug)]
 #[command(
     name = "provider-openai",
-    about = "OpenAI Chat Completions provider worker behind llm-router."
+    about = "OpenAI Responses provider worker behind llm-router."
 )]
 struct Cli {
     /// Accepted for the standard worker CLI contract; provider config comes

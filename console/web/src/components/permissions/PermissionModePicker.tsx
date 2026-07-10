@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ModeToggle } from '@/components/ui/ModeToggle'
+import { Select } from '@/components/ui/Select'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import { FullModeConfirmDialog } from './FullModeConfirmDialog'
 
@@ -13,10 +13,10 @@ interface PermissionModePickerProps {
 }
 
 /**
- * In-chat permission mode picker. Lives next to the composer; commits
- * each change directly to the backend through `onChange`. Selecting Full
- * gates on the shared confirmation dialog. Allowlist management lives
- * on the Configuration screen — keep this control narrow.
+ * In-chat permission mode picker. Lives next to the composer as one compact
+ * dropdown and commits each change directly to the backend through `onChange`.
+ * Selecting Full gates on the shared confirmation dialog. Allowlist
+ * management lives on the Configuration screen, keep this control narrow.
  */
 export function PermissionModePicker({
   value,
@@ -36,11 +36,12 @@ export function PermissionModePicker({
 
   return (
     <>
-      <ModeToggle<PermissionMode>
+      <Select<PermissionMode>
         value={value}
         onChange={handleSelect}
-        variant="radio"
-        aria-label="permission mode"
+        disabled={disabled}
+        aria-label="approval mode"
+        className="min-w-[92px]"
         options={[
           { value: 'manual', label: 'manual' },
           { value: 'auto', label: 'auto' },

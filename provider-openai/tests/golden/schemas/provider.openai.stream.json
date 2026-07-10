@@ -1,5 +1,5 @@
 {
-  "description": "Stream an OpenAI chat completion: resolve credentials, call the upstream Chat Completions API, and relay AssistantMessageEvent frames to writer_ref.",
+  "description": "Stream an OpenAI response: resolve credentials, call the configured Responses or Chat Completions endpoint, and relay AssistantMessageEvent frames to writer_ref.",
   "function_id": "provider::openai::stream",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

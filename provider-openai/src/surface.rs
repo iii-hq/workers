@@ -14,8 +14,9 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::openai::stream";
-pub const STREAM_DESC: &str = "Stream an OpenAI chat completion: resolve credentials, call the \
-     upstream Chat Completions API, and relay AssistantMessageEvent frames to writer_ref.";
+pub const STREAM_DESC: &str =
+    "Stream an OpenAI response: resolve credentials, call the configured \
+     Responses or Chat Completions endpoint, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::openai::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenAI catalog slice from GET /v1/models and \

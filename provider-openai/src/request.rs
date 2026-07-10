@@ -1,8 +1,8 @@
-//! Full Chat Completions request assembly: body (messages, tools,
-//! reasoning_effort, response_format) + headers.
-use crate::config::OpenaiConfig;
-use crate::wire::messages::to_wire_messages;
-use crate::wire::tools::functions_to_wire;
+//! Request assembly for the Responses API and the legacy Chat Completions
+//! compatibility path.
+use crate::config::{ApiMode, OpenaiConfig};
+use crate::wire::messages::{to_responses_input, to_wire_messages};
+use crate::wire::tools::{functions_to_responses_wire, functions_to_wire};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::ResponseFormat;
@@ -25,7 +25,7 @@ pub struct BodyArgs {
 /// correct: retrying cannot fix the schema). Without: json_object mode
 /// (OpenAI requires the word "JSON" somewhere in the messages — the
 /// caller's contract per spec § Model capabilities).
-pub fn build_response_format(rf: &ResponseFormat) -> Value {
+pub fn build_chat_response_format(rf: &ResponseFormat) -> Value {
     match &rf.schema {
         Some(schema) => json!({
             "type": "json_schema",
@@ -39,7 +39,7 @@ pub fn build_response_format(rf: &ResponseFormat) -> Value {
 /// and gpt-5 families reject the old param. Reasoning tokens count toward
 /// it; the router-clamped budget leaves ample room. No `temperature`: the
 /// API default applies (reasoning models reject non-default values).
-pub fn build_body(args: &BodyArgs) -> Value {
+fn build_chat_body(args: &BodyArgs) -> Value {
     let mut body = json!({
         "model": args.model,
         "max_completion_tokens": args.max_tokens,
@@ -55,15 +55,57 @@ pub fn build_body(args: &BodyArgs) -> Value {
         body["reasoning_effort"] = json!(effort);
     }
     if let Some(rf) = &args.response_format {
-        body["response_format"] = build_response_format(rf);
+        body["response_format"] = build_chat_response_format(rf);
     }
     body
+}
+
+fn build_responses_text(rf: &ResponseFormat) -> Value {
+    let format = match &rf.schema {
+        Some(schema) => json!({
+            "type": "json_schema",
+            "name": "response",
+            "strict": true,
+            "schema": schema,
+        }),
+        None => json!({ "type": "json_object" }),
+    };
+    json!({ "format": format })
+}
+
+fn build_responses_body(args: &BodyArgs) -> Value {
+    let mut body = json!({
+        "model": args.model,
+        "max_output_tokens": args.max_tokens,
+        "input": to_responses_input(&args.messages, &args.system_prompt),
+        "stream": true,
+        "store": false,
+    });
+    let wire_tools = functions_to_responses_wire(&args.tools);
+    if !wire_tools.is_empty() {
+        body["tools"] = Value::Array(wire_tools);
+    }
+    if let Some(effort) = args.reasoning_effort {
+        body["reasoning"] = json!({ "effort": effort });
+    }
+    if let Some(response_format) = &args.response_format {
+        body["text"] = build_responses_text(response_format);
+    }
+    body
+}
+
+pub fn build_body(args: &BodyArgs, api_mode: ApiMode) -> Value {
+    match api_mode {
+        ApiMode::Responses => build_responses_body(args),
+        ApiMode::ChatCompletions => build_chat_body(args),
+    }
 }
 
 pub fn build_headers(cfg: &OpenaiConfig) -> Vec<(&'static str, String)> {
     vec![
         ("authorization", format!("Bearer {}", cfg.credential_value)),
         ("content-type", "application/json".to_string()),
+        ("accept", "text/event-stream".to_string()),
     ]
 }
 
@@ -91,7 +133,7 @@ mod tests {
 
     #[test]
     fn body_has_required_fields_and_stream_options() {
-        let body = build_body(&args());
+        let body = build_body(&args(), ApiMode::ChatCompletions);
         assert_eq!(body["model"], "gpt-5.2");
         assert_eq!(body["max_completion_tokens"], 4096);
         assert!(
@@ -119,14 +161,14 @@ mod tests {
             label: None,
             execution_mode: None,
         }];
-        let body = build_body(&a);
+        let body = build_body(&a, ApiMode::ChatCompletions);
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["tools"][0]["function"]["name"], "agent__trigger");
     }
 
     #[test]
     fn response_format_maps_to_json_schema_or_json_object() {
-        let with_schema = build_response_format(&ResponseFormat {
+        let with_schema = build_chat_response_format(&ResponseFormat {
             r#type: "json".into(),
             schema: Some(serde_json::json!({ "type": "object", "additionalProperties": false })),
         });
@@ -135,7 +177,7 @@ mod tests {
         assert_eq!(with_schema["json_schema"]["strict"], true);
         assert_eq!(with_schema["json_schema"]["schema"]["type"], "object");
 
-        let without = build_response_format(&ResponseFormat {
+        let without = build_chat_response_format(&ResponseFormat {
             r#type: "json".into(),
             schema: None,
         });
@@ -146,7 +188,38 @@ mod tests {
             r#type: "json".into(),
             schema: None,
         });
-        assert_eq!(build_body(&a)["response_format"]["type"], "json_object");
+        assert_eq!(
+            build_body(&a, ApiMode::ChatCompletions)["response_format"]["type"],
+            "json_object"
+        );
+    }
+
+    #[test]
+    fn responses_body_uses_items_tools_and_reasoning_object() {
+        let mut a = args();
+        a.reasoning_effort = Some("high");
+        a.tools = vec![AgentFunction {
+            name: "agent::trigger".into(),
+            description: "d".into(),
+            parameters: json!({ "type": "object" }),
+            label: None,
+            execution_mode: None,
+        }];
+        a.response_format = Some(ResponseFormat {
+            r#type: "json".into(),
+            schema: Some(json!({ "type": "object", "additionalProperties": false })),
+        });
+        let body = build_body(&a, ApiMode::Responses);
+        assert_eq!(body["model"], "gpt-5.2");
+        assert_eq!(body["max_output_tokens"], 4096);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["tools"][0]["name"], "agent__trigger");
+        assert!(body["tools"][0].get("function").is_none());
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["text"]["format"]["type"], "json_schema");
+        assert!(body.get("messages").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -156,6 +229,7 @@ mod tests {
             model: "gpt-5.2".into(),
             max_tokens: 4096,
             api_url: "https://api.openai.com/v1/chat/completions".into(),
+            api_mode: ApiMode::ChatCompletions,
         };
         let h = build_headers(&cfg);
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));

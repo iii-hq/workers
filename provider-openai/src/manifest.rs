@@ -2,7 +2,7 @@
 //! (binary-worker.md § manifest; same shape as provider-anthropic/src/manifest.rs).
 use serde::Serialize;
 
-const DESCRIPTION: &str = "OpenAI Chat Completions provider worker behind llm-router.";
+const DESCRIPTION: &str = "OpenAI Responses provider worker behind llm-router.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

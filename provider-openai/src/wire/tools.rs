@@ -19,6 +19,22 @@ pub fn functions_to_wire(tools: &[AgentFunction]) -> Vec<Value> {
         .collect()
 }
 
+/// Responses uses the same function definition fields without the nested
+/// `function` envelope used by Chat Completions.
+pub fn functions_to_responses_wire(tools: &[AgentFunction]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "name": encode_tool_name(&tool.name),
+                "description": tool.description,
+                "parameters": tool.parameters,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,5 +63,21 @@ mod tests {
     #[test]
     fn empty_input_yields_empty_array() {
         assert!(functions_to_wire(&[]).is_empty());
+        assert!(functions_to_responses_wire(&[]).is_empty());
+    }
+
+    #[test]
+    fn responses_shape_has_flat_function_fields() {
+        let tools = vec![AgentFunction {
+            name: "agent::trigger".into(),
+            description: "Invoke an iii function".into(),
+            parameters: json!({ "type": "object" }),
+            label: None,
+            execution_mode: None,
+        }];
+        let wire = functions_to_responses_wire(&tools);
+        assert_eq!(wire[0]["type"], "function");
+        assert_eq!(wire[0]["name"], "agent__trigger");
+        assert!(wire[0].get("function").is_none());
     }
 }

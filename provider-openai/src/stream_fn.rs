@@ -1,7 +1,7 @@
 //! The `provider::openai::stream` iii function (spec § Provider stream
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
-use crate::config::config_from_resolve;
+use crate::config::{config_from_resolve, ApiMode};
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
 use crate::request::{build_body, build_headers, BodyArgs};
@@ -20,6 +20,23 @@ use tokio::sync::mpsc;
 
 /// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+fn compatible_reasoning_effort(
+    api_mode: ApiMode,
+    model: &str,
+    has_tools: bool,
+    effort: Option<&'static str>,
+) -> (Option<&'static str>, bool) {
+    let needs_luna_guard = api_mode == ApiMode::ChatCompletions
+        && has_tools
+        && model.to_ascii_lowercase().contains("luna")
+        && effort != Some("none");
+    if needs_luna_guard {
+        (Some("none"), true)
+    } else {
+        (effort, false)
+    }
+}
 
 pub fn make_stream(
     iii: IIIClient,
@@ -86,7 +103,7 @@ async fn run_stream_call(
         Some(m) => Some(m),
         None => router_client::models_get(iii, &model).await,
     };
-    let reasoning_effort = if is_reasoning_model(
+    let mut reasoning_effort = if is_reasoning_model(
         &model,
         model_meta.as_ref().and_then(|m| m.supports_thinking),
     ) {
@@ -108,15 +125,28 @@ async fn run_stream_call(
         None
     };
 
-    let body = build_body(&BodyArgs {
-        model: cfg.model.clone(),
-        max_tokens: cfg.max_tokens,
-        system_prompt: input.system_prompt.unwrap_or_default(),
-        messages: input.messages,
-        tools: input.tools.unwrap_or_default(),
-        reasoning_effort,
-        response_format: input.response_format,
-    });
+    let tools = input.tools.unwrap_or_default();
+    let (compatible_effort, effort_was_disabled) =
+        compatible_reasoning_effort(cfg.api_mode, &model, !tools.is_empty(), reasoning_effort);
+    reasoning_effort = compatible_effort;
+    if effort_was_disabled {
+        warnings.push(format!(
+            "reasoning effort disabled: {model} does not support function tools with reasoning_effort on Chat Completions"
+        ));
+    }
+
+    let body = build_body(
+        &BodyArgs {
+            model: cfg.model.clone(),
+            max_tokens: cfg.max_tokens,
+            system_prompt: input.system_prompt.unwrap_or_default(),
+            messages: input.messages,
+            tools,
+            reasoning_effort,
+            response_format: input.response_format,
+        },
+        cfg.api_mode,
+    );
     let headers = build_headers(&cfg);
 
     let rx = spawn_upstream(
@@ -178,6 +208,32 @@ mod tests {
         AssistantMessageEvent::Done {
             message: empty_assistant("gpt-test"),
         }
+    }
+
+    #[test]
+    fn luna_tools_disable_effort_only_on_chat_completions() {
+        assert_eq!(
+            compatible_reasoning_effort(
+                ApiMode::ChatCompletions,
+                "gpt-5.6-luna",
+                true,
+                Some("high")
+            ),
+            (Some("none"), true)
+        );
+        assert_eq!(
+            compatible_reasoning_effort(ApiMode::Responses, "gpt-5.6-luna", true, Some("high")),
+            (Some("high"), false)
+        );
+        assert_eq!(
+            compatible_reasoning_effort(
+                ApiMode::ChatCompletions,
+                "gpt-5.6-luna",
+                false,
+                Some("high")
+            ),
+            (Some("high"), false)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

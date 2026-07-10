@@ -247,6 +247,175 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
     out
 }
 
+fn responses_user_content_parts(content: &[ContentBlock]) -> Vec<Value> {
+    let mut parts = Vec::new();
+    let text = content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text.is_empty() {
+        parts.push(json!({ "type": "input_text", "text": text }));
+    }
+    for block in content {
+        if let ContentBlock::Image { mime, data } = block {
+            parts.push(json!({
+                "type": "input_image",
+                "image_url": format!("data:{mime};base64,{data}")
+            }));
+        }
+    }
+    if parts.is_empty() {
+        parts.push(json!({ "type": "input_text", "text": "" }));
+    }
+    parts
+}
+
+fn responses_function_call_output(call_id: &str, output: String) -> Value {
+    json!({ "type": "function_call_output", "call_id": call_id, "output": output })
+}
+
+fn flush_responses_result_images(out: &mut Vec<Value>, buf: &mut Vec<(String, Vec<Value>)>) {
+    if buf.is_empty() {
+        return;
+    }
+    let mut parts = Vec::new();
+    for (call_id, images) in buf.drain(..) {
+        parts.push(json!({
+            "type": "input_text",
+            "text": format!("[image result of tool call {call_id}]")
+        }));
+        parts.extend(images);
+    }
+    out.push(json!({ "role": "user", "content": parts }));
+}
+
+fn upsert_responses_output(out: &mut Vec<Value>, row: Value) {
+    let id = row.get("call_id").and_then(Value::as_str).unwrap_or("");
+    let existing = out.iter().position(|entry| {
+        entry.get("type").and_then(Value::as_str) == Some("function_call_output")
+            && entry.get("call_id").and_then(Value::as_str) == Some(id)
+    });
+    match existing {
+        Some(index) => out[index] = row,
+        None => out.push(row),
+    }
+}
+
+/// Build a stateless Responses `input` item array. Function calls and results
+/// are distinct items correlated by `call_id`; incomplete calls receive a
+/// synthetic output so a damaged transcript remains replayable.
+pub fn to_responses_input(messages: &[AgentMessage], system_prompt: &str) -> Vec<Value> {
+    let messages = llm_router::types::messages::reorder_displaced_results(messages);
+    let mut out = Vec::new();
+    if !system_prompt.is_empty() {
+        out.push(json!({
+            "role": "system",
+            "content": [{ "type": "input_text", "text": system_prompt }],
+        }));
+    }
+
+    let mut resolved_ids: HashSet<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::FunctionResult(result) => Some(result.function_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut image_buf: Vec<(String, Vec<Value>)> = Vec::new();
+
+    for message in messages {
+        match message {
+            AgentMessage::User(user) => {
+                flush_responses_result_images(&mut out, &mut image_buf);
+                out.push(json!({
+                    "role": "user",
+                    "content": responses_user_content_parts(&user.content)
+                }));
+            }
+            AgentMessage::Assistant(assistant) => {
+                flush_responses_result_images(&mut out, &mut image_buf);
+                let text = assistant
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty() {
+                    out.push(json!({
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": text }],
+                    }));
+                }
+                for block in &assistant.content {
+                    if let ContentBlock::FunctionCall {
+                        id,
+                        function_id,
+                        arguments,
+                    } = block
+                    {
+                        out.push(json!({
+                            "type": "function_call",
+                            "call_id": id,
+                            "name": encode_tool_name(function_id),
+                            "arguments": arguments.to_string(),
+                        }));
+                        if !resolved_ids.contains(id) {
+                            out.push(responses_function_call_output(
+                                id,
+                                ORPHAN_TOOL_PLACEHOLDER.to_string(),
+                            ));
+                            resolved_ids.insert(id.clone());
+                        }
+                    }
+                }
+            }
+            AgentMessage::FunctionResult(result) => {
+                upsert_responses_output(
+                    &mut out,
+                    responses_function_call_output(
+                        &result.function_call_id,
+                        format_function_result_content(result),
+                    ),
+                );
+                let images: Vec<Value> = result
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Image { mime, data } => Some(json!({
+                            "type": "input_image",
+                            "image_url": format!("data:{mime};base64,{data}")
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                let existing = image_buf
+                    .iter()
+                    .position(|(id, _)| id == &result.function_call_id);
+                match existing {
+                    Some(index) if images.is_empty() => {
+                        image_buf.remove(index);
+                    }
+                    Some(index) => image_buf[index].1 = images,
+                    None if !images.is_empty() => {
+                        image_buf.push((result.function_call_id.clone(), images));
+                    }
+                    None => {}
+                }
+            }
+            AgentMessage::Custom(_) => {}
+        }
+    }
+    flush_responses_result_images(&mut out, &mut image_buf);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +786,26 @@ mod tests {
             "",
         );
         assert!(wire.is_empty(), "thinking-only assistant omitted: {wire:?}");
+    }
+
+    #[test]
+    fn responses_replays_calls_and_outputs_as_items() {
+        let wire = to_responses_input(
+            &[
+                assistant(vec![ContentBlock::Text { text: "run".into() }, call("t1")]),
+                result("t1", "ok", json!({})),
+            ],
+            "be brief",
+        );
+        assert_eq!(wire[0]["role"], "system");
+        assert_eq!(wire[0]["content"][0]["type"], "input_text");
+        assert_eq!(wire[1]["role"], "assistant");
+        assert_eq!(wire[1]["content"][0]["type"], "output_text");
+        assert_eq!(wire[2]["type"], "function_call");
+        assert_eq!(wire[2]["call_id"], "t1");
+        assert_eq!(wire[2]["name"], "shell__exec");
+        assert_eq!(wire[3]["type"], "function_call_output");
+        assert_eq!(wire[3]["call_id"], "t1");
+        assert_eq!(wire[3]["output"], "ok");
     }
 }

@@ -1,4 +1,5 @@
-//! POST /v1/chat/completions (stream:true) → SSE → mpsc<AssistantMessageEvent>.
+//! POST an OpenAI Responses or Chat Completions stream → SSE →
+//! mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::errors::classify;
@@ -155,12 +156,23 @@ async fn run_upstream(
             }
         }
     }
-    // Stream ended without [DONE] (connection close framing): still terminal.
-    let _ = tx
-        .send(AssistantMessageEvent::Done {
-            message: build_final(&state, &args.model),
-        })
-        .await;
+    // Responses usually terminates with `response.completed`; compatible
+    // gateways may instead close the connection after their final delta.
+    if state.has_content() {
+        let _ = tx
+            .send(AssistantMessageEvent::Done {
+                message: build_final(&state, &args.model),
+            })
+            .await;
+    } else {
+        let _ = tx
+            .send(synthetic_error_event(
+                "openai stream ended without output or a completion event",
+                &args.model,
+                ErrorKind::Transient,
+            ))
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -204,6 +216,8 @@ mod tests {
 
     const HAPPY: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\ndata: [DONE]\n\n";
 
+    const RESPONSES_HAPPY: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":2}}}\n\n";
+
     #[tokio::test(flavor = "multi_thread")]
     async fn happy_stream_yields_start_through_stop_and_done() {
         let url = stub(HAPPY).await;
@@ -232,6 +246,30 @@ mod tests {
             other => panic!("want done, got {other:?}"),
         }
         // exactly one terminal
+        assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn responses_stream_yields_start_through_stop_and_done() {
+        let url = stub(RESPONSES_HAPPY).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert!(matches!(
+            events.first(),
+            Some(AssistantMessageEvent::Start { .. })
+        ));
+        assert!(matches!(
+            events[events.len() - 2],
+            AssistantMessageEvent::Stop { .. }
+        ));
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                assert!(
+                    matches!(&message.content[0], llm_router::types::content::ContentBlock::Text { text } if text == "Hello")
+                );
+                assert_eq!(message.usage.as_ref().unwrap().input, Some(12));
+            }
+            other => panic!("want done, got {other:?}"),
+        }
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
     }
 

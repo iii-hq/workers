@@ -15,13 +15,14 @@ use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// Derive the models endpoint from the configured completions endpoint
-/// (`…/v1/chat/completions` → `…/v1/models`).
+/// Derive the models endpoint from either supported generation endpoint.
 pub fn models_url(api_url: &str) -> String {
-    match api_url.strip_suffix("/chat/completions") {
-        Some(base) => format!("{base}/models"),
-        None => "https://api.openai.com/v1/models".to_string(),
-    }
+    let trimmed = api_url.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/chat/completions")
+        .or_else(|| trimmed.strip_suffix("/responses"))
+        .map(|base| format!("{base}/models"))
+        .unwrap_or_else(|| "https://api.openai.com/v1/models".to_string())
 }
 
 /// Substrings marking a non-chat modality (embeddings, audio, image, …).
@@ -190,13 +191,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn models_url_derives_from_completions_endpoint() {
+    fn models_url_derives_from_generation_endpoint() {
         assert_eq!(
             models_url("https://api.openai.com/v1/chat/completions"),
             "https://api.openai.com/v1/models"
         );
         assert_eq!(
             models_url("http://127.0.0.1:9999/v1/chat/completions"),
+            "http://127.0.0.1:9999/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.openai.com/v1/responses"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            models_url("http://127.0.0.1:9999/v1/responses/"),
             "http://127.0.0.1:9999/v1/models"
         );
         // unrecognized shape falls back to the public endpoint

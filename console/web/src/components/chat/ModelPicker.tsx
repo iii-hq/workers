@@ -1,7 +1,8 @@
-import * as SelectPrimitive from '@radix-ui/react-select'
+import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   RefreshCw,
   Settings,
@@ -57,6 +58,10 @@ function groupByProvider(options: ModelOption[]): ModelGroup[] {
     .map(([label, opts]) => ({ label, options: opts }))
 }
 
+function providerForModel(modelId: ModelId | undefined): string | null {
+  return modelId?.split(CATALOG_MODEL_KEY_SEP)[0] || null
+}
+
 function effortOptionsFor(
   model: ModelOption | undefined,
 ): ReasoningEffortOption[] {
@@ -78,78 +83,6 @@ function effortSupported(
   return options.some((option) => option.effort === effort)
 }
 
-function EffortPicker({
-  value,
-  options,
-  onChange,
-  disabled,
-}: {
-  value: ThinkingLevel
-  options: ReasoningEffortOption[]
-  onChange: (next: ThinkingLevel) => void
-  disabled?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-
-  return (
-    <SelectPrimitive.Root
-      value={value}
-      open={open}
-      onOpenChange={setOpen}
-      onValueChange={onChange}
-      disabled={disabled}
-    >
-      <SelectPrimitive.Trigger
-        aria-label={`reasoning effort: ${value}`}
-        className={cn(
-          'inline-flex h-9 min-w-0 items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[state=open]:border-ink',
-          disabled && 'pointer-events-none opacity-40',
-        )}
-      >
-        <span className="truncate text-left">effort: {value}</span>
-        <SelectPrimitive.Icon asChild>
-          {open ? (
-            <ChevronUp size={12} aria-hidden />
-          ) : (
-            <ChevronDown size={12} aria-hidden />
-          )}
-        </SelectPrimitive.Icon>
-      </SelectPrimitive.Trigger>
-
-      <SelectPrimitive.Portal>
-        <SelectPrimitive.Content
-          position="popper"
-          sideOffset={4}
-          align="end"
-          className="z-50 min-w-[min(360px,calc(100vw-24px))] overflow-hidden border border-rule bg-bg font-mono text-[13px] lowercase text-ink"
-        >
-          <SelectPrimitive.Viewport className="max-h-[60vh] p-1">
-            {options.map((option) => (
-              <SelectPrimitive.Item
-                key={option.effort}
-                value={option.effort}
-                className="relative cursor-pointer select-none py-2 pl-7 pr-3 outline-none data-[highlighted]:bg-panel data-[highlighted]:text-ink"
-              >
-                <SelectPrimitive.ItemIndicator className="absolute left-2 top-2.5 text-ink">
-                  <Check size={12} aria-hidden />
-                </SelectPrimitive.ItemIndicator>
-                <SelectPrimitive.ItemText>
-                  <span className="block text-ink">{option.effort}</span>
-                </SelectPrimitive.ItemText>
-                {option.description ? (
-                  <span className="mt-0.5 block max-w-[42ch] text-[11px] leading-[1.45] text-ink-faint">
-                    {option.description}
-                  </span>
-                ) : null}
-              </SelectPrimitive.Item>
-            ))}
-          </SelectPrimitive.Viewport>
-        </SelectPrimitive.Content>
-      </SelectPrimitive.Portal>
-    </SelectPrimitive.Root>
-  )
-}
-
 export function ModelPicker({
   value,
   options,
@@ -162,7 +95,15 @@ export function ModelPicker({
 }: ModelPickerProps) {
   const ctx = useConversationsCtxOptional()
   const [open, setOpen] = useState(false)
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
+  const [effortFocusRequest, setEffortFocusRequest] = useState(0)
   const effortByModel = useRef(new Map<ModelId, ThinkingLevel>())
+  const modelItemRefs = useRef(new Map<ModelId, HTMLElement>())
+  const effortItemRefs = useRef(new Map<ThinkingLevel, HTMLElement>())
+  const pendingEffortFocus = useRef<{
+    model: ModelId
+    effort: ThinkingLevel
+  } | null>(null)
 
   const presentIds = ctx?.presentProviders.map((p) => p.id) ?? []
   const presentSet = new Set<string>(presentIds)
@@ -199,6 +140,10 @@ export function ModelPicker({
   const pickerDisabled = disabled || loading || groups.length === 0
 
   useEffect(() => {
+    if (pickerDisabled && open) setOpen(false)
+  }, [pickerDisabled, open])
+
+  useEffect(() => {
     if (!safeValue) return
     if (effortSupported(selectedEfforts, thinkingLevel)) {
       effortByModel.current.set(safeValue, thinkingLevel)
@@ -207,6 +152,32 @@ export function ModelPicker({
     if (thinkingLevel !== 'default') onThinkingLevelChange('default')
     effortByModel.current.set(safeValue, 'default')
   }, [safeValue, selectedEfforts, thinkingLevel, onThinkingLevelChange])
+
+  useEffect(() => {
+    if (
+      !open ||
+      !safeValue ||
+      expandedProvider !== providerForModel(safeValue)
+    ) {
+      return
+    }
+    const frame = window.requestAnimationFrame(() => {
+      modelItemRefs.current.get(safeValue)?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [expandedProvider, open, safeValue])
+
+  useEffect(() => {
+    if (effortFocusRequest === 0) return
+    const pending = pendingEffortFocus.current
+    if (!open || !pending || pending.model !== safeValue) return
+    const target =
+      effortItemRefs.current.get(pending.effort) ??
+      effortItemRefs.current.get('default')
+    if (!target) return
+    pendingEffortFocus.current = null
+    target.focus()
+  }, [effortFocusRequest, open, safeValue])
 
   function handleModelChange(next: string) {
     const nextModel = optionsById.get(next)
@@ -217,6 +188,7 @@ export function ModelPicker({
       : 'default'
     onChange(next)
     if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
+    return { nextEfforts, nextEffort }
   }
 
   function handleEffortChange(next: ThinkingLevel) {
@@ -224,57 +196,94 @@ export function ModelPicker({
     onThinkingLevelChange(next)
   }
 
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setExpandedProvider(
+        providerForModel(safeValue) ?? groups[0]?.label ?? null,
+      )
+    }
+    setOpen(nextOpen)
+  }
+
   return (
     <span className="inline-flex min-w-0 items-center gap-1">
-      <SelectPrimitive.Root
-        value={safeValue ?? ''}
-        open={open}
-        onOpenChange={setOpen}
-        onValueChange={handleModelChange}
-        disabled={pickerDisabled}
-      >
-        <SelectPrimitive.Trigger
-          aria-label={loading ? 'model (loading catalog)' : 'model'}
-          aria-busy={loading || undefined}
-          className={cn(
-            'inline-flex h-9 min-w-0 max-w-full items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[placeholder]:text-ink-faint data-[state=open]:border-ink',
-            pickerDisabled && 'pointer-events-none opacity-40',
-            className,
-          )}
-        >
-          <span className="min-w-0 flex-1 truncate text-left">
-            <SelectPrimitive.Value
-              placeholder={loading ? 'loading…' : 'no models'}
-            >
-              {selected?.label}
-            </SelectPrimitive.Value>
-          </span>
-          <SelectPrimitive.Icon asChild>
+      <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange}>
+        <DropdownMenuPrimitive.Trigger asChild disabled={pickerDisabled}>
+          <button
+            type="button"
+            aria-label={
+              loading
+                ? 'model (loading catalog)'
+                : selected
+                  ? `model: ${selected.label}, reasoning effort: ${thinkingLevel}`
+                  : 'model'
+            }
+            aria-busy={loading || undefined}
+            className={cn(
+              'inline-flex h-9 min-w-0 max-w-full items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[state=open]:border-ink',
+              pickerDisabled && 'pointer-events-none opacity-40',
+              className,
+            )}
+          >
+            <span className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate text-left">
+              <span className={cn('truncate', !selected && 'text-ink-faint')}>
+                {selected?.label ?? (loading ? 'loading…' : 'no models')}
+              </span>
+              {selectedEfforts.length > 1 && thinkingLevel !== 'default' ? (
+                <span className="shrink-0 text-[11px] text-ink-faint">
+                  · {thinkingLevel}
+                </span>
+              ) : null}
+            </span>
             {open ? (
               <ChevronUp size={12} aria-hidden />
             ) : (
               <ChevronDown size={12} aria-hidden />
             )}
-          </SelectPrimitive.Icon>
-        </SelectPrimitive.Trigger>
+          </button>
+        </DropdownMenuPrimitive.Trigger>
 
-        <SelectPrimitive.Portal>
-          <SelectPrimitive.Content
-            position="popper"
+        <DropdownMenuPrimitive.Portal>
+          <DropdownMenuPrimitive.Content
             sideOffset={4}
-            className="z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden border border-rule bg-bg font-mono text-[13px] lowercase text-ink"
+            align="start"
+            className="z-50 w-[min(480px,calc(100vw-24px))] overflow-hidden border border-rule bg-bg font-mono text-[13px] lowercase text-ink"
           >
-            <SelectPrimitive.Viewport className="max-h-[60vh] p-1">
+            <DropdownMenuPrimitive.RadioGroup
+              value={safeValue ?? ''}
+              className="max-h-[50vh] overflow-y-auto p-1"
+            >
               {groups.map((group) => {
                 const unavailable = unavailableSet.has(group.label)
                 const unconfigured = !unavailable && group.options.length === 0
+                const expanded = expandedProvider === group.label
                 return (
-                  <SelectPrimitive.Group key={group.label}>
-                    <div className="flex items-center justify-between gap-2 pb-1 pr-2 pt-2">
-                      <span className="flex min-w-0 items-baseline gap-1.5">
-                        <SelectPrimitive.Label className="px-3 text-[11px] uppercase tracking-[0.12em] text-ink-faint">
+                  <DropdownMenuPrimitive.Group key={group.label}>
+                    <div className="flex items-center gap-1 pr-2">
+                      <DropdownMenuPrimitive.Item
+                        aria-expanded={expanded}
+                        onSelect={(event) => {
+                          event.preventDefault()
+                          setExpandedProvider(expanded ? null : group.label)
+                        }}
+                        className="flex min-w-0 flex-1 cursor-pointer select-none items-center gap-1.5 px-2 py-2 text-ink-faint outline-none data-[highlighted]:bg-panel data-[highlighted]:text-ink"
+                      >
+                        {expanded ? (
+                          <ChevronDown
+                            size={12}
+                            className="shrink-0"
+                            aria-hidden
+                          />
+                        ) : (
+                          <ChevronRight
+                            size={12}
+                            className="shrink-0"
+                            aria-hidden
+                          />
+                        )}
+                        <span className="truncate text-[11px] uppercase tracking-[0.12em]">
                           {group.label}
-                        </SelectPrimitive.Label>
+                        </span>
                         {unavailable ? (
                           <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
                             not loaded
@@ -284,7 +293,7 @@ export function ModelPicker({
                             not configured
                           </span>
                         ) : null}
-                      </span>
+                      </DropdownMenuPrimitive.Item>
                       {presentSet.has(group.label) ? (
                         <button
                           type="button"
@@ -302,42 +311,100 @@ export function ModelPicker({
                         </button>
                       ) : null}
                     </div>
-                    {group.options.map((option) => (
-                      <SelectPrimitive.Item
-                        key={option.id}
-                        value={option.id}
-                        disabled={unavailable}
-                        className={cn(
-                          'relative flex min-w-0 cursor-pointer select-none items-center py-1.5 pl-7 pr-3 outline-none',
-                          'data-[highlighted]:bg-panel data-[highlighted]:text-ink',
-                          'data-[state=checked]:text-ink',
-                          'data-[disabled]:cursor-default data-[disabled]:opacity-40',
-                        )}
-                      >
-                        <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-                          <Check size={12} aria-hidden />
-                        </SelectPrimitive.ItemIndicator>
-                        <SelectPrimitive.ItemText className="truncate">
-                          {option.label}
-                        </SelectPrimitive.ItemText>
-                      </SelectPrimitive.Item>
-                    ))}
-                  </SelectPrimitive.Group>
+                    {expanded
+                      ? group.options.map((option) => (
+                          <DropdownMenuPrimitive.RadioItem
+                            key={option.id}
+                            ref={(node) => {
+                              if (node) {
+                                modelItemRefs.current.set(option.id, node)
+                              } else {
+                                modelItemRefs.current.delete(option.id)
+                              }
+                            }}
+                            value={option.id}
+                            disabled={unavailable}
+                            onSelect={(event) => {
+                              event.preventDefault()
+                              const { nextEfforts, nextEffort } =
+                                handleModelChange(option.id)
+                              if (nextEfforts.length > 1) {
+                                pendingEffortFocus.current = {
+                                  model: option.id,
+                                  effort: nextEffort,
+                                }
+                                setEffortFocusRequest((request) => request + 1)
+                              }
+                            }}
+                            className={cn(
+                              'relative flex min-w-0 cursor-pointer select-none items-center py-1.5 pl-7 pr-3 outline-none',
+                              'data-[highlighted]:bg-panel data-[highlighted]:text-ink',
+                              'data-[state=checked]:text-ink',
+                              'data-[disabled]:cursor-default data-[disabled]:opacity-40',
+                            )}
+                          >
+                            <DropdownMenuPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
+                              <Check size={12} aria-hidden />
+                            </DropdownMenuPrimitive.ItemIndicator>
+                            <span className="truncate">{option.label}</span>
+                          </DropdownMenuPrimitive.RadioItem>
+                        ))
+                      : null}
+                  </DropdownMenuPrimitive.Group>
                 )
               })}
-            </SelectPrimitive.Viewport>
-          </SelectPrimitive.Content>
-        </SelectPrimitive.Portal>
-      </SelectPrimitive.Root>
+            </DropdownMenuPrimitive.RadioGroup>
 
-      {selectedEfforts.length > 1 ? (
-        <EffortPicker
-          value={thinkingLevel}
-          options={selectedEfforts}
-          onChange={handleEffortChange}
-          disabled={disabled || loading}
-        />
-      ) : null}
+            <div className="flex min-h-10 items-center gap-1 border-t border-rule bg-panel px-3 py-2">
+              <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-ink-faint">
+                effort
+              </span>
+              {selectedEfforts.length > 1 ? (
+                <DropdownMenuPrimitive.RadioGroup
+                  value={thinkingLevel}
+                  className="flex min-w-0 items-center whitespace-nowrap"
+                >
+                  {selectedEfforts.map((option) => (
+                    <DropdownMenuPrimitive.RadioItem
+                      key={option.effort}
+                      value={option.effort}
+                      ref={(node) => {
+                        if (node) {
+                          effortItemRefs.current.set(option.effort, node)
+                        } else {
+                          effortItemRefs.current.delete(option.effort)
+                        }
+                      }}
+                      aria-label={option.effort}
+                      title={option.description}
+                      onSelect={() => {
+                        handleEffortChange(option.effort)
+                        setOpen(false)
+                      }}
+                      className={cn(
+                        'cursor-pointer select-none border px-1.5 py-1 text-[11px] outline-none transition-colors data-[highlighted]:bg-paper-2 data-[highlighted]:text-ink',
+                        'border-transparent text-ink-faint data-[state=checked]:border-ink data-[state=checked]:bg-ink data-[state=checked]:text-bg',
+                      )}
+                    >
+                      {option.effort}
+                    </DropdownMenuPrimitive.RadioItem>
+                  ))}
+                </DropdownMenuPrimitive.RadioGroup>
+              ) : (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="truncate text-[11px] text-ink-faint"
+                >
+                  {selected
+                    ? 'this model uses its default effort'
+                    : 'select a model to see effort options'}
+                </span>
+              )}
+            </div>
+          </DropdownMenuPrimitive.Content>
+        </DropdownMenuPrimitive.Portal>
+      </DropdownMenuPrimitive.Root>
 
       {ctx ? (
         <button
