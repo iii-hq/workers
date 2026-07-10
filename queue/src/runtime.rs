@@ -819,11 +819,13 @@ async fn run_concurrent(
         let active = active.clone();
         let max_retries = config.max_retries;
         let poll_interval_ms = config.poll_interval_ms;
+        let timeout_ms = config.timeout_ms;
         tasks.spawn(async move {
             process_standard_message(
                 &queue_name,
                 max_retries,
                 poll_interval_ms,
+                timeout_ms,
                 active,
                 adapter,
                 invoker,
@@ -895,6 +897,7 @@ async fn run_grouped_fifo(
                 let max_retries = config.max_retries;
                 let backoff_ms = config.backoff_ms;
                 let poll_interval_ms = config.poll_interval_ms;
+                let timeout_ms = config.timeout_ms;
                 tasks.spawn(async move {
                     while let Ok(Some(message)) =
                         tokio::time::timeout(Duration::from_secs(60), group_rx.recv()).await
@@ -904,6 +907,7 @@ async fn run_grouped_fifo(
                             max_retries,
                             backoff_ms,
                             poll_interval_ms,
+                            timeout_ms,
                             active.clone(),
                             adapter.clone(),
                             invoker.clone(),
@@ -940,10 +944,12 @@ fn reap_finished(queue: &str, tasks: &mut tokio::task::JoinSet<()>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_standard_message(
     queue: &str,
     max_retries: u32,
     poll_interval_ms: u64,
+    timeout_ms: u64,
     active: Arc<Semaphore>,
     adapter: Arc<dyn QueueAdapter>,
     invoker: Arc<dyn Invoker>,
@@ -953,7 +959,7 @@ async fn process_standard_message(
     let Ok(_permit) = active.acquire_owned().await else {
         return;
     };
-    let result = invoke_message(queue, &invoker, &message, message.attempt).await;
+    let result = invoke_message(queue, &invoker, &message, message.attempt, timeout_ms).await;
     let operation = if result.is_ok() {
         adapter.ack_function_queue(queue, message.delivery_id).await
     } else {
@@ -972,6 +978,7 @@ async fn process_fifo_message(
     max_retries: u32,
     backoff_ms: u64,
     poll_interval_ms: u64,
+    timeout_ms: u64,
     active: Arc<Semaphore>,
     adapter: Arc<dyn QueueAdapter>,
     invoker: Arc<dyn Invoker>,
@@ -983,7 +990,7 @@ async fn process_fifo_message(
         let Ok(permit) = active.clone().acquire_owned().await else {
             return;
         };
-        let succeeded = invoke_message(queue, &invoker, &message, attempt)
+        let succeeded = invoke_message(queue, &invoker, &message, attempt, timeout_ms)
             .await
             .is_ok();
         drop(permit);
@@ -1022,6 +1029,7 @@ async fn invoke_message(
     invoker: &Arc<dyn Invoker>,
     message: &QueueMessage,
     attempt: u32,
+    timeout_ms: u64,
 ) -> Result<Option<Value>, String> {
     let baggage = message.baggage.as_deref().and_then(scrub_relevance_tags);
     let span = tracing::info_span!(
@@ -1046,7 +1054,7 @@ async fn invoke_message(
         }
     }
     invoker
-        .call(&message.function_id, message.data.clone())
+        .call_with_timeout(&message.function_id, message.data.clone(), timeout_ms)
         .instrument(span)
         .await
 }
@@ -1169,7 +1177,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 
     use crate::store::TopicStats;
@@ -1325,6 +1333,28 @@ mod tests {
             } else {
                 Ok(None)
             }
+        }
+    }
+
+    #[derive(Default)]
+    struct TimeoutRecordingInvoker {
+        timeout_ms: AtomicU64,
+    }
+
+    #[async_trait]
+    impl Invoker for TimeoutRecordingInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+
+        async fn call_with_timeout(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            timeout_ms: u64,
+        ) -> Result<Option<Value>, String> {
+            self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
+            Ok(None)
         }
     }
 
@@ -1513,6 +1543,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn function_queue_invocation_uses_configured_timeout() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let invoker = Arc::new(TimeoutRecordingInvoker::default());
+        let config = FunctionQueueConfig::default();
+        let expected_timeout_ms = config.timeout_ms;
+        let (sender, receiver) = mpsc::channel(1);
+        let consumer = tokio::spawn(run_concurrent(
+            "turns".to_string(),
+            config,
+            adapter.clone(),
+            invoker.clone(),
+            receiver,
+        ));
+
+        sender.send(message(7, "s1", 1, 0)).await.unwrap();
+        drop(sender);
+        consumer.await.unwrap();
+
+        assert_eq!(
+            invoker.timeout_ms.load(Ordering::SeqCst),
+            expected_timeout_ms
+        );
+        assert_eq!(*adapter.acked.lock().unwrap(), vec![7]);
+    }
+
+    #[tokio::test]
     async fn fifo_retries_in_place_then_acks_without_requeueing() {
         let adapter = Arc::new(RecordingAdapter::default());
         let invoker = Arc::new(FailingInvoker {
@@ -1525,6 +1581,7 @@ mod tests {
             3,
             1,
             1,
+            1_800_000,
             Arc::new(Semaphore::new(1)),
             adapter.clone(),
             invoker.clone(),
@@ -1550,6 +1607,7 @@ mod tests {
             2,
             1,
             1,
+            1_800_000,
             Arc::new(Semaphore::new(1)),
             adapter.clone(),
             invoker.clone(),

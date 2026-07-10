@@ -79,7 +79,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn turn_queue_is_grouped_fifo_with_bounded_delivery_settings() {
+    fn turn_queue_is_grouped_fifo_and_uses_worker_timeout_default() {
         assert_eq!(
             turn_queue_definition(),
             json!({
@@ -94,5 +94,8 @@ mod tests {
                 }
             })
         );
+        assert!(turn_queue_definition()["config"]
+            .get("timeout_ms")
+            .is_none());
     }
 }

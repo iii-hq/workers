@@ -32,6 +32,15 @@ const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 pub trait Invoker: Send + Sync + 'static {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String>;
 
+    async fn call_with_timeout(
+        &self,
+        function_id: &str,
+        payload: Value,
+        _timeout_ms: u64,
+    ) -> Result<Option<Value>, String> {
+        self.call(function_id, payload).await
+    }
+
     /// Whether the target is currently registered with the engine.
     ///
     /// Adapters used in unit tests and embedded deployments can keep the
@@ -63,6 +72,24 @@ impl Invoker for IiiInvoker {
                 payload,
                 action: None,
                 timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
+            })
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
+    async fn call_with_timeout(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+    ) -> Result<Option<Value>, String> {
+        self.iii
+            .trigger(TriggerRequest {
+                function_id: function_id.to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(timeout_ms),
             })
             .await
             .map(Some)

@@ -51,6 +51,8 @@ pub struct QueueMessage {
     pub baggage: Option<String>,
 }
 
+pub const DEFAULT_FUNCTION_QUEUE_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+
 /// Per-function-queue transport settings, passed to
 /// [`QueueAdapter::setup_function_queue`].
 ///
@@ -62,6 +64,9 @@ pub struct FunctionQueueConfig {
     pub max_retries: u32,
     /// Number of messages processed concurrently.
     pub concurrency: u32,
+    /// Maximum time in milliseconds allowed for one target-function
+    /// invocation.
+    pub timeout_ms: u64,
     /// Queue scheduling mode. Supported values are `standard` and `fifo`.
     #[serde(rename = "type")]
     pub r#type: String,
@@ -92,6 +97,7 @@ impl Default for FunctionQueueConfig {
         Self {
             max_retries: 3,
             concurrency: 10,
+            timeout_ms: DEFAULT_FUNCTION_QUEUE_TIMEOUT_MS,
             r#type: "standard".to_string(),
             message_group_field: None,
             backoff_ms: 1_000,
@@ -113,6 +119,11 @@ impl FunctionQueueConfig {
         if self.concurrency == 0 {
             return Err(format!(
                 "queue '{queue_name}' concurrency must be greater than zero"
+            ));
+        }
+        if self.timeout_ms == 0 {
+            return Err(format!(
+                "queue '{queue_name}' timeout_ms must be greater than zero"
             ));
         }
         if self.poll_interval_ms == 0 {
@@ -618,6 +629,7 @@ mod tests {
     fn function_queue_config_defaults_and_validates_fifo() {
         let defaults: FunctionQueueConfig = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(defaults, FunctionQueueConfig::default());
+        assert_eq!(defaults.timeout_ms, 1_800_000);
         assert!(defaults.validate("turns").is_ok());
 
         let fifo: FunctionQueueConfig = serde_json::from_value(serde_json::json!({

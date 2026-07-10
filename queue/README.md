@@ -67,6 +67,8 @@ queue_configs:
 
 For FIFO named queues, messages with the same group-field value run in order;
 different groups run concurrently up to `concurrency`.
+Each target invocation has a configurable `timeout_ms`; when omitted, it
+defaults to 1,800,000 milliseconds (30 minutes).
 After a restart, a delivery waits until its target function is registered and
 does not consume retry budget while the target worker is still booting.
 
