@@ -13,6 +13,16 @@ use serde_json::{json, Value};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Stream `tool_use.input` incrementally instead of the default server-side
+/// buffering, which goes ping-only silent for the whole generation of a large
+/// input (measured: ~120s of silence for a ~4k-token input, one leading
+/// ~100B delta then a single burst) — long enough to trip the router's
+/// 120s post-content idle guard and kill a healthy stream. Trade-off per the
+/// API docs: on an early stop the accumulated input may be partial/invalid
+/// JSON, which `llm_router::types::messages::degraded_arguments` already
+/// salvages.
+pub const ANTHROPIC_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
+
 pub struct BodyArgs {
     pub model: String,
     pub max_tokens: u64,
@@ -87,6 +97,7 @@ pub fn build_headers(cfg: &AnthropicConfig) -> Vec<(&'static str, String)> {
     vec![
         auth_header(cfg.auth_mode, &cfg.credential_value),
         ("anthropic-version", ANTHROPIC_VERSION.to_string()),
+        ("anthropic-beta", ANTHROPIC_BETA.to_string()),
         ("content-type", "application/json".to_string()),
     ]
 }
@@ -231,7 +242,10 @@ mod tests {
         let h = build_headers(&cfg(AuthMode::ApiKey));
         assert!(h.contains(&("x-api-key", "sk-test".to_string())));
         assert!(h.contains(&("anthropic-version", ANTHROPIC_VERSION.to_string())));
-        assert!(!h.iter().any(|(k, _)| *k == "anthropic-beta"));
+        // Fine-grained tool streaming: without it, large tool inputs are
+        // server-buffered into a ping-only silence that trips the router's
+        // idle guard.
+        assert!(h.contains(&("anthropic-beta", ANTHROPIC_BETA.to_string())));
 
         let h = build_headers(&cfg(AuthMode::OauthBearer));
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
