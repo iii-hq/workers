@@ -25,6 +25,8 @@ interface FilesystemAccessDialogProps {
   onRefreshGrants: () => void | Promise<void>
   /** Shows a hint that revoking mid-turn may make the agent ask again. */
   sessionBusy?: boolean
+  /** Whether the working directory is an enforced boundary with approval recovery. */
+  workspaceScoped: boolean
 }
 
 /**
@@ -43,6 +45,7 @@ export function FilesystemAccessDialog({
   onRevoke,
   onRefreshGrants,
   sessionBusy,
+  workspaceScoped,
 }: FilesystemAccessDialogProps) {
   const [shellRoots, setShellRoots] = useState<string[] | null>(null)
 
@@ -57,8 +60,17 @@ export function FilesystemAccessDialog({
       <DialogContent className="max-w-lg">
         <DialogTitle className="text-[14px]">filesystem access</DialogTitle>
         <DialogDescription className="mt-1">
-          folders the agent can read and write in this conversation.
+          {workspaceScoped
+            ? 'folders the agent can read and write in this conversation.'
+            : 'the working directory sets where commands start; shell configuration controls access.'}
         </DialogDescription>
+
+        {!workspaceScoped ? (
+          <p className="mt-3 font-mono text-[11px] leading-5 text-ink-faint">
+            filesystem approvals are off. access uses the shell defaults shown
+            below.
+          </p>
+        ) : null}
 
         <div className="mt-5 flex flex-col gap-5">
           <FolderGroup title="workspace">
@@ -78,7 +90,9 @@ export function FilesystemAccessDialog({
                     {workingDir}
                   </span>
                   <span className="block font-mono text-[10px] lowercase text-ink-ghost">
-                    always allowed — change it with the directory picker
+                    {workspaceScoped
+                      ? 'workspace boundary; change it with the directory picker'
+                      : 'command starting folder, not an access boundary'}
                   </span>
                 </div>
               </div>
@@ -89,7 +103,7 @@ export function FilesystemAccessDialog({
             )}
           </FolderGroup>
 
-          {grantsSupported ? (
+          {workspaceScoped && grantsSupported ? (
             <FolderGroup title="allowed this session">
               {sessionBusy ? (
                 <p className="px-2 pb-1.5 font-mono text-[11px] text-ink-faint">

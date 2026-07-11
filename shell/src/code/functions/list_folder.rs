@@ -107,7 +107,7 @@ fn inner(
     // list-folder uses `resolve`, not `require_writable`, so callers can
     // list a directory that contains non-accessible *children* even if the
     // directory itself happened to match a glob.
-    let abs = resolver.resolve_opt(crate::fs::scope_root(req.fs_scope.as_ref()), &req.path)?;
+    let abs = resolver.resolve_scope(req.fs_scope.as_ref(), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).

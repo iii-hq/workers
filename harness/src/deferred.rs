@@ -116,6 +116,7 @@ pub async fn resolve(
                 arguments,
                 filesystem_root.as_deref(),
                 &trusted_roots,
+                deps.hooks.filesystem_boundary(&function_id),
             );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;

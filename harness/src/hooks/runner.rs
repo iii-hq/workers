@@ -327,7 +327,7 @@ fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
 
 /// Whether a pre/post_trigger binding's `functions` globs match the target
 /// (no `functions` filter → all calls).
-fn functions_match(binding: &HookBinding, function_id: &str) -> bool {
+pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool {
     match &binding.functions {
         None => true,
         Some(globs) if globs.is_empty() => true,

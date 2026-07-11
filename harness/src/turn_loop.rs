@@ -631,6 +631,7 @@ pub async fn run_step(
                 call.arguments.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
+                deps.hooks.filesystem_boundary(&call.function_id),
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -652,6 +653,7 @@ pub async fn run_step(
                         arguments,
                         filesystem_root.as_deref(),
                         &session_grants,
+                        deps.hooks.filesystem_boundary(&call.function_id),
                     );
                     (arguments, annotations)
                 }
