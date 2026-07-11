@@ -159,6 +159,13 @@ impl HookSet {
         self.lock().is_empty()
     }
 
+    pub fn has_function_binding(&self, function_id: &str, target_function_id: &str) -> bool {
+        self.lock().values().any(|binding| {
+            binding.function_id == function_id
+                && runner::functions_match(binding, target_function_id)
+        })
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, HookBinding>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -245,6 +252,20 @@ impl HookRegistry {
             HookPoint::PostTrigger => &self.post_trigger,
         }
     }
+
+    pub fn filesystem_boundary(
+        &self,
+        target_function_id: &str,
+    ) -> crate::filesystem_scope::FilesystemBoundary {
+        if self.post_trigger.has_function_binding(
+            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+            target_function_id,
+        ) {
+            crate::filesystem_scope::FilesystemBoundary::Workspace
+        } else {
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots
+        }
+    }
 }
 
 pub mod runner;
@@ -283,6 +304,37 @@ mod tests {
         .unwrap();
         let order: Vec<String> = set.ordered().into_iter().map(|b| b.function_id).collect();
         assert_eq!(order, vec!["m::hook", "a::hook", "z::hook"]);
+    }
+
+    #[test]
+    fn filesystem_boundary_tracks_the_live_access_watch_binding() {
+        let set = HookSet::default();
+        assert!(!set.has_function_binding(
+            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+            "shell::fs::ls"
+        ));
+        set.add(
+            HookPoint::PostTrigger,
+            cfg(
+                "access-watch",
+                crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+                json!({ "functions": ["shell::*", "coder::*"] }),
+            ),
+        )
+        .unwrap();
+        assert!(set.has_function_binding(
+            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+            "shell::fs::ls"
+        ));
+        assert!(!set.has_function_binding(
+            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+            "web::fetch"
+        ));
+        set.remove("access-watch");
+        assert!(!set.has_function_binding(
+            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+            "shell::fs::ls"
+        ));
     }
 
     #[test]

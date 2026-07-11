@@ -48,12 +48,13 @@ pub async fn handle(
     // target so the harness-injected session dir does not surface as a host cwd
     // override and trip the host-only rejection below (see `scope_root_for_target`).
     let scope_root =
-        scope_root_for_target(&req.target, crate::fs::scope_root(req.fs_scope.as_ref()));
+        scope_root_for_target(&req.target, crate::fs::scope_anchor(req.fs_scope.as_ref()));
     let mut overrides = build_overrides(
         req.cwd.as_deref(),
         req.env.as_ref(),
         scope_root,
         crate::fs::scope_grants(req.fs_scope.as_ref()),
+        crate::fs::scope_boundary(req.fs_scope.as_ref()),
         &cfg,
     )
     .map_err(|e| format!("{}: {}", e.code, e.message))?;

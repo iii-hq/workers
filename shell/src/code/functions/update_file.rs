@@ -210,10 +210,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+    let fs_scope = req.fs_scope.as_ref();
     let mut entries = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        match resolver.require_writable_opt(scope_root, &spec.path) {
+        match resolver.require_writable_scope(fs_scope, &spec.path) {
             Ok(abs) => entries.push((spec, Ok(abs))),
             Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
             Err(e) => entries.push((spec, Err(e))),

@@ -194,8 +194,7 @@ fn inner(
     // Use `resolve` rather than `require_writable` so a search rooted at
     // a folder that *contains* non-accessible children still works; the
     // per-file `is_non_accessible` filter below still guards their bytes.
-    let walk_root =
-        resolver.resolve_opt(crate::fs::scope_root(req.fs_scope.as_ref()), &req.path)?;
+    let walk_root = resolver.resolve_scope(req.fs_scope.as_ref(), &req.path)?;
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).

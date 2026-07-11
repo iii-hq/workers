@@ -286,16 +286,25 @@ impl HostFsBackend {
         path: &str,
         scope_root_canon: Option<&Path>,
         scope_grants_canon: &[PathBuf],
+        boundary: crate::fs::FsBoundary,
     ) -> Result<PathBuf, FsError> {
-        let canon = match scope_root_canon {
+        let restrict_to_workspace = boundary == crate::fs::FsBoundary::Workspace;
+        let canon = match (scope_root_canon, restrict_to_workspace) {
             // validate_path already applies the non_accessible gate.
-            None if scope_grants_canon.is_empty() => return self.validate_path(path),
-            None => confine_path(
+            (None, _) if scope_grants_canon.is_empty() => return self.validate_path(path),
+            (None, _) => confine_path(
                 path,
                 &effective_roots(&self.host_roots_canon, None, scope_grants_canon),
                 &self.denylist_canon,
             )?,
-            Some(_) => confine_path_with_scope_root(
+            (Some(base), false) => confine_path_with_anchor(
+                path,
+                &self.host_roots_canon,
+                base,
+                scope_grants_canon,
+                &self.denylist_canon,
+            )?,
+            (Some(_), true) => confine_path_with_scope_root(
                 path,
                 &self.host_roots_canon,
                 scope_root_canon,
@@ -303,7 +312,8 @@ impl HostFsBackend {
                 &self.denylist_canon,
             )?,
         };
-        if self.is_non_accessible_scoped(&canon, scope_root_canon, scope_grants_canon) {
+        let access_scope = restrict_to_workspace.then_some(scope_root_canon).flatten();
+        if self.is_non_accessible_scoped(&canon, access_scope, scope_grants_canon) {
             return Err(FsError::new(
                 "S215",
                 format!("path is protected (non_accessible): {path}"),
@@ -337,6 +347,27 @@ impl HostFsBackend {
             Some(base) => lexical_operand_with(path, Some(base)),
         }
     }
+}
+
+fn confine_path_with_anchor(
+    path: &str,
+    host_roots_canon: &[PathBuf],
+    anchor: &Path,
+    scope_grants_canon: &[PathBuf],
+    denylist_canon: &[PathBuf],
+) -> Result<PathBuf, FsError> {
+    let raw = Path::new(path);
+    let anchored = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        anchor.join(raw)
+    };
+    let display = anchored.to_string_lossy();
+    confine_path(
+        &display,
+        &effective_roots(host_roots_canon, None, scope_grants_canon),
+        denylist_canon,
+    )
 }
 
 /// Jail-confinement check, factored out of `HostFsBackend::validate_path` so
@@ -944,9 +975,14 @@ impl FsBackend for HostFsBackend {
         // A per-call scope_root (when set) scopes both the relative anchor and the
         // containment ceiling to the session directory; None ⇒ the unchanged
         // configured jail.
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        let p = self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        let p = self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         // The symlink_metadata stat, read_dir, and the per-entry
         // symlink_metadata loop are all blocking std::fs work that scales with
         // directory size; move it off the executor (mirrors grep/sed).
@@ -979,9 +1015,14 @@ impl FsBackend for HostFsBackend {
     }
 
     async fn stat(&self, req: StatArgs) -> FsCallResult<StatResponse> {
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        let p = self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        let p = self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
         let name = p
             .file_name()
@@ -991,9 +1032,14 @@ impl FsBackend for HostFsBackend {
     }
 
     async fn mkdir(&self, req: crate::fs::MkdirArgs) -> FsCallResult<crate::fs::MkdirResponse> {
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        let p = self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        let p = self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
         if p.exists() {
@@ -1043,9 +1089,14 @@ impl FsBackend for HostFsBackend {
         // operate on the lexical path to preserve unlink semantics. Both the
         // validation and the operand anchor at the session scope_root when set,
         // so they cannot diverge.
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let p = self.lexical_operand_scoped(&req.path, base.as_deref(), &extra);
 
         // The symlink_metadata stat, recursive remove_dir_all, the non-recursive
@@ -1088,9 +1139,14 @@ impl FsBackend for HostFsBackend {
     async fn chmod(&self, req: crate::fs::ChmodArgs) -> FsCallResult<crate::fs::ChmodResponse> {
         // Jail validation + mode parsing run here, on the async fn, BEFORE the
         // blocking work. scope_root (when set) scopes the validation + operand.
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let p = self.lexical_operand_scoped(&req.path, base.as_deref(), &extra);
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
@@ -1166,10 +1222,20 @@ impl FsBackend for HostFsBackend {
 
     async fn mv(&self, req: crate::fs::MvArgs) -> FsCallResult<crate::fs::MvResponse> {
         // A single session scope_root scopes BOTH operands.
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        self.validate_path_scoped(&req.src, base.as_deref(), &extra)?;
-        self.validate_path_scoped(&req.dst, base.as_deref(), &extra)?;
+        self.validate_path_scoped(
+            &req.src,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
+        self.validate_path_scoped(
+            &req.dst,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let src_p = self.lexical_operand_scoped(&req.src, base.as_deref(), &extra);
         let dst_p = self.lexical_operand_scoped(&req.dst, base.as_deref(), &extra);
         if !src_p.exists() {
@@ -1227,9 +1293,14 @@ impl FsBackend for HostFsBackend {
         })
     }
     async fn grep(&self, req: crate::fs::GrepArgs) -> FsCallResult<crate::fs::GrepResponse> {
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        let root = self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        let root = self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         // Cap before compiling: an unbounded pattern stalls compilation and
         // pins memory.
         check_pattern_len(&req.pattern)?;
@@ -1528,7 +1599,7 @@ impl FsBackend for HostFsBackend {
         // blocking closure confines + anchors every operand to it instead of the
         // global jail roots. None ⇒ unchanged jail behaviour.
         let scope_root_canon =
-            self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+            self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let scope_grants_canon =
             self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
         let access_roots = access_roots(
@@ -1782,9 +1853,14 @@ impl FsBackend for HostFsBackend {
         })
     }
     async fn write(&self, req: crate::fs::WriteArgs) -> FsCallResult<crate::fs::WriteResponse> {
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        let p = self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        let p = self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
 
@@ -1930,9 +2006,14 @@ impl FsBackend for HostFsBackend {
     async fn read(&self, req: crate::fs::ReadArgs) -> FsCallResult<crate::fs::ReadResponse> {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = self.confine_scope_root(crate::fs::scope_root(req.fs_scope.as_ref()))?;
+        let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
-        let p = self.validate_path_scoped(&req.path, base.as_deref(), &extra)?;
+        let p = self.validate_path_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let md = tokio::fs::symlink_metadata(&p)
             .await
             .map_err(|e| FsError::from_io(&req.path, e))?;
@@ -2252,6 +2333,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.display().to_string(),
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -2264,6 +2346,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.display().to_string(),
                     grants: vec![granted.display().to_string()],
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -3991,6 +4074,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4022,6 +4106,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4053,6 +4138,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4086,6 +4172,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4120,6 +4207,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: selected.join("project").to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4144,6 +4232,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: selected.to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4161,6 +4250,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: "../../etc".into(),
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4183,6 +4273,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: base,
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             })
             .await
@@ -4212,5 +4303,38 @@ mod tests {
             "legacy\n",
             "scope_root=None ⇒ anchors at the jail root exactly as before"
         );
+    }
+
+    #[tokio::test]
+    async fn configured_roots_boundary_anchors_relative_paths_without_blocking_siblings() {
+        let root = tmp();
+        fs::create_dir_all(root.join("session")).unwrap();
+        fs::create_dir_all(root.join("sibling")).unwrap();
+        fs::write(root.join("session/local.txt"), "local").unwrap();
+        fs::write(root.join("sibling/shared.txt"), "shared").unwrap();
+        let backend = jailed_backend(&root);
+        let scope = crate::fs::FsScope {
+            root: root.join("session").to_string_lossy().into_owned(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::ConfiguredRoots,
+        };
+
+        let relative = backend
+            .stat(crate::fs::StatArgs {
+                path: "local.txt".into(),
+                fs_scope: Some(scope.clone()),
+            })
+            .await
+            .expect("relative paths stay anchored at the working directory");
+        assert_eq!(relative.0.name, "local.txt");
+
+        let sibling = backend
+            .stat(crate::fs::StatArgs {
+                path: root.join("sibling/shared.txt").display().to_string(),
+                fs_scope: Some(scope),
+            })
+            .await
+            .expect("configured-roots mode permits siblings inside shell policy");
+        assert_eq!(sibling.0.name, "shared.txt");
     }
 }

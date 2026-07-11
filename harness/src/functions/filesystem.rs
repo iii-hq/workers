@@ -39,6 +39,9 @@ pub struct FilesystemInfoResponse {
     /// send carries no explicit `fs_scope.root`; `null` when defaulting is
     /// disabled (`default_filesystem_root: "off"`) or the cwd is unreadable.
     pub default_root: Option<String>,
+    /// Effective per-session boundary for shell/coder calls. `workspace` when
+    /// the filesystem approval hook can widen it, otherwise `configured_roots`.
+    pub boundary: crate::filesystem_scope::FilesystemBoundary,
 }
 
 /// The resolved default working directory — the value a console pre-fills the
@@ -50,6 +53,7 @@ pub async fn info(
     let cfg = deps.cfg().await;
     Ok(FilesystemInfoResponse {
         default_root: cfg.resolved_default_filesystem_root(),
+        boundary: deps.hooks.filesystem_boundary("shell::fs::ls"),
     })
 }
 

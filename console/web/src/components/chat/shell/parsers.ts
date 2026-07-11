@@ -465,7 +465,7 @@ export const S_CODE_LABEL: Record<string, string> = {
   S212: 'wrong file type',
   S213: 'already exists',
   S214: 'directory not empty',
-  S215: 'permission denied',
+  S215: 'filesystem access blocked',
   S216: 'i/o error',
   S217: 'bad regex',
   S218: 'size cap exceeded',
@@ -481,9 +481,16 @@ function shellWire(e: { code: string; message: string }): SandboxErrorDisplay {
     error: {
       type: S_CODE_LABEL[e.code] ?? 'shell error',
       code: e.code,
-      message: e.message,
+      message: cleanShellErrorMessage(e.message),
     },
   }
+}
+
+export function cleanShellErrorMessage(message: string): string {
+  return stripHandlerPrefix(message)
+    .replace(/^remote error \(S\d{3}\):\s*/, '')
+    .replace(/\s+filesystem_access_request=\{[\s\S]*\}\s*$/, '')
+    .trim()
 }
 
 /** exec_bg stringifies its S-code into the message ("S215: …"), and the
@@ -510,7 +517,7 @@ function wireFromText(text: string): SandboxErrorDisplay | null {
   if (!match) return null
   return shellWire({
     code: match[1],
-    message: stripHandlerPrefix(match[2].trim()),
+    message: cleanShellErrorMessage(match[2].trim()),
   })
 }
 

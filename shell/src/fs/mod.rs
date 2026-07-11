@@ -21,6 +21,14 @@ pub struct FsScope {
     pub root: String,
     #[serde(default)]
     pub grants: Vec<String>,
+    pub boundary: FsBoundary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FsBoundary {
+    Workspace,
+    ConfiguredRoots,
 }
 
 impl FsScope {
@@ -38,11 +46,21 @@ impl FsScope {
 }
 
 pub fn scope_root(scope: Option<&FsScope>) -> Option<&str> {
+    scope.and_then(|scope| (scope.boundary == FsBoundary::Workspace).then_some(scope.root()))
+}
+
+pub fn scope_anchor(scope: Option<&FsScope>) -> Option<&str> {
     scope.map(FsScope::root)
 }
 
 pub fn scope_grants(scope: Option<&FsScope>) -> Option<&[String]> {
     scope.and_then(FsScope::grants)
+}
+
+pub fn scope_boundary(scope: Option<&FsScope>) -> FsBoundary {
+    scope
+        .map(|scope| scope.boundary)
+        .unwrap_or(FsBoundary::ConfiguredRoots)
 }
 
 /// Wire-identical mirror of `iii_sdk::channels::StreamChannelRef`. The SDK
@@ -851,6 +869,15 @@ mod tests {
     fn target_defaults_to_host_when_field_missing() {
         let v: Target = serde_json::from_value(serde_json::json!({"kind": "host"})).unwrap();
         assert_eq!(v, Target::Host);
+    }
+
+    #[test]
+    fn fs_scope_requires_an_explicit_boundary() {
+        let scope: Result<FsScope, _> = serde_json::from_value(serde_json::json!({
+            "root": "/work/project",
+            "grants": []
+        }));
+        assert!(scope.is_err());
     }
 
     #[test]

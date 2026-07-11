@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cleanShellErrorMessage,
   extractEmbeddedSCode,
   fsChmodRequestSchema,
   fsChmodResponseSchema,
@@ -606,11 +607,19 @@ describe('parseShellErrorDisplay', () => {
     expect(out).toEqual({
       variant: 'wire',
       error: {
-        type: 'permission denied',
+        type: 'filesystem access blocked',
         code: 'S215',
         message: 'cwd escapes jail: /etc/passwd',
       },
     })
+  })
+
+  it('keeps filesystem access metadata out of the readable error', () => {
+    expect(
+      cleanShellErrorMessage(
+        'remote error (S215): path escapes the fs jail roots [/work]: /other filesystem_access_request={"v":1,"requested_root":"/other","attempted_path":"/other","error_code":"S215"}',
+      ),
+    ).toBe('path escapes the fs jail roots [/work]: /other')
   })
 
   it('delegates S-code-free denials to the sandbox invocation variant', () => {

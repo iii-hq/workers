@@ -68,10 +68,11 @@ pub async fn handle(
             "`paths` must not be empty".into(),
         )));
     }
-    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+    let fs_scope = req.fs_scope.as_ref();
+    let scope_anchor = crate::fs::scope_anchor(fs_scope);
     let mut entries = Vec::with_capacity(req.paths.len());
     for p in req.paths {
-        match resolver.require_writable_opt(scope_root, &p) {
+        match resolver.require_writable_scope(fs_scope, &p) {
             Ok(abs) => entries.push((p, Ok(abs))),
             Err(e) if is_jail_scope_error(&e) => return Err(err_to_string(e)),
             Err(e) => entries.push((p, Err(e))),
@@ -79,7 +80,7 @@ pub async fn handle(
     }
     let results = entries
         .into_iter()
-        .map(|(p, resolved)| delete_one(&resolver, scope_root, &p, req.recursive, resolved))
+        .map(|(p, resolved)| delete_one(&resolver, scope_anchor, &p, req.recursive, resolved))
         .collect();
     Ok(DeleteFileOutput { results })
 }
@@ -396,6 +397,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             },
         )
@@ -423,6 +425,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: abs,
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             },
         )
@@ -449,6 +452,7 @@ mod tests {
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
                 }),
             },
         )

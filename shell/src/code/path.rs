@@ -331,21 +331,6 @@ impl PathResolver {
         set.is_match(&rel)
     }
 
-    /// Resolve and reject if the result is on the non-accessible list.
-    /// Used by every mutating operation and by `read-file` so the same
-    /// glob hides both reads and writes.
-    ///
-    /// The C211 message is intentionally identical in wording to the
-    /// not-found case (REDACTION INVARIANT: callers must not be able to
-    /// distinguish "denied" from "missing" by observing the error text).
-    pub fn require_writable(&self, rel: &str) -> Result<PathBuf, CoderError> {
-        let abs = self.resolve(rel)?;
-        if self.is_non_accessible(&abs) {
-            return Err(CoderError::not_found_or_denied(rel));
-        }
-        Ok(abs)
-    }
-
     /// Shared symlink-safe canonicalisation of a joined wire path, with the
     /// standardized C215/C211/C216 error mapping. Extracted verbatim from
     /// `resolve` so `resolve` and `resolve_in` map I/O failures identically
@@ -455,41 +440,51 @@ impl PathResolver {
         Ok(canon)
     }
 
-    /// `require_writable` for a session scoped to `scope_root`: resolve via
-    /// `resolve_in`, then apply the same non-accessible glob gate. Mutating
-    /// ops in `scope_root`-present mode call this instead of `require_writable`.
-    pub fn require_writable_in(&self, scope_root: &str, rel: &str) -> Result<PathBuf, CoderError> {
-        let abs = self.resolve_in(scope_root, rel)?;
-        if self.is_non_accessible(&abs) {
-            return Err(CoderError::not_found_or_denied(rel));
+    fn resolve_from(&self, anchor: &str, path: &str) -> Result<PathBuf, CoderError> {
+        let anchor_path = Path::new(anchor);
+        if !anchor_path.is_absolute() {
+            return Err(CoderError::BadInput(format!(
+                "scope_root must be an absolute path: {anchor}"
+            )));
         }
-        Ok(abs)
+        let anchor_canon = self.canonicalize_wire(anchor, anchor_path)?;
+        if self.containing_root(&anchor_canon).is_none() {
+            return Err(CoderError::OutsideBase(format!(
+                "scope_root is outside every allowed root: {anchor}. {C215_ROOTS_PREFIX}{roots}",
+                roots = self.roots_list()
+            )));
+        }
+        if Path::new(path).is_absolute() {
+            self.resolve(path)
+        } else {
+            self.resolve(&anchor_canon.join(path).to_string_lossy())
+        }
     }
 
-    /// Dispatch helper: resolve `path` against `scope_root` when present, else
-    /// use the normal resolver. Handlers thread the per-call `scope_root` straight
-    /// through.
-    pub fn resolve_opt(&self, scope_root: Option<&str>, path: &str) -> Result<PathBuf, CoderError> {
-        match scope_root {
-            Some(b) => self.resolve_in(b, path),
+    pub fn resolve_scope(
+        &self,
+        scope: Option<&crate::fs::FsScope>,
+        path: &str,
+    ) -> Result<PathBuf, CoderError> {
+        match scope {
+            Some(scope) if scope.boundary == crate::fs::FsBoundary::ConfiguredRoots => {
+                self.resolve_from(scope.root(), path)
+            }
+            Some(scope) => self.resolve_in(scope.root(), path),
             None => self.resolve(path),
         }
     }
 
-    /// Dispatch helper mirroring [`resolve_opt`] for mutating/accessibility-
-    /// gated reads: `require_writable_in` when `scope_root` is present, else
-    /// the unchanged `require_writable`.
-    ///
-    /// [`resolve_opt`]: Self::resolve_opt
-    pub fn require_writable_opt(
+    pub fn require_writable_scope(
         &self,
-        scope_root: Option<&str>,
-        rel: &str,
+        scope: Option<&crate::fs::FsScope>,
+        path: &str,
     ) -> Result<PathBuf, CoderError> {
-        match scope_root {
-            Some(b) => self.require_writable_in(b, rel),
-            None => self.require_writable(rel),
+        let abs = self.resolve_scope(scope, path)?;
+        if self.is_non_accessible(&abs) {
+            return Err(CoderError::not_found_or_denied(path));
         }
+        Ok(abs)
     }
 }
 
@@ -867,7 +862,12 @@ mod tests {
         let tmp = tempdir().unwrap();
         std::fs::write(tmp.path().join(".env"), b"x").unwrap();
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec!["**/.env"])).unwrap();
-        let err = r.require_writable(".env").unwrap_err();
+        let scope = crate::fs::FsScope {
+            root: tmp.path().display().to_string(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::ConfiguredRoots,
+        };
+        let err = r.require_writable_scope(Some(&scope), ".env").unwrap_err();
         assert_eq!(err.code(), "C211");
     }
 
@@ -981,7 +981,7 @@ mod tests {
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec![])).unwrap();
         let dir = r.resolve("node_modules").unwrap();
         assert!(!r.is_non_accessible(&dir));
-        assert!(r.require_writable("node_modules/x.txt").is_ok());
+        assert!(r.require_writable_scope(None, "node_modules/x.txt").is_ok());
     }
 
     // RECOVERY-PAIR TEST: parse the first allowed root out of the C215 error
@@ -1088,7 +1088,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Per-call scope_root (resolve_in / require_writable_in): a containment
+    // Per-call scope_root (resolve_in / require_writable_scope): a containment
     // check + relative-anchor LAYERED on the existing jail core. These
     // exercise the new C218 DX-1 error and prove scope_root=None is unchanged.
     // -----------------------------------------------------------------------
@@ -1248,7 +1248,14 @@ mod tests {
         let base = selected.path().display().to_string();
 
         let scoped = r.session_scoped(Some(&base), None);
-        let err = scoped.require_writable_in(&base, ".env").unwrap_err();
+        let scope = crate::fs::FsScope {
+            root: base,
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        };
+        let err = scoped
+            .require_writable_scope(Some(&scope), ".env")
+            .unwrap_err();
         assert_eq!(err.code(), "C211");
     }
 
@@ -1329,63 +1336,50 @@ mod tests {
         );
     }
 
-    /// require_writable_in applies the non-accessible glob gate on top of
+    /// require_writable_scope applies the non-accessible glob gate on top of
     /// the session containment (C211, identical to require_writable).
     #[test]
-    fn require_writable_in_rejects_non_accessible_with_c211() {
+    fn require_writable_scope_rejects_non_accessible_with_c211() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("session")).unwrap();
         std::fs::write(tmp.path().join("session/.env"), b"x").unwrap();
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec!["**/.env"])).unwrap();
         let base = tmp.path().join("session").display().to_string();
-        let err = r.require_writable_in(&base, ".env").unwrap_err();
+        let scope = crate::fs::FsScope {
+            root: base,
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        };
+        let err = r.require_writable_scope(Some(&scope), ".env").unwrap_err();
         assert_eq!(err.code(), "C211");
     }
 
-    /// BACK-COMPAT: the dispatch helpers with scope_root=None must produce
-    /// EXACTLY what resolve()/require_writable() produce — both the Ok path
-    /// and the error path, byte-for-byte. This pins that the None branch is
-    /// the unchanged legacy code.
     #[test]
-    fn resolve_opt_none_is_identical_to_resolve() {
+    fn configured_roots_scope_anchors_relative_paths_and_allows_siblings() {
         let tmp = tempdir().unwrap();
-        std::fs::create_dir(tmp.path().join("sub")).unwrap();
-        std::fs::write(tmp.path().join("sub/a.txt"), b"hi").unwrap();
-        std::fs::write(tmp.path().join(".env"), b"secret").unwrap();
-        let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec!["**/.env"])).unwrap();
+        std::fs::create_dir_all(tmp.path().join("session")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sibling")).unwrap();
+        std::fs::write(tmp.path().join("session/local.txt"), b"local").unwrap();
+        std::fs::write(tmp.path().join("sibling/shared.txt"), b"shared").unwrap();
+        let resolver = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec![])).unwrap();
+        let scope = crate::fs::FsScope {
+            root: tmp.path().join("session").display().to_string(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::ConfiguredRoots,
+        };
 
-        // Ok path: relative, existing nested, dot — all must match resolve().
-        for p in [".", "sub/a.txt", "sub/does/not/exist.txt"] {
-            assert_eq!(
-                r.resolve_opt(None, p).unwrap(),
-                r.resolve(p).unwrap(),
-                "resolve_opt(None) diverged from resolve() for {p:?}"
-            );
-        }
-
-        // Error path: identical code AND identical message text.
-        for p in ["/etc/passwd", "../etc/passwd"] {
-            let via_opt = r.resolve_opt(None, p).unwrap_err();
-            let via_resolve = r.resolve(p).unwrap_err();
-            assert_eq!(via_opt.code(), via_resolve.code());
-            assert_eq!(
-                via_opt.to_string(),
-                via_resolve.to_string(),
-                "resolve_opt(None) error text diverged for {p:?}"
-            );
-        }
-
-        // require_writable_opt(None) must also mirror require_writable,
-        // including the glob-denied C211.
         assert_eq!(
-            r.require_writable_opt(None, ".env")
-                .unwrap_err()
-                .to_string(),
-            r.require_writable(".env").unwrap_err().to_string(),
+            resolver.resolve_scope(Some(&scope), "local.txt").unwrap(),
+            canon(&tmp.path().join("session/local.txt"))
         );
         assert_eq!(
-            r.require_writable_opt(None, "sub/a.txt").unwrap(),
-            r.require_writable("sub/a.txt").unwrap(),
+            resolver
+                .resolve_scope(
+                    Some(&scope),
+                    &tmp.path().join("sibling/shared.txt").display().to_string(),
+                )
+                .unwrap(),
+            canon(&tmp.path().join("sibling/shared.txt"))
         );
     }
 }

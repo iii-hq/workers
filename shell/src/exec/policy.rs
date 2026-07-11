@@ -294,24 +294,41 @@ fn validate_env(env: &BTreeMap<String, String>) -> Result<BTreeMap<String, Strin
 pub fn build_overrides(
     cwd: Option<&str>,
     env: Option<&BTreeMap<String, String>>,
-    scope_root: Option<&str>,
+    scope_anchor: Option<&str>,
     scope_grants: Option<&[String]>,
+    boundary: crate::fs::FsBoundary,
     cfg: &ShellConfig,
 ) -> Result<ExecOverrides, ExecError> {
     let (host_roots_canon, denylist_canon) = jail_inputs(cfg)?;
     // Resolve the session directory first: it gates the cwd confinement below
     // and, when no cwd is supplied, becomes the working directory itself.
-    let scope_root_canon = confine_scope_root(scope_root, &denylist_canon)?;
+    let scope_root_canon = confine_scope_root(scope_anchor, &denylist_canon)?;
     let scope_grants_canon = crate::fs::host::confine_scope_grants(scope_grants, &denylist_canon);
+    let confinement_root = (boundary == crate::fs::FsBoundary::Workspace)
+        .then_some(scope_root_canon.as_deref())
+        .flatten();
 
     let cwd = match cwd {
-        Some(c) => Some(confine_cwd(
-            c,
-            &host_roots_canon,
-            scope_root_canon.as_deref(),
-            &scope_grants_canon,
-            &denylist_canon,
-        )?),
+        Some(c) => {
+            let anchored;
+            let c = if boundary == crate::fs::FsBoundary::ConfiguredRoots
+                && !Path::new(c).is_absolute()
+            {
+                anchored = scope_root_canon
+                    .as_ref()
+                    .map(|root| root.join(c).to_string_lossy().into_owned());
+                anchored.as_deref().unwrap_or(c)
+            } else {
+                c
+            };
+            Some(confine_cwd(
+                c,
+                &host_roots_canon,
+                confinement_root,
+                &scope_grants_canon,
+                &denylist_canon,
+            )?)
+        }
         // No explicit cwd: a session scope_root (already validated as an existing
         // directory) becomes the working directory, so the child runs in the
         // session root instead of `cfg.working_dir`. Without scope_root this stays
@@ -491,7 +508,8 @@ mod tests {
     #[test]
     fn build_overrides_both_none_is_empty() {
         let c = ShellConfig::default();
-        let ov = build_overrides(None, None, None, None, &c).expect("ok");
+        let ov = build_overrides(None, None, None, None, crate::fs::FsBoundary::Workspace, &c)
+            .expect("ok");
         assert!(ov.is_empty());
     }
 
@@ -507,7 +525,15 @@ mod tests {
         let base = root.join("session").to_string_lossy().into_owned();
 
         // cwd omitted ⇒ working dir is scope_root.
-        let ov = build_overrides(None, None, Some(&base), None, &c).expect("scope_root is valid");
+        let ov = build_overrides(
+            None,
+            None,
+            Some(&base),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect("scope_root is valid");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("session").canonicalize().unwrap().as_path()),
@@ -515,8 +541,15 @@ mod tests {
         );
 
         // relative cwd anchors at scope_root, not the jail root.
-        let ov = build_overrides(Some("inner"), None, Some(&base), None, &c)
-            .expect("inner is under scope_root");
+        let ov = build_overrides(
+            Some("inner"),
+            None,
+            Some(&base),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect("inner is under scope_root");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("session/inner").canonicalize().unwrap().as_path()),
@@ -535,8 +568,15 @@ mod tests {
         let c = cfg_jailed(&root);
         let outside = root.join("other").canonicalize().unwrap();
         let base = root.join("session").to_string_lossy().into_owned();
-        let err = build_overrides(Some(outside.to_str().unwrap()), None, Some(&base), None, &c)
-            .expect_err("abs cwd outside scope_root must reject");
+        let err = build_overrides(
+            Some(outside.to_str().unwrap()),
+            None,
+            Some(&base),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect_err("abs cwd outside scope_root must reject");
         assert_eq!(err.code, "S220", "must be the distinct scope_root code");
         let session_canon = root.join("session").canonicalize().unwrap();
         assert!(
@@ -564,14 +604,28 @@ mod tests {
         std::fs::create_dir_all(selected.join("inner")).unwrap();
         let c = cfg_jailed(&root);
         let selected_raw = selected.to_string_lossy().into_owned();
-        let ov = build_overrides(None, None, Some(&selected_raw), None, &c)
-            .expect("absolute selected scope_root is valid");
+        let ov = build_overrides(
+            None,
+            None,
+            Some(&selected_raw),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect("absolute selected scope_root is valid");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(selected.canonicalize().unwrap().as_path())
         );
-        let ov = build_overrides(Some("inner"), None, Some(&selected_raw), None, &c)
-            .expect("relative cwd anchors at selected scope_root");
+        let ov = build_overrides(
+            Some("inner"),
+            None,
+            Some(&selected_raw),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect("relative cwd anchors at selected scope_root");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(selected.join("inner").canonicalize().unwrap().as_path())
@@ -587,8 +641,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let c = cfg_jailed(&root);
-        let err = build_overrides(None, None, Some("../../etc"), None, &c)
-            .expect_err("relative scope_root is not part of the trusted contract");
+        let err = build_overrides(
+            None,
+            None,
+            Some("../../etc"),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect_err("relative scope_root is not part of the trusted contract");
         assert_eq!(err.code, "S210");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -602,18 +663,66 @@ mod tests {
         let c = cfg_jailed(&root);
 
         // Omitted cwd + omitted scope_root ⇒ no cwd override (cfg.working_dir wins).
-        let ov = build_overrides(None, None, None, None, &c).expect("ok");
+        let ov = build_overrides(None, None, None, None, crate::fs::FsBoundary::Workspace, &c)
+            .expect("ok");
         assert!(
             ov.cwd.is_none(),
             "no scope_root, no cwd ⇒ None (prior behaviour)"
         );
 
         // Relative cwd still anchors at the primary jail root when scope_root is absent.
-        let ov = build_overrides(Some("sub"), None, None, None, &c).expect("ok");
+        let ov = build_overrides(
+            Some("sub"),
+            None,
+            None,
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &c,
+        )
+        .expect("ok");
         assert_eq!(
             ov.cwd.as_deref(),
             Some(root.join("sub").canonicalize().unwrap().as_path()),
             "relative cwd anchors at the primary jail root when scope_root is absent"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn configured_roots_boundary_keeps_default_cwd_but_allows_sibling_cwd() {
+        let root = std::env::temp_dir().join(format!("shell-policy-{}", uuid::Uuid::new_v4()));
+        let session = root.join("session");
+        let sibling = root.join("sibling");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let c = cfg_jailed(&root);
+
+        let defaulted = build_overrides(
+            None,
+            None,
+            Some(session.to_str().unwrap()),
+            None,
+            crate::fs::FsBoundary::ConfiguredRoots,
+            &c,
+        )
+        .unwrap();
+        assert_eq!(
+            defaulted.cwd.as_deref(),
+            Some(session.canonicalize().unwrap().as_path())
+        );
+
+        let widened = build_overrides(
+            Some(sibling.to_str().unwrap()),
+            None,
+            Some(session.to_str().unwrap()),
+            None,
+            crate::fs::FsBoundary::ConfiguredRoots,
+            &c,
+        )
+        .expect("sibling cwd is permitted inside configured shell roots");
+        assert_eq!(
+            widened.cwd.as_deref(),
+            Some(sibling.canonicalize().unwrap().as_path())
         );
         std::fs::remove_dir_all(&root).ok();
     }

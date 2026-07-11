@@ -117,10 +117,10 @@ pub async fn handle(
             "`files` must not be empty".into(),
         )));
     }
-    let scope_root = crate::fs::scope_root(req.fs_scope.as_ref());
+    let fs_scope = req.fs_scope.as_ref();
     for spec in &req.files {
         for path in [&spec.from, &spec.to] {
-            if let Err(e) = resolver.require_writable_opt(scope_root, path) {
+            if let Err(e) = resolver.require_writable_scope(fs_scope, path) {
                 if is_jail_scope_error(&e) {
                     return Err(err_to_string(e));
                 }
@@ -129,7 +129,7 @@ pub async fn handle(
     }
     let mut results = Vec::with_capacity(req.files.len());
     for spec in req.files {
-        results.push(move_one(&resolver, scope_root, spec));
+        results.push(move_one(&resolver, fs_scope, spec));
     }
     Ok(MoveFileOutput { results })
 }
@@ -147,11 +147,11 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
 
 fn move_one(
     resolver: &PathResolver,
-    scope_root: Option<&str>,
+    fs_scope: Option<&crate::fs::FsScope>,
     spec: MoveFileSpec,
 ) -> MoveFileResult {
     // Resolve source.
-    let abs_from = match resolver.require_writable_opt(scope_root, &spec.from) {
+    let abs_from = match resolver.require_writable_scope(fs_scope, &spec.from) {
         Ok(p) => p,
         Err(e) => {
             return MoveFileResult {
@@ -165,7 +165,7 @@ fn move_one(
     };
 
     // Resolve destination (may not exist yet — resolution via fallback is fine).
-    let abs_to = match resolver.require_writable_opt(scope_root, &spec.to) {
+    let abs_to = match resolver.require_writable_scope(fs_scope, &spec.to) {
         Ok(p) => p,
         Err(e) => {
             return MoveFileResult {

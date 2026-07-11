@@ -1532,10 +1532,15 @@ export function ChatView({
               <button
                 type="button"
                 onClick={handleManageFilesystemAccess}
+                title={
+                  approvalEnabled
+                    ? 'Access is limited to this workspace until you approve another folder.'
+                    : 'The working directory sets where commands start; shell configuration controls access.'
+                }
                 className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
               >
-                filesystem access
-                {filesystemGrants.grants.length > 0
+                access: {approvalEnabled ? 'workspace' : 'shell defaults'}
+                {approvalEnabled && filesystemGrants.grants.length > 0
                   ? ` · ${filesystemGrants.grants.length}`
                   : ''}
               </button>
@@ -1633,6 +1638,7 @@ export function ChatView({
           onRevoke={filesystemGrants.revoke}
           onRefreshGrants={filesystemGrants.refresh}
           sessionBusy={streamingIndicator}
+          workspaceScoped={approvalEnabled}
         />
       ) : null}
     </section>
