@@ -198,19 +198,17 @@ async fn main() -> Result<()> {
         );
     }
 
-    let code_cells = if cfg.fs.is_jailed() {
-        Some(
-            configuration::build_code_cells(&cfg)
-                .map_err(anyhow::Error::msg)
-                .context("building initial code surface state (coder::*)")?,
-        )
-    } else {
-        None
-    };
+    // coder::* remains jailed even when shell::fs::* is explicitly unjailed:
+    // an empty fs.host_roots uses the code resolver's narrow cwd + /tmp
+    // fallback. Building the cells unconditionally keeps the zero-config
+    // worker useful while preserving the coder path boundary.
+    let code_cells = configuration::build_code_cells(&cfg)
+        .map_err(anyhow::Error::msg)
+        .context("building initial code surface state (coder::*)")?;
 
     let state = AppState {
         runtime: std::sync::Arc::new(tokio::sync::RwLock::new(runtime)),
-        code_cells: code_cells.clone(),
+        code_cells: Some(code_cells.clone()),
         iii: iii.clone(),
         reload_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         reload_status: std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -237,22 +235,12 @@ async fn main() -> Result<()> {
             "boot reconcile of configuration failed (refusing to serve a possibly stale policy)",
         )?;
 
-    // Code surface (folded coder::*): build the path-jail resolver from the
-    // UNIFIED roots (fs.host_roots) + the `code` block's protected globs, then
-    // register the 9 code functions. The resolver IS the jail. A bad glob /
-    // unreachable root makes PathResolver::new fail and aborts startup — the
-    // whole worker fails closed (no half-booted surface). The code surface
-    // requires a jail: unjailed shells don't expose coder::*.
-    if cfg.fs.is_jailed() {
-        let cells = code_cells.expect("code cells exist when fs is jailed");
-        code::register_all(&iii, cells);
-        tracing::info!("code surface (coder::*) registered over the unified fs jail");
-    } else {
-        tracing::warn!(
-            "fs is unjailed (no fs.host_roots) — code surface (coder::*) NOT \
-             registered; coder file functions require a jail root"
-        );
-    }
+    // Code surface (folded coder::*): explicit fs.host_roots are shared with
+    // shell::fs::*; when they are empty, PathResolver supplies its own narrow
+    // cwd + /tmp defaults. In both cases the resolver is a jail. A bad glob or
+    // unreachable root aborts startup so the worker never half-boots.
+    code::register_all(&iii, code_cells);
+    tracing::info!("code surface (coder::*) registered");
 
     // exec / exec_bg / list read the live config snapshot from AppState.
     {
