@@ -63,9 +63,6 @@ fn build_code_snapshot(
     ),
     String,
 > {
-    if !cfg.fs.is_jailed() {
-        return Err("coder surface requires a jailed fs.host_roots config".to_string());
-    }
     let code_cfg = Arc::new(cfg.code_resolver_config());
     let resolver = Arc::new(
         PathResolver::new(&code_cfg)
@@ -533,6 +530,21 @@ mod tests {
     }
 
     #[test]
+    fn zero_config_seed_builds_coder_cells_with_narrow_fallback_roots() {
+        let cells = build_code_cells(&ShellConfig::seed_default())
+            .expect("zero-config shell must expose coder functions");
+        let resolver = cells.resolver.blocking_read();
+        let expected_cwd = std::fs::canonicalize(".").expect("current directory exists");
+        let expected_tmp = std::fs::canonicalize("/tmp").expect("/tmp exists");
+
+        assert_eq!(resolver.roots(), &[expected_cwd, expected_tmp]);
+        assert!(
+            cells.config.blocking_read().base_paths.is_empty(),
+            "empty configured roots must keep using the coder-only fallback"
+        );
+    }
+
+    #[test]
     fn prepare_config_accepts_pinned_host_roots() {
         let mut c = ShellConfig::default();
         c.fs.host_roots = vec![std::path::PathBuf::from("/tmp/shell")];
@@ -824,6 +836,26 @@ mod tests {
             "coder resolver must see the newly reloaded shell root"
         );
         assert_eq!(cells.config.read().await.base_paths, vec![dir_b]);
+
+        // Clearing host_roots is an explicit shell::fs::* widening, but coder
+        // remains jailed to its own cwd + /tmp fallback and stays available.
+        let unjailed = ShellConfig::seed_default();
+        let res = reload_serialized(&state, {
+            let unjailed = unjailed.clone();
+            move || async move { Ok::<_, String>(unjailed.to_json()) }
+        })
+        .await;
+        assert!(matches!(res, Ok(ReloadOutcome::Applied)));
+
+        let after = cells.resolver.read().await.clone();
+        assert_eq!(
+            after.roots(),
+            &[
+                std::fs::canonicalize(".").expect("current directory exists"),
+                std::fs::canonicalize("/tmp").expect("/tmp exists"),
+            ]
+        );
+        assert!(cells.config.read().await.base_paths.is_empty());
     }
 
     #[tokio::test]
