@@ -169,6 +169,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root.clone(),
                 grants: Vec::new(),
+                boundary: shell::fs::FsBoundary::Workspace,
             }),
             ..ReadFileInput::default()
         },
@@ -191,6 +192,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root.clone(),
                 grants: Vec::new(),
+                boundary: shell::fs::FsBoundary::Workspace,
             }),
         },
     )
@@ -210,6 +212,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root,
                 grants: Vec::new(),
+                boundary: shell::fs::FsBoundary::Workspace,
             }),
         },
     )

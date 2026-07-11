@@ -331,21 +331,6 @@ impl PathResolver {
         set.is_match(&rel)
     }
 
-    /// Resolve and reject if the result is on the non-accessible list.
-    /// Used by every mutating operation and by `read-file` so the same
-    /// glob hides both reads and writes.
-    ///
-    /// The C211 message is intentionally identical in wording to the
-    /// not-found case (REDACTION INVARIANT: callers must not be able to
-    /// distinguish "denied" from "missing" by observing the error text).
-    pub fn require_writable(&self, rel: &str) -> Result<PathBuf, CoderError> {
-        let abs = self.resolve(rel)?;
-        if self.is_non_accessible(&abs) {
-            return Err(CoderError::not_found_or_denied(rel));
-        }
-        Ok(abs)
-    }
-
     /// Shared symlink-safe canonicalisation of a joined wire path, with the
     /// standardized C215/C211/C216 error mapping. Extracted verbatim from
     /// `resolve` so `resolve` and `resolve_in` map I/O failures identically
@@ -453,17 +438,6 @@ impl PathResolver {
             )));
         }
         Ok(canon)
-    }
-
-    /// `require_writable` for a session scoped to `scope_root`: resolve via
-    /// `resolve_in`, then apply the same non-accessible glob gate. Mutating
-    /// ops in `scope_root`-present mode call this instead of `require_writable`.
-    pub fn require_writable_in(&self, scope_root: &str, rel: &str) -> Result<PathBuf, CoderError> {
-        let abs = self.resolve_in(scope_root, rel)?;
-        if self.is_non_accessible(&abs) {
-            return Err(CoderError::not_found_or_denied(rel));
-        }
-        Ok(abs)
     }
 
     fn resolve_from(&self, anchor: &str, path: &str) -> Result<PathBuf, CoderError> {
@@ -888,7 +862,12 @@ mod tests {
         let tmp = tempdir().unwrap();
         std::fs::write(tmp.path().join(".env"), b"x").unwrap();
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec!["**/.env"])).unwrap();
-        let err = r.require_writable(".env").unwrap_err();
+        let scope = crate::fs::FsScope {
+            root: tmp.path().display().to_string(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::ConfiguredRoots,
+        };
+        let err = r.require_writable_scope(Some(&scope), ".env").unwrap_err();
         assert_eq!(err.code(), "C211");
     }
 
@@ -1002,7 +981,7 @@ mod tests {
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec![])).unwrap();
         let dir = r.resolve("node_modules").unwrap();
         assert!(!r.is_non_accessible(&dir));
-        assert!(r.require_writable("node_modules/x.txt").is_ok());
+        assert!(r.require_writable_scope(None, "node_modules/x.txt").is_ok());
     }
 
     // RECOVERY-PAIR TEST: parse the first allowed root out of the C215 error
@@ -1109,7 +1088,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Per-call scope_root (resolve_in / require_writable_in): a containment
+    // Per-call scope_root (resolve_in / require_writable_scope): a containment
     // check + relative-anchor LAYERED on the existing jail core. These
     // exercise the new C218 DX-1 error and prove scope_root=None is unchanged.
     // -----------------------------------------------------------------------
@@ -1269,7 +1248,14 @@ mod tests {
         let base = selected.path().display().to_string();
 
         let scoped = r.session_scoped(Some(&base), None);
-        let err = scoped.require_writable_in(&base, ".env").unwrap_err();
+        let scope = crate::fs::FsScope {
+            root: base,
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        };
+        let err = scoped
+            .require_writable_scope(Some(&scope), ".env")
+            .unwrap_err();
         assert_eq!(err.code(), "C211");
     }
 
@@ -1350,16 +1336,21 @@ mod tests {
         );
     }
 
-    /// require_writable_in applies the non-accessible glob gate on top of
+    /// require_writable_scope applies the non-accessible glob gate on top of
     /// the session containment (C211, identical to require_writable).
     #[test]
-    fn require_writable_in_rejects_non_accessible_with_c211() {
+    fn require_writable_scope_rejects_non_accessible_with_c211() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("session")).unwrap();
         std::fs::write(tmp.path().join("session/.env"), b"x").unwrap();
         let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec!["**/.env"])).unwrap();
         let base = tmp.path().join("session").display().to_string();
-        let err = r.require_writable_in(&base, ".env").unwrap_err();
+        let scope = crate::fs::FsScope {
+            root: base,
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        };
+        let err = r.require_writable_scope(Some(&scope), ".env").unwrap_err();
         assert_eq!(err.code(), "C211");
     }
 

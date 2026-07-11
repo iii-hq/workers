@@ -50,6 +50,6 @@ Feature: coder path security
       """
     When I call coder::read-file with payload:
       """
-      {"path":"../outside-session.txt","fs_scope":{"root":"{{session}}"}}
+      {"path":"../outside-session.txt","fs_scope":{"root":"{{session}}","boundary":"workspace"}}
       """
     Then the call failed with code "C218"

@@ -309,13 +309,10 @@ mod tests {
     #[test]
     fn filesystem_boundary_tracks_the_live_access_watch_binding() {
         let set = HookSet::default();
-        assert_eq!(
-            set.has_function_binding(
-                crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-                "shell::fs::ls"
-            ),
-            false
-        );
+        assert!(!set.has_function_binding(
+            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+            "shell::fs::ls"
+        ));
         set.add(
             HookPoint::PostTrigger,
             cfg(
