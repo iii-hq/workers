@@ -118,6 +118,14 @@ def load_config() -> dict[str, Any]:
     return cfg
 
 
+def _print_connected(state: str, url: str) -> None:
+    # Fires on every (re)connect via the SDK connection-state listener, so the
+    # "connected" line is evidence of a live socket, not startup aspiration (MOT-3969).
+    if state == "connected":
+        # flush: this line is timing evidence; don't let it sit in a pipe buffer
+        print(f"hermes worker connected to {url}", flush=True)
+
+
 def main() -> None:
     cfg = load_config()
     url = os.environ.get("III_URL") or cfg["engine_url"]
@@ -217,7 +225,7 @@ def main() -> None:
         handlers["inbound"],
     )
 
-    print(f"hermes worker connected to {url}")
+    iii.add_connection_state_listener(lambda state: _print_connected(state, url))
 
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
