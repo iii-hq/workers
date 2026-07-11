@@ -462,6 +462,7 @@ fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) 
         functions: opts.functions,
         metadata: opts.metadata,
         max_validation_retries: cfg.max_validation_retries,
+        max_transient_resumes: cfg.max_transient_resumes,
     }
 }
 
@@ -579,6 +580,7 @@ async fn seed_new(
         result: None,
         result_error: None,
         validation_retries: 0,
+        transient_resumes: 0,
         created_at: now,
         updated_at: now,
     };

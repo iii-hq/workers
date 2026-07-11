@@ -233,4 +233,35 @@ describe('appendMessageToConversation', () => {
     expect(next.statusReason).toBeUndefined()
     expect(next.updatedAt).toBe(3_500)
   })
+
+  it('upserts a durable lifecycle notice over its live fallback', () => {
+    const next = appendMessageToConversation(
+      conversation({
+        messages: [
+          {
+            id: 'e_t-1_error',
+            role: 'system',
+            kind: 'notice',
+            tone: 'error',
+            content: 'response failed',
+            createdAt: 3_000,
+          },
+        ],
+      }),
+      {
+        id: 'e_t-1_error',
+        role: 'system',
+        kind: 'notice',
+        tone: 'error',
+        content: 'turn failed [llm.transient] — exact reason',
+        createdAt: 3_100,
+      },
+    )
+
+    expect(next.messages).toHaveLength(1)
+    expect(next.messages[0]).toMatchObject({
+      id: 'e_t-1_error',
+      content: 'turn failed [llm.transient] — exact reason',
+    })
+  })
 })

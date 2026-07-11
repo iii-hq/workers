@@ -187,14 +187,47 @@ describe('translateTurnSource — turn-completed', () => {
         completed({ status: 'failed', result_error: 'provider exploded' }),
       ),
     ).toEqual([
-      { kind: 'stop-reason', reason: 'error', message: 'provider exploded' },
+      {
+        kind: 'stop-reason',
+        reason: 'error',
+        message: 'provider exploded',
+        entryId: 'e_t-1_error',
+        partialResultAvailable: false,
+      },
       { kind: 'assistant-end' },
     ])
   })
 
   it('omits the message when a failed turn carries no reason', () => {
     expect(translateTurnSource(completed({ status: 'failed' }))).toEqual([
-      { kind: 'stop-reason', reason: 'error', message: undefined },
+      {
+        kind: 'stop-reason',
+        reason: 'error',
+        message: undefined,
+        entryId: 'e_t-1_error',
+        partialResultAvailable: false,
+      },
+      { kind: 'assistant-end' },
+    ])
+  })
+
+  it('treats a legacy completed result_error as a visible failure', () => {
+    expect(
+      translateTurnSource(
+        completed({
+          status: 'completed',
+          result: 'best effort',
+          result_error: 'schema mismatch',
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'stop-reason',
+        reason: 'error',
+        message: 'schema mismatch',
+        entryId: 'e_t-1_error',
+        partialResultAvailable: true,
+      },
       { kind: 'assistant-end' },
     ])
   })

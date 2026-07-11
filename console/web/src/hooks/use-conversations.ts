@@ -214,7 +214,13 @@ export function appendMessageToConversation(
   message: Message,
   now = Date.now(),
 ): Conversation {
-  const messages = [...c.messages, message]
+  const existingIndex = c.messages.findIndex((item) => item.id === message.id)
+  const messages =
+    existingIndex === -1
+      ? [...c.messages, message]
+      : c.messages.map((item, index) =>
+          index === existingIndex ? message : item,
+        )
   const next: Conversation = {
     ...c,
     messages,

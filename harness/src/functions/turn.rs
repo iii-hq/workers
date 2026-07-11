@@ -5,6 +5,9 @@
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::turn_loop::{self, TurnStepPayload, TurnStepResult};
+use crate::types::turn::TurnStatus;
+use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
+use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 
 pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
     // Stamp this turn's identity into OTel baggage for the whole step. Every
@@ -73,11 +76,33 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
     let (session_id, turn_id) = (payload.session_id.clone(), payload.turn_id.clone());
-    match turn_loop::run_step(deps, payload).await {
-        Ok(result) => Ok(result),
+    let result = match turn_loop::run_step(deps, payload).await {
+        Ok(result) => result,
         Err(e) => {
             tracing::error!(session_id = %session_id, turn_id = %turn_id, error = %e, "turn step failed; finalising turn as failed");
-            Ok(turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await)
+            turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await
         }
+    };
+    record_step_status(&result);
+    Ok(result)
+}
+
+fn record_step_status(result: &TurnStepResult) {
+    let status = match result.status {
+        TurnStatus::Running => "running",
+        TurnStatus::AwaitingFunctions => "awaiting_functions",
+        TurnStatus::Completed => "completed",
+        TurnStatus::Cancelled => "cancelled",
+        TurnStatus::Failed => "failed",
+    };
+    let cx = Context::current();
+    let span = cx.span();
+    if !span.span_context().is_valid() {
+        return;
+    }
+    span.set_attribute(KeyValue::new("iii.turn.status", status));
+    if result.status == TurnStatus::Failed {
+        span.set_attribute(KeyValue::new("iii.tag.outcome", "failed"));
+        span.set_status(Status::error("harness turn failed"));
     }
 }

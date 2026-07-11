@@ -63,6 +63,7 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
   const endTime = pending ? undefined : toMs(span.end_time_unix_nano)
   const duration = endTime === undefined ? undefined : endTime - startTime
   const attrs = normalizeSpanAttributes(span.attributes)
+  const traceOutcome = span.trace_tags?.['iii.tag.outcome']
 
   const functionId = (attrs['faas.invoked_name'] || attrs.function_id) as
     | string
@@ -75,7 +76,9 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
     functionId,
     topic,
     status:
-      span.status.toLowerCase() === 'error'
+      span.status.toLowerCase() === 'error' ||
+      traceOutcome === 'failed' ||
+      traceOutcome === 'error'
         ? 'error'
         : pending
           ? 'pending'

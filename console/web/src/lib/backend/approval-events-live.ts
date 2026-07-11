@@ -11,6 +11,7 @@
  */
 
 import type { IiiClient } from '@/lib/iii-client'
+import type { Conversation } from '@/types/chat'
 import type {
   PendingApprovalRecord,
   PendingResolvedEvent,
@@ -32,7 +33,7 @@ function bind<P>(
   client: ClientSubset,
   handlerFn: string,
   triggerType: string,
-  sessionId: string,
+  sessionId: string | undefined,
   onEvent: (payload: P) => void,
 ): () => void {
   const off = client.on(handlerFn, (payload: unknown) => {
@@ -47,7 +48,7 @@ function bind<P>(
   const offTrigger = client.registerTrigger({
     type: triggerType,
     function_id: `${handlerFn}::${client.browserId}`,
-    config: { session_id: sessionId },
+    config: sessionId ? { session_id: sessionId } : {},
   })
   return () => {
     off()
@@ -65,7 +66,7 @@ function bind<P>(
  */
 export function startApprovalEventsSubscription(
   client: ClientSubset,
-  sessionId: string,
+  sessionId: string | undefined,
   handlers: ApprovalEventHandlers,
 ): () => void {
   const offs = [
@@ -96,11 +97,44 @@ export function startApprovalEventsSubscription(
  */
 export async function listPendingApprovals(
   client: Pick<IiiClient, 'trigger'>,
-  sessionId: string,
+  sessionId?: string,
 ): Promise<PendingApprovalRecord[]> {
   const res = await client.trigger<{ pending?: PendingApprovalRecord[] }>(
     'approval::list-pending',
-    { session_id: sessionId },
+    sessionId ? { session_id: sessionId } : { limit: 500 },
   )
   return Array.isArray(res?.pending) ? res.pending : []
+}
+
+/**
+ * True when an approval's owning session is the active conversation or one of
+ * its descendants. The pending record's denormalized parent handles the
+ * creation race for direct children; the live conversation tree resolves
+ * deeper descendants without requiring a root id to be persisted separately.
+ */
+export function approvalBelongsToConversationTree(
+  approval: Pick<PendingApprovalRecord, 'session_id' | 'session_metadata'>,
+  rootSessionId: string,
+  conversations: ReadonlyArray<Pick<Conversation, 'id' | 'parentId'>>,
+): boolean {
+  if (approval.session_id === rootSessionId) return true
+
+  const parentById = new Map(
+    conversations.map((conversation) => [
+      conversation.id,
+      conversation.parentId,
+    ]),
+  )
+  const recordParent = approval.session_metadata?.parent_session_id
+  let current =
+    typeof recordParent === 'string'
+      ? recordParent
+      : parentById.get(approval.session_id)
+  const visited = new Set<string>()
+  while (current && !visited.has(current)) {
+    if (current === rootSessionId) return true
+    visited.add(current)
+    current = parentById.get(current)
+  }
+  return false
 }

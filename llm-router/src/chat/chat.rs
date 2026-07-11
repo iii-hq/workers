@@ -227,6 +227,7 @@ impl ChatPipeline {
                 &call.model,
                 resp.stop_reason,
                 resp.usage.as_ref(),
+                resp.error.as_ref(),
             );
         }
         result

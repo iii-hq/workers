@@ -207,13 +207,13 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
     )
 }
 
-/// `once` on a react binding: honored for simple edges (the binding retires
-/// after its first successful spawn); ignored for join predecessors — the
+/// `once` on a react binding: simple non-cron edges default to one-shot, while
+/// cron remains standing. Callers that truly want a standing state/turn watcher
+/// opt out with `once: false`. Join predecessors ignore this field because the
 /// join owns their lifecycle (auto-unregister on fire, `rearm` to keep).
-/// Only an EXPLICIT `true` opts in: applying the notify path's per-type
-/// default would flip every standing watcher to one-shot.
 fn react_once(req: &SubscribeRequest) -> bool {
-    req.once == Some(true) && req.metadata.as_ref().and_then(|m| m.get("join")).is_none()
+    req.metadata.as_ref().and_then(|m| m.get("join")).is_none()
+        && req.once.unwrap_or(!defaults_recurring(&req.trigger_type))
 }
 
 async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
@@ -800,14 +800,14 @@ mod tests {
     }
 
     #[test]
-    fn react_once_needs_explicit_true_and_no_join() {
-        let mk = |once: Option<bool>, join: bool| -> SubscribeRequest {
+    fn simple_reactions_default_once_while_cron_and_joins_stay_standing() {
+        let mk = |ty: &str, once: Option<bool>, join: bool| -> SubscribeRequest {
             let mut metadata = json!({ "model": "m", "task": "t" });
             if join {
                 metadata["join"] = json!({ "id": "J", "expect": ["a"], "key": "a" });
             }
             serde_json::from_value(json!({
-                "trigger_type": "state",
+                "trigger_type": ty,
                 "config": { "scope": "s", "key": "k" },
                 "function_id": "harness::react",
                 "once": once,
@@ -815,12 +815,13 @@ mod tests {
             }))
             .unwrap()
         };
-        assert!(react_once(&mk(Some(true), false)));
-        // No notify-path default: omitted or false stays persistent.
-        assert!(!react_once(&mk(None, false)));
-        assert!(!react_once(&mk(Some(false), false)));
+        assert!(react_once(&mk("state", Some(true), false)));
+        assert!(react_once(&mk("state", None, false)));
+        // Explicit opt-out and naturally recurring cron bindings stay standing.
+        assert!(!react_once(&mk("state", Some(false), false)));
+        assert!(!react_once(&mk("cron", None, false)));
         // The join owns its predecessors' lifecycle.
-        assert!(!react_once(&mk(Some(true), true)));
+        assert!(!react_once(&mk("state", Some(true), true)));
     }
 
     #[test]

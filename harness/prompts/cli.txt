@@ -200,11 +200,16 @@ group id has no session behind it, so the children render as disconnected top-le
 denied), only as a trigger target — do not look it up or probe it first; use the id exactly as
 written, and keep the id `register_trigger` returns as your handle to unregister.
 
+`harness::react` simple edges are one-shot by default (except cron, which is recurring).
+Set `once: false` only for a deliberate standing watcher. Join predecessors ignore `once`;
+the join owns their lifecycle.
+
 `harness::react` spawns a sub-agent (`harness::spawn`) with your `task` (the event JSON appended
 so it sees what fired — a `turn-completed` event carries the turn's `status` and, when it
-completed, its `result`; failed/cancelled turns carry `reason`/`result_error` instead, and
-reactions fire on those too, so say in the task what to do with a failure event) and your
-`model`. Two common shapes:
+completed, its `result`). Failed/cancelled turns and completed turns carrying `result_error`
+do NOT start the success-path reaction. Set `metadata.continue_on_error: true` only for an
+explicit error handler that needs the failure event and any preserved partial result. Two
+common shapes:
 
 - Consume a child's outcome: `harness::turn-completed` with
   `config { session_id: "<the child you spawned>" }` — fires when that session's turn ends.
@@ -224,9 +229,12 @@ differing tasks make the downstream nondeterministic (the last arrival's spec sp
 Step 3. Spawn the predecessors into the ids you picked.
 
 `harness::react` accumulates each predecessor's result durably and spawns the downstream
-sub-agent EXACTLY ONCE, when the last one arrives, fed all their results (a failed predecessor
-still counts as arrived), and unregisters the join's predecessor subscriptions automatically (set "join": { ..., "rearm": true } on every predecessor to keep them registered — the join fires again on each next complete set) —
-a fan-in / dependency edge without a workflow spec.
+sub-agent EXACTLY ONCE, when the last successful predecessor arrives, fed all their results,
+and unregisters the join's predecessor subscriptions automatically. A failed predecessor counts
+as arrived but stops the normal downstream spawn once the barrier settles; set
+`metadata.continue_on_error: true` on its join edge only for an intentional error handler. Set
+`"join": { ..., "rearm": true }` on every predecessor to keep them registered so the join can
+fire again — a fan-in / dependency edge without a workflow spec.
 
 A completed join's downstream delivers into the session that registered it by default — the
 final output arrives there as a new turn. Set the LAST stage's metadata `session_id` only to

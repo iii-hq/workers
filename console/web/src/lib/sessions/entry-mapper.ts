@@ -15,6 +15,8 @@
  *   re-derives the segment list wholesale and replaces the entry's range.
  * - `function_result` entries render no row of their own; they fill the
  *   `output` of the function-call row with the matching `functionCallId`.
+ * - Lifecycle custom entries (`error`, `recovery`, `reaction`) render durable
+ *   system notices so failure state survives refresh.
  * - `custom_type: "compaction"` custom entries render the compaction marker.
  *
  * Events are at-least-once and unordered: callers keep the highest
@@ -39,6 +41,8 @@ export const TRIGGER_FIRED_CUSTOM_TYPE = 'trigger_fired'
 export const ERROR_CUSTOM_TYPE = 'error'
 /** Harness informational record (`{ reason, message }`) — e.g. max_turns. */
 export const NOTICE_CUSTOM_TYPE = 'notice'
+export const RECOVERY_CUSTOM_TYPE = 'recovery'
+export const REACTION_CUSTOM_TYPE = 'reaction'
 
 /**
  * Map one typed custom record (however it arrived — `item.custom` on events,
@@ -59,9 +63,17 @@ function customSegments(
     // Harness failure/notice records: without these the turn can end in an
     // error the chat never shows (the session flips to "error" silently).
     case ERROR_CUSTOM_TYPE:
-      return [customNotice(entryId, data, 'error', 'turn failed', timestamp)]
+      return [
+        lifecycleNotice(entryId, customType, data, timestamp) ??
+          customNotice(entryId, data, 'error', 'turn failed', timestamp),
+      ]
     case NOTICE_CUSTOM_TYPE:
       return [customNotice(entryId, data, 'info', 'notice', timestamp)]
+    case RECOVERY_CUSTOM_TYPE:
+    case REACTION_CUSTOM_TYPE: {
+      const notice = lifecycleNotice(entryId, customType, data, timestamp)
+      return notice ? [notice] : []
+    }
     default:
       return null
   }
@@ -129,6 +141,96 @@ function triggerFiredMessage(
     trigger: t,
     createdAt: typeof t.fired_at === 'number' ? t.fired_at : timestamp,
   }
+}
+
+function lifecycleNotice(
+  entryId: string,
+  customType: string,
+  data: unknown,
+  timestamp: number,
+): SystemMessage | null {
+  const d = (data ?? {}) as Record<string, unknown>
+  const status = typeof d.status === 'string' ? d.status : undefined
+  const summary =
+    typeof d.summary === 'string'
+      ? d.summary
+      : typeof d.reason === 'string'
+        ? d.reason
+        : undefined
+  const createdAt = typeof d.timestamp === 'number' ? d.timestamp : timestamp
+
+  if (customType === ERROR_CUSTOM_TYPE) {
+    const code = typeof d.code === 'string' ? d.code : undefined
+    const partial = d.partial_result_available === true
+    const recovery =
+      d.recovery && typeof d.recovery === 'object'
+        ? (d.recovery as Record<string, unknown>)
+        : undefined
+    const attempted =
+      typeof recovery?.attempted === 'number' ? recovery.attempted : 0
+    const maxAttempts =
+      typeof recovery?.max_attempts === 'number'
+        ? recovery.max_attempts
+        : undefined
+    const parts = [
+      `turn failed${code ? ` [${code}]` : ''}${summary ? ` — ${summary}` : ''}`,
+      partial
+        ? 'partial output above was preserved and may be incomplete'
+        : undefined,
+      attempted > 0
+        ? `recovery exhausted (${attempted}/${maxAttempts ?? attempted})`
+        : undefined,
+    ].filter((part): part is string => Boolean(part))
+    return {
+      id: entryId,
+      role: 'system',
+      kind: 'notice',
+      content: parts.join(' · '),
+      tone: 'error',
+      createdAt,
+    }
+  }
+
+  if (customType === RECOVERY_CUSTOM_TYPE) {
+    return {
+      id: entryId,
+      role: 'system',
+      kind: 'notice',
+      content:
+        summary ??
+        (status === 'recovered'
+          ? 'generation recovered after a transient interruption'
+          : 'generation interrupted; attempting recovery'),
+      tone: status === 'recovered' ? 'info' : 'warn',
+      createdAt,
+    }
+  }
+
+  if (customType === REACTION_CUSTOM_TYPE) {
+    const label =
+      status === 'spawned'
+        ? 'reaction spawned'
+        : status === 'waiting'
+          ? 'reaction waiting'
+          : status === 'blocked'
+            ? 'reaction blocked'
+            : 'reaction failed'
+    return {
+      id: entryId,
+      role: 'system',
+      kind: 'notice',
+      content: summary ? `${label} — ${summary}` : label,
+      tone:
+        status === 'blocked' || status === 'failed'
+          ? 'error'
+          : status === 'waiting'
+            ? 'warn'
+            : 'info',
+      createdAt,
+    }
+  }
+
+  return null
 }
 
 /** The harness wraps every tool call in agent_trigger; unwrap for display. */
@@ -293,6 +395,10 @@ export function entrySegments(
 
   switch (message.role) {
     case 'user': {
+      // Internal recovery prompt sent back to the model. The paired durable
+      // `recovery` custom entry explains the attempt to the user without
+      // making this machine-authored instruction look human-authored.
+      if (item.entry_id.includes('_transient_resume_')) return []
       const origin = item.origin as
         | { notification?: unknown; reaction?: unknown; spawn?: unknown }
         | undefined

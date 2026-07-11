@@ -71,6 +71,11 @@ describe('getTurnStatus', () => {
       turn_count: 1,
       depth: 0,
       max_turns: 16,
+      validation_retries: 0,
+      max_validation_retries: 2,
+      transient_resumes: 1,
+      max_transient_resumes: 1,
+      partial_result_available: true,
       pending_function_calls: [],
       children: [],
     }

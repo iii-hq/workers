@@ -44,7 +44,7 @@ export interface TurnCompletedEvent {
   status: 'completed' | 'cancelled' | 'failed'
   /** Present on a turn with an output contract. */
   result?: unknown
-  /** Present when the turn `failed`. */
+  /** Present when the turn failed; accepted on legacy completed events. */
   result_error?: string
   /** Short human-readable reason (failed / cancelled). */
   reason?: string

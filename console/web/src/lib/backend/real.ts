@@ -19,6 +19,7 @@ import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
 import type { AgentMessage } from '@/lib/sessions/types'
 import type { Mode, ModelId } from '@/types/chat'
+import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
   listPendingApprovals,
   startApprovalEventsSubscription,
@@ -48,6 +49,8 @@ import {
   startTurnEventsSubscription,
 } from './turn-events-live'
 import type {
+  ApprovalStreamEvent,
+  ApprovalWatchOptions,
   ChatBackend,
   ChatStreamOptions,
   CompactResult,
@@ -216,6 +219,77 @@ async function realQueueMessage(
   await sendTurn(client, req)
 }
 
+/**
+ * Keep the approval inbox live for a displayed conversation, rather than only
+ * for the duration of its current parent turn. `harness::spawn` can return
+ * before its child reaches the gate, so turn-scoped watchers miss that event.
+ */
+function realWatchApprovals(
+  opts: ApprovalWatchOptions,
+  onEvent: (event: ApprovalStreamEvent) => void,
+): () => void {
+  if (opts.approvalGateAvailable === false) return () => {}
+
+  let disposed = false
+  let stop = () => {}
+  const seenPending = new Set<string>()
+  const emit = (event: TurnSourceEvent) => {
+    if (disposed) return
+    for (const streamEvent of translateTurnSource(event)) {
+      if (
+        streamEvent.kind === 'fcall-start' ||
+        streamEvent.kind === 'fcall-approval-cleared'
+      ) {
+        onEvent(streamEvent)
+      }
+    }
+  }
+
+  void getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      const matcher: NonNullable<
+        ApprovalWatchOptions['approvalSessionMatcher']
+      > =
+        opts.approvalSessionMatcher ??
+        ((event: { session_id: string }) => event.session_id === opts.sessionId)
+      const subscriptionSessionId = opts.approvalSessionMatcher
+        ? undefined
+        : opts.sessionId
+      const emitPending = (record: PendingApprovalRecord) => {
+        if (!matcher(record)) return
+        const key = `${record.session_id}:${record.function_call_id}`
+        if (seenPending.has(key)) return
+        seenPending.add(key)
+        emit({ kind: 'approval-created', record })
+      }
+
+      stop = startApprovalEventsSubscription(client, subscriptionSessionId, {
+        onCreated: emitPending,
+        onResolved: (event) => {
+          if (matcher(event)) emit({ kind: 'approval-resolved', event })
+        },
+      })
+      void listPendingApprovals(client, subscriptionSessionId)
+        .then((records) => records.forEach(emitPending))
+        .catch((err) => {
+          if (import.meta.env.DEV) {
+            console.warn('[real-backend] approval::list-pending recovery', err)
+          }
+        })
+    })
+    .catch((err) => {
+      if (import.meta.env.DEV) {
+        console.warn('[real-backend] approval watcher unavailable', err)
+      }
+    })
+
+  return () => {
+    disposed = true
+    stop()
+  }
+}
+
 async function* realStream(
   prompt: string,
   mode: Mode,
@@ -230,6 +304,11 @@ async function* realStream(
   // worker. When it's absent, skip every approval subscription / read so we
   // don't register triggers for unknown types or call missing functions.
   const approvalGateAvailable = opts?.approvalGateAvailable !== false
+  const approvalSessionMatcher =
+    opts?.approvalSessionMatcher ?? ((event) => event.session_id === sessionId)
+  const approvalSubscriptionSessionId = opts?.approvalSessionMatcher
+    ? undefined
+    : sessionId
 
   const queue: TurnSourceEvent[] = []
   let resolveNext: (() => void) | null = null
@@ -246,25 +325,38 @@ async function* realStream(
   // Dedupe pending approvals seen by both the catch-up read and the live
   // trigger (at-least-once, and the two can race on start).
   const seenPending = new Set<string>()
-  const pushPending = (functionCallId: string, event: TurnSourceEvent) => {
-    if (seenPending.has(functionCallId)) return
-    seenPending.add(functionCallId)
+  const pushPending = (
+    approvalSessionId: string,
+    functionCallId: string,
+    event: TurnSourceEvent,
+  ) => {
+    const key = `${approvalSessionId}:${functionCallId}`
+    if (seenPending.has(key)) return
+    seenPending.add(key)
     push(event)
   }
 
   const stopTurnEvents = startTurnEventsSubscription(client, sessionId, {
     onCompleted: (event) => push({ kind: 'turn-completed', event }),
   })
-  const stopApprovalEvents = approvalGateAvailable
-    ? startApprovalEventsSubscription(client, sessionId, {
-        onCreated: (record) =>
-          pushPending(record.function_call_id, {
-            kind: 'approval-created',
-            record,
-          }),
-        onResolved: (event) => push({ kind: 'approval-resolved', event }),
-      })
-    : () => {}
+  const stopApprovalEvents = opts?.approvalEventsExternallyManaged
+    ? () => {}
+    : approvalGateAvailable
+      ? startApprovalEventsSubscription(client, approvalSubscriptionSessionId, {
+          onCreated: (record) => {
+            if (!approvalSessionMatcher(record)) return
+            pushPending(record.session_id, record.function_call_id, {
+              kind: 'approval-created',
+              record,
+            })
+          },
+          onResolved: (event) => {
+            if (approvalSessionMatcher(event)) {
+              push({ kind: 'approval-resolved', event })
+            }
+          },
+        })
+      : () => {}
 
   const onAbort = () => wake()
   signal?.addEventListener('abort', onAbort, { once: true })
@@ -273,11 +365,12 @@ async function* realStream(
   try {
     // Reconnect recovery: rebuild any pending-approval cards a prior turn left
     // held (e.g. resending after a reload). Best-effort; skipped without the gate.
-    if (approvalGateAvailable) {
-      void listPendingApprovals(client, sessionId)
+    if (!opts?.approvalEventsExternallyManaged && approvalGateAvailable) {
+      void listPendingApprovals(client, approvalSubscriptionSessionId)
         .then((records) => {
           for (const record of records) {
-            pushPending(record.function_call_id, {
+            if (!approvalSessionMatcher(record)) continue
+            pushPending(record.session_id, record.function_call_id, {
               kind: 'approval-created',
               record,
             })
@@ -587,6 +680,7 @@ export const realBackend: ChatBackend = {
   listTriggers: realListTriggers,
   unregisterTrigger: realUnregisterTrigger,
   stateKeyExists: realStateKeyExists,
+  watchApprovals: realWatchApprovals,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
   compactSession: realCompactSession,

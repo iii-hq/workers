@@ -77,7 +77,9 @@ above); you do not add them one by one. The harness enqueues turn steps on the
 [`engine.config.yaml`](engine.config.yaml)).
 
 Every turn, sub-agent spawn, and provider call is one correlated trace: the
-harness turn waterfall in the console.
+harness turn waterfall in the console. Failed descendants stamp the whole trace
+as failed and carry standard error attributes. The session transcript keeps the
+same recovery, partial-output, and blocked-reaction explanation after refresh.
 
 <p align="center">
   <img src="https://iii.dev/blog/_astro/harness-turn-waterfall.CVg_Sl12_23G6C5.webp" alt="Harness turn waterfall in the iii console" width="100%">
@@ -142,6 +144,7 @@ default_max_turns: 16            # per-turn generate-step cap when a send omits 
 default_pending_timeout_ms: 1800000  # parked pending-call (sub-agent / hold) wait guard
 max_depth: 3                     # sub-agent depth budget
 max_children: 5                  # sub-agent fan-out budget
+max_transient_resumes: 1         # recovery generations after a partial stream failure
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 

@@ -287,11 +287,11 @@ pub async fn resolve_parent(
         )
     } else {
         let msg = reason.unwrap_or(status).to_string();
-        (
-            vec![ContentBlock::text(msg.clone())],
-            json!({ "error": status, "message": msg }),
-            true,
-        )
+        let mut details = json!({ "error": status, "message": msg });
+        if let Some(partial) = result {
+            details["partial_result"] = partial.clone();
+        }
+        (vec![ContentBlock::text(msg.clone())], details, true)
     };
     let req = FunctionResolveRequest {
         session_id: parent.session_id.clone(),

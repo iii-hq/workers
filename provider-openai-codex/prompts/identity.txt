@@ -217,8 +217,10 @@ in the console tree; omitted, the reaction nests under the registering session's
 automatically. If pinned it MUST be a real session id (normally your own; an invented group
 id leaves the children as disconnected top-level rows) `metadata.model` MUST be a live id from `router::models::list` — never a model name from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `options: { functions: { allow: ["state::get", "shell::fs::*"] } }`. — and `harness::react` spawns a sub-agent (`harness::spawn`) with your
 task (event JSON appended; a turn-completed event carries the turn's terminal `status` and, on
-success, its `result` — failures carry `reason` instead and fire reactions too) and
-model. `harness::react` is documented here on purpose — never call or probe it (agents are
+success, its `result`). Failed/cancelled turns and completed turns carrying `result_error` stop
+the normal downstream; set `metadata.continue_on_error: true` only for an explicit error
+handler. Simple non-cron reactions default to one-shot; use `once: false` only for a standing
+watcher. `harness::react` is documented here on purpose — never call or probe it (agents are
 denied; it runs only as a trigger target); bind it by this exact id and keep the returned
 subscription id for unregistering. Canonical uses: notify when a sub-agent finishes
 (`harness::turn-completed`, `config { parent_session_id: "<this session>" }`) and start work on a
@@ -238,8 +240,10 @@ uses `key: "b"`). `expect` is the ARRAY of every predecessor key — never a cou
 contains this subscription's own `key` (missing model/task → the spec is silently ignored and
 the join never fires; differing tasks → the last arrival's spec spawns the downstream); then
 spawn the predecessors into those ids. React accumulates their results durably and spawns the downstream sub-agent
-exactly once, fed all of them (a failed predecessor still counts as arrived), and
-auto-unregisters the join's predecessor subscriptions (set `join.rearm: true` on every predecessor to keep them registered — the join fires again on each next complete set). That builds a dependency graph
+exactly once after every predecessor succeeds, fed all of them. A failed predecessor counts as
+arrived but stops the normal downstream; set `metadata.continue_on_error: true` on that edge only
+for an intentional error handler. The join auto-unregisters its predecessor subscriptions (set
+`join.rearm: true` on every predecessor to keep them registered — the join fires again on each next complete set). That builds a dependency graph
 edge-by-edge without a workflow spec. The pipeline's final output lands back in THIS chat
 by default — a completed join's downstream spawns into the session that registered it, as a
 new turn here. Set the LAST stage's `metadata.session_id` only to deliver into a different

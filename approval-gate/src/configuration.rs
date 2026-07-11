@@ -41,6 +41,7 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 const HOOK_FUNCTIONS: &[&str] = &["*"];
 const HOOK_TIMEOUT_MS: u64 = 5_000;
 const HOOK_ON_ERROR: &str = "fail_closed";
+const HOOK_RETRY_INTERVAL_MS: u64 = 500;
 
 /// Fixed `harness::hook::post-trigger` binding for `approval::filesystem-access-watch`
 /// — only `shell::*` / `coder::*` dispatch results carry a `filesystem_access_request`
@@ -169,6 +170,49 @@ pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
             "trigger binding failed (sibling absent?)"
         ),
     }
+}
+
+/// Retry hook bindings until the harness has registered the hook trigger
+/// types. Approval-gate may start before harness; a one-shot registration in
+/// that order fails asynchronously and silently leaves the gate detached.
+pub fn retry_hook_bindings(iii: IIIClient) {
+    tokio::spawn(async move {
+        loop {
+            let pre_trigger_ready = trigger_instance_count(&iii, "harness::hook::pre-trigger")
+                .await
+                .is_some_and(|count| count > 0);
+            if !pre_trigger_ready {
+                bind_hook(&iii);
+            }
+
+            let post_trigger_ready = trigger_instance_count(&iii, "harness::hook::post-trigger")
+                .await
+                .is_some_and(|count| count > 0);
+            if !post_trigger_ready {
+                bind_filesystem_access_watch_hook(&iii);
+            }
+
+            if pre_trigger_ready && post_trigger_ready {
+                tracing::info!("approval-gate hook bindings confirmed");
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(HOOK_RETRY_INTERVAL_MS)).await;
+        }
+    });
+}
+
+async fn trigger_instance_count(iii: &IIIClient, trigger_type: &str) -> Option<u64> {
+    let response = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::triggers::info".to_string(),
+            payload: json!({ "id": trigger_type }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .ok()?;
+    response.get("instance_count").and_then(Value::as_u64)
 }
 
 /// Internal `approval::on-config-change` trigger payload. The handler

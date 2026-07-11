@@ -86,12 +86,14 @@ function translateTurnCompleted(event: TurnCompletedEvent): StreamEvent[] {
   const out: StreamEvent[] = []
   if (event.status === 'cancelled') {
     out.push({ kind: 'stop-reason', reason: 'aborted', message: event.reason })
-  } else if (event.status === 'failed') {
+  } else if (event.status === 'failed' || event.result_error) {
     const message = event.result_error ?? event.reason
     out.push({
       kind: 'stop-reason',
       reason: 'error',
       message: message && message.length > 0 ? message : undefined,
+      entryId: `e_${event.turn_id}_error`,
+      partialResultAvailable: event.result !== undefined,
     })
   }
   out.push({ kind: 'assistant-end' })
