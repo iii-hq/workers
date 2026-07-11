@@ -349,9 +349,18 @@ impl SessionService {
         let _guard = self.lock_session(&req.session_id).await;
         let mut meta = self.meta_or_not_found(&req.session_id).await?;
 
-        // Spec-strict no-op: same status fires no event, even if the
-        // reason differs.
-        if meta.status == req.status {
+        // Reason is retained while `working` (live phase detail, e.g.
+        // "waiting for <model>") and on `error` (failure cause);
+        // idle/done always clear it.
+        let new_reason = match req.status {
+            SessionStatus::Working | SessionStatus::Error => req.reason,
+            _ => None,
+        };
+
+        // Spec-strict no-op: same status AND same stored reason fires no
+        // event. A reason change alone re-emits so UIs can render live
+        // phase updates within one `working` stretch.
+        if meta.status == req.status && meta.status_reason == new_reason {
             return Ok((
                 SetStatusResponse {
                     status: meta.status,
@@ -363,11 +372,7 @@ impl SessionService {
 
         let previous_status = meta.status;
         meta.status = req.status;
-        meta.status_reason = if req.status == SessionStatus::Error {
-            req.reason
-        } else {
-            None
-        };
+        meta.status_reason = new_reason;
         let now = self.clock.now_ms();
         meta.updated_at = now;
         self.store.put_meta(&meta).await?;

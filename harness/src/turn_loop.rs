@@ -166,8 +166,10 @@ pub async fn run_step(
     drain_queued(deps, &session, &record.session_id).await?;
 
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
+    // The reason is the live phase detail UIs render while the shimmer shows;
+    // it advances to "waiting for <model>" right before the generation RPC.
     let _ = session
-        .set_status(&record.session_id, "working", None)
+        .set_status(&record.session_id, "working", Some("preparing context"))
         .await;
     if payload.step == 0 && record.turn_count == 0 {
         deps.events
@@ -379,6 +381,13 @@ pub async fn run_step(
     // flag — observed THIS step by the re-read below — instead of leaving the
     // stop blocked behind the whole step and a step of tool execution leaking.
     drop(_guard);
+
+    // Phase detail: context is assembled, the provider round-trip starts now.
+    // This is the window users actually wait in (provider time-to-first-token).
+    let waiting_reason = format!("waiting for {}", record.options.model);
+    let _ = session
+        .set_status(&record.session_id, "working", Some(&waiting_reason))
+        .await;
 
     let router = deps.router().await;
     let outcome = router.chat(params, &sink).await?;

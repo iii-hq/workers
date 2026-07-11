@@ -338,6 +338,7 @@ async function* realStream(
 
   const stopTurnEvents = startTurnEventsSubscription(client, sessionId, {
     onCompleted: (event) => push({ kind: 'turn-completed', event }),
+    onStarted: (event) => push({ kind: 'turn-started', event }),
   })
   const stopApprovalEvents = opts?.approvalEventsExternallyManaged
     ? () => {}
@@ -393,13 +394,15 @@ async function* realStream(
       messageId,
       opts,
     )
-    void sendTurn(client, sendRequest).catch((err) => {
-      kickoffError = err instanceof Error ? err : new Error(String(err))
-      if (import.meta.env.DEV) {
-        console.warn('[real-backend] harness::send failed', err)
-      }
-      wake()
-    })
+    void sendTurn(client, sendRequest)
+      .then((response) => push({ kind: 'send-resolved', response }))
+      .catch((err) => {
+        kickoffError = err instanceof Error ? err : new Error(String(err))
+        if (import.meta.env.DEV) {
+          console.warn('[real-backend] harness::send failed', err)
+        }
+        wake()
+      })
 
     while (true) {
       if (signal?.aborted) return

@@ -12,8 +12,9 @@ pub struct SetStatusRequest {
     pub session_id: String,
     /// Target status: `idle` / `working` / `done` / `error`.
     pub status: SessionStatus,
-    /// Short cause stored as `status_reason` — kept on `error`,
-    /// cleared on any other status.
+    /// Short cause/phase stored as `status_reason` — kept on `error`
+    /// (failure cause) and `working` (live phase detail), cleared on
+    /// `idle`/`done`.
     pub reason: Option<String>,
 }
 

@@ -11,6 +11,8 @@
  *   - `approval::pending-resolved` → `fcall-approval-cleared`
  *   - `harness::turn-completed`    → `assistant-end` (+ `stop-reason` when the
  *                                    turn failed / was cancelled)
+ *   - `harness::send` response     → `turn-status` (accepted/merged/queued)
+ *   - `harness::turn-started`      → `turn-status { phase: 'started' }`
  *
  * The translator is stateless: the new gate triggers are already discrete
  * create/resolve events, so no list-diffing (the old `turn_state_changed`
@@ -21,7 +23,9 @@ import type {
   PendingApprovalRecord,
   PendingResolvedEvent,
   TurnCompletedEvent,
+  TurnStartedEvent,
 } from '@/types/iii-agent-event'
+import type { HarnessSendResponse } from './harness-send'
 import type { StreamEvent } from './types'
 
 /** The discriminated union of trigger events `realStream` feeds the translator. */
@@ -29,6 +33,8 @@ export type TurnSourceEvent =
   | { kind: 'approval-created'; record: PendingApprovalRecord }
   | { kind: 'approval-resolved'; event: PendingResolvedEvent }
   | { kind: 'turn-completed'; event: TurnCompletedEvent }
+  | { kind: 'turn-started'; event: TurnStartedEvent }
+  | { kind: 'send-resolved'; response: HarnessSendResponse }
 
 /** True once this event ends the turn (the generator should stop after it). */
 export function isTerminalSource(event: TurnSourceEvent): boolean {
@@ -79,6 +85,23 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
 
     case 'turn-completed':
       return translateTurnCompleted(event.event)
+
+    case 'turn-started':
+      return [{ kind: 'turn-status', phase: 'started' }]
+
+    case 'send-resolved': {
+      const { response } = event
+      return [
+        {
+          kind: 'turn-status',
+          phase: response.queued
+            ? 'queued'
+            : response.merged
+              ? 'merged'
+              : 'accepted',
+        },
+      ]
+    }
   }
 }
 
