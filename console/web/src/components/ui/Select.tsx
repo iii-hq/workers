@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils'
 interface SelectOption<T extends string> {
   value: T
   label: string
+  /** Optional hover tooltip on the option row. */
+  title?: string
 }
 
 interface SelectGroup<T extends string> {
@@ -189,6 +191,7 @@ export function Select<T extends string>({
                         key={opt.value}
                         value={opt.value}
                         label={opt.label}
+                        title={opt.title}
                       />
                     ))}
                   </SelectPrimitive.Group>
@@ -198,6 +201,7 @@ export function Select<T extends string>({
                     key={opt.value}
                     value={opt.value}
                     label={opt.label}
+                    title={opt.title}
                   />
                 ))}
           </SelectPrimitive.Viewport>
@@ -223,12 +227,14 @@ export function Select<T extends string>({
 interface SelectItemProps {
   value: string
   label: string
+  title?: string
 }
 
-function SelectItem({ value, label }: SelectItemProps) {
+function SelectItem({ value, label, title }: SelectItemProps) {
   return (
     <SelectPrimitive.Item
       value={value}
+      title={title}
       className={cn(
         'relative flex items-center pl-7 pr-3 py-1.5 cursor-pointer outline-none select-none',
         'data-[highlighted]:bg-rule data-[highlighted]:text-ink',
