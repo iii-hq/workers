@@ -29,6 +29,44 @@ export interface ApprovalEventHandlers {
   onResolved: (event: PendingResolvedEvent) => void
 }
 
+type PendingApprovalIdentity = Pick<
+  PendingApprovalRecord,
+  'session_id' | 'function_call_id'
+>
+
+/** Stable inbox slot shared by each approval stage for one function call. */
+export function pendingApprovalKey(record: PendingApprovalIdentity): string {
+  return `${record.session_id}:${record.function_call_id}`
+}
+
+/**
+ * Revision within an inbox slot. A generic approval can transition into a
+ * filesystem approval without changing its function-call id, so deduping by
+ * slot alone hides the follow-up prompt until refresh.
+ */
+export function pendingApprovalRevision(record: PendingApprovalRecord): string {
+  return JSON.stringify([
+    record.pending_at,
+    record.function_id,
+    record.kind ?? 'function',
+    record.access_request?.requested_root ?? null,
+    record.access_request?.attempted_path ?? null,
+    record.access_request?.error_code ?? null,
+  ])
+}
+
+/** Record a pending revision; false means this exact event was already seen. */
+export function acceptPendingApprovalRevision(
+  seen: Map<string, string>,
+  record: PendingApprovalRecord,
+): boolean {
+  const key = pendingApprovalKey(record)
+  const revision = pendingApprovalRevision(record)
+  if (seen.get(key) === revision) return false
+  seen.set(key, revision)
+  return true
+}
+
 function bind<P>(
   client: ClientSubset,
   handlerFn: string,
