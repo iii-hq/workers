@@ -5,8 +5,11 @@ import type {
   PendingResolvedEvent,
 } from '@/types/iii-agent-event'
 import {
+  acceptPendingApprovalRevision,
   approvalBelongsToConversationTree,
   listPendingApprovals,
+  pendingApprovalKey,
+  pendingApprovalRevision,
   startApprovalEventsSubscription,
 } from './approval-events-live'
 
@@ -160,6 +163,31 @@ describe('listPendingApprovals', () => {
     expect(trigger).toHaveBeenCalledWith('approval::list-pending', {
       limit: 500,
     })
+  })
+})
+
+describe('pending approval revisions', () => {
+  it('distinguishes a filesystem follow-up from the generic approval for the same call', () => {
+    const followUp: PendingApprovalRecord = {
+      ...record,
+      pending_at: 10,
+      kind: 'filesystem_access',
+      access_request: {
+        requested_root: '/private/tmp',
+        attempted_path: '/private/tmp',
+        error_code: 'S220',
+      },
+    }
+
+    const seen = new Map<string, string>()
+    expect(acceptPendingApprovalRevision(seen, record)).toBe(true)
+    expect(acceptPendingApprovalRevision(seen, { ...record })).toBe(false)
+    expect(pendingApprovalKey(record)).toBe(pendingApprovalKey(followUp))
+    expect(pendingApprovalRevision(record)).not.toBe(
+      pendingApprovalRevision(followUp),
+    )
+    expect(acceptPendingApprovalRevision(seen, followUp)).toBe(true)
+    expect(acceptPendingApprovalRevision(seen, { ...followUp })).toBe(false)
   })
 })
 

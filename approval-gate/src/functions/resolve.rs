@@ -68,39 +68,72 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         .get("turn_resumed")
         .and_then(serde_json::Value::as_bool);
 
-    match pending::delete_with_gate(iii, &req.session_id, &req.function_call_id).await {
-        Ok(Some(deleted)) => {
-            deps.sink
-                .pending_resolved(&PendingResolvedEvent {
-                    session_id: deleted.session_id,
-                    turn_id: deleted.turn_id,
-                    function_call_id: deleted.function_call_id,
-                    function_id: deleted.function_id,
-                    outcome: match req.decision {
-                        ResolveDecision::Allow => ResolvedOutcome::Allow,
-                        ResolveDecision::Deny => ResolvedOutcome::Deny,
-                    },
-                    reason: match req.decision {
-                        ResolveDecision::Deny => req.reason.clone(),
-                        ResolveDecision::Allow => None,
-                    },
-                    session_metadata: deleted.session_metadata,
-                    resolved_at: now_ms(),
-                })
-                .await;
-        }
-        // A concurrent path already deleted (and emitted): exactly-once
-        // emission is the gate's contract.
-        Ok(None) => {}
+    // Executing an approved call can synchronously hit another hold, most
+    // notably the filesystem-access post-trigger hook. That follow-up replaces
+    // the original record under the same session/call key before harness
+    // returns. Delete only when the key still contains the record we resolved;
+    // otherwise preserve the replacement. A verification failure is also
+    // cleanup-only: the function has already executed, so returning an error
+    // here could encourage a duplicate retry.
+    let next_pending = match pending::get(iii, &req.session_id, &req.function_call_id).await {
+        Ok(current) => current.filter(|current| current != &record),
         Err(e) => {
-            // The decision reached the harness; retry or turn/session cleanup
-            // will collect the orphaned record. Never fail resolve over cleanup.
             tracing::warn!(
                 session_id = %req.session_id,
                 function_call_id = %req.function_call_id,
                 error = %e,
-                "pending record delete failed after resolve; retry or purge will collect it"
+                "pending record verification failed after resolve; preserving it for retry or purge"
             );
+            return Ok(ResolveResponse {
+                resolved: true,
+                turn_resumed,
+            });
+        }
+    };
+
+    if let Some(next) = &next_pending {
+        tracing::info!(
+            session_id = %req.session_id,
+            function_call_id = %req.function_call_id,
+            next_kind = ?next.kind,
+            next_pending_at = next.pending_at,
+            "approved call transitioned to a follow-up approval"
+        );
+    } else {
+        match pending::delete_with_gate(iii, &req.session_id, &req.function_call_id).await {
+            Ok(Some(deleted)) => {
+                deps.sink
+                    .pending_resolved(&PendingResolvedEvent {
+                        session_id: deleted.session_id,
+                        turn_id: deleted.turn_id,
+                        function_call_id: deleted.function_call_id,
+                        function_id: deleted.function_id,
+                        outcome: match req.decision {
+                            ResolveDecision::Allow => ResolvedOutcome::Allow,
+                            ResolveDecision::Deny => ResolvedOutcome::Deny,
+                        },
+                        reason: match req.decision {
+                            ResolveDecision::Deny => req.reason.clone(),
+                            ResolveDecision::Allow => None,
+                        },
+                        session_metadata: deleted.session_metadata,
+                        resolved_at: now_ms(),
+                    })
+                    .await;
+            }
+            // A concurrent path already deleted (and emitted): exactly-once
+            // emission is the gate's contract.
+            Ok(None) => {}
+            Err(e) => {
+                // The decision reached the harness; retry or turn/session cleanup
+                // will collect the orphaned record. Never fail resolve over cleanup.
+                tracing::warn!(
+                    session_id = %req.session_id,
+                    function_call_id = %req.function_call_id,
+                    error = %e,
+                    "pending record delete failed after resolve; retry or purge will collect it"
+                );
+            }
         }
     }
 
@@ -311,6 +344,28 @@ mod tests {
         .await;
     }
 
+    fn filesystem_replacement() -> PendingApprovalRecord {
+        PendingApprovalRecord {
+            session_id: "s_1".into(),
+            turn_id: "t_9".into(),
+            function_call_id: "c_1".into(),
+            function_id: "shell::run".into(),
+            arguments_excerpt: json!({ "cmd": "ls" }),
+            pending_at: 200,
+            session_title: None,
+            session_description: None,
+            session_metadata: Some(serde_json::from_value(json!({ "owner": "u_1" })).unwrap()),
+            depth: 0,
+            assistant_excerpt: None,
+            kind: PendingKind::FilesystemAccess,
+            access_request: Some(AccessRequest {
+                requested_root: "/private/tmp".into(),
+                attempted_path: "/private/tmp".into(),
+                error_code: "S215".into(),
+            }),
+        }
+    }
+
     fn req(decision: ResolveDecision, reason: Option<&str>) -> ResolveRequest {
         ResolveRequest {
             session_id: "s_1".into(),
@@ -339,6 +394,35 @@ mod tests {
                 .await
                 .is_null());
         })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn allow_preserves_a_followup_approval_created_during_execution() {
+        let replacement = filesystem_replacement();
+        let replacement_value = serde_json::to_value(&replacement).unwrap();
+        with_stack(
+            BootOpts::needs_approval().replacing_pending_on_resolve(replacement_value.clone()),
+            |stack| async move {
+                seed_record(&stack.iii).await;
+
+                let res = handle(&stack.deps, req(ResolveDecision::Allow, None))
+                    .await
+                    .unwrap();
+
+                assert!(res.resolved);
+                assert_eq!(res.turn_resumed, Some(false));
+                assert_eq!(
+                    state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await,
+                    replacement_value,
+                    "the follow-up approval must remain actionable"
+                );
+                assert!(
+                    log_snapshot(&stack.resolved).is_empty(),
+                    "the replacement must not be cleared as the old approval"
+                );
+            },
+        )
         .await;
     }
 

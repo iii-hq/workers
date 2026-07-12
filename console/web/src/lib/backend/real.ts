@@ -21,7 +21,9 @@ import type { AgentMessage } from '@/lib/sessions/types'
 import type { Mode, ModelId } from '@/types/chat'
 import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
+  acceptPendingApprovalRevision,
   listPendingApprovals,
+  pendingApprovalKey,
   startApprovalEventsSubscription,
 } from './approval-events-live'
 import { loadApprovalGateDefaults } from './approval-gate-config'
@@ -232,7 +234,7 @@ function realWatchApprovals(
 
   let disposed = false
   let stop = () => {}
-  const seenPending = new Set<string>()
+  const seenPending = new Map<string, string>()
   const emit = (event: TurnSourceEvent) => {
     if (disposed) return
     for (const streamEvent of translateTurnSource(event)) {
@@ -258,16 +260,17 @@ function realWatchApprovals(
         : opts.sessionId
       const emitPending = (record: PendingApprovalRecord) => {
         if (!matcher(record)) return
-        const key = `${record.session_id}:${record.function_call_id}`
-        if (seenPending.has(key)) return
-        seenPending.add(key)
+        if (!acceptPendingApprovalRevision(seenPending, record)) return
         emit({ kind: 'approval-created', record })
       }
 
       stop = startApprovalEventsSubscription(client, subscriptionSessionId, {
         onCreated: emitPending,
         onResolved: (event) => {
-          if (matcher(event)) emit({ kind: 'approval-resolved', event })
+          if (matcher(event)) {
+            seenPending.delete(pendingApprovalKey(event))
+            emit({ kind: 'approval-resolved', event })
+          }
         },
       })
       void listPendingApprovals(client, subscriptionSessionId)
