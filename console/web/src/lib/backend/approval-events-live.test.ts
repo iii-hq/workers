@@ -115,12 +115,28 @@ describe('startApprovalEventsSubscription', () => {
   })
 
   it('can bind unscoped events for a parent chat that filters descendants client-side', () => {
-    const { client, triggers } = fakeClient()
+    const { client, triggers, fire } = fakeClient()
+    const onCreated = vi.fn()
+    const onResolved = vi.fn()
     startApprovalEventsSubscription(client, undefined, {
-      onCreated: () => {},
-      onResolved: () => {},
+      onCreated,
+      onResolved,
     })
     expect(triggers.map((trigger) => trigger.config)).toEqual([{}, {}])
+
+    fire('iii::console::approval_pending_created', record)
+    expect(onCreated).toHaveBeenCalledWith(record)
+
+    const resolved: PendingResolvedEvent = {
+      function_call_id: 'fc-1',
+      function_id: 'shell::fs::write',
+      session_id: 'sess-1',
+      turn_id: 't-1',
+      outcome: 'allow',
+      resolved_at: 9,
+    }
+    fire('iii::console::approval_pending_resolved', resolved)
+    expect(onResolved).toHaveBeenCalledWith(resolved)
   })
 })
 

@@ -42,7 +42,8 @@ function bind<P>(
     // the engine-side trigger filter is per-binding, so another session's
     // events also land here — drop them.
     const sid = (payload as { session_id?: unknown }).session_id
-    if (typeof sid === 'string' && sid !== sessionId) return
+    if (sessionId !== undefined && typeof sid === 'string' && sid !== sessionId)
+      return
     onEvent(payload as P)
   })
   const offTrigger = client.registerTrigger({
