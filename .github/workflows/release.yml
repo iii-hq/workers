@@ -230,14 +230,14 @@ jobs:
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────
-  # Announce the release in Slack (#worker-releases). Terminal job:
-  # nothing depends on it, but a bad token or channel fails red
-  # instead of rotting silently.
+  # Report the terminal release status in Slack (#worker-releases). This is a
+  # single run-level notification rather than one message per job. Successful
+  # releases get their notes in a thread; failures name the failed stage(s).
   # ──────────────────────────────────────────────────────────────
-  announce:
-    name: Announce on Slack
-    needs: [setup, binary-build, container-build, bundle-build, publish]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
+  notify:
+    name: Report release on Slack
+    needs: [setup, create-release, binary-build, container-build, bundle-build, publish]
+    if: ${{ always() && !cancelled() && needs.setup.outputs.dry_run != 'true' && !contains(inputs.tag || github.ref_name, '-dry-run.') }}
     runs-on: ubuntu-latest
     steps:
       - name: Post to Slack
@@ -247,13 +247,52 @@ jobs:
           CHANNEL: worker-releases
           WORKER: ${{ needs.setup.outputs.worker }}
           VERSION: ${{ needs.setup.outputs.version }}
+          TAG: ${{ needs.setup.outputs.tag || inputs.tag || github.ref_name }}
           IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+          SETUP_RESULT: ${{ needs.setup.result }}
+          CREATE_RELEASE_RESULT: ${{ needs.create-release.result }}
+          BINARY_BUILD_RESULT: ${{ needs.binary-build.result }}
+          CONTAINER_BUILD_RESULT: ${{ needs.container-build.result }}
+          BUNDLE_BUILD_RESULT: ${{ needs.bundle-build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
         run: |
           set -euo pipefail
-          suffix=""
-          if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
-          text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
+
+          failures=()
+          results=(
+            "Setup:${SETUP_RESULT}"
+            "Create GitHub Release:${CREATE_RELEASE_RESULT}"
+            "Binary build:${BINARY_BUILD_RESULT}"
+            "Container build:${CONTAINER_BUILD_RESULT}"
+            "Bundle build:${BUNDLE_BUILD_RESULT}"
+            "Publish to registry:${PUBLISH_RESULT}"
+          )
+          for entry in "${results[@]}"; do
+            if [[ "${entry##*:}" == "failure" ]]; then
+              failures+=("${entry%:*}")
+            fi
+          done
+
+          release_name="$TAG"
+          if [[ -n "$WORKER" && -n "$VERSION" ]]; then
+            release_name="${WORKER} v${VERSION}"
+          fi
+
+          if (( ${#failures[@]} > 0 )); then
+            printf -v failed_stages '%s, ' "${failures[@]}"
+            failed_stages="${failed_stages%, }"
+            status="failure"
+            text="🔴 ${release_name} release failed at ${failed_stages} — <${RUN_URL}|View failed run> · triggered by ${ACTOR}"
+          else
+            suffix=""
+            if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
+            status="success"
+            text="🚀 ${release_name}${suffix} released — <${RELEASE_URL}|GitHub Release> · <${RUN_URL}|Actions run>"
+          fi
+
           payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
           resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
@@ -264,8 +303,10 @@ jobs:
             exit 1
           fi
           echo "ts=$(echo "$resp" | jq -r .ts)" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
 
       - name: Post release notes in thread
+        if: steps.post.outputs.status == 'success'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL: worker-releases

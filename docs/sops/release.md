@@ -212,12 +212,14 @@ Confirm:
 
 ## Announce & organize
 
-Slack announcement is automatic: the terminal `announce` job in
-`release.yml` posts `🚀 <worker> vX.Y.Z` to `#worker-releases` for every
-successful non-dry-run release. `SLACK_BOT_TOKEN` is org-level (the same
-bot as the iii engine release pipeline); the bot must be invited to
-`#worker-releases`. The GitHub release-notes body is posted as a thread
-reply under the announcement. Ticket association rides on PR titles —
+Slack reporting is automatic: the terminal `notify` job in `release.yml`
+posts one message to `#worker-releases` for every non-dry-run release. A
+successful release posts `🚀 <worker> vX.Y.Z` and its release notes as a
+thread reply. A failed release posts one `🔴` alert naming the failed
+top-level stage(s), who triggered it, and a direct link to the Actions run.
+Cancelled runs stay quiet. `SLACK_BOT_TOKEN` is org-level (the same bot as the
+iii engine release pipeline); the bot must be invited to `#worker-releases`.
+Ticket association rides on PR titles —
 `(MOT-##) type: description` — enforced by the `PR Linear Check` workflow
 (`no-ticket` label for bump/typo/CI-only PRs).
 
