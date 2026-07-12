@@ -69,8 +69,16 @@ export function FilesystemAccessPrompt({
         >
           {requestedRoot}
         </div>
-        <p className="font-mono text-[11px] text-ink-faint">
-          this folder is outside the session's allowed folders.
+        <p
+          role="status"
+          aria-live="polite"
+          className="font-mono text-[11px] text-ink-faint"
+        >
+          the approved function reached this folder and paused before accessing
+          it.
+        </p>
+        <p className="font-mono text-[11px] text-ink-ghost">
+          choose how long to allow access; the function resumes automatically.
         </p>
         {workingDir ? (
           <p className="font-mono text-[11px] text-ink-ghost">
@@ -114,7 +122,7 @@ export function FilesystemAccessPrompt({
         </Button>
         {submitting ? (
           <span className="font-mono text-[12px] text-ink-faint">
-            waiting for the agent to resume…
+            access saved; resuming the function…
           </span>
         ) : null}
       </div>

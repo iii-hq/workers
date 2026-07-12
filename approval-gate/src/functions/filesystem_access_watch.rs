@@ -107,6 +107,15 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
         Ok(Some(existing)) if existing.access_request.as_ref() == Some(&hint) => {
             return HookOutput::Hold;
         }
+        Ok(Some(existing))
+            if existing.kind == PendingKind::Function
+                && existing.turn_id == input.turn_id
+                && existing.function_id == call.function_id =>
+        {
+            // The generic approval currently being resolved is allowed to
+            // transition atomically into a filesystem approval for the same
+            // call. Keeping it until put() avoids a blind gap in the inbox.
+        }
         Ok(Some(_stale)) => {
             // Clear the stale record so the write below (step 8) is a clean
             // insert rather than racing `hold`'s own duplicate-write
@@ -197,9 +206,20 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: AccessReque
             );
             HookOutput::Continue
         }
-        // Lost a write race with a concurrent duplicate hold: the first
-        // writer's record (and emission) stands.
-        Ok(Some(_prior)) => HookOutput::Hold,
+        Ok(Some(prior)) => {
+            // A generic pre-trigger approval can transition into this
+            // filesystem approval while approval::resolve is still running.
+            // put() has already replaced it atomically; emit the new request
+            // so the UI explains why the call remains paused. Same-kind
+            // duplicates were returned by evaluate() before reaching here.
+            if pending::parse_record(&prior).is_some_and(|prior| prior.kind != record.kind) {
+                let sink = deps.sink.clone();
+                tokio::spawn(async move {
+                    sink.pending_created(&record).await;
+                });
+            }
+            HookOutput::Hold
+        }
         Ok(None) => {
             let sink = deps.sink.clone();
             tokio::spawn(async move {
@@ -467,6 +487,53 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(out2, HookOutput::Continue);
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generic_approval_transitions_into_a_visible_filesystem_approval() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            let generic = PendingApprovalRecord {
+                session_id: "s_1".into(),
+                turn_id: "t_1".into(),
+                function_call_id: "c_1".into(),
+                function_id: "shell::fs::read".into(),
+                arguments_excerpt: json!({ "path": "/a/b" }),
+                pending_at: 100,
+                session_title: None,
+                session_description: None,
+                session_metadata: None,
+                depth: 0,
+                assistant_excerpt: None,
+                kind: PendingKind::Function,
+                access_request: None,
+            };
+            state_set(
+                &stack.iii,
+                PENDING_SCOPE,
+                "s_1/c_1",
+                serde_json::to_value(generic).unwrap(),
+            )
+            .await;
+
+            let out = handle(&stack.deps, jail_input("s_1", "c_1", "/a/b"))
+                .await
+                .unwrap();
+            assert_eq!(out, HookOutput::Hold);
+
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["kind"], json!("filesystem_access"));
+            assert_eq!(current["access_request"]["requested_root"], json!("/a/b"));
+            assert!(
+                crate::testkit::wait_for(3_000, || { !log_snapshot(&stack.created).is_empty() })
+                    .await
+            );
+            assert_eq!(
+                log_snapshot(&stack.created)[0]["kind"],
+                json!("filesystem_access")
+            );
         })
         .await;
     }

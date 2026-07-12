@@ -199,6 +199,9 @@ pub struct BootOpts {
     /// When true, spawn the real `harness` worker and skip the fake
     /// `harness::function::resolve` stub.
     pub real_harness: bool,
+    /// Test-only replacement written while the fake function resolver runs,
+    /// modeling a post-trigger hook that parks the same call again.
+    pub function_resolve_replacement: Option<Value>,
 }
 
 impl Default for BootOpts {
@@ -213,6 +216,7 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Empty,
             real_harness: false,
+            function_resolve_replacement: None,
         }
     }
 
@@ -221,6 +225,7 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Empty,
             real_harness: true,
+            function_resolve_replacement: None,
         }
     }
 
@@ -229,6 +234,7 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Custom(vec![json!("*")]),
             real_harness: false,
+            function_resolve_replacement: None,
         }
     }
 
@@ -237,6 +243,7 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Custom(vec![json!(function_id.into())]),
             real_harness: false,
+            function_resolve_replacement: None,
         }
     }
 
@@ -245,6 +252,7 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Custom(vec![json!(format!("!{}", function_id.into()))]),
             real_harness: false,
+            function_resolve_replacement: None,
         }
     }
 
@@ -253,6 +261,7 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Custom(rules),
             real_harness: false,
+            function_resolve_replacement: None,
         }
     }
 
@@ -261,7 +270,13 @@ impl BootOpts {
         Self {
             rules: RulesOverride::Shipped,
             real_harness: false,
+            function_resolve_replacement: None,
         }
+    }
+
+    pub fn replacing_pending_on_resolve(mut self, replacement: Value) -> Self {
+        self.function_resolve_replacement = Some(replacement);
+        self
     }
 }
 
@@ -364,15 +379,32 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     let harness_calls: CallLog = Arc::default();
     if !opts.real_harness {
         let log = harness_calls.clone();
+        let iii_for_resolve = iii.clone();
+        let replacement = opts.function_resolve_replacement.clone();
         iii.register_function(
             "harness::function::resolve",
             RegisterFunction::new_async(move |req: Value| {
                 let log = log.clone();
+                let iii = iii_for_resolve.clone();
+                let replacement = replacement.clone();
                 async move {
-                    log_push(&log, req);
-                    Ok::<_, iii_sdk::errors::Error>(
-                        json!({ "resolved": true, "turn_resumed": true }),
-                    )
+                    log_push(&log, req.clone());
+                    let has_replacement = replacement.is_some();
+                    if let Some(replacement) = replacement {
+                        let session_id = req["session_id"].as_str().unwrap_or("s_1");
+                        let call_id = req["function_call_id"].as_str().unwrap_or("c_1");
+                        state_set(
+                            &iii,
+                            crate::pending::PENDING_SCOPE,
+                            &format!("{session_id}/{call_id}"),
+                            replacement,
+                        )
+                        .await;
+                    }
+                    Ok::<_, iii_sdk::errors::Error>(json!({
+                        "resolved": true,
+                        "turn_resumed": !has_replacement,
+                    }))
                 }
             }),
         );
