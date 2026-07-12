@@ -26,6 +26,7 @@ help:
 	  '  make tmux restart console harness   restart several workers in tmux' \
 	  '  make tmux stop harness shell         stop selected tmux workers' \
 	  '  make tmux logs                       attach to the tmux session' \
+	  '  HARNESS_TMUX_SESSION=name make tmux dev-up' \
 	  '' \
 	  'The default foreground mode does not require tmux.'
 

@@ -1,7 +1,9 @@
 III_WORKERS  ?= $(HOME)/.iii/workers
 PROFILE      ?= release
 RUN_PROFILE  ?= debug
-TMUX_SESSION ?= harness-dev
+TMPDIR       ?= /tmp
+HARNESS_TMUX_SESSION ?= harness-dev
+override TMUX_SESSION := $(HARNESS_TMUX_SESSION)
 ENGINE_URL   ?= ws://127.0.0.1:49134
 ENGINE_PORT  ?= 49134
 CONSOLE_PORT ?= 3113
@@ -13,7 +15,9 @@ REPO_ROOT    := $(abspath $(MAKEFILE_DIR)/..)
 WORKTREE_ROOT ?= $(REPO_ROOT)
 WORKTREE_ROOT_ABS := $(abspath $(if $(filter /%,$(WORKTREE_ROOT)),$(WORKTREE_ROOT),$(REPO_ROOT)/$(WORKTREE_ROOT)))
 ENGINE_CONFIG ?= $(MAKEFILE_DIR)engine.config.yaml
-PID_FILE      ?= $(TMPDIR)/iii-harness-$(ENGINE_PORT).pids
+STATE_DIR      ?= $(TMPDIR)/iii-harness-$(ENGINE_PORT)
+STOP_WAIT_STEPS ?= 150
+STOP_GRACE_STEPS ?= 50
 
 STACK := iii-directory llm-router session-manager context-manager \
          provider-anthropic provider-openai provider-openai-codex shell web harness approval-gate console

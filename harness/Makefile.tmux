@@ -16,23 +16,20 @@ UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
 
 help:
 	@printf '%s\n' \
-	  'Harness local development targets:' \
-	  '  make -f Makefile.tmux dev-up        start engine + harness stack in tmux' \
-	  '  make -f Makefile.tmux dev-down      stop the tmux stack' \
-	  '  make -f Makefile.tmux dev-restart   restart all workers in the stack' \
-	  '  make -f Makefile.tmux restart console harness shell' \
-	  '  make -f Makefile.tmux restart harness WORKTREE_ROOT=.worktrees/my-feature' \
-	  '  make -f Makefile.tmux stop harness shell' \
-	  '  make -f Makefile.tmux stop-work    stop all worker windows, keep engine' \
-	  '  make -f Makefile.tmux stop-engine  stop the engine window only' \
-	  '  make -f Makefile.tmux install-iii-next' \
-	  '  make -f Makefile.tmux status       list registered workers' \
-	  '  make -f Makefile.tmux smoke        run basic engine/harness/router probes' \
-	  '  make -f Makefile.tmux where        print source roots, refs, and tmux panes' \
-	  '  make -f Makefile.tmux logs         attach to the tmux session' \
-	  '  make -f Makefile.tmux build [workers...]' \
-	  '  make -f Makefile.tmux cargo-clean [workers...]' \
-	  '  make -f Makefile.tmux install-local [workers...]'
+	  'Harness tmux development targets (run from the repository root):' \
+	  '  make tmux dev-up                    start engine + harness stack in tmux' \
+	  '  make tmux dev-down                  stop the tmux stack' \
+	  '  make tmux dev-restart               restart all workers in the stack' \
+	  '  make tmux restart console harness shell' \
+	  '  make tmux restart harness WORKTREE_ROOT=.worktrees/my-feature' \
+	  '  make tmux stop harness shell' \
+	  '  make tmux stop-work                 stop all worker windows, keep engine' \
+	  '  make tmux stop-engine               stop the engine window only' \
+	  '  make tmux status                    list registered workers' \
+	  '  make tmux smoke                     run basic engine/harness/router probes' \
+	  '  make tmux where                     print source roots, refs, and tmux panes' \
+	  '  make tmux logs                      attach to the tmux session' \
+	  '  HARNESS_TMUX_SESSION=name make tmux dev-up'
 
 install-iii-next:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next

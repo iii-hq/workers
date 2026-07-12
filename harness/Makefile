@@ -1,5 +1,7 @@
 include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/Makefile.common
 
+FOREGROUND_MAKEFILE := $(MAKEFILE_DIR)Makefile
+
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart status smoke where,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -67,7 +69,7 @@ cargo-clean:
 
 dev-up:
 	@set -eu; \
-	pid_file='$(PID_FILE)'; \
+	state_dir='$(STATE_DIR)'; \
 	repo_root='$(REPO_ROOT)'; \
 	worker_root='$(WORKTREE_ROOT_ABS)'; \
 	engine_config='$(ENGINE_CONFIG)'; \
@@ -77,24 +79,36 @@ dev-up:
 	rust_log='$(RUST_LOG)'; \
 	run_profile='$(RUN_PROFILE)'; \
 	stack='$(STACK)'; \
+	stop_grace_steps='$(STOP_GRACE_STEPS)'; \
 	is_alive() { kill -0 "$$1" 2>/dev/null; }; \
 	if command -v iii >/dev/null 2>&1; then :; else echo "iii CLI is required; run make install-iii-next first" >&2; exit 127; fi; \
 	if command -v cargo >/dev/null 2>&1; then :; else echo "cargo is required; install the Rust toolchain first" >&2; exit 127; fi; \
-	if [ -f "$$pid_file" ]; then \
-		alive_pid=; \
-		while IFS=' ' read -r _name pid; do \
-			case "$$pid" in ''|*[!0-9]*) continue ;; esac; \
-			if is_alive "$$pid"; then alive_pid="$$pid"; break; fi; \
-		done < "$$pid_file"; \
-		if [ -n "$$alive_pid" ]; then echo "foreground harness stack is already running (pid $$alive_pid)" >&2; echo "run make dev-down before starting it again" >&2; exit 2; fi; \
-		rm -f "$$pid_file"; \
+	case "$$state_dir" in ''|/) echo "invalid foreground state directory: $$state_dir" >&2; exit 2 ;; esac; \
+	if ! mkdir "$$state_dir" 2>/dev/null; then \
+		owner=$$(sed -n '1p' "$$state_dir/supervisor.pid" 2>/dev/null || true); \
+		case "$$owner" in \
+			''|*[!0-9]*) echo "foreground state exists without a valid owner; run make dev-down" >&2; exit 2 ;; \
+		esac; \
+		if is_alive "$$owner"; then echo "foreground harness stack is already running (supervisor $$owner)" >&2; exit 2; fi; \
+		rm -f "$$state_dir/stop" "$$state_dir/processes" "$$state_dir/supervisor.pid"; \
+		rmdir "$$state_dir" 2>/dev/null || { echo "cannot remove stale foreground state: $$state_dir" >&2; exit 2; }; \
+		mkdir "$$state_dir" || { echo "cannot create foreground state: $$state_dir" >&2; exit 2; }; \
 	fi; \
-	mkdir -p "$$(dirname "$$pid_file")"; \
-	: > "$$pid_file"; \
 	pids=; \
-	record_pid() { name="$$1"; pid="$$2"; pids="$$pids $$pid"; printf '%s %s\\n' "$$name" "$$pid" >> "$$pid_file"; printf 'started %-24s (pid %s)\\n' "$$name" "$$pid"; }; \
-	cleanup() { exit_code=$$?; trap - 0 1 2 3 15; for pid in $$pids; do kill "$$pid" 2>/dev/null || true; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; rm -f "$$pid_file"; exit "$$exit_code"; }; \
+	record_pid() { name="$$1"; pid="$$2"; pids="$$pids $$pid"; printf '%s %s\n' "$$name" "$$pid" >> "$$state_dir/processes"; printf 'started %-24s (pid %s)\n' "$$name" "$$pid"; }; \
+	cleanup() { \
+		exit_code=$$?; trap - 0 1 2 3 15; \
+		for pid in $$pids; do if command -v pkill >/dev/null 2>&1; then pkill -TERM -P "$$pid" 2>/dev/null || true; fi; kill -TERM "$$pid" 2>/dev/null || true; done; \
+		grace=0; \
+		while [ "$$grace" -lt "$$stop_grace_steps" ]; do alive=0; for pid in $$pids; do if is_alive "$$pid"; then alive=1; fi; done; [ "$$alive" -eq 0 ] && break; grace=$$((grace + 1)); sleep 0.1; done; \
+		for pid in $$pids; do if is_alive "$$pid"; then if command -v pkill >/dev/null 2>&1; then pkill -KILL -P "$$pid" 2>/dev/null || true; fi; kill -KILL "$$pid" 2>/dev/null || true; fi; done; \
+		for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; \
+		owner=$$(sed -n '1p' "$$state_dir/supervisor.pid" 2>/dev/null || true); \
+		if [ "$$owner" = "$$$$" ]; then rm -f "$$state_dir/stop" "$$state_dir/processes" "$$state_dir/supervisor.pid"; rmdir "$$state_dir" 2>/dev/null || true; fi; \
+		exit "$$exit_code"; \
+	}; \
 	trap cleanup 0 1 2 3 15; \
+	printf '%s\n' "$$$$" > "$$state_dir/supervisor.pid"; \
 	if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:"$$engine_port" -sTCP:LISTEN >/dev/null 2>&1; then echo "TCP $$engine_port is already in use" >&2; lsof -nP -iTCP:"$$engine_port" -sTCP:LISTEN || true; exit 2; fi; \
 	( cd "$$repo_root"; exec iii -c "$$engine_config" ) & \
 	engine_pid=$$!; \
@@ -124,21 +138,37 @@ dev-up:
 	echo "foreground harness stack is running"; \
 	echo "console: http://127.0.0.1:$$console_port"; \
 	echo "press Ctrl-C to stop the engine and all workers"; \
-	while is_alive "$$engine_pid"; do sleep 1; done; \
-	echo "engine exited" >&2; \
-	exit 1
+	while [ ! -f "$$state_dir/stop" ]; do \
+		exited=; \
+		while IFS=' ' read -r name pid; do if ! is_alive "$$pid"; then exited="$$name ($$pid)"; break; fi; done < "$$state_dir/processes"; \
+		if [ -n "$$exited" ]; then echo "$$exited exited; stopping foreground harness stack" >&2; exit 1; fi; \
+		sleep 0.2; \
+	done; \
+	echo "stopping foreground harness stack"
 
 dev-down:
 	@set -eu; \
-	pid_file='$(PID_FILE)'; \
-	if [ ! -f "$$pid_file" ]; then echo "no foreground harness stack is running"; exit 0; fi; \
-	while IFS=' ' read -r name pid; do \
-		case "$$pid" in ''|*[!0-9]*) continue ;; esac; \
-		if kill -0 "$$pid" 2>/dev/null; then echo "stopping $$name ($$pid)"; kill "$$pid" 2>/dev/null || true; fi; \
-	done < "$$pid_file"; \
-	rm -f "$$pid_file"
+	state_dir='$(STATE_DIR)'; \
+	stop_wait_steps='$(STOP_WAIT_STEPS)'; \
+	case "$$state_dir" in ''|/) echo "invalid foreground state directory: $$state_dir" >&2; exit 2 ;; esac; \
+	if [ ! -d "$$state_dir" ]; then echo "no foreground harness stack is running"; exit 0; fi; \
+	i=0; \
+	while [ ! -s "$$state_dir/supervisor.pid" ] && [ "$$i" -lt 20 ]; do i=$$((i + 1)); sleep 0.1; done; \
+	owner=$$(sed -n '1p' "$$state_dir/supervisor.pid" 2>/dev/null || true); \
+	case "$$owner" in \
+		''|*[!0-9]*) rm -f "$$state_dir/stop" "$$state_dir/processes" "$$state_dir/supervisor.pid"; rmdir "$$state_dir" 2>/dev/null || true; echo "removed stale foreground state"; exit 0 ;; \
+	esac; \
+	if ! kill -0 "$$owner" 2>/dev/null; then rm -f "$$state_dir/stop" "$$state_dir/processes" "$$state_dir/supervisor.pid"; rmdir "$$state_dir" 2>/dev/null || true; echo "removed stale foreground state"; exit 0; fi; \
+	: > "$$state_dir/stop"; \
+	i=0; \
+	while [ -d "$$state_dir" ] && [ "$$i" -lt "$$stop_wait_steps" ]; do i=$$((i + 1)); sleep 0.1; done; \
+	if [ ! -d "$$state_dir" ]; then echo "foreground harness stack stopped"; exit 0; fi; \
+	echo "foreground harness stack did not stop within $$(($$stop_wait_steps / 10)) seconds (supervisor $$owner)" >&2; \
+	exit 1
 
-dev-restart: dev-down dev-up
+dev-restart:
+	@$(MAKE) --no-print-directory -f "$(FOREGROUND_MAKEFILE)" dev-down
+	@$(MAKE) --no-print-directory -f "$(FOREGROUND_MAKEFILE)" dev-up
 
 status:
 	@iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}'
@@ -162,7 +192,7 @@ where:
 	@echo "engine config: $(ENGINE_CONFIG)"
 	@echo "engine url:    $(ENGINE_URL)"
 	@echo "runtime mode:  foreground"
-	@echo "pid file:      $(PID_FILE)"
+	@echo "state dir:     $(STATE_DIR)"
 	@branch=$$(git -C "$(REPO_ROOT)" branch --show-current 2>/dev/null || true); \
 	  sha=$$(git -C "$(REPO_ROOT)" rev-parse --short HEAD 2>/dev/null || true); \
 	  if [ -n "$$sha" ]; then echo "repo ref:      $${branch:-detached} @ $$sha"; else echo "repo ref:      unavailable"; fi
