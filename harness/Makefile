@@ -1,7 +1,5 @@
 include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/Makefile.common
 
-FOREGROUND_SCRIPT := $(MAKEFILE_DIR)scripts/foreground-dev.sh
-
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart status smoke where,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -68,30 +66,77 @@ cargo-clean:
 	done
 
 dev-up:
-	@REPO_ROOT='$(REPO_ROOT)' \
-	 WORKTREE_ROOT_ABS='$(WORKTREE_ROOT_ABS)' \
-	 ENGINE_CONFIG='$(ENGINE_CONFIG)' \
-	 ENGINE_URL='$(ENGINE_URL)' \
-	 ENGINE_PORT='$(ENGINE_PORT)' \
-	 CONSOLE_PORT='$(CONSOLE_PORT)' \
-	 RUST_LOG='$(RUST_LOG)' \
-	 RUN_PROFILE='$(RUN_PROFILE)' \
-	 STACK='$(STACK)' \
-	 PID_FILE='$(PID_FILE)' \
-	 sh '$(FOREGROUND_SCRIPT)' up
+	@set -eu; \
+	pid_file='$(PID_FILE)'; \
+	repo_root='$(REPO_ROOT)'; \
+	worker_root='$(WORKTREE_ROOT_ABS)'; \
+	engine_config='$(ENGINE_CONFIG)'; \
+	engine_url='$(ENGINE_URL)'; \
+	engine_port='$(ENGINE_PORT)'; \
+	console_port='$(CONSOLE_PORT)'; \
+	rust_log='$(RUST_LOG)'; \
+	run_profile='$(RUN_PROFILE)'; \
+	stack='$(STACK)'; \
+	is_alive() { kill -0 "$$1" 2>/dev/null; }; \
+	if command -v iii >/dev/null 2>&1; then :; else echo "iii CLI is required; run make install-iii-next first" >&2; exit 127; fi; \
+	if command -v cargo >/dev/null 2>&1; then :; else echo "cargo is required; install the Rust toolchain first" >&2; exit 127; fi; \
+	if [ -f "$$pid_file" ]; then \
+		alive_pid=; \
+		while IFS=' ' read -r _name pid; do \
+			case "$$pid" in ''|*[!0-9]*) continue ;; esac; \
+			if is_alive "$$pid"; then alive_pid="$$pid"; break; fi; \
+		done < "$$pid_file"; \
+		if [ -n "$$alive_pid" ]; then echo "foreground harness stack is already running (pid $$alive_pid)" >&2; echo "run make dev-down before starting it again" >&2; exit 2; fi; \
+		rm -f "$$pid_file"; \
+	fi; \
+	mkdir -p "$$(dirname "$$pid_file")"; \
+	: > "$$pid_file"; \
+	pids=; \
+	record_pid() { name="$$1"; pid="$$2"; pids="$$pids $$pid"; printf '%s %s\\n' "$$name" "$$pid" >> "$$pid_file"; printf 'started %-24s (pid %s)\\n' "$$name" "$$pid"; }; \
+	cleanup() { exit_code=$$?; trap - 0 1 2 3 15; for pid in $$pids; do kill "$$pid" 2>/dev/null || true; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; rm -f "$$pid_file"; exit "$$exit_code"; }; \
+	trap cleanup 0 1 2 3 15; \
+	if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:"$$engine_port" -sTCP:LISTEN >/dev/null 2>&1; then echo "TCP $$engine_port is already in use" >&2; lsof -nP -iTCP:"$$engine_port" -sTCP:LISTEN || true; exit 2; fi; \
+	( cd "$$repo_root"; exec iii -c "$$engine_config" ) & \
+	engine_pid=$$!; \
+	record_pid engine "$$engine_pid"; \
+	echo "waiting for engine on $$engine_url"; \
+	i=0; \
+	while [ "$$i" -lt 40 ]; do \
+		if iii trigger engine::workers::list --port "$$engine_port" --json '{}' >/dev/null 2>&1; then echo "engine ready"; break; fi; \
+		if ! is_alive "$$engine_pid"; then echo "engine exited before becoming ready" >&2; exit 1; fi; \
+		i=$$((i + 1)); sleep 0.5; \
+	done; \
+	if [ "$$i" -ge 40 ]; then echo "engine did not become ready on $$engine_url" >&2; exit 1; fi; \
+	start_worker() { \
+		worker="$$1"; manifest="$$worker_root/$$worker/Cargo.toml"; \
+		test -f "$$manifest" || { echo "missing $$manifest" >&2; return 1; }; \
+		( cd "$$worker_root"; \
+			if [ "$$worker" = console ]; then \
+				if [ "$$run_profile" = release ]; then exec env RUST_LOG="$$rust_log" cargo run --release --manifest-path "$$manifest" -- --url "$$engine_url" --http-port "$$console_port"; fi; \
+				exec env RUST_LOG="$$rust_log" cargo run --manifest-path "$$manifest" -- --url "$$engine_url" --http-port "$$console_port"; \
+			fi; \
+			if [ "$$run_profile" = release ]; then exec env RUST_LOG="$$rust_log" cargo run --release --manifest-path "$$manifest" -- --url "$$engine_url"; fi; \
+			exec env RUST_LOG="$$rust_log" cargo run --manifest-path "$$manifest" -- --url "$$engine_url" \
+		) & \
+		record_pid "$$worker" "$$!"; \
+	}; \
+	for worker in $$stack; do start_worker "$$worker"; done; \
+	echo "foreground harness stack is running"; \
+	echo "console: http://127.0.0.1:$$console_port"; \
+	echo "press Ctrl-C to stop the engine and all workers"; \
+	while is_alive "$$engine_pid"; do sleep 1; done; \
+	echo "engine exited" >&2; \
+	exit 1
 
 dev-down:
-	@REPO_ROOT='$(REPO_ROOT)' \
-	 WORKTREE_ROOT_ABS='$(WORKTREE_ROOT_ABS)' \
-	 ENGINE_CONFIG='$(ENGINE_CONFIG)' \
-	 ENGINE_URL='$(ENGINE_URL)' \
-	 ENGINE_PORT='$(ENGINE_PORT)' \
-	 CONSOLE_PORT='$(CONSOLE_PORT)' \
-	 RUST_LOG='$(RUST_LOG)' \
-	 RUN_PROFILE='$(RUN_PROFILE)' \
-	 STACK='$(STACK)' \
-	 PID_FILE='$(PID_FILE)' \
-	 sh '$(FOREGROUND_SCRIPT)' stop
+	@set -eu; \
+	pid_file='$(PID_FILE)'; \
+	if [ ! -f "$$pid_file" ]; then echo "no foreground harness stack is running"; exit 0; fi; \
+	while IFS=' ' read -r name pid; do \
+		case "$$pid" in ''|*[!0-9]*) continue ;; esac; \
+		if kill -0 "$$pid" 2>/dev/null; then echo "stopping $$name ($$pid)"; kill "$$pid" 2>/dev/null || true; fi; \
+	done < "$$pid_file"; \
+	rm -f "$$pid_file"
 
 dev-restart: dev-down dev-up
 
