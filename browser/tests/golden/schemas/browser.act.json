@@ -1,12 +1,30 @@
 {
-  "description": "Interact with the page: click, type, press, or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
+  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
   "function_id": "browser::act",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "action": {
-        "description": "`click`, `type`, `press`, or `scroll`.",
+        "description": "`click`, `hover`, `type`, `press`, or `scroll`.",
         "type": "string"
+      },
+      "button": {
+        "default": null,
+        "description": "Mouse button for `click`: `left` (default), `right`, or `middle`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "click_count": {
+        "default": null,
+        "description": "Clicks in the gesture: 2 double-clicks (`click` only, default 1).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "delta_y": {
         "default": null,

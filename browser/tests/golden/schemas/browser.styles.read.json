@@ -1,0 +1,77 @@
+{
+  "description": "Read an element's computed styles (curated design set by default, or named properties) plus its inline style attribute.",
+  "function_id": "browser::styles::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "properties": {
+        "default": null,
+        "description": "Computed property names to return. Omit for a curated design-panel set; pass `[\"*\"]` for every computed property.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "ref": {
+        "description": "Element ref from `browser::snapshot`, `browser::dom::read`, or a pick.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref",
+      "session_id"
+    ],
+    "title": "StylesReadInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "StyleProperty": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "inline_style": {
+        "description": "The element's inline `style` attribute, when present.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "properties": {
+        "items": {
+          "$ref": "#/definitions/StyleProperty"
+        },
+        "type": "array"
+      },
+      "ref": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "properties",
+      "ref"
+    ],
+    "title": "StylesReadOutput",
+    "type": "object"
+  }
+}

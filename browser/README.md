@@ -70,11 +70,14 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The rest of the surface: `browser::act` (click/type/press/scroll by ref or
-coordinates), `browser::evaluate` (JS expression), `browser::screenshot`
-(viewable JPEG), `browser::network::read` (requests + failures), and
-`browser::sessions::list` / `browser::sessions::stop`. Function ids and
-schemas live in the code and `iii worker info browser`.
+The rest of the surface: `browser::act` (click/hover/type/press/scroll by
+ref or coordinates, left/right/middle and double-click), `browser::evaluate`
+(JS expression), `browser::screenshot` (viewable JPEG), `browser::history`
+(back/forward/reload), `browser::network::read` (requests + failures),
+`browser::dom::read` (DOM tree with refs), `browser::styles::read` /
+`browser::styles::write` (computed styles + live inline edits, the design
+panel backing), and `browser::sessions::list` / `browser::sessions::stop`.
+Function ids and schemas live in the code and `iii worker info browser`.
 
 ## Configuration
 
@@ -85,6 +88,7 @@ editable live from the console. Caps and timeouts hot-reload; `executable`,
 ```yaml
 browser:
   executable: ''            # empty = auto-detect Chrome/Chromium/Edge
+  user_data_dir: ''         # set a path to persist cookies/logins across sessions
   headless: true            # false shows a real window locally
   max_sessions: 4           # concurrent Chromium processes
   console_buffer: 500       # per-session console ring buffer (entries)

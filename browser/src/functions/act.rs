@@ -7,8 +7,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ActInput {
     pub session_id: String,
-    /// `click`, `type`, `press`, or `scroll`.
+    /// `click`, `hover`, `type`, `press`, or `scroll`.
     pub action: String,
+    /// Mouse button for `click`: `left` (default), `right`, or `middle`.
+    #[serde(default)]
+    pub button: Option<String>,
+    /// Clicks in the gesture: 2 double-clicks (`click` only, default 1).
+    #[serde(default)]
+    pub click_count: Option<u32>,
     /// Element ref from `browser::snapshot` (`e3`) or `browser::picked`
     /// (`p1`). Refs die on navigation; re-snapshot after.
     #[serde(default)]

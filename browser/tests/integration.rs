@@ -154,6 +154,67 @@ async fn session_lifecycle_console_and_snapshot() {
     .await;
     assert!(snapshot["tree"].is_string(), "{snapshot}");
 
+    // dom tree gives element refs
+    let dom = call(
+        "browser::dom::read",
+        json!({ "session_id": session_id }),
+        15_000,
+    )
+    .await;
+    let body_ref = dom["root"]["children"]
+        .as_array()
+        .and_then(|kids| {
+            kids.iter()
+                .flat_map(|k| {
+                    std::iter::once(k).chain(k["children"].as_array().into_iter().flatten())
+                })
+                .find(|n| n["tag"] == "body")
+        })
+        .and_then(|n| n["ref"].as_str())
+        .expect("body node in dom tree")
+        .to_string();
+
+    // computed styles for the body, then a live inline edit round-trips
+    let styles = call(
+        "browser::styles::read",
+        json!({ "session_id": session_id, "ref": body_ref }),
+        15_000,
+    )
+    .await;
+    assert!(
+        styles["properties"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty()),
+        "{styles}"
+    );
+    let written = call(
+        "browser::styles::write",
+        json!({
+            "session_id": session_id,
+            "ref": body_ref,
+            "property": "background-color",
+            "value": "rgb(1, 2, 3)"
+        }),
+        15_000,
+    )
+    .await;
+    assert!(
+        written["inline_style"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("background-color"),
+        "{written}"
+    );
+
+    // history reload keeps the session alive
+    let reloaded = call(
+        "browser::history",
+        json!({ "session_id": session_id, "action": "reload" }),
+        20_000,
+    )
+    .await;
+    assert_eq!(reloaded["ok"], true, "{reloaded}");
+
     // stop is idempotent
     let stopped = call(
         "browser::sessions::stop",

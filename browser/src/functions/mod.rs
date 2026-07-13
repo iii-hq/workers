@@ -4,13 +4,16 @@
 
 pub mod act;
 pub mod console;
+pub mod dom;
 pub mod evaluate;
+pub mod history;
 pub mod navigate;
 pub mod network;
 pub mod pick;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
+pub mod styles;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,10 +21,13 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
-use chromiumoxide::cdp::browser_protocol::dom;
+use chromiumoxide::cdp::browser_protocol::css as cdp_css;
+use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
 use chromiumoxide::cdp::browser_protocol::input;
 use chromiumoxide::cdp::browser_protocol::overlay;
+use chromiumoxide::cdp::browser_protocol::page as cdp_page;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::js_protocol::runtime as cdp_rt;
 use chromiumoxide::page::ScreenshotParams;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
@@ -57,8 +63,9 @@ pub const SCREENSHOT_DESC: &str =
      machine-readable structure; screenshot when layout or rendering matters.";
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
-    "Interact with the page: click, type, press, or scroll. Address elements with a [ref=eN] \
-     handle from browser::snapshot (or a pick), or raw viewport coordinates.";
+    "Interact with the page: click (left/right/middle, single or double), hover, type, press, \
+     or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or \
+     raw viewport coordinates.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -72,6 +79,22 @@ pub const NETWORK_READ_ID: &str = "browser::network::read";
 pub const NETWORK_READ_DESC: &str =
     "Read the session's captured network requests (method, URL, status, failures). \
      failed_only=true is the fast path for 'what broke'.";
+pub const HISTORY_ID: &str = "browser::history";
+pub const HISTORY_DESC: &str =
+    "Go back, go forward, or reload the session's page. Back/forward at the history edge is a \
+     no-op with moved=false.";
+pub const DOM_READ_ID: &str = "browser::dom::read";
+pub const DOM_READ_DESC: &str =
+    "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to \
+     browser::snapshot; read deep subtrees by passing a ref.";
+pub const STYLES_READ_ID: &str = "browser::styles::read";
+pub const STYLES_READ_DESC: &str =
+    "Read an element's computed styles (curated design set by default, or named properties) \
+     plus its inline style attribute.";
+pub const STYLES_WRITE_ID: &str = "browser::styles::write";
+pub const STYLES_WRITE_DESC: &str =
+    "Set one inline CSS property on an element, live in the page. Visual experiment only: the \
+     page's source files are untouched, and the edit dies with the next navigation.";
 pub const PICK_START_ID: &str = "browser::pick::start";
 pub const PICK_START_DESC: &str =
     "Internal: enter DevTools inspect mode so the human can pick an element in the console \
@@ -128,6 +151,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
             NETWORK_READ_ID,
             NETWORK_READ_DESC,
         ),
+        spec::<history::HistoryInput, history::HistoryOutput>(HISTORY_ID, HISTORY_DESC),
+        spec::<dom::DomReadInput, dom::DomReadOutput>(DOM_READ_ID, DOM_READ_DESC),
+        spec::<styles::StylesReadInput, styles::StylesReadOutput>(STYLES_READ_ID, STYLES_READ_DESC),
+        spec::<styles::StylesWriteInput, styles::StylesWriteOutput>(
+            STYLES_WRITE_ID,
+            STYLES_WRITE_DESC,
+        ),
         spec::<pick::PickStartInput, pick::PickOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickStopInput, pick::PickOutput>(PICK_STOP_ID, PICK_STOP_DESC),
     ]
@@ -144,6 +174,10 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_evaluate(iii, sessions);
     register_console_read(iii, sessions);
     register_network_read(iii, sessions);
+    register_history(iii, sessions);
+    register_dom_read(iii, sessions);
+    register_styles_read(iii, sessions);
+    register_styles_write(iii, sessions);
     register_pick_start(iii, sessions);
     register_pick_stop(iii, sessions);
     tracing::info!("all functions registered");
@@ -389,8 +423,8 @@ async fn action_point(session: &Session, req: &act::ActInput) -> Result<(f64, f6
         let model = session
             .page
             .execute(
-                dom::GetBoxModelParams::builder()
-                    .backend_node_id(dom::BackendNodeId::new(backend_id))
+                cdp_dom::GetBoxModelParams::builder()
+                    .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
                     .build(),
             )
             .await
@@ -409,37 +443,72 @@ async fn action_point(session: &Session, req: &act::ActInput) -> Result<(f64, f6
     }
 }
 
-async fn dispatch_click(session: &Session, x: f64, y: f64) -> Result<(), Error> {
+async fn dispatch_click(
+    session: &Session,
+    x: f64,
+    y: f64,
+    button: &str,
+    click_count: i64,
+) -> Result<(), Error> {
     use input::{DispatchMouseEventParams, DispatchMouseEventType, MouseButton};
+    let button = match button {
+        "left" => MouseButton::Left,
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        other => return Err(handler_err(format!("unknown button '{other}'"))),
+    };
     let moved = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MouseMoved)
         .x(x)
         .y(y)
         .build()
         .map_err(handler_err)?;
-    let pressed = DispatchMouseEventParams::builder()
-        .r#type(DispatchMouseEventType::MousePressed)
-        .x(x)
-        .y(y)
-        .button(MouseButton::Left)
-        .click_count(1)
-        .build()
-        .map_err(handler_err)?;
-    let released = DispatchMouseEventParams::builder()
-        .r#type(DispatchMouseEventType::MouseReleased)
-        .x(x)
-        .y(y)
-        .button(MouseButton::Left)
-        .click_count(1)
-        .build()
-        .map_err(handler_err)?;
-    for params in [moved, pressed, released] {
-        session
-            .page
-            .execute(params)
-            .await
-            .map_err(|e| handler_err(format!("mouse event failed: {e}")))?;
+    session
+        .page
+        .execute(moved)
+        .await
+        .map_err(|e| handler_err(format!("mouse event failed: {e}")))?;
+    for count in 1..=click_count.max(1) {
+        let pressed = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MousePressed)
+            .x(x)
+            .y(y)
+            .button(button.clone())
+            .click_count(count)
+            .build()
+            .map_err(handler_err)?;
+        let released = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseReleased)
+            .x(x)
+            .y(y)
+            .button(button.clone())
+            .click_count(count)
+            .build()
+            .map_err(handler_err)?;
+        for params in [pressed, released] {
+            session
+                .page
+                .execute(params)
+                .await
+                .map_err(|e| handler_err(format!("mouse event failed: {e}")))?;
+        }
     }
+    Ok(())
+}
+
+async fn dispatch_hover(session: &Session, x: f64, y: f64) -> Result<(), Error> {
+    use input::{DispatchMouseEventParams, DispatchMouseEventType};
+    let moved = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseMoved)
+        .x(x)
+        .y(y)
+        .build()
+        .map_err(handler_err)?;
+    session
+        .page
+        .execute(moved)
+        .await
+        .map_err(|e| handler_err(format!("mouse event failed: {e}")))?;
     Ok(())
 }
 
@@ -456,8 +525,15 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let detail = match req.action.as_str() {
                     "click" => {
                         let (x, y) = action_point(&session, &req).await?;
-                        dispatch_click(&session, x, y).await?;
-                        format!("clicked at ({x:.0}, {y:.0})")
+                        let button = req.button.as_deref().unwrap_or("left");
+                        let clicks = i64::from(req.click_count.unwrap_or(1));
+                        dispatch_click(&session, x, y, button, clicks).await?;
+                        format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
+                    }
+                    "hover" => {
+                        let (x, y) = action_point(&session, &req).await?;
+                        dispatch_hover(&session, x, y).await?;
+                        format!("hovering at ({x:.0}, {y:.0})")
                     }
                     "type" => {
                         let text = req
@@ -471,8 +547,8 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             session
                                 .page
                                 .execute(
-                                    dom::FocusParams::builder()
-                                        .backend_node_id(dom::BackendNodeId::new(backend_id))
+                                    cdp_dom::FocusParams::builder()
+                                        .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
                                         .build(),
                                 )
                                 .await
@@ -557,7 +633,7 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     }
                     other => {
                         return Err(handler_err(format!(
-                            "unknown action '{other}' (click, type, press, scroll)"
+                            "unknown action '{other}' (click, hover, type, press, scroll)"
                         )))
                     }
                 };
@@ -712,16 +788,16 @@ fn register_pick_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
-                let _ = session.page.execute(dom::EnableParams::default()).await;
+                let _ = session.page.execute(cdp_dom::EnableParams::default()).await;
                 let _ = session.page.execute(overlay::EnableParams::default()).await;
                 let highlight = overlay::HighlightConfig {
-                    content_color: Some(dom::Rgba {
+                    content_color: Some(cdp_dom::Rgba {
                         r: 111,
                         g: 168,
                         b: 220,
                         a: Some(0.5),
                     }),
-                    padding_color: Some(dom::Rgba {
+                    padding_color: Some(cdp_dom::Rgba {
                         r: 147,
                         g: 196,
                         b: 125,
@@ -772,5 +848,356 @@ fn register_pick_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         })
         .description(PICK_STOP_DESC)
         .metadata(json!({ "internal": true })),
+    );
+}
+
+fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HISTORY_ID,
+        RegisterFunction::new_async(move |req: history::HistoryInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+
+                let moved = match req.action.as_str() {
+                    "reload" => {
+                        session
+                            .page
+                            .execute(cdp_page::ReloadParams::default())
+                            .await
+                            .map_err(|e| handler_err(format!("reload failed: {e}")))?;
+                        true
+                    }
+                    dir @ ("back" | "forward") => {
+                        let history = session
+                            .page
+                            .execute(cdp_page::GetNavigationHistoryParams::default())
+                            .await
+                            .map_err(|e| handler_err(format!("history read failed: {e}")))?;
+                        let target = if dir == "back" {
+                            history.current_index - 1
+                        } else {
+                            history.current_index + 1
+                        };
+                        match usize::try_from(target)
+                            .ok()
+                            .and_then(|i| history.entries.get(i))
+                        {
+                            Some(entry) => {
+                                session
+                                    .page
+                                    .execute(cdp_page::NavigateToHistoryEntryParams::new(entry.id))
+                                    .await
+                                    .map_err(|e| {
+                                        handler_err(format!("history navigation failed: {e}"))
+                                    })?;
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    other => {
+                        return Err(handler_err(format!(
+                            "unknown action '{other}' (back, forward, reload)"
+                        )))
+                    }
+                };
+
+                let wait = Duration::from_millis(sx.config.load().default_timeout_ms);
+                if moved {
+                    let _ = timeout(wait, session.page.wait_for_navigation()).await;
+                }
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                session.touch();
+                Ok::<_, Error>(history::HistoryOutput {
+                    ok: true,
+                    url,
+                    moved,
+                })
+            }
+        })
+        .description(HISTORY_DESC),
+    );
+}
+
+/// Convert a CDP node subtree into the wire outline, registering a `d<id>`
+/// ref per element so the tree is actionable. Whitespace-only text nodes are
+/// skipped. `budget` caps total emitted nodes.
+fn convert_dom_node(
+    session: &Session,
+    node: &cdp_dom::Node,
+    budget: &mut usize,
+) -> Option<dom::DomNode> {
+    if *budget == 0 {
+        return None;
+    }
+    const TEXT_NODE: i64 = 3;
+    let mut text = None;
+    if node.node_type == TEXT_NODE {
+        let trimmed = node.node_value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        text = Some(crate::session::truncate(trimmed, 120));
+    }
+    *budget -= 1;
+
+    let mut id = None;
+    let mut classes = None;
+    if let Some(attrs) = &node.attributes {
+        for pair in attrs.chunks(2) {
+            if let [k, v] = pair {
+                match k.as_str() {
+                    "id" => id = Some(v.clone()),
+                    "class" => classes = Some(crate::session::truncate(v, 200)),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let backend_id = *node.backend_node_id.inner();
+    let r#ref = format!("d{backend_id}");
+    session.add_ref(r#ref.clone(), backend_id);
+
+    let children = node
+        .children
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|child| convert_dom_node(session, child, budget))
+        .collect();
+
+    Some(dom::DomNode {
+        r#ref,
+        tag: node.node_name.to_lowercase(),
+        id,
+        classes,
+        text,
+        child_count: node.child_node_count.unwrap_or(0).max(0) as u32,
+        children,
+    })
+}
+
+fn register_dom_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOM_READ_ID,
+        RegisterFunction::new_async(move |req: dom::DomReadInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let depth = i64::from(req.depth.unwrap_or(dom::DEFAULT_DEPTH).clamp(1, 20));
+
+                let node = match &req.r#ref {
+                    Some(r) => {
+                        let backend_id = session.resolve_ref(r).ok_or_else(|| {
+                            handler_err(format!("unknown ref '{r}'; re-snapshot first"))
+                        })?;
+                        session
+                            .page
+                            .execute(
+                                cdp_dom::DescribeNodeParams::builder()
+                                    .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                                    .depth(depth)
+                                    .pierce(true)
+                                    .build(),
+                            )
+                            .await
+                            .map_err(|e| handler_err(format!("describe node failed: {e}")))?
+                            .node
+                            .clone()
+                    }
+                    None => session
+                        .page
+                        .execute(
+                            cdp_dom::GetDocumentParams::builder()
+                                .depth(depth)
+                                .pierce(true)
+                                .build(),
+                        )
+                        .await
+                        .map_err(|e| handler_err(format!("document read failed: {e}")))?
+                        .root
+                        .clone(),
+                };
+
+                let mut budget = dom::MAX_DOM_NODES;
+                let root = convert_dom_node(&session, &node, &mut budget)
+                    .ok_or_else(|| handler_err("document root is empty"))?;
+                Ok::<_, Error>(dom::DomReadOutput {
+                    root,
+                    truncated: budget == 0,
+                })
+            }
+        })
+        .description(DOM_READ_DESC),
+    );
+}
+
+/// Push a backend node id into the CSS agent's id space. CSS.* functions
+/// take frontend node ids, not backend ids.
+async fn frontend_node_id(session: &Session, backend_id: i64) -> Result<cdp_dom::NodeId, Error> {
+    let _ = session.page.execute(cdp_dom::EnableParams::default()).await;
+    let _ = session.page.execute(cdp_css::EnableParams::default()).await;
+    let pushed = session
+        .page
+        .execute(cdp_dom::PushNodesByBackendIdsToFrontendParams::new(vec![
+            cdp_dom::BackendNodeId::new(backend_id),
+        ]))
+        .await
+        .map_err(|e| handler_err(format!("node push failed: {e}")))?;
+    pushed
+        .node_ids
+        .first()
+        .cloned()
+        .ok_or_else(|| handler_err("element no longer exists"))
+}
+
+fn register_styles_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        STYLES_READ_ID,
+        RegisterFunction::new_async(move |req: styles::StylesReadInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let backend_id = session.resolve_ref(&req.r#ref).ok_or_else(|| {
+                    handler_err(format!("unknown ref '{}'; re-snapshot first", req.r#ref))
+                })?;
+                let node_id = frontend_node_id(&session, backend_id).await?;
+
+                let computed = session
+                    .page
+                    .execute(cdp_css::GetComputedStyleForNodeParams::new(node_id))
+                    .await
+                    .map_err(|e| handler_err(format!("computed styles failed: {e}")))?;
+
+                let wanted: Option<Vec<&str>> = match &req.properties {
+                    None => Some(styles::DEFAULT_PROPERTIES.to_vec()),
+                    Some(list) if list.iter().any(|p| p == "*") => None,
+                    Some(list) => Some(list.iter().map(String::as_str).collect()),
+                };
+                let properties = computed
+                    .computed_style
+                    .iter()
+                    .filter(|p| {
+                        wanted
+                            .as_ref()
+                            .map(|w| w.contains(&p.name.as_str()))
+                            .unwrap_or(true)
+                    })
+                    .map(|p| styles::StyleProperty {
+                        name: p.name.clone(),
+                        value: p.value.clone(),
+                    })
+                    .collect();
+
+                let inline_style = session
+                    .page
+                    .execute(cdp_css::GetInlineStylesForNodeParams::new(node_id))
+                    .await
+                    .ok()
+                    .and_then(|r| r.inline_style.clone())
+                    .and_then(|s| s.css_text)
+                    .filter(|t| !t.is_empty());
+
+                Ok::<_, Error>(styles::StylesReadOutput {
+                    r#ref: req.r#ref,
+                    properties,
+                    inline_style,
+                })
+            }
+        })
+        .description(STYLES_READ_DESC),
+    );
+}
+
+fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        STYLES_WRITE_ID,
+        RegisterFunction::new_async(move |req: styles::StylesWriteInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let backend_id = session.resolve_ref(&req.r#ref).ok_or_else(|| {
+                    handler_err(format!("unknown ref '{}'; re-snapshot first", req.r#ref))
+                })?;
+
+                let resolved = session
+                    .page
+                    .execute(
+                        cdp_dom::ResolveNodeParams::builder()
+                            .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                            .build(),
+                    )
+                    .await
+                    .map_err(|e| handler_err(format!("node resolve failed: {e}")))?;
+                let object_id = resolved
+                    .object
+                    .object_id
+                    .clone()
+                    .ok_or_else(|| handler_err("element has no JS object"))?;
+
+                let priority = if req.important.unwrap_or(false) {
+                    "important"
+                } else {
+                    ""
+                };
+                let call = cdp_rt::CallFunctionOnParams::builder()
+                    .function_declaration(
+                        "function(p, v, imp) { if (v === '') { this.style.removeProperty(p); } \
+                         else { this.style.setProperty(p, v, imp); } \
+                         return this.getAttribute('style') || ''; }",
+                    )
+                    .object_id(object_id)
+                    .argument(cdp_rt::CallArgument {
+                        value: Some(serde_json::Value::String(req.property.clone())),
+                        unserializable_value: None,
+                        object_id: None,
+                    })
+                    .argument(cdp_rt::CallArgument {
+                        value: Some(serde_json::Value::String(req.value.clone())),
+                        unserializable_value: None,
+                        object_id: None,
+                    })
+                    .argument(cdp_rt::CallArgument {
+                        value: Some(serde_json::Value::String(priority.to_string())),
+                        unserializable_value: None,
+                        object_id: None,
+                    })
+                    .return_by_value(true)
+                    .build()
+                    .map_err(handler_err)?;
+                let result = session
+                    .page
+                    .execute(call)
+                    .await
+                    .map_err(|e| handler_err(format!("style write failed: {e}")))?;
+                if let Some(details) = &result.exception_details {
+                    return Err(handler_err(format!("style write threw: {}", details.text)));
+                }
+                let inline_style = result
+                    .result
+                    .result
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                session.touch();
+                Ok::<_, Error>(styles::StylesWriteOutput {
+                    ok: true,
+                    inline_style,
+                })
+            }
+        })
+        .description(STYLES_WRITE_DESC),
     );
 }

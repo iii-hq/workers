@@ -404,6 +404,9 @@ fn build_browser_config(cfg: &WorkerConfig, headless: bool) -> Result<BrowserCon
     if !cfg.executable.is_empty() {
         builder = builder.chrome_executable(&cfg.executable);
     }
+    if !cfg.user_data_dir.is_empty() {
+        builder = builder.user_data_dir(&cfg.user_data_dir);
+    }
     builder.build()
 }
 

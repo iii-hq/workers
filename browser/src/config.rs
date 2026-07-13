@@ -19,6 +19,10 @@ pub struct WorkerConfig {
     /// Absolute path to a Chromium/Chrome executable. Empty string
     /// auto-detects a system install (Chrome, Chromium, Edge).
     pub executable: String,
+    /// Chromium profile directory. Empty string is ephemeral (fresh profile
+    /// per session); set a path to persist cookies, localStorage, and logins
+    /// across sessions. All sessions share the one profile.
+    pub user_data_dir: String,
     /// Launch sessions headless. Set false to watch a real window locally.
     pub headless: bool,
     /// Maximum concurrently running sessions; `sessions::start` beyond this
@@ -52,6 +56,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             executable: String::new(),
+            user_data_dir: String::new(),
             headless: true,
             max_sessions: 4,
             console_buffer: 500,
@@ -107,6 +112,7 @@ mod tests {
     fn defaults_match_spec() {
         let c = WorkerConfig::default();
         assert_eq!(c.executable, "");
+        assert_eq!(c.user_data_dir, "");
         assert!(c.headless);
         assert_eq!(c.max_sessions, 4);
         assert_eq!(c.console_buffer, 500);
