@@ -11,7 +11,7 @@ use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::registry::LookupSpan;
 
-const TRACER_NAME: &str = "iii-queue";
+const TRACER_NAME: &str = "queue";
 
 #[derive(Debug, Clone, Default)]
 pub struct LazyGlobalTracer;
