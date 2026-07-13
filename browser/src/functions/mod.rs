@@ -6,6 +6,7 @@ pub mod act;
 pub mod console;
 pub mod dom;
 pub mod evaluate;
+pub mod frame;
 pub mod hint;
 pub mod history;
 pub mod navigate;
@@ -96,6 +97,17 @@ pub const STYLES_WRITE_ID: &str = "browser::styles::write";
 pub const STYLES_WRITE_DESC: &str =
     "Set one inline CSS property on an element, live in the page. Visual experiment only: the \
      page's source files are untouched, and the edit dies with the next navigation.";
+pub const SCREENCAST_START_ID: &str = "browser::screencast::start";
+pub const SCREENCAST_START_DESC: &str =
+    "Internal: start pushing live viewport frames for browser::frame. Console-UI plumbing; \
+     agents use browser::screenshot. Not an agent function.";
+pub const SCREENCAST_STOP_ID: &str = "browser::screencast::stop";
+pub const SCREENCAST_STOP_DESC: &str =
+    "Internal: stop the live frame push. Idempotent. Not an agent function.";
+pub const FRAME_ID: &str = "browser::frame";
+pub const FRAME_DESC: &str =
+    "Internal: newest screencast frame, or nothing when since_frame is still current. No \
+     capture round-trip; poll fast. Not an agent function.";
 pub const PICK_HINT_ID: &str = "browser::pick::hint";
 pub const PICK_HINT_DESC: &str =
     "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console \
@@ -163,6 +175,15 @@ pub fn catalog() -> Vec<FunctionSpec> {
             STYLES_WRITE_ID,
             STYLES_WRITE_DESC,
         ),
+        spec::<frame::ScreencastStartInput, pick::PickOutput>(
+            SCREENCAST_START_ID,
+            SCREENCAST_START_DESC,
+        ),
+        spec::<frame::ScreencastStopInput, pick::PickOutput>(
+            SCREENCAST_STOP_ID,
+            SCREENCAST_STOP_DESC,
+        ),
+        spec::<frame::FrameInput, frame::FrameOutput>(FRAME_ID, FRAME_DESC),
         spec::<hint::PickHintInput, hint::PickHintOutput>(PICK_HINT_ID, PICK_HINT_DESC),
         spec::<pick::PickStartInput, pick::PickOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickStopInput, pick::PickOutput>(PICK_STOP_ID, PICK_STOP_DESC),
@@ -184,6 +205,9 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_dom_read(iii, sessions);
     register_styles_read(iii, sessions);
     register_styles_write(iii, sessions);
+    register_screencast_start(iii, sessions);
+    register_screencast_stop(iii, sessions);
+    register_frame(iii, sessions);
     register_pick_hint(iii, sessions);
     register_pick_start(iii, sessions);
     register_pick_stop(iii, sessions);
@@ -1283,6 +1307,109 @@ fn register_pick_hint(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(PICK_HINT_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+}
+
+fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        SCREENCAST_START_ID,
+        RegisterFunction::new_async(move |req: frame::ScreencastStartInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let cfg = sx.config.load();
+                let params = cdp_page::StartScreencastParams::builder()
+                    .format(cdp_page::StartScreencastFormat::Jpeg)
+                    .quality(cfg.screenshot_quality as i64)
+                    .every_nth_frame(1)
+                    .build();
+                session
+                    .page
+                    .execute(params)
+                    .await
+                    .map_err(|e| handler_err(format!("screencast start failed: {e}")))?;
+                session
+                    .screencast_active
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok::<_, Error>(pick::PickOutput { ok: true })
+            }
+        })
+        .description(SCREENCAST_START_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+}
+
+fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        SCREENCAST_STOP_ID,
+        RegisterFunction::new_async(move |req: frame::ScreencastStopInput| {
+            let sx = sx.clone();
+            async move {
+                if let Some(session) = sx.get(&req.session_id) {
+                    let _ = session
+                        .page
+                        .execute(cdp_page::StopScreencastParams::default())
+                        .await;
+                    session
+                        .screencast_active
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok::<_, Error>(pick::PickOutput { ok: true })
+            }
+        })
+        .description(SCREENCAST_STOP_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+}
+
+fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        FRAME_ID,
+        RegisterFunction::new_async(move |req: frame::FrameInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let active = session
+                    .screencast_active
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let slot = session
+                    .latest_frame
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                let output = match slot.as_ref() {
+                    Some(latest) => {
+                        let unchanged = req.since_frame == Some(latest.seq);
+                        frame::FrameOutput {
+                            frame: if unchanged {
+                                None
+                            } else {
+                                Some(latest.data.clone())
+                            },
+                            width: latest.width,
+                            height: latest.height,
+                            frame_seq: latest.seq,
+                            timestamp: latest.timestamp,
+                            active,
+                        }
+                    }
+                    None => frame::FrameOutput {
+                        frame: None,
+                        width: 0,
+                        height: 0,
+                        frame_seq: 0,
+                        timestamp: 0,
+                        active,
+                    },
+                };
+                Ok::<_, Error>(output)
+            }
+        })
+        .description(FRAME_DESC)
         .metadata(json!({ "internal": true })),
     );
 }

@@ -123,6 +123,16 @@ impl<T> RingBuffer<T> {
     }
 }
 
+/// Newest screencast frame, replaced in place as Chromium pushes. `seq` is
+/// the change cursor `browser::frame` compares against `since_frame`.
+pub struct LatestFrame {
+    pub data: String,
+    pub width: u32,
+    pub height: u32,
+    pub seq: u64,
+    pub timestamp: i64,
+}
+
 pub struct Session {
     pub id: String,
     pub headless: bool,
@@ -130,6 +140,9 @@ pub struct Session {
     /// Temp profile dir removed on shutdown. None in persistent
     /// `user_data_dir` mode.
     ephemeral_profile: Option<std::path::PathBuf>,
+    pub latest_frame: Mutex<Option<LatestFrame>>,
+    pub screencast_active: std::sync::atomic::AtomicBool,
+    frame_seq: AtomicU64,
     browser: tokio::sync::Mutex<Browser>,
     pub page: Page,
     pub console: Arc<Mutex<RingBuffer<ConsoleEntry>>>,
@@ -321,6 +334,9 @@ impl Sessions {
             headless,
             created_ms: now,
             ephemeral_profile,
+            latest_frame: Mutex::new(None),
+            screencast_active: std::sync::atomic::AtomicBool::new(false),
+            frame_seq: AtomicU64::new(0),
             browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
             console: Arc::new(Mutex::new(RingBuffer::new(cfg.console_buffer as usize))),
@@ -638,6 +654,36 @@ async fn spawn_event_pumps(
                         },
                     )
                     .await;
+            }
+        }));
+    }
+
+    // screencast frames: keep only the newest, ack every frame so Chromium
+    // keeps pushing
+    if let Ok(mut events) = page
+        .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame>()
+        .await
+    {
+        let s = session.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                let seq = s.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                {
+                    let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
+                    *slot = Some(LatestFrame {
+                        data: String::from(event.data.clone()),
+                        width: event.metadata.device_width.max(0.0) as u32,
+                        height: event.metadata.device_height.max(0.0) as u32,
+                        seq,
+                        timestamp: now_ms(),
+                    });
+                }
+                let ack = chromiumoxide::cdp::browser_protocol::page::ScreencastFrameAckParams::new(
+                    event.session_id,
+                );
+                if let Err(e) = s.page.execute(ack).await {
+                    tracing::debug!(session_id = %s.id, error = %e, "screencast ack failed");
+                }
             }
         }));
     }
