@@ -159,7 +159,9 @@ pub struct JoinSpec {
 /// `metadata` and delivered to this handler as the metadata sidecar.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ReactSpec {
-    /// Model for the reacting sub-agent (required by `harness::spawn`).
+    /// Model for the reacting sub-agent (required by `harness::spawn`). Agent
+    /// registrations that omit it inherit the registering turn's model, stamped
+    /// by the `engine::register_trigger` interceptor.
     pub model: String,
     /// The sub-agent's opening task; the event (simple) or all predecessor
     /// results (join) are appended fenced so it sees its inputs.

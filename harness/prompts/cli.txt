@@ -186,7 +186,8 @@ to `harness::react` and put the sub-agent you want in the trigger's `metadata`:
       "trigger_type": "harness::turn-completed",
       "function_id": "harness::react",
       "config": { "session_id": "<the child session id you picked>" },
-      "metadata": { "model": "<model>", "task": "<what the reacting sub-agent should do>",
+      "metadata": { "task": "<what the reacting sub-agent should do>",
+                    "model": "<optional; omit to run the reaction on your own model>",
                     "session_id": "<spawn into this session; omit for a fresh child>",
                     "parent_session_id": "<console root for the child — MUST be a real session id>" }
     }'
@@ -194,7 +195,7 @@ to `harness::react` and put the sub-agent you want in the trigger's `metadata`:
 `metadata.parent_session_id` pins where the reacting sub-agent nests in the console tree;
 omitted, the reaction nests under the registering session's root automatically (session
 events: the firing session's root). If you pin one it MUST be a real session id — an invented
-group id has no session behind it, so the children render as disconnected top-level rows. `metadata.model` MUST be a live id from `router::models::list` — never a model name from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `"options": { "functions": { "allow": ["state::get", "shell::fs::*"] } }`.
+group id has no session behind it, so the children render as disconnected top-level rows. `metadata.model` is OPTIONAL — omit it and the reaction runs on your own model. Set it only to switch models, and then only to a live id from `router::models::list`, never one from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `"options": { "functions": { "allow": ["state::get", "shell::fs::*"] } }`.
 
 `harness::react` is documented here on purpose: it never runs as a direct call (agents are
 denied), only as a trigger target — do not look it up or probe it first; use the id exactly as
@@ -221,10 +222,10 @@ Join (wait for several): to spawn only after MULTIPLE predecessors finish:
 Step 1. Pick a session id for each predecessor yourself (as above).
 Step 2. Register ONE `harness::turn-completed` subscription per predecessor, filtered on that
 predecessor's own id: `"config": { "session_id": "<that child>" }`. Each subscription's
-`metadata` is the SAME full downstream spec — the combiner's `"model"` and `"task"` on all of
-them, the SAME `"join"` `"id"` and `"expect"` list, and only its OWN `"key"` differing (e.g.
+`metadata` is the SAME full downstream spec — the combiner's `"task"` on all of
+them (`"model"` optional, as above), the SAME `"join"` `"id"` and `"expect"` list, and only its OWN `"key"` differing (e.g.
 `"join": { "id": "J", "expect": ["a","b"], "key": "a" }` — the "b" predecessor uses
-`"key": "b"`). A metadata without model/task is silently ignored and the join never fires;
+`"key": "b"`). A metadata without a `"task"` is silently ignored and the join never fires;
 differing tasks make the downstream nondeterministic (the last arrival's spec spawns it).
 Step 3. Spawn the predecessors into the ids you picked.
 

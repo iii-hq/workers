@@ -178,6 +178,7 @@ pub async fn handle(
         &req.call.function_id,
         &arguments,
         &req.session_id,
+        record.as_ref().map(|rec| rec.options.model.as_str()),
     )
     .await;
     let data = if let Some(rec) = &record {

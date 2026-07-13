@@ -742,6 +742,7 @@ pub async fn run_step(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
+                Some(&record.options.model),
             )
             .await;
             let post_outcome = deps

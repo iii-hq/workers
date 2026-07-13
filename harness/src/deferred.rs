@@ -135,6 +135,7 @@ pub async fn resolve(
                 &function_id,
                 &arguments,
                 &record.session_id,
+                Some(&record.options.model),
             )
             .await;
             let post_outcome = deps

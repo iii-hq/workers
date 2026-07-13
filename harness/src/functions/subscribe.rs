@@ -61,9 +61,10 @@ pub struct SubscribeRequest {
     /// `metadata`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_id: Option<String>,
-    /// `harness::react` reaction spec: `{ model, task, session_id?,
-    /// parent_session_id?, options?, join? }`. Required (with `model` + `task`)
-    /// when `function_id` is `harness::react`; forwarded verbatim. A
+    /// `harness::react` reaction spec: `{ task, model?, session_id?,
+    /// parent_session_id?, options?, join? }`. Required (with `task`) when
+    /// `function_id` is `harness::react`; forwarded verbatim, with `model`
+    /// defaulted to the registering turn's when omitted. A
     /// trigger-fired sub-agent starts with only the read-only default policy —
     /// grant what the reaction needs via `options` (same shape as
     /// `harness::spawn` options, e.g. `{ "functions": { "allow":
@@ -169,9 +170,10 @@ pub async fn invoke(
     function_id: &str,
     arguments: &Value,
     session_id: &str,
+    caller_model: Option<&str>,
 ) -> ResultData {
     match function_id {
-        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id).await,
+        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id, caller_model).await,
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
@@ -216,15 +218,40 @@ fn react_once(req: &SubscribeRequest) -> bool {
         && req.once.unwrap_or(!defaults_recurring(&req.trigger_type))
 }
 
-async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
-    let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
+async fn intercept_register(
+    deps: &Deps,
+    args: &Value,
+    session_id: &str,
+    caller_model: Option<&str>,
+) -> ResultData {
+    let mut req: SubscribeRequest = match serde_json::from_value(args.clone()) {
         Ok(r) => r,
         Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
     };
+    if req.function_id.as_deref() == Some(crate::functions::react::REACT_ID) {
+        inherit_model(&mut req.metadata, caller_model);
+    }
 
     match handle(deps, req, session_id).await {
         Ok(resp) => ok_result(&resp),
         Err(e) => error_result(e.to_string()),
+    }
+}
+
+/// A react spec with no `model` inherits the registering turn's — agents drop
+/// `metadata.model` often enough that requiring it just turned working pipelines
+/// into failed registrations, and the harness already knows the answer. Stamped
+/// before validation/dedup so the spec that binds is the spec that fires.
+fn inherit_model(metadata: &mut Option<Value>, caller_model: Option<&str>) {
+    let (Some(Value::Object(m)), Some(model)) = (metadata.as_mut(), caller_model) else {
+        return;
+    };
+    let has_model = m
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    if !has_model {
+        m.insert("model".to_string(), Value::String(model.to_string()));
     }
 }
 
@@ -662,6 +689,26 @@ fn error_result(msg: String) -> ResultData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_less_react_spec_inherits_the_registering_turn_model() {
+        // The exact shape that used to fail registration with "missing field `model`".
+        let mut md = Some(
+            json!({ "task": "summarize", "join": { "id": "J", "expect": ["a"], "key": "a" } }),
+        );
+        inherit_model(&mut md, Some("claude-opus-4-8"));
+        assert_eq!(md.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
+        assert!(crate::functions::react::validate_spec(md.as_ref()).is_ok());
+
+        // An explicit model wins; an empty one does not.
+        let mut explicit = Some(json!({ "model": "kimi-k2", "task": "t" }));
+        inherit_model(&mut explicit, Some("claude-opus-4-8"));
+        assert_eq!(explicit.as_ref().unwrap()["model"], json!("kimi-k2"));
+
+        let mut empty = Some(json!({ "model": "", "task": "t" }));
+        inherit_model(&mut empty, Some("claude-opus-4-8"));
+        assert_eq!(empty.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
+    }
 
     #[test]
     fn react_target_allows_turn_events_and_external_types_only() {
