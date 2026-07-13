@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
+import { ConsoleEntryRow } from '@/components/chat/browser/BrowserViews'
 import { Input } from '@/components/ui/Input'
 import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
 import {
   BROWSER_CONSOLE_EVENT_TRIGGER,
   type BrowserConsoleEntry,
-  consoleLevelTone,
+  errorMessage,
   parseConsoleEvent,
   readBrowserConsole,
 } from '@/lib/browser'
@@ -32,11 +32,6 @@ function matchesPattern(text: string, pattern: string): boolean {
   } catch {
     return text.toLowerCase().includes(pattern.toLowerCase())
   }
-}
-
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp)
-  return date.toLocaleTimeString(undefined, { hour12: false })
 }
 
 interface ConsolePanelProps {
@@ -80,7 +75,7 @@ export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
       })
       .catch((err) => {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorMessage(err))
       })
     return () => {
       cancelled = true
@@ -130,32 +125,7 @@ export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
         // scroll position to the bottom, terminal-style.
         <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col-reverse">
           {[...entries].reverse().map((entry) => (
-            <li
-              key={entry.seq}
-              className="flex items-start gap-2 px-3 py-1 border-t border-rule-2 font-mono text-[12px] leading-[1.55]"
-            >
-              <span className="shrink-0 tabular-nums text-ink-ghost">
-                {formatTime(entry.timestamp)}
-              </span>
-              <Badge
-                variant={
-                  consoleLevelTone(entry.level) === 'alert'
-                    ? 'alert'
-                    : consoleLevelTone(entry.level) === 'warn'
-                      ? 'warn'
-                      : 'default'
-                }
-                className="shrink-0 w-[72px]"
-              >
-                {entry.level}
-              </Badge>
-              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-ink">
-                {entry.text}
-                {entry.source ? (
-                  <span className="text-ink-ghost"> · {entry.source}</span>
-                ) : null}
-              </span>
-            </li>
+            <ConsoleEntryRow key={entry.seq} entry={entry} />
           ))}
         </ul>
       )}

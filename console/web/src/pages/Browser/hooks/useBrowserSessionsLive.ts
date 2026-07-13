@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useBrowserLifecycleEvents } from '@/hooks/use-browser-events'
-import { type BrowserSessionInfo, listBrowserSessions } from '@/lib/browser'
+import {
+  type BrowserSessionInfo,
+  errorMessage,
+  listBrowserSessions,
+} from '@/lib/browser'
 
 /**
  * Live session feed for the Browser page: `browser::sessions::list`,
@@ -50,7 +54,7 @@ export function useBrowserSessionsLive(enabled: boolean): BrowserSessionsLive {
         setError(null)
       } catch (err) {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorMessage(err))
       } finally {
         if (!cancelled) setLoading(false)
       }

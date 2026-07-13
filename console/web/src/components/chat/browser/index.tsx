@@ -119,8 +119,10 @@ function BrowserCallView({ message }: { message: FunctionCallMessage }) {
   const running = !!message.running
 
   const body = !running && message.output != null ? renderBody(message) : null
-  const decoded =
-    message.output != null ? decodeBrowserResult(message.output) : null
+  // Fallback decode only when no pretty body renders (the normal case has a
+  // body, so the full envelope parse is skipped there).
+  const fallback =
+    !body && message.output != null ? decodeBrowserResult(message.output) : null
 
   return (
     <div className="flex flex-col bg-bg">
@@ -148,9 +150,9 @@ function BrowserCallView({ message }: { message: FunctionCallMessage }) {
         </p>
       ) : body ? (
         body
-      ) : decoded != null ? (
+      ) : fallback != null ? (
         <div className="max-h-64 overflow-auto">
-          <JsonHighlight code={formatJson(decoded)} />
+          <JsonHighlight code={formatJson(fallback)} />
         </div>
       ) : (
         <p className="px-3 py-2 font-mono text-[12px] lowercase text-ink-ghost">

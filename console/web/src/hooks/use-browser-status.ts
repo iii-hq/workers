@@ -41,5 +41,3 @@ export function useBrowserStatus(enabled: boolean): BrowserStatus {
 export function isBrowserAvailable(status: BrowserStatus): boolean {
   return isWorkerPresent(status)
 }
-
-export { BROWSER_WATCH_FN, BROWSER_WORKER_NAME }

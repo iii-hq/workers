@@ -14,6 +14,7 @@ import {
   isChatBlockedByHarness,
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
+import { hashForBrowserSession } from '@/hooks/use-hash-route'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
@@ -1366,7 +1367,7 @@ export function ChatView({
       onAppendMessage(
         conversation.id,
         makeSystemNotice(
-          `browser session ${browserSessionId} started, watch it live in the browser tab (#/browser/${browserSessionId})`,
+          `browser session ${browserSessionId} started, watch it live in the browser tab (${hashForBrowserSession(browserSessionId)})`,
         ),
       )
     }

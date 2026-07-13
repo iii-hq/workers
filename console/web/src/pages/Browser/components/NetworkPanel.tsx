@@ -1,5 +1,10 @@
-import { useEffect, useState } from 'react'
-import { type BrowserNetworkEntry, readBrowserNetwork } from '@/lib/browser'
+import { useEffect, useRef, useState } from 'react'
+import {
+  type BrowserNetworkEntry,
+  errorMessage,
+  formatTime,
+  readBrowserNetwork,
+} from '@/lib/browser'
 import { cn } from '@/lib/utils'
 
 /**
@@ -11,11 +16,6 @@ import { cn } from '@/lib/utils'
 const READ_LIMIT = 200
 const NETWORK_POLL_MS = 5_000
 
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp)
-  return date.toLocaleTimeString(undefined, { hour12: false })
-}
-
 interface NetworkPanelProps {
   sessionId: string
   enabled: boolean
@@ -26,11 +26,15 @@ export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
   const [entries, setEntries] = useState<BrowserNetworkEntry[]>([])
   const [dropped, setDropped] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  // The last (last_seq, dropped) rendered, so an idle poll that returns the
+  // same window skips the state update and its whole-list re-render.
+  const lastReadRef = useRef<{ lastSeq: number; dropped: number } | null>(null)
 
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
     setEntries([])
+    lastReadRef.current = null
     const load = async () => {
       try {
         const res = await readBrowserNetwork(sessionId, {
@@ -38,12 +42,22 @@ export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
           limit: READ_LIMIT,
         })
         if (cancelled || !res) return
+        const prev = lastReadRef.current
+        if (
+          prev &&
+          prev.lastSeq === res.last_seq &&
+          prev.dropped === res.dropped
+        ) {
+          setError(null)
+          return
+        }
+        lastReadRef.current = { lastSeq: res.last_seq, dropped: res.dropped }
         setEntries(res.entries)
         setDropped(res.dropped)
         setError(null)
       } catch (err) {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorMessage(err))
       }
     }
     void load()

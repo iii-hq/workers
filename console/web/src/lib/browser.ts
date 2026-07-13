@@ -10,8 +10,6 @@ import { getIiiClient } from '@/lib/iii-client'
  * (`use-browser-status`).
  */
 
-export const BROWSER_WORKER_NAME = 'browser'
-
 export const BROWSER_SESSIONS_START_FUNCTION_ID = 'browser::sessions::start'
 export const BROWSER_SESSIONS_LIST_FUNCTION_ID = 'browser::sessions::list'
 export const BROWSER_SESSIONS_STOP_FUNCTION_ID = 'browser::sessions::stop'
@@ -277,7 +275,31 @@ export function browserSessionIdFromCall(
   )
 }
 
-/** Badge tone per DESIGN.md status semantics for a console entry level. */
+/** Human-readable message from anything a bus call can reject with: Error
+ * instances, or the engine's plain `{ code, message }` error objects (which
+ * String() would render as [object Object]). */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'object' && err !== null) {
+    const msg = (err as { message?: unknown }).message
+    if (typeof msg === 'string' && msg.length > 0) return msg
+  }
+  return String(err)
+}
+
+/** 24-hour clock for a console/network entry timestamp. Shared by the live
+ * panels and the chat function-call views. */
+export function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false })
+}
+
+/** Badge variant for a console entry level (`consoleLevelTone` mapped to the
+ * Badge component's variant names). */
+export function levelBadgeVariant(level: string): 'default' | 'warn' | 'alert' {
+  const tone = consoleLevelTone(level)
+  return tone === 'ink' ? 'default' : tone
+}
+
 export function consoleLevelTone(level: string): 'ink' | 'warn' | 'alert' {
   switch (level) {
     case 'error':

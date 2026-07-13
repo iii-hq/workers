@@ -274,24 +274,30 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |_req: sessions::ListInput| {
             let sx = sx.clone();
             async move {
-                let mut out = Vec::new();
-                for session in sx.list() {
-                    let url = session.page.url().await.ok().flatten().unwrap_or_default();
-                    let title = session.page.get_title().await.ok().flatten();
-                    let console_entries = {
-                        let buf = session.console.lock().unwrap_or_else(|p| p.into_inner());
-                        buf.len() as u64
-                    };
-                    out.push(sessions::SessionInfo {
-                        session_id: session.id.clone(),
-                        url,
-                        title,
-                        headless: session.headless,
-                        created_ms: session.created_ms,
-                        last_used_ms: session.last_used_ms(),
-                        console_entries,
-                    });
-                }
+                // Each session's url + title are two independent CDP
+                // round-trips, and sessions are independent of each other:
+                // join both axes so the whole list costs one round-trip time
+                // instead of 2N. This is re-read on every lifecycle trigger
+                // plus a poll fallback.
+                let out =
+                    futures::future::join_all(sx.list().into_iter().map(|session| async move {
+                        let (url, title) =
+                            futures::join!(session.page.url(), session.page.get_title());
+                        let console_entries = {
+                            let buf = session.console.lock().unwrap_or_else(|p| p.into_inner());
+                            buf.len() as u64
+                        };
+                        sessions::SessionInfo {
+                            session_id: session.id.clone(),
+                            url: url.ok().flatten().unwrap_or_default(),
+                            title: title.ok().flatten(),
+                            headless: session.headless,
+                            created_ms: session.created_ms,
+                            last_used_ms: session.last_used_ms(),
+                            console_entries,
+                        }
+                    }))
+                    .await;
                 Ok::<_, Error>(sessions::ListOutput { sessions: out })
             }
         })
@@ -432,8 +438,8 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     details: screenshot::ScreenshotDetails {
                         session_id: session.id.clone(),
                         url,
-                        width: cfg.viewport_width,
-                        height: cfg.viewport_height,
+                        width: session.viewport_width,
+                        height: session.viewport_height,
                     },
                 })
             }
@@ -445,12 +451,7 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 /// Resolve the target point for a ref- or coordinate-addressed action.
 async fn action_point(session: &Session, req: &act::ActInput) -> Result<(f64, f64), Error> {
     if let Some(r) = &req.r#ref {
-        let backend_id = session.resolve_ref(r).ok_or_else(|| {
-            handler_err(format!(
-                "unknown ref '{r}'; refs come from browser::snapshot / browser::picked and die \
-                 on navigation"
-            ))
-        })?;
+        let backend_id = session.resolve_ref_or_err(r)?;
         let model = session
             .page
             .execute(
@@ -572,9 +573,7 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             .clone()
                             .ok_or_else(|| handler_err("type needs text"))?;
                         if let Some(r) = &req.r#ref {
-                            let backend_id = session.resolve_ref(r).ok_or_else(|| {
-                                handler_err(format!("unknown ref '{r}'; re-snapshot first"))
-                            })?;
+                            let backend_id = session.resolve_ref_or_err(r)?;
                             session
                                 .page
                                 .execute(
@@ -639,10 +638,9 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         {
                             action_point(&session, &req).await?
                         } else {
-                            let cfg = sx.config.load();
                             (
-                                cfg.viewport_width as f64 / 2.0,
-                                cfg.viewport_height as f64 / 2.0,
+                                session.viewport_width as f64 / 2.0,
+                                session.viewport_height as f64 / 2.0,
                             )
                         };
                         let delta_y = req.delta_y.unwrap_or(600.0);
@@ -730,31 +728,24 @@ fn register_console_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .map_err(|e| handler_err(format!("invalid pattern: {e}")))?;
                 let since = req.since_seq.unwrap_or(0);
                 let limit = req.limit.unwrap_or(console::DEFAULT_LIMIT as u64) as usize;
+                let level = req.level.clone();
 
-                let (mut entries, dropped) = {
-                    let buf = session.console.lock().unwrap_or_else(|p| p.into_inner());
-                    let entries: Vec<_> = buf
-                        .iter()
-                        .filter(|e| e.seq > since)
-                        .filter(|e| {
-                            req.level
-                                .as_deref()
-                                .map(|want| console::level_matches(want, &e.level))
-                                .unwrap_or(true)
-                        })
-                        .filter(|e| {
-                            matcher
+                let (entries, last_seq, dropped) = crate::session::read_ring(
+                    &session.console,
+                    since,
+                    limit,
+                    |e| {
+                        level
+                            .as_deref()
+                            .map(|want| console::level_matches(want, &e.level))
+                            .unwrap_or(true)
+                            && matcher
                                 .as_ref()
                                 .map(|m| m.is_match(&e.text))
                                 .unwrap_or(true)
-                        })
-                        .cloned()
-                        .collect();
-                    (entries, buf.dropped())
-                };
-                let overflow = entries.len().saturating_sub(limit);
-                entries.drain(..overflow);
-                let last_seq = entries.last().map(|e| e.seq).unwrap_or(since);
+                    },
+                    |e| e.seq,
+                );
                 Ok::<_, Error>(console::ConsoleReadOutput {
                     entries,
                     last_seq,
@@ -785,20 +776,16 @@ fn register_network_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let limit = req.limit.unwrap_or(console::DEFAULT_LIMIT as u64) as usize;
                 let failed_only = req.failed_only.unwrap_or(false);
 
-                let (mut entries, dropped) = {
-                    let buf = session.network.lock().unwrap_or_else(|p| p.into_inner());
-                    let entries: Vec<_> = buf
-                        .iter()
-                        .filter(|e| e.seq > since)
-                        .filter(|e| !failed_only || e.failed)
-                        .filter(|e| matcher.as_ref().map(|m| m.is_match(&e.url)).unwrap_or(true))
-                        .cloned()
-                        .collect();
-                    (entries, buf.dropped())
-                };
-                let overflow = entries.len().saturating_sub(limit);
-                entries.drain(..overflow);
-                let last_seq = entries.last().map(|e| e.seq).unwrap_or(since);
+                let (entries, last_seq, dropped) = crate::session::read_ring(
+                    &session.network,
+                    since,
+                    limit,
+                    |e| {
+                        (!failed_only || e.failed)
+                            && matcher.as_ref().map(|m| m.is_match(&e.url)).unwrap_or(true)
+                    },
+                    |e| e.seq,
+                );
                 Ok::<_, Error>(network::NetworkReadOutput {
                     entries,
                     last_seq,
@@ -975,19 +962,8 @@ fn convert_dom_node(
     }
     *budget -= 1;
 
-    let mut id = None;
-    let mut classes = None;
-    if let Some(attrs) = &node.attributes {
-        for pair in attrs.chunks(2) {
-            if let [k, v] = pair {
-                match k.as_str() {
-                    "id" => id = Some(v.clone()),
-                    "class" => classes = Some(crate::session::truncate(v, 200)),
-                    _ => {}
-                }
-            }
-        }
-    }
+    let (id, classes) =
+        crate::session::id_and_classes(node.attributes.as_deref().unwrap_or(&[]), 200);
 
     let backend_id = *node.backend_node_id.inner();
     let r#ref = format!("d{backend_id}");
@@ -1025,9 +1001,7 @@ fn register_dom_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 
                 let node = match &req.r#ref {
                     Some(r) => {
-                        let backend_id = session.resolve_ref(r).ok_or_else(|| {
-                            handler_err(format!("unknown ref '{r}'; re-snapshot first"))
-                        })?;
+                        let backend_id = session.resolve_ref_or_err(r)?;
                         session
                             .page
                             .execute(
@@ -1097,9 +1071,7 @@ fn register_styles_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
-                let backend_id = session.resolve_ref(&req.r#ref).ok_or_else(|| {
-                    handler_err(format!("unknown ref '{}'; re-snapshot first", req.r#ref))
-                })?;
+                let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
                 let node_id = frontend_node_id(&session, backend_id).await?;
 
                 let computed = session
@@ -1157,9 +1129,7 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
-                let backend_id = session.resolve_ref(&req.r#ref).ok_or_else(|| {
-                    handler_err(format!("unknown ref '{}'; re-snapshot first", req.r#ref))
-                })?;
+                let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
 
                 let resolved = session
                     .page
@@ -1262,38 +1232,27 @@ fn register_pick_hint(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 };
                 let backend_id = *located.backend_node_id.inner();
 
-                let described = session
-                    .page
-                    .execute(
+                // describeNode and getBoxModel both depend only on
+                // backend_id and not on each other; join them so a hint at
+                // the 120ms cursor cadence pays one round-trip, not two.
+                let (described, box_model) = futures::join!(
+                    session.page.execute(
                         cdp_dom::DescribeNodeParams::builder()
                             .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
                             .build(),
-                    )
-                    .await
-                    .map_err(|e| handler_err(format!("describe node failed: {e}")))?;
-                let node = &described.node;
-                let mut id = None;
-                let mut classes = None;
-                if let Some(attrs) = &node.attributes {
-                    for pair in attrs.chunks(2) {
-                        if let [k, v] = pair {
-                            match k.as_str() {
-                                "id" => id = Some(v.clone()),
-                                "class" => classes = Some(crate::session::truncate(v, 120)),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-
-                let bounds = session
-                    .page
-                    .execute(
+                    ),
+                    session.page.execute(
                         cdp_dom::GetBoxModelParams::builder()
                             .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
                             .build(),
-                    )
-                    .await
+                    ),
+                );
+                let described =
+                    described.map_err(|e| handler_err(format!("describe node failed: {e}")))?;
+                let node = &described.node;
+                let (id, classes) =
+                    crate::session::id_and_classes(node.attributes.as_deref().unwrap_or(&[]), 120);
+                let bounds = box_model
                     .ok()
                     .map(|r| crate::session::quad_bounds(&r.model.content));
 
@@ -1321,10 +1280,15 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
                 let cfg = sx.config.load();
+                // Cap the push rate: the only consumer is the console's
+                // ~150ms poll (~6.7fps), so pushing a JPEG per compositor
+                // frame (up to ~60fps) would decode and discard most frames
+                // unread. Every 4th frame keeps a ~15fps ceiling, invisible
+                // at the poll cadence.
                 let params = cdp_page::StartScreencastParams::builder()
                     .format(cdp_page::StartScreencastFormat::Jpeg)
                     .quality(cfg.screenshot_quality as i64)
-                    .every_nth_frame(1)
+                    .every_nth_frame(4)
                     .build();
                 session
                     .page
@@ -1377,23 +1341,31 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let active = session
                     .screencast_active
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let slot = session
-                    .latest_frame
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                let output = match slot.as_ref() {
-                    Some(latest) => {
-                        let unchanged = req.since_frame == Some(latest.seq);
+                // Clone the Arc under the lock and release it before copying
+                // the base64 payload, so the push-rate pump never waits
+                // behind this poll-rate copy.
+                let latest = {
+                    let slot = session
+                        .latest_frame
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    slot.as_ref()
+                        .map(|l| (l.frame.clone(), l.seq, l.timestamp, l.width(), l.height()))
+                };
+                let output = match latest {
+                    Some((frame, seq, timestamp, width, height)) => {
+                        let unchanged = req.since_frame == Some(seq);
                         frame::FrameOutput {
                             frame: if unchanged {
                                 None
                             } else {
-                                Some(latest.data.clone())
+                                let data: &str = frame.data.as_ref();
+                                Some(data.to_string())
                             },
-                            width: latest.width,
-                            height: latest.height,
-                            frame_seq: latest.seq,
-                            timestamp: latest.timestamp,
+                            width,
+                            height,
+                            frame_seq: seq,
+                            timestamp,
                             active,
                         }
                     }

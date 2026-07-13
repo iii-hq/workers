@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  errorMessage,
   readBrowserFrame,
   startBrowserScreencast,
   stopBrowserScreencast,
@@ -129,7 +130,7 @@ export function useLiveFrames(
         }
       } catch (err) {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorMessage(err))
       }
       schedule()
     }

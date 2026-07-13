@@ -52,6 +52,25 @@ pub fn truncate(s: &str, max: usize) -> String {
     format!("{}… [truncated]", &s[..end])
 }
 
+/// Pull `id` and `class` from CDP's flattened `[k0, v0, k1, v1, …]`
+/// attribute array, truncating the (often long) class list to `class_cap`.
+/// The one place the flattened-attribute convention lives for the
+/// element-label callers (`dom::read`, `pick::hint`).
+pub fn id_and_classes(attrs: &[String], class_cap: usize) -> (Option<String>, Option<String>) {
+    let mut id = None;
+    let mut classes = None;
+    for pair in attrs.chunks(2) {
+        if let [k, v] = pair {
+            match k.as_str() {
+                "id" => id = Some(v.clone()),
+                "class" => classes = Some(truncate(v, class_cap)),
+                _ => {}
+            }
+        }
+    }
+    (id, classes)
+}
+
 /// One captured console/log/exception entry.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConsoleEntry {
@@ -123,19 +142,62 @@ impl<T> RingBuffer<T> {
     }
 }
 
-/// Newest screencast frame, replaced in place as Chromium pushes. `seq` is
-/// the change cursor `browser::frame` compares against `since_frame`.
+/// The shared read pipeline behind `console::read` and `network::read`:
+/// take entries past `since` that `keep` accepts, newest `limit` retained,
+/// plus the drop counter and the next-cursor `last_seq`. `seq_of` reads the
+/// per-entry cursor.
+pub fn read_ring<T: Clone>(
+    buf: &Mutex<RingBuffer<T>>,
+    since: u64,
+    limit: usize,
+    keep: impl Fn(&T) -> bool,
+    seq_of: impl Fn(&T) -> u64,
+) -> (Vec<T>, u64, u64) {
+    let guard = buf.lock().unwrap_or_else(|p| p.into_inner());
+    let mut entries: Vec<T> = guard
+        .iter()
+        .filter(|e| seq_of(e) > since && keep(e))
+        .cloned()
+        .collect();
+    let dropped = guard.dropped();
+    drop(guard);
+    let overflow = entries.len().saturating_sub(limit);
+    entries.drain(..overflow);
+    let last_seq = entries.last().map(&seq_of).unwrap_or(since);
+    (entries, last_seq, dropped)
+}
+
+/// Newest screencast frame, replaced in place as Chromium pushes. Holds the
+/// CDP event by `Arc` so the push-rate pump only copies a pointer; the one
+/// owned copy of the base64 payload happens in the `browser::frame` handler,
+/// which runs at poll rate. `seq` is the change cursor `browser::frame`
+/// compares against `since_frame`.
 pub struct LatestFrame {
-    pub data: String,
-    pub width: u32,
-    pub height: u32,
+    pub frame: Arc<ScreencastFrameEvent>,
     pub seq: u64,
     pub timestamp: i64,
+}
+
+type ScreencastFrameEvent = chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame;
+
+impl LatestFrame {
+    pub fn width(&self) -> u32 {
+        self.frame.metadata.device_width.max(0.0) as u32
+    }
+
+    pub fn height(&self) -> u32 {
+        self.frame.metadata.device_height.max(0.0) as u32
+    }
 }
 
 pub struct Session {
     pub id: String,
     pub headless: bool,
+    /// Viewport captured at launch. Config viewport is a session-start
+    /// setting (a running session keeps the browser it launched with), so
+    /// per-call consumers read these fields, not the live config.
+    pub viewport_width: u32,
+    pub viewport_height: u32,
     pub created_ms: i64,
     /// Temp profile dir removed on shutdown. None in persistent
     /// `user_data_dir` mode.
@@ -145,9 +207,9 @@ pub struct Session {
     frame_seq: AtomicU64,
     browser: tokio::sync::Mutex<Browser>,
     pub page: Page,
-    pub console: Arc<Mutex<RingBuffer<ConsoleEntry>>>,
-    pub network: Arc<Mutex<RingBuffer<NetworkEntry>>>,
-    seq: Arc<AtomicU64>,
+    pub console: Mutex<RingBuffer<ConsoleEntry>>,
+    pub network: Mutex<RingBuffer<NetworkEntry>>,
+    seq: AtomicU64,
     last_used_ms: AtomicU64,
     /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
     /// navigation — backend ids do not survive a document swap.
@@ -179,6 +241,18 @@ impl Session {
             .unwrap_or_else(|p| p.into_inner())
             .get(r)
             .copied()
+    }
+
+    /// Resolve an element ref to its backend node id, or the one canonical
+    /// "unknown ref" error every ref-taking handler shares. The message is
+    /// load-bearing for agent self-correction, so it lives in one place.
+    pub fn resolve_ref_or_err(&self, r: &str) -> Result<i64, iii_sdk::errors::Error> {
+        self.resolve_ref(r).ok_or_else(|| {
+            iii_sdk::errors::Error::Handler(format!(
+                "unknown ref '{r}'; refs come from browser::snapshot / browser::dom::read / a \
+                 pick and die on navigation. Re-snapshot, then use a fresh ref."
+            ))
+        })
     }
 
     pub fn store_refs(&self, map: HashMap<String, i64>) {
@@ -332,6 +406,8 @@ impl Sessions {
         let session = Arc::new(Session {
             id: id.clone(),
             headless,
+            viewport_width: cfg.viewport_width,
+            viewport_height: cfg.viewport_height,
             created_ms: now,
             ephemeral_profile,
             latest_frame: Mutex::new(None),
@@ -339,9 +415,9 @@ impl Sessions {
             frame_seq: AtomicU64::new(0),
             browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
-            console: Arc::new(Mutex::new(RingBuffer::new(cfg.console_buffer as usize))),
-            network: Arc::new(Mutex::new(RingBuffer::new(cfg.network_buffer as usize))),
-            seq: Arc::new(AtomicU64::new(1)),
+            console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
+            network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
+            seq: AtomicU64::new(1),
             last_used_ms: AtomicU64::new(now as u64),
             refs: Mutex::new(HashMap::new()),
             pick_counter: AtomicU64::new(0),
@@ -668,18 +744,17 @@ async fn spawn_event_pumps(
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
                 let seq = s.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                let ack_id = event.session_id;
                 {
                     let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
                     *slot = Some(LatestFrame {
-                        data: String::from(event.data.clone()),
-                        width: event.metadata.device_width.max(0.0) as u32,
-                        height: event.metadata.device_height.max(0.0) as u32,
+                        frame: event,
                         seq,
                         timestamp: now_ms(),
                     });
                 }
                 let ack = chromiumoxide::cdp::browser_protocol::page::ScreencastFrameAckParams::new(
-                    event.session_id,
+                    ack_id,
                 );
                 if let Err(e) = s.page.execute(ack).await {
                     tracing::debug!(session_id = %s.id, error = %e, "screencast ack failed");

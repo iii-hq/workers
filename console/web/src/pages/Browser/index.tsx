@@ -9,7 +9,7 @@ import {
   useBrowserStatus,
 } from '@/hooks/use-browser-status'
 import { useBrowserSessionRoute } from '@/hooks/use-hash-route'
-import { startBrowserSession } from '@/lib/browser'
+import { errorMessage, startBrowserSession } from '@/lib/browser'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import { SessionRail } from './components/SessionRail'
@@ -59,7 +59,7 @@ export function Browser() {
       refresh()
       if (started) setSelectedId(started.session_id)
     } catch (err) {
-      setStartError(err instanceof Error ? err.message : String(err))
+      setStartError(errorMessage(err))
     } finally {
       setStarting(false)
     }

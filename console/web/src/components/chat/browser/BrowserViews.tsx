@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { renderWithHighlight } from '@/components/chat/sandbox/highlight'
 import {
   ActionLine,
   Chip,
@@ -9,8 +10,9 @@ import { Badge } from '@/components/ui/Badge'
 import {
   type BrowserConsoleEntry,
   type BrowserNetworkEntry,
-  consoleLevelTone,
   elementLabel,
+  formatTime,
+  levelBadgeVariant,
 } from '@/lib/browser'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -40,10 +42,6 @@ import {
  * JSON rendering instead of guessing.
  */
 
-function formatTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false })
-}
-
 function truncate(s: string, max: number): string {
   const flat = s.replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
@@ -51,30 +49,17 @@ function truncate(s: string, max: number): string {
 
 /* ---------------- snapshot ---------------- */
 
-/** The a11y outline with the `[ref=eN]` handles subtly highlighted. */
+/** The a11y outline with the `[ref=eN]` handles subtly highlighted, reusing
+ * the shared grep-style match highlighter. */
 function SnapshotTree({ tree }: { tree: string }) {
-  const nodes: React.ReactNode[] = []
-  const regex = /\[ref=[^\]]*\]/g
-  let last = 0
-  for (;;) {
-    const match = regex.exec(tree)
-    if (!match) break
-    if (match.index > last) {
-      nodes.push(<span key={`t${last}`}>{tree.slice(last, match.index)}</span>)
-    }
-    nodes.push(
-      <span key={`r${match.index}`} className="text-accent bg-paper-2">
-        {match[0]}
-      </span>,
-    )
-    last = match.index + match[0].length
-  }
-  if (last < tree.length) {
-    nodes.push(<span key={`t${last}`}>{tree.slice(last)}</span>)
-  }
   return (
     <pre className="m-0 max-h-96 overflow-auto px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
-      <code>{nodes}</code>
+      <code>
+        {renderWithHighlight(tree, '\\[ref=[^\\]]*\\]', {
+          isRegex: true,
+          ignoreCase: false,
+        })}
+      </code>
     </pre>
   )
 }
@@ -274,12 +259,7 @@ const readInputSchema = z.object({
   limit: z.number().optional(),
 })
 
-function levelBadgeVariant(level: string): 'default' | 'warn' | 'alert' {
-  const tone = consoleLevelTone(level)
-  return tone === 'ink' ? 'default' : tone
-}
-
-function ConsoleEntryRow({ entry }: { entry: BrowserConsoleEntry }) {
+export function ConsoleEntryRow({ entry }: { entry: BrowserConsoleEntry }) {
   return (
     <li className="flex items-start gap-2 border-b border-rule-2 px-3 py-1 font-mono text-[12px] leading-[1.55] last:border-b-0">
       <span className="shrink-0 tabular-nums text-ink-ghost">
@@ -341,7 +321,7 @@ export function ConsoleReadView({
   )
 }
 
-function NetworkEntryRow({ entry }: { entry: BrowserNetworkEntry }) {
+export function NetworkEntryRow({ entry }: { entry: BrowserNetworkEntry }) {
   return (
     <li className="flex items-start gap-2 border-b border-rule-2 px-3 py-1 font-mono text-[12px] leading-[1.55] last:border-b-0">
       <span

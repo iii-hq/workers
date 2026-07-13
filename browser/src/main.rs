@@ -138,13 +138,8 @@ async fn main() -> Result<()> {
     let sessions = Sessions::new(shared.clone(), emitter);
     functions::register_all(&iii, &sessions);
 
-    configuration::register_config_trigger(
-        &iii,
-        configuration::SharedState {
-            config: shared.clone(),
-        },
-    )
-    .context("registering configuration change trigger")?;
+    configuration::register_config_trigger(&iii, shared.clone())
+        .context("registering configuration change trigger")?;
 
     // Idle sweep: stop sessions nobody has touched for idle_stop_ms.
     let sweep_sessions = sessions.clone();

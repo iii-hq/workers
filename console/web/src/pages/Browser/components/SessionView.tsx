@@ -10,6 +10,7 @@ import {
   type BrowserPickedEvent,
   type BrowserSessionInfo,
   clickBrowserAt,
+  errorMessage,
   formatPickedElement,
   hintBrowserPick,
   navigateBrowser,
@@ -61,7 +62,7 @@ export function SessionView({
       await action()
       setActionError(null)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setActionError(errorMessage(err))
     }
   }, [])
 

@@ -18,11 +18,6 @@ const CONFIG_FN_ID: &str = "browser::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
-#[derive(Clone)]
-pub struct SharedState {
-    pub config: SharedConfig,
-}
-
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
@@ -65,10 +60,6 @@ async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     }
 }
 
-pub fn apply_config(state: &SharedState, cfg: WorkerConfig) {
-    state.config.store(std::sync::Arc::new(cfg));
-}
-
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 struct OnConfigChangeRequest {}
 
@@ -77,16 +68,16 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
-pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<(), Error> {
-    let st = state.clone();
+pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<(), Error> {
+    let cfg = config.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_req: OnConfigChangeRequest| {
-            let st = st.clone();
+            let cfg = cfg.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &st).await;
+                on_config_change(&engine, &cfg).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -105,10 +96,10 @@ pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<()
     Ok(())
 }
 
-async fn on_config_change(iii: &IIIClient, state: &SharedState) {
+async fn on_config_change(iii: &IIIClient, config: &SharedConfig) {
     match fetch_config(iii).await {
         Ok(cfg) => {
-            apply_config(state, cfg);
+            config.store(std::sync::Arc::new(cfg));
             tracing::info!("browser configuration reloaded");
         }
         Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),

@@ -36,8 +36,8 @@ pub struct WorkerConfig {
     pub viewport_width: u32,
     /// Viewport height for new sessions (pixels).
     pub viewport_height: u32,
-    /// Timeout used when the caller omits `timeout_ms` (navigation, act,
-    /// evaluate).
+    /// Timeout used when the caller omits `timeout_ms` (navigation and
+    /// evaluate, which take a caller `timeout_ms`).
     pub default_timeout_ms: u64,
     /// Hard ceiling on per-call timeout; caller `timeout_ms` is clamped DOWN
     /// to this.

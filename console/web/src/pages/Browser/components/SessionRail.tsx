@@ -1,4 +1,5 @@
 import { Globe } from 'lucide-react'
+import { formatMtime } from '@/components/chat/sandbox/format'
 import type { BrowserSessionInfo } from '@/lib/browser'
 import { cn } from '@/lib/utils'
 
@@ -20,14 +21,6 @@ function hostOf(url: string): string {
   } catch {
     return url
   }
-}
-
-function relativeTime(ms: number): string {
-  const delta = Date.now() - ms
-  if (delta < 60_000) return 'now'
-  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`
-  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`
-  return `${Math.floor(delta / 86_400_000)}d ago`
 }
 
 export function SessionRail({
@@ -72,7 +65,9 @@ export function SessionRail({
               <span>·</span>
               <span>{session.headless ? 'headless' : 'headful'}</span>
               <span>·</span>
-              <span>{relativeTime(session.last_used_ms)}</span>
+              <span>
+                {formatMtime(Math.floor(session.last_used_ms / 1000))}
+              </span>
             </span>
           </button>
         )

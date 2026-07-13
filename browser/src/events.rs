@@ -365,7 +365,15 @@ impl Emitter {
 
     pub async fn emit<T: Serialize>(&self, kind: EventKind, session_id: &str, payload: &T) {
         let bindings = self.sets.for_kind(kind).snapshot();
-        if bindings.is_empty() {
+        // Filter before serializing: on the high-volume console-event pump,
+        // a session with no matching binding must not pay the payload
+        // serialization cost (a console panel open on session A means every
+        // session-B log line would otherwise serialize for nothing).
+        let mut matched = bindings
+            .into_iter()
+            .filter(|b| binding_matches(&b.filter, session_id))
+            .peekable();
+        if matched.peek().is_none() {
             return;
         }
         let payload = match serde_json::to_value(payload) {
@@ -375,12 +383,10 @@ impl Emitter {
                 return;
             }
         };
-        for binding in bindings {
-            if binding_matches(&binding.filter, session_id) {
-                self.deliverer
-                    .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
-                    .await;
-            }
+        for binding in matched {
+            self.deliverer
+                .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
+                .await;
         }
     }
 }
