@@ -10,6 +10,28 @@ worker adds the human window: a live Browser page with a streaming viewport
 (Chromium-pushed screencast frames), the console feed, and click-to-pick
 elements into chat.
 
+## In the console
+
+An agent reads a page as an accessibility outline (`browser::snapshot`) while
+you watch the live viewport and console feed:
+
+<a href="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/snapshot.png">
+  <img src="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/snapshot.png" alt="browser::snapshot rendered as an accessibility outline beside the live viewport" width="100%" />
+</a>
+
+`browser::screenshot` renders the captured image inline in the chat card:
+
+<a href="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/screenshot.png">
+  <img src="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/screenshot.png" alt="browser::screenshot rendered as an inline image in the chat card" width="100%" />
+</a>
+
+Pick mode highlights the element under the cursor and drops it into the chat
+composer as an actionable ref:
+
+<a href="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/pick.png">
+  <img src="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/pick.png" alt="pick mode highlighting an element and inserting it into the chat composer" width="100%" />
+</a>
+
 ## Install
 
 ```bash
