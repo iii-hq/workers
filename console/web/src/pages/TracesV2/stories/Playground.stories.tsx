@@ -6,11 +6,11 @@ import { withFakeIiiClient } from './harness'
 /**
  * The full TracesV2 surface, wired end-to-end against the fake iii-client.
  *
- * List mode: the live TimelineStrip masthead up top (fixture traces are in
- * the past, so the strip mostly shows the grid sliding by), the filter bar,
- * and the trace list. Click a row (or a strip bar) to open a trace.
- *
- * Detail mode: the detail FILLS the canvas — no list, no filter bar. The
+ * The live TimelineStrip masthead up top (fixture traces are in the past,
+ * so the strip mostly shows the grid sliding by), the filter bar, and the
+ * trace list. Click a row (or a strip bar) to expand the trace's detail
+ * ACCORDION-style right beneath it — clicking another row swaps the
+ * expansion, clicking the open row (or its ✕, or Esc) collapses it. The
  * view switcher offers the lane timeline (default) and the waterfall;
  * click a span to open the right-hand span panel; Esc walks back out.
  * This is the interactive playground — iterate on the whole composition
@@ -35,9 +35,10 @@ export const Default: Story = {
 }
 
 /**
- * Mounted straight into the rich agent trace: full-canvas detail with the
- * lane timeline view active (4 nested ancestors as bars + 3 leaf chips).
- * Click a bar/chip to open the span panel; drag the separator to resize it.
+ * Mounted with the rich agent trace already expanded: the accordion detail
+ * with the lane timeline view active (4 nested ancestors as bars + 3 leaf
+ * chips). Click a bar/chip to open the span panel; drag the separator to
+ * resize it.
  */
 export const DetailFullCanvas: Story = {
   render: () => (

@@ -1,4 +1,4 @@
-import { EyeOff, Timer, Zap } from 'lucide-react'
+import { ChevronRight, EyeOff, Timer, Zap } from 'lucide-react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { TraceListItem } from '../hooks/useTraceData'
@@ -67,6 +67,7 @@ export function TraceListRow({
       type="button"
       onClick={onSelect}
       onAnimationEnd={onAnimationEnd}
+      aria-expanded={isSelected}
       className={cn(
         'group/row w-full px-4 py-3 border-b border-rule-2 text-left transition-colors',
         isSelected ? 'bg-panel border-l-2 border-l-accent' : 'hover:bg-panel',
@@ -74,6 +75,12 @@ export function TraceListRow({
       )}
     >
       <div className="flex items-center gap-2 mb-1">
+        <ChevronRight
+          className={cn(
+            'w-3 h-3 flex-shrink-0 text-ink-faint transition-transform',
+            isSelected && 'rotate-90',
+          )}
+        />
         <StatusDot
           tone={statusDotTone(trace.status)}
           pulse={trace.status === 'pending' || isLive}

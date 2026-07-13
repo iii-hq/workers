@@ -81,6 +81,13 @@ export interface TraceTimelineProps {
    * this and `spanGroupKey` are provided.
    */
   spanFilter?: SpanFilterControls
+  /**
+   * Size the canvas to the packed lines instead of filling the parent —
+   * for inline/accordion placement where the surrounding page scrolls.
+   * Still capped (60dvh) so a huge trace keeps its internal pan and the
+   * sticky ruler rather than becoming a screens-tall block.
+   */
+  fitContent?: boolean
 }
 
 const PADDING_X = 16
@@ -329,6 +336,7 @@ export function TraceTimeline({
   className,
   spanGroupKey,
   spanFilter,
+  fitContent,
 }: TraceTimelineProps) {
   const stageRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -504,6 +512,9 @@ export function TraceTimeline({
   const scrollableY = contentHeight + RULER_H > stage.height + 1
   const scrollableX = contentWidth > stage.width + 1
   const scrollable = scrollableY || scrollableX
+  // fitContent: ruler + packed lines, plus room for a classic (non-overlay)
+  // horizontal scrollbar so it can't clip the bottom line
+  const fitHeight = contentHeight + RULER_H + (scrollableX ? 14 : 0)
 
   const trackHover = (id: string) => (e: React.MouseEvent) => {
     if (dragRef.current?.active) return
@@ -574,8 +585,24 @@ export function TraceTimeline({
     : null
 
   return (
-    <div className={cn('flex h-full w-full min-h-[120px] flex-col', className)}>
-      <div ref={stageRef} className="relative min-h-0 flex-1">
+    <div
+      className={cn(
+        'flex w-full flex-col',
+        !fitContent && 'h-full min-h-[120px]',
+        className,
+      )}
+    >
+      {/* fitContent: the stage takes exactly the ruler + packed lines
+          (capped) — the explicit height is what the absolute viewport and
+          the ResizeObserver measure, so panning only engages past the cap */}
+      <div
+        ref={stageRef}
+        className={cn(
+          'relative min-h-0',
+          fitContent ? 'min-h-[120px] max-h-[60dvh]' : 'flex-1',
+        )}
+        style={fitContent ? { height: fitHeight } : undefined}
+      >
         {/* filter menu, floating over the canvas below the ruler row:
             funnel expands on hover into the workers + span-group lists
             (busiest first). */}

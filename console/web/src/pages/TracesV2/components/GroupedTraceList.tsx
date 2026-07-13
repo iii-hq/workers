@@ -40,6 +40,8 @@ interface GroupedTraceListProps {
   selectedTraceId: string | null
   onSelectTrace: (traceId: string) => void
   onHideFunction?: (functionId: string) => void
+  /** accordion body rendered beneath the selected member row */
+  expandedContent?: React.ReactNode
 }
 
 export function GroupedTraceList({
@@ -50,6 +52,7 @@ export function GroupedTraceList({
   selectedTraceId,
   onSelectTrace,
   onHideFunction,
+  expandedContent,
 }: GroupedTraceListProps) {
   const { groups, isLoading, unavailable } = useTraceGroups({
     groupBy: attribute,
@@ -128,6 +131,7 @@ export function GroupedTraceList({
                 selectedTraceId={selectedTraceId}
                 onSelectTrace={onSelectTrace}
                 onHideFunction={onHideFunction}
+                expandedContent={expandedContent}
               />
             )}
           </div>
@@ -201,6 +205,7 @@ interface GroupMembersProps {
   selectedTraceId: string | null
   onSelectTrace: (traceId: string) => void
   onHideFunction?: (functionId: string) => void
+  expandedContent?: React.ReactNode
 }
 
 function GroupMembers({
@@ -212,6 +217,7 @@ function GroupMembers({
   selectedTraceId,
   onSelectTrace,
   onHideFunction,
+  expandedContent,
 }: GroupMembersProps) {
   // Keyed by group identity + member-count so live growth refetches, while
   // the id list itself rides in via closure (it can be hundreds of entries).
@@ -261,16 +267,18 @@ function GroupMembers({
   return (
     <div className="pl-6 border-l border-rule-2 ml-4">
       {rows.map((trace) => (
-        <TraceListRow
-          key={trace.traceId}
-          trace={trace}
-          isSelected={selectedTraceId === trace.traceId}
-          isNew={false}
-          onSelect={() => onSelectTrace(trace.traceId)}
-          onAnimationEnd={() => {}}
-          label={label}
-          onHideFunction={onHideFunction}
-        />
+        <div key={trace.traceId} data-trace-row-id={trace.traceId}>
+          <TraceListRow
+            trace={trace}
+            isSelected={selectedTraceId === trace.traceId}
+            isNew={false}
+            onSelect={() => onSelectTrace(trace.traceId)}
+            onAnimationEnd={() => {}}
+            label={label}
+            onHideFunction={onHideFunction}
+          />
+          {selectedTraceId === trace.traceId && expandedContent}
+        </div>
       ))}
     </div>
   )
