@@ -86,9 +86,10 @@ one is a regression even if all types still line up):
 6. **Entry timestamps never change after creation** (they anchor history);
    event timestamps are the mutation time. `meta.updated_at` bumps on every
    mutation of the session.
-7. **`set_status` is spec-strict:** same status ⇒ no write, no event — even if
-   the `reason` differs. `status_reason` is stored only with `error` and
-   cleared by any other status.
+7. **`set_status` is spec-strict:** same status AND same stored reason ⇒ no
+   write, no event. A reason change alone re-emits (live phase detail within
+   one `working` stretch). `status_reason` is stored with `error` (failure
+   cause) and `working` (phase detail), cleared by `idle`/`done`.
 8. **`set_meta` replaces `metadata` wholesale** when supplied (it is the
    tenancy hook; merging would leak stale keys). An all-`None` request is a
    silent no-op.

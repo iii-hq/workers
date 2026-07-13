@@ -16,7 +16,7 @@
     },
     "properties": {
       "reason": {
-        "description": "Short cause stored as `status_reason` — kept on `error`, cleared on any other status.",
+        "description": "Short cause/phase stored as `status_reason` — kept on `error` (failure cause) and `working` (live phase detail), cleared on `idle`/`done`.",
         "type": [
           "string",
           "null"

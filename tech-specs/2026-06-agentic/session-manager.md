@@ -29,7 +29,8 @@ Every session has a coarse lifecycle status that consumers can render directly (
 badge, a list filter):
 
 - `idle` — created and waiting; no work has run yet.
-- `working` — the agent is thinking/responding (a turn is running).
+- `working` — the agent is thinking/responding (a turn is running); the optional `status_reason`
+  carries the live phase (e.g. `preparing context`, `waiting for <model>`).
 - `done` — the agent finished the job (completed or cancelled) and the session is at rest.
 - `error` — the last turn failed; the optional `status_reason` carries a short cause. Distinct from
   `done` so a **standalone** UI can render failures without asking the harness.
@@ -187,7 +188,7 @@ type StatusChangedEvent = {
   session_id: string;
   status: SessionStatus;
   previous_status: SessionStatus;
-  status_reason?: string;       // short cause, set on "error"
+  status_reason?: string;       // failure cause on "error", live phase on "working"
   timestamp: number;
 };
 ```
@@ -242,7 +243,7 @@ type SessionMeta = {
   title: string;
   description: string;
   status: SessionStatus;          // "idle" | "working" | "done" | "error"
-  status_reason?: string;         // short cause, set on "error"
+  status_reason?: string;         // failure cause on "error", live phase on "working"
   metadata?: Record<string, unknown>; // app-defined; the tenancy hook (e.g. { owner: "u_1" })
   forked_from?: string | null;
   created_at: number;
@@ -339,8 +340,10 @@ type SetMetaResponse = { meta: SessionMeta };
 
 ### `session::set-status`
 
-Set the session status. Fires `session::status-changed`. No-op (no event) if the status is unchanged.
-`reason` is stored as `status_reason` (typically set with `error`, cleared on any other status).
+Set the session status. Fires `session::status-changed`. No-op (no event) if both the status and the
+stored reason are unchanged; a reason change alone re-emits so UIs can render live phase updates
+within one `working` stretch. `reason` is stored as `status_reason` — kept on `error` (failure
+cause) and `working` (live phase detail), cleared on `idle`/`done`.
 
 - Invocation: **sync**
 

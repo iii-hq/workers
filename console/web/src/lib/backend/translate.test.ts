@@ -4,6 +4,7 @@ import type {
   PendingResolvedEvent,
   TurnCompletedEvent,
 } from '@/types/iii-agent-event'
+import type { HarnessSendResponse } from './harness-send'
 import {
   isTerminalSource,
   type TurnSourceEvent,
@@ -236,6 +237,60 @@ describe('translateTurnSource — turn-completed', () => {
     expect(isTerminalSource(completed({ status: 'completed' }))).toBe(true)
     expect(
       isTerminalSource({ kind: 'approval-created', record: pendingRecord() }),
+    ).toBe(false)
+  })
+})
+
+describe('translateTurnSource — pre-content turn status', () => {
+  function sendResolved(
+    over: Partial<HarnessSendResponse> = {},
+  ): TurnSourceEvent {
+    return {
+      kind: 'send-resolved',
+      response: {
+        session_id: 'sess-a',
+        turn_id: 't-1',
+        accepted: true,
+        ...over,
+      },
+    }
+  }
+
+  it('maps a plain accepted send to phase accepted', () => {
+    expect(translateTurnSource(sendResolved())).toEqual([
+      { kind: 'turn-status', phase: 'accepted' },
+    ])
+  })
+
+  it('maps a merged send to phase merged', () => {
+    expect(translateTurnSource(sendResolved({ merged: true }))).toEqual([
+      { kind: 'turn-status', phase: 'merged' },
+    ])
+  })
+
+  it('maps a queued send to phase queued, even when also flagged merged', () => {
+    expect(
+      translateTurnSource(sendResolved({ queued: true, merged: true })),
+    ).toEqual([{ kind: 'turn-status', phase: 'queued' }])
+  })
+
+  it('maps turn-started to phase started', () => {
+    const event: TurnSourceEvent = {
+      kind: 'turn-started',
+      event: { session_id: 'sess-a', turn_id: 't-1', timestamp: 0 },
+    }
+    expect(translateTurnSource(event)).toEqual([
+      { kind: 'turn-status', phase: 'started' },
+    ])
+  })
+
+  it('is not terminal for send-resolved or turn-started', () => {
+    expect(isTerminalSource(sendResolved())).toBe(false)
+    expect(
+      isTerminalSource({
+        kind: 'turn-started',
+        event: { session_id: 'sess-a', turn_id: 't-1', timestamp: 0 },
+      }),
     ).toBe(false)
   })
 })

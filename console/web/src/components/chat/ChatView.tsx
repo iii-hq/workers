@@ -148,6 +148,12 @@ export function ChatView({
   onCompactConversation,
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
+  // Pre-content phase of this tab's in-flight send, for the thinking
+  // shimmer's detail line: submit → harness::send ack → turn-started.
+  // Null once content streams (or for turns this tab didn't start).
+  const [turnPhase, setTurnPhase] = useState<
+    'sending' | 'accepted' | 'merged' | 'started' | null
+  >(null)
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
     DEFAULT_THINKING_LEVEL,
   )
@@ -954,6 +960,7 @@ export function ChatView({
       const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
+      setTurnPhase('sending')
 
       let thoughtId: string | null = null
       let thoughtBuffer = ''
@@ -1136,6 +1143,7 @@ export function ChatView({
                 })
               }
               setIsStreaming(false)
+              setTurnPhase(null)
               assistantId = null
               assistantBuffer = ''
               break
@@ -1157,6 +1165,11 @@ export function ChatView({
               }
               onAppendMessage(conversationId, marker)
               announcer.announce(compactionContent)
+              break
+            }
+            case 'turn-status': {
+              // `queued` renders in the queued-messages strip, not the shimmer.
+              setTurnPhase(event.phase === 'queued' ? null : event.phase)
               break
             }
             case 'stop-reason': {
@@ -1188,6 +1201,8 @@ export function ChatView({
             event.kind === 'thought-start'
           ) {
             setIsStreaming(true)
+            // Content arrived — the pre-content phase line is over.
+            setTurnPhase(null)
           }
         }
       } catch (err) {
@@ -1219,6 +1234,7 @@ export function ChatView({
           onPatchMessage(conversationId, assistantId, { streaming: false })
         }
         setIsStreaming(false)
+        setTurnPhase(null)
         abortRef.current = null
       }
     },
@@ -1278,6 +1294,26 @@ export function ChatView({
       }
       return false
     })()
+
+  // Pre-content phase text for the shimmer. Only trusted while the transcript
+  // still ends at the user's message — on the real backend content arrives via
+  // session events (not stream events), so once anything streamed the phase is
+  // stale and mid-turn gaps fall back to the model line instead.
+  const phaseDetail = (() => {
+    if (!turnPhase) return null
+    const last = conversation.messages[conversation.messages.length - 1] ?? null
+    if (last && last.role !== 'user') return null
+    switch (turnPhase) {
+      case 'sending':
+        return 'sending…'
+      case 'accepted':
+        return 'queued — waiting to start…'
+      case 'merged':
+        return 'added to the running turn…'
+      case 'started':
+        return null
+    }
+  })()
 
   const isDock = density === 'dock'
   const headerPad = isDock ? 'px-4' : 'px-9'
@@ -1539,9 +1575,8 @@ export function ChatView({
         thinkingDetail={
           conversation.status === 'working' && conversation.statusReason
             ? conversation.statusReason
-            : effectiveModel
-              ? `dispatching ${effectiveModel}`
-              : undefined
+            : (phaseDetail ??
+              (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
         }
         density={density}
         onResolveApproval={resolveApproval}

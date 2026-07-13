@@ -103,6 +103,17 @@ export type StreamEvent =
       /** The assistant output above is preserved evidence, not a successful result. */
       partialResultAvailable?: boolean
     }
+  | {
+      /**
+       * Pre-content turn lifecycle, for the thinking shimmer's detail line.
+       * `accepted` = harness::send seeded a turn (step-0 sits on the durable
+       * queue); `merged` = folded into an in-flight turn; `queued` = parked
+       * in the server-side queue (the queued strip owns that surface);
+       * `started` = harness::turn-started fired, the loop is running.
+       */
+      kind: 'turn-status'
+      phase: 'accepted' | 'merged' | 'queued' | 'started'
+    }
 
 export interface ChatStreamOptions {
   signal?: AbortSignal

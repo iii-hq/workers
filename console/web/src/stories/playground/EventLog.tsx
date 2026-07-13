@@ -185,6 +185,8 @@ function toneFor(kind: StreamEvent['kind']): string {
       return 'text-warn'
     case 'stop-reason':
       return 'text-warn'
+    case 'turn-status':
+      return 'text-ink-faint'
   }
 }
 

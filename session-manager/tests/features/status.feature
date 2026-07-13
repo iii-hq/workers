@@ -4,9 +4,12 @@ Feature: session::set-status — the coarse lifecycle status
   Contract (session-manager.md § Session status / session::set-status):
   idle -> working -> done/error is driven by the harness; consumers
   render it directly (spinner, done badge, list filter). set_status is
-  a NO-OP (no event) when the status is unchanged. reason is stored as
-  status_reason — kept on "error", cleared on any other status — so a
-  standalone UI can render failures without asking the harness.
+  a NO-OP (no event) when both the status AND the stored reason are
+  unchanged; a reason change alone re-emits so UIs can render live
+  phase updates within one "working" stretch. reason is stored as
+  status_reason — kept on "error" (failure cause) and "working" (phase
+  detail), cleared on "idle"/"done" — so a standalone UI can render
+  progress and failures without asking the harness.
 
   Background:
     Given a bare session
@@ -50,27 +53,48 @@ Feature: session::set-status — the coarse lifecycle status
     And the response field "previous_status" is "working"
     And function "ui::status" received 1 "session::status-changed" delivery
 
-  # Prevents: spec-strict regression — same status with a DIFFERENT
-  # reason is still a no-op; the stored reason must not silently change
-  # and the second call must not emit a duplicate status_changed.
-  Scenario: same status with a different reason is still a no-op
+  # Prevents: invisible in-turn phases — a reason change within one
+  # "working" stretch must update the stored reason and re-emit so a
+  # UI can walk "preparing context" -> "waiting for <model>" live.
+  Scenario: a working-phase reason change updates and re-emits
     Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
       """
       {}
       """
     Given I call "session::set-status" with:
       """
-      { "session_id": "s_001", "status": "error", "reason": "rate limited" }
+      { "session_id": "s_001", "status": "working", "reason": "preparing context" }
       """
     When I call "session::set-status" with:
       """
-      { "session_id": "s_001", "status": "error", "reason": "DIFFERENT" }
+      { "session_id": "s_001", "status": "working", "reason": "waiting for claude" }
       """
     And I call "session::get" with:
       """
       { "session_id": "s_001" }
       """
-    Then the response field "meta.status_reason" is "rate limited"
+    Then the response field "meta.status_reason" is "waiting for claude"
+    And function "ui::status" received 2 "session::status-changed" deliveries
+    And delivery 1 to "ui::status" has "status" = "working"
+    And delivery 1 to "ui::status" has "previous_status" = "working"
+    And delivery 1 to "ui::status" has "status_reason" = "waiting for claude"
+
+  # Prevents: duplicate events on redundant stamps — same status AND
+  # same reason together stay a strict no-op.
+  Scenario: same status with the same reason is still a no-op
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
+      """
+      {}
+      """
+    Given I call "session::set-status" with:
+      """
+      { "session_id": "s_001", "status": "working", "reason": "preparing context" }
+      """
+    When I call "session::set-status" with:
+      """
+      { "session_id": "s_001", "status": "working", "reason": "preparing context" }
+      """
+    Then the call succeeds
     And function "ui::status" received 1 "session::status-changed" delivery
 
   # Prevents: failures without a cause — error status must carry the
