@@ -1,0 +1,31 @@
+{
+  "description": "Internal: leave DevTools inspect mode without picking. Idempotent. Not an agent function.",
+  "function_id": "browser::pick::stop",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "description": "Cancelling pick mode on an unknown session succeeds.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "PickStopInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "PickOutput",
+    "type": "object"
+  }
+}

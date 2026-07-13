@@ -1,0 +1,104 @@
+{
+  "description": "Capture the session viewport as a viewable JPEG. Use browser::snapshot for machine-readable structure; screenshot when layout or rendering matters.",
+  "function_id": "browser::screenshot",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "full_page": {
+        "default": null,
+        "description": "Capture the full scrollable page instead of the viewport.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "ScreenshotInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentBlock": {
+        "description": "One block of a viewable response: an image block plus a text line.",
+        "properties": {
+          "data": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "ScreenshotDetails": {
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "session_id",
+          "url",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "content": {
+        "items": {
+          "$ref": "#/definitions/ContentBlock"
+        },
+        "type": "array"
+      },
+      "details": {
+        "$ref": "#/definitions/ScreenshotDetails"
+      }
+    },
+    "required": [
+      "content",
+      "details"
+    ],
+    "title": "ScreenshotOutput",
+    "type": "object"
+  }
+}

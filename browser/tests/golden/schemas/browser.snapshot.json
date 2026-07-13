@@ -1,0 +1,46 @@
+{
+  "description": "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that browser::act accepts; refs stay valid until the next navigation. Prefer this over browser::screenshot; it is cheaper and machine-readable.",
+  "function_id": "browser::snapshot",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SnapshotInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tree": {
+        "description": "Indented outline; lines carry `[ref=eN]` handles for `browser::act`.",
+        "type": "string"
+      },
+      "truncated": {
+        "description": "True when the tree hit `max_snapshot_nodes` and was cut short.",
+        "type": "boolean"
+      },
+      "url": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "tree",
+      "truncated",
+      "url"
+    ],
+    "title": "SnapshotOutput",
+    "type": "object"
+  }
+}

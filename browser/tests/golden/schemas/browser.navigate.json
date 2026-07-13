@@ -1,0 +1,61 @@
+{
+  "description": "Navigate a session to a URL and wait for the page to load. Element refs from earlier snapshots are invalidated by navigation.",
+  "function_id": "browser::navigate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Upper bound on the navigation wait; clamped to `max_timeout_ms`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "url": {
+        "description": "Absolute URL; scheme must be on the configured allowlist.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "url"
+    ],
+    "title": "NavigateInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "timed_out": {
+        "description": "True when the load event did not fire inside the timeout; the page may still be usable; snapshot to check.",
+        "type": "boolean"
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "url": {
+        "description": "URL after redirects.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ok",
+      "timed_out",
+      "url"
+    ],
+    "title": "NavigateOutput",
+    "type": "object"
+  }
+}

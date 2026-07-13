@@ -1,0 +1,136 @@
+{
+  "description": "Read the session's captured network requests (method, URL, status, failures). failed_only=true is the fast path for 'what broke'.",
+  "function_id": "browser::network::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "failed_only": {
+        "default": null,
+        "description": "Only failed requests (network error or status >= 400).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "limit": {
+        "default": null,
+        "description": "Maximum entries returned, newest kept (default 100).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pattern": {
+        "default": null,
+        "description": "Regex applied to the request URL.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "since_seq": {
+        "default": null,
+        "description": "Only entries with `seq` greater than this.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "NetworkReadInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "NetworkEntry": {
+        "description": "One captured network request.",
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed": {
+            "type": "boolean"
+          },
+          "method": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "description": "Monotonic per-session cursor; pass back as `since_seq`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "status": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "failed",
+          "method",
+          "seq",
+          "timestamp",
+          "url"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "dropped": {
+        "description": "Entries evicted from the ring buffer since session start.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "entries": {
+        "items": {
+          "$ref": "#/definitions/NetworkEntry"
+        },
+        "type": "array"
+      },
+      "last_seq": {
+        "description": "Cursor for the next `since_seq`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "dropped",
+      "entries",
+      "last_seq"
+    ],
+    "title": "NetworkReadOutput",
+    "type": "object"
+  }
+}

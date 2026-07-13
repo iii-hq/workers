@@ -1,0 +1,121 @@
+{
+  "description": "Read the session's captured console: console.* calls, uncaught exceptions, and browser-level log entries. Filter with pattern/level and page with since_seq instead of dumping everything.",
+  "function_id": "browser::console::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "level": {
+        "default": null,
+        "description": "Only entries at this level: `log`, `info`, `warning`, `error`, `debug`, `exception`. `error` also matches `exception`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "default": null,
+        "description": "Maximum entries returned, newest kept (default 100).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pattern": {
+        "default": null,
+        "description": "Regex applied to entry text. Use it: dumping an unfiltered console wastes the caller's context.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "since_seq": {
+        "default": null,
+        "description": "Only entries with `seq` greater than this; resume from the cursor returned as `last_seq`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "ConsoleReadInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ConsoleEntry": {
+        "description": "One captured console/log/exception entry.",
+        "properties": {
+          "level": {
+            "description": "`log`, `info`, `warning`, `error`, `debug`, or `exception`.",
+            "type": "string"
+          },
+          "seq": {
+            "description": "Monotonic per-session cursor; pass back as `since_seq`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "description": "`url:line` of the emitting frame, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "level",
+          "seq",
+          "text",
+          "timestamp"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "dropped": {
+        "description": "Entries evicted from the ring buffer since session start.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "entries": {
+        "items": {
+          "$ref": "#/definitions/ConsoleEntry"
+        },
+        "type": "array"
+      },
+      "last_seq": {
+        "description": "Cursor for the next `since_seq`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "dropped",
+      "entries",
+      "last_seq"
+    ],
+    "title": "ConsoleReadOutput",
+    "type": "object"
+  }
+}
