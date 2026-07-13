@@ -14,7 +14,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-use iii_mcp::{config, functions, manifest};
+use mcp::{config, functions, manifest};
 
 use crate::config::McpConfig;
 

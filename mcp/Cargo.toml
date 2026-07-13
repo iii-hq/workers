@@ -7,11 +7,11 @@ edition = "2021"
 publish = false
 
 [[bin]]
-name = "mcp"
+name = "iii-mcp"
 path = "src/main.rs"
 
 [lib]
-name = "iii_mcp"
+name = "mcp"
 path = "src/lib.rs"
 
 [dependencies]
