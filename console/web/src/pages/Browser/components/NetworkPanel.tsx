@@ -1,20 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
+import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
 import {
+  BROWSER_NETWORK_EVENT_TRIGGER,
   type BrowserNetworkEntry,
   errorMessage,
   formatTime,
+  parseNetworkEvent,
   readBrowserNetwork,
 } from '@/lib/browser'
 import { cn } from '@/lib/utils'
 
 /**
- * Network history for the selected session: `browser::network::read` with a
- * failed-only toggle. There is no live network trigger, so the panel
- * re-reads on a modest interval while mounted and the tab is visible.
+ * Network feed for the selected session: seeded from `browser::network::read`,
+ * then appended through the session-filtered `browser::network-event`
+ * binding, the same seed-then-stream shape as the console panel. The
+ * failed-only toggle filters both the seed and the live entries.
  */
 
-const READ_LIMIT = 200
-const NETWORK_POLL_MS = 5_000
+const SEED_LIMIT = 200
+const MAX_ENTRIES = 500
+
+const NETWORK_FEED_FN = 'console::browser-network-feed'
 
 interface NetworkPanelProps {
   sessionId: string
@@ -26,50 +32,46 @@ export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
   const [entries, setEntries] = useState<BrowserNetworkEntry[]>([])
   const [dropped, setDropped] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  // The last (last_seq, dropped) rendered, so an idle poll that returns the
-  // same window skips the state update and its whole-list re-render.
-  const lastReadRef = useRef<{ lastSeq: number; dropped: number } | null>(null)
+  const lastSeqRef = useRef(0)
+  const failedOnlyRef = useRef(false)
+  failedOnlyRef.current = failedOnly
 
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
+    lastSeqRef.current = 0
     setEntries([])
-    lastReadRef.current = null
-    const load = async () => {
-      try {
-        const res = await readBrowserNetwork(sessionId, {
-          failedOnly,
-          limit: READ_LIMIT,
-        })
+    void readBrowserNetwork(sessionId, { failedOnly, limit: SEED_LIMIT })
+      .then((res) => {
         if (cancelled || !res) return
-        const prev = lastReadRef.current
-        if (
-          prev &&
-          prev.lastSeq === res.last_seq &&
-          prev.dropped === res.dropped
-        ) {
-          setError(null)
-          return
-        }
-        lastReadRef.current = { lastSeq: res.last_seq, dropped: res.dropped }
         setEntries(res.entries)
         setDropped(res.dropped)
+        lastSeqRef.current = res.last_seq
         setError(null)
-      } catch (err) {
+      })
+      .catch((err) => {
         if (cancelled) return
         setError(errorMessage(err))
-      }
-    }
-    void load()
-    const id = window.setInterval(() => {
-      if (document.hidden) return
-      void load()
-    }, NETWORK_POLL_MS)
+      })
     return () => {
       cancelled = true
-      window.clearInterval(id)
     }
   }, [enabled, sessionId, failedOnly])
+
+  useBrowserSessionEvent({
+    enabled,
+    triggerType: BROWSER_NETWORK_EVENT_TRIGGER,
+    sessionId,
+    fnId: NETWORK_FEED_FN,
+    onEvent: (payload) => {
+      const evt = parseNetworkEvent(payload)
+      if (!evt || evt.session_id !== sessionId) return
+      if (evt.entry.seq <= lastSeqRef.current) return
+      lastSeqRef.current = evt.entry.seq
+      if (failedOnlyRef.current && !evt.entry.failed) return
+      setEntries((cur) => [...cur.slice(-(MAX_ENTRIES - 1)), evt.entry])
+    },
+  })
 
   return (
     <div className="flex flex-col h-full min-h-0">

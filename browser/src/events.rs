@@ -21,6 +21,7 @@ pub const SESSION_STARTED: &str = "browser::session-started";
 pub const SESSION_STOPPED: &str = "browser::session-stopped";
 pub const NAVIGATED: &str = "browser::navigated";
 pub const CONSOLE_EVENT: &str = "browser::console-event";
+pub const NETWORK_EVENT: &str = "browser::network-event";
 pub const PICKED: &str = "browser::picked";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,6 +30,7 @@ pub enum EventKind {
     SessionStopped,
     Navigated,
     ConsoleEvent,
+    NetworkEvent,
     Picked,
 }
 
@@ -39,16 +41,18 @@ impl EventKind {
             EventKind::SessionStopped => SESSION_STOPPED,
             EventKind::Navigated => NAVIGATED,
             EventKind::ConsoleEvent => CONSOLE_EVENT,
+            EventKind::NetworkEvent => NETWORK_EVENT,
             EventKind::Picked => PICKED,
         }
     }
 
-    pub fn all() -> [EventKind; 5] {
+    pub fn all() -> [EventKind; 6] {
         [
             EventKind::SessionStarted,
             EventKind::SessionStopped,
             EventKind::Navigated,
             EventKind::ConsoleEvent,
+            EventKind::NetworkEvent,
             EventKind::Picked,
         ]
     }
@@ -110,6 +114,15 @@ pub struct NavigatedEvent {
 pub struct ConsoleEventPayload {
     pub session_id: String,
     pub entry: crate::session::ConsoleEntry,
+}
+
+/// `browser::network-event` — one network request was captured (completed or
+/// failed). Symmetric with `browser::console-event`; the durable record is the
+/// ring buffer behind `browser::network::read`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NetworkEventPayload {
+    pub session_id: String,
+    pub entry: crate::session::NetworkEntry,
 }
 
 /// `browser::picked` — the human picked an element in inspect mode
@@ -260,11 +273,11 @@ impl TriggerHandler for BrowserTriggerHandler {
     }
 }
 
-/// Register the five custom trigger types with the engine. Must run before
+/// Register the six custom trigger types with the engine. Must run before
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 5] = [
+    let descriptions: [(EventKind, &str); 6] = [
         (
             EventKind::SessionStarted,
             "A Chromium session is up and ready.",
@@ -280,6 +293,10 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         (
             EventKind::ConsoleEvent,
             "A console/log/exception entry was captured on a session's page.",
+        ),
+        (
+            EventKind::NetworkEvent,
+            "A network request was captured (completed or failed) on a session's page.",
         ),
         (
             EventKind::Picked,

@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
         Arc::new(IiiDeliverer::new(iii.clone())),
     ));
 
-    let sessions = Sessions::new(shared.clone(), emitter);
+    let sessions = Sessions::new(shared.clone(), emitter, iii.clone());
     functions::register_all(&iii, &sessions);
 
     configuration::register_config_trigger(&iii, shared.clone())

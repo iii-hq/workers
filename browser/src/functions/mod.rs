@@ -1285,15 +1285,15 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
                 let cfg = sx.config.load();
-                // Cap the push rate: the only consumer is the console's
-                // ~150ms poll (~6.7fps), so pushing a JPEG per compositor
-                // frame (up to ~60fps) would decode and discard most frames
-                // unread. Every 4th frame keeps a ~15fps ceiling, invisible
-                // at the poll cadence.
+                // every_nth_frame counts COMPOSITOR frames, not wall-clock, so
+                // a value > 1 starves a static page (which may never produce
+                // that many repaints and would then emit no frame at all). Take
+                // every frame and cap the push rate by time in the pump
+                // instead (see FRAME_MIN_INTERVAL_MS).
                 let params = cdp_page::StartScreencastParams::builder()
                     .format(cdp_page::StartScreencastFormat::Jpeg)
                     .quality(cfg.screenshot_quality as i64)
-                    .every_nth_frame(4)
+                    .every_nth_frame(1)
                     .build();
                 session
                     .page
@@ -1326,6 +1326,20 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     session
                         .screencast_active
                         .store(false, std::sync::atomic::Ordering::Relaxed);
+                    // Drop the last frame from the stream so a later
+                    // subscriber does not see a stale image.
+                    let _ = sx
+                        .iii
+                        .trigger(iii_sdk::protocol::TriggerRequest {
+                            function_id: "stream::delete".to_string(),
+                            payload: json!({
+                                "stream_name": crate::session::FRAMES_STREAM,
+                                "group_id": req.session_id,
+                            }),
+                            action: None,
+                            timeout_ms: Some(5_000),
+                        })
+                        .await;
                 }
                 Ok::<_, Error>(pick::PickOutput { ok: true })
             }

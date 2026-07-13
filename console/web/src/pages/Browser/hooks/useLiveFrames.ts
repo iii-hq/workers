@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useBrowserStream } from '@/hooks/use-browser-events'
 import {
-  errorMessage,
+  BROWSER_FRAMES_STREAM,
+  extractStreamFrame,
   readBrowserFrame,
   startBrowserScreencast,
   stopBrowserScreencast,
@@ -8,20 +10,16 @@ import {
 } from '@/lib/browser'
 
 /**
- * Live view for the selected session, fed by the worker's screencast
- * pipeline: `screencast::start` on mount, then a fast `browser::frame`
- * cursor poll (a memory read on the worker; Chromium pushes the frames, so
- * there is no capture round-trip). A response without `frame` means
- * nothing changed and nothing re-renders. One `browser::screenshot` paints
- * the viewport while the first frame is still in flight; if the screencast
- * surface is unavailable (older worker) the hook degrades to plain
- * screenshot polling. Polling pauses while the tab is hidden and resumes
- * with an immediate read; `screencast::stop` runs on unmount and session
- * switch (idempotent).
+ * Live view for the selected session, fed by the worker's screencast stream:
+ * `screencast::start` on mount, then the worker pushes each frame onto the
+ * `browser:frames` stream (group = session id) and this hook appends the
+ * pushed frames, the same engine-pushes / client-appends pattern the Traces
+ * view uses. No polling. One `browser::frame` seed read paints the current
+ * frame immediately (the stream only delivers frames produced after the
+ * subscription); a `browser::screenshot` is the last-resort first paint if
+ * the screencast surface is unavailable (older worker). `screencast::stop`
+ * runs on unmount and session switch (idempotent).
  */
-
-export const FRAME_POLL_MS = 150
-const FALLBACK_POLL_MS = 2_000
 
 export interface LiveFrame {
   dataUrl: string
@@ -43,125 +41,78 @@ export function useLiveFrames(
 ): LiveViewState {
   const [frame, setFrame] = useState<LiveFrame | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Newest applied frame seq, so an out-of-order stream push is ignored.
+  const lastSeqRef = useRef(0)
 
   // The stale image never bleeds into a newly selected session.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on session change only
   useEffect(() => {
     setFrame(null)
     setError(null)
+    lastSeqRef.current = 0
   }, [sessionId])
 
+  // Start the screencast, seed the current frame, and clean up on unmount /
+  // session switch.
   useEffect(() => {
     if (!enabled || !sessionId) return
     let cancelled = false
-    let timer: number | undefined
-    let lastSeq = 0
-    let gotFrame = false
-    // Flips off when the screencast surface is unavailable; the loop then
-    // degrades to plain screenshot polling.
-    let streaming = true
-    // One re-start per outage: the worker restarting drops the screencast
-    // (active=false) without ending the session.
-    let restartAttempted = false
-
-    const schedule = () => {
-      if (cancelled) return
-      timer = window.setTimeout(
-        tick,
-        streaming ? FRAME_POLL_MS : FALLBACK_POLL_MS,
-      )
-    }
-
-    const paintScreenshot = async () => {
-      const shot = await takeBrowserScreenshot(sessionId)
-      if (cancelled || gotFrame || !shot?.dataUrl) return
-      setFrame({
-        dataUrl: shot.dataUrl,
-        width: shot.width,
-        height: shot.height,
-      })
-      setError(null)
-    }
-
-    const tick = async () => {
-      if (cancelled) return
-      if (document.hidden) {
-        schedule()
-        return
-      }
-      try {
-        if (streaming) {
-          const res = await readBrowserFrame(
-            sessionId,
-            lastSeq > 0 ? lastSeq : undefined,
-          )
-          if (cancelled) return
-          if (res) {
-            if (!res.active && !restartAttempted) {
-              restartAttempted = true
-              await startBrowserScreencast(sessionId).catch(() => {})
-            } else if (res.active) {
-              restartAttempted = false
-            }
-            if (res.frame) {
-              lastSeq = res.frame_seq
-              gotFrame = true
-              setFrame({
-                dataUrl: `data:image/jpeg;base64,${res.frame}`,
-                width: res.width,
-                height: res.height,
-              })
-              setError(null)
-            } else if (res.frame_seq > lastSeq) {
-              lastSeq = res.frame_seq
-            }
-          }
-        } else {
-          const shot = await takeBrowserScreenshot(sessionId)
-          if (cancelled) return
-          if (shot?.dataUrl) {
-            setFrame({
-              dataUrl: shot.dataUrl,
-              width: shot.width,
-              height: shot.height,
-            })
-            setError(null)
-          }
-        }
-      } catch (err) {
-        if (cancelled) return
-        setError(errorMessage(err))
-      }
-      schedule()
-    }
-
-    const onVisibility = () => {
-      if (document.hidden || cancelled) return
-      window.clearTimeout(timer)
-      void tick()
-    }
 
     void (async () => {
       try {
         await startBrowserScreencast(sessionId)
       } catch {
-        streaming = false
+        // Older worker without the screencast surface: one screenshot so the
+        // viewport is not blank.
+        const shot = await takeBrowserScreenshot(sessionId).catch(() => null)
+        if (!cancelled && shot?.dataUrl) {
+          setFrame({
+            dataUrl: shot.dataUrl,
+            width: shot.width,
+            height: shot.height,
+          })
+        }
+        return
       }
       if (cancelled) return
-      void tick()
-      if (streaming) {
-        void paintScreenshot().catch(() => {})
+      // Immediate first paint: the stream only delivers frames produced after
+      // the subscription, so read the current one once.
+      const seed = await readBrowserFrame(sessionId).catch(() => null)
+      if (cancelled || !seed?.frame) return
+      if (seed.frame_seq > lastSeqRef.current) {
+        lastSeqRef.current = seed.frame_seq
+        setFrame({
+          dataUrl: `data:image/jpeg;base64,${seed.frame}`,
+          width: seed.width,
+          height: seed.height,
+        })
+        setError(null)
       }
     })()
 
-    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       cancelled = true
-      window.clearTimeout(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
       void stopBrowserScreencast(sessionId).catch(() => {})
     }
   }, [enabled, sessionId])
+
+  useBrowserStream({
+    enabled: enabled && !!sessionId,
+    streamName: BROWSER_FRAMES_STREAM,
+    groupId: sessionId,
+    fnId: 'console::browser-frames',
+    onFrame: (payload) => {
+      const f = extractStreamFrame(payload)
+      if (!f || f.frame_seq <= lastSeqRef.current) return
+      lastSeqRef.current = f.frame_seq
+      setFrame({
+        dataUrl: `data:image/jpeg;base64,${f.frame}`,
+        width: f.width,
+        height: f.height,
+      })
+      setError(null)
+    },
+  })
 
   return { frame, loading: frame === null && error === null, error }
 }

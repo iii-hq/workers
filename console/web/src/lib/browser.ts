@@ -30,7 +30,12 @@ export const BROWSER_SESSION_STARTED_TRIGGER = 'browser::session-started'
 export const BROWSER_SESSION_STOPPED_TRIGGER = 'browser::session-stopped'
 export const BROWSER_NAVIGATED_TRIGGER = 'browser::navigated'
 export const BROWSER_CONSOLE_EVENT_TRIGGER = 'browser::console-event'
+export const BROWSER_NETWORK_EVENT_TRIGGER = 'browser::network-event'
 export const BROWSER_PICKED_TRIGGER = 'browser::picked'
+
+/** Stream the worker pushes live viewport frames onto (group = session id).
+ * The console subscribes with a `type:'stream'` trigger instead of polling. */
+export const BROWSER_FRAMES_STREAM = 'browser:frames'
 
 /** Session lifecycle trigger types the sessions rail re-reads on. */
 export const BROWSER_LIFECYCLE_TRIGGERS = [
@@ -223,6 +228,42 @@ export function parseConsoleEvent(
   payload: unknown,
 ): BrowserConsoleEvent | null {
   const parsed = consoleEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+const networkEventSchema = z.object({
+  session_id: z.string(),
+  entry: networkEntrySchema,
+})
+export type BrowserNetworkEvent = z.infer<typeof networkEventSchema>
+
+export function parseNetworkEvent(
+  payload: unknown,
+): BrowserNetworkEvent | null {
+  const parsed = networkEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+const streamFrameSchema = z.object({
+  frame: z.string(),
+  width: z.number(),
+  height: z.number(),
+  frame_seq: z.number(),
+  timestamp: z.number(),
+})
+export type BrowserStreamFrame = z.infer<typeof streamFrameSchema>
+
+/** Pull the frame payload out of a raw `stream::set` frame. The Create/Update
+ * shape nests the data at `event.data`; a flat `data` is the fallback. */
+export function extractStreamFrame(raw: unknown): BrowserStreamFrame | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  const outer =
+    obj.event && typeof obj.event === 'object'
+      ? (obj.event as Record<string, unknown>)
+      : obj
+  const data = 'data' in outer ? outer.data : obj.data
+  const parsed = streamFrameSchema.safeParse(data)
   return parsed.success ? parsed.data : null
 }
 

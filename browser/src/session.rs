@@ -32,6 +32,8 @@ const MAX_ARG_LEN: usize = 300;
 const MAX_OUTER_HTML_LEN: usize = 2_000;
 const MAX_PICK_TEXT_LEN: usize = 400;
 const RECENT_ERRORS_IN_PICK: usize = 3;
+/// Minimum wall-clock gap between pushed screencast frames (~15fps ceiling).
+const FRAME_MIN_INTERVAL_MS: i64 = 66;
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -319,15 +321,23 @@ pub struct Sessions {
     counter: AtomicU64,
     pub config: SharedConfig,
     pub emitter: Arc<Emitter>,
+    /// For pushing screencast frames onto the `browser:frames` stream, which
+    /// the console subscribes to instead of polling.
+    pub iii: Arc<iii_sdk::IIIClient>,
 }
 
 impl Sessions {
-    pub fn new(config: SharedConfig, emitter: Arc<Emitter>) -> Arc<Self> {
+    pub fn new(
+        config: SharedConfig,
+        emitter: Arc<Emitter>,
+        iii: Arc<iii_sdk::IIIClient>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
             config,
             emitter,
+            iii,
         })
     }
 
@@ -643,6 +653,7 @@ async fn spawn_event_pumps(
         .await
     {
         let s = session.clone();
+        let sx = sessions.clone();
         let pending = pending.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
@@ -661,10 +672,7 @@ async fn spawn_event_pumps(
                     failed: event.response.status >= 400,
                     error: None,
                 };
-                s.network
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push(entry);
+                push_network_and_emit(&sx, &s, entry).await;
             }
         }));
     }
@@ -674,6 +682,7 @@ async fn spawn_event_pumps(
         .await
     {
         let s = session.clone();
+        let sx = sessions.clone();
         let pending = pending.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
@@ -697,10 +706,7 @@ async fn spawn_event_pumps(
                     failed: true,
                     error: Some(event.error_text.clone()),
                 };
-                s.network
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push(entry);
+                push_network_and_emit(&sx, &s, entry).await;
             }
         }));
     }
@@ -740,17 +746,30 @@ async fn spawn_event_pumps(
         .await
     {
         let s = session.clone();
+        let sx = sessions.clone();
         tasks.push(tokio::spawn(async move {
+            let mut last_push_ms = 0i64;
             while let Some(event) = events.next().await {
-                let seq = s.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
                 let ack_id = event.session_id;
-                {
-                    let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
-                    *slot = Some(LatestFrame {
+                let now = now_ms();
+                // Wall-clock rate cap: an animated page can produce ~60
+                // compositor frames a second, but the console only needs a
+                // smooth ~15fps. Drop frames that arrive inside the interval
+                // (still ack them so Chromium keeps sending); a static page
+                // that produces one frame is never starved.
+                if now - last_push_ms >= FRAME_MIN_INTERVAL_MS {
+                    last_push_ms = now;
+                    let seq = s.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                    let stream_frame = LatestFrame {
                         frame: event,
                         seq,
-                        timestamp: now_ms(),
-                    });
+                        timestamp: now,
+                    };
+                    // Push onto the stream (the console subscribes to it); the
+                    // in-memory slot stays as the seed for a fresh subscriber.
+                    push_frame_stream(&sx.iii, &s.id, &stream_frame).await;
+                    let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
+                    *slot = Some(stream_frame);
                 }
                 let ack = chromiumoxide::cdp::browser_protocol::page::ScreencastFrameAckParams::new(
                     ack_id,
@@ -778,6 +797,61 @@ async fn push_and_emit(sessions: &Arc<Sessions>, session: &Arc<Session>, entry: 
             },
         )
         .await;
+}
+
+async fn push_network_and_emit(
+    sessions: &Arc<Sessions>,
+    session: &Arc<Session>,
+    entry: NetworkEntry,
+) {
+    session
+        .network
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(entry.clone());
+    sessions
+        .emitter
+        .emit(
+            EventKind::NetworkEvent,
+            &session.id,
+            &crate::events::NetworkEventPayload {
+                session_id: session.id.clone(),
+                entry,
+            },
+        )
+        .await;
+}
+
+/// The stream the console subscribes to for live viewport frames. Each frame
+/// overwrites one item per session (constant item_id, group = session id), so
+/// the stream is last-value: subscribers get every new frame pushed, and the
+/// stream never retains more than one item per session.
+pub const FRAMES_STREAM: &str = "browser:frames";
+
+async fn push_frame_stream(iii: &iii_sdk::IIIClient, session_id: &str, frame: &LatestFrame) {
+    let data: &str = frame.frame.data.as_ref();
+    let res = iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "stream::set".to_string(),
+            payload: serde_json::json!({
+                "stream_name": FRAMES_STREAM,
+                "group_id": session_id,
+                "item_id": "frame",
+                "data": {
+                    "frame": data,
+                    "width": frame.width(),
+                    "height": frame.height(),
+                    "frame_seq": frame.seq,
+                    "timestamp": frame.timestamp,
+                },
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    if let Err(e) = res {
+        tracing::debug!(session_id, error = %e, "frame stream push failed");
+    }
 }
 
 /// Resolve a pick from viewport coordinates: hit-test the exact point with

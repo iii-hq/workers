@@ -163,3 +163,65 @@ export function useBrowserSessionEvent(
     }
   }, [enabled, triggerType, sessionId, fnId, instanceId])
 }
+
+export interface UseBrowserStreamOptions {
+  enabled: boolean
+  /** iii stream name to subscribe to. */
+  streamName: string
+  /** Stream group (the session id for per-session streams). */
+  groupId: string | null
+  /** Base id for this binding's browser-local handler. */
+  fnId: string
+  onFrame: (payload: unknown) => void
+}
+
+/**
+ * Subscribe to an iii stream (`type:'stream'`) for a session, the same
+ * engine-pushes / client-appends pattern the Traces view uses. Rebinds when
+ * the stream group (session) changes and unregisters on unmount.
+ */
+export function useBrowserStream(opts: UseBrowserStreamOptions): void {
+  const { enabled, streamName, groupId, fnId } = opts
+  const onFrameRef = useRef(opts.onFrame)
+  onFrameRef.current = opts.onFrame
+
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  useEffect(() => {
+    if (!enabled || !groupId) return
+    let cancelled = false
+    const offs: Array<() => void> = []
+
+    void (async () => {
+      let client: Awaited<ReturnType<typeof getIiiClient>>
+      try {
+        client = await getIiiClient()
+      } catch {
+        return
+      }
+      if (cancelled) return
+      const localFnId = `${fnId}::${instanceId}`
+      try {
+        offs.push(
+          client.on(localFnId, (payload: unknown) => {
+            onFrameRef.current(payload)
+          }),
+        )
+        offs.push(
+          client.registerTrigger({
+            type: 'stream',
+            function_id: `${localFnId}::${client.browserId}`,
+            config: { stream_name: streamName, group_id: groupId },
+          }),
+        )
+      } catch {
+        // Stream not available; the seed read is the fallback.
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      for (const off of offs) off()
+    }
+  }, [enabled, streamName, groupId, fnId, instanceId])
+}
