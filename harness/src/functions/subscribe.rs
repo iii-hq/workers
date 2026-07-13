@@ -61,9 +61,11 @@ pub struct SubscribeRequest {
     /// `metadata`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_id: Option<String>,
-    /// `harness::react` reaction spec: `{ model, task, session_id?,
-    /// parent_session_id?, options?, join? }`. Required (with `model` + `task`)
-    /// when `function_id` is `harness::react`; forwarded verbatim. A
+    /// `harness::react` reaction spec: `{ task, model?, session_id?,
+    /// parent_session_id?, options?, join? }`. Required (with `task`) when
+    /// `function_id` is `harness::react`; forwarded verbatim, with `model`
+    /// (and `provider`, when unset) defaulted to the registering turn's
+    /// when omitted. A
     /// trigger-fired sub-agent starts with only the read-only default policy —
     /// grant what the reaction needs via `options` (same shape as
     /// `harness::spawn` options, e.g. `{ "functions": { "allow":
@@ -156,6 +158,23 @@ async fn session_filter_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<
     ))
 }
 
+/// The registering turn's model identity, threaded from the dispatch
+/// chokepoints so a model-less react spec can inherit it (see [`inherit_model`]).
+#[derive(Clone, Copy)]
+pub struct CallerModel<'a> {
+    pub model: &'a str,
+    pub provider: Option<&'a str>,
+}
+
+impl<'a> CallerModel<'a> {
+    pub fn from_options(options: &'a crate::types::turn::TurnOptions) -> Self {
+        Self {
+            model: &options.model,
+            provider: options.provider.as_deref(),
+        }
+    }
+}
+
 /// The single per-call invocation chokepoint. Subscription control calls
 /// (`engine::register_trigger` / `engine::unregister_trigger`) are handled inline
 /// with the trusted owning session injected — the model can never widen the
@@ -169,9 +188,10 @@ pub async fn invoke(
     function_id: &str,
     arguments: &Value,
     session_id: &str,
+    caller: Option<CallerModel<'_>>,
 ) -> ResultData {
     match function_id {
-        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id).await,
+        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id, caller).await,
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
@@ -216,15 +236,48 @@ fn react_once(req: &SubscribeRequest) -> bool {
         && req.once.unwrap_or(!defaults_recurring(&req.trigger_type))
 }
 
-async fn intercept_register(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
+async fn intercept_register(
+    deps: &Deps,
+    args: &Value,
+    session_id: &str,
+    caller: Option<CallerModel<'_>>,
+) -> ResultData {
     let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
         Ok(r) => r,
         Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
     };
 
-    match handle(deps, req, session_id).await {
+    match handle(deps, req, session_id, caller).await {
         Ok(resp) => ok_result(&resp),
         Err(e) => error_result(e.to_string()),
+    }
+}
+
+/// A react spec with no `model` inherits the registering turn's — agents drop
+/// `metadata.model` often enough that requiring it just turned working pipelines
+/// into failed registrations, and the harness already knows the answer. The
+/// caller's `provider` rides along when the spec pins none, so an inherited
+/// model cannot route to a different provider than the registering turn's
+/// (ambiguous ids resolve per-provider). Only a truly absent or empty-string
+/// `model` inherits: present-but-mistyped values (`null`, `false`, `0`) still
+/// fail spec validation loudly rather than silently running on another model.
+fn inherit_model(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) {
+    let (Some(Value::Object(m)), Some(caller)) = (metadata.as_mut(), caller) else {
+        return;
+    };
+    let inheritable = match m.get("model") {
+        None => true,
+        Some(Value::String(s)) => s.is_empty(),
+        Some(_) => false,
+    };
+    if !inheritable {
+        return;
+    }
+    m.insert("model".to_string(), Value::String(caller.model.to_string()));
+    if !m.contains_key("provider") {
+        if let Some(provider) = caller.provider {
+            m.insert("provider".to_string(), Value::String(provider.to_string()));
+        }
     }
 }
 
@@ -262,6 +315,7 @@ async fn handle(
     deps: &Deps,
     req: SubscribeRequest,
     session_id: &str,
+    caller: Option<CallerModel<'_>>,
 ) -> Result<SubscribeResponse, HarnessError> {
     if let Some(fid) = req.function_id.as_deref() {
         if fid != crate::functions::react::REACT_ID {
@@ -270,7 +324,7 @@ async fn handle(
                 crate::functions::react::REACT_ID
             )));
         }
-        return handle_react(deps, req, session_id).await;
+        return handle_react(deps, req, session_id, caller).await;
     }
 
     if subscriptions::is_forbidden_trigger_type(&req.trigger_type) {
@@ -489,8 +543,9 @@ fn react_target_type_allowed(trigger_type: &str) -> bool {
 /// catalog) so a bad binding fails this call instead of no-oping at fire time.
 async fn handle_react(
     deps: &Deps,
-    req: SubscribeRequest,
+    mut req: SubscribeRequest,
     session_id: &str,
+    caller: Option<CallerModel<'_>>,
 ) -> Result<SubscribeResponse, HarnessError> {
     if !react_target_type_allowed(&req.trigger_type) {
         return Err(HarnessError::InvalidRequest(format!(
@@ -499,18 +554,23 @@ async fn handle_react(
         )));
     }
 
+    let once = react_once(&req);
+
+    // Idempotency: same rule as the notify path — an identical re-registration
+    // returns the standing subscription instead of a twin reaction that would
+    // double-spawn on every fire. Keyed on the raw request BEFORE the owner and
+    // model stamps: a model-less spec re-registered from a turn on a different
+    // model must still match its standing twin, or every model switch would
+    // wire a duplicate binding (and a duplicate join edge leaks its twin at
+    // teardown — the accumulator keeps one binding id per key).
+    let dedup = registration_dedup_key(&req, once);
+
+    inherit_model(&mut req.metadata, caller);
     crate::functions::react::validate_spec(req.metadata.as_ref())
         .map_err(HarnessError::InvalidRequest)?;
     crate::functions::react::validate_model(&deps.iii, req.metadata.as_ref())
         .await
         .map_err(HarnessError::InvalidRequest)?;
-
-    let once = react_once(&req);
-
-    // Idempotency: same rule as the notify path — an identical re-registration
-    // returns the standing subscription instead of a twin reaction that would
-    // double-spawn on every fire. Keyed on the raw request (pre-owner-stamp).
-    let dedup = registration_dedup_key(&req, once);
     if let Some(existing) = deps.subscriptions.find_duplicate(session_id, &dedup) {
         return Ok(SubscribeResponse {
             subscription_id: existing,
@@ -662,6 +722,140 @@ fn error_result(msg: String) -> ResultData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_less_react_spec_inherits_the_registering_turn_model() {
+        // The exact shape that used to fail registration with "missing field `model`".
+        let mut md = Some(
+            json!({ "task": "summarize", "join": { "id": "J", "expect": ["a"], "key": "a" } }),
+        );
+        inherit_model(
+            &mut md,
+            Some(CallerModel {
+                model: "claude-opus-4-8",
+                provider: None,
+            }),
+        );
+        assert_eq!(md.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
+        assert!(crate::functions::react::validate_spec(md.as_ref()).is_ok());
+
+        // An explicit model wins; an empty one does not.
+        let mut explicit = Some(json!({ "model": "kimi-k2", "task": "t" }));
+        inherit_model(
+            &mut explicit,
+            Some(CallerModel {
+                model: "claude-opus-4-8",
+                provider: None,
+            }),
+        );
+        assert_eq!(explicit.as_ref().unwrap()["model"], json!("kimi-k2"));
+
+        let mut empty = Some(json!({ "model": "", "task": "t" }));
+        inherit_model(
+            &mut empty,
+            Some(CallerModel {
+                model: "claude-opus-4-8",
+                provider: None,
+            }),
+        );
+        assert_eq!(empty.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn inherited_model_carries_the_caller_provider() {
+        // A caller pinned to a provider must not have its reaction route the
+        // same model id through a different provider.
+        let mut md = Some(json!({ "task": "t" }));
+        inherit_model(
+            &mut md,
+            Some(CallerModel {
+                model: "m",
+                provider: Some("anthropic"),
+            }),
+        );
+        assert_eq!(md.as_ref().unwrap()["model"], json!("m"));
+        assert_eq!(md.as_ref().unwrap()["provider"], json!("anthropic"));
+
+        // An explicit spec provider wins over the caller's.
+        let mut pinned = Some(json!({ "task": "t", "provider": "openai" }));
+        inherit_model(
+            &mut pinned,
+            Some(CallerModel {
+                model: "m",
+                provider: Some("anthropic"),
+            }),
+        );
+        assert_eq!(pinned.as_ref().unwrap()["provider"], json!("openai"));
+
+        // An explicit model means nothing is inherited — not even the provider.
+        let mut explicit = Some(json!({ "task": "t", "model": "kimi-k2" }));
+        inherit_model(
+            &mut explicit,
+            Some(CallerModel {
+                model: "m",
+                provider: Some("anthropic"),
+            }),
+        );
+        assert!(explicit.as_ref().unwrap().get("provider").is_none());
+    }
+
+    #[test]
+    fn mistyped_model_values_do_not_inherit() {
+        // Present-but-invalid values must keep failing spec validation loudly
+        // instead of silently running on the caller's model.
+        for bad in [json!(null), json!(false), json!(0), json!({})] {
+            let mut md = Some(json!({ "task": "t", "model": bad }));
+            inherit_model(
+                &mut md,
+                Some(CallerModel {
+                    model: "m",
+                    provider: None,
+                }),
+            );
+            assert_eq!(md.as_ref().unwrap()["model"], json!(bad), "{bad}");
+            assert!(crate::functions::react::validate_spec(md.as_ref()).is_err());
+        }
+    }
+
+    #[test]
+    fn dedup_key_ignores_the_inherited_model() {
+        // The same raw registration from turns on different models must produce
+        // the SAME dedup key — handle_react computes it before inherit_model
+        // stamps, so a model switch cannot wire a twin binding.
+        let raw = json!({
+            "trigger_type": "harness::turn-completed",
+            "config": { "session_id": "child-1" },
+            "function_id": crate::functions::react::REACT_ID,
+            "metadata": { "task": "t" },
+        });
+        let req: SubscribeRequest = serde_json::from_value(raw).unwrap();
+        let key_raw = registration_dedup_key(&req, react_once(&req));
+
+        let mut stamped = req.clone();
+        inherit_model(
+            &mut stamped.metadata,
+            Some(CallerModel {
+                model: "claude-opus-4-8",
+                provider: Some("anthropic"),
+            }),
+        );
+        let key_stamped_input = registration_dedup_key(&stamped, react_once(&stamped));
+
+        assert_ne!(
+            key_raw, key_stamped_input,
+            "sanity: the stamp does change the metadata"
+        );
+        // The behavioral guarantee lives in handle_react's ordering (dedup key
+        // from `req` BEFORE inherit_model) — this pins the raw key's stability.
+        let req2: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "harness::turn-completed",
+            "config": { "session_id": "child-1" },
+            "function_id": crate::functions::react::REACT_ID,
+            "metadata": { "task": "t" },
+        }))
+        .unwrap();
+        assert_eq!(key_raw, registration_dedup_key(&req2, react_once(&req2)));
+    }
 
     #[test]
     fn react_target_allows_turn_events_and_external_types_only() {

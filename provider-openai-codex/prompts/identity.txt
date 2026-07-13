@@ -211,11 +211,11 @@ To make an event START a sub-agent
 (not just notify a handler), bind it to `harness::react`: a
 turn-completed or `state` event carries no `task`/`model`, so it can't drive `harness::spawn`
 directly. Put the sub-agent in the trigger's `metadata` — `engine::register_trigger {
-trigger_type, function_id: "harness::react", config: <the type's filters>, metadata: { model,
-task, session_id?, parent_session_id? } }` — where `parent_session_id` pins the child's spot
+trigger_type, function_id: "harness::react", config: <the type's filters>, metadata: { task,
+model?, session_id?, parent_session_id? } }` — where `parent_session_id` pins the child's spot
 in the console tree; omitted, the reaction nests under the registering session's root
 automatically. If pinned it MUST be a real session id (normally your own; an invented group
-id leaves the children as disconnected top-level rows) `metadata.model` MUST be a live id from `router::models::list` — never a model name from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `options: { functions: { allow: ["state::get", "shell::fs::*"] } }`. — and `harness::react` spawns a sub-agent (`harness::spawn`) with your
+id leaves the children as disconnected top-level rows) `metadata.model` is OPTIONAL — omit it and the reaction runs on your own model. Set it only to switch models, and then only to a live id from `router::models::list`, never one from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `options: { functions: { allow: ["state::get", "shell::fs::*"] } }`. — and `harness::react` spawns a sub-agent (`harness::spawn`) with your
 task (event JSON appended; a turn-completed event carries the turn's terminal `status` and, on
 success, its `result`). Failed/cancelled turns and completed turns carrying `result_error` stop
 the normal downstream; set `metadata.continue_on_error: true` only for an explicit error
@@ -234,10 +234,10 @@ over, console nesting stuck under the old run); register one `harness::turn-comp
 subscription per predecessor filtered on that id
 (`config { session_id }` — NOT `parent_session_id`, which matches every child and would fill
 every join key with the first completion). Each metadata is the SAME full downstream spec —
-the combiner's model/task on all of them, only `key` differing:
-`{ model, task, join: { id: "J", expect: ["a","b","c"], key: "a" } }` (the "b" predecessor
+the combiner's task on all of them (`model` optional, as above), only `key` differing:
+`{ task, join: { id: "J", expect: ["a","b","c"], key: "a" } }` (the "b" predecessor
 uses `key: "b"`). `expect` is the ARRAY of every predecessor key — never a count — and
-contains this subscription's own `key` (missing model/task → the spec is silently ignored and
+contains this subscription's own `key` (missing task → the spec is silently ignored and
 the join never fires; differing tasks → the last arrival's spec spawns the downstream); then
 spawn the predecessors into those ids. React accumulates their results durably and spawns the downstream sub-agent
 exactly once after every predecessor succeeds, fed all of them. A failed predecessor counts as

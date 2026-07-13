@@ -135,6 +135,9 @@ pub async fn resolve(
                 &function_id,
                 &arguments,
                 &record.session_id,
+                Some(crate::functions::subscribe::CallerModel::from_options(
+                    &record.options,
+                )),
             )
             .await;
             let post_outcome = deps
