@@ -169,16 +169,13 @@ fn register_internal<Req, Resp, F, Fut>(
     F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
 {
-    let deps = deps.clone();
-    iii.register_function(
+    register_meta(
+        iii,
+        deps,
         id,
-        RegisterFunction::new_async(move |req: Req| {
-            let deps = deps.clone();
-            let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(Error::from) }
-        })
-        .description(description)
-        .metadata(serde_json::json!({ "internal": true })),
+        description,
+        Some(serde_json::json!({ "internal": true })),
+        handler,
     );
 }
 

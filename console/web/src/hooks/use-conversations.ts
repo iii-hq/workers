@@ -366,6 +366,10 @@ export function useConversations(
   const lastSavedDraftRef = useRef(new Map<string, string>())
   const pendingDraftRef = useRef<{ id: string; text: string } | null>(null)
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Per-session tail of the in-flight `session::set-draft` writes: saves
+      chain so an older save can never land after (and clobber) a newer one
+      — the case that matters is the post-send CLEAR racing a stale save. */
+  const draftSaveChainRef = useRef(new Map<string, Promise<void>>())
 
   const patchConversation = useCallback(
     (id: string, patch: (c: Conversation) => Conversation) => {
@@ -886,12 +890,25 @@ export function useConversations(
     pendingDraftRef.current = null
     if (!pending) return
     if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
-    lastSavedDraftRef.current.set(pending.id, pending.text)
-    void setSessionDraft(pending.id, pending.text || null).catch((err) => {
-      if (import.meta.env.DEV) {
-        console.warn('[conversations] set-draft failed', err)
-      }
-    })
+    const chain = draftSaveChainRef.current
+    const tail = (chain.get(pending.id) ?? Promise.resolve())
+      .then(async () => {
+        // Re-check under the chain: an earlier link may have saved this very
+        // value already. The saved-marker moves only AFTER the RPC resolves —
+        // a failed save stays eligible for retry on the next flush.
+        if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
+        await setSessionDraft(pending.id, pending.text || null)
+        lastSavedDraftRef.current.set(pending.id, pending.text)
+      })
+      .catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn('[conversations] set-draft failed', err)
+        }
+      })
+      .finally(() => {
+        if (chain.get(pending.id) === tail) chain.delete(pending.id)
+      })
+    chain.set(pending.id, tail)
   }, [])
 
   const setDraftText = useCallback(

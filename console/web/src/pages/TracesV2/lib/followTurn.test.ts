@@ -146,6 +146,28 @@ describe('evaluateFollow', () => {
     expect(later.openTraceId).toBeNull()
   })
 
+  it('baselines a DELAYED older trace arriving after the newest was seen', () => {
+    const first = evaluateFollow(null, [], SESSION)
+    const newer = turnSpan({
+      trace_id: 't-2',
+      span_id: 's-2',
+      start_time_unix_nano: T1_MS * 1_000_000,
+    })
+    const opened = evaluateFollow(first.state, [newer], SESSION)
+    expect(opened.openTraceId).toBe('t-2')
+
+    // An older trace's spans arrive late, on a frame whose newest (t-2) is
+    // already seen — the quiet early-return must still adopt it…
+    const older = turnSpan()
+    const quiet = evaluateFollow(opened.state, [newer, older], SESSION)
+    expect(quiet.openTraceId).toBeNull()
+
+    // …so it cannot pop open once retention prunes t-2 and the stale
+    // t-1 becomes the newest trace on the feed.
+    const pruned = evaluateFollow(quiet.state, [older], SESSION)
+    expect(pruned.openTraceId).toBeNull()
+  })
+
   it('rebaselines when the active session changes', () => {
     const a = evaluateFollow(null, [turnSpan()], SESSION)
     const otherTurn = turnSpan({

@@ -114,12 +114,14 @@ export function evaluateFollow(
     return { state: next, openTraceId: openLive }
   }
 
-  if (newest === null || state.seenTraceIds.has(newest)) {
+  if (newest === null) {
     return { state, openTraceId: null }
   }
-  // Adopt every currently-visible trace, not just the winner: an older
-  // unseen trace must not pop open on a later frame after retention prunes
-  // the newer one.
+  // Adopt every currently-visible trace, not just the winner — and also on
+  // frames where the winner was already seen: an older trace whose spans
+  // arrive late must be baselined immediately, or it would pop open once
+  // retention prunes the newer trace and it becomes the newest unseen.
+  const alreadySeen = state.seenTraceIds.has(newest)
   for (const traceId of traces.keys()) state.seenTraceIds.add(traceId)
-  return { state, openTraceId: newest }
+  return { state, openTraceId: alreadySeen ? null : newest }
 }

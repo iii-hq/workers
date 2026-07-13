@@ -26,7 +26,7 @@ use crate::chat::inflight::InflightMap;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
-use crate::config::state::{apply_config, new_config_cell, ConfigCell};
+use crate::config::state::{new_config_cell, ConfigCell};
 use crate::registry::availability::make_provider_list;
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
@@ -34,6 +34,7 @@ use crate::registry::store::RegistryStore;
 use crate::surface;
 use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
+use crate::types::router::ConfigChangedEvent;
 
 /// `metadata.internal = true` keeps a registration out of the default
 /// `engine::functions::list`: orchestrator/provider plumbing, invoked by id.
@@ -204,7 +205,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
 
     // 6. Bind configuration changes only after every consumer of the live
     // snapshot has been built.
-    {
+    let on_config_changed = {
         let registry_for_listing = registry.clone();
         let lookup: crate::config::on_changed::ListingLookup = Arc::new(move |id: &str| {
             let registry = registry_for_listing.clone();
@@ -217,19 +218,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                     .unwrap_or(false)
             })
         });
-        iii.register_function(
-            surface::ON_CONFIG_CHANGED_ID,
-            RegisterFunction::new_async(make_on_config_changed(
-                iii.clone(),
-                lookup,
-                config.clone(),
-                entry_lock.clone(),
-                2000,
-            ))
+        make_on_config_changed(iii.clone(), lookup, config.clone(), entry_lock.clone(), 2000)
+    };
+    iii.register_function(
+        surface::ON_CONFIG_CHANGED_ID,
+        RegisterFunction::new_async(on_config_changed.clone())
             .description(surface::ON_CONFIG_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
-        );
-    }
+    );
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "configuration".into(),
         function_id: surface::ON_CONFIG_CHANGED_ID.into(),
@@ -237,10 +233,16 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         metadata: None,
     })?;
 
-    // Close the boot race between the initial fetch and trigger binding.
-    {
-        let _guard = entry_lock.lock().await;
-        apply_config(&config, read_entry_value(&iii).await?);
+    // Close the boot race between the initial fetch and trigger binding by
+    // running the SAME operation the trigger runs: one reconcile keeps the
+    // snapshot, the fingerprint baseline, and any due `refresh_models` in
+    // step (a bare `apply_config` would install a newer value the handler
+    // then diffs against a stale baseline).
+    let ack = on_config_changed(ConfigChangedEvent { id: None }).await?;
+    if !ack.ok {
+        tracing::warn!(
+            "boot config reconcile kept the step-3 snapshot; authoritative re-read failed"
+        );
     }
 
     // 7. ready — providers re-declare on this

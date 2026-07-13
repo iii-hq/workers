@@ -30,6 +30,15 @@ export interface ComposerSubmitPayload {
   attachments: Attachment[]
 }
 
+/** Round icon action button (send / queue / stop) at the composer's edge. */
+const actionButtonClass = cn(
+  'inline-flex items-center justify-center size-8 rounded-full bg-bg text-ink',
+  '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
+  'hover:opacity-80 transition-opacity duration-150',
+  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+  'disabled:pointer-events-none disabled:opacity-40',
+)
+
 interface ComposerProps {
   mode: Mode
   model: ModelId | null
@@ -160,6 +169,12 @@ export function Composer({
   )
   const [clearToken, setClearToken] = useState(0)
   const textRef = useRef(initialContent ? '' : (initialText ?? ''))
+  /* Boolean mirror of "the editor holds text": the action button swaps on
+     the empty↔non-empty transition, and state updates for an unchanged
+     boolean bail out — so plain typing still never re-renders the tree. */
+  const [hasText, setHasText] = useState(
+    () => textRef.current.trim().length > 0,
+  )
 
   // One-shot mount initializer: seed the editor with the restored draft text.
   // Runs inside Lexical's initial-state update, so $-functions apply directly.
@@ -216,6 +231,7 @@ export function Composer({
       setBrowse(result.target.id)
       setAttachments(result.target.attachments)
       textRef.current = result.target.text
+      setHasText(result.target.text.trim().length > 0)
       return result.target.text
     },
     [queuedForEdit, browseId, setBrowse],
@@ -240,6 +256,7 @@ export function Composer({
       onSubmit({ text, attachments })
     }
     textRef.current = ''
+    setHasText(false)
     // The submitted text is no longer a draft; report the clear even if the
     // editor-clear update below is tag-filtered by the change plugin.
     onTextChange?.('')
@@ -281,6 +298,7 @@ export function Composer({
         <LexicalShell
           onChange={(text) => {
             textRef.current = text
+            setHasText(text.trim().length > 0)
             if (browseIdRef.current === null) onTextChange?.(text)
           }}
           onSubmit={handleSubmit}
@@ -333,18 +351,17 @@ export function Composer({
         />
         <div className="flex-1 min-w-0" />
         <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
-        {isStreaming ? (
+        {/* ONE action button. Mid-stream the slot shows Stop, but the moment
+            the composer holds queueable content (text or attachments) it
+            flips to send — the editor advertises "queue a message…", and the
+            click must queue it, not kill the turn. */}
+        {isStreaming &&
+        !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
           <button
             type="button"
             onClick={onStop}
             aria-label="stop generating"
-            className={cn(
-              'inline-flex items-center justify-center size-8 rounded-full bg-bg text-ink',
-              '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
-              'hover:opacity-80 transition-opacity duration-150',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-              'disabled:pointer-events-none disabled:opacity-40',
-            )}
+            className={actionButtonClass}
           >
             <Square size={16} aria-hidden className="fill-black/90" />
           </button>
@@ -353,14 +370,8 @@ export function Composer({
             type="button"
             onClick={handleSubmit}
             disabled={blocked}
-            aria-label="send message"
-            className={cn(
-              'inline-flex items-center justify-center size-8 rounded-full bg-bg text-ink',
-              '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
-              'hover:opacity-80 transition-opacity duration-150',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-              'disabled:pointer-events-none disabled:opacity-40',
-            )}
+            aria-label={isStreaming ? 'queue message' : 'send message'}
+            className={actionButtonClass}
           >
             <ArrowUp size={20} aria-hidden />
           </button>
