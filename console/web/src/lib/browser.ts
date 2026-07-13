@@ -19,6 +19,7 @@ export const BROWSER_ACT_FUNCTION_ID = 'browser::act'
 export const BROWSER_CONSOLE_READ_FUNCTION_ID = 'browser::console::read'
 export const BROWSER_NETWORK_READ_FUNCTION_ID = 'browser::network::read'
 export const BROWSER_PICK_START_FUNCTION_ID = 'browser::pick::start'
+export const BROWSER_PICK_RESOLVE_FUNCTION_ID = 'browser::pick::resolve'
 export const BROWSER_PICK_STOP_FUNCTION_ID = 'browser::pick::stop'
 export const BROWSER_PICK_HINT_FUNCTION_ID = 'browser::pick::hint'
 export const BROWSER_SCREENCAST_START_FUNCTION_ID = 'browser::screencast::start'
@@ -582,6 +583,22 @@ export async function startBrowserPick(sessionId: string): Promise<void> {
   const client = await getIiiClient()
   await client.trigger(BROWSER_PICK_START_FUNCTION_ID, {
     session_id: sessionId,
+  })
+}
+
+/** Resolve the element at a clicked point; the worker emits browser::picked.
+ * Deterministic (same getNodeForLocation hit-test as the hover hint), unlike
+ * a synthesized click through DevTools inspect mode. */
+export async function resolveBrowserPick(
+  sessionId: string,
+  x: number,
+  y: number,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(BROWSER_PICK_RESOLVE_FUNCTION_ID, {
+    session_id: sessionId,
+    x,
+    y,
   })
 }
 

@@ -1,0 +1,42 @@
+{
+  "description": "Internal: resolve the element at a clicked viewport point and emit browser::picked. The console calls this on a pick-mode click. Not an agent function.",
+  "function_id": "browser::pick::resolve",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "x": {
+        "description": "Viewport x of the click.",
+        "format": "double",
+        "type": "number"
+      },
+      "y": {
+        "description": "Viewport y of the click.",
+        "format": "double",
+        "type": "number"
+      }
+    },
+    "required": [
+      "session_id",
+      "x",
+      "y"
+    ],
+    "title": "PickResolveInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "PickOutput",
+    "type": "object"
+  }
+}

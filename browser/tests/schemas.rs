@@ -32,7 +32,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the twenty registered functions, in
+/// The catalog must cover exactly the twenty-one registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
@@ -59,6 +59,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "browser::frame",
             "browser::pick::hint",
             "browser::pick::start",
+            "browser::pick::resolve",
             "browser::pick::stop",
         ]
     );

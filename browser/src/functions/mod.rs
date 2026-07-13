@@ -114,8 +114,12 @@ pub const PICK_HINT_DESC: &str =
      UI can draw a hover highlight in pick mode. Not an agent function.";
 pub const PICK_START_ID: &str = "browser::pick::start";
 pub const PICK_START_DESC: &str =
-    "Internal: enter DevTools inspect mode so the human can pick an element in the console \
-     UI. The pick arrives as a browser::picked trigger event. Not an agent function.";
+    "Internal: enter pick mode so the human can select an element in the console UI. Not an \
+     agent function.";
+pub const PICK_RESOLVE_ID: &str = "browser::pick::resolve";
+pub const PICK_RESOLVE_DESC: &str =
+    "Internal: resolve the element at a clicked viewport point and emit browser::picked. The \
+     console calls this on a pick-mode click. Not an agent function.";
 pub const PICK_STOP_ID: &str = "browser::pick::stop";
 pub const PICK_STOP_DESC: &str =
     "Internal: leave DevTools inspect mode without picking. Idempotent. Not an agent \
@@ -186,6 +190,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<frame::FrameInput, frame::FrameOutput>(FRAME_ID, FRAME_DESC),
         spec::<hint::PickHintInput, hint::PickHintOutput>(PICK_HINT_ID, PICK_HINT_DESC),
         spec::<pick::PickStartInput, pick::PickOutput>(PICK_START_ID, PICK_START_DESC),
+        spec::<pick::PickResolveInput, pick::PickOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
         spec::<pick::PickStopInput, pick::PickOutput>(PICK_STOP_ID, PICK_STOP_DESC),
     ]
 }
@@ -210,6 +215,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_frame(iii, sessions);
     register_pick_hint(iii, sessions);
     register_pick_start(iii, sessions);
+    register_pick_resolve(iii, sessions);
     register_pick_stop(iii, sessions);
     tracing::info!("all functions registered");
 }
@@ -806,38 +812,37 @@ fn register_pick_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
+                // Enable the DOM domain so getNodeForLocation can hit-test.
+                // The pick itself is resolved by browser::pick::resolve from
+                // the click coordinates, so no DevTools inspect mode is
+                // needed (and none is wanted: it would draw a second overlay
+                // the console already draws itself, and its synthesized-click
+                // hit-test is unreliable in headless).
                 let _ = session.page.execute(cdp_dom::EnableParams::default()).await;
-                let _ = session.page.execute(overlay::EnableParams::default()).await;
-                let highlight = overlay::HighlightConfig {
-                    content_color: Some(cdp_dom::Rgba {
-                        r: 111,
-                        g: 168,
-                        b: 220,
-                        a: Some(0.5),
-                    }),
-                    padding_color: Some(cdp_dom::Rgba {
-                        r: 147,
-                        g: 196,
-                        b: 125,
-                        a: Some(0.5),
-                    }),
-                    ..overlay::HighlightConfig::default()
-                };
-                session
-                    .page
-                    .execute(
-                        overlay::SetInspectModeParams::builder()
-                            .mode(overlay::InspectMode::SearchForNode)
-                            .highlight_config(highlight)
-                            .build()
-                            .map_err(handler_err)?,
-                    )
-                    .await
-                    .map_err(|e| handler_err(format!("inspect mode failed: {e}")))?;
                 Ok::<_, Error>(pick::PickOutput { ok: true })
             }
         })
         .description(PICK_START_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+}
+
+fn register_pick_resolve(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        PICK_RESOLVE_ID,
+        RegisterFunction::new_async(move |req: pick::PickResolveInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                crate::session::resolve_pick_at(&sx, &session, req.x, req.y)
+                    .await
+                    .map_err(handler_err)?;
+                Ok::<_, Error>(pick::PickOutput { ok: true })
+            }
+        })
+        .description(PICK_RESOLVE_DESC)
         .metadata(json!({ "internal": true })),
     );
 }

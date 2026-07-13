@@ -13,7 +13,6 @@ use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::dom;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
-use chromiumoxide::cdp::browser_protocol::overlay;
 use chromiumoxide::cdp::js_protocol::runtime;
 use chromiumoxide::Page;
 use futures::StreamExt;
@@ -763,23 +762,6 @@ async fn spawn_event_pumps(
         }));
     }
 
-    // element picked in inspect mode (browser::pick::start)
-    if let Ok(mut events) = page
-        .event_listener::<overlay::EventInspectNodeRequested>()
-        .await
-    {
-        let s = session.clone();
-        let sx = sessions.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(event) = events.next().await {
-                let backend_node_id = *event.backend_node_id.inner();
-                if let Err(e) = handle_pick(&sx, &s, backend_node_id).await {
-                    tracing::warn!(session_id = %s.id, error = %e, "pick resolution failed");
-                }
-            }
-        }));
-    }
-
     tasks
 }
 
@@ -798,8 +780,34 @@ async fn push_and_emit(sessions: &Arc<Sessions>, session: &Arc<Session>, entry: 
         .await;
 }
 
+/// Resolve a pick from viewport coordinates: hit-test the exact point with
+/// `DOM.getNodeForLocation` (piercing shadow roots and iframes), then run the
+/// shared resolution. This is the console's pick path, so the element picked
+/// is exactly the one under the cursor the hover highlight drew, with no
+/// dependency on inspect-mode intercepting a synthesized click (which is
+/// unreliable in headless).
+pub async fn resolve_pick_at(
+    sessions: &Arc<Sessions>,
+    session: &Arc<Session>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let params = dom::GetNodeForLocationParams::builder()
+        .x(x as i64)
+        .y(y as i64)
+        .include_user_agent_shadow_dom(true)
+        .build()
+        .map_err(|e| format!("GetNodeForLocation params: {e}"))?;
+    let located = session
+        .page
+        .execute(params)
+        .await
+        .map_err(|e| format!("DOM.getNodeForLocation: {e}"))?;
+    handle_pick(sessions, session, *located.backend_node_id.inner()).await
+}
+
 /// Resolve the picked node into a `PickedElement`, register a ref for it,
-/// emit `browser::picked`, and leave inspect mode.
+/// and emit `browser::picked`.
 async fn handle_pick(
     sessions: &Arc<Sessions>,
     session: &Arc<Session>,
@@ -881,16 +889,6 @@ async fn handle_pick(
                 element,
                 timestamp: now_ms(),
             },
-        )
-        .await;
-
-    // one pick per pick::start: leave inspect mode after the click
-    let _ = page
-        .execute(
-            overlay::SetInspectModeParams::builder()
-                .mode(overlay::InspectMode::None)
-                .build()
-                .map_err(|e| format!("SetInspectMode: {e}"))?,
         )
         .await;
     session.touch();

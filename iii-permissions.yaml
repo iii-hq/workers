@@ -113,6 +113,7 @@ rules:
   # act, evaluate, console/network reads, dom/styles, history, screenshot)
   # stays at the needs_approval default.
   - '!browser::pick::start'
+  - '!browser::pick::resolve'
   - '!browser::pick::stop'
   - '!browser::pick::hint'
   - '!browser::screencast::start'

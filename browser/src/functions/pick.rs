@@ -12,6 +12,15 @@ pub struct PickStartInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PickResolveInput {
+    pub session_id: String,
+    /// Viewport x of the click.
+    pub x: f64,
+    /// Viewport y of the click.
+    pub y: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PickStopInput {
     /// Cancelling pick mode on an unknown session succeeds.
     pub session_id: String,

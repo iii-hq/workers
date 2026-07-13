@@ -1,5 +1,5 @@
 {
-  "description": "Internal: enter DevTools inspect mode so the human can pick an element in the console UI. The pick arrives as a browser::picked trigger event. Not an agent function.",
+  "description": "Internal: enter pick mode so the human can select an element in the console UI. Not an agent function.",
   "function_id": "browser::pick::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

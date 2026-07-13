@@ -44,8 +44,7 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::styles::write` edits are visual experiments only: they die on the
   next navigation and never touch source files. Use them to find the right
   value, then edit the codebase.
-- `browser::pick::*`, `browser::screencast::*`, `browser::frame`, and
-  `browser::pick::hint` are console-UI plumbing, not agent surface.
+- `browser::pick::*`, `browser::screencast::*`, and `browser::frame` are console-UI plumbing, not agent surface.
 - Navigation is limited to the configured URL schemes (http/https by
   default).
 

@@ -56,6 +56,7 @@ interface ViewportProps {
   error: string | null
   picking: boolean
   onClickAt: (x: number, y: number, options?: BrowserClickOptions) => void
+  onPickAt: (x: number, y: number) => void
   onScrollAt: (x: number, y: number, deltaY: number) => void
   onTextInput: (text: string) => void
   onPressKey: (key: string) => void
@@ -68,6 +69,7 @@ export function Viewport({
   error,
   picking,
   onClickAt,
+  onPickAt,
   onScrollAt,
   onTextInput,
   onPressKey,
@@ -121,7 +123,7 @@ export function Viewport({
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
     if (picking) {
-      onClickAt(pt.x, pt.y)
+      onPickAt(pt.x, pt.y)
       return
     }
     if (e.detail >= 2) {

@@ -17,6 +17,7 @@ import {
   parsePickedEvent,
   pickedSelector,
   pressBrowserKey,
+  resolveBrowserPick,
   scrollBrowserAt,
   startBrowserPick,
   stopBrowserPick,
@@ -151,6 +152,16 @@ export function SessionView({
   const handleClickAt = useCallback(
     (x: number, y: number, options?: BrowserClickOptions) => {
       void runAction(() => clickBrowserAt(sessionId, x, y, options))
+    },
+    [sessionId, runAction],
+  )
+
+  // Pick-mode click: resolve the element at the exact clicked point (the
+  // worker emits browser::picked), so what the hover highlight showed is
+  // what gets picked.
+  const handlePickAt = useCallback(
+    (x: number, y: number) => {
+      void runAction(() => resolveBrowserPick(sessionId, x, y))
     },
     [sessionId, runAction],
   )
@@ -317,6 +328,7 @@ export function SessionView({
         error={live.error}
         picking={picking}
         onClickAt={handleClickAt}
+        onPickAt={handlePickAt}
         onScrollAt={handleScrollAt}
         onTextInput={handleTextInput}
         onPressKey={handlePressKey}
