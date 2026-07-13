@@ -1,0 +1,45 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme {
+  --font-sans:
+    "Geist", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono:
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+
+  --color-bg: #f2f0ed;
+  --color-panel: lab(98.26% 0 0);
+  --color-paper-2: #ebe8e3;
+  --color-ink: #0a0a0a;
+  --color-ink-faint: #6b6865;
+  --color-ink-ghost: #a3a09c;
+  --color-rule: #d8d5d0;
+  --color-rule-2: #e6e3df;
+  --color-accent: #b8420f;
+  --color-accent-fg: #f2f0ed;
+  --color-alert: #ff0026;
+  --color-warn: #a87a00;
+  --color-ok: #356f3d;
+  --color-ring: color-mix(in oklab, var(--color-ink) 5%, transparent);
+}
+
+[data-theme="dark"] {
+  --color-bg: #030303;
+  --color-panel: #0a0a0a;
+  --color-paper-2: #1f1e1c;
+  --color-ink: #f2f0ed;
+  --color-ink-faint: #a8a49e;
+  --color-ink-ghost: #8a8782;
+  --color-rule: #2a2926;
+  --color-rule-2: #1f1e1c;
+  --color-accent: #3ea8ff;
+  --color-accent-fg: #030303;
+  --color-ok: #5fae6a;
+}
+
+[data-console-extension="approval-gate"] {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}

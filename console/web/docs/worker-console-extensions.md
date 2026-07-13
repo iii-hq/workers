@@ -77,5 +77,6 @@ to an in-run model.
 ## Reference implementation
 
 - Worker capability: `approval-gate/src/functions/console_extension.rs`
-- Worker UI: `approval-gate/ui/`
+- Worker UI source: `approval-gate/web/src/`
+- Worker UI bundle: `approval-gate/web/dist/` (generated and embedded at build time)
 - Console loader and slot host: `console/web/src/extensions/`

@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use super::Deps;
 use crate::error::ApprovalError;
 
-const EXTENSION_JS: &[u8] = include_bytes!("../../ui/extension.js");
-const EXTENSION_CSS: &[u8] = include_bytes!("../../ui/extension.css");
+const EXTENSION_JS: &[u8] = include_bytes!("../../web/dist/extension.js");
+const EXTENSION_CSS: &[u8] = include_bytes!("../../web/dist/extension.css");
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]

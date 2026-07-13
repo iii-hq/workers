@@ -193,8 +193,9 @@ agent allow-lists too.
 
 ## Console extension
 
-The worker owns its console UI under [`ui/`](ui/). It exposes two internal,
-typed capability functions:
+The worker owns its React/TypeScript console UI under [`web/`](web/). Vite
+builds a single extension module and stylesheet, and the Rust binary embeds
+those generated assets. It exposes two internal, typed capability functions:
 
 - `approval::console-extension` returns the extension API version, worker
   version, entry module, stylesheet descriptors, content etags, and declared
@@ -217,12 +218,17 @@ model function catalogs.
 ## Local development & testing
 
 ```bash
+cd web && pnpm install && pnpm build && cd .. # React extension bundle
 cargo test                                   # lib suites: pure unit + engine-backed handlers
 cargo test --test integration               # engine-backed; self-skips without `iii`
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ./target/debug/approval-gate --manifest      # registry-publish manifest
 ```
+
+`cargo build` also rebuilds `web/dist/` automatically when the extension
+source is newer. Node and pnpm must be on `PATH`; release CI prebuilds the
+platform-independent bundle once before compiling the target binaries.
 
 The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
 PATH) with `configuration` + `iii-state`, registers the production surface
