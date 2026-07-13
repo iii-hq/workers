@@ -113,14 +113,24 @@ const contentBlockSchema = z.object({
   text: z.string().optional(),
 })
 
+const screenshotDetailsSchema = z.object({
+  session_id: z.string(),
+  url: z.string(),
+  width: z.number(),
+  height: z.number(),
+})
+
 const screenshotSchema = z.object({
   content: z.array(contentBlockSchema),
-  details: z.object({
-    session_id: z.string(),
-    url: z.string(),
-    width: z.number(),
-    height: z.number(),
-  }),
+  // Through the harness, `details` is the whole worker return, so the real
+  // details sit one level deeper at `details.details`; a direct bus call has
+  // them at the top. Accept either.
+  details: z
+    .union([
+      screenshotDetailsSchema,
+      z.object({ details: screenshotDetailsSchema }),
+    ])
+    .optional(),
 })
 
 export interface BrowserScreenshot {
@@ -134,8 +144,10 @@ export interface BrowserScreenshot {
 }
 
 /**
- * Parse a `browser::screenshot` result envelope into a renderable shape.
- * Also used by the chat function-call view on transcript outputs.
+ * Parse a `browser::screenshot` result into a renderable shape. The image
+ * block lives at `content` in both the direct bus result and the harness
+ * transcript output; the metadata (`details`) may be nested one level under
+ * the harness result envelope, so both shapes are accepted.
  */
 export function parseScreenshotOutput(
   payload: unknown,
@@ -145,14 +157,16 @@ export function parseScreenshotOutput(
   const image = parsed.data.content.find(
     (block) => block.type === 'image' && block.data,
   )
+  const d = parsed.data.details
+  const meta = d && 'details' in d ? d.details : d
   return {
     dataUrl: image?.data
       ? `data:${image.mime ?? 'image/jpeg'};base64,${image.data}`
       : null,
-    sessionId: parsed.data.details.session_id,
-    url: parsed.data.details.url,
-    width: parsed.data.details.width,
-    height: parsed.data.details.height,
+    sessionId: meta?.session_id ?? '',
+    url: meta?.url ?? '',
+    width: meta?.width ?? 0,
+    height: meta?.height ?? 0,
   }
 }
 
