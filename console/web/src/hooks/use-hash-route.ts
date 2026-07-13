@@ -3,8 +3,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// routed views are `traces`, `workers`, `worktrees`, and `configuration`.
-export type View = 'configuration' | 'traces' | 'workers' | 'worktrees'
+// routed views are `traces`, `workers`, `worktrees`, `browser`, and
+// `configuration`.
+export type View =
+  | 'configuration'
+  | 'traces'
+  | 'workers'
+  | 'worktrees'
+  | 'browser'
 
 export interface WorkersConfigurationRoute {
   configurationId: string | null
@@ -87,6 +93,9 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/worktrees') {
     return 'worktrees'
   }
+  if (hash === '#/browser' || hash.startsWith('#/browser/')) {
+    return 'browser'
+  }
   if (hash === '#/configuration/workers') {
     return 'workers'
   }
@@ -113,6 +122,8 @@ function hashFor(view: View): string {
       return '#/workers'
     case 'worktrees':
       return '#/worktrees'
+    case 'browser':
+      return '#/browser'
     case 'configuration':
       return '#/configuration'
   }
@@ -153,6 +164,61 @@ function replaceHash(targetHash: string) {
     '',
     `${window.location.pathname}${window.location.search}${targetHash}`,
   )
+}
+
+const BROWSER_HASH = '#/browser'
+
+/** `#/browser/<session_id>` -> the session id, or null for `#/browser`. */
+export function browserSessionFromHash(hash: string): string | null {
+  if (!hash.startsWith(`${BROWSER_HASH}/`)) return null
+  const segment = hash
+    .slice(BROWSER_HASH.length + 1)
+    .split('/')
+    .filter(Boolean)[0]
+  if (!segment) return null
+  return decodeSegment(segment)
+}
+
+export function hashForBrowserSession(sessionId: string | null): string {
+  if (!sessionId) return BROWSER_HASH
+  return `${BROWSER_HASH}/${encodeURIComponent(sessionId)}`
+}
+
+/**
+ * Selected browser session as a hash sub-route, so sessions deep-link
+ * (`#/browser/<session_id>`) from chat cards and survive reloads.
+ */
+export function useBrowserSessionRoute(): [
+  string | null,
+  (next: string | null) => void,
+] {
+  const [selected, setSelected] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return browserSessionFromHash(window.location.hash)
+  })
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+
+  useEffect(() => {
+    const sync = () => {
+      const next = browserSessionFromHash(window.location.hash)
+      if (next !== selectedRef.current) setSelected(next)
+    }
+    sync()
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
+
+  const navigate = useCallback((next: string | null) => {
+    const targetHash = hashForBrowserSession(next)
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash
+    } else {
+      setSelected(next)
+    }
+  }, [])
+
+  return [selected, navigate]
 }
 
 export function useWorkersConfigurationRoute(): [

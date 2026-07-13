@@ -8,6 +8,7 @@ import type { View } from '@/hooks/use-hash-route'
  */
 export function buildViewOptions(
   worktreeAvailable: boolean,
+  browserAvailable: boolean,
 ): { value: View; label: string }[] {
   const options: { value: View; label: string }[] = [
     { value: 'traces', label: 'traces' },
@@ -15,6 +16,9 @@ export function buildViewOptions(
   ]
   if (worktreeAvailable) {
     options.push({ value: 'worktrees', label: 'worktrees' })
+  }
+  if (browserAvailable) {
+    options.push({ value: 'browser', label: 'browser' })
   }
   return options
 }

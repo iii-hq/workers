@@ -18,6 +18,7 @@ import {
   type LexicalEditor,
 } from 'lexical'
 import { useEffect, useMemo, useRef } from 'react'
+import { onComposerInsert } from '@/lib/composer-insert'
 import type { FunctionEntry } from '@/lib/functions'
 import { FileMentionNode } from './lexical/FileMentionNode'
 import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
@@ -171,6 +172,31 @@ function ClearOnDemandPlugin({ token }: { token: number }) {
 }
 
 /**
+ * Drains the composer-insert bus (see `lib/composer-insert`) into the
+ * editor: appended as its own paragraph with the caret at the end, so a
+ * picked browser element lands ready to send or annotate. Replaces the
+ * content when the editor holds only whitespace to avoid a leading blank
+ * line.
+ */
+function ExternalInsertPlugin() {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    return onComposerInsert((text) => {
+      editor.update(() => {
+        const root = $getRoot()
+        if (root.getTextContent().trim().length === 0) root.clear()
+        const paragraph = $createParagraphNode()
+        paragraph.append($createTextNode(text))
+        root.append(paragraph)
+        paragraph.selectEnd()
+      })
+      editor.focus()
+    })
+  }, [editor])
+  return null
+}
+
+/**
  * Toggle the editor's editable state when `disabled` flips.
  */
 function EditablePlugin({ disabled }: { disabled?: boolean }) {
@@ -244,6 +270,7 @@ export function LexicalShell({
       <ChangePlugin onChange={onChange} />
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
+      <ExternalInsertPlugin />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

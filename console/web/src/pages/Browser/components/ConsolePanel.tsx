@@ -1,0 +1,164 @@
+import { useEffect, useRef, useState } from 'react'
+import { Badge } from '@/components/ui/Badge'
+import { Input } from '@/components/ui/Input'
+import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
+import {
+  BROWSER_CONSOLE_EVENT_TRIGGER,
+  type BrowserConsoleEntry,
+  consoleLevelTone,
+  parseConsoleEvent,
+  readBrowserConsole,
+} from '@/lib/browser'
+
+/**
+ * Live console feed for the selected session: seeded from
+ * `browser::console::read`, then appended through the session-filtered
+ * `browser::console-event` binding. The search input maps to the read's
+ * `pattern` (regex, re-seeding on change); live entries are matched
+ * client-side with the same expression so the feed stays consistent
+ * between seeds.
+ */
+
+const SEED_LIMIT = 200
+const MAX_ENTRIES = 500
+const PATTERN_DEBOUNCE_MS = 300
+
+const CONSOLE_FEED_FN = 'console::browser-console-feed'
+
+function matchesPattern(text: string, pattern: string): boolean {
+  if (!pattern) return true
+  try {
+    return new RegExp(pattern, 'i').test(text)
+  } catch {
+    return text.toLowerCase().includes(pattern.toLowerCase())
+  }
+}
+
+function formatTime(timestamp: number): string {
+  const date = new Date(timestamp)
+  return date.toLocaleTimeString(undefined, { hour12: false })
+}
+
+interface ConsolePanelProps {
+  sessionId: string
+  enabled: boolean
+}
+
+export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
+  const [pattern, setPattern] = useState('')
+  const [debouncedPattern, setDebouncedPattern] = useState('')
+  const [entries, setEntries] = useState<BrowserConsoleEntry[]>([])
+  const [dropped, setDropped] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const lastSeqRef = useRef(0)
+  const patternRef = useRef('')
+  patternRef.current = debouncedPattern
+
+  useEffect(() => {
+    const id = window.setTimeout(
+      () => setDebouncedPattern(pattern.trim()),
+      PATTERN_DEBOUNCE_MS,
+    )
+    return () => window.clearTimeout(id)
+  }, [pattern])
+
+  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+    lastSeqRef.current = 0
+    setEntries([])
+    void readBrowserConsole(sessionId, {
+      pattern: debouncedPattern || undefined,
+      limit: SEED_LIMIT,
+    })
+      .then((res) => {
+        if (cancelled || !res) return
+        setEntries(res.entries)
+        setDropped(res.dropped)
+        lastSeqRef.current = res.last_seq
+        setError(null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [enabled, sessionId, debouncedPattern])
+
+  useBrowserSessionEvent({
+    enabled,
+    triggerType: BROWSER_CONSOLE_EVENT_TRIGGER,
+    sessionId,
+    fnId: CONSOLE_FEED_FN,
+    onEvent: (payload) => {
+      const evt = parseConsoleEvent(payload)
+      if (!evt || evt.session_id !== sessionId) return
+      if (evt.entry.seq <= lastSeqRef.current) return
+      lastSeqRef.current = evt.entry.seq
+      if (!matchesPattern(evt.entry.text, patternRef.current)) return
+      setEntries((cur) => [...cur.slice(-(MAX_ENTRIES - 1)), evt.entry])
+    },
+  })
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-rule-2">
+        <Input
+          value={pattern}
+          onChange={setPattern}
+          preserveCase
+          placeholder="filter (regex)"
+          aria-label="filter console entries"
+          className="h-7 text-[12px] max-w-[280px]"
+        />
+        {dropped > 0 ? (
+          <span className="font-mono text-[11px] lowercase text-ink-ghost">
+            {dropped} older entries dropped from the buffer
+          </span>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="px-3 py-2 font-mono text-[12px] text-alert">{error}</p>
+      ) : entries.length === 0 ? (
+        <p className="px-3 py-2 font-mono text-[12px] lowercase text-ink-ghost">
+          no console entries yet
+        </p>
+      ) : (
+        // Column-reverse with the newest entry first in the DOM pins the
+        // scroll position to the bottom, terminal-style.
+        <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col-reverse">
+          {[...entries].reverse().map((entry) => (
+            <li
+              key={entry.seq}
+              className="flex items-start gap-2 px-3 py-1 border-t border-rule-2 font-mono text-[12px] leading-[1.55]"
+            >
+              <span className="shrink-0 tabular-nums text-ink-ghost">
+                {formatTime(entry.timestamp)}
+              </span>
+              <Badge
+                variant={
+                  consoleLevelTone(entry.level) === 'alert'
+                    ? 'alert'
+                    : consoleLevelTone(entry.level) === 'warn'
+                      ? 'warn'
+                      : 'default'
+                }
+                className="shrink-0 w-[72px]"
+              >
+                {entry.level}
+              </Badge>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-ink">
+                {entry.text}
+                {entry.source ? (
+                  <span className="text-ink-ghost"> · {entry.source}</span>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
