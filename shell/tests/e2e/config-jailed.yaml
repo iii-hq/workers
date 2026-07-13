@@ -10,11 +10,6 @@
 # while the kernel follows the symlink and writes to /private/tmp/.
 
 workers:
-  - name: iii-queue
-    config:
-      adapter:
-        name: builtin
-
   - name: iii-observability
     config:
       enabled: true

@@ -55,15 +55,19 @@
 //!   the "one subscription per (topic, id)" invariant.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::adapter::{QueueAdapter, TopicInfo};
+use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{Job, QueueStore, TopicStats};
 use crate::subscriber_config::SubscriberQueueConfig;
 use crate::trigger::Invoker;
@@ -121,6 +125,41 @@ pub struct BuiltinAdapter {
     /// (`adapter.rs:49`).
     topic_functions: Mutex<HashMap<String, HashSet<String>>>,
     poll_interval_ms: u64,
+    function_queue_configs: RwLock<HashMap<String, FunctionQueueConfig>>,
+    function_deliveries: Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
+    function_consumers: Mutex<Vec<FunctionConsumerHandle>>,
+    delivery_counter: Arc<AtomicU64>,
+    consumer_counter: AtomicU64,
+}
+
+#[derive(Debug)]
+struct FunctionDelivery {
+    delivery_id: u64,
+    consumer_id: u64,
+    queue_name: String,
+    job: Job,
+    backoff_ms: u64,
+    _permit: OwnedSemaphorePermit,
+    operation: Mutex<()>,
+    settled: AtomicBool,
+}
+
+struct FunctionConsumerHandle {
+    queue_name: String,
+    consumer_id: u64,
+    task: JoinHandle<()>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FunctionQueueEnvelope {
+    function_id: String,
+    data: Value,
+    message_id: String,
+    max_retries: u32,
+    backoff_ms: u64,
+    traceparent: Option<String>,
+    baggage: Option<String>,
+    priority: Option<u8>,
 }
 
 /// `format!("{topic}::{function_id}")` — the internal queue name a
@@ -149,6 +188,11 @@ impl BuiltinAdapter {
             subscriptions: Mutex::new(HashMap::new()),
             topic_functions: Mutex::new(HashMap::new()),
             poll_interval_ms,
+            function_queue_configs: RwLock::new(HashMap::new()),
+            function_deliveries: Arc::new(Mutex::new(HashMap::new())),
+            function_consumers: Mutex::new(Vec::new()),
+            delivery_counter: Arc::new(AtomicU64::new(1)),
+            consumer_counter: AtomicU64::new(1),
         }
     }
 }
@@ -400,6 +444,26 @@ impl QueueAdapter for BuiltinAdapter {
                 depth,
             });
         }
+        let existing = infos
+            .iter()
+            .map(|info| info.name.clone())
+            .collect::<HashSet<_>>();
+        let function_queues = self
+            .function_queue_configs
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for queue_name in function_queues {
+            if !existing.contains(&queue_name) {
+                infos.push(TopicInfo {
+                    name: queue_name.clone(),
+                    depth: self.store.topic_stats(&queue_name).await.depth,
+                });
+            }
+        }
+        infos.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(infos)
     }
 
@@ -427,6 +491,350 @@ impl QueueAdapter for BuiltinAdapter {
         for (_, sub) in subs {
             sub.task.abort();
         }
+
+        let consumers = self
+            .function_consumers
+            .lock()
+            .await
+            .drain(..)
+            .collect::<Vec<_>>();
+        for consumer in &consumers {
+            consumer.task.abort();
+        }
+        for consumer in consumers {
+            let _ = consumer.task.await;
+        }
+
+        let deliveries = self
+            .function_deliveries
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        if let Err(err) =
+            requeue_function_deliveries(&self.store, &self.function_deliveries, deliveries).await
+        {
+            tracing::error!(error = %err, "failed to requeue builtin function queue deliveries during shutdown");
+        }
+    }
+
+    async fn publish_to_function_queue(
+        &self,
+        queue_name: &str,
+        function_id: &str,
+        data: Value,
+        message_id: &str,
+        max_retries: u32,
+        backoff_ms: u64,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+        priority: Option<u8>,
+    ) -> anyhow::Result<()> {
+        if !self
+            .function_queue_configs
+            .read()
+            .await
+            .contains_key(queue_name)
+        {
+            anyhow::bail!("function queue '{queue_name}' has not been set up");
+        }
+        if function_id.trim().is_empty() {
+            anyhow::bail!("function_id is required");
+        }
+        if message_id.trim().is_empty() {
+            anyhow::bail!("message_id is required");
+        }
+
+        let envelope = FunctionQueueEnvelope {
+            function_id: function_id.to_string(),
+            data,
+            message_id: message_id.to_string(),
+            max_retries,
+            backoff_ms,
+            traceparent,
+            baggage,
+            priority,
+        };
+        self.store
+            .enqueue(queue_name, serde_json::to_value(envelope)?)
+            .await?;
+        Ok(())
+    }
+
+    async fn setup_function_queue(
+        &self,
+        queue_name: &str,
+        config: &FunctionQueueConfig,
+    ) -> anyhow::Result<()> {
+        config.validate(queue_name).map_err(anyhow::Error::msg)?;
+        self.function_queue_configs
+            .write()
+            .await
+            .insert(queue_name.to_string(), config.clone());
+        Ok(())
+    }
+
+    async fn consume_function_queue(
+        &self,
+        queue_name: &str,
+        prefetch: u32,
+    ) -> anyhow::Result<mpsc::Receiver<QueueMessage>> {
+        let config = self
+            .function_queue_configs
+            .read()
+            .await
+            .get(queue_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("function queue '{queue_name}' has not been set up"))?;
+
+        let consumer_id = self.consumer_counter.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel(prefetch.max(1) as usize);
+        let store = Arc::clone(&self.store);
+        let deliveries = Arc::clone(&self.function_deliveries);
+        let delivery_counter = Arc::clone(&self.delivery_counter);
+        let queue_name = queue_name.to_string();
+        let task_queue_name = queue_name.clone();
+        let task = tokio::spawn(async move {
+            run_function_queue_consumer(
+                store,
+                deliveries,
+                delivery_counter,
+                consumer_id,
+                task_queue_name,
+                config.poll_interval_ms,
+                tx,
+            )
+            .await;
+        });
+        self.function_consumers
+            .lock()
+            .await
+            .push(FunctionConsumerHandle {
+                queue_name,
+                consumer_id,
+                task,
+            });
+        Ok(rx)
+    }
+
+    async fn stop_function_queue_consumer(&self, queue_name: &str) -> anyhow::Result<()> {
+        let matching = {
+            let mut active = self.function_consumers.lock().await;
+            let mut matching = Vec::new();
+            let mut retained = Vec::with_capacity(active.len());
+            for handle in active.drain(..) {
+                if handle.queue_name == queue_name {
+                    matching.push(handle);
+                } else {
+                    retained.push(handle);
+                }
+            }
+            *active = retained;
+            matching
+        };
+
+        let consumer_ids = matching
+            .iter()
+            .map(|handle| handle.consumer_id)
+            .collect::<HashSet<_>>();
+        for handle in &matching {
+            handle.task.abort();
+        }
+        for handle in matching {
+            let _ = handle.task.await;
+        }
+
+        let deliveries = {
+            let active = self.function_deliveries.lock().await;
+            active
+                .values()
+                .filter(|delivery| consumer_ids.contains(&delivery.consumer_id))
+                .cloned()
+                .collect()
+        };
+        requeue_function_deliveries(&self.store, &self.function_deliveries, deliveries).await
+    }
+
+    async fn forget_function_queue(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.function_queue_configs.write().await.remove(queue_name);
+        Ok(())
+    }
+
+    async fn ack_function_queue(&self, queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
+        let delivery = self
+            .function_deliveries
+            .lock()
+            .await
+            .get(&delivery_id)
+            .cloned();
+        let Some(delivery) = delivery else {
+            return Ok(());
+        };
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if delivery.queue_name != queue_name {
+            anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
+        }
+        self.store.ack(queue_name, &delivery.job.id).await;
+        delivery.settled.store(true, Ordering::Release);
+        self.function_deliveries.lock().await.remove(&delivery_id);
+        Ok(())
+    }
+
+    async fn nack_function_queue(
+        &self,
+        queue_name: &str,
+        delivery_id: u64,
+        attempt: u32,
+        max_retries: u32,
+    ) -> anyhow::Result<()> {
+        let delivery = self
+            .function_deliveries
+            .lock()
+            .await
+            .get(&delivery_id)
+            .cloned();
+        let Some(delivery) = delivery else {
+            return Ok(());
+        };
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if delivery.queue_name != queue_name {
+            anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
+        }
+        // QueueStore counts total attempts, while the public function-queue
+        // config counts retries after the initial delivery.
+        let mut job = delivery.job.clone();
+        job.attempts = job.attempts.max(attempt);
+        self.store
+            .nack(
+                queue_name,
+                job,
+                max_retries.saturating_add(1),
+                delivery.backoff_ms,
+            )
+            .await;
+        delivery.settled.store(true, Ordering::Release);
+        self.function_deliveries.lock().await.remove(&delivery_id);
+        Ok(())
+    }
+}
+
+async fn run_function_queue_consumer(
+    store: Arc<dyn QueueStore>,
+    deliveries: Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
+    delivery_counter: Arc<AtomicU64>,
+    consumer_id: u64,
+    queue_name: String,
+    poll_interval_ms: u64,
+    tx: mpsc::Sender<QueueMessage>,
+) {
+    let outstanding = Arc::new(Semaphore::new(tx.max_capacity()));
+    loop {
+        if tx.is_closed() {
+            break;
+        }
+
+        let permit = tokio::select! {
+            _ = tx.closed() => break,
+            permit = outstanding.clone().acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            },
+        };
+
+        let Some(job) = store.dequeue(&queue_name).await else {
+            drop(permit);
+            tokio::select! {
+                _ = tx.closed() => break,
+                _ = tokio::time::sleep(Duration::from_millis(poll_interval_ms)) => continue,
+            }
+        };
+
+        let envelope: FunctionQueueEnvelope = match serde_json::from_value(job.payload.clone()) {
+            Ok(envelope) => envelope,
+            Err(err) => {
+                tracing::error!(queue = %queue_name, error = %err, "invalid builtin function queue envelope");
+                store.nack(&queue_name, job, 1, 0).await;
+                continue;
+            }
+        };
+        let delivery_id = delivery_counter.fetch_add(1, Ordering::Relaxed);
+        let message = QueueMessage {
+            delivery_id,
+            function_id: envelope.function_id,
+            data: envelope.data,
+            attempt: job.attempts,
+            message_id: Some(envelope.message_id),
+            traceparent: envelope.traceparent,
+            baggage: envelope.baggage,
+        };
+        deliveries.lock().await.insert(
+            delivery_id,
+            Arc::new(FunctionDelivery {
+                delivery_id,
+                consumer_id,
+                queue_name: queue_name.clone(),
+                job,
+                backoff_ms: envelope.backoff_ms,
+                _permit: permit,
+                operation: Mutex::new(()),
+                settled: AtomicBool::new(false),
+            }),
+        );
+
+        if tx.send(message).await.is_err() {
+            break;
+        }
+    }
+
+    let consumer_deliveries = {
+        let active = deliveries.lock().await;
+        active
+            .values()
+            .filter(|delivery| delivery.consumer_id == consumer_id)
+            .cloned()
+            .collect()
+    };
+    if let Err(err) = requeue_function_deliveries(&store, &deliveries, consumer_deliveries).await {
+        tracing::error!(queue = %queue_name, error = %err, "failed to requeue builtin function queue deliveries after consumer stopped");
+    }
+}
+
+async fn requeue_function_deliveries(
+    store: &Arc<dyn QueueStore>,
+    active_deliveries: &Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
+    mut deliveries: Vec<Arc<FunctionDelivery>>,
+) -> anyhow::Result<()> {
+    // `QueueStore::requeue` pushes to the front. Requeue newest-first to
+    // restore the consumer's original delivery order ahead of waiting jobs.
+    deliveries.sort_by_key(|delivery| std::cmp::Reverse(delivery.delivery_id));
+    let mut errors = Vec::new();
+    for delivery in deliveries {
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            active_deliveries.lock().await.remove(&delivery.delivery_id);
+            continue;
+        }
+        if let Err(err) = store
+            .requeue(&delivery.queue_name, delivery.job.clone())
+            .await
+        {
+            tracing::error!(queue = %delivery.queue_name, error = %err, "failed to requeue unacknowledged function queue delivery");
+            errors.push(err.to_string());
+        }
+        delivery.settled.store(true, Ordering::Release);
+        active_deliveries.lock().await.remove(&delivery.delivery_id);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(errors.join("; "))
     }
 }
 
@@ -560,6 +968,221 @@ mod tests {
             sleep(Duration::from_millis(10)).await;
         }
         assert!(pred().await, "condition did not become true before timeout");
+    }
+
+    fn function_queue_config() -> FunctionQueueConfig {
+        FunctionQueueConfig {
+            concurrency: 1,
+            poll_interval_ms: 1,
+            backoff_ms: 1,
+            ..FunctionQueueConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn function_queue_publish_consume_and_ack() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let config = function_queue_config();
+        adapter
+            .setup_function_queue("turns", &config)
+            .await
+            .unwrap();
+        assert_eq!(adapter.list_topics().await.unwrap()[0].name, "turns");
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+
+        adapter
+            .publish_to_function_queue(
+                "turns",
+                "harness::turn",
+                json!({"session_id": "s1"}),
+                "receipt-1",
+                config.max_retries,
+                config.backoff_ms,
+                Some("trace".to_string()),
+                Some("bag".to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let message = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.function_id, "harness::turn");
+        assert_eq!(message.message_id.as_deref(), Some("receipt-1"));
+        assert_eq!(message.traceparent.as_deref(), Some("trace"));
+        assert_eq!(message.baggage.as_deref(), Some("bag"));
+        adapter
+            .ack_function_queue("turns", message.delivery_id)
+            .await
+            .unwrap();
+        assert_eq!(store.topic_stats("turns").await.delivered, 1);
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn function_queue_nack_retries_then_moves_to_dlq() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let config = FunctionQueueConfig {
+            max_retries: 1,
+            ..function_queue_config()
+        };
+        adapter
+            .setup_function_queue("turns", &config)
+            .await
+            .unwrap();
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+        adapter
+            .publish_to_function_queue(
+                "turns",
+                "harness::turn",
+                Value::Null,
+                "receipt-1",
+                config.max_retries,
+                config.backoff_ms,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let first = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.attempt, 0);
+        adapter
+            .nack_function_queue("turns", first.delivery_id, first.attempt, 1)
+            .await
+            .unwrap();
+
+        let retry = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.attempt, 1);
+        adapter
+            .nack_function_queue("turns", retry.delivery_id, retry.attempt, 1)
+            .await
+            .unwrap();
+        assert_eq!(store.topic_stats("turns").await.dlq_depth, 1);
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_function_queue_receiver_requeues_unacked_delivery() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let config = function_queue_config();
+        adapter
+            .setup_function_queue("turns", &config)
+            .await
+            .unwrap();
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+        adapter
+            .publish_to_function_queue(
+                "turns",
+                "harness::turn",
+                Value::Null,
+                "receipt-1",
+                config.max_retries,
+                config.backoff_ms,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(receiver);
+
+        wait_until(|| {
+            let store = store.clone();
+            async move { store.topic_stats("turns").await.depth == 1 }
+        })
+        .await;
+
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        let redelivered = tokio::time::timeout(Duration::from_secs(1), replacement.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(redelivered.delivery_id, first.delivery_id);
+        assert_eq!(redelivered.message_id, first.message_id);
+        adapter
+            .ack_function_queue("turns", redelivered.delivery_id)
+            .await
+            .unwrap();
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stopping_function_queue_consumer_waits_and_requeues_delivery() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let config = function_queue_config();
+        adapter
+            .setup_function_queue("turns", &config)
+            .await
+            .unwrap();
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+        adapter
+            .publish_to_function_queue(
+                "turns",
+                "harness::turn",
+                Value::Null,
+                "receipt-1",
+                config.max_retries,
+                config.backoff_ms,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let delivery = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        adapter.stop_function_queue_consumer("turns").await.unwrap();
+        assert_eq!(store.topic_stats("turns").await.depth, 1);
+
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        let redelivered = tokio::time::timeout(Duration::from_secs(1), replacement.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(redelivered.delivery_id, delivery.delivery_id);
+        adapter
+            .ack_function_queue("turns", redelivered.delivery_id)
+            .await
+            .unwrap();
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn forgetting_function_queue_only_removes_definition() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store, Arc::new(FakeInvoker::default()));
+        let config = function_queue_config();
+        adapter
+            .setup_function_queue("turns", &config)
+            .await
+            .unwrap();
+        adapter.forget_function_queue("turns").await.unwrap();
+        let err = adapter
+            .consume_function_queue("turns", 1)
+            .await
+            .expect_err("forgotten queue should no longer be consumable");
+        assert!(err.to_string().contains("has not been set up"));
     }
 
     /// Cheap deterministic jitter so ordering tests exercise varied handler

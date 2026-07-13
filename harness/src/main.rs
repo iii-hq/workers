@@ -9,13 +9,15 @@
 //!      env-expanded value (a required boot dependency).
 //!   4. Register the trigger types the harness emits/owns (turn events + the
 //!      five hook points) BEFORE functions so handlers capture subscriber sets.
-//!   5. Register the `harness::*` functions.
-//!   6. Bind the cron pending-sweep (retain its handle for live re-bind).
-//!   7. Seed the function-registry cache and bind `engine::functions-available`
-//!      so native exposure reads a live snapshot instead of listing per turn.
-//!   8. LAST: bind the configuration-change trigger so its handler closes over
+//!   5. Seed the function-registry cache and bind `engine::functions-available`.
+//!   6. Register the `harness::*` functions. Registering `harness::turn` is
+//!      the readiness signal that allows restored queue deliveries to run.
+//!   7. Ensure the dedicated `harness-turn` queue exists (required; bounded
+//!      retries cover queue-worker registration during stack startup).
+//!   8. Bind the cron pending-sweep (retain its handle for live re-bind).
+//!   9. LAST: bind the configuration-change trigger so its handler closes over
 //!      the fully-built snapshot cell + the cron handle.
-//!   9. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!  10. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
 
@@ -29,7 +31,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, discovery, functions, manifest, subscriptions};
+use harness::{config, discovery, functions, manifest, queue, subscriptions};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -122,7 +124,22 @@ async fn main() -> Result<()> {
         hooks,
     ));
 
+    // The queue worker may already have restored the harness-turn consumer
+    // from durable configuration. Seed discovery before registering
+    // harness::turn, because target registration is what releases any held
+    // delivery waiting for this worker to come back.
+    discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
+    discovery::register_functions_trigger(&iii, functions_cell.clone(), cfg.dispatch_timeout_ms);
+
     functions::register_all(&iii, &deps);
+
+    // The queue consumer may restore durable jobs as soon as this definition
+    // succeeds. Discovery and `harness::turn` are already ready; do not bind
+    // lifecycle triggers or announce ready unless the queue is usable.
+    queue::ensure_turn_queue(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("ensuring the harness-turn queue")?;
 
     // Bind lifecycle triggers and retain their handles for the worker lifetime.
     // The sweep binding is hot-reloaded when sweep_expression changes.
@@ -130,9 +147,6 @@ async fn main() -> Result<()> {
         configuration::bind_sweep(&iii, &cfg),
         configuration::bind_session_deleted(&iii),
     ));
-
-    discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
-    discovery::register_functions_trigger(&iii, functions_cell, cfg.dispatch_timeout_ms);
 
     // LAST: bind the configuration-change trigger.
     configuration::register_config_trigger(&iii, cell, handles)

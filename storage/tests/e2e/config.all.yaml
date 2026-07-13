@@ -11,11 +11,6 @@
 # for the e2e harness — covered separately via Rust integration tests.
 
 workers:
-  - name: iii-queue
-    config:
-      adapter:
-        name: builtin
-
   - name: iii-observability
     config:
       enabled: true

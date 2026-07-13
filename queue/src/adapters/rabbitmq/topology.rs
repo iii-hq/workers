@@ -125,7 +125,7 @@ impl TopologyManager {
     pub async fn setup_function_queue(
         &self,
         queue_name: &str,
-        backoff_ms: u64,
+        _backoff_ms: u64,
         max_priority: Option<u8>,
     ) -> Result<()> {
         let names = FnQueueNames::new(queue_name);
@@ -191,10 +191,8 @@ impl TopologyManager {
             .await?;
 
         let mut retry_queue_args = FieldTable::default();
-        retry_queue_args.insert(
-            "x-message-ttl".into(),
-            AMQPValue::LongUInt(backoff_ms as u32),
-        );
+        // Each retry publish supplies a per-message expiration so the delay
+        // can grow exponentially with the attempt number.
         retry_queue_args.insert(
             "x-dead-letter-exchange".into(),
             AMQPValue::LongString(names.exchange().into()),

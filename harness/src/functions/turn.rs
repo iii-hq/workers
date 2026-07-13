@@ -1,5 +1,5 @@
 //! `harness::turn` — the internal durable loop step (enqueued onto the
-//! `default` queue). Consumers never call it directly. An unexpected
+//! `harness-turn` queue). Consumers never call it directly. An unexpected
 //! step error finalises the turn as failed rather than retrying forever.
 
 use crate::deps::Deps;

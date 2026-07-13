@@ -16,7 +16,7 @@ use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
@@ -31,6 +31,25 @@ const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String>;
+
+    async fn call_with_timeout(
+        &self,
+        function_id: &str,
+        payload: Value,
+        _timeout_ms: u64,
+    ) -> Result<Option<Value>, String> {
+        self.call(function_id, payload).await
+    }
+
+    /// Whether the target is currently registered with the engine.
+    ///
+    /// Adapters used in unit tests and embedded deployments can keep the
+    /// optimistic default. The real iii-backed invoker overrides this so a
+    /// durable job restored before its worker boots is held instead of
+    /// burning delivery retries on a transient `FUNCTION_NOT_FOUND` error.
+    async fn function_available(&self, _function_id: &str) -> Result<bool, String> {
+        Ok(true)
+    }
 }
 
 #[derive(Clone)]
@@ -57,6 +76,47 @@ impl Invoker for IiiInvoker {
             .await
             .map(Some)
             .map_err(|e| e.to_string())
+    }
+
+    async fn call_with_timeout(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+    ) -> Result<Option<Value>, String> {
+        self.iii
+            .trigger(TriggerRequest {
+                function_id: function_id.to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            })
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
+    async fn function_available(&self, function_id: &str) -> Result<bool, String> {
+        match self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::info".to_string(),
+                payload: json!({ "function_id": function_id }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+        {
+            Ok(value) => Ok(!value.is_null() && value.get("error").is_none()),
+            Err(error) => {
+                let message = error.to_string();
+                if message.to_ascii_uppercase().contains("NOT_FOUND") {
+                    Ok(false)
+                } else {
+                    Err(message)
+                }
+            }
+        }
     }
 }
 

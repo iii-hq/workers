@@ -5,7 +5,7 @@ use std::sync::Arc;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterTriggerType};
 use serde::Deserialize;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::adapters::builtin::BuiltinAdapter;
@@ -13,6 +13,7 @@ use crate::adapters::builtin::BuiltinAdapter;
 use crate::adapters::rabbitmq::RabbitMQAdapter;
 use crate::adapters::redis::RedisAdapter;
 use crate::config::{adapter_config_value, QueueConfig};
+use crate::runtime::FunctionQueueRuntime;
 use crate::store::{FileStore, InMemoryStore, QueueStore};
 use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec};
 use crate::TRIGGER_TYPE;
@@ -21,17 +22,19 @@ const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 pub const BUILTIN_III_QUEUE_WORKER_ID: &str = "iii-queue";
 
 pub type ConfigCell = Arc<RwLock<Arc<QueueConfig>>>;
-pub type ApplyLock = Arc<Mutex<()>>;
+pub type ApplyLock = Arc<RwLock<()>>;
 
 pub struct BootHandle {
     pub adapter: Arc<SwappableAdapter>,
     pub trigger_handler: QueueTriggerHandler,
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
+    pub runtime: FunctionQueueRuntime,
 }
 
 impl BootHandle {
     pub async fn shutdown(self) {
+        self.runtime.shutdown().await;
         self.trigger_handler.shutdown().await;
     }
 }
@@ -39,18 +42,31 @@ impl BootHandle {
 pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(iii.clone()));
     // No fallback to builtin on a bad config: an adapter that fails to build
     // at boot (e.g. redis/rabbitmq unreachable) must fail the boot itself,
     // matching the engine's `make_adapter` behavior for `iii-queue`.
-    let built = build_adapter(&config, invoker).await?;
+    let built = build_adapter(&config, invoker.clone()).await?;
     let adapter = Arc::new(SwappableAdapter::new(built, adapter_identity_name(&config)));
     let config = Arc::new(RwLock::new(Arc::new(config.normalized())));
-    let apply_lock = Arc::new(Mutex::new(()));
+    let apply_lock = Arc::new(RwLock::new(()));
 
-    crate::functions::register_all(&iii, adapter.clone());
-
+    let runtime = FunctionQueueRuntime::new(
+        iii.clone(),
+        adapter.clone(),
+        invoker,
+        config.clone(),
+        apply_lock.clone(),
+    );
     let trigger_handler = QueueTriggerHandler::new(adapter.clone());
+
+    // Restore every authoritative queue before exposing queue::define. This
+    // closes the startup race where a concurrent definition could otherwise
+    // be replaced by a stale boot snapshot. Restored jobs wait for their
+    // target function to appear, so starting before dependent workers is safe.
+    runtime.start().await?;
+
+    crate::functions::register_all(&iii, adapter.clone(), runtime.clone());
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,
@@ -65,6 +81,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
         trigger_handler,
         config,
         apply_lock,
+        runtime,
     })
 }
 
@@ -272,6 +289,7 @@ mod tests {
                 name: "builtin".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         let store = build_store(&config).await.unwrap();
         store.enqueue("demo", json!({"ok": true})).await.unwrap();
@@ -289,6 +307,7 @@ mod tests {
                     "save_interval_ms": 5
                 })),
             }),
+            ..QueueConfig::default()
         };
         let store = build_store(&config).await.unwrap();
         store.enqueue("demo", json!({"ok": true})).await.unwrap();
@@ -330,6 +349,7 @@ mod tests {
                 name: "in_memory".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         build_adapter(&config, noop_invoker()).await.unwrap();
     }
@@ -345,6 +365,7 @@ mod tests {
                     "save_interval_ms": 5
                 })),
             }),
+            ..QueueConfig::default()
         };
         build_adapter(&config, noop_invoker()).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
@@ -357,6 +378,7 @@ mod tests {
                 name: "sqs".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         let err = match build_adapter(&config, noop_invoker()).await {
             Ok(_) => panic!("expected 'sqs' to be rejected"),
@@ -386,6 +408,7 @@ mod tests {
                 name: "rabbitmq".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         let err = match build_adapter(&config, noop_invoker()).await {
             Ok(_) => panic!("expected 'rabbitmq' to be rejected without the feature"),
@@ -409,6 +432,7 @@ mod tests {
                 name: "memory".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         let adapter = build_adapter(&config, noop_invoker()).await.unwrap();
         adapter
@@ -423,12 +447,14 @@ mod tests {
                 name: "in_memory".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         let file_based = QueueConfig {
             adapter: Some(AdapterEntry {
                 name: "file_based".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         assert_eq!(adapter_identity_name(&in_memory), "builtin");
         assert_eq!(adapter_identity_name(&file_based), "builtin");
@@ -442,6 +468,7 @@ mod tests {
                 name: "redis".to_string(),
                 config: None,
             }),
+            ..QueueConfig::default()
         };
         assert_eq!(adapter_identity_name(&redis), "redis");
     }

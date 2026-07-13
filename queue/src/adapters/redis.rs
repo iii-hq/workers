@@ -403,7 +403,7 @@ impl QueueAdapter for RedisAdapter {
         // RabbitMQ-only feature; the redis pub/sub adapter ignores it, same
         // as the engine.
         _priority: Option<u8>,
-    ) {
+    ) -> anyhow::Result<()> {
         let channel = format!("__queue::{}", queue_name);
         let publisher = Arc::clone(&self.publisher);
 
@@ -417,21 +417,29 @@ impl QueueAdapter for RedisAdapter {
             "data": data,
         });
 
-        let json = match serde_json::to_string(&envelope) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, queue = %queue_name, "Failed to serialize function queue data");
-                return;
-            }
-        };
+        let json = serde_json::to_string(&envelope).map_err(|err| {
+            anyhow::anyhow!("failed to serialize function queue message for '{queue_name}': {err}")
+        })?;
 
         tracing::debug!(queue = %queue_name, function_id = %function_id, "Publishing to Redis function queue channel");
 
         let mut conn = publisher.lock().await;
 
-        if let Err(e) = conn.publish::<_, _, ()>(&channel, &json).await {
-            tracing::error!(error = %e, queue = %queue_name, "Failed to publish to Redis function queue channel");
-        }
+        conn.publish::<_, _, ()>(&channel, &json)
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to publish to Redis function queue channel '{channel}': {err}"
+                )
+            })
+    }
+
+    async fn setup_function_queue(
+        &self,
+        _queue_name: &str,
+        _config: &crate::adapter::FunctionQueueConfig,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Redis does not support durable function queues")
     }
 
     async fn consume_function_queue(
@@ -439,7 +447,7 @@ impl QueueAdapter for RedisAdapter {
         _queue_name: &str,
         _prefetch: u32,
     ) -> anyhow::Result<mpsc::Receiver<QueueMessage>> {
-        anyhow::bail!("Redis function queue consumer not yet implemented")
+        anyhow::bail!("Redis does not support durable function queues")
     }
 
     async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {

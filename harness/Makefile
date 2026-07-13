@@ -14,7 +14,7 @@ WORKTREE_ROOT_ABS := $(abspath $(if $(filter /%,$(WORKTREE_ROOT)),$(WORKTREE_ROO
 ENGINE_CONFIG ?= $(MAKEFILE_DIR)engine.config.yaml
 
 STACK := iii-directory llm-router session-manager context-manager \
-         provider-anthropic provider-openai provider-openai-codex shell web harness approval-gate console
+         provider-anthropic provider-openai provider-openai-codex shell web queue harness approval-gate console
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
                     engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
@@ -183,6 +183,7 @@ restart-worker:
 	manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
 	test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	args="--url $(ENGINE_URL)"; \
+	if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
 	if [ "$$worker" = "console" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
 	cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq "$$worker"; then \

@@ -1,6 +1,6 @@
 # iii engine configuration — passed via `iii -c config.yaml`.
 #
-# Infrastructure workers only (queue, observability). The `configuration`
+# Infrastructure workers only (observability). The `configuration`
 # worker is enabled by default in the engine.
 #
 # The database worker and harness are NOT registered here. run-tests.sh:
@@ -10,11 +10,6 @@
 #   4. runs the harness test suite
 
 workers:
-  - name: iii-queue
-    config:
-      adapter:
-        name: builtin
-
   - name: iii-observability
     config:
       enabled: true

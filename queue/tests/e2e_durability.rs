@@ -31,6 +31,7 @@ fn file_config(dir: &std::path::Path) -> QueueConfig {
                 "save_interval_ms": 5
             })),
         }),
+        ..QueueConfig::default()
     }
 }
 

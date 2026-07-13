@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
+use crate::runtime::{DefineQueueInput, EnqueueInput, FunctionQueueRuntime};
 use crate::store::Job;
 
 pub const PUBLISH_FN_ID: &str = "iii::durable::publish";
@@ -19,6 +20,8 @@ pub const LIST_TOPICS_FN_ID: &str = "engine::queue::list_topics";
 pub const TOPIC_STATS_FN_ID: &str = "engine::queue::topic_stats";
 pub const DLQ_TOPICS_FN_ID: &str = "engine::queue::dlq_topics";
 pub const DLQ_MESSAGES_FN_ID: &str = "engine::queue::dlq_messages";
+pub const DEFINE_QUEUE_FN_ID: &str = "queue::define";
+pub const ENQUEUE_FUNCTION_FN_ID: &str = "engine::queue::enqueue";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PublishInput {
@@ -125,7 +128,30 @@ pub struct DlqMessage {
     pub size_bytes: u64,
 }
 
-pub fn register_all(iii: &Arc<IIIClient>, adapter: Arc<SwappableAdapter>) {
+pub fn register_all(
+    iii: &Arc<IIIClient>,
+    adapter: Arc<SwappableAdapter>,
+    runtime: FunctionQueueRuntime,
+) {
+    let define_runtime = runtime.clone();
+    iii.register_function(
+        DEFINE_QUEUE_FN_ID,
+        RegisterFunction::new_async(move |input: DefineQueueInput| {
+            let runtime = define_runtime.clone();
+            async move { runtime.define(input).await }
+        })
+        .description("Define and start a durable named function queue"),
+    );
+
+    iii.register_function(
+        ENQUEUE_FUNCTION_FN_ID,
+        RegisterFunction::new_async(move |input: EnqueueInput| {
+            let runtime = runtime.clone();
+            async move { runtime.enqueue(input).await }
+        })
+        .description("Internal provider for TriggerAction::Enqueue"),
+    );
+
     let publish_adapter = adapter.clone();
     iii.register_function(
         PUBLISH_FN_ID,

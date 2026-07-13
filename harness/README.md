@@ -21,7 +21,7 @@
   <a href="https://workers.iii.dev/workers/shell"><img alt="shell" src="https://workers.iii.dev/workers/shell/badge.svg"></a>
   <a href="https://workers.iii.dev/workers/web"><img alt="web" src="https://workers.iii.dev/workers/web/badge.svg"></a>
   <a href="https://workers.iii.dev/workers/iii-state"><img alt="iii-state" src="https://workers.iii.dev/workers/iii-state/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/iii-queue"><img alt="iii-queue" src="https://workers.iii.dev/workers/iii-queue/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/queue"><img alt="queue" src="https://workers.iii.dev/workers/queue/badge.svg"></a>
   <a href="https://workers.iii.dev/workers/iii-cron"><img alt="iii-cron" src="https://workers.iii.dev/workers/iii-cron/badge.svg"></a>
   <a href="https://workers.iii.dev/workers/iii-stream"><img alt="iii-stream" src="https://workers.iii.dev/workers/iii-stream/badge.svg"></a>
   <a href="https://workers.iii.dev/workers/iii-observability"><img alt="iii-observability" src="https://workers.iii.dev/workers/iii-observability/badge.svg"></a>
@@ -72,9 +72,10 @@ Until a provider is configured the picker is empty and chat will not generate.
 </p>
 
 `iii worker add harness` installs every worker the loop needs (see the badges
-above); you do not add them one by one. The harness enqueues turn steps on the
-`default` queue (the `iii-queue` worker; see
-[`engine.config.yaml`](engine.config.yaml)).
+above); you do not add them one by one. During bootstrap, the harness asks the
+`queue` worker to define a dedicated `harness-turn` queue before it reports
+ready. That queue is FIFO within each `session_id` and processes separate
+sessions concurrently; startup fails if the queue cannot be ensured.
 
 Every turn, sub-agent spawn, and provider call is one correlated trace: the
 harness turn waterfall in the console. Failed descendants stamp the whole trace

@@ -120,7 +120,7 @@ impl QueueAdapter for MemoryAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
-    ) {
+    ) -> anyhow::Result<()> {
         self.inner
             .publish_to_function_queue(
                 queue_name,
@@ -133,7 +133,7 @@ impl QueueAdapter for MemoryAdapter {
                 baggage,
                 priority,
             )
-            .await;
+            .await
     }
 
     async fn setup_function_queue(
@@ -152,6 +152,14 @@ impl QueueAdapter for MemoryAdapter {
         self.inner
             .consume_function_queue(queue_name, prefetch)
             .await
+    }
+
+    async fn stop_function_queue_consumer(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.inner.stop_function_queue_consumer(queue_name).await
+    }
+
+    async fn forget_function_queue(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.inner.forget_function_queue(queue_name).await
     }
 
     async fn ack_function_queue(&self, queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {

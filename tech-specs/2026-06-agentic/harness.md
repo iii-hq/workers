@@ -1017,10 +1017,12 @@ pattern [approval-gate](approval-gate.md#state-lifecycle) mandates for its own s
   and set status. Required.
 - `llm-router` (`router::chat`) — generation. Required.
 - `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.
-- `iii-queue` — the durable `harness-turn` loop. The queue MUST provide per-session ordering with
-  cross-session parallelism (partition by `session_id`); a single global FIFO would head-of-line
-  block every session behind one long stream step. Sub-agent turns are ordinary entries on this
-  queue under their child `session_id` — which is what makes spawned children run in parallel.
+- `queue` — the durable `harness-turn` loop. After registering `harness::*` functions, bootstrap
+  MUST call `queue::define` and fail before ready if it cannot ensure this queue. Its definition is
+  FIFO grouped by `session_id`, concurrency `10`, three retries, 1-second backoff, and 100ms
+  polling. Grouping provides per-session ordering with cross-session parallelism; a single global
+  FIFO would head-of-line block every session behind one long stream step. Sub-agent turns are
+  ordinary entries under their child `session_id`, which lets spawned children run in parallel.
 - iii engine — `iii.trigger` for function dispatch (`agent_trigger` unwrap → target function);
   registry reads (`engine::functions::list` / `engine::functions::info`) for runtime discovery and
   `expose: "native"` schema mapping; custom trigger-type registration (`registerTriggerType`) for

@@ -18,6 +18,7 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
 use crate::policy::{self, CallKind, CompiledPolicy};
+pub use crate::queue::TURN_QUEUE;
 use crate::trigger;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
@@ -25,8 +26,6 @@ use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
 };
-
-pub const TURN_QUEUE: &str = "default";
 
 #[derive(Clone, Copy)]
 struct FailureInfo {
@@ -40,7 +39,6 @@ const INTERNAL_FAILURE: FailureInfo = FailureInfo {
     phase: "execution",
     retryable: false,
 };
-
 /// The enqueued `harness::turn` step payload.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TurnStepPayload {
@@ -71,7 +69,7 @@ pub struct TurnStepResult {
     pub skipped: bool,
 }
 
-/// Enqueue the next durable loop step onto the engine's `default` queue.
+/// Enqueue the next durable loop step onto the dedicated `harness-turn` queue.
 pub async fn enqueue_step(
     iii: &IIIClient,
     session_id: &str,

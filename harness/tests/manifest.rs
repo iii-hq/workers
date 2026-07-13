@@ -42,3 +42,19 @@ fn manifest_subcommand_emits_valid_json() {
         "supported_targets must not be empty"
     );
 }
+
+#[test]
+fn worker_manifest_uses_the_standalone_queue_worker() {
+    let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
+    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
+    let dependencies = manifest["dependencies"]
+        .as_mapping()
+        .expect("dependencies is a mapping");
+
+    assert_eq!(
+        dependencies.get(serde_yaml::Value::String("queue".into())),
+        Some(&serde_yaml::Value::String("^0.2.0".into()))
+    );
+    assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-queue".into())));
+}

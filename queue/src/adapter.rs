@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
@@ -50,23 +51,33 @@ pub struct QueueMessage {
     pub baggage: Option<String>,
 }
 
+pub const DEFAULT_FUNCTION_QUEUE_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+
 /// Per-function-queue transport settings, passed to
 /// [`QueueAdapter::setup_function_queue`].
 ///
-/// Minimal port of the engine builtin's `FunctionQueueConfig`
-/// (`engine/src/workers/queue/config.rs`) — only the fields the
-/// function-queue adapter methods need to compile against. Call-site-less
-/// until the engine `QueueEnqueuer` cut lands; a later task may replace
-/// this with the full config-module port.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct FunctionQueueConfig {
-    /// Maximum delivery attempts before a message is sent to the
-    /// dead-letter queue.
+    /// Maximum retries after the initial delivery before a message is sent
+    /// to the dead-letter queue.
     pub max_retries: u32,
     /// Number of messages processed concurrently.
     pub concurrency: u32,
+    /// Maximum time in milliseconds allowed for one target-function
+    /// invocation.
+    pub timeout_ms: u64,
+    /// Queue scheduling mode. Supported values are `standard` and `fifo`.
+    #[serde(rename = "type")]
+    pub r#type: String,
+    /// Payload field used to partition FIFO messages into independently
+    /// ordered groups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_group_field: Option<String>,
     /// Base delay in milliseconds for the exponential retry backoff.
     pub backoff_ms: u64,
+    /// Delay between polls for adapters backed by a local store.
+    pub poll_interval_ms: u64,
     /// Declares the queue as a RabbitMQ priority queue with this many
     /// priority levels (`x-max-priority`). `None` means not a priority
     /// queue. RabbitMQ-only; other adapters ignore it. Added (rather than
@@ -75,6 +86,91 @@ pub struct FunctionQueueConfig {
     /// RabbitMQ adapter's topology setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_priority: Option<u8>,
+    /// Payload field whose non-negative integer value supplies message
+    /// priority when the adapter supports priority queues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_field: Option<String>,
+}
+
+impl Default for FunctionQueueConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            concurrency: 10,
+            timeout_ms: DEFAULT_FUNCTION_QUEUE_TIMEOUT_MS,
+            r#type: "standard".to_string(),
+            message_group_field: None,
+            backoff_ms: 1_000,
+            poll_interval_ms: 100,
+            max_priority: None,
+            priority_field: None,
+        }
+    }
+}
+
+impl FunctionQueueConfig {
+    pub fn validate(&self, queue_name: &str) -> Result<(), String> {
+        if queue_name.trim().is_empty() {
+            return Err("queue name is required".to_string());
+        }
+        if queue_name.trim() != queue_name {
+            return Err("queue name must not have leading or trailing whitespace".to_string());
+        }
+        if self.concurrency == 0 {
+            return Err(format!(
+                "queue '{queue_name}' concurrency must be greater than zero"
+            ));
+        }
+        if self.timeout_ms == 0 {
+            return Err(format!(
+                "queue '{queue_name}' timeout_ms must be greater than zero"
+            ));
+        }
+        if self.poll_interval_ms == 0 {
+            return Err(format!(
+                "queue '{queue_name}' poll_interval_ms must be greater than zero"
+            ));
+        }
+        if !matches!(self.r#type.as_str(), "standard" | "fifo") {
+            return Err(format!(
+                "queue '{queue_name}' type must be either 'standard' or 'fifo'"
+            ));
+        }
+        if self.r#type == "fifo"
+            && self
+                .message_group_field
+                .as_deref()
+                .is_none_or(|field| field.trim().is_empty())
+        {
+            return Err(format!(
+                "queue '{queue_name}' with type 'fifo' requires message_group_field"
+            ));
+        }
+        if self
+            .message_group_field
+            .as_deref()
+            .is_some_and(|field| field.trim().is_empty())
+        {
+            return Err(format!(
+                "queue '{queue_name}' message_group_field must not be empty"
+            ));
+        }
+        if self
+            .priority_field
+            .as_deref()
+            .is_some_and(|field| field.trim().is_empty())
+        {
+            return Err(format!(
+                "queue '{queue_name}' priority_field must not be empty"
+            ));
+        }
+        if self.max_priority == Some(0) {
+            return Err(format!(
+                "queue '{queue_name}' max_priority must be greater than zero"
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Transport abstraction implemented by every queue backend adapter
@@ -158,10 +254,8 @@ pub trait QueueAdapter: Send + Sync + 'static {
 
     // -- Function queue transport methods --
     //
-    // Call-site-less until the engine `QueueEnqueuer` cut lands (see
-    // `engine/src/workers/queue/mod.rs:78-158`). Ported here so adapters
-    // implementing this trait have the same surface as the engine builtin;
-    // default bodies match the engine's no-op/unimplemented defaults.
+    // The engine routes `TriggerAction::Enqueue` through the standalone
+    // `engine::queue::enqueue` provider, which publishes through this surface.
 
     /// Publish a message directly onto a function's dedicated queue.
     #[allow(clippy::too_many_arguments)]
@@ -178,8 +272,8 @@ pub trait QueueAdapter: Send + Sync + 'static {
         // AMQP message priority (`None` = default). Honored by adapters whose
         // queues are declared as priority queues; others ignore it.
         _priority: Option<u8>,
-    ) {
-        unimplemented!("publish_to_function_queue not implemented for this adapter")
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("function queue publishing is not supported by this adapter")
     }
 
     /// Set up transport topology for a function queue (exchanges, queues,
@@ -199,7 +293,19 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _queue_name: &str,
         _prefetch: u32,
     ) -> anyhow::Result<mpsc::Receiver<QueueMessage>> {
-        unimplemented!("consume_function_queue not implemented for this adapter")
+        anyhow::bail!("function queue consumption is not supported by this adapter")
+    }
+
+    /// Stop all active consumers for one named function queue and return any
+    /// unacknowledged deliveries to the transport before returning.
+    async fn stop_function_queue_consumer(&self, _queue_name: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Forget an in-memory queue definition after a failed apply. Durable
+    /// messages and transport topology are intentionally retained.
+    async fn forget_function_queue(&self, _queue_name: &str) -> anyhow::Result<()> {
+        Ok(())
     }
 
     /// Acknowledge successful processing of a message.
@@ -344,7 +450,7 @@ impl QueueAdapter for SwappableAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
-    ) {
+    ) -> anyhow::Result<()> {
         self.current()
             .await
             .publish_to_function_queue(
@@ -358,7 +464,7 @@ impl QueueAdapter for SwappableAdapter {
                 baggage,
                 priority,
             )
-            .await;
+            .await
     }
 
     async fn setup_function_queue(
@@ -381,6 +487,17 @@ impl QueueAdapter for SwappableAdapter {
             .await
             .consume_function_queue(queue_name, prefetch)
             .await
+    }
+
+    async fn stop_function_queue_consumer(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .stop_function_queue_consumer(queue_name)
+            .await
+    }
+
+    async fn forget_function_queue(&self, queue_name: &str) -> anyhow::Result<()> {
+        self.current().await.forget_function_queue(queue_name).await
     }
 
     async fn ack_function_queue(&self, queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
@@ -412,6 +529,7 @@ mod tests {
     #[derive(Default)]
     struct CountingAdapter {
         enqueue_calls: AtomicU64,
+        function_publish_calls: AtomicU64,
     }
 
     #[async_trait]
@@ -463,6 +581,22 @@ mod tests {
         }
 
         async fn shutdown(&self) {}
+
+        async fn publish_to_function_queue(
+            &self,
+            _queue_name: &str,
+            _function_id: &str,
+            _data: Value,
+            _message_id: &str,
+            _max_retries: u32,
+            _backoff_ms: u64,
+            _traceparent: Option<String>,
+            _baggage: Option<String>,
+            _priority: Option<u8>,
+        ) -> anyhow::Result<()> {
+            self.function_publish_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -489,5 +623,47 @@ mod tests {
         let second = Arc::new(CountingAdapter::default());
         swappable.replace(second, "redis").await;
         assert_eq!(swappable.current_name().await, "redis");
+    }
+
+    #[test]
+    fn function_queue_config_defaults_and_validates_fifo() {
+        let defaults: FunctionQueueConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(defaults, FunctionQueueConfig::default());
+        assert_eq!(defaults.timeout_ms, 1_800_000);
+        assert!(defaults.validate("turns").is_ok());
+
+        let fifo: FunctionQueueConfig = serde_json::from_value(serde_json::json!({
+            "type": "fifo",
+            "message_group_field": "session_id"
+        }))
+        .unwrap();
+        assert!(fifo.validate("harness-turn").is_ok());
+
+        let invalid = FunctionQueueConfig {
+            r#type: "fifo".to_string(),
+            ..FunctionQueueConfig::default()
+        };
+        assert!(invalid.validate("harness-turn").is_err());
+    }
+
+    #[tokio::test]
+    async fn swappable_forwards_function_queue_publish_result() {
+        let adapter = Arc::new(CountingAdapter::default());
+        let swappable = SwappableAdapter::new(adapter.clone(), "counting");
+        swappable
+            .publish_to_function_queue(
+                "turns",
+                "harness::turn",
+                Value::Null,
+                "receipt-1",
+                3,
+                1_000,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(adapter.function_publish_calls.load(Ordering::SeqCst), 1);
     }
 }
