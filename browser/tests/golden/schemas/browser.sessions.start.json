@@ -1,0 +1,49 @@
+{
+  "description": "Start an interactive Chromium session and return its session_id. Sessions keep console and network history; stop them with browser::sessions::stop when done.",
+  "function_id": "browser::sessions::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "headful": {
+        "default": null,
+        "description": "Force a visible window for this session, overriding the configured `headless` default.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "url": {
+        "default": null,
+        "description": "URL to open immediately. Omit to start on about:blank.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "StartInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "headless": {
+        "type": "boolean"
+      },
+      "session_id": {
+        "description": "Pass this to every other browser function.",
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "headless",
+      "session_id",
+      "url"
+    ],
+    "title": "StartOutput",
+    "type": "object"
+  }
+}

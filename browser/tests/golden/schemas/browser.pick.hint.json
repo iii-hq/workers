@@ -1,0 +1,102 @@
+{
+  "description": "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console UI can draw a hover highlight in pick mode. Not an agent function.",
+  "function_id": "browser::pick::hint",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "x": {
+        "description": "Viewport x of the cursor.",
+        "format": "double",
+        "type": "number"
+      },
+      "y": {
+        "description": "Viewport y of the cursor.",
+        "format": "double",
+        "type": "number"
+      }
+    },
+    "required": [
+      "session_id",
+      "x",
+      "y"
+    ],
+    "title": "PickHintInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Bounds": {
+        "properties": {
+          "height": {
+            "format": "double",
+            "type": "number"
+          },
+          "width": {
+            "format": "double",
+            "type": "number"
+          },
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "height",
+          "width",
+          "x",
+          "y"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "bounds": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Bounds"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Viewport-space box to draw the highlight over."
+      },
+      "classes": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "hit": {
+        "description": "False when no element sits at the point.",
+        "type": "boolean"
+      },
+      "id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tag": {
+        "description": "Lowercase tag name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "hit"
+    ],
+    "title": "PickHintOutput",
+    "type": "object"
+  }
+}

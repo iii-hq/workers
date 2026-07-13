@@ -1,5 +1,9 @@
 import { Check, Copy, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import {
+  BrowserFunctionIdLabel,
+  BrowserToolView,
+} from '@/components/chat/browser'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
   DirectoryFunctionIdLabel,
@@ -236,6 +240,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (StateToolView.isStateFunction(functionId)) {
     return <StateFunctionIdLabel functionId={functionId} />
   }
+  if (BrowserToolView.isBrowserFunction(functionId)) {
+    return <BrowserFunctionIdLabel functionId={functionId} />
+  }
   return <span className="text-ink">{functionId}</span>
 }
 
@@ -281,7 +288,8 @@ export function FunctionCallCard({
     WorkflowToolView.tryRenderPreview(message) ??
     RouterToolView.tryRenderPreview(message) ??
     HarnessToolView.tryRenderPreview(message) ??
-    StateToolView.tryRenderPreview(message)
+    StateToolView.tryRenderPreview(message) ??
+    BrowserToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
@@ -294,7 +302,8 @@ export function FunctionCallCard({
       WorkflowToolView.tryRender(message) ??
       RouterToolView.tryRender(message) ??
       HarnessToolView.tryRender(message) ??
-      StateToolView.tryRender(message))
+      StateToolView.tryRender(message) ??
+      BrowserToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   // The top request pane renders only while the call is in flight and no

@@ -20,6 +20,7 @@ import {
 } from '@/lib/conversations-context'
 import { buildViewOptions } from '@/lib/nav-options'
 import { cn } from '@/lib/utils'
+import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
@@ -94,6 +95,8 @@ export function App() {
               <Workers />
             ) : view === 'worktrees' ? (
               <Worktrees />
+            ) : view === 'browser' ? (
+              <Browser />
             ) : (
               <TracesV2 />
             )}
@@ -120,10 +123,11 @@ function Header({
   onToggleDock,
   onOpenShortcuts,
 }: HeaderProps) {
-  // The worktrees entry appears only while the optional worker is present;
-  // a direct #/worktrees hit still lands on that page's install notice.
-  const { worktreeAvailable } = useConversationsCtx()
-  const viewOptions = buildViewOptions(worktreeAvailable)
+  // Optional-worker entries appear only while their worker is present; a
+  // direct #/worktrees or #/browser hit still lands on that page's install
+  // notice.
+  const { worktreeAvailable, browserAvailable } = useConversationsCtx()
+  const viewOptions = buildViewOptions(worktreeAvailable, browserAvailable)
   const onConsoleSettings = view === 'configuration'
   return (
     <header className="flex items-center justify-between pl-3 pr-6 h-12 border-b border-rule shrink-0">

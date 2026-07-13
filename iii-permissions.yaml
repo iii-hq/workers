@@ -106,6 +106,20 @@ rules:
   - '!harness::react'
   - '!context::on-config-change'
   - '!approval::on-config-change'
+  # browser: console-UI plumbing, never agent-callable. pick::* and hint are
+  # human gestures (the console drives them as user-initiated SDK calls,
+  # which bypass this gate); screencast::*/frame exist only to feed the
+  # console viewport. The agent-facing surface (sessions, navigate, snapshot,
+  # act, evaluate, console/network reads, dom/styles, history, screenshot)
+  # stays at the needs_approval default.
+  - '!browser::pick::start'
+  - '!browser::pick::resolve'
+  - '!browser::pick::stop'
+  - '!browser::pick::hint'
+  - '!browser::screencast::start'
+  - '!browser::screencast::stop'
+  - '!browser::frame'
+  - '!browser::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
   # engine's trigger dispatch, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.

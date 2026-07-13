@@ -1,0 +1,104 @@
+{
+  "description": "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to browser::snapshot; read deep subtrees by passing a ref.",
+  "function_id": "browser::dom::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "depth": {
+        "default": null,
+        "description": "Levels of children to include (default 3).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "ref": {
+        "default": null,
+        "description": "Subtree root from an earlier ref (`e3`/`p1`) or dom node. Omit for the document root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "DomReadInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DomNode": {
+        "description": "One DOM node in the outline. `ref` resolves in `browser::act`, `browser::styles::read`, and `browser::styles::write`.",
+        "properties": {
+          "child_count": {
+            "description": "Total children in the document, which may exceed `children` returned at this depth.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/definitions/DomNode"
+            },
+            "type": "array"
+          },
+          "classes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "tag": {
+            "description": "Lowercase tag (`div`, `button`) or node name (`#text`).",
+            "type": "string"
+          },
+          "text": {
+            "description": "Trimmed text content for text nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "child_count",
+          "ref",
+          "tag"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "root": {
+        "$ref": "#/definitions/DomNode"
+      },
+      "truncated": {
+        "description": "True when the node cap cut the tree short; read a subtree via `ref`.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "root",
+      "truncated"
+    ],
+    "title": "DomReadOutput",
+    "type": "object"
+  }
+}

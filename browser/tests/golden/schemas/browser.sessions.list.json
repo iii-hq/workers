@@ -1,0 +1,68 @@
+{
+  "description": "List live browser sessions with their current URL and activity.",
+  "function_id": "browser::sessions::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ListInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionInfo": {
+        "properties": {
+          "console_entries": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "headless": {
+            "type": "boolean"
+          },
+          "last_used_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "console_entries",
+          "created_ms",
+          "headless",
+          "last_used_ms",
+          "session_id",
+          "url"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "sessions": {
+        "items": {
+          "$ref": "#/definitions/SessionInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "sessions"
+    ],
+    "title": "ListOutput",
+    "type": "object"
+  }
+}

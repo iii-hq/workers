@@ -1,0 +1,58 @@
+{
+  "description": "Set one inline CSS property on an element, live in the page. Visual experiment only: the page's source files are untouched, and the edit dies with the next navigation.",
+  "function_id": "browser::styles::write",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "important": {
+        "default": null,
+        "description": "Apply with `!important`.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "property": {
+        "description": "CSS property name (`background-color`).",
+        "type": "string"
+      },
+      "ref": {
+        "description": "Element ref to edit.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "value": {
+        "description": "CSS value (`#101418`). Empty string removes the inline property.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "property",
+      "ref",
+      "session_id",
+      "value"
+    ],
+    "title": "StylesWriteInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "inline_style": {
+        "description": "The element's inline `style` attribute after the edit.",
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "inline_style",
+      "ok"
+    ],
+    "title": "StylesWriteOutput",
+    "type": "object"
+  }
+}

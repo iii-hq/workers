@@ -1,0 +1,31 @@
+{
+  "description": "Internal: start pushing live viewport frames for browser::frame. Console-UI plumbing; agents use browser::screenshot. Not an agent function.",
+  "function_id": "browser::screencast::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "ScreencastStartInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Neutral acknowledgement returned by the fire-and-forget internal functions (pick start/stop/resolve, screencast start/stop): they emit their result as a trigger event, so the direct return is just `{ ok }`.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "AckOutput",
+    "type": "object"
+  }
+}
