@@ -12,6 +12,7 @@ on:
           - acp
           - approval-gate
           - bridge
+          - browser
           - claude-code
           - codex
           - devin

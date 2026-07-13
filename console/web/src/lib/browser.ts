@@ -23,6 +23,9 @@ export const BROWSER_NETWORK_READ_FUNCTION_ID = 'browser::network::read'
 export const BROWSER_PICK_START_FUNCTION_ID = 'browser::pick::start'
 export const BROWSER_PICK_STOP_FUNCTION_ID = 'browser::pick::stop'
 export const BROWSER_PICK_HINT_FUNCTION_ID = 'browser::pick::hint'
+export const BROWSER_SCREENCAST_START_FUNCTION_ID = 'browser::screencast::start'
+export const BROWSER_SCREENCAST_STOP_FUNCTION_ID = 'browser::screencast::stop'
+export const BROWSER_FRAME_FUNCTION_ID = 'browser::frame'
 
 export const BROWSER_SESSION_STARTED_TRIGGER = 'browser::session-started'
 export const BROWSER_SESSION_STOPPED_TRIGGER = 'browser::session-stopped'
@@ -463,6 +466,47 @@ export async function hintBrowserPick(
     y,
   })
   const parsed = pickHintSchema.safeParse(res)
+  return parsed.success ? parsed.data : null
+}
+
+const frameSchema = z.object({
+  frame: z.string().optional(),
+  width: z.number(),
+  height: z.number(),
+  frame_seq: z.number(),
+  timestamp: z.number(),
+  active: z.boolean(),
+})
+export type BrowserFrame = z.infer<typeof frameSchema>
+
+export async function startBrowserScreencast(sessionId: string): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+}
+
+export async function stopBrowserScreencast(sessionId: string): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+}
+
+/**
+ * Newest pushed screencast frame; a memory read on the worker, cheap to
+ * poll fast. `frame` is absent while `sinceFrame` is still the newest seq.
+ */
+export async function readBrowserFrame(
+  sessionId: string,
+  sinceFrame?: number,
+): Promise<BrowserFrame | null> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>(BROWSER_FRAME_FUNCTION_ID, {
+    session_id: sessionId,
+    ...(sinceFrame != null ? { since_frame: sinceFrame } : {}),
+  })
+  const parsed = frameSchema.safeParse(res)
   return parsed.success ? parsed.data : null
 }
 

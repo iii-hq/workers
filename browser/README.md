@@ -6,8 +6,9 @@ click and type against element refs, and read the page's own console and
 network history back as data. The single most important thing it gives you:
 "why is my dev server page blank?" becomes answerable, because the page's
 console errors are one `browser::console::read` away. The [console](../console)
-worker adds the human window: a live Browser page with the viewport, the
-console feed, and click-to-pick elements into chat.
+worker adds the human window: a live Browser page with a streaming viewport
+(Chromium-pushed screencast frames), the console feed, and click-to-pick
+elements into chat.
 
 ## Install
 
@@ -125,6 +126,6 @@ flows straight into agent action.
 
 `browser::pick::start` puts the page in DevTools inspect mode (native hover
 highlight); the human's click resolves to tag, attributes, outer HTML, text,
-bounds, and recent console errors, emitted as `browser::picked`. Both pick
-functions are internal: they are console-UI plumbing, not agent surface, and
-stay out of agent tool lists.
+bounds, and recent console errors, emitted as `browser::picked`. The pick,
+hint, screencast, and frame functions are internal: console-UI plumbing, not
+agent surface, and they stay out of agent tool lists.

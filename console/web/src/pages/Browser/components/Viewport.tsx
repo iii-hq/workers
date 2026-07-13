@@ -2,16 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type BrowserClickOptions,
   type BrowserPickHint,
-  type BrowserScreenshot,
   elementLabel,
 } from '@/lib/browser'
 import { cn } from '@/lib/utils'
+import type { LiveFrame } from '../hooks/useLiveFrames'
 
 /**
- * The session viewport: the latest screenshot scaled to fit the pane
+ * The session viewport: the latest screencast frame scaled to fit the pane
  * (aspect preserved, centered, letterboxed), acting as a real browser
  * surface. Mouse and keyboard map from the rendered image rect to
- * page-viewport space (the capture's `details.width/height` against
+ * page-viewport space (the frame's width/height against
  * `getBoundingClientRect` at event time), so the mapping survives any pane
  * size: clicks, double clicks, right clicks, wheel scroll, and (while the
  * surface is focused) typing and special keys all forward as
@@ -51,7 +51,7 @@ interface HintDisplay {
 }
 
 interface ViewportProps {
-  shot: BrowserScreenshot | null
+  frame: LiveFrame | null
   loading: boolean
   error: string | null
   picking: boolean
@@ -63,7 +63,7 @@ interface ViewportProps {
 }
 
 export function Viewport({
-  shot,
+  frame,
   loading,
   error,
   picking,
@@ -76,8 +76,8 @@ export function Viewport({
   const surfaceRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
 
-  const shotRef = useRef(shot)
-  shotRef.current = shot
+  const frameRef = useRef(frame)
+  frameRef.current = frame
   const pickingRef = useRef(picking)
   pickingRef.current = picking
   const onScrollAtRef = useRef(onScrollAt)
@@ -86,7 +86,7 @@ export function Viewport({
   /** Client point -> page-viewport point, null outside the rendered image. */
   const mapToPage = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
-      const current = shotRef.current
+      const current = frameRef.current
       const img = imgRef.current
       if (!current || !img || current.width <= 0 || current.height <= 0) {
         return null
@@ -250,7 +250,7 @@ export function Viewport({
             setHint(null)
             return
           }
-          const current = shotRef.current
+          const current = frameRef.current
           const img = imgRef.current
           const surface = surfaceRef.current
           if (!current || !img || !surface || current.width <= 0) {
@@ -306,15 +306,16 @@ export function Viewport({
       onKeyDown={handleKeyDown}
       className={cn(
         'relative flex-1 min-h-0 min-w-0 overflow-hidden bg-panel p-3',
-        'flex items-center justify-center cursor-crosshair',
+        'flex items-center justify-center',
+        picking ? 'cursor-crosshair' : 'cursor-default',
         'outline-none focus-visible:ring-1 focus-visible:ring-ring',
       )}
     >
-      {shot?.dataUrl ? (
+      {frame ? (
         <img
           ref={imgRef}
-          src={shot.dataUrl}
-          alt={`live capture of ${shot.url}`}
+          src={frame.dataUrl}
+          alt="live view of the current page"
           draggable={false}
           className={cn(
             'block max-w-full max-h-full w-auto h-auto object-contain select-none border bg-bg',
@@ -324,10 +325,10 @@ export function Viewport({
       ) : (
         <p className="font-mono text-[12px] lowercase text-ink-ghost">
           {error
-            ? `screenshot failed: ${error}`
+            ? `live view failed: ${error}`
             : loading
-              ? 'capturing viewport...'
-              : 'no capture yet'}
+              ? 'waiting for the first frame...'
+              : 'no frame yet'}
         </p>
       )}
       {hint ? (

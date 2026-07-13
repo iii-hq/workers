@@ -24,18 +24,15 @@ import {
 } from '@/lib/browser'
 import { insertIntoComposer } from '@/lib/composer-insert'
 import { cn } from '@/lib/utils'
-import {
-  SCREENSHOT_PICK_POLL_MS,
-  SCREENSHOT_POLL_MS,
-  useScreenshotPolling,
-} from '../hooks/useScreenshotPolling'
+import { useLiveFrames } from '../hooks/useLiveFrames'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
 import { Viewport } from './Viewport'
 
 /**
  * Everything for one selected session: the URL bar, pick-to-chat toggle,
- * stop control, the polled viewport, and the console / network tabs.
+ * stop control, the screencast-fed viewport, and the console / network
+ * tabs.
  */
 
 const PICKED_FN = 'console::browser-picked'
@@ -56,11 +53,7 @@ export function SessionView({
 }: SessionViewProps) {
   const sessionId = session.session_id
   const [picking, setPicking] = useState(false)
-  const screenshot = useScreenshotPolling(
-    sessionId,
-    enabled,
-    picking ? SCREENSHOT_PICK_POLL_MS : SCREENSHOT_POLL_MS,
-  )
+  const live = useLiveFrames(sessionId, enabled)
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -94,10 +87,9 @@ export function SessionView({
     if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) url = `https://${url}`
     void runAction(async () => {
       await navigateBrowser(sessionId, url)
-      screenshot.refresh()
       onSessionsRefresh()
     })
-  }, [urlDraft, sessionId, runAction, screenshot, onSessionsRefresh])
+  }, [urlDraft, sessionId, runAction, onSessionsRefresh])
 
   // Pick-to-chat. The worker auto-exits inspect mode after one pick, so a
   // received event only flips local state; explicit toggles and unmounts
@@ -152,28 +144,21 @@ export function SessionView({
       setLastPicked(evt)
       insertIntoComposer(formatPickedElement(evt))
       setPicking(false)
-      screenshot.refresh()
     },
   })
 
   const handleClickAt = useCallback(
     (x: number, y: number, options?: BrowserClickOptions) => {
-      void runAction(async () => {
-        await clickBrowserAt(sessionId, x, y, options)
-        screenshot.refresh()
-      })
+      void runAction(() => clickBrowserAt(sessionId, x, y, options))
     },
-    [sessionId, runAction, screenshot],
+    [sessionId, runAction],
   )
 
   const handleScrollAt = useCallback(
     (x: number, y: number, deltaY: number) => {
-      void runAction(async () => {
-        await scrollBrowserAt(sessionId, x, y, deltaY)
-        screenshot.refresh()
-      })
+      void runAction(() => scrollBrowserAt(sessionId, x, y, deltaY))
     },
-    [sessionId, runAction, screenshot],
+    [sessionId, runAction],
   )
 
   // Printable characters batch into one type act per idle window; a special
@@ -191,11 +176,8 @@ export function SessionView({
   const flushTypeBuffer = useCallback(() => {
     const text = takeTypeBuffer()
     if (!text) return
-    void runAction(async () => {
-      await typeBrowserText(sessionId, text)
-      screenshot.refresh()
-    })
-  }, [takeTypeBuffer, sessionId, runAction, screenshot])
+    void runAction(() => typeBrowserText(sessionId, text))
+  }, [takeTypeBuffer, sessionId, runAction])
 
   const handleTextInput = useCallback(
     (text: string) => {
@@ -212,10 +194,9 @@ export function SessionView({
       void runAction(async () => {
         if (text) await typeBrowserText(sessionId, text)
         await pressBrowserKey(sessionId, key)
-        screenshot.refresh()
       })
     },
-    [takeTypeBuffer, sessionId, runAction, screenshot],
+    [takeTypeBuffer, sessionId, runAction],
   )
 
   useEffect(() => {
@@ -330,9 +311,9 @@ export function SessionView({
       ) : null}
 
       <Viewport
-        shot={screenshot.shot}
-        loading={screenshot.loading}
-        error={screenshot.error}
+        frame={live.frame}
+        loading={live.loading}
+        error={live.error}
         picking={picking}
         onClickAt={handleClickAt}
         onScrollAt={handleScrollAt}
