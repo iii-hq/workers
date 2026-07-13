@@ -21,18 +21,38 @@ use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungCloseFrame;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 
 /// Axum handler. Splits the upgraded socket into a sender + receiver
 /// and spawns a single `handle_ws` future for the lifetime of the
 /// connection.
+///
+/// Both legs run without message/frame size limits: the proxy must not
+/// impose caps the endpoints themselves don't have. With the default
+/// tungstenite limits (16 MiB frame / 64 MiB message) a single large
+/// engine response (e.g. a traces read on a long-running stack) killed
+/// the connection, and the browser SDK then reconnected, refetched the
+/// same payload, and looped forever.
 pub async fn ws_proxy(ws: WebSocketUpgrade, State(engine_url): State<Arc<String>>) -> Response {
-    ws.on_upgrade(move |socket| handle_ws(socket, engine_url))
+    ws.max_message_size(usize::MAX)
+        .max_frame_size(usize::MAX)
+        .on_upgrade(move |socket| handle_ws(socket, engine_url))
 }
 
 async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
-    let (engine, _resp) = match tokio_tungstenite::connect_async(engine_url.as_str()).await {
+    let engine_ws_config = WebSocketConfig {
+        max_message_size: None,
+        max_frame_size: None,
+        ..Default::default()
+    };
+    let (engine, _resp) = match tokio_tungstenite::connect_async_with_config(
+        engine_url.as_str(),
+        Some(engine_ws_config),
+        false,
+    )
+    .await
+    {
         Ok(pair) => pair,
         Err(e) => {
             tracing::warn!(
@@ -61,7 +81,7 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
             let msg = match msg {
                 Ok(m) => m,
                 Err(e) => {
-                    tracing::debug!(error = %e, "browser -> engine: client read error");
+                    tracing::warn!(error = %e, "browser -> engine: client read error; closing proxied WS");
                     break;
                 }
             };
@@ -91,7 +111,7 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
             let msg = match msg {
                 Ok(m) => m,
                 Err(e) => {
-                    tracing::debug!(error = %e, "engine -> browser: engine read error");
+                    tracing::warn!(error = %e, "engine -> browser: engine read error; closing proxied WS");
                     break;
                 }
             };

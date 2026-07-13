@@ -246,3 +246,71 @@ fn resolve_asset_url_joins_relative_paths() {
         "http://127.0.0.1:3113/assets/index.js"
     );
 }
+
+/// Regression test: an engine response bigger than tungstenite's default
+/// limits (16 MiB frame / 64 MiB message) must pass through the proxy
+/// instead of killing the connection. Before the fix the proxy dialed the
+/// engine with default limits, the read errored, and the browser socket
+/// was closed — putting the console SPA into an endless reconnect loop.
+/// Self-contained: uses a fake engine, no `iii` binary needed.
+#[tokio::test]
+async fn ws_proxy_forwards_oversized_engine_message() {
+    use std::sync::Arc;
+
+    const BIG_LEN: usize = 20 * 1024 * 1024; // > 16 MiB default frame cap
+
+    // Fake engine: accept one WS connection, send one oversized text
+    // message, then hold the connection open until the peer closes.
+    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine listener");
+    let engine_addr = engine_listener.local_addr().expect("fake engine addr");
+    tokio::spawn(async move {
+        let (stream, _) = engine_listener.accept().await.expect("accept proxy dial");
+        let mut ws = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("ws handshake from proxy");
+        ws.send(Message::Text("x".repeat(BIG_LEN)))
+            .await
+            .expect("send oversized message");
+        while let Some(Ok(_)) = ws.next().await {}
+    });
+
+    // Console worker's HTTP server (port 0 = OS-assigned) fronting it.
+    let engine_url = Arc::new(format!("ws://{engine_addr}"));
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(console::server::serve(
+        0,
+        engine_url,
+        shutdown_rx,
+        Some(bound_tx),
+    ));
+    let addr = bound_rx.await.expect("server bound");
+
+    // Browser stand-in: browsers impose no message size limit, so the
+    // test client must not either.
+    let client_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: None,
+        max_frame_size: None,
+        ..Default::default()
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async_with_config(
+        &format!("ws://127.0.0.1:{}/ws", addr.port()),
+        Some(client_config),
+        false,
+    )
+    .await
+    .expect("connect to /ws proxy");
+
+    let msg = timeout(Duration::from_secs(15), ws.next())
+        .await
+        .expect("timed out waiting for proxied message")
+        .expect("proxy closed the connection instead of forwarding")
+        .expect("ws read error from proxy");
+    match msg {
+        Message::Text(t) => assert_eq!(t.len(), BIG_LEN),
+        other => panic!("expected oversized text message, got {other:?}"),
+    }
+    let _ = ws.close(None).await;
+}
