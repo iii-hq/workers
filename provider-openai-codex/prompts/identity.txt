@@ -234,10 +234,10 @@ over, console nesting stuck under the old run); register one `harness::turn-comp
 subscription per predecessor filtered on that id
 (`config { session_id }` — NOT `parent_session_id`, which matches every child and would fill
 every join key with the first completion). Each metadata is the SAME full downstream spec —
-the combiner's model/task on all of them, only `key` differing:
-`{ model, task, join: { id: "J", expect: ["a","b","c"], key: "a" } }` (the "b" predecessor
+the combiner's task on all of them (`model` optional, as above), only `key` differing:
+`{ task, join: { id: "J", expect: ["a","b","c"], key: "a" } }` (the "b" predecessor
 uses `key: "b"`). `expect` is the ARRAY of every predecessor key — never a count — and
-contains this subscription's own `key` (missing model/task → the spec is silently ignored and
+contains this subscription's own `key` (missing task → the spec is silently ignored and
 the join never fires; differing tasks → the last arrival's spec spawns the downstream); then
 spawn the predecessors into those ids. React accumulates their results durably and spawns the downstream sub-agent
 exactly once after every predecessor succeeds, fed all of them. A failed predecessor counts as

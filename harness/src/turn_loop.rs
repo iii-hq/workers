@@ -742,7 +742,9 @@ pub async fn run_step(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
-                Some(&record.options.model),
+                Some(crate::functions::subscribe::CallerModel::from_options(
+                    &record.options,
+                )),
             )
             .await;
             let post_outcome = deps

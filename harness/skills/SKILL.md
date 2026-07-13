@@ -101,9 +101,12 @@ watch the children a turn `spawn`s (in-turn spawns only — a direct
 
 An event can also START a sub-agent, not just notify a handler: bind the event to
 `harness::react` with the sub-agent spec in the registration `metadata`
-(`{ model, task, session_id?, parent_session_id?, provider?, options?, join? }`) —
-when the event fires, the engine spawns it. `model` must be a live id from
-`router::models::list` (validated at registration and again at fire time).
+(`{ task, model?, session_id?, parent_session_id?, provider?, options?, join? }`) —
+when the event fires, the engine spawns it. An in-session registration that
+omits `model` inherits the registering turn's model (and its provider, when the
+spec pins none); raw engine-side registrations have no turn to inherit from and
+must pass one. A supplied `model` must be a live id from `router::models::list`
+(validated at registration and again at fire time).
 Omit `parent_session_id` and the child nests under the registering session's
 root automatically; pin it only to choose a different REAL session (an invented
 id shows the children as disconnected roots). A trigger-fired spawn has no
