@@ -477,9 +477,13 @@ mod tests {
             Box::pin(async move {
                 store.enqueue("demo", json!("job")).await.unwrap();
                 let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 3, 30).await;
+                // The backoff must dwarf CI scheduling + FileStore persist
+                // stalls: the store reads the wall clock, so if more than the
+                // backoff elapses between nack and the next dequeue, the job
+                // is already ready and the is_none assert flakes.
+                store.nack("demo", job, 3, 500).await;
                 assert!(store.dequeue("demo").await.is_none());
-                sleep(Duration::from_millis(35)).await;
+                sleep(Duration::from_millis(600)).await;
                 let retry = store.dequeue("demo").await.unwrap();
                 assert_eq!(retry.attempts, 1);
                 store
