@@ -58,9 +58,13 @@ export function useLiveFrames(
     if (!enabled || !sessionId) return
     let cancelled = false
 
+    // Retain the start so teardown can wait for it to settle before stopping;
+    // otherwise a late start could reactivate the screencast after cleanup.
+    const started = startBrowserScreencast(sessionId)
+
     void (async () => {
       try {
-        await startBrowserScreencast(sessionId)
+        await started
       } catch {
         // Older worker without the screencast surface: one screenshot so the
         // viewport is not blank.
@@ -92,7 +96,12 @@ export function useLiveFrames(
 
     return () => {
       cancelled = true
-      void stopBrowserScreencast(sessionId).catch(() => {})
+      // Stop only after the start has settled, so the stop can never be
+      // overtaken by an in-flight start reactivating the screencast.
+      void started
+        .catch(() => {})
+        .then(() => stopBrowserScreencast(sessionId))
+        .catch(() => {})
     }
   }, [enabled, sessionId])
 

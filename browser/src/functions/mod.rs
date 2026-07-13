@@ -179,19 +179,19 @@ pub fn catalog() -> Vec<FunctionSpec> {
             STYLES_WRITE_ID,
             STYLES_WRITE_DESC,
         ),
-        spec::<frame::ScreencastStartInput, pick::PickOutput>(
+        spec::<frame::ScreencastStartInput, pick::AckOutput>(
             SCREENCAST_START_ID,
             SCREENCAST_START_DESC,
         ),
-        spec::<frame::ScreencastStopInput, pick::PickOutput>(
+        spec::<frame::ScreencastStopInput, pick::AckOutput>(
             SCREENCAST_STOP_ID,
             SCREENCAST_STOP_DESC,
         ),
         spec::<frame::FrameInput, frame::FrameOutput>(FRAME_ID, FRAME_DESC),
         spec::<hint::PickHintInput, hint::PickHintOutput>(PICK_HINT_ID, PICK_HINT_DESC),
-        spec::<pick::PickStartInput, pick::PickOutput>(PICK_START_ID, PICK_START_DESC),
-        spec::<pick::PickResolveInput, pick::PickOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
-        spec::<pick::PickStopInput, pick::PickOutput>(PICK_STOP_ID, PICK_STOP_DESC),
+        spec::<pick::PickStartInput, pick::AckOutput>(PICK_START_ID, PICK_START_DESC),
+        spec::<pick::PickResolveInput, pick::AckOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
+        spec::<pick::PickStopInput, pick::AckOutput>(PICK_STOP_ID, PICK_STOP_DESC),
     ]
 }
 
@@ -819,7 +819,7 @@ fn register_pick_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 // the console already draws itself, and its synthesized-click
                 // hit-test is unreliable in headless).
                 let _ = session.page.execute(cdp_dom::EnableParams::default()).await;
-                Ok::<_, Error>(pick::PickOutput { ok: true })
+                Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
         .description(PICK_START_DESC)
@@ -839,7 +839,7 @@ fn register_pick_resolve(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 crate::session::resolve_pick_at(&sx, &session, req.x, req.y)
                     .await
                     .map_err(handler_err)?;
-                Ok::<_, Error>(pick::PickOutput { ok: true })
+                Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
         .description(PICK_RESOLVE_DESC)
@@ -866,7 +866,7 @@ fn register_pick_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         )
                         .await;
                 }
-                Ok::<_, Error>(pick::PickOutput { ok: true })
+                Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
         .description(PICK_STOP_DESC)
@@ -1303,7 +1303,7 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session
                     .screencast_active
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                Ok::<_, Error>(pick::PickOutput { ok: true })
+                Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
         .description(SCREENCAST_START_DESC)
@@ -1341,7 +1341,7 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         })
                         .await;
                 }
-                Ok::<_, Error>(pick::PickOutput { ok: true })
+                Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
         .description(SCREENCAST_STOP_DESC)

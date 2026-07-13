@@ -46,7 +46,7 @@ async fn boot() -> Option<Harness> {
         return None;
     }
 
-    let iii = Command::new(&iii_bin)
+    let mut iii = Command::new(&iii_bin)
         .arg("--use-default-config")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -55,13 +55,22 @@ async fn boot() -> Option<Harness> {
 
     sleep(Duration::from_millis(800)).await;
 
-    let worker = Command::new(env!("CARGO_BIN_EXE_browser"))
+    let worker = match Command::new(env!("CARGO_BIN_EXE_browser"))
         .arg("--url")
         .arg(ENGINE_WS)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+    {
+        Ok(w) => w,
+        Err(_) => {
+            // The Harness Drop that reaps `iii` never runs (it was never
+            // constructed), so clean up the already-started engine here.
+            let _ = iii.kill();
+            let _ = iii.wait();
+            return None;
+        }
+    };
 
     sleep(Duration::from_millis(1500)).await;
 

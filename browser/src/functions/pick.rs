@@ -26,7 +26,10 @@ pub struct PickStopInput {
     pub session_id: String,
 }
 
+/// Neutral acknowledgement returned by the fire-and-forget internal
+/// functions (pick start/stop/resolve, screencast start/stop): they emit
+/// their result as a trigger event, so the direct return is just `{ ok }`.
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct PickOutput {
+pub struct AckOutput {
     pub ok: bool,
 }

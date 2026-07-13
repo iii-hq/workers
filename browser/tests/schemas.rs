@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the twelve `browser::*` functions.
+//! Wire-schema snapshots for the twenty-one `browser::*` functions.
 //!
 //! `browser::functions::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived

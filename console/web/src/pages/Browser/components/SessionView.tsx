@@ -86,7 +86,9 @@ export function SessionView({
   const submitUrl = useCallback(() => {
     let url = urlDraft.trim()
     if (!url) return
-    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) url = `https://${url}`
+    // Require a real scheme (`scheme://`) to skip the prefix; a bare
+    // `host:port` like localhost:3000 is not a scheme and must get https://.
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = `https://${url}`
     void runAction(async () => {
       await navigateBrowser(sessionId, url)
       onSessionsRefresh()
@@ -211,11 +213,15 @@ export function SessionView({
     [takeTypeBuffer, sessionId, runAction],
   )
 
+  // Flush any buffered text before the session changes or the component
+  // unmounts, so keystrokes typed against one session are sent to that
+  // session rather than dropped (or leaking into the next one). The cleanup
+  // captures the flush bound to the session that received the text.
   useEffect(() => {
     return () => {
-      window.clearTimeout(typeTimerRef.current)
+      flushTypeBuffer()
     }
-  }, [])
+  }, [flushTypeBuffer])
 
   const requestHint = useCallback(
     (x: number, y: number) => hintBrowserPick(sessionId, x, y),
