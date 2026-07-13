@@ -13,7 +13,7 @@
 //!   4. Register the two custom trigger types (`approval::pending-created`,
 //!      `approval::pending-resolved`) — first, because the function
 //!      handlers capture the subscriber sets they fan out to.
-//!   5. Register the 13 `approval::*` functions (each reads the live config
+//!   5. Register the 15 `approval::*` functions (each reads the live config
 //!      snapshot per call).
 //!   6. Bind the fixed gate + filesystem-access-watch hooks + the session/turn
 //!      triggers, all best-effort (in a standalone deployment some of these
@@ -189,7 +189,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types");
+    tracing::info!("approval-gate ready: 15 approval::* functions + 2 custom trigger types");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("approval-gate shutting down");

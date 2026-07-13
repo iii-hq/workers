@@ -191,6 +191,29 @@ in-depth backstop). `list_pending` / `get_pending` are read-only and
 redacted, but they enumerate held calls **across sessions** — keep them off
 agent allow-lists too.
 
+## Console extension
+
+The worker owns its console UI under [`ui/`](ui/). It exposes two internal,
+typed capability functions:
+
+- `approval::console-extension` returns the extension API version, worker
+  version, entry module, stylesheet descriptors, content etags, and declared
+  console slots.
+- `approval::console-extension::asset` returns one allowlisted embedded asset
+  as base64. Arbitrary paths are rejected.
+
+The console discovers manifest functions through
+`engine::functions::list { include_internal: true }`, confirms the
+`iii.console-extension` capability metadata through `engine::functions::info`,
+verifies every fetched asset against its descriptor, and activates the ES module. No
+`iii.worker.yaml`, registry, or extra HTTP endpoint is involved. Adding the
+worker registers its UI; removing the worker disposes its slots and styles.
+
+Both functions carry `metadata.internal: true`,
+`metadata.capability: "iii.console-extension"`, and `metadata.api_version: 1`.
+They are control-plane transport, not agent tools, and must stay hidden from
+model function catalogs.
+
 ## Local development & testing
 
 ```bash

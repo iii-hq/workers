@@ -126,6 +126,24 @@ gated sets a broad trigger policy and lets the gate hold/deny.
   read-merge-write to edit one field. When `rules` is omitted, the built-in
   shipped defaults apply. Every field hot-reloads via snapshot swap.
 
+## Console extension capability
+
+Approval-gate ships its frontend adapter inside the worker binary. The console
+discovers it from the internal `approval::console-extension` function and reads
+only the manifest's allowlisted assets through
+`approval::console-extension::asset`. The extension API is versioned
+independently from the worker and currently contributes:
+
+- `chat.banner`
+- `chat.composer.controls`
+- `function-call.pending-actions`
+- `settings.sections`
+- `chat.workspace-access`
+
+This is a runtime capability contract. Worker lifecycle add/remove events are
+the activation boundary; there is deliberately no YAML declaration and no
+console-side approval component registry.
+
 ## What not to do
 
 - **Never expose `approval::*` or `configuration::*` to in-run agents.** An

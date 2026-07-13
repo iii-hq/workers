@@ -1,0 +1,48 @@
+{
+  "description": "Internal console-extension asset reader. Returns one allowlisted embedded approval-gate UI asset as base64.",
+  "function_id": "approval::console-extension::asset",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "Allowlisted path from the capability manifest.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "ConsoleExtensionAssetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "content": {
+        "type": "string"
+      },
+      "encoding": {
+        "type": "string"
+      },
+      "etag": {
+        "type": "string"
+      },
+      "media_type": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "encoding",
+      "etag",
+      "media_type",
+      "path"
+    ],
+    "title": "ConsoleExtensionAssetResponse",
+    "type": "object"
+  }
+}

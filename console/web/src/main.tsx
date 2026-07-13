@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { ConsoleExtensionsProvider } from '@/extensions/ConsoleExtensions'
 import { App } from './App'
 import faviconUrl from './icons/favicon.svg?url'
 import './index.css'
@@ -30,9 +31,11 @@ const queryClient = new QueryClient({
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={150}>
-        <App />
-      </TooltipProvider>
+      <ConsoleExtensionsProvider>
+        <TooltipProvider delayDuration={150}>
+          <App />
+        </TooltipProvider>
+      </ConsoleExtensionsProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

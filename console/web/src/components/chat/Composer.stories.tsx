@@ -101,12 +101,10 @@ function ComposerHarness({
       model={model}
       modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
-      permissionMode="manual"
       thinkingLevel={thinkingLevel}
       onThinkingLevelChange={setThinkingLevel}
       onModeChange={setMode}
       onModelChange={setModel}
-      onPermissionModeChange={fn()}
       onSubmit={fn()}
       onStop={fn()}
       initialContent={initialContent}

@@ -1,0 +1,77 @@
+{
+  "description": "Internal console-extension capability manifest. Returns the versioned UI entrypoint, styles, slots, and content etags owned by approval-gate.",
+  "function_id": "approval::console-extension",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "title": "ConsoleExtensionManifestRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ConsoleExtensionAssetDescriptor": {
+        "properties": {
+          "etag": {
+            "description": "Stable content identifier used for verification and browser caching.",
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "etag",
+          "media_type",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "api_version": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "asset_function": {
+        "type": "string"
+      },
+      "entry": {
+        "$ref": "#/definitions/ConsoleExtensionAssetDescriptor"
+      },
+      "id": {
+        "type": "string"
+      },
+      "slots": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "styles": {
+        "items": {
+          "$ref": "#/definitions/ConsoleExtensionAssetDescriptor"
+        },
+        "type": "array"
+      },
+      "worker_version": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "api_version",
+      "asset_function",
+      "entry",
+      "id",
+      "slots",
+      "styles",
+      "worker_version"
+    ],
+    "title": "ConsoleExtensionManifestResponse",
+    "type": "object"
+  }
+}

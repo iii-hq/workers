@@ -27,14 +27,9 @@ import {
   WorkflowFunctionIdLabel,
   WorkflowToolView,
 } from '@/components/chat/workflow'
-import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
-import {
-  type FilesystemAccessAction,
-  FilesystemAccessPrompt,
-} from '@/components/permissions/FilesystemAccessPrompt'
-import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { ConsoleExtensionSlot } from '@/extensions/ConsoleExtensions'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
@@ -54,29 +49,6 @@ import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/cha
 interface FunctionCallCardProps {
   message: FunctionCallMessageType
   defaultOpen?: boolean
-  /**
-   * Approve handler. May be sync or async; the component shows a
-   * `submitting…` state while the promise resolves and a red error row
-   * if it rejects. Wire the actual `approval::resolve` call here.
-   */
-  onApprove?: () => void | Promise<void>
-  onDeny?: () => void | Promise<void>
-  /**
-   * Approve + add to per-conversation always-allow list. When provided,
-   * an "always allow" button renders next to approve/deny. Destructive
-   * function ids gate on a confirmation modal inside the button.
-   */
-  onAlwaysAllow?: () => void | Promise<void>
-  /**
-   * Resolve a filesystem-access grant request (see `message.filesystemAccess`).
-   * When set alongside `message.filesystemAccess`, replaces the standard
-   * approve/deny/always row with `FilesystemAccessPrompt`.
-   */
-  onResolveFilesystemAccess?: (
-    action: FilesystemAccessAction,
-  ) => void | Promise<void>
-  /** Opens the filesystem-access management dialog (§5 of the spec). */
-  onManageFilesystemAccess?: () => void
   /** Conversation's session workspace — shown as "always allowed" context. */
   workingDir?: string | null
   /**
@@ -242,11 +214,6 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
 export function FunctionCallCard({
   message,
   defaultOpen,
-  onApprove,
-  onDeny,
-  onAlwaysAllow,
-  onResolveFilesystemAccess,
-  onManageFilesystemAccess,
   workingDir,
   embedded,
 }: FunctionCallCardProps) {
@@ -264,10 +231,6 @@ export function FunctionCallCard({
   const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
-  const [submitting, setSubmitting] = useState<
-    'approve' | 'deny' | 'always_allow' | null
-  >(null)
-  const [submitError, setSubmitError] = useState<string | null>(null)
 
   const customPreview =
     SandboxToolView.tryRenderPreview(message) ??
@@ -305,23 +268,6 @@ export function FunctionCallCard({
     : running
       ? !hasCustomTerminal && streamingTail === undefined
       : false
-
-  const runResolve = async (kind: 'approve' | 'deny' | 'always_allow') => {
-    const handler =
-      kind === 'approve' ? onApprove : kind === 'deny' ? onDeny : onAlwaysAllow
-    if (!handler || submitting) return
-    setSubmitError(null)
-    setSubmitting(kind)
-    try {
-      await handler()
-      // Leave `submitting` set; the message patches once the resurrected
-      // execution emits real events (pendingApproval flips off, output
-      // arrives), at which point this whole pending block stops rendering.
-    } catch (err) {
-      setSubmitting(null)
-      setSubmitError(err instanceof Error ? err.message : String(err))
-    }
-  }
 
   useEffect(() => {
     if (pending) setOpen(true)
@@ -445,58 +391,17 @@ export function FunctionCallCard({
         </div>
       ) : null}
 
-      {pending && filesystemAccess ? (
-        <FilesystemAccessPrompt
-          // A held call can be re-parked with a fresh access request (same
-          // function_call_id, different root) — remount so submitting/confirm
-          // state from the previous round never wedges the buttons.
-          key={`${filesystemAccess.requestedRoot} ${filesystemAccess.attemptedPath ?? ''}`}
-          requestedRoot={filesystemAccess.requestedRoot}
-          workingDir={workingDir}
-          onResolve={(action) => onResolveFilesystemAccess?.(action)}
-          onManage={onManageFilesystemAccess}
-          disabled={!onResolveFilesystemAccess}
+      {pending ? (
+        <ConsoleExtensionSlot
+          name="function-call.pending-actions"
+          context={{ message, workingDir }}
+          fallback={
+            <div className="border-t border-rule-2 px-3 py-2 font-mono text-[12px] text-warn">
+              this function is paused, but its approval controls are
+              unavailable.
+            </div>
+          }
         />
-      ) : pending ? (
-        <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
-          <p className="font-mono text-[12px] text-ink-faint">
-            execution is paused until you approve or deny this call.
-          </p>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => void runResolve('approve')}
-              disabled={!onApprove || !!submitting}
-            >
-              {submitting === 'approve' ? 'approving…' : 'approve'}
-            </Button>
-            <Button
-              variant="pill"
-              size="sm"
-              onClick={() => void runResolve('deny')}
-              disabled={!onDeny || !!submitting}
-            >
-              {submitting === 'deny' ? 'denying…' : 'deny'}
-            </Button>
-            {onAlwaysAllow ? (
-              <AlwaysAllowButton
-                functionId={message.functionId}
-                onConfirm={() => void runResolve('always_allow')}
-                disabled={!!submitting}
-                submitting={submitting === 'always_allow'}
-              />
-            ) : null}
-            {submitting ? (
-              <span className="font-mono text-[12px] text-ink-faint">
-                waiting for the agent to resume…
-              </span>
-            ) : null}
-          </div>
-          {submitError ? (
-            <div className="font-mono text-[12px] text-warn">{submitError}</div>
-          ) : null}
-        </div>
       ) : null}
     </div>
   )

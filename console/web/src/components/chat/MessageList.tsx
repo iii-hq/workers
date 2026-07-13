@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from 'react'
-import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import type {
@@ -21,22 +20,6 @@ interface MessageListProps {
       when absent. */
   thinkingDetail?: string
   density?: 'route' | 'dock'
-  onResolveApproval?: (
-    sessionId: string,
-    functionCallId: string,
-    decision: 'allow' | 'deny',
-  ) => Promise<void>
-  onAlwaysAllow?: (
-    sessionId: string,
-    functionCallId: string,
-    functionId: string,
-  ) => Promise<void>
-  onResolveFilesystemAccess?: (
-    sessionId: string,
-    functionCallId: string,
-    action: FilesystemAccessAction,
-  ) => Promise<void>
-  onManageFilesystemAccess?: () => void
   workingDir?: string | null
 }
 
@@ -90,10 +73,6 @@ export function MessageList({
   isThinking,
   thinkingDetail,
   density = 'route',
-  onResolveApproval,
-  onAlwaysAllow,
-  onResolveFilesystemAccess,
-  onManageFilesystemAccess,
   workingDir,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -172,20 +151,12 @@ export function MessageList({
             <Message
               key={item.key}
               message={item.message}
-              onResolveApproval={onResolveApproval}
-              onAlwaysAllow={onAlwaysAllow}
-              onResolveFilesystemAccess={onResolveFilesystemAccess}
-              onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
             />
           ) : (
             <FunctionCallGroup
               key={item.key}
               messages={item.messages}
-              onResolveApproval={onResolveApproval}
-              onAlwaysAllow={onAlwaysAllow}
-              onResolveFilesystemAccess={onResolveFilesystemAccess}
-              onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
             />
           ),

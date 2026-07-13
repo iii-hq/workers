@@ -4,7 +4,6 @@ import {
   FunctionCallCard,
   isErrorOutput,
 } from '@/components/function-call/FunctionCallCard'
-import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
@@ -13,27 +12,6 @@ interface FunctionCallGroupProps {
   messages: FunctionCallMessageType[]
   /** Force the group open. Used by the examples showcase. */
   defaultOpen?: boolean
-  /**
-   * Forwarded from `MessageList` so a pending approval landing on any
-   * child call still wires through to `approval::resolve`. Each child's
-   * approve/deny is bound to that child's `sessionId` + `functionCallId`.
-   */
-  onResolveApproval?: (
-    sessionId: string,
-    functionCallId: string,
-    decision: 'allow' | 'deny',
-  ) => Promise<void>
-  onAlwaysAllow?: (
-    sessionId: string,
-    functionCallId: string,
-    functionId: string,
-  ) => Promise<void>
-  onResolveFilesystemAccess?: (
-    sessionId: string,
-    functionCallId: string,
-    action: FilesystemAccessAction,
-  ) => Promise<void>
-  onManageFilesystemAccess?: () => void
   workingDir?: string | null
 }
 
@@ -136,10 +114,6 @@ function hasConcerningChild(messages: FunctionCallMessageType[]): boolean {
 export function FunctionCallGroup({
   messages,
   defaultOpen,
-  onResolveApproval,
-  onAlwaysAllow,
-  onResolveFilesystemAccess,
-  onManageFilesystemAccess,
   workingDir,
 }: FunctionCallGroupProps) {
   const status = deriveStatus(messages)
@@ -194,43 +168,14 @@ export function FunctionCallGroup({
 
       {open ? (
         <div className="border-t border-rule-2 divide-y divide-rule-2">
-          {messages.map((m) => {
-            const sessionId = m.sessionId
-            const functionCallId = m.functionCallId
-            let onApprove: (() => Promise<void>) | undefined
-            let onDeny: (() => Promise<void>) | undefined
-            let onAlwaysAllowHandler: (() => Promise<void>) | undefined
-            let onResolveFilesystemAccessHandler:
-              | ((action: FilesystemAccessAction) => Promise<void>)
-              | undefined
-            if (onResolveApproval && sessionId && functionCallId) {
-              onApprove = () =>
-                onResolveApproval(sessionId, functionCallId, 'allow')
-              onDeny = () =>
-                onResolveApproval(sessionId, functionCallId, 'deny')
-            }
-            if (onAlwaysAllow && sessionId && functionCallId) {
-              onAlwaysAllowHandler = () =>
-                onAlwaysAllow(sessionId, functionCallId, m.functionId)
-            }
-            if (onResolveFilesystemAccess && sessionId && functionCallId) {
-              onResolveFilesystemAccessHandler = (action) =>
-                onResolveFilesystemAccess(sessionId, functionCallId, action)
-            }
-            return (
-              <FunctionCallCard
-                key={m.id}
-                message={m}
-                onApprove={onApprove}
-                onDeny={onDeny}
-                onAlwaysAllow={onAlwaysAllowHandler}
-                onResolveFilesystemAccess={onResolveFilesystemAccessHandler}
-                onManageFilesystemAccess={onManageFilesystemAccess}
-                workingDir={workingDir}
-                embedded
-              />
-            )
-          })}
+          {messages.map((m) => (
+            <FunctionCallCard
+              key={m.id}
+              message={m}
+              workingDir={workingDir}
+              embedded
+            />
+          ))}
         </div>
       ) : null}
     </div>

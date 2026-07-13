@@ -30,8 +30,8 @@ export type StreamEvent =
       /**
        * Present when the pending approval is a filesystem-access request
        * (`PendingApprovalRecord.kind === 'filesystem_access'`) rather than a
-       * plain function-call approval. Drives `FilesystemAccessPrompt` instead of
-       * the standard approve/deny/always row.
+       * plain function-call approval. The approval-gate console extension uses
+       * it to choose the filesystem-specific pending actions.
        */
       filesystemAccess?: {
         requestedRoot: string

@@ -1,5 +1,4 @@
 import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
-import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
 import { Markdown } from '@/lib/markdown'
@@ -16,33 +15,10 @@ import { ThoughtMessage } from './ThoughtMessage'
 
 interface MessageProps {
   message: MessageType
-  onResolveApproval?: (
-    sessionId: string,
-    functionCallId: string,
-    decision: 'allow' | 'deny',
-  ) => Promise<void>
-  onAlwaysAllow?: (
-    sessionId: string,
-    functionCallId: string,
-    functionId: string,
-  ) => Promise<void>
-  onResolveFilesystemAccess?: (
-    sessionId: string,
-    functionCallId: string,
-    action: FilesystemAccessAction,
-  ) => Promise<void>
-  onManageFilesystemAccess?: () => void
   workingDir?: string | null
 }
 
-export function Message({
-  message,
-  onResolveApproval,
-  onAlwaysAllow,
-  onResolveFilesystemAccess,
-  onManageFilesystemAccess,
-  workingDir,
-}: MessageProps) {
+export function Message({ message, workingDir }: MessageProps) {
   switch (message.role) {
     case 'user':
       return message.notification ? (
@@ -58,39 +34,8 @@ export function Message({
       return <AssistantMessage message={message} />
     case 'thought':
       return <ThoughtMessage message={message} />
-    case 'function-call': {
-      const sessionId = message.sessionId
-      const functionCallId = message.functionCallId
-      let onApprove: (() => Promise<void>) | undefined
-      let onDeny: (() => Promise<void>) | undefined
-      let onAlwaysAllowHandler: (() => Promise<void>) | undefined
-      let onResolveFilesystemAccessHandler:
-        | ((action: FilesystemAccessAction) => Promise<void>)
-        | undefined
-      if (onResolveApproval && sessionId && functionCallId) {
-        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
-        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
-      }
-      if (onAlwaysAllow && sessionId && functionCallId) {
-        onAlwaysAllowHandler = () =>
-          onAlwaysAllow(sessionId, functionCallId, message.functionId)
-      }
-      if (onResolveFilesystemAccess && sessionId && functionCallId) {
-        onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionCallId, action)
-      }
-      return (
-        <FunctionCallCard
-          message={message}
-          onApprove={onApprove}
-          onDeny={onDeny}
-          onAlwaysAllow={onAlwaysAllowHandler}
-          onResolveFilesystemAccess={onResolveFilesystemAccessHandler}
-          onManageFilesystemAccess={onManageFilesystemAccess}
-          workingDir={workingDir}
-        />
-      )
-    }
+    case 'function-call':
+      return <FunctionCallCard message={message} workingDir={workingDir} />
     case 'system':
       return message.kind === 'compaction' ? (
         <CompactionMarker message={message} />

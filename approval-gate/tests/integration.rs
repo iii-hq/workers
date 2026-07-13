@@ -1,12 +1,54 @@
 //! Engine-backed integration suite — the worker's production surface
 //! registered against a real iii engine.
 
+use base64::Engine as _;
 use serde_json::json;
 
 use approval_gate::testkit::{
     call, hook_input, log_snapshot, settle, wait_for, with_stack, BootOpts,
 };
 use approval_gate::types::PermissionMode;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn console_extension_is_internal_and_serves_its_declared_assets() {
+    with_stack(BootOpts::needs_approval(), |stack| async move {
+        let iii = &stack.iii;
+        let info = call(
+            iii,
+            "engine::functions::info",
+            json!({ "function_id": "approval::console-extension" }),
+        )
+        .await
+        .expect("extension function info");
+        assert_eq!(info["metadata"]["internal"], json!(true));
+        assert_eq!(
+            info["metadata"]["capability"],
+            json!("iii.console-extension")
+        );
+
+        let manifest = call(iii, "approval::console-extension", json!({}))
+            .await
+            .expect("extension manifest");
+        assert_eq!(manifest["api_version"], json!(1));
+        assert_eq!(manifest["id"], json!("approval-gate"));
+
+        let asset = call(
+            iii,
+            manifest["asset_function"].as_str().unwrap(),
+            json!({ "path": manifest["entry"]["path"] }),
+        )
+        .await
+        .expect("extension entry asset");
+        assert_eq!(asset["etag"], manifest["entry"]["etag"]);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(asset["content"].as_str().unwrap())
+            .expect("base64 entry module");
+        assert!(String::from_utf8(bytes)
+            .expect("entry module is utf-8")
+            .contains("export function activate"));
+    })
+    .await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hold_writes_record_emits_once_and_is_idempotent() {

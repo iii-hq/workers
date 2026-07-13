@@ -1,9 +1,8 @@
 import type { LexicalEditor } from 'lexical'
 import { ArrowUp, Square } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Button } from '@/components/ui/Button'
-import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { ConsoleExtensionSlot } from '@/extensions/ConsoleExtensions'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
 import type {
@@ -31,19 +30,8 @@ interface ComposerProps {
   model: ModelId | null
   modelOptions: ModelOption[]
   catalogLoading?: boolean
-  /**
-   * Per-conversation permission mode (manual / auto / full). Owned by
-   * the backend `approval_settings` scope; ChatView passes the loaded
-   * value here. While loading, the picker disables.
-   */
-  permissionMode: PermissionMode
-  permissionModeLoading?: boolean
-  /**
-   * Whether to render the manual/auto/full permission-mode picker. Hidden when
-   * the optional approval-gate worker is absent (nothing to control). Defaults
-   * to `true` so existing callers / Storybook keep the picker.
-   */
-  showPermissionMode?: boolean
+  /** Context exposed to worker-owned controls mounted beside the composer. */
+  extensionContext?: Record<string, unknown>
   thinkingLevel: ThinkingLevel
   /** Show the per-session working-directory picker (real backend only). */
   showWorkingDir?: boolean
@@ -65,7 +53,6 @@ interface ComposerProps {
   onModelChange: (next: ModelId) => void
   onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
-  onPermissionModeChange: (next: PermissionMode) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
   isStreaming?: boolean
@@ -109,9 +96,7 @@ export function Composer({
   model,
   modelOptions,
   catalogLoading,
-  permissionMode,
-  permissionModeLoading,
-  showPermissionMode = true,
+  extensionContext,
   thinkingLevel,
   showWorkingDir,
   workingDir,
@@ -123,7 +108,6 @@ export function Composer({
   onModelChange,
   onWorkingDirChange,
   onThinkingLevelChange,
-  onPermissionModeChange,
   onSubmit,
   onStop,
   isStreaming,
@@ -264,13 +248,13 @@ export function Composer({
             worktrees={worktreePicker}
           />
         ) : null}
-        {showPermissionMode ? (
-          <PermissionModePicker
-            value={permissionMode}
-            onChange={onPermissionModeChange}
-            disabled={optionsDisabled || !!permissionModeLoading}
-          />
-        ) : null}
+        <ConsoleExtensionSlot
+          name="chat.composer.controls"
+          context={{
+            ...extensionContext,
+            disabled: optionsDisabled,
+          }}
+        />
         <ModelPicker
           value={model}
           options={modelOptions}

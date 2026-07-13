@@ -109,8 +109,8 @@ export interface FunctionCallMessage extends BaseMessage {
   sessionId?: string
   /**
    * Present when this pending call is a filesystem-access grant request rather
-   * than a plain function-call approval — renders `FilesystemAccessPrompt`
-   * instead of the standard approve/deny/always row.
+   * than a plain function-call approval. The approval-gate extension uses this
+   * to render filesystem-specific actions in the pending-actions slot.
    */
   filesystemAccess?: {
     requestedRoot: string

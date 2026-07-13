@@ -5,6 +5,7 @@
 
 pub mod approve_always;
 pub mod clear_settings;
+pub mod console_extension;
 pub mod filesystem_access_watch;
 pub mod gate;
 pub mod get_pending;
@@ -75,6 +76,12 @@ pub const CLEAR_SETTINGS_ID: &str = "approval::clear-settings";
 pub const CLEAR_SETTINGS_DESC: &str =
     "Drop the session's stored settings record (revert to configuration defaults).";
 
+pub const CONSOLE_EXTENSION_ID: &str = "approval::console-extension";
+pub const CONSOLE_EXTENSION_DESC: &str = "Internal console-extension capability manifest. Returns the versioned UI entrypoint, styles, slots, and content etags owned by approval-gate.";
+
+pub const CONSOLE_EXTENSION_ASSET_ID: &str = "approval::console-extension::asset";
+pub const CONSOLE_EXTENSION_ASSET_DESC: &str = "Internal console-extension asset reader. Returns one allowlisted embedded approval-gate UI asset as base64.";
+
 pub const ON_SESSION_DELETED_ID: &str = "approval::on-session-deleted";
 pub const ON_SESSION_DELETED_DESC: &str =
     "Internal: session::deleted handler (purge the session's settings and pending records).";
@@ -125,6 +132,38 @@ fn register<Req, Resp, F, Fut>(
             async move { handler(deps, req).await.map_err(Error::from) }
         })
         .description(description),
+    );
+}
+
+/// Register a typed control-plane handler that must never appear in the agent
+/// function catalogue. The console discovers these handlers explicitly via
+/// `engine::functions::list { include_internal: true }`.
+fn register_internal<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, ApprovalError>> + Send + 'static,
+{
+    let deps = deps.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new_async(move |req: Req| {
+            let deps = deps.clone();
+            let handler = handler.clone();
+            async move { handler(deps, req).await.map_err(Error::from) }
+        })
+        .description(description)
+        .metadata(serde_json::json!({
+            "internal": true,
+            "capability": "iii.console-extension",
+            "api_version": 1,
+        })),
     );
 }
 
@@ -194,6 +233,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         CLEAR_SETTINGS_DESC,
         |d, r| async move { clear_settings::handle(&d, r).await },
     );
+    register_internal(
+        iii,
+        deps,
+        CONSOLE_EXTENSION_ID,
+        CONSOLE_EXTENSION_DESC,
+        |d, r| async move { console_extension::manifest(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        CONSOLE_EXTENSION_ASSET_ID,
+        CONSOLE_EXTENSION_ASSET_DESC,
+        |d, r| async move { console_extension::asset(&d, r).await },
+    );
     register(
         iii,
         deps,
@@ -252,6 +305,10 @@ where
 /// The full wire-surface catalog, in registration order. Golden-tested in
 /// `tests/schemas.rs`; keep in lockstep with `register_all`.
 pub fn catalog() -> Vec<FunctionSpec> {
+    use self::console_extension::{
+        ConsoleExtensionAssetRequest, ConsoleExtensionAssetResponse,
+        ConsoleExtensionManifestRequest, ConsoleExtensionManifestResponse,
+    };
     use crate::types::{
         AlwaysAllowMutationRequest, ApproveAlwaysRequest, ClearSettingsRequest,
         ClearSettingsResponse, EventAck, GetPendingRequest, GetPendingResponse, GetSettingsRequest,
@@ -279,6 +336,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ApproveAlwaysRequest, SettingsResponse>(APPROVE_ALWAYS_ID, APPROVE_ALWAYS_DESC),
         spec::<GetSettingsRequest, GetSettingsResponse>(GET_SETTINGS_ID, GET_SETTINGS_DESC),
         spec::<ClearSettingsRequest, ClearSettingsResponse>(CLEAR_SETTINGS_ID, CLEAR_SETTINGS_DESC),
+        spec::<ConsoleExtensionManifestRequest, ConsoleExtensionManifestResponse>(
+            CONSOLE_EXTENSION_ID,
+            CONSOLE_EXTENSION_DESC,
+        ),
+        spec::<ConsoleExtensionAssetRequest, ConsoleExtensionAssetResponse>(
+            CONSOLE_EXTENSION_ASSET_ID,
+            CONSOLE_EXTENSION_ASSET_DESC,
+        ),
         spec::<SessionDeletedEvent, EventAck>(ON_SESSION_DELETED_ID, ON_SESSION_DELETED_DESC),
         spec::<TurnCompletedEvent, EventAck>(ON_TURN_COMPLETED_ID, ON_TURN_COMPLETED_DESC),
     ]

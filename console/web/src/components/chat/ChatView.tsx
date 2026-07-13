@@ -1,13 +1,9 @@
 import { Copy, Folder } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
-import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { useApprovalSettings } from '@/hooks/use-approval-settings'
+import { ConsoleExtensionSlot } from '@/extensions/ConsoleExtensions'
 import { uid } from '@/hooks/use-conversations'
-import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import {
   harnessComposerPlaceholder,
@@ -496,20 +492,6 @@ export function ChatView({
    * rendered at the bottom of the component. */
   const announcer = useLiveAnnouncer()
 
-  /* Wrap the backend's resolver in a stable callback so MessageList
-   * row-level memoization isn't broken by a fresh lambda identity on
-   * every render, and so the auto-accept hook's deps don't shift
-   * every render. */
-  const resolveApproval = useMemo(() => {
-    const fn = backend.resolveApproval
-    if (!fn) return undefined
-    return (
-      sessionId: string,
-      functionCallId: string,
-      decision: 'allow' | 'deny',
-    ) => fn(sessionId, functionCallId, decision)
-  }, [backend])
-
   // Approval UI + `approval::*` RPC require BOTH the harness AND the optional
   // standalone approval-gate worker. The gate owns `approval::*`; without it,
   // enabling approval would trigger "function not found", so we treat approval
@@ -520,8 +502,6 @@ export function ChatView({
       ? isHarnessAvailable(conversationsCtx.harnessStatus) &&
         conversationsCtx.approvalGateAvailable
       : false)
-  const approvalSettings = useApprovalSettings(sessionId, approvalEnabled)
-
   const handleApprovalEvent = useCallback(
     (event: ApprovalStreamEvent) => {
       if (event.kind === 'fcall-start') {
@@ -685,61 +665,6 @@ export function ChatView({
   const worktreeEnabled =
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.worktreeAvailable : false)
-
-  const handleAlwaysAllow = useMemo(() => {
-    const resolveFn = backend.resolveApproval
-    if (!resolveFn) return undefined
-    return async (sId: string, functionCallId: string, functionId: string) => {
-      await approvalSettings.approveAlways(functionId)
-      await resolveFn(sId, functionCallId, 'allow')
-      announcer.announce(`approved always this session: ${functionId}`)
-    }
-  }, [backend, approvalSettings, announcer])
-
-  const filesystemGrants = useFilesystemGrants(sessionId)
-  const [filesystemDialogOpen, setFilesystemDialogOpen] = useState(false)
-  const handleManageFilesystemAccess = useCallback(() => {
-    setFilesystemDialogOpen(true)
-  }, [])
-
-  const handleFilesystemResolve = useMemo(() => {
-    const resolveFn = backend.resolveApproval
-    if (!resolveFn) return undefined
-    return async (
-      sId: string,
-      functionCallId: string,
-      action: FilesystemAccessAction,
-    ) => {
-      const requestedRoot = messagesRef.current.find(
-        (m): m is FunctionCallMessage =>
-          m.role === 'function-call' && m.functionCallId === functionCallId,
-      )?.filesystemAccess?.requestedRoot
-
-      if (action === 'deny') {
-        await resolveFn(sId, functionCallId, 'deny')
-        announcer.announce(
-          requestedRoot
-            ? `denied filesystem access to ${requestedRoot}`
-            : 'denied filesystem access',
-        )
-        return
-      }
-
-      await resolveFn(sId, functionCallId, 'allow', { accessDuration: action })
-      if (requestedRoot && (action === 'session' || action === 'always')) {
-        filesystemGrants.addOptimistic(requestedRoot)
-      }
-      if (requestedRoot) {
-        announcer.announce(
-          action === 'session'
-            ? `allowed ${requestedRoot} for this session`
-            : action === 'always'
-              ? `permanently allowed ${requestedRoot}`
-              : `allowed ${requestedRoot} for this call`,
-        )
-      }
-    }
-  }, [backend, announcer, filesystemGrants])
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -1473,11 +1398,7 @@ export function ChatView({
         </div>
       </header>
 
-      {approvalSettings.settings.mode === 'full' ? (
-        <FullPermissionsBanner
-          onDisable={() => void approvalSettings.setMode('manual')}
-        />
-      ) : null}
+      <ConsoleExtensionSlot name="chat.banner" context={{ sessionId }} />
 
       <MessageList
         messages={conversation.messages}
@@ -1490,10 +1411,6 @@ export function ChatView({
               : undefined
         }
         density={density}
-        onResolveApproval={resolveApproval}
-        onAlwaysAllow={handleAlwaysAllow}
-        onResolveFilesystemAccess={handleFilesystemResolve}
-        onManageFilesystemAccess={handleManageFilesystemAccess}
         workingDir={conversation.workingDir ?? null}
       />
       <LiveRegion announcement={announcer.announcement} />
@@ -1529,21 +1446,20 @@ export function ChatView({
                   )}
                 </>
               )}
-              <button
-                type="button"
-                onClick={handleManageFilesystemAccess}
-                title={
-                  approvalEnabled
-                    ? 'Access is limited to this workspace until you approve another folder.'
-                    : 'The working directory sets where commands start; shell configuration controls access.'
+              <ConsoleExtensionSlot
+                name="chat.workspace-access"
+                context={{
+                  sessionId,
+                  workingDir: conversation.workingDir ?? null,
+                  sessionBusy: streamingIndicator,
+                }}
+                className="ml-auto shrink-0"
+                fallback={
+                  <span className="ml-auto shrink-0 lowercase text-ink-ghost">
+                    access: shell defaults
+                  </span>
                 }
-                className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
-              >
-                access: {approvalEnabled ? 'workspace' : 'shell defaults'}
-                {approvalEnabled && filesystemGrants.grants.length > 0
-                  ? ` · ${filesystemGrants.grants.length}`
-                  : ''}
-              </button>
+              />
             </div>
           ) : null}
           <SessionTriggers
@@ -1590,9 +1506,7 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             functionEntries={functionEntries}
-            permissionMode={approvalSettings.settings.mode}
-            permissionModeLoading={!approvalSettings.loaded}
-            showPermissionMode={approvalEnabled}
+            extensionContext={{ sessionId }}
             thinkingLevel={thinkingLevel}
             onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
@@ -1607,9 +1521,6 @@ export function ChatView({
               worktreeEnabled
                 ? { enabled: true, onPick: handlePickWorktree }
                 : undefined
-            }
-            onPermissionModeChange={(next) =>
-              void approvalSettings.setMode(next)
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
@@ -1627,20 +1538,6 @@ export function ChatView({
           />
         </div>
       </footer>
-
-      {workingDirEnabled ? (
-        <FilesystemAccessDialog
-          open={filesystemDialogOpen}
-          onOpenChange={setFilesystemDialogOpen}
-          workingDir={conversation.workingDir ?? null}
-          grants={filesystemGrants.grants}
-          grantsSupported={filesystemGrants.supported}
-          onRevoke={filesystemGrants.revoke}
-          onRefreshGrants={filesystemGrants.refresh}
-          sessionBusy={streamingIndicator}
-          workspaceScoped={approvalEnabled}
-        />
-      ) : null}
     </section>
   )
 }

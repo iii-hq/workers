@@ -5,10 +5,7 @@ import {
   useContext,
   useState,
 } from 'react'
-import {
-  isApprovalGateAvailable,
-  useApprovalGateStatus,
-} from '@/hooks/use-approval-gate-status'
+import { useConsoleExtensionAvailable } from '@/extensions/ConsoleExtensions'
 import {
   type ConversationsApi,
   useConversations,
@@ -54,10 +51,9 @@ interface ConversationsContextValue extends ConversationsApi {
    */
   harnessStatus: HarnessStatus
   /**
-   * Whether the optional standalone `approval-gate` worker is connected. Gates
-   * all approval UI + `approval::*` RPC: false → the gate isn't installed, so
-   * the console hides the permission-mode picker and runs calls ungated rather
-   * than triggering "function not found". Only meaningful on the real backend.
+   * Whether the approval-gate console extension was discovered and activated.
+   * This replaces component-level worker-presence rules: no capability means
+   * no registered slots and no approval event/RPC path.
    */
   approvalGateAvailable: boolean
   /**
@@ -96,9 +92,7 @@ export function ConversationsProvider({
 }: ConversationsProviderProps) {
   const harnessStatus = useHarnessStatus(backend.id === 'real')
   const harnessAvailable = isHarnessAvailable(harnessStatus)
-  const approvalGateAvailable = isApprovalGateAvailable(
-    useApprovalGateStatus(backend.id === 'real'),
-  )
+  const approvalGateAvailable = useConsoleExtensionAvailable('approval-gate')
   const shellAvailable = isShellAvailable(useShellStatus(backend.id === 'real'))
   const worktreeAvailable = isWorktreeAvailable(
     useWorktreeStatus(backend.id === 'real'),

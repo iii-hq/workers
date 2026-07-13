@@ -3,7 +3,7 @@
 //! compile). First match wins; no match → **hold**.
 //!
 //! The shipped defaults deny **only this worker's `approval::*` surface**
-//! (the 12 registered functions — see `functions::catalog`). Every
+//! (the registered functions — see `functions::catalog`). Every
 //! other function_id holds until the operator adds custom `rules`.
 
 /// Shorthand rule strings compiled into [`super::default_permissions`].
