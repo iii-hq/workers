@@ -73,6 +73,23 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::styles::read` / `browser::styles::write` — computed styles and
   live inline CSS edits on one element.
 
+## Keeping context small
+
+Browser outputs are large and land in the transcript, so a few careless reads
+fill the context window and force a compaction. Read economically:
+
+- Prefer `browser::snapshot` (a compact text outline) over
+  `browser::screenshot` (a whole image) for reading a page; take a screenshot
+  only when layout or rendering is the actual question.
+- Filter every read instead of dumping: `browser::console::read` takes
+  `pattern`/`level`, `browser::network::read` takes `failed_only`, and both
+  page with `since_seq` so a follow-up read returns only what is new.
+- On a big page, read a subtree: pass a `ref` to `browser::dom::read` rather
+  than snapshotting the whole document repeatedly.
+- Reuse one session across steps and `browser::sessions::stop` it when done;
+  do not re-snapshot after every action, only after the page actually
+  changed.
+
 ## Reactive triggers
 
 Bind a `browser::*` trigger when another function should react to session
