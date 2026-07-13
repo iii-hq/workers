@@ -22,6 +22,7 @@ export const BROWSER_CONSOLE_READ_FUNCTION_ID = 'browser::console::read'
 export const BROWSER_NETWORK_READ_FUNCTION_ID = 'browser::network::read'
 export const BROWSER_PICK_START_FUNCTION_ID = 'browser::pick::start'
 export const BROWSER_PICK_STOP_FUNCTION_ID = 'browser::pick::stop'
+export const BROWSER_PICK_HINT_FUNCTION_ID = 'browser::pick::hint'
 
 export const BROWSER_SESSION_STARTED_TRIGGER = 'browser::session-started'
 export const BROWSER_SESSION_STOPPED_TRIGGER = 'browser::session-stopped'
@@ -41,7 +42,7 @@ export function isBrowserFunction(functionId: string): boolean {
   return functionId.startsWith('browser::')
 }
 
-const sessionInfoSchema = z.object({
+export const sessionInfoSchema = z.object({
   session_id: z.string(),
   url: z.string(),
   title: z.string().optional(),
@@ -56,7 +57,7 @@ const sessionListSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
 })
 
-const sessionStartSchema = z.object({
+export const sessionStartSchema = z.object({
   session_id: z.string(),
   url: z.string(),
   headless: z.boolean(),
@@ -72,7 +73,7 @@ const consoleEntrySchema = z.object({
 })
 export type BrowserConsoleEntry = z.infer<typeof consoleEntrySchema>
 
-const consoleReadSchema = z.object({
+export const consoleReadSchema = z.object({
   entries: z.array(consoleEntrySchema),
   last_seq: z.number(),
   dropped: z.number(),
@@ -91,7 +92,7 @@ const networkEntrySchema = z.object({
 })
 export type BrowserNetworkEntry = z.infer<typeof networkEntrySchema>
 
-const networkReadSchema = z.object({
+export const networkReadSchema = z.object({
   entries: z.array(networkEntrySchema),
   last_seq: z.number(),
   dropped: z.number(),
@@ -154,6 +155,37 @@ const boundsSchema = z.object({
   width: z.number(),
   height: z.number(),
 })
+export type BrowserBounds = z.infer<typeof boundsSchema>
+
+const pickHintSchema = z.object({
+  hit: z.boolean(),
+  tag: z.string().optional(),
+  id: z.string().optional(),
+  classes: z.string().optional(),
+  bounds: boundsSchema.optional(),
+})
+export type BrowserPickHint = z.infer<typeof pickHintSchema>
+
+/**
+ * `tag#id.class` label in the DevTools grammar, shared by the hover hint
+ * chip and the dom outline rows. `classes` is the space-separated class
+ * list as the worker reports it.
+ */
+export function elementLabel(
+  tag: string | undefined,
+  id: string | undefined | null,
+  classes: string | undefined | null,
+): string {
+  const idPart = id ? `#${id}` : ''
+  const classPart = (classes ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((cls) => `.${cls}`)
+    .join('')
+  return `${tag ?? 'element'}${idPart}${classPart}`
+}
 
 const pickedElementSchema = z.object({
   ref: z.string(),
@@ -193,9 +225,35 @@ export function parseConsoleEvent(
 }
 
 /**
+ * Unwrap a transcript output into the worker's plain result. Through the
+ * harness, results arrive as `{content:[{type:'text', text:<stringified
+ * result>}, ...], details}`; the text block is authoritative, `details` is
+ * the fallback cross-check. Direct bus results pass through untouched.
+ */
+export function decodeBrowserResult(output: unknown): unknown {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) {
+    return output
+  }
+  const obj = output as Record<string, unknown>
+  if (!Array.isArray(obj.content)) return output
+  for (const block of obj.content) {
+    if (!block || typeof block !== 'object') continue
+    const b = block as Record<string, unknown>
+    if (b.type !== 'text' || typeof b.text !== 'string') continue
+    try {
+      return JSON.parse(b.text) as unknown
+    } catch {
+      break
+    }
+  }
+  if (obj.details != null) return obj.details
+  return output
+}
+
+/**
  * Session id carried by a `browser::*` function call, wherever the worker
- * put it: the result (`sessions::start`), the result's `details` envelope
- * (`screenshot`), or the request payload (everything else).
+ * put it: the result (`sessions::start`), the harness result envelope
+ * around it, or the request payload (everything else).
  */
 export function browserSessionIdFromCall(
   input: unknown,
@@ -209,7 +267,11 @@ export function browserSessionIdFromCall(
     }
     return fromObject(obj.details)
   }
-  return fromObject(output) ?? fromObject(input)
+  return (
+    fromObject(decodeBrowserResult(output)) ??
+    fromObject(output) ??
+    fromObject(input)
+  )
 }
 
 /** Badge tone per DESIGN.md status semantics for a console entry level. */
@@ -225,38 +287,40 @@ export function consoleLevelTone(level: string): 'ink' | 'warn' | 'alert' {
   }
 }
 
-const SELECTOR_CLASS_LIMIT = 3
-const PICKED_TEXT_LIMIT = 160
+const PICKED_TEXT_LIMIT = 80
 const PICKED_ERROR_LIMIT = 3
 const PICKED_ERROR_LINE_LIMIT = 200
 
-/** `tag#id.class.class` summary from the picked element's attributes. */
+/**
+ * Selector-ish summary from the picked element's attributes, restricted to
+ * id/class/name/type (never the raw outer_html).
+ */
 export function pickedSelector(element: BrowserPickedElement): string {
-  const id = element.attributes.id ? `#${element.attributes.id}` : ''
-  const classes = (element.attributes.class ?? '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, SELECTOR_CLASS_LIMIT)
-    .map((cls) => `.${cls}`)
+  const base = elementLabel(
+    element.tag,
+    element.attributes.id,
+    element.attributes.class,
+  )
+  const extras = (['name', 'type'] as const)
+    .filter((attr) => element.attributes[attr])
+    .map((attr) => `[${attr}="${element.attributes[attr]}"]`)
     .join('')
-  return `${element.tag}${id}${classes}`
+  return `${base}${extras}`
 }
 
 /**
  * Compact text block handed to the chat composer for a picked element:
- * ref, selector summary, trimmed text, url, and recent console errors,
- * shaped so the agent can act on the ref with `browser::act` directly.
+ * one summary line, the url, recent console errors when present, and the
+ * ref the agent can use directly. Never includes outer_html.
  */
 export function formatPickedElement(evt: BrowserPickedEvent): string {
   const el = evt.element
   const text = el.text.replace(/\s+/g, ' ').trim().slice(0, PICKED_TEXT_LIMIT)
+  const summary = text.length > 0 ? ` "${text}"` : ''
   const lines = [
-    `picked element ${el.ref} on browser session ${evt.session_id}:`,
-    `selector: ${pickedSelector(el)}`,
+    `picked element ${pickedSelector(el)}${summary} (session ${evt.session_id}, ref ${el.ref})`,
+    `url: ${el.url}`,
   ]
-  if (text.length > 0) lines.push(`text: "${text}"`)
-  lines.push(`url: ${el.url}`)
   if (el.console_recent.length > 0) {
     lines.push('recent console errors:')
     for (const err of el.console_recent.slice(-PICKED_ERROR_LIMIT)) {
@@ -265,9 +329,7 @@ export function formatPickedElement(evt: BrowserPickedEvent): string {
       )
     }
   }
-  lines.push(
-    `act on it with browser::act {"session_id":"${evt.session_id}","action":"click","ref":"${el.ref}"}`,
-  )
+  lines.push(`ref ${el.ref} works with browser::act / browser::styles::read`)
   return lines.join('\n')
 }
 
@@ -327,10 +389,16 @@ export async function takeBrowserScreenshot(
   return parseScreenshotOutput(res)
 }
 
+export interface BrowserClickOptions {
+  button?: 'left' | 'right' | 'middle'
+  clickCount?: number
+}
+
 export async function clickBrowserAt(
   sessionId: string,
   x: number,
   y: number,
+  options: BrowserClickOptions = {},
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger(BROWSER_ACT_FUNCTION_ID, {
@@ -338,7 +406,64 @@ export async function clickBrowserAt(
     action: 'click',
     x,
     y,
+    ...(options.button ? { button: options.button } : {}),
+    ...(options.clickCount ? { click_count: options.clickCount } : {}),
   })
+}
+
+export async function scrollBrowserAt(
+  sessionId: string,
+  x: number,
+  y: number,
+  deltaY: number,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+    session_id: sessionId,
+    action: 'scroll',
+    x,
+    y,
+    delta_y: deltaY,
+  })
+}
+
+export async function typeBrowserText(
+  sessionId: string,
+  text: string,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+    session_id: sessionId,
+    action: 'type',
+    text,
+  })
+}
+
+export async function pressBrowserKey(
+  sessionId: string,
+  key: string,
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+    session_id: sessionId,
+    action: 'press',
+    key,
+  })
+}
+
+export async function hintBrowserPick(
+  sessionId: string,
+  x: number,
+  y: number,
+): Promise<BrowserPickHint | null> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>(BROWSER_PICK_HINT_FUNCTION_ID, {
+    session_id: sessionId,
+    x,
+    y,
+  })
+  const parsed = pickHintSchema.safeParse(res)
+  return parsed.success ? parsed.data : null
 }
 
 export interface BrowserConsoleReadOptions {

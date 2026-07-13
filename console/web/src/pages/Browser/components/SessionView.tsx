@@ -6,20 +6,29 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
 import {
   BROWSER_PICKED_TRIGGER,
+  type BrowserClickOptions,
   type BrowserPickedEvent,
   type BrowserSessionInfo,
   clickBrowserAt,
   formatPickedElement,
+  hintBrowserPick,
   navigateBrowser,
   parsePickedEvent,
   pickedSelector,
+  pressBrowserKey,
+  scrollBrowserAt,
   startBrowserPick,
   stopBrowserPick,
   stopBrowserSession,
+  typeBrowserText,
 } from '@/lib/browser'
 import { insertIntoComposer } from '@/lib/composer-insert'
 import { cn } from '@/lib/utils'
-import { useScreenshotPolling } from '../hooks/useScreenshotPolling'
+import {
+  SCREENSHOT_PICK_POLL_MS,
+  SCREENSHOT_POLL_MS,
+  useScreenshotPolling,
+} from '../hooks/useScreenshotPolling'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
 import { Viewport } from './Viewport'
@@ -30,6 +39,7 @@ import { Viewport } from './Viewport'
  */
 
 const PICKED_FN = 'console::browser-picked'
+const TYPE_FLUSH_MS = 200
 
 interface SessionViewProps {
   session: BrowserSessionInfo
@@ -45,7 +55,12 @@ export function SessionView({
   onStopped,
 }: SessionViewProps) {
   const sessionId = session.session_id
-  const screenshot = useScreenshotPolling(sessionId, enabled)
+  const [picking, setPicking] = useState(false)
+  const screenshot = useScreenshotPolling(
+    sessionId,
+    enabled,
+    picking ? SCREENSHOT_PICK_POLL_MS : SCREENSHOT_POLL_MS,
+  )
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -87,7 +102,6 @@ export function SessionView({
   // Pick-to-chat. The worker auto-exits inspect mode after one pick, so a
   // received event only flips local state; explicit toggles and unmounts
   // send pick::stop.
-  const [picking, setPicking] = useState(false)
   const [lastPicked, setLastPicked] = useState<BrowserPickedEvent | null>(null)
   const pickingRef = useRef(false)
   pickingRef.current = picking
@@ -143,13 +157,76 @@ export function SessionView({
   })
 
   const handleClickAt = useCallback(
-    (x: number, y: number) => {
+    (x: number, y: number, options?: BrowserClickOptions) => {
       void runAction(async () => {
-        await clickBrowserAt(sessionId, x, y)
+        await clickBrowserAt(sessionId, x, y, options)
         screenshot.refresh()
       })
     },
     [sessionId, runAction, screenshot],
+  )
+
+  const handleScrollAt = useCallback(
+    (x: number, y: number, deltaY: number) => {
+      void runAction(async () => {
+        await scrollBrowserAt(sessionId, x, y, deltaY)
+        screenshot.refresh()
+      })
+    },
+    [sessionId, runAction, screenshot],
+  )
+
+  // Printable characters batch into one type act per idle window; a special
+  // key flushes the pending text first so the page sees keystrokes in order.
+  const typeBufferRef = useRef('')
+  const typeTimerRef = useRef<number | undefined>(undefined)
+  const takeTypeBuffer = useCallback(() => {
+    window.clearTimeout(typeTimerRef.current)
+    typeTimerRef.current = undefined
+    const text = typeBufferRef.current
+    typeBufferRef.current = ''
+    return text
+  }, [])
+
+  const flushTypeBuffer = useCallback(() => {
+    const text = takeTypeBuffer()
+    if (!text) return
+    void runAction(async () => {
+      await typeBrowserText(sessionId, text)
+      screenshot.refresh()
+    })
+  }, [takeTypeBuffer, sessionId, runAction, screenshot])
+
+  const handleTextInput = useCallback(
+    (text: string) => {
+      typeBufferRef.current += text
+      window.clearTimeout(typeTimerRef.current)
+      typeTimerRef.current = window.setTimeout(flushTypeBuffer, TYPE_FLUSH_MS)
+    },
+    [flushTypeBuffer],
+  )
+
+  const handlePressKey = useCallback(
+    (key: string) => {
+      const text = takeTypeBuffer()
+      void runAction(async () => {
+        if (text) await typeBrowserText(sessionId, text)
+        await pressBrowserKey(sessionId, key)
+        screenshot.refresh()
+      })
+    },
+    [takeTypeBuffer, sessionId, runAction, screenshot],
+  )
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(typeTimerRef.current)
+    }
+  }, [])
+
+  const requestHint = useCallback(
+    (x: number, y: number) => hintBrowserPick(sessionId, x, y),
+    [sessionId],
   )
 
   const handleStop = useCallback(() => {
@@ -258,11 +335,15 @@ export function SessionView({
         error={screenshot.error}
         picking={picking}
         onClickAt={handleClickAt}
+        onScrollAt={handleScrollAt}
+        onTextInput={handleTextInput}
+        onPressKey={handlePressKey}
+        requestHint={requestHint}
       />
 
       <Tabs
         defaultValue="console"
-        className="shrink-0 h-56 flex flex-col border-t border-rule"
+        className="shrink-0 h-[38%] min-h-44 flex flex-col border-t border-rule"
       >
         <TabsList className="px-3 shrink-0">
           <TabsTrigger value="console">console</TabsTrigger>

@@ -10,6 +10,8 @@ import { type BrowserScreenshot, takeBrowserScreenshot } from '@/lib/browser'
  */
 
 export const SCREENSHOT_POLL_MS = 2_000
+/** Faster cadence while pick mode is on, so the hover target stays fresh. */
+export const SCREENSHOT_PICK_POLL_MS = 500
 
 export interface ScreenshotPolling {
   shot: BrowserScreenshot | null
@@ -22,6 +24,7 @@ export interface ScreenshotPolling {
 export function useScreenshotPolling(
   sessionId: string | null,
   enabled: boolean,
+  intervalMs: number = SCREENSHOT_POLL_MS,
 ): ScreenshotPolling {
   const [shot, setShot] = useState<BrowserScreenshot | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -44,7 +47,7 @@ export function useScreenshotPolling(
 
     const schedule = () => {
       if (cancelled) return
-      timer = window.setTimeout(tick, SCREENSHOT_POLL_MS)
+      timer = window.setTimeout(tick, intervalMs)
     }
 
     const tick = async () => {
@@ -80,7 +83,7 @@ export function useScreenshotPolling(
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [enabled, sessionId, token])
+  }, [enabled, sessionId, token, intervalMs])
 
   return { shot, loading: shot === null && error === null, error, refresh }
 }
