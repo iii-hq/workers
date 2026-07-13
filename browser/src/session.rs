@@ -127,6 +127,9 @@ pub struct Session {
     pub id: String,
     pub headless: bool,
     pub created_ms: i64,
+    /// Temp profile dir removed on shutdown. None in persistent
+    /// `user_data_dir` mode.
+    ephemeral_profile: Option<std::path::PathBuf>,
     browser: tokio::sync::Mutex<Browser>,
     pub page: Page,
     pub console: Arc<Mutex<RingBuffer<ConsoleEntry>>>,
@@ -218,6 +221,9 @@ impl Session {
             }
         }
         let _ = browser.wait().await;
+        if let Some(dir) = &self.ephemeral_profile {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -276,7 +282,8 @@ impl Sessions {
             Some(headful) => !headful,
             None => cfg.headless,
         };
-        let browser_config = build_browser_config(&cfg, headless)?;
+        let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let (browser_config, ephemeral_profile) = build_browser_config(&cfg, headless, slot)?;
 
         let (browser, mut handler) = Browser::launch(browser_config)
             .await
@@ -307,12 +314,13 @@ impl Sessions {
         let _ = page.execute(cdp_log::EnableParams::default()).await;
         let _ = page.execute(cdp_network::EnableParams::default()).await;
 
-        let id = format!("b{}", self.counter.fetch_add(1, Ordering::Relaxed) + 1);
+        let id = format!("b{slot}");
         let now = now_ms();
         let session = Arc::new(Session {
             id: id.clone(),
             headless,
             created_ms: now,
+            ephemeral_profile,
             browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
             console: Arc::new(Mutex::new(RingBuffer::new(cfg.console_buffer as usize))),
@@ -388,14 +396,35 @@ impl Sessions {
     }
 }
 
-fn build_browser_config(cfg: &WorkerConfig, headless: bool) -> Result<BrowserConfig, String> {
+/// Every session gets its own profile dir: Chromium holds a process
+/// singleton per profile, so two sessions sharing one dir cannot coexist
+/// (and a killed session's stale SingletonLock would block the next
+/// launch). Ephemeral mode mints a temp dir removed on shutdown;
+/// persistent mode maps session slot N to `<user_data_dir>/session-N`, so
+/// the first session after every worker boot reuses the same cookies.
+fn build_browser_config(
+    cfg: &WorkerConfig,
+    headless: bool,
+    slot: u64,
+) -> Result<(BrowserConfig, Option<std::path::PathBuf>), String> {
+    let (profile_dir, ephemeral) = if cfg.user_data_dir.is_empty() {
+        let dir = std::env::temp_dir().join(format!("iii-browser-{}-{slot}", std::process::id()));
+        (dir.clone(), Some(dir))
+    } else {
+        (
+            std::path::PathBuf::from(&cfg.user_data_dir).join(format!("session-{slot}")),
+            None,
+        )
+    };
+
     let mut builder = BrowserConfig::builder()
         .window_size(cfg.viewport_width, cfg.viewport_height)
         .viewport(chromiumoxide::handler::viewport::Viewport {
             width: cfg.viewport_width,
             height: cfg.viewport_height,
             ..Default::default()
-        });
+        })
+        .user_data_dir(&profile_dir);
     builder = if headless {
         builder.new_headless_mode()
     } else {
@@ -404,10 +433,7 @@ fn build_browser_config(cfg: &WorkerConfig, headless: bool) -> Result<BrowserCon
     if !cfg.executable.is_empty() {
         builder = builder.chrome_executable(&cfg.executable);
     }
-    if !cfg.user_data_dir.is_empty() {
-        builder = builder.user_data_dir(&cfg.user_data_dir);
-    }
-    builder.build()
+    Ok((builder.build()?, ephemeral))
 }
 
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
@@ -751,7 +777,7 @@ async fn handle_pick(
 }
 
 /// Bounds from a CDP content quad `[x1,y1,x2,y2,x3,y3,x4,y4]`.
-fn quad_bounds(quad: &dom::Quad) -> Bounds {
+pub fn quad_bounds(quad: &dom::Quad) -> Bounds {
     let points = quad.inner();
     let xs: Vec<f64> = points.iter().step_by(2).copied().collect();
     let ys: Vec<f64> = points.iter().skip(1).step_by(2).copied().collect();

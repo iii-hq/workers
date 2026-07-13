@@ -30,6 +30,27 @@ struct Cli {
     manifest: bool,
 }
 
+/// SIGINT and SIGTERM both shut down cleanly: sessions own Chromium
+/// processes and temp profiles, and `kill`/`docker stop`/the worker manager
+/// all deliver SIGTERM, so ctrl_c alone would orphan them.
+async fn wait_for_shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -136,7 +157,7 @@ async fn main() -> Result<()> {
     });
 
     tracing::info!("browser ready: browser::* sessions + console capture + pick");
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown_signal().await?;
     tracing::info!("browser shutting down");
     sweep.abort();
     sessions.stop_all().await;

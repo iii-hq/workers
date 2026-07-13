@@ -6,6 +6,7 @@ pub mod act;
 pub mod console;
 pub mod dom;
 pub mod evaluate;
+pub mod hint;
 pub mod history;
 pub mod navigate;
 pub mod network;
@@ -95,6 +96,10 @@ pub const STYLES_WRITE_ID: &str = "browser::styles::write";
 pub const STYLES_WRITE_DESC: &str =
     "Set one inline CSS property on an element, live in the page. Visual experiment only: the \
      page's source files are untouched, and the edit dies with the next navigation.";
+pub const PICK_HINT_ID: &str = "browser::pick::hint";
+pub const PICK_HINT_DESC: &str =
+    "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console \
+     UI can draw a hover highlight in pick mode. Not an agent function.";
 pub const PICK_START_ID: &str = "browser::pick::start";
 pub const PICK_START_DESC: &str =
     "Internal: enter DevTools inspect mode so the human can pick an element in the console \
@@ -158,6 +163,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             STYLES_WRITE_ID,
             STYLES_WRITE_DESC,
         ),
+        spec::<hint::PickHintInput, hint::PickHintOutput>(PICK_HINT_ID, PICK_HINT_DESC),
         spec::<pick::PickStartInput, pick::PickOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickStopInput, pick::PickOutput>(PICK_STOP_ID, PICK_STOP_DESC),
     ]
@@ -178,6 +184,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_dom_read(iii, sessions);
     register_styles_read(iii, sessions);
     register_styles_write(iii, sessions);
+    register_pick_hint(iii, sessions);
     register_pick_start(iii, sessions);
     register_pick_stop(iii, sessions);
     tracing::info!("all functions registered");
@@ -1199,5 +1206,83 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(STYLES_WRITE_DESC),
+    );
+}
+
+fn register_pick_hint(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        PICK_HINT_ID,
+        RegisterFunction::new_async(move |req: hint::PickHintInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+
+                let miss = hint::PickHintOutput {
+                    hit: false,
+                    tag: None,
+                    id: None,
+                    classes: None,
+                    bounds: None,
+                };
+                let located = match session
+                    .page
+                    .execute(cdp_dom::GetNodeForLocationParams::new(
+                        req.x as i64,
+                        req.y as i64,
+                    ))
+                    .await
+                {
+                    Ok(node) => node,
+                    Err(_) => return Ok::<_, Error>(miss),
+                };
+                let backend_id = *located.backend_node_id.inner();
+
+                let described = session
+                    .page
+                    .execute(
+                        cdp_dom::DescribeNodeParams::builder()
+                            .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                            .build(),
+                    )
+                    .await
+                    .map_err(|e| handler_err(format!("describe node failed: {e}")))?;
+                let node = &described.node;
+                let mut id = None;
+                let mut classes = None;
+                if let Some(attrs) = &node.attributes {
+                    for pair in attrs.chunks(2) {
+                        if let [k, v] = pair {
+                            match k.as_str() {
+                                "id" => id = Some(v.clone()),
+                                "class" => classes = Some(crate::session::truncate(v, 120)),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                let bounds = session
+                    .page
+                    .execute(
+                        cdp_dom::GetBoxModelParams::builder()
+                            .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                            .build(),
+                    )
+                    .await
+                    .ok()
+                    .map(|r| crate::session::quad_bounds(&r.model.content));
+
+                Ok::<_, Error>(hint::PickHintOutput {
+                    hit: true,
+                    tag: Some(node.node_name.to_lowercase()),
+                    id,
+                    classes,
+                    bounds,
+                })
+            }
+        })
+        .description(PICK_HINT_DESC)
+        .metadata(json!({ "internal": true })),
     );
 }
