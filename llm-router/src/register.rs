@@ -218,7 +218,13 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                     .unwrap_or(false)
             })
         });
-        make_on_config_changed(iii.clone(), lookup, config.clone(), entry_lock.clone(), 2000)
+        make_on_config_changed(
+            iii.clone(),
+            lookup,
+            config.clone(),
+            entry_lock.clone(),
+            2000,
+        )
     };
     iii.register_function(
         surface::ON_CONFIG_CHANGED_ID,
