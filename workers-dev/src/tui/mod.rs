@@ -447,7 +447,10 @@ fn handle_dashboard_key(
             if let Some(name) = worker_name {
                 // Only stop workers with a live local child; `external` and
                 // `elsewhere` rows have no process workers-dev can kill.
-                if views.iter().any(|v| v.name == name && v.local_pid.is_some()) {
+                if views
+                    .iter()
+                    .any(|v| v.name == name && v.local_pid.is_some())
+                {
                     spawn_stop(actions, vec![name.clone()]);
                     *mode = UiMode::Busy(format!("stopping {name}…"));
                 } else {
@@ -917,7 +920,10 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         } else {
             "(no output yet — press s to start this worker, or Ctrl+u to start the harness stack)"
         };
-        vec![Line::from(Span::styled(msg, styled_if(color, hint_style())))]
+        vec![Line::from(Span::styled(
+            msg,
+            styled_if(color, hint_style()),
+        ))]
     } else {
         ctx.log_lines[start..end]
             .iter()
