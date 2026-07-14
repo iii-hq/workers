@@ -11,8 +11,12 @@
 //! Capture and input are synchronous, blocking OS calls, so each runs on a
 //! blocking thread. `enigo` state is not `Send`, so an `Enigo` is created, used,
 //! and dropped inside each blocking closure. On macOS the worker process needs
-//! Screen Recording (capture) and Accessibility (input) permission, or capture
-//! is black and input is ignored.
+//! Screen Recording (capture) and Accessibility (input) permission. Input is
+//! preflighted with `AXIsProcessTrusted` so a dropped click fails loudly instead
+//! of a false success. Screen Recording is NOT preflighted:
+//! `CGPreflightScreenCaptureAccess` reports per-process state that a child of a
+//! granted terminal does not inherit, so it false-negatives on a capture that
+//! actually works; a missing grant instead surfaces as a wallpaper-only image.
 
 use std::io::Cursor;
 use std::sync::OnceLock;
@@ -26,6 +30,30 @@ use tokio::task::spawn_blocking;
 use xcap::Monitor;
 
 use super::{Backend, Screen, Shot};
+
+/// macOS Accessibility preflight. Without it, macOS silently drops synthetic
+/// input while `enigo` still reports success, so `act` would lie; we check
+/// `AXIsProcessTrusted` and fail loudly instead. Screen Recording is
+/// deliberately not checked here: its preflight API false-negatives for a child
+/// of a granted terminal. Windows has no equivalent gate, so the check is always
+/// true there.
+#[cfg(target_os = "macos")]
+mod perms {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> u8;
+    }
+    pub fn accessibility_granted() -> bool {
+        unsafe { AXIsProcessTrusted() != 0 }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod perms {
+    pub fn accessibility_granted() -> bool {
+        true
+    }
+}
 
 pub struct NativeHost {
     max_dimension: u32,
@@ -98,6 +126,16 @@ where
     F: FnOnce(&mut Enigo, f64, f64) -> Result<(), String> + Send + 'static,
 {
     spawn_blocking(move || {
+        // Without Accessibility, macOS drops the event and enigo reports ok, so
+        // the agent thinks a click landed when it did not. Fail clearly instead.
+        if !perms::accessibility_granted() {
+            return Err(
+                "Accessibility is not granted to this process, so macOS is silently \
+                        dropping synthetic input. Enable it in System Settings > Privacy & \
+                        Security > Accessibility for the app running this worker, then retry."
+                    .to_string(),
+            );
+        }
         let (sx, sy) = match real {
             Some((rw, rh)) => {
                 let (tw, th) = target_dims(rw, rh, max_dim);
