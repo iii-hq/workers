@@ -7,6 +7,7 @@
 //! code.
 
 pub mod computer_server;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub mod native;
 
 use async_trait::async_trait;
@@ -16,6 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use computer_server::ComputerServerClient;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use native::NativeHost;
 
 /// Desktop pixel dimensions. Coordinates handed to pointer actions are in this

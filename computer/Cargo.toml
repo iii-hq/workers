@@ -30,6 +30,12 @@ clap = { version = "4", features = ["derive"] }
 schemars = "0.8"
 async-trait = "0.1"
 base64 = "0.22"
+
+# Native host backend (screen capture + input injection). Only meaningful on a
+# desktop OS, and these pull system libraries (dbus/xcb/xdo) that headless Linux
+# servers and CI do not have, so they are gated to macOS/Windows. Other targets
+# build with the computer-server backend only.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 enigo = "0.3"
 xcap = "0.4"
 image = "0.25"

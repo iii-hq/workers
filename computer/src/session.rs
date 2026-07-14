@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::backend::{Backend, ComputerServerClient, NativeHost, Screen};
+use crate::backend::{Backend, ComputerServerClient, Screen};
 use crate::config::SharedConfig;
 use crate::events::{Emitter, EventKind, SessionStartedEvent, SessionStoppedEvent};
 
@@ -42,6 +42,25 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Build the native (drive-this-machine) backend. Only available on desktop
+/// OSes; elsewhere the worker requires a computer-server endpoint.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn native_backend(cfg: &crate::config::WorkerConfig) -> Result<Arc<dyn Backend>, String> {
+    Ok(Arc::new(crate::backend::NativeHost::new(
+        cfg.max_screenshot_dimension as u32,
+        cfg.screenshot_quality as u8,
+    )))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn native_backend(_cfg: &crate::config::WorkerConfig) -> Result<Arc<dyn Backend>, String> {
+    Err(
+        "native backend (drive this machine) is only available on macOS and Windows; \
+         pass a computer-server `endpoint` to drive a remote or sandboxed desktop"
+            .to_string(),
+    )
 }
 
 /// The newest screencast frame, handed to `computer::frame` without a capture
@@ -309,13 +328,7 @@ impl Sessions {
                 let label = client.endpoint().to_string();
                 (Arc::new(client), label)
             }
-            None => (
-                Arc::new(NativeHost::new(
-                    cfg.max_screenshot_dimension as u32,
-                    cfg.screenshot_quality as u8,
-                )),
-                "native".to_string(),
-            ),
+            None => (native_backend(&cfg)?, "native".to_string()),
         };
         let screen = backend
             .screen_size()
@@ -466,13 +479,7 @@ impl Sessions {
         cfg: &crate::config::WorkerConfig,
     ) -> Result<Arc<Session>, String> {
         let (backend, endpoint_used): (Arc<dyn Backend>, String) = if rec.endpoint == "native" {
-            (
-                Arc::new(NativeHost::new(
-                    cfg.max_screenshot_dimension as u32,
-                    cfg.screenshot_quality as u8,
-                )),
-                "native".to_string(),
-            )
+            (native_backend(cfg)?, "native".to_string())
         } else {
             let client = ComputerServerClient::connect(
                 &rec.endpoint,
