@@ -7,12 +7,12 @@ bin: harness
 description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop; spawns sub-agents as child sessions.
 
 dependencies:
-  iii-state: "^0.21.3"
+  iii-state: "^0.21.6"
   queue: "^0.2.0"
-  iii-cron: "^0.21.3"
-  configuration: "^0.21.3"
-  iii-observability: "^0.21.3"
-  iii-stream: "^0.21.3"
+  iii-cron: "^0.21.6"
+  configuration: "^0.21.6"
+  iii-observability: "^0.21.6"
+  iii-stream: "^0.21.6"
   iii-directory: "^1.0.0"
   llm-router: "^1.0.0"
   session-manager: "^1.0.0"
