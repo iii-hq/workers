@@ -309,7 +309,13 @@ impl Sessions {
                 let label = client.endpoint().to_string();
                 (Arc::new(client), label)
             }
-            None => (Arc::new(NativeHost::new()), "native".to_string()),
+            None => (
+                Arc::new(NativeHost::new(
+                    cfg.max_screenshot_dimension as u32,
+                    cfg.screenshot_quality as u8,
+                )),
+                "native".to_string(),
+            ),
         };
         let screen = backend
             .screen_size()
@@ -460,7 +466,13 @@ impl Sessions {
         cfg: &crate::config::WorkerConfig,
     ) -> Result<Arc<Session>, String> {
         let (backend, endpoint_used): (Arc<dyn Backend>, String) = if rec.endpoint == "native" {
-            (Arc::new(NativeHost::new()), "native".to_string())
+            (
+                Arc::new(NativeHost::new(
+                    cfg.max_screenshot_dimension as u32,
+                    cfg.screenshot_quality as u8,
+                )),
+                "native".to_string(),
+            )
         } else {
             let client = ComputerServerClient::connect(
                 &rec.endpoint,

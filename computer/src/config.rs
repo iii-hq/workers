@@ -33,6 +33,12 @@ pub struct WorkerConfig {
     /// Live-view frame rate cap for the screencast (frames/sec). Clamped to
     /// at least 1. The pump polls the backend screenshot at most this often.
     pub screencast_fps: u64,
+    /// Longest edge (px) a native screenshot/frame is downscaled to before
+    /// JPEG encoding. Full-resolution Retina captures are huge; this caps the
+    /// image the model sees and the coordinate space it acts in.
+    pub max_screenshot_dimension: u64,
+    /// JPEG quality (1-100) for native screenshots and frames.
+    pub screenshot_quality: u64,
     /// Timeout for each backend action (ms). Fixed when a session connects.
     pub command_timeout_ms: u64,
     /// Timeout for establishing the backend connection at session start (ms).
@@ -47,6 +53,8 @@ impl Default for WorkerConfig {
             max_sessions: 2,
             idle_stop_ms: 300_000,
             screencast_fps: 15,
+            max_screenshot_dimension: 1280,
+            screenshot_quality: 70,
             command_timeout_ms: 120_000,
             connect_timeout_ms: 15_000,
         }
@@ -94,6 +102,8 @@ mod tests {
         assert_eq!(c.max_sessions, 2);
         assert_eq!(c.idle_stop_ms, 300_000);
         assert_eq!(c.screencast_fps, 15);
+        assert_eq!(c.max_screenshot_dimension, 1280);
+        assert_eq!(c.screenshot_quality, 70);
         assert_eq!(c.command_timeout_ms, 120_000);
         assert_eq!(c.connect_timeout_ms, 15_000);
     }

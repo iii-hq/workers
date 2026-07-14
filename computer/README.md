@@ -111,6 +111,8 @@ computer:
   max_sessions: 2           # concurrent desktop connections
   idle_stop_ms: 300000      # stop sessions idle this long; 0 disables
   screencast_fps: 15        # live-view frame rate cap
+  max_screenshot_dimension: 1280 # downscale screenshots/frames to this longest edge (native backend)
+  screenshot_quality: 70    # JPEG quality 1-100 (native backend)
   command_timeout_ms: 120000 # timeout for each backend action (fixed at connect)
   connect_timeout_ms: 15000  # backend connect timeout at session start
 ```
