@@ -47,15 +47,22 @@ pub fn now_ms() -> i64 {
 /// Build the native (drive-this-machine) backend. Only available on desktop
 /// OSes; elsewhere the worker requires a computer-server endpoint.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn native_backend(cfg: &crate::config::WorkerConfig) -> Result<Arc<dyn Backend>, String> {
+fn native_backend(
+    cfg: &crate::config::WorkerConfig,
+    monitor: Option<u32>,
+) -> Result<Arc<dyn Backend>, String> {
     Ok(Arc::new(crate::backend::NativeHost::new(
         cfg.max_screenshot_dimension as u32,
         cfg.screenshot_quality as u8,
+        monitor,
     )))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn native_backend(_cfg: &crate::config::WorkerConfig) -> Result<Arc<dyn Backend>, String> {
+fn native_backend(
+    _cfg: &crate::config::WorkerConfig,
+    _monitor: Option<u32>,
+) -> Result<Arc<dyn Backend>, String> {
     Err(
         "native backend (drive this machine) is only available on macOS and Windows; \
          pass a computer-server `endpoint` to drive a remote or sandboxed desktop"
@@ -292,6 +299,7 @@ impl Sessions {
         &self,
         endpoint: Option<String>,
         os: Option<String>,
+        monitor: Option<u32>,
     ) -> Result<Arc<Session>, String> {
         let cfg = self.config.load_full();
         if (self.map.lock().await.len() as u64) >= cfg.max_sessions {
@@ -328,7 +336,7 @@ impl Sessions {
                 let label = client.endpoint().to_string();
                 (Arc::new(client), label)
             }
-            None => (native_backend(&cfg)?, "native".to_string()),
+            None => (native_backend(&cfg, monitor)?, "native".to_string()),
         };
         let screen = backend
             .screen_size()
@@ -479,7 +487,7 @@ impl Sessions {
         cfg: &crate::config::WorkerConfig,
     ) -> Result<Arc<Session>, String> {
         let (backend, endpoint_used): (Arc<dyn Backend>, String) = if rec.endpoint == "native" {
-            (native_backend(cfg)?, "native".to_string())
+            (native_backend(cfg, None)?, "native".to_string())
         } else {
             let client = ComputerServerClient::connect(
                 &rec.endpoint,

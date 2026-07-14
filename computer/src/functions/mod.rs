@@ -3,6 +3,7 @@
 //! registration lives here so `register_all` reads as the product surface.
 
 pub mod act;
+pub mod displays;
 pub mod frame;
 pub mod observe;
 pub mod screenshot;
@@ -28,6 +29,11 @@ pub const SESSIONS_STOP_ID: &str = "computer::sessions::stop";
 pub const SESSIONS_STOP_DESC: &str =
     "Stop a computer session and close its backend connection. Idempotent: stopping an unknown \
      or already-stopped session succeeds with was_running=false.";
+pub const DISPLAYS_ID: &str = "computer::displays";
+pub const DISPLAYS_DESC: &str =
+    "List the local displays (index, name, primary, size). Pass the chosen index as `monitor` \
+     to computer::sessions::start to drive that display; omit it to use the display under the \
+     cursor. Native host only.";
 pub const SCREENSHOT_ID: &str = "computer::screenshot";
 pub const SCREENSHOT_DESC: &str =
     "Capture the desktop as a viewable image. This is how you see the screen before acting; the \
@@ -83,6 +89,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sessions::StartInput, sessions::StartOutput>(SESSIONS_START_ID, SESSIONS_START_DESC),
         spec::<sessions::ListInput, sessions::ListOutput>(SESSIONS_LIST_ID, SESSIONS_LIST_DESC),
         spec::<sessions::StopInput, sessions::StopOutput>(SESSIONS_STOP_ID, SESSIONS_STOP_DESC),
+        spec::<displays::DisplaysInput, displays::DisplaysOutput>(DISPLAYS_ID, DISPLAYS_DESC),
         spec::<screenshot::ScreenshotInput, screenshot::ScreenshotOutput>(
             SCREENSHOT_ID,
             SCREENSHOT_DESC,
@@ -105,6 +112,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_sessions_start(iii, sessions);
     register_sessions_list(iii, sessions);
     register_sessions_stop(iii, sessions);
+    register_displays(iii);
     register_screenshot(iii, sessions);
     register_observe(iii, sessions);
     register_act(iii, sessions);
@@ -146,6 +154,29 @@ fn xy_or_center(req: &act::ActInput, screen: Screen) -> (i64, i64) {
 // Registration
 // ---------------------------------------------------------------------------
 
+/// Local displays, enumerated live from the OS. Empty on non-desktop targets.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn host_displays() -> Vec<crate::backend::DisplayInfo> {
+    crate::backend::native::list_displays().unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn host_displays() -> Vec<crate::backend::DisplayInfo> {
+    Vec::new()
+}
+
+fn register_displays(iii: &Arc<IIIClient>) {
+    iii.register_function(
+        DISPLAYS_ID,
+        RegisterFunction::new_async(|_req: displays::DisplaysInput| async move {
+            Ok::<_, Error>(displays::DisplaysOutput {
+                displays: host_displays(),
+            })
+        })
+        .description(DISPLAYS_DESC),
+    );
+}
+
 fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sessions = sessions.clone();
     iii.register_function(
@@ -154,7 +185,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 let session = sessions
-                    .start(req.endpoint, req.os)
+                    .start(req.endpoint, req.os, req.monitor)
                     .await
                     .map_err(Error::Handler)?;
                 Ok::<_, Error>(sessions::StartOutput {

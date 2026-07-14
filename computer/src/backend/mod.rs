@@ -28,6 +28,20 @@ pub struct Screen {
     pub height: u32,
 }
 
+/// One display available to the native host (from `computer::displays`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DisplayInfo {
+    /// Index to pass as `monitor` to `computer::sessions::start`.
+    pub index: u32,
+    pub name: String,
+    pub primary: bool,
+    pub builtin: bool,
+    /// Logical width in points.
+    pub width: u32,
+    /// Logical height in points.
+    pub height: u32,
+}
+
 /// An encoded screenshot plus the detected mime of its bytes. The backend
 /// returns whatever its guest encodes (png by default); the mime is read from
 /// the magic bytes rather than assumed, so the content block advertises the

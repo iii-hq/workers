@@ -12,6 +12,16 @@
           "null"
         ]
       },
+      "monitor": {
+        "default": null,
+        "description": "Display index (from `computer::displays`) for a native session. Omit to drive the display under the cursor. Ignored for a computer-server endpoint.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "os": {
         "default": null,
         "description": "Guest OS label recorded on the session and surfaced in `session-started` (`linux`, `macos`, `windows`, `android`). Omit to use the configured `os`.",

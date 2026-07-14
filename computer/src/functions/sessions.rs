@@ -19,6 +19,11 @@ pub struct StartInput {
     /// use the configured `os`.
     #[serde(default)]
     pub os: Option<String>,
+    /// Display index (from `computer::displays`) for a native session. Omit to
+    /// drive the display under the cursor. Ignored for a computer-server
+    /// endpoint.
+    #[serde(default)]
+    pub monitor: Option<u32>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
