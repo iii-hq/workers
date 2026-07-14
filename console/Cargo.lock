@@ -764,9 +764,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.21.2-next.1"
+version = "0.21.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "030839b177b118574ca2f8c03030f33948cd353eb774127f281d200428a4918d"
+checksum = "c0d84d5c149ae4404365a79feca28aa66f6a7dbed56423b4b8c4e2421e0b5add"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -785,9 +785,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.2-next.1"
+version = "0.21.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1837ea510df889a7f9c9d7b3432c962946674f54741de7e6ec6e8ad2534ee83c"
+checksum = "07dd060fddcc9153b0dd07c038a14cf172ce15ce1d4edb98155563ed55b2caba"
 dependencies = [
  "async-trait",
  "futures-util",

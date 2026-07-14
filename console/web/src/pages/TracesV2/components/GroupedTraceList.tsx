@@ -11,7 +11,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, Layers, Loader2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { fetchTraces, type TraceGroup } from '../api/traces'
 import type { TraceListItem } from '../hooks/useTraceData'
@@ -60,6 +60,52 @@ export function GroupedTraceList({
     labelAttribute: defaultLabelAttribute(attribute),
   })
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  // Selection can arrive from outside the list (follow-live-turn, timeline
+  // strip, deep link). The detail accordion only renders under a visible
+  // member row, so a collapsed group would swallow it: auto-expand the
+  // group(s) containing the selection, then scroll the row into view once
+  // the member fetch lands. One-shot per trace id — collapsing the group
+  // again while that trace is still selected is respected.
+  const autoExpandedForRef = useRef<string | null>(null)
+  const revealFrameRef = useRef(0)
+  useEffect(() => () => cancelAnimationFrame(revealFrameRef.current), [])
+  useEffect(() => {
+    if (!selectedTraceId) {
+      autoExpandedForRef.current = null
+      return
+    }
+    if (autoExpandedForRef.current === selectedTraceId) return
+    const containing = groups.filter((g) =>
+      g.trace_ids.includes(selectedTraceId),
+    )
+    // Groups may still be loading, or a live turn's trace may not be in the
+    // aggregation yet — leave the ref unset so the next groups update retries.
+    if (containing.length === 0) return
+    autoExpandedForRef.current = selectedTraceId
+    setExpanded((prev) => {
+      if (containing.every((g) => prev.has(g.value))) return prev
+      const next = new Set(prev)
+      for (const g of containing) next.add(g.value)
+      return next
+    })
+    // Member rows fetch on expansion; poll a few frames for the row to
+    // mount (bounded so a failed fetch can't leave a perpetual rAF loop).
+    cancelAnimationFrame(revealFrameRef.current)
+    const deadline = performance.now() + 3000
+    const reveal = () => {
+      const row = document.querySelector(
+        `[data-trace-row-id="${CSS.escape(selectedTraceId)}"]`,
+      )
+      if (row) {
+        row.scrollIntoView({ block: 'nearest' })
+        return
+      }
+      if (performance.now() > deadline) return
+      revealFrameRef.current = requestAnimationFrame(reveal)
+    }
+    revealFrameRef.current = requestAnimationFrame(reveal)
+  }, [selectedTraceId, groups])
 
   if (unavailable) {
     return (

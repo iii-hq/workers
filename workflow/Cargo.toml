@@ -15,8 +15,8 @@ name = "workflow"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.20.0"
-iii-helpers = "=0.20.0"
+iii-sdk = "=0.21.6"
+iii-helpers = "=0.21.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
