@@ -3,12 +3,10 @@
 //! registration lives here so `register_all` reads as the product surface.
 
 pub mod act;
-pub mod files;
 pub mod frame;
 pub mod observe;
 pub mod screenshot;
 pub mod sessions;
-pub mod shell;
 
 use std::sync::Arc;
 
@@ -42,14 +40,6 @@ pub const ACT_ID: &str = "computer::act";
 pub const ACT_DESC: &str =
     "Drive the desktop: click, right_click, double_click, move, drag, scroll, type, press, or \
      hotkey. Address by pixel coordinates read off the screenshot (top-left origin).";
-pub const SHELL_ID: &str = "computer::shell";
-pub const SHELL_DESC: &str =
-    "Run a shell command inside the desktop guest and return stdout, stderr, and exit code.";
-pub const FILES_READ_ID: &str = "computer::files::read";
-pub const FILES_READ_DESC: &str = "Read a text file from the desktop guest filesystem.";
-pub const FILES_WRITE_ID: &str = "computer::files::write";
-pub const FILES_WRITE_DESC: &str =
-    "Write a text file in the desktop guest filesystem, replacing any existing content.";
 pub const SCREENCAST_START_ID: &str = "computer::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
     "Internal: start pushing live desktop frames onto the computer:frames stream for the console \
@@ -99,9 +89,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<observe::ObserveInput, observe::ObserveOutput>(OBSERVE_ID, OBSERVE_DESC),
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
-        spec::<shell::ShellInput, shell::ShellOutput>(SHELL_ID, SHELL_DESC),
-        spec::<files::FilesReadInput, files::FilesReadOutput>(FILES_READ_ID, FILES_READ_DESC),
-        spec::<files::FilesWriteInput, files::FilesWriteOutput>(FILES_WRITE_ID, FILES_WRITE_DESC),
         spec::<frame::ScreencastStartInput, frame::AckOutput>(
             SCREENCAST_START_ID,
             SCREENCAST_START_DESC,
@@ -121,9 +108,6 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_screenshot(iii, sessions);
     register_observe(iii, sessions);
     register_act(iii, sessions);
-    register_shell(iii, sessions);
-    register_files_read(iii, sessions);
-    register_files_write(iii, sessions);
     register_screencast_start(iii, sessions);
     register_screencast_stop(iii, sessions);
     register_frame(iii, sessions);
@@ -404,73 +388,6 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(ACT_DESC),
-    );
-}
-
-fn register_shell(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
-    let sessions = sessions.clone();
-    iii.register_function(
-        SHELL_ID,
-        RegisterFunction::new_async(move |req: shell::ShellInput| {
-            let sessions = sessions.clone();
-            async move {
-                let session = get_session(&sessions, &req.session_id).await?;
-                session.touch();
-                let out = session
-                    .backend()
-                    .run_command(&req.command)
-                    .await
-                    .map_err(Error::Handler)?;
-                Ok::<_, Error>(shell::ShellOutput {
-                    stdout: out.stdout,
-                    stderr: out.stderr,
-                    exit_code: out.exit_code,
-                })
-            }
-        })
-        .description(SHELL_DESC),
-    );
-}
-
-fn register_files_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
-    let sessions = sessions.clone();
-    iii.register_function(
-        FILES_READ_ID,
-        RegisterFunction::new_async(move |req: files::FilesReadInput| {
-            let sessions = sessions.clone();
-            async move {
-                let session = get_session(&sessions, &req.session_id).await?;
-                session.touch();
-                let content = session
-                    .backend()
-                    .read_text(&req.path)
-                    .await
-                    .map_err(Error::Handler)?;
-                Ok::<_, Error>(files::FilesReadOutput { content })
-            }
-        })
-        .description(FILES_READ_DESC),
-    );
-}
-
-fn register_files_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
-    let sessions = sessions.clone();
-    iii.register_function(
-        FILES_WRITE_ID,
-        RegisterFunction::new_async(move |req: files::FilesWriteInput| {
-            let sessions = sessions.clone();
-            async move {
-                let session = get_session(&sessions, &req.session_id).await?;
-                session.touch();
-                session
-                    .backend()
-                    .write_text(&req.path, &req.content)
-                    .await
-                    .map_err(Error::Handler)?;
-                Ok::<_, Error>(files::FilesWriteOutput { ok: true })
-            }
-        })
-        .description(FILES_WRITE_DESC),
     );
 }
 

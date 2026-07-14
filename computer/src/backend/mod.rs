@@ -26,14 +26,6 @@ pub struct Screen {
     pub height: u32,
 }
 
-/// Result of a shell command run inside the desktop.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CommandOutput {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i64,
-}
-
 /// An encoded screenshot plus the detected mime of its bytes. The backend
 /// returns whatever its guest encodes (png by default); the mime is read from
 /// the magic bytes rather than assumed, so the content block advertises the
@@ -91,9 +83,6 @@ pub trait Backend: Send + Sync {
     /// Press a chord: a single key (`["enter"]`) or a combination
     /// (`["ctrl", "c"]`).
     async fn keypress(&self, keys: &[String]) -> Result<(), String>;
-    async fn run_command(&self, command: &str) -> Result<CommandOutput, String>;
-    async fn read_text(&self, path: &str) -> Result<String, String>;
-    async fn write_text(&self, path: &str, content: &str) -> Result<(), String>;
     /// Best-effort accessibility tree; `null` when the guest does not expose a
     /// real one (Linux/Windows guests return a stub or nothing).
     async fn accessibility_tree(&self) -> Result<serde_json::Value, String>;

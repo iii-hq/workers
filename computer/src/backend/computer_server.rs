@@ -23,7 +23,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-use super::{Backend, CommandOutput, Screen, Shot};
+use super::{Backend, Screen, Shot};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -159,12 +159,6 @@ fn parse_reply(command: &str, text: &str) -> Result<Value, String> {
     Err(format!("{command}: backend returned success=false"))
 }
 
-/// First string field among `content`/`text`/`data`, for read-style replies
-/// whose payload key varies across computer-server versions.
-fn first_str_field<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|k| v.get(*k).and_then(Value::as_str))
-}
-
 #[async_trait]
 impl Backend for ComputerServerClient {
     async fn screen_size(&self) -> Result<Screen, String> {
@@ -242,42 +236,6 @@ impl Backend for ComputerServerClient {
 
     async fn keypress(&self, keys: &[String]) -> Result<(), String> {
         self.command_ok("hotkey", json!({ "keys": keys })).await
-    }
-
-    async fn run_command(&self, command: &str) -> Result<CommandOutput, String> {
-        let v = self
-            .command("run_command", json!({ "command": command }))
-            .await?;
-        let exit_code = v
-            .get("return_code")
-            .or_else(|| v.get("returncode"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        Ok(CommandOutput {
-            stdout: v
-                .get("stdout")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            stderr: v
-                .get("stderr")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            exit_code,
-        })
-    }
-
-    async fn read_text(&self, path: &str) -> Result<String, String> {
-        let v = self.command("read_text", json!({ "path": path })).await?;
-        first_str_field(&v, &["content", "text", "data"])
-            .map(str::to_string)
-            .ok_or_else(|| "read_text: reply missing content".to_string())
-    }
-
-    async fn write_text(&self, path: &str, content: &str) -> Result<(), String> {
-        self.command_ok("write_text", json!({ "path": path, "content": content }))
-            .await
     }
 
     async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {
@@ -361,17 +319,5 @@ mod tests {
     #[test]
     fn parse_reply_rejects_invalid_json() {
         assert!(parse_reply("x", "not json").is_err());
-    }
-
-    #[test]
-    fn first_str_field_prefers_content() {
-        let v = json!({ "text": "b", "content": "a" });
-        assert_eq!(first_str_field(&v, &["content", "text", "data"]), Some("a"));
-        let v2 = json!({ "data": "d" });
-        assert_eq!(
-            first_str_field(&v2, &["content", "text", "data"]),
-            Some("d")
-        );
-        assert_eq!(first_str_field(&json!({}), &["content"]), None);
     }
 }

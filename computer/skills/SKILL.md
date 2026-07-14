@@ -1,20 +1,21 @@
 ---
 name: computer
 description: >-
-  Drive a full desktop computer over the iii bus: connect a computer-use
-  session, see the screen as an image, and click, type, scroll, and run shell
-  by coordinate. Reach for it when a task needs to operate a real GUI app or
-  whole desktop, not just a web page.
+  Drive a full desktop computer over the iii bus: start a session, see the
+  screen as an image, and click, type, and scroll by coordinate. Reach for it
+  when a task needs to operate a real GUI app or whole desktop, not just a web
+  page.
 ---
 
 # computer
 
-The computer worker connects to a live desktop (a computer-server backend, for
-example a booted desktop sandbox) and turns it into iii functions. Start a
-session, take a screenshot to see the screen, then act on it by pixel
-coordinate: the screenshot is the source of truth for where things are, and
-`computer::act` clicks and types at those coordinates. The session stays alive,
-so you can act, screenshot the result, and act again.
+The computer worker turns a live desktop into iii functions. Start a session
+with no endpoint to drive the local machine this worker runs on, or pass an
+endpoint to drive a remote or sandboxed desktop over computer-server. Take a
+screenshot to see the screen, then act on it by pixel coordinate: the screenshot
+is the source of truth for where things are, and `computer::act` clicks and
+types at those coordinates. The session stays alive, so you can act, screenshot
+the result, and act again.
 
 Sessions are durable (a worker restart reconnects them) and cost one backend
 connection each; the configured session cap is small. Stop sessions when a task
@@ -27,18 +28,20 @@ after every action.
   native app, a settings panel).
 - End-to-end tasks that span the whole screen: move a window, drag between
   apps, use a system dialog.
-- Running a command in the desktop guest and seeing its effect on screen, with
-  `computer::shell` for the command and `computer::screenshot` for the result.
-- Reading or writing a file inside the guest as part of a desktop task.
+- Watching the effect of a change on screen: run the command with the `shell`
+  worker, then `computer::screenshot` to see the result.
 
 ## Boundaries
 
 - Web-only tasks belong to the [browser](../browser) worker (a real Chromium
   tab with an accessibility outline and page console) or `web::fetch` for a
   one-shot page. Do not start a desktop session just to open a URL.
-- The desktop itself is external: `computer` connects to a computer-server
-  endpoint, it does not boot the VM. Point `default_endpoint` at a running
-  backend or pass `endpoint` to `computer::sessions::start`.
+- Shell and files on the desktop belong to the `shell` worker (`shell::exec`,
+  `shell::fs::*`), not this worker. `computer` only sees the screen and drives
+  the cursor.
+- `computer` does not boot desktops. With no endpoint it drives the local
+  machine; with an endpoint it connects to a remote desktop a sandbox worker
+  booted.
 - `computer::screencast::*` and `computer::frame` are console-UI plumbing, not
   agent surface.
 - Coordinates are integer pixels, top-left origin, in the space of the most
@@ -56,10 +59,6 @@ after every action.
   tree (`include_a11y: true`).
 - `computer::act` — click, right_click, double_click, move, drag, scroll, type,
   press, or hotkey, addressed by pixel coordinates.
-- `computer::shell` — run a command in the guest; returns stdout, stderr, exit
-  code.
-- `computer::files::read` / `computer::files::write` — read and write text
-  files in the guest.
 
 ## Keeping context small
 

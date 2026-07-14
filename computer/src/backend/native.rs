@@ -10,7 +10,6 @@
 //! permission, or capture returns black and input no-ops.
 
 use std::io::Cursor;
-use std::process::Command;
 
 use async_trait::async_trait;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
@@ -18,7 +17,7 @@ use tokio::task::spawn_blocking;
 use xcap::image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
 use xcap::Monitor;
 
-use super::{Backend, CommandOutput, Screen, Shot};
+use super::{Backend, Screen, Shot};
 
 #[derive(Default)]
 pub struct NativeHost;
@@ -207,42 +206,6 @@ impl Backend for NativeHost {
             tapped
         })
         .await
-    }
-
-    async fn run_command(&self, command: &str) -> Result<CommandOutput, String> {
-        let command = command.to_string();
-        spawn_blocking(move || {
-            let out = Command::new("sh")
-                .arg("-c")
-                .arg(&command)
-                .output()
-                .map_err(|e| format!("spawn shell failed: {e}"))?;
-            Ok(CommandOutput {
-                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-                exit_code: out.status.code().unwrap_or(-1) as i64,
-            })
-        })
-        .await
-        .map_err(|e| format!("shell task failed: {e}"))?
-    }
-
-    async fn read_text(&self, path: &str) -> Result<String, String> {
-        let path = path.to_string();
-        spawn_blocking(move || {
-            std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))
-        })
-        .await
-        .map_err(|e| format!("read task failed: {e}"))?
-    }
-
-    async fn write_text(&self, path: &str, content: &str) -> Result<(), String> {
-        let (path, content) = (path.to_string(), content.to_string());
-        spawn_blocking(move || {
-            std::fs::write(&path, content).map_err(|e| format!("write {path}: {e}"))
-        })
-        .await
-        .map_err(|e| format!("write task failed: {e}"))?
     }
 
     async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {

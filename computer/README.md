@@ -2,17 +2,23 @@
 
 Drive a full desktop on the [iii engine](https://github.com/iii-hq/iii) bus.
 Where the [browser](../browser) worker gives an agent a Chromium tab, `computer`
-gives it a whole screen: it connects to a computer-use session, hands the model
-a screenshot, and clicks, types, scrolls, and runs shell inside the desktop by
-coordinate. The harness discovers `computer::*` as tools automatically, so the
-model sees the screen and acts on it with no glue.
+gives it a whole screen: it hands the model a screenshot and clicks, types, and
+scrolls by coordinate. The harness discovers `computer::*` as tools
+automatically, so the model sees the screen and acts on it with no glue.
 
-The desktop itself lives outside iii (booting real macOS/Windows/Linux desktops
-is deep systems work). `computer` connects to a **computer-server** endpoint,
-the in-guest executor that open desktop-sandbox stacks (for example a
-[Cua](https://github.com/trycua/cua) sandbox) already expose. iii owns the part
-it is good at: the session lifecycle, the bus, durable state, the live screen
-stream, and the harness that drives it all.
+The worker does only the one thing no other worker can: capture the screen and
+move the cursor. Two backends sit behind one surface:
+
+- **native** (no endpoint): drive the local machine this worker runs on, with
+  screen capture and input injection built in. No external server.
+- **computer-server** (an endpoint): drive a remote or sandboxed desktop by
+  connecting to its in-guest executor over WebSocket. Boot that desktop out of
+  band (a sandbox worker owns VM lifecycle); `computer` only connects to it.
+
+Everything else composes with the workers that already exist: run commands and
+touch files with the [shell](../shell) worker, persist with `state`, schedule
+with `cron`. iii owns the session lifecycle, the bus, durable state, the live
+screen stream, and the harness that drives it all.
 
 ## What iii adds over a one-shot computer-use client
 
@@ -35,13 +41,14 @@ iii worker add computer
 ```
 
 `iii worker add` fetches the binary and writes a config block into
-`~/.iii/config.yaml`; the engine starts the worker on the next `iii start`.
-Point `default_endpoint` at a running computer-server (see Configuration) or
-pass an `endpoint` per session.
+`~/.iii/config.yaml`; the engine starts the worker on the next `iii start`. With
+no endpoint it drives the local machine (native). On macOS grant the worker
+process Screen Recording (capture) and Accessibility (input) in System Settings,
+or capture is black and input is ignored.
 
 ## Quickstart
 
-Start a session, look at the screen, act on it, then read a file back:
+Start a session on the local machine, look at the screen, and act on it:
 
 ```rust
 use iii_sdk::protocol::TriggerRequest;
@@ -52,10 +59,10 @@ use serde_json::json;
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    // Connect to a computer-server backend (a booted desktop sandbox).
+    // No endpoint: drive the machine this worker runs on (native backend).
     let started = iii.trigger(TriggerRequest {
         function_id: "computer::sessions::start".into(),
-        payload: json!({ "endpoint": "http://127.0.0.1:8000", "os": "linux" }),
+        payload: json!({}),
         action: None,
         timeout_ms: Some(30_000),
     }).await?;
@@ -81,12 +88,15 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+To drive a remote or sandboxed desktop instead, pass an `endpoint` pointing at
+its computer-server: `json!({ "endpoint": "http://host:8000" })`.
+
 The rest of the surface: `computer::act` (click / right_click / double_click /
 move / drag / scroll / type / press / hotkey, by coordinate), `computer::observe`
-(screenshot plus the accessibility tree on macOS guests), `computer::shell`
-(run a command in the guest), `computer::files::read` / `computer::files::write`,
-and `computer::sessions::list` / `computer::sessions::stop`. Function ids and
-schemas live in the code and `iii worker info computer`.
+(screenshot plus the accessibility tree on macOS), and
+`computer::sessions::list` / `computer::sessions::stop`. For running commands or
+reading and writing files on the desktop, use the [shell](../shell) worker.
+Function ids and schemas live in the code and `iii worker info computer`.
 
 ## Configuration
 
@@ -96,7 +106,7 @@ editable live from the console. Timeouts and the screencast rate hot-reload;
 
 ```yaml
 computer:
-  default_endpoint: ''      # computer-server endpoint (ws/http/host:port); empty = pass per session
+  default_endpoint: ''      # computer-server endpoint for a remote desktop; empty = drive the local machine (native)
   os: linux                 # guest OS label recorded on sessions
   max_sessions: 2           # concurrent desktop connections
   idle_stop_ms: 300000      # stop sessions idle this long; 0 disables
