@@ -7,11 +7,19 @@ use crate::backend::Screen;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartInput {
-    /// Desktop to drive. Omit to drive the local machine this worker runs on
-    /// (native backend, no computer-server needed). Pass a computer-server
-    /// endpoint (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to
-    /// drive a remote or sandboxed desktop; falls back to the configured
-    /// `default_endpoint` when omitted.
+    /// Boot a fresh desktop inside an iii-sandbox microVM from this OCI image
+    /// (a sandbox preset name or `custom_images` key) and drive it through iii
+    /// primitives, no computer-server. A fixed virtual display means 1:1
+    /// coordinates, no HiDPI or multi-monitor ambiguity. Falls back to the
+    /// configured `sandbox_image` when omitted. Takes precedence over
+    /// `endpoint`.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Desktop to drive when not using a sandbox `image`. Omit (and leave
+    /// `image` unset) to drive the local machine this worker runs on (native
+    /// backend, no computer-server needed). Pass a computer-server endpoint (a
+    /// `ws`/`wss`/`http`/`https` url or a bare `host:port`) to drive a remote
+    /// desktop; falls back to the configured `default_endpoint` when omitted.
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Guest OS label recorded on the session and surfaced in
@@ -21,7 +29,7 @@ pub struct StartInput {
     pub os: Option<String>,
     /// Display index (from `computer::displays`) for a native session. Omit to
     /// drive the display under the cursor. Ignored for a computer-server
-    /// endpoint.
+    /// endpoint or a sandbox `image`.
     #[serde(default)]
     pub monitor: Option<u32>,
 }

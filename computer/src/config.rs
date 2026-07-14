@@ -43,6 +43,20 @@ pub struct WorkerConfig {
     pub command_timeout_ms: u64,
     /// Timeout for establishing the backend connection at session start (ms).
     pub connect_timeout_ms: u64,
+    /// OCI image (an iii-sandbox preset name or `custom_images` key) booted for
+    /// a sandbox-backed session when `sessions::start` omits `image`. Empty
+    /// means a sandbox session must name its own image. The image must ship
+    /// Xvfb, xdotool, imagemagick, and openbox (see images/desktop).
+    pub sandbox_image: String,
+    /// Virtual display width (px) for a sandbox-backed session. Fixed
+    /// resolution keeps coordinates 1:1 with the screenshot.
+    pub sandbox_width: u64,
+    /// Virtual display height (px) for a sandbox-backed session.
+    pub sandbox_height: u64,
+    /// Idle timeout (seconds) passed to `sandbox::create`. Set well above the
+    /// worker's own `idle_stop_ms` so the sandbox reaper never kills a live
+    /// desktop out from under a session; the worker owns teardown.
+    pub sandbox_idle_timeout_secs: u64,
 }
 
 impl Default for WorkerConfig {
@@ -57,6 +71,10 @@ impl Default for WorkerConfig {
             screenshot_quality: 70,
             command_timeout_ms: 120_000,
             connect_timeout_ms: 15_000,
+            sandbox_image: String::new(),
+            sandbox_width: 1280,
+            sandbox_height: 800,
+            sandbox_idle_timeout_secs: 86_400,
         }
     }
 }
@@ -106,6 +124,10 @@ mod tests {
         assert_eq!(c.screenshot_quality, 70);
         assert_eq!(c.command_timeout_ms, 120_000);
         assert_eq!(c.connect_timeout_ms, 15_000);
+        assert_eq!(c.sandbox_image, "");
+        assert_eq!(c.sandbox_width, 1280);
+        assert_eq!(c.sandbox_height, 800);
+        assert_eq!(c.sandbox_idle_timeout_secs, 86_400);
     }
 
     #[test]

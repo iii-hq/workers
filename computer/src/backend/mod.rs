@@ -1,14 +1,19 @@
-//! The environment backend: one connected desktop the worker drives. v1 ships
-//! a single implementation, [`ComputerServerClient`], which speaks the Cua
-//! computer-server wire (`{command, params}` over a WebSocket). The [`Backend`]
-//! trait keeps [`crate::session::Session`] backend-agnostic so a
-//! host-background driver (out-of-process, a different integration shape) can
-//! slot in behind the same surface later without touching session or function
-//! code.
+//! The environment backend: one desktop the worker drives. The [`Backend`]
+//! trait keeps [`crate::session::Session`] backend-agnostic; three
+//! implementations slot in behind it:
+//!
+//! - [`ComputerServerClient`] speaks the computer-server wire (`{command,
+//!   params}` over a WebSocket) to a remote or sandboxed desktop.
+//! - [`NativeHost`] drives the local machine this worker runs on (macOS /
+//!   Windows), capturing and injecting input directly.
+//! - [`IiiSandboxHost`] boots a desktop inside an iii-sandbox microVM and
+//!   drives it through iii primitives (`sandbox::exec` / `sandbox::fs`), with
+//!   no computer-server and no host socket.
 
 pub mod computer_server;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub mod native;
+pub mod sandbox;
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -19,6 +24,7 @@ use serde::{Deserialize, Serialize};
 pub use computer_server::ComputerServerClient;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use native::NativeHost;
+pub use sandbox::IiiSandboxHost;
 
 /// Desktop pixel dimensions. Coordinates handed to pointer actions are in this
 /// space: integer pixels, top-left origin, 1:1 with the screenshot.

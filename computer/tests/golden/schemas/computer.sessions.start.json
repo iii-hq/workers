@@ -1,12 +1,20 @@
 {
-  "description": "Start a computer-use session against a computer-server backend and return its session_id. Pass the endpoint or rely on the configured default. Sessions are durable; stop them with computer::sessions::stop when done.",
+  "description": "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop in an iii-sandbox microVM (fixed virtual display, no host setup), an `endpoint` to drive a computer-server desktop, or omit both to drive the local machine. Sessions are durable; stop them with computer::sessions::stop when done.",
   "function_id": "computer::sessions::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "endpoint": {
         "default": null,
-        "description": "Desktop to drive. Omit to drive the local machine this worker runs on (native backend, no computer-server needed). Pass a computer-server endpoint (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to drive a remote or sandboxed desktop; falls back to the configured `default_endpoint` when omitted.",
+        "description": "Desktop to drive when not using a sandbox `image`. Omit (and leave `image` unset) to drive the local machine this worker runs on (native backend, no computer-server needed). Pass a computer-server endpoint (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to drive a remote desktop; falls back to the configured `default_endpoint` when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "image": {
+        "default": null,
+        "description": "Boot a fresh desktop inside an iii-sandbox microVM from this OCI image (a sandbox preset name or `custom_images` key) and drive it through iii primitives, no computer-server. A fixed virtual display means 1:1 coordinates, no HiDPI or multi-monitor ambiguity. Falls back to the configured `sandbox_image` when omitted. Takes precedence over `endpoint`.",
         "type": [
           "string",
           "null"
@@ -14,7 +22,7 @@
       },
       "monitor": {
         "default": null,
-        "description": "Display index (from `computer::displays`) for a native session. Omit to drive the display under the cursor. Ignored for a computer-server endpoint.",
+        "description": "Display index (from `computer::displays`) for a native session. Omit to drive the display under the cursor. Ignored for a computer-server endpoint or a sandbox `image`.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [

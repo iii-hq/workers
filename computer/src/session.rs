@@ -297,6 +297,7 @@ impl Sessions {
     /// `computer::session-started`.
     pub async fn start(
         &self,
+        image: Option<String>,
         endpoint: Option<String>,
         os: Option<String>,
         monitor: Option<u32>,
@@ -308,6 +309,15 @@ impl Sessions {
                 cfg.max_sessions
             ));
         }
+        // A sandbox image (arg or configured default) boots a fresh desktop in
+        // an iii-sandbox; it takes precedence over an endpoint.
+        let image = image
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let d = cfg.sandbox_image.trim();
+                (!d.is_empty()).then(|| d.to_string())
+            });
         let endpoint = endpoint
             .map(|e| e.trim().to_string())
             .filter(|e| !e.is_empty())
@@ -315,18 +325,24 @@ impl Sessions {
                 let d = cfg.default_endpoint.trim();
                 (!d.is_empty()).then(|| d.to_string())
             });
-        let os = os.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-            if endpoint.is_none() {
-                std::env::consts::OS.to_string()
-            } else {
-                cfg.os.clone()
-            }
-        });
 
-        // No endpoint drives the local machine directly (native backend); an
-        // endpoint drives a remote or sandboxed desktop over computer-server.
-        let (backend, endpoint_used): (Arc<dyn Backend>, String) = match &endpoint {
-            Some(ep) => {
+        // Backend selection: a sandbox image wins, else a computer-server
+        // endpoint, else the local machine (native backend).
+        let (backend, endpoint_used, default_os): (Arc<dyn Backend>, String, String) =
+            if let Some(img) = &image {
+                let host = crate::backend::IiiSandboxHost::create(
+                    self.iii.clone(),
+                    img,
+                    cfg.sandbox_width as u32,
+                    cfg.sandbox_height as u32,
+                    cfg.screenshot_quality as u8,
+                    cfg.sandbox_idle_timeout_secs,
+                    cfg.command_timeout_ms,
+                )
+                .await?;
+                let label = format!("sandbox:{}", host.sandbox_id());
+                (Arc::new(host), label, "linux".to_string())
+            } else if let Some(ep) = &endpoint {
                 let client = ComputerServerClient::connect(
                     ep,
                     cfg.connect_timeout_ms,
@@ -334,10 +350,15 @@ impl Sessions {
                 )
                 .await?;
                 let label = client.endpoint().to_string();
-                (Arc::new(client), label)
-            }
-            None => (native_backend(&cfg, monitor)?, "native".to_string()),
-        };
+                (Arc::new(client), label, cfg.os.clone())
+            } else {
+                (
+                    native_backend(&cfg, monitor)?,
+                    "native".to_string(),
+                    std::env::consts::OS.to_string(),
+                )
+            };
+        let os = os.filter(|s| !s.is_empty()).unwrap_or(default_os);
         let screen = backend
             .screen_size()
             .await
@@ -488,6 +509,20 @@ impl Sessions {
     ) -> Result<Arc<Session>, String> {
         let (backend, endpoint_used): (Arc<dyn Backend>, String) = if rec.endpoint == "native" {
             (native_backend(cfg, None)?, "native".to_string())
+        } else if let Some(sid) = rec.endpoint.strip_prefix("sandbox:") {
+            // Re-attach to a sandbox that outlived the restart; attach re-runs
+            // the idempotent display bootstrap and fails if the VM is gone.
+            let host = crate::backend::IiiSandboxHost::attach(
+                self.iii.clone(),
+                sid.to_string(),
+                rec.width,
+                rec.height,
+                cfg.screenshot_quality as u8,
+                cfg.command_timeout_ms,
+            )
+            .await?;
+            let label = format!("sandbox:{}", host.sandbox_id());
+            (Arc::new(host), label)
         } else {
             let client = ComputerServerClient::connect(
                 &rec.endpoint,

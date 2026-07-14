@@ -19,9 +19,10 @@ use crate::session::{Session, Sessions};
 
 pub const SESSIONS_START_ID: &str = "computer::sessions::start";
 pub const SESSIONS_START_DESC: &str =
-    "Start a computer-use session against a computer-server backend and return its session_id. \
-     Pass the endpoint or rely on the configured default. Sessions are durable; stop them with \
-     computer::sessions::stop when done.";
+    "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop \
+     in an iii-sandbox microVM (fixed virtual display, no host setup), an `endpoint` to drive a \
+     computer-server desktop, or omit both to drive the local machine. Sessions are durable; stop \
+     them with computer::sessions::stop when done.";
 pub const SESSIONS_LIST_ID: &str = "computer::sessions::list";
 pub const SESSIONS_LIST_DESC: &str =
     "List live computer sessions with their endpoint, guest OS, and screen size.";
@@ -185,7 +186,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 let session = sessions
-                    .start(req.endpoint, req.os, req.monitor)
+                    .start(req.image, req.endpoint, req.os, req.monitor)
                     .await
                     .map_err(Error::Handler)?;
                 Ok::<_, Error>(sessions::StartOutput {
