@@ -1,13 +1,14 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
 //! count -> (if over) prune function outputs -> (if still over) compact
-//! the head -> assemble the final list.
+//! the head -> (if still over) emergency-reduce function results ->
+//! assemble the final list or return a structured overflow.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
 //! model-facing list (nor the count); `applied.tail_start_index`
 //! indexes the *request* messages array so callers can map it onto
-//! their own storage; a busy lease or failed summariser degrades to
-//! best effort instead of erroring the turn.
+//! their own storage; a busy lease or failed summariser falls through
+//! to emergency reduction and the hard budget check.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{estimator_for_model, Estimator};
 use crate::core::lease;
-use crate::core::prune::{prune as run_prune, PruneParams};
+use crate::core::prune::{emergency_reduce, prune as run_prune, PruneParams};
 use crate::core::selection::select;
 use crate::core::summary::{
     build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
@@ -23,7 +24,7 @@ use crate::core::summary::{
 use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeRequest};
-use crate::types::{AgentMessage, ModelInput, Role, ThinkingLevel};
+use crate::types::{AgentFunction, AgentMessage, ModelInput, Role, ThinkingLevel};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
@@ -39,9 +40,14 @@ pub struct AssembleOptions {
     /// Default true.
     #[serde(default)]
     pub allow_prune: Option<bool>,
-    /// `function_id`s whose outputs are never pruned.
+    /// `function_id`s exempt from the normal prune pass. Emergency
+    /// safety reduction may still replace their oversized results.
     #[serde(default)]
     pub protected_functions: Option<Vec<String>>,
+    /// Estimated tokens for final provider request fields and framing
+    /// not otherwise represented by the prompt, messages, or tools.
+    #[serde(default)]
+    pub request_overhead_tokens: Option<u64>,
     /// Reserve the model's thinking budget for this tier.
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
@@ -64,6 +70,9 @@ pub struct AssembleRequest {
     /// Base system prompt to prepend/merge.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Model-facing invocation schemas included in every budget count.
+    #[serde(default)]
+    pub tools: Option<Vec<AgentFunction>>,
     #[serde(default)]
     pub options: Option<AssembleOptions>,
 }
@@ -101,14 +110,32 @@ pub struct AssembleResponse {
     pub system_prompt: String,
     /// Budgeted, ready to send to llm-router.
     pub messages: Vec<AgentMessage>,
-    /// Estimated tokens of the returned context (messages + system
-    /// prompt). Can exceed `usable` when prune/compaction were
-    /// disabled, unavailable, or insufficient — best effort, visible.
+    /// Estimated tokens of the returned context, including the system
+    /// prompt, tools, and request overhead. Always at most `usable`.
     pub token_count: u64,
     /// The budget the context was fit into.
     pub usable: u64,
     pub model_resolved: ModelResolvedWire,
     pub applied: Applied,
+}
+
+fn count_context(
+    messages: &[AgentMessage],
+    prompt: &str,
+    tools: &[AgentFunction],
+    request_overhead_tokens: u64,
+    estimator: &dyn Estimator,
+) -> u64 {
+    let message_tokens = messages.iter().fold(0u64, |total, message| {
+        total.saturating_add(estimator.message(message))
+    });
+    let tool_tokens = tools.iter().fold(0u64, |total, tool| {
+        total.saturating_add(estimator.function(tool))
+    });
+    message_tokens
+        .saturating_add(estimator.text(prompt))
+        .saturating_add(tool_tokens)
+        .saturating_add(request_overhead_tokens)
 }
 
 pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleResponse, ContextError> {
@@ -141,9 +168,11 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 
     let base_prompt = req.system_prompt.as_deref();
     let mut system_prompt = render_system_prompt(base_prompt, options.previous_summary.as_deref());
+    let tools = req.tools.as_deref().unwrap_or_default();
+    let request_overhead_tokens = options.request_overhead_tokens.unwrap_or(0);
 
     let count = |messages: &[AgentMessage], prompt: &str| -> u64 {
-        messages.iter().map(|m| estimator.message(m)).sum::<u64>() + estimator.text(prompt)
+        count_context(messages, prompt, tools, request_overhead_tokens, estimator)
     };
 
     let mut applied = Applied {
@@ -203,6 +232,29 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         }
     }
 
+    // Step 3: enforce the budget by reducing complete function-result
+    // messages, including latest/protected results and their details.
+    // This pass is intentionally independent of all normal-prune knobs.
+    if token_count > usable_budget {
+        let emergency = emergency_reduce(
+            &mut working,
+            token_count.saturating_sub(usable_budget),
+            estimator,
+        );
+        applied.pruned |= emergency.pruned_parts > 0;
+        applied.pruned_tokens = applied
+            .pruned_tokens
+            .saturating_add(emergency.pruned_tokens);
+        token_count = count(&working, &system_prompt);
+    }
+
+    if token_count > usable_budget {
+        return Err(ContextError::Overflow {
+            token_count,
+            usable: usable_budget,
+        });
+    }
+
     Ok(AssembleResponse {
         system_prompt,
         messages: working,
@@ -226,7 +278,7 @@ struct CompactionOutcome {
 
 /// Inline compaction under the lease. `None` means "no compaction this
 /// call" — lease busy, nothing to summarise, or summariser failure —
-/// and assemble degrades to best effort.
+/// and assemble continues to emergency reduction and budget checking.
 #[allow(clippy::too_many_arguments)]
 async fn try_compact(
     deps: &Deps,
@@ -268,9 +320,9 @@ async fn try_compact(
                 tokens_before,
             }),
             Err(err) => {
-                // Assemble never fails the turn on a summariser error;
-                // the caller still gets a (possibly over-budget)
-                // context and can see token_count > usable.
+                // A summariser error skips compaction, after which the
+                // emergency pass either fits the request or returns a
+                // structured context overflow.
                 tracing::warn!(error = %err, "assemble: compaction skipped");
                 None
             }
@@ -280,4 +332,69 @@ async fn try_compact(
 
     lease::release(leases.as_ref(), lease_key, &nonce).await;
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::estimate::HeuristicEstimator;
+    use serde_json::json;
+
+    #[test]
+    fn count_includes_tools_and_request_overhead() {
+        let message: AgentMessage = serde_json::from_value(json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": "hello" }],
+            "timestamp": 1
+        }))
+        .unwrap();
+        let tool: AgentFunction = serde_json::from_value(json!({
+            "name": "agent_trigger",
+            "description": "Run an agent function",
+            "parameters": {
+                "type": "object",
+                "properties": { "function_id": { "type": "string" } }
+            }
+        }))
+        .unwrap();
+        let estimator = HeuristicEstimator;
+        let baseline = count_context(std::slice::from_ref(&message), "system", &[], 0, &estimator);
+
+        let counted = count_context(
+            &[message],
+            "system",
+            std::slice::from_ref(&tool),
+            37,
+            &estimator,
+        );
+
+        assert_eq!(counted, baseline + estimator.function(&tool) + 37);
+    }
+
+    #[test]
+    fn assemble_wire_accepts_optional_tools_and_request_overhead() {
+        let request: AssembleRequest = serde_json::from_value(json!({
+            "messages": [],
+            "model": {
+                "id": "m",
+                "limits": { "context_window": 1_000, "max_output_tokens": 100 }
+            },
+            "tools": [{
+                "name": "agent_trigger",
+                "description": "Run an agent function",
+                "parameters": { "type": "object" }
+            }],
+            "options": { "request_overhead_tokens": 41 }
+        }))
+        .unwrap();
+
+        assert_eq!(request.tools.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            request
+                .options
+                .as_ref()
+                .and_then(|options| options.request_overhead_tokens),
+            Some(41)
+        );
+    }
 }

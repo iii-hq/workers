@@ -159,6 +159,51 @@ async fn message_text_len(world: &mut ContextWorld, idx: usize, expected: usize)
     assert_eq!(text.len(), expected, "message {idx} text length mismatch");
 }
 
+#[then(regex = r#"^response message (\d+) text contains "([^"]*)"$"#)]
+async fn message_text_contains(world: &mut ContextWorld, idx: usize, expected: String) {
+    if world.soft_skipped {
+        return;
+    }
+    let messages = response_messages(world);
+    let message = messages
+        .get(idx)
+        .unwrap_or_else(|| panic!("no response message at index {idx}"));
+    let text = message
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        text.contains(&expected),
+        "message {idx} text does not contain `{expected}`: {text}"
+    );
+}
+
+#[then(regex = r#"^response message (\d+) text does not exceed (\d+) chars$"#)]
+async fn message_text_at_most(world: &mut ContextWorld, idx: usize, limit: usize) {
+    if world.soft_skipped {
+        return;
+    }
+    let messages = response_messages(world);
+    let message = messages
+        .get(idx)
+        .unwrap_or_else(|| panic!("no response message at index {idx}"));
+    let text = message
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        text.len() <= limit,
+        "message {idx} text has {} chars, expected at most {limit}",
+        text.len()
+    );
+}
+
 #[then(regex = r#"^every response message keeps its function_call_id$"#)]
 async fn keeps_call_ids(world: &mut ContextWorld) {
     if world.soft_skipped {

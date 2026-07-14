@@ -23,6 +23,13 @@ pub enum ContextError {
     /// A filesystem operation backing the compaction lease failed.
     #[error("context/state: {0}")]
     State(String),
+
+    /// No safe model-facing context can fit within the usable input
+    /// budget after normal pruning, compaction, and emergency reduction.
+    #[error(
+        "context/overflow: assembled context requires {token_count} tokens but usable budget is {usable}"
+    )]
+    Overflow { token_count: u64, usable: u64 },
 }
 
 impl ContextError {
@@ -32,6 +39,7 @@ impl ContextError {
             ContextError::InvalidRequest(_) => "context/invalid_request",
             ContextError::ModelUnresolved(_) => "context/model_unresolved",
             ContextError::State(_) => "context/state",
+            ContextError::Overflow { .. } => "context/overflow",
         }
     }
 }
@@ -68,6 +76,10 @@ mod tests {
             ContextError::InvalidRequest("m".into()),
             ContextError::ModelUnresolved("m".into()),
             ContextError::State("m".into()),
+            ContextError::Overflow {
+                token_count: 101,
+                usable: 100,
+            },
         ];
         for v in variants {
             assert!(
@@ -76,5 +88,26 @@ mod tests {
                 v.code()
             );
         }
+    }
+
+    #[test]
+    fn overflow_carries_budget_values_and_stable_code() {
+        let error = ContextError::Overflow {
+            token_count: 12_345,
+            usable: 10_000,
+        };
+
+        assert_eq!(error.code(), "context/overflow");
+        assert_eq!(
+            error.to_string(),
+            "context/overflow: assembled context requires 12345 tokens but usable budget is 10000"
+        );
+        assert!(matches!(
+            error,
+            ContextError::Overflow {
+                token_count: 12_345,
+                usable: 10_000
+            }
+        ));
     }
 }
