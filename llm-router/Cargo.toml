@@ -4,7 +4,7 @@
 # this lineage starts above them so Create Tag never collides.
 [package]
 name = "llm-router"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
