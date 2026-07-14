@@ -7,6 +7,12 @@
 //! a known fact is reinforced (`corroboration += 1`), never duplicated.
 //! Memory's own function calls never reach this path: the transcript is
 //! fetched with `roles: [user, assistant]`, and only text blocks are read.
+//!
+//! INCREMENTAL: a per-session cursor (last processed entry id, kept in the
+//! `state` worker under scope `memory_cursor`) means each pass reads and
+//! extracts only the messages that arrived since the previous pass — the
+//! LLM never re-pays for content it already saw. The cursor advances only
+//! after a successful pass, so a failed call retries over the same span.
 
 use std::sync::Arc;
 
@@ -85,8 +91,20 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
         return Ok(());
     };
 
-    let transcript = fetch_transcript(&deps.iii, session_id, cfg.extraction_window).await?;
+    let since = cursor_get(&deps.iii, session_id).await;
+    let (transcript, newest_id) = fetch_transcript_since(
+        &deps.iii,
+        session_id,
+        since.as_deref(),
+        cfg.extraction_window,
+    )
+    .await?;
     if transcript.trim().len() < 20 {
+        // Nothing new worth an LLM call; still advance past trivia so the
+        // same span is never re-fetched.
+        if let Some(id) = newest_id {
+            cursor_set(&deps.iii, session_id, &id).await;
+        }
         return Ok(());
     }
 
@@ -113,6 +131,11 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
 
     let text = assistant_text(&reply);
     let items = parse_items(&text)?;
+    // The pass succeeded (whatever it yielded): advance the cursor so the
+    // next turn's extraction reads only newer messages.
+    if let Some(id) = newest_id {
+        cursor_set(&deps.iii, session_id, &id).await;
+    }
     if items.is_empty() {
         return Ok(());
     }
@@ -187,50 +210,141 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Last `window` user/assistant messages as plain text, oldest first.
-/// `roles` narrowing also excludes custom + function_result entries, so
-/// memory's own injections and calls never feed back into extraction.
-async fn fetch_transcript(
-    iii: &IIIClient,
-    session_id: &str,
-    window: usize,
-) -> Result<String, String> {
+const CURSOR_SCOPE: &str = "memory_cursor";
+/// Page size while walking a session; bounded so a pathological session
+/// costs at most PAGE_LIMIT * MAX_PAGES wire reads (never LLM tokens).
+const PAGE_SIZE: usize = 100;
+const MAX_PAGES: usize = 10;
+
+/// Last processed entry id for a session, from the state worker. Any
+/// failure (state absent, no cursor yet) means "no cursor" — the pass
+/// falls back to the newest `window` messages.
+async fn cursor_get(iii: &IIIClient, session_id: &str) -> Option<String> {
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "session::messages".into(),
-            payload: json!({
-                "session_id": session_id,
-                "limit": window,
-                "roles": ["user", "assistant"],
-            }),
+            function_id: "state::get".into(),
+            payload: json!({ "scope": CURSOR_SCOPE, "key": session_id }),
             action: None,
-            timeout_ms: Some(10_000),
+            timeout_ms: Some(5_000),
         })
         .await
-        .map_err(|e| format!("session::messages: {e}"))?;
+        .ok()?;
+    reply
+        .pointer("/value/last_entry_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
 
-    let mut lines = Vec::new();
-    if let Some(items) = reply.get("messages").and_then(Value::as_array) {
-        for item in items {
-            let Some(message) = item.get("message") else {
-                continue;
-            };
-            let role = message.get("role").and_then(Value::as_str).unwrap_or("");
-            let text = content_text(message.get("content"));
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                continue;
+/// Best-effort cursor write; a miss only costs a re-read next pass
+/// (fingerprints keep re-extraction harmless, just not free).
+async fn cursor_set(iii: &IIIClient, session_id: &str, entry_id: &str) {
+    let res = iii
+        .trigger(TriggerRequest {
+            function_id: "state::set".into(),
+            payload: json!({
+                "scope": CURSOR_SCOPE,
+                "key": session_id,
+                "value": { "last_entry_id": entry_id },
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    if let Err(e) = res {
+        tracing::debug!(session_id, error = %e, "cursor write failed (state worker absent?)");
+    }
+}
+
+/// Drop a session's cursor (bound to `session::deleted`).
+pub async fn cursor_delete(iii: &IIIClient, session_id: &str) {
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "state::delete".into(),
+            payload: json!({ "scope": CURSOR_SCOPE, "key": session_id }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+}
+
+/// User/assistant messages NEWER than `since` (all of them, capped to the
+/// most recent `window`), plus the newest entry id seen. Walks the
+/// session page by page — `session::messages` returns root→leaf, so the
+/// new turn lives on the LAST page. `roles` narrowing also excludes
+/// custom + function_result entries, so memory's own calls never feed
+/// back into extraction.
+async fn fetch_transcript_since(
+    iii: &IIIClient,
+    session_id: &str,
+    since: Option<&str>,
+    window: usize,
+) -> Result<(String, Option<String>), String> {
+    let mut collected: Vec<(String, String, String)> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let mut payload = json!({
+            "session_id": session_id,
+            "limit": PAGE_SIZE,
+            "roles": ["user", "assistant"],
+        });
+        if let Some(c) = &cursor {
+            payload["cursor"] = json!(c);
+        }
+        let reply = iii
+            .trigger(TriggerRequest {
+                function_id: "session::messages".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(10_000),
+            })
+            .await
+            .map_err(|e| format!("session::messages: {e}"))?;
+        if let Some(items) = reply.get("messages").and_then(Value::as_array) {
+            for item in items {
+                let entry_id = item
+                    .get("entry_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let Some(message) = item.get("message") else {
+                    continue;
+                };
+                let role = message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let text = content_text(message.get("content"));
+                collected.push((entry_id, role, text));
             }
-            // The memory injection wrapper itself must not re-enter memory.
-            if trimmed.starts_with("<memory ") {
-                continue;
-            }
-            let mut excerpt = trimmed.to_string();
-            excerpt.truncate(2_000);
-            lines.push(format!("{role}: {excerpt}"));
+        }
+        match reply.get("next_cursor").and_then(Value::as_str) {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
         }
     }
-    Ok(lines.join("\n"))
+
+    let newest_id = collected.last().map(|(id, _, _)| id.clone());
+
+    // Keep only entries strictly after the stored cursor; an unknown
+    // cursor id (branch switch, trimmed history) falls back to the tail.
+    let start = since
+        .and_then(|s| collected.iter().position(|(id, _, _)| id == s))
+        .map(|p| p + 1)
+        .unwrap_or_else(|| collected.len().saturating_sub(window));
+
+    let mut lines = Vec::new();
+    for (_, role, text) in collected.into_iter().skip(start).rev().take(window) {
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() || trimmed.starts_with("<memory ") {
+            continue;
+        }
+        let mut excerpt = trimmed;
+        excerpt.truncate(2_000);
+        lines.push(format!("{role}: {excerpt}"));
+    }
+    lines.reverse();
+    Ok((lines.join("\n"), newest_id))
 }
 
 /// Concatenated text blocks of one message's content array.

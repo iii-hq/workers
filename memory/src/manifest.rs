@@ -31,6 +31,7 @@ pub fn build_manifest() -> ModuleManifest {
             "extraction_window": 12,
             "extraction_timeout_ms": 60_000,
             "max_facts_per_turn": 8,
+            "max_block_chars": 6_000,
             "decay_half_life_days": 30,
         }),
         supported_targets: vec![env!("TARGET").to_string()],

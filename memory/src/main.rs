@@ -180,6 +180,13 @@ async fn main() -> Result<()> {
         hooks::TURN_COMPLETED_FN,
         json!({}),
     );
+    // GC the per-session extraction cursor when its session goes away.
+    bind_best_effort(
+        &iii,
+        "session::deleted",
+        hooks::SESSION_DELETED_FN,
+        json!({}),
+    );
 
     // Reuse the queue surface (iii-queue builtin or the queue worker) for
     // durable extraction jobs: retries + DLQ instead of a lost pass on a
@@ -257,7 +264,10 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             "Internal: harness pre-generate hook — injects the session bank's blocks into the \
              system prompt and recalled facts as one appended message. Never denies.",
         )
-        .metadata(json!({ "internal": true, "trace_hidden": true })),
+        // Deliberately NOT trace_hidden: seeing memory feed each turn (which
+        // bank, which facts) in the trace timeline is a product requirement,
+        // not plumbing noise.
+        .metadata(json!({ "internal": true })),
     );
 
     let d = deps.clone();
@@ -272,7 +282,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
              (a single router::complete call) for the finished turn; inline fallback without \
              a queue.",
         )
-        .metadata(json!({ "internal": true, "trace_hidden": true })),
+        .metadata(json!({ "internal": true })),
     );
 
     let d = deps.clone();
@@ -286,6 +296,17 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             "Internal: queue-delivered extraction job — errors propagate so the queue retries \
              and dead-letters instead of losing the pass.",
         )
+        .metadata(json!({ "internal": true })),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        hooks::SESSION_DELETED_FN,
+        RegisterFunction::new_async(move |input: hooks::SessionDeletedInput| {
+            let d = d.clone();
+            async move { hooks::session_deleted(&d, input).await }
+        })
+        .description("Internal: session::deleted handler — drops the session's extraction cursor.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 }

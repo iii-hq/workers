@@ -72,6 +72,13 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_facts_per_turn")]
     pub max_facts_per_turn: usize,
 
+    /// Hard character budget for the injected blocks section. Blocks are
+    /// injected into the system prompt on EVERY turn, so an unbounded
+    /// block taxes every call forever; over-budget content is truncated
+    /// with a visible marker.
+    #[serde(default = "default_max_block_chars")]
+    pub max_block_chars: usize,
+
     /// Recency half-life in days for recall ranking. Unpinned facts lose
     /// rank weight as they age; they never lose the data.
     #[serde(default = "default_decay_half_life_days")]
@@ -101,6 +108,9 @@ fn default_extraction_timeout_ms() -> u64 {
 }
 fn default_max_facts_per_turn() -> usize {
     8
+}
+fn default_max_block_chars() -> usize {
+    6_000
 }
 fn default_decay_half_life_days() -> u64 {
     30

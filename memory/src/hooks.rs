@@ -27,6 +27,7 @@ use crate::types::now_ms;
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
 pub const EXTRACT_JOB_FN: &str = "memory::extract-job";
+pub const SESSION_DELETED_FN: &str = "memory::on-session-deleted";
 /// Durable queue (iii-queue builtin or the queue worker) carrying one
 /// extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
@@ -155,8 +156,41 @@ pub async fn pre_generate(
                 let generate = input.generate.as_ref();
                 let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
                 let mut section = format!("\n\n# Memory — bank: {bank_name}\n");
+                let mut budget = cfg.max_block_chars;
+                let mut truncated = false;
                 for b in &blocks {
-                    section.push_str(&format!("\n## {}\n{}\n", b.name, b.content.trim()));
+                    let content = b.content.trim();
+                    if content.len() <= budget {
+                        budget -= content.len();
+                        section.push_str(&format!("\n## {}\n{content}\n", b.name));
+                    } else if budget > 200 {
+                        let mut cut = budget.min(content.len());
+                        while cut > 0 && !content.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        section.push_str(&format!(
+                            "\n## {}\n{}\n[block truncated: over the {} char injection budget — trim it in the memory page]\n",
+                            b.name,
+                            &content[..cut],
+                            cfg.max_block_chars,
+                        ));
+                        budget = 0;
+                        truncated = true;
+                    } else {
+                        section.push_str(&format!(
+                            "\n## {} [omitted: over the injection budget]\n",
+                            b.name
+                        ));
+                        truncated = true;
+                    }
+                }
+                if truncated {
+                    tracing::warn!(
+                        bank = %bank_name,
+                        max_block_chars = cfg.max_block_chars,
+                        "memory blocks exceed the injection budget; truncated"
+                    );
+                    annotations.insert("memory_blocks_truncated".into(), json!(true));
                 }
                 mutations.system_prompt = Some(format!("{base}{section}"));
                 annotations.insert("memory_blocks".into(), json!(blocks.len()));
@@ -250,6 +284,25 @@ pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<Ack
     extract::try_run(deps, &input.session_id)
         .await
         .map_err(Error::Handler)?;
+    Ok(AckResponse { ok: true })
+}
+
+/// `session::deleted` payload (the field this worker reads).
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct SessionDeletedInput {
+    #[serde(default)]
+    pub session_id: String,
+}
+
+/// GC the per-session extraction cursor. Facts keep their provenance ids
+/// (history), but the operational cursor has nothing left to point at.
+pub async fn session_deleted(
+    deps: &Arc<Deps>,
+    input: SessionDeletedInput,
+) -> Result<AckResponse, Error> {
+    if !input.session_id.is_empty() {
+        extract::cursor_delete(&deps.iii, &input.session_id).await;
+    }
     Ok(AckResponse { ok: true })
 }
 
