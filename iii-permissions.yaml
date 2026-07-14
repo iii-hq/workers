@@ -121,6 +121,14 @@ rules:
   - '!browser::screencast::stop'
   - '!browser::frame'
   - '!browser::on-config-change'
+  # computer: console-UI plumbing, never agent-callable. screencast::*/frame
+  # exist only to feed the console viewport; on-config-change is the internal
+  # hot-reload trigger handler. The agent-facing surface (sessions, screenshot,
+  # observe, act, shell, files) stays at the needs_approval default.
+  - '!computer::screencast::start'
+  - '!computer::screencast::stop'
+  - '!computer::frame'
+  - '!computer::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
   # engine's trigger dispatch, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.

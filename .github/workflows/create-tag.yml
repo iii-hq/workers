@@ -15,6 +15,7 @@ on:
           - browser
           - claude-code
           - codex
+          - computer
           - devin
           - console
           - grok

@@ -1,0 +1,40 @@
+{
+  "description": "Write a text file in the desktop guest filesystem, replacing any existing content.",
+  "function_id": "computer::files::write",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "content": {
+        "description": "Text to write, replacing any existing content.",
+        "type": "string"
+      },
+      "path": {
+        "description": "Absolute path in the guest filesystem.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "path",
+      "session_id"
+    ],
+    "title": "FilesWriteInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "FilesWriteOutput",
+    "type": "object"
+  }
+}

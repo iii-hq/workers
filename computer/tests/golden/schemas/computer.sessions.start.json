@@ -1,0 +1,81 @@
+{
+  "description": "Start a computer-use session against a computer-server backend and return its session_id. Pass the endpoint or rely on the configured default. Sessions are durable; stop them with computer::sessions::stop when done.",
+  "function_id": "computer::sessions::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "endpoint": {
+        "default": null,
+        "description": "computer-server endpoint to drive: a `ws://`/`wss://` url, an `http://`/`https://` url, or a bare `host:port` (ws assumed, `/ws` appended). Omit to use the configured `default_endpoint`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "os": {
+        "default": null,
+        "description": "Guest OS label recorded on the session and surfaced in `session-started` (`linux`, `macos`, `windows`, `android`). Omit to use the configured `os`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "StartInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Screen": {
+        "description": "Desktop pixel dimensions. Coordinates handed to pointer actions are in this space: integer pixels, top-left origin, 1:1 with the screenshot.",
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "endpoint": {
+        "description": "Normalized endpoint the session is connected to.",
+        "type": "string"
+      },
+      "os": {
+        "type": "string"
+      },
+      "screen": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Screen"
+          }
+        ],
+        "description": "Desktop pixel dimensions; the coordinate space for `computer::act`."
+      },
+      "session_id": {
+        "description": "Pass this to every other computer function.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "endpoint",
+      "os",
+      "screen",
+      "session_id"
+    ],
+    "title": "StartOutput",
+    "type": "object"
+  }
+}

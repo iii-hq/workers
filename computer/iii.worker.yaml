@@ -1,0 +1,7 @@
+iii: v1
+name: computer
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: computer
+description: Drive a full desktop on the iii bus. Start a computer-use session against a computer-server backend, screenshot it, click and type by coordinate, run shell, and stream the live screen.

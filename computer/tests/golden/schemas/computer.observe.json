@@ -1,0 +1,119 @@
+{
+  "description": "Capture the desktop plus, optionally, the accessibility tree. Use include_a11y on macOS guests for a machine-readable element tree; elsewhere prefer computer::screenshot.",
+  "function_id": "computer::observe",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "include_a11y": {
+        "default": null,
+        "description": "Also fetch the accessibility tree. macOS returns a real tree; other guests may return a stub or nothing (the field is then omitted).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "ObserveInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentBlock": {
+        "description": "One block of a viewable response: an image block or a text line.",
+        "properties": {
+          "data": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "ObserveDetails": {
+        "properties": {
+          "mime": {
+            "type": "string"
+          },
+          "screen": {
+            "$ref": "#/definitions/Screen"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mime",
+          "screen",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "Screen": {
+        "description": "Desktop pixel dimensions. Coordinates handed to pointer actions are in this space: integer pixels, top-left origin, 1:1 with the screenshot.",
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "accessibility": {
+        "description": "Accessibility tree, present only when requested and the guest exposes one."
+      },
+      "content": {
+        "items": {
+          "$ref": "#/definitions/ContentBlock"
+        },
+        "type": "array"
+      },
+      "details": {
+        "$ref": "#/definitions/ObserveDetails"
+      }
+    },
+    "required": [
+      "content",
+      "details"
+    ],
+    "title": "ObserveOutput",
+    "type": "object"
+  }
+}

@@ -69,6 +69,7 @@ npx skills add iii-hq/iii --all
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
 | [`scrapling`](scrapling/) | Python | [Scrapling](https://github.com/D4Vinci/Scrapling) as an iii worker — `scrapling::*` map three fetch tiers (HTTP / Camoufox stealth / Playwright), screenshots, and CSS/XPath/regex/adaptive extraction over the bus. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
+| [`computer`](computer/) | Rust | Full-desktop computer use over the bus — connects to a computer-server backend, returns screenshots as image blocks, acts by coordinate (click/type/scroll/drag/shell), streams the live screen onto `computer:frames`, and keeps sessions durable in `state`. |
 | [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
 
 ## SDK

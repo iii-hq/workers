@@ -1,0 +1,45 @@
+{
+  "description": "Run a shell command inside the desktop guest and return stdout, stderr, and exit code.",
+  "function_id": "computer::shell",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "command": {
+        "description": "Command line to run in the guest.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "command",
+      "session_id"
+    ],
+    "title": "ShellInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "exit_code": {
+        "description": "Process exit code; a non-zero code is returned, not raised.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stdout": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "exit_code",
+      "stderr",
+      "stdout"
+    ],
+    "title": "ShellOutput",
+    "type": "object"
+  }
+}
