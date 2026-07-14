@@ -6,6 +6,10 @@ import {
 } from '@/components/chat/browser'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
+  ComputerFunctionIdLabel,
+  ComputerToolView,
+} from '@/components/chat/computer'
+import {
   DirectoryFunctionIdLabel,
   DirectoryToolView,
 } from '@/components/chat/directory'
@@ -219,6 +223,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (CoderToolView.isCoderFunction(functionId)) {
     return <CoderFunctionIdLabel functionId={functionId} />
   }
+  if (ComputerToolView.isComputerFunction(functionId)) {
+    return <ComputerFunctionIdLabel functionId={functionId} />
+  }
   if (SandboxToolView.isSandboxFunction(functionId)) {
     return <SandboxFunctionIdLabel functionId={functionId} />
   }
@@ -283,6 +290,7 @@ export function FunctionCallCard({
     WorkerToolView.tryRenderPreview(message) ??
     WebToolView.tryRenderPreview(message) ??
     CoderToolView.tryRenderPreview(message) ??
+    ComputerToolView.tryRenderPreview(message) ??
     ScraplingToolView.tryRenderPreview(message) ??
     ShellToolView.tryRenderPreview(message) ??
     WorkflowToolView.tryRenderPreview(message) ??
@@ -297,6 +305,7 @@ export function FunctionCallCard({
       WorkerToolView.tryRender(message) ??
       WebToolView.tryRender(message) ??
       CoderToolView.tryRender(message) ??
+      ComputerToolView.tryRender(message) ??
       ScraplingToolView.tryRender(message) ??
       ShellToolView.tryRender(message) ??
       WorkflowToolView.tryRender(message) ??
