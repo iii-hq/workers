@@ -424,7 +424,10 @@ export function DirectoryPicker({
   }
 
   return (
-    <div ref={containerRef} className={cn('relative inline-flex', className)}>
+    <div
+      ref={containerRef}
+      className={cn('relative inline-flex min-w-0', className)}
+    >
       <button
         type="button"
         disabled={disabled}
@@ -434,13 +437,13 @@ export function DirectoryPicker({
         title={value ?? 'choose a working directory'}
         onClick={() => (open ? setOpen(false) : openPanel())}
         className={cn(
-          'inline-flex items-center gap-1 rounded-sm border border-rule px-2 py-1 text-[11px] lowercase transition-colors',
+          'inline-flex h-9 min-w-0 items-center gap-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
           externalError ? 'text-warn' : value ? 'text-ink' : 'text-ink-faint',
-          'hover:text-ink disabled:opacity-50',
+          'hover:border-ink hover:text-ink disabled:opacity-50',
         )}
       >
-        <Folder size={12} aria-hidden />
-        <span className="max-w-[160px] truncate">{label}</span>
+        <Folder size={14} aria-hidden className="shrink-0" />
+        <span className="min-w-0 max-w-[160px] truncate">{label}</span>
       </button>
 
       {open ? (

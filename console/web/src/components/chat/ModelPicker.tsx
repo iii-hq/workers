@@ -206,7 +206,7 @@ export function ModelPicker({
   }
 
   return (
-    <span className="inline-flex min-w-0 items-center gap-1">
+    <span className={cn('flex min-w-0 items-center gap-1', className)}>
       <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange}>
         <DropdownMenuPrimitive.Trigger asChild disabled={pickerDisabled}>
           <button
@@ -220,13 +220,17 @@ export function ModelPicker({
             }
             aria-busy={loading || undefined}
             className={cn(
-              'inline-flex h-9 min-w-0 max-w-full items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[state=open]:border-ink',
+              'flex h-9 min-w-0 flex-1 items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[state=open]:border-ink',
               pickerDisabled && 'pointer-events-none opacity-40',
-              className,
             )}
           >
-            <span className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate text-left">
-              <span className={cn('truncate', !selected && 'text-ink-faint')}>
+            <span className="flex min-w-0 flex-1 items-baseline gap-1.5 overflow-hidden whitespace-nowrap text-left">
+              <span
+                className={cn(
+                  'min-w-0 flex-1 truncate',
+                  !selected && 'text-ink-faint',
+                )}
+              >
                 {selected?.label ?? (loading ? 'loading…' : 'no models')}
               </span>
               {selectedEfforts.length > 1 && thinkingLevel !== 'default' ? (
@@ -415,7 +419,7 @@ export function ModelPicker({
           onClick={() => {
             void ctx.refreshModels()
           }}
-          className="p-1 text-ink-ghost transition-colors hover:text-ink disabled:opacity-50"
+          className="inline-flex size-9 shrink-0 items-center justify-center text-ink-ghost transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
         >
           <RefreshCw
             size={12}
