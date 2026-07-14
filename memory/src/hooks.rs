@@ -150,12 +150,22 @@ pub async fn pre_generate(
     let mut annotations = Map::new();
     annotations.insert("memory_bank".into(), json!(bank_name));
 
+    // Always present (stable per session, so it never breaks the provider
+    // prompt cache): without this, models apologize that they "can't save
+    // to memory" when a user asks them to remember something — capture is
+    // ambient and needs no function call.
+    let generate = input.generate.as_ref();
+    let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
+    let mut section = format!(
+        "\n\n# Memory — bank: {bank_name}\nMemory is automatic here: durable facts and \
+         preferences from this conversation are extracted and saved after each turn, and \
+         relevant memories are provided to you when they exist. When the user asks you to \
+         remember something, acknowledge it — no save call is needed.\n"
+    );
+
     if cfg.inject_blocks {
         if let Ok(blocks) = bank.list_blocks() {
             if !blocks.is_empty() {
-                let generate = input.generate.as_ref();
-                let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
-                let mut section = format!("\n\n# Memory — bank: {bank_name}\n");
                 let mut budget = cfg.max_block_chars;
                 let mut truncated = false;
                 for b in &blocks {
@@ -192,11 +202,11 @@ pub async fn pre_generate(
                     );
                     annotations.insert("memory_blocks_truncated".into(), json!(true));
                 }
-                mutations.system_prompt = Some(format!("{base}{section}"));
                 annotations.insert("memory_blocks".into(), json!(blocks.len()));
             }
         }
     }
+    mutations.system_prompt = Some(format!("{base}{section}"));
 
     if cfg.inject_facts {
         let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
