@@ -79,7 +79,7 @@ pub async fn run(deps: Arc<Deps>, session_id: String) {
     }
 }
 
-async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
+pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     let cfg = deps.config().await;
     let Some(bank_name) = resolve_bank(&deps.iii, session_id, &cfg.default_bank).await else {
         return Ok(());

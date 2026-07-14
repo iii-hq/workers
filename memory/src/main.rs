@@ -181,12 +181,61 @@ async fn main() -> Result<()> {
         json!({}),
     );
 
+    // Reuse the queue surface (iii-queue builtin or the queue worker) for
+    // durable extraction jobs: retries + DLQ instead of a lost pass on a
+    // mid-extraction restart. Best-effort — without a queue the
+    // turn-completed handler falls back to inline extraction.
+    match iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "queue::define".into(),
+            payload: json!({ "queue": hooks::EXTRACTION_QUEUE, "config": {} }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+    {
+        Ok(_) => tracing::info!(queue = hooks::EXTRACTION_QUEUE, "extraction queue defined"),
+        Err(e) => {
+            tracing::info!(error = %e, "queue::define unavailable (builtin queue or none); extraction enqueues best-effort")
+        }
+    }
+    bind_best_effort(
+        &iii,
+        "durable:subscriber",
+        hooks::EXTRACT_JOB_FN,
+        json!({ "queue": hooks::EXTRACTION_QUEUE, "max_retries": 3, "backoff_ms": 2_000 }),
+    );
+
+    // Reuse the http worker: every public function doubles as a REST
+    // route (`POST /memory/...`). Best-effort — without the http worker
+    // the bus surface still serves everything.
+    for spec in functions::catalog() {
+        let api_path = spec.function_id.replace("::", "/");
+        match iii.register_trigger(RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: spec.function_id.to_string(),
+            config: json!({ "api_path": api_path, "http_method": "POST" }),
+            metadata: None,
+        }) {
+            Ok(_) => tracing::debug!(
+                function_id = spec.function_id,
+                api_path,
+                "http trigger registered"
+            ),
+            Err(e) => {
+                tracing::debug!(error = %e, function_id = spec.function_id, "http trigger registration failed")
+            }
+        }
+    }
+
     // LAST: bind the configuration-change trigger so its handler closes
     // over the fully-built cells.
     configuration::register_config_trigger(&iii, cell, store_cell)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!("memory ready: 14 memory::* functions + 2 custom trigger types");
+    tracing::info!(
+        "memory ready: 14 memory::* functions + 2 custom trigger types + REST via http worker"
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("memory shutting down (all writes already fsynced)");
@@ -219,8 +268,23 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             async move { hooks::turn_completed(&d, input).await }
         })
         .description(
-            "Internal: harness turn-completed handler — spawns one background extraction pass \
-             (a single router::complete call) for the finished turn.",
+            "Internal: harness turn-completed handler — enqueues one durable extraction job \
+             (a single router::complete call) for the finished turn; inline fallback without \
+             a queue.",
+        )
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        hooks::EXTRACT_JOB_FN,
+        RegisterFunction::new_async(move |input: hooks::ExtractJobInput| {
+            let d = d.clone();
+            async move { hooks::extract_job(&d, input).await }
+        })
+        .description(
+            "Internal: queue-delivered extraction job — errors propagate so the queue retries \
+             and dead-letters instead of losing the pass.",
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );

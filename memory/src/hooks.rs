@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
 use crate::extract;
@@ -25,6 +26,11 @@ use crate::types::now_ms;
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
+pub const EXTRACT_JOB_FN: &str = "memory::extract-job";
+/// Durable queue (iii-queue builtin or the queue worker) carrying one
+/// extraction job per completed turn: retries + DLQ instead of a lost
+/// pass when this worker restarts mid-extraction.
+pub const EXTRACTION_QUEUE: &str = "memory-extraction";
 
 /// Envelope the harness posts to `pre-generate` hooks. Only the fields
 /// this worker reads are typed; everything else is ignored.
@@ -85,7 +91,15 @@ pub struct TurnCompletedInput {
     #[serde(default)]
     pub session_id: String,
     #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
     pub status: Option<String>,
+}
+
+/// One durable extraction job (the `data` of a queue message).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExtractJobInput {
+    pub session_id: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -190,8 +204,10 @@ pub async fn pre_generate(
     })
 }
 
-/// Ack fast, extract in the background. At-least-once redelivery is safe:
-/// fingerprints make the whole pass idempotent.
+/// Ack fast; hand the extraction pass to the durable queue (retries +
+/// DLQ, receipt-id deduped by turn), falling back to an inline spawn when
+/// no queue surface is installed. At-least-once redelivery is safe either
+/// way: fingerprints make the whole pass idempotent.
 pub async fn turn_completed(
     deps: &Arc<Deps>,
     input: TurnCompletedInput,
@@ -199,10 +215,41 @@ pub async fn turn_completed(
     let cfg = deps.config().await;
     let completed = input.status.as_deref().is_none_or(|s| s == "completed");
     if cfg.extraction_enabled && completed && !input.session_id.is_empty() {
-        let deps = deps.clone();
-        let session_id = input.session_id;
-        tokio::spawn(async move { extract::run(deps, session_id).await });
+        let receipt = input
+            .turn_id
+            .clone()
+            .unwrap_or_else(|| format!("t{}", now_ms()));
+        let enqueued = deps
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "engine::queue::enqueue".into(),
+                payload: json!({
+                    "queue": EXTRACTION_QUEUE,
+                    "function_id": EXTRACT_JOB_FN,
+                    "data": { "session_id": input.session_id },
+                    "messageReceiptId": format!("memx-{receipt}"),
+                }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        if let Err(e) = enqueued {
+            tracing::debug!(error = %e, "queue surface unavailable; extracting inline");
+            let deps = deps.clone();
+            let session_id = input.session_id;
+            tokio::spawn(async move { extract::run(deps, session_id).await });
+        }
     }
+    Ok(AckResponse { ok: true })
+}
+
+/// Queue-delivered extraction job. Returns the error to the queue so a
+/// failed pass retries and eventually lands in the DLQ instead of
+/// vanishing.
+pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<AckResponse, Error> {
+    extract::try_run(deps, &input.session_id)
+        .await
+        .map_err(Error::Handler)?;
     Ok(AckResponse { ok: true })
 }
 
