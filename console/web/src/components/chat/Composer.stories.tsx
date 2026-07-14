@@ -40,6 +40,17 @@ const STORY_MODEL_OPTIONS: ModelOption[] = [
     supportsThinking: true,
   },
   {
+    id: 'codex::gpt-5.6-terra',
+    label: 'gpt-5.6-terra (codex)',
+    contextWindow: 400_000,
+    supportsThinking: true,
+    reasoningEfforts: [
+      { effort: 'low', description: 'quick reasoning for routine tasks' },
+      { effort: 'medium', description: 'balanced reasoning and latency' },
+      { effort: 'high', description: 'deeper reasoning for complex tasks' },
+    ],
+  },
+  {
     id: 'openai::gpt-4.1',
     label: 'gpt-4.1',
     contextWindow: 1_000_000,
@@ -82,19 +93,25 @@ function seedWithText() {
 function ComposerHarness({
   initialMode = 'agent',
   initialModel = STORY_MODEL_OPTIONS[0].id,
+  initialThinkingLevel = 'default',
+  initialWorkingDir,
   initialContent,
   initialAttachments,
   isStreaming,
 }: {
   initialMode?: Mode
   initialModel?: ModelId
+  initialThinkingLevel?: ThinkingLevel
+  initialWorkingDir?: string
   initialContent?: () => void
   initialAttachments?: Attachment[]
   isStreaming?: boolean
 }) {
   const [mode, setMode] = useState<Mode>(initialMode)
   const [model, setModel] = useState<ModelId>(initialModel)
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('default')
+  const [thinkingLevel, setThinkingLevel] =
+    useState<ThinkingLevel>(initialThinkingLevel)
+  const [workingDir, setWorkingDir] = useState(initialWorkingDir)
   return (
     <Composer
       mode={mode}
@@ -103,9 +120,12 @@ function ComposerHarness({
       functionEntries={STATIC_FUNCTIONS}
       permissionMode="manual"
       thinkingLevel={thinkingLevel}
+      showWorkingDir={initialWorkingDir !== undefined}
+      workingDir={workingDir}
       onThinkingLevelChange={setThinkingLevel}
       onModeChange={setMode}
       onModelChange={setModel}
+      onWorkingDirChange={setWorkingDir}
       onPermissionModeChange={fn()}
       onSubmit={fn()}
       onStop={fn()}
@@ -162,6 +182,19 @@ export const WithAttachments: Story = {
       initialModel="openai::gpt-5"
       initialAttachments={sampleAttachments}
     />
+  ),
+}
+
+export const WithReasoningEffort: Story = {
+  name: 'selected reasoning effort',
+  render: () => (
+    <div className="max-w-[640px]">
+      <ComposerHarness
+        initialModel="codex::gpt-5.6-terra"
+        initialThinkingLevel="medium"
+        initialWorkingDir="/workspace/workers"
+      />
+    </div>
   ),
 }
 
