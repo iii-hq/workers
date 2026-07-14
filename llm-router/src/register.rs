@@ -1,6 +1,6 @@
-//! Wiring: boot order per the design doc — load stores → register trigger
-//! types → register iii functions → bind triggers → register the configuration
-//! entry → read settings → emit `router::ready`.
+//! Wiring: restore stores → register and fetch configuration → build the live
+//! in-memory snapshot → register functions → bind and reconcile the
+//! configuration trigger → emit `router::ready`.
 //!
 //! Every registration below is a direct `iii_sdk` call:
 //! `iii.register_function(id, RegisterFunction::new_async(...))` for the
@@ -8,7 +8,7 @@
 //! for trigger bindings. Router events fan out via worker-owned trigger types
 //! (`triggers::RouterEvents`).
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
@@ -26,14 +26,15 @@ use crate::chat::inflight::InflightMap;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
+use crate::config::state::{new_config_cell, ConfigCell};
 use crate::registry::availability::make_provider_list;
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
-use crate::settings::{parse_settings, RouterSettings};
 use crate::surface;
 use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
+use crate::types::router::ConfigChangedEvent;
 
 /// `metadata.internal = true` keeps a registration out of the default
 /// `engine::functions::list`: orchestrator/provider plumbing, invoked by id.
@@ -47,7 +48,7 @@ pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
     pub inflight: Arc<InflightMap>,
-    pub settings: Arc<RwLock<RouterSettings>>,
+    pub config: ConfigCell,
 }
 
 pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
@@ -57,10 +58,23 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     registry.load().await?;
     catalog.load().await?;
 
-    // 3. shared settings + inflight + router event fan-out
-    let settings = Arc::new(RwLock::new(RouterSettings::default()));
-    let inflight = Arc::new(InflightMap::default());
+    // 3. Register and fetch the authoritative configuration before exposing
+    // any request handlers. Re-registration preserves the stored value.
     let entry_lock = EntryWriteLock::default();
+    let mut provider_schemas = BTreeMap::new();
+    for rec in registry.list().await {
+        let schema = provider_entry_schema(
+            rec.declaration.config_schema.as_ref(),
+            &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
+            rec.declaration.system_prompt.as_deref(),
+        );
+        provider_schemas.insert(rec.declaration.id.clone(), schema);
+    }
+    register_entry(&iii, &provider_schemas).await?;
+    let config = new_config_cell(read_entry_value(&iii).await?);
+
+    // 4. Shared runtime state + router event fan-out.
+    let inflight = Arc::new(InflightMap::default());
     let events = RouterEvents::register(&iii);
 
     let pipeline = Arc::new(ChatPipeline {
@@ -68,11 +82,11 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         registry: registry.clone(),
         catalog: catalog.clone(),
         inflight: inflight.clone(),
-        settings: settings.clone(),
+        config: config.clone(),
         events: events.clone(),
     });
 
-    // 4. function surface
+    // 5. Function surface.
     {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
         iii.register_function(
@@ -125,13 +139,13 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_LIST_ID,
-        RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone()))
+        RegisterFunction::new_async(make_provider_list(config.clone(), registry.clone()))
             .description(surface::PROVIDER_LIST_DESC),
     );
     iii.register_function(
         surface::SYSTEM_PROMPT_GET_ID,
         RegisterFunction::new_async(crate::system_prompt::make_system_prompt_get(
-            iii.clone(),
+            config.clone(),
             registry.clone(),
         ))
         .description(surface::SYSTEM_PROMPT_GET_DESC)
@@ -142,7 +156,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         RegisterFunction::new_async(crate::routing::make_route(
             registry.clone(),
             catalog.clone(),
-            settings.clone(),
+            config.clone(),
         ))
         .description(surface::ROUTE_DESC)
         .metadata(internal_meta()),
@@ -164,7 +178,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_RESOLVE_ID,
-        RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone()))
+        RegisterFunction::new_async(make_provider_resolve(config.clone(), registry.clone()))
             .description(surface::PROVIDER_RESOLVE_DESC)
             .metadata(internal_meta()),
     );
@@ -173,7 +187,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         RegisterFunction::new_async(make_update_credential(
             iii.clone(),
             registry.clone(),
-            entry_lock,
+            config.clone(),
+            entry_lock.clone(),
         ))
         .description(surface::UPDATE_CREDENTIAL_DESC)
         .metadata(internal_meta()),
@@ -188,8 +203,9 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         .metadata(internal_meta()),
     );
 
-    // 5. bound trigger: configuration change (paste-a-key)
-    {
+    // 6. Bind configuration changes only after every consumer of the live
+    // snapshot has been built.
+    let on_config_changed = {
         let registry_for_listing = registry.clone();
         let lookup: crate::config::on_changed::ListingLookup = Arc::new(move |id: &str| {
             let registry = registry_for_listing.clone();
@@ -202,37 +218,38 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                     .unwrap_or(false)
             })
         });
-        iii.register_function(
-            surface::ON_CONFIG_CHANGED_ID,
-            RegisterFunction::new_async(make_on_config_changed(
-                iii.clone(),
-                lookup,
-                settings.clone(),
-                2000,
-            ))
+        make_on_config_changed(
+            iii.clone(),
+            lookup,
+            config.clone(),
+            entry_lock.clone(),
+            2000,
+        )
+    };
+    iii.register_function(
+        surface::ON_CONFIG_CHANGED_ID,
+        RegisterFunction::new_async(on_config_changed.clone())
             .description(surface::ON_CONFIG_CHANGED_DESC)
-            .metadata(internal_meta()),
-        );
-    }
-    let _ = iii.register_trigger(RegisterTriggerInput {
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+    iii.register_trigger(RegisterTriggerInput {
         trigger_type: "configuration".into(),
         function_id: surface::ON_CONFIG_CHANGED_ID.into(),
         config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
         metadata: None,
-    });
+    })?;
 
-    // 6. (re)register the entry from the restored registry, then read settings
-    let mut provider_schemas = BTreeMap::new();
-    for rec in registry.list().await {
-        let schema = provider_entry_schema(
-            rec.declaration.config_schema.as_ref(),
-            &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
-            rec.declaration.system_prompt.as_deref(),
+    // Close the boot race between the initial fetch and trigger binding by
+    // running the SAME operation the trigger runs: one reconcile keeps the
+    // snapshot, the fingerprint baseline, and any due `refresh_models` in
+    // step (a bare `apply_config` would install a newer value the handler
+    // then diffs against a stale baseline).
+    let ack = on_config_changed(ConfigChangedEvent { id: None }).await?;
+    if !ack.ok {
+        tracing::warn!(
+            "boot config reconcile kept the step-3 snapshot; authoritative re-read failed"
         );
-        provider_schemas.insert(rec.declaration.id.clone(), schema);
     }
-    register_entry(&iii, &provider_schemas).await?;
-    *settings.write().unwrap() = parse_settings(&read_entry_value(&iii).await);
 
     // 7. ready — providers re-declare on this
     events.emit(crate::triggers::READY, json!({})).await;
@@ -267,6 +284,6 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         registry,
         catalog,
         inflight,
-        settings,
+        config,
     })
 }

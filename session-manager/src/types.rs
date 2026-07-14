@@ -320,6 +320,11 @@ pub struct SessionMeta {
     /// Source session id when created by `session::fork`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<String>,
+    /// Unsent composer input parked on the session (`session::set-draft`),
+    /// so a client reload restores what the user was typing. Never set by
+    /// `session::set-meta`; absent when nothing is parked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
     /// Milliseconds since epoch.
     pub created_at: i64,
     /// Milliseconds since epoch.
@@ -406,6 +411,7 @@ mod tests {
             status_reason: None,
             metadata: None,
             forked_from: None,
+            draft: None,
             created_at: 1,
             updated_at: 1,
             message_count: 0,
@@ -415,5 +421,6 @@ mod tests {
         assert!(v.get("status_reason").is_none());
         assert!(v.get("metadata").is_none());
         assert!(v.get("forked_from").is_none());
+        assert!(v.get("draft").is_none());
     }
 }

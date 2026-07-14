@@ -772,15 +772,21 @@ impl IiiDeliverer {
 #[async_trait]
 impl EventDeliverer for IiiDeliverer {
     async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
-        let res = self
-            .iii
-            .trigger(TriggerRequest {
+        // Every session mutation fans out one delivery per subscriber (the
+        // console's live relays among them) — pure bookkeeping in a trace, so
+        // the call rides an `iii.tag.hidden` baggage scope: the spans it
+        // produces stack into the trace UI's span-filter INTERNAL section,
+        // hidden by default (workers/docs/sops/trace-hidden-functions.md).
+        let res = iii_helpers::observability::run_with_baggage(
+            &[("iii.tag.hidden", "session events")],
+            self.iii.trigger(TriggerRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
-            })
-            .await;
+            }),
+        )
+        .await;
         if let Err(e) = res {
             tracing::warn!(
                 trigger_type,
@@ -975,7 +981,10 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
                 Ok::<_, Error>(serde_json::json!({ "ok": true }))
             }
         })
-        .description("Internal: session event relay for one bridged session-manager instance."),
+        .description("Internal: session event relay for one bridged session-manager instance.")
+        // One relay invocation per session event on the main bus — hidden by
+        // default in trace UIs (workers/docs/sops/trace-hidden-functions.md).
+        .metadata(serde_json::json!({ "trace_hidden": true })),
     );
 
     match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput {

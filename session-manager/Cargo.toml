@@ -15,7 +15,10 @@ name = "session_manager"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.2-next.1"
+iii-sdk = "=0.21.3"
+# `run_with_baggage` for call-site span hiding (`iii.tag.hidden` on the
+# session-event fan-out — see src/events.rs `IiiDeliverer`).
+iii-helpers = "=0.21.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

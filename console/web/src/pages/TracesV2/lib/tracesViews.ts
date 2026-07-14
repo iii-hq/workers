@@ -47,6 +47,13 @@ export interface TracesView extends TracesViewConfig {
   name: string
 }
 
+/**
+ * Id of the "sessions" view the console worker seeds into a fresh `console`
+ * configuration entry (src/configuration.rs — keep the id in sync). Browsers
+ * with no recorded view choice select it by default.
+ */
+export const DEFAULT_VIEW_ID = 'view-sessions'
+
 /** Snapshot the live filter state into a view config. */
 export function captureViewConfig(filters: TraceFilterState): TracesViewConfig {
   const timeRangeMs =

@@ -1,4 +1,4 @@
-//! (Re)register + read the llm-router configuration entry through the
+//! (Re)register, fetch, and write the llm-router configuration entry through
 //! engine's `configuration::register/get/set` iii functions. Never passes
 //! initial_value, so operator-stored values survive every re-register.
 use std::collections::BTreeMap;
@@ -12,8 +12,8 @@ use super::schema::compose_entry_schema;
 
 pub const ENTRY_ID: &str = "llm-router";
 
-/// Serializes every llm-router entry mutation (register's schema re-compose,
-/// update_credential's read-merge-write) — spec § "Serialized merges".
+/// Serializes entry mutations and authoritative reloads so an older reload
+/// cannot overwrite the snapshot produced by a newer credential write.
 pub type EntryWriteLock = std::sync::Arc<tokio::sync::Mutex<()>>;
 
 pub async fn register_entry(
@@ -35,20 +35,21 @@ pub async fn register_entry(
     Ok(())
 }
 
-/// Null before the entry exists.
-pub async fn read_entry_value(iii: &IIIClient) -> Value {
-    let res: Result<Value, _> = iii
+/// Fetch the authoritative, env-expanded entry value.
+///
+/// Registration precedes every fetch during normal operation, so a missing
+/// entry or transport failure is surfaced instead of replacing the last-good
+/// in-memory snapshot with `null`.
+pub async fn read_entry_value(iii: &IIIClient) -> Result<Value, Error> {
+    let response: Value = iii
         .trigger(TriggerRequest {
             function_id: "configuration::get".into(),
             payload: json!({ "id": ENTRY_ID }),
             action: None,
             timeout_ms: None,
         })
-        .await;
-    match res {
-        Ok(v) => v.get("value").cloned().unwrap_or(Value::Null),
-        Err(_) => Value::Null, // NOT_FOUND before first registration
-    }
+        .await?;
+    Ok(response.get("value").cloned().unwrap_or(Value::Null))
 }
 
 pub async fn write_entry_value(iii: &IIIClient, value: Value) -> Result<(), Error> {

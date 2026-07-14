@@ -94,8 +94,17 @@ const EXECUTE_PREFIX = 'execute '
  * baggage-stamped `iii.function.id` is deliberately NOT read here — baggage
  * propagates from the caller, so on child spans it can name the trace
  * originator rather than the function that owns the span.
+ *
+ * Exported for the trace filter's grouping (`traceTimelineFilters.ts`):
+ * a span with an explicit identity is that function's own machinery
+ * (queue wrapper, handler span), which is exactly what producer-side
+ * `trace_hidden` tagging is meant to hide.
  */
-function explicitFunctionId(span: VisualizationSpan): string | null {
+export function explicitFunctionId(
+  span: Pick<VisualizationSpan, 'name'> & {
+    attributes?: Record<string, unknown>
+  },
+): string | null {
   const attrs = span.attributes ?? {}
   const id = attrs['faas.invoked_name'] ?? attrs.function_id
   if (typeof id === 'string' && id.length > 0) return id

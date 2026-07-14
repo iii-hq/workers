@@ -19,6 +19,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::core::budget::{fallback_model, ResolvedModel};
 use crate::error::ContextError;
@@ -74,6 +75,12 @@ pub(crate) async fn resolve_model(
 /// the bus error shape (`code: message`). `internal` hides the function
 /// from the discoverable `engine::functions::list` (trigger/config plumbing
 /// stays callable by id); see harness's iii-permissions.yaml.
+///
+/// Every `context::*` function is registered with `trace_hidden: true`
+/// metadata: context assembly runs inside every agent turn and reads as
+/// plumbing in trace timelines, so trace UIs hide these spans by default
+/// (users can unhide them from the span filter). See
+/// workers/docs/sops/trace-hidden-functions.md.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
@@ -95,9 +102,9 @@ fn register<Req, Resp, F, Fut>(
     })
     .description(description);
     let reg = if internal {
-        reg.metadata(serde_json::json!({ "internal": true }))
+        reg.metadata(json!({ "internal": true, "trace_hidden": true }))
     } else {
-        reg
+        reg.metadata(json!({ "trace_hidden": true }))
     };
     iii.register_function(id, reg);
 }

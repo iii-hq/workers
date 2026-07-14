@@ -58,6 +58,7 @@ rules:
   - '!session::create'
   - '!session::ensure'
   - '!session::set-meta'
+  - '!session::set-draft'
   - '!session::set-status'
   - '!session::delete'
   - '!session::append'

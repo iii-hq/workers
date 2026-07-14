@@ -1,14 +1,16 @@
-# Timeline span tags: `iii.tag.kind` / `iii.tag.display_name`
+# Timeline span tags: `iii.tag.kind` / `iii.tag.display_name` / `iii.tag.hidden`
 
 A convention for marking OpenTelemetry spans as **relevant** — the spans a
 trace UI should treat as first-class segments (an agent turn, a sub-agent
-run, a queue-dispatched job) rather than anonymous `execute <fn>` bars. Two
-span attributes carry the whole contract:
+run, a queue-dispatched job) rather than anonymous `execute <fn>` bars —
+or, inversely, as **internal plumbing** a trace UI should hide by default.
+Three span attributes carry the whole contract:
 
 | Attribute | Value | Meaning |
 |---|---|---|
 | `iii.tag.kind` | free-form string, dot-namespaced (`harness.turn`, `queue.process`, …) | classifies the span; its **presence** is what makes a span a relevant-span candidate |
 | `iii.tag.display_name` | free-form human string | overrides the span's display label wherever it renders |
+| `iii.tag.hidden` | free-form family label (`harness state`, `session events`, …) | marks the span as INTERNAL: trace UIs stack tagged spans into a separate span-filter section, hidden by default; the value is the section's entry label |
 
 Nothing here deviates from OTel: producers stamp plain span attributes,
 either directly or via W3C baggage, and consumers read them back off the
@@ -29,6 +31,25 @@ A display name is only worth setting when it is genuinely more informative
 than the default verb-stripped span name — `Workflow: cleanup temp files`
 beats `execute workflow::step`; a display name that just repeats the
 function name is noise.
+
+**Internal families (`iii.tag.hidden`) in use today**, all set as a baggage
+scope around ONE outbound call (`run_with_baggage` — the smear is the
+point: every span of the delivery carries the tag and hides on its own
+match; an untagged descendant survives, re-attached to the hidden span's
+parent):
+
+| Family | Producer | What it covers |
+|---|---|---|
+| `harness state` | harness `src/state.rs` | `state::*` turn/queue/idempotency bookkeeping |
+| `session updates` | harness `clients/session.rs` | the per-stream-batch `session::update-message` writes |
+| `session events` | session-manager `IiiDeliverer` | session-event fan-out to subscribers (the console's live relays) |
+| `turn enqueue` | harness `src/turn_loop.rs` | the re-enqueue of the next `harness::turn` step (the queue consumer scrubs the tag at the boundary) |
+
+Unlike `iii.tag.kind`, there is no root/echo distinction for `iii.tag.hidden`
+— every tagged span hides. Use it for call sites whose spans are plumbing
+from THIS caller while the same function stays meaningful from others; for
+a function that is plumbing from everywhere, prefer `trace_hidden`
+registration metadata (workers/docs/sops/trace-hidden-functions.md).
 
 ---
 
@@ -91,6 +112,16 @@ root. Backends and consumers must apply this rule wherever they enumerate
 relevant spans; a producer stamping direct attributes on one span trivially
 satisfies it.
 
+**Gap spans: compare against the nearest tagged ancestor.** "Parent" in the
+rule must be read as *nearest ancestor carrying the attribute*: a worker on
+an SDK whose span processor drops `iii.tag.*` baggage leaves tag-less spans
+in the middle of a scope, while its downstream callees re-materialize the
+tags (in real traces, `execute context::assemble` carries nothing while its
+`router::models::get` child repeats the sub-agent's tags). A consumer that
+compares only the immediate parent misreads such echoes as fresh tag roots.
+The console's implementation is `inheritedTags` in
+`workers/console/web/src/pages/TracesV2/lib/spanLabel.ts`.
+
 **Queue boundaries reset the scope.** A publisher's baggage necessarily
 carries its own scope's tags, and they ride the queued message; replayed
 verbatim they would smear the *publisher's* identity over the whole
@@ -107,11 +138,23 @@ function re-stamps its own tags.
 
 The lightest consumption — per rendered span:
 
-- **Label**: `iii.tag.display_name`, when present, wins outright over the
-  default (verb-stripped) span name.
+- **Label**: `iii.tag.display_name` wins over the default (verb-stripped)
+  span name — but only where it is NEW information: a span whose nearest
+  display-carrying ancestor already has the same value is a baggage echo
+  and keeps its own name. Without this, one sub-agent turn renders its
+  title on every LLM call, session write, and tool span in its scope
+  (trace `f6292958dfe97afbd87e323d4f4541b6`: 69 of 129 spans).
 - **Icon/classification**: `iii.tag.kind` is checked before the raw OTel
   `SpanKind` when bucketing the span's icon. `queue.process` buckets with
   queue consumers/producers; `harness.*` buckets with function invocations.
+- **Filter grouping**: a tag ROOT with no explicit function identity of its
+  own groups under its span NAME in the span filter, not under the function
+  whose baggage it inherits — and hiding a function's spans spares tag-root
+  descendants (they re-root instead of vanishing). This is what lets the
+  `trace_hidden` convention (see
+  [`../../docs/sops/trace-hidden-functions.md`](../../docs/sops/trace-hidden-functions.md))
+  hide `harness::turn`'s queue/execute wrappers while the `harness::turn
+  step` segment stays visible.
 
 Untagged spans are untouched, so the convention is strictly additive.
 

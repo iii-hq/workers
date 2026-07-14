@@ -403,16 +403,14 @@ pub struct ModelsReconcileRequest {
     pub models: Vec<Model>,
 }
 
-/// Configuration-change event delivered to `router::on_config_changed` via the
-/// engine's `configuration` trigger (paste-a-key flow).
+/// Advisory configuration-change event delivered to
+/// `router::on_config_changed`. The handler ignores event values and re-fetches
+/// the authoritative entry before replacing its in-memory snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigChangedEvent {
-    /// Configuration id; the handler only acts on `llm-router`.
+    /// Configuration id that changed (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// The new authoritative configuration value.
-    #[serde(default)]
-    pub new_value: Value,
 }
 
 /// Generic acknowledgement returned by trigger-bound handlers whose result is

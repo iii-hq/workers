@@ -194,6 +194,28 @@ async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Valu
     .await
 }
 
+async fn call_until(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+    predicate: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let value = call(iii, function_id, payload.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{function_id} failed while polling: {error}"));
+        if predicate(&value) {
+            return value;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{function_id} did not observe the reactive configuration update; last response: {value}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 fn remote_code(err: &Error) -> &str {
     match err {
         Error::Remote { code, .. } => code,
@@ -632,9 +654,13 @@ async fn system_prompt_get_resolves_declared_override_unset_and_default_provider
     )
     .await
     .unwrap();
-    let res = call(&router_iii, "router::system_prompt::get", json!({}))
-        .await
-        .unwrap();
+    let res = call_until(
+        &router_iii,
+        "router::system_prompt::get",
+        json!({}),
+        |value| value["system_prompt"] == json!("OPERATOR OVERRIDE"),
+    )
+    .await;
     assert_eq!(res["provider"], "prompty");
     assert_eq!(res["system_prompt"], "OPERATOR OVERRIDE");
 
@@ -650,9 +676,13 @@ async fn system_prompt_get_resolves_declared_override_unset_and_default_provider
     )
     .await
     .unwrap();
-    let res = call(&router_iii, "router::system_prompt::get", json!({}))
-        .await
-        .unwrap();
+    let res = call_until(
+        &router_iii,
+        "router::system_prompt::get",
+        json!({}),
+        |value| value["system_prompt"] == json!("DECLARED IDENTITY"),
+    )
+    .await;
     assert_eq!(res["system_prompt"], "DECLARED IDENTITY");
 
     provider_iii.shutdown();
@@ -761,13 +791,13 @@ async fn resolve_precedence_config_over_env_over_none() {
     )
     .await
     .unwrap();
-    let res = call(
+    let res = call_until(
         &provider.iii,
         "router::provider::resolve",
         json!({ "id": "real", "token": provider.token }),
+        |value| value["source"] == json!("config"),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(res["source"], "config");
     assert_eq!(res["credential"]["key"], "sk-stored");
     assert_eq!(res["max_tokens"], 4096);
@@ -1041,6 +1071,26 @@ async fn router_boots_its_interface_against_a_bare_engine() {
         .await
         .expect("interface answers");
     assert_eq!(list["models"], json!([]));
+
+    let functions = call(
+        &router_iii,
+        "engine::functions::list",
+        json!({ "include_internal": true }),
+    )
+    .await
+    .expect("function catalog answers");
+    let config_handler = functions["functions"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row["function_id"] == "router::on_config_changed")
+        })
+        .expect("reactive configuration handler is registered");
+    assert_eq!(
+        config_handler["metadata"]["trace_hidden"],
+        json!(true),
+        "reactive configuration plumbing must be hidden from traces by default"
+    );
 
     router_iii.shutdown();
 }

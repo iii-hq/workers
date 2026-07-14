@@ -33,6 +33,7 @@ import {
   fetchTranscript,
   getSession,
   listSessions,
+  setSessionDraft,
   setSessionMeta,
 } from '@/lib/sessions/api'
 import {
@@ -65,6 +66,10 @@ import {
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
 }
+
+/** Composer-draft save cadence (`session::set-draft` is event-silent, so the
+ *  only costs are the RPC and one JSONL append per flush). */
+const DRAFT_SAVE_DEBOUNCE_MS = 500
 
 /** Draft ids double as engine session ids — minted with the console prefix. */
 function newConversationId(): string {
@@ -146,6 +151,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
     spawnedBy:
       md.spawned_by === 'trigger' || md.spawned_by === 'agent'
         ? md.spawned_by
+        : undefined,
+    draftText:
+      typeof meta.draft === 'string' && meta.draft.length > 0
+        ? meta.draft
         : undefined,
     messages: [],
     status: meta.status,
@@ -267,6 +276,19 @@ export interface ConversationsApi {
    * send (idempotent). `titleHint` seeds the session title from the prompt.
    */
   ensureSession: (id: string, titleHint?: string) => Promise<void>
+  /**
+   * Record the composer's live text for a conversation. Kept in a ref (no
+   * re-render per keystroke) and, for server-backed sessions, persisted via
+   * the debounced event-silent `session::set-draft` so a page refresh
+   * restores what the user was typing.
+   */
+  setDraftText: (id: string, text: string) => void
+  /**
+   * The composer text to seed when (re)opening a conversation: what this tab
+   * last recorded via `setDraftText`, else the server-restored
+   * `SessionMeta.draft`. `undefined` when there is nothing to restore.
+   */
+  getDraftText: (id: string) => string | undefined
 }
 
 /**
@@ -332,6 +354,22 @@ export function useConversations(
     sessionId: string
     upserts: HydrationUpsert[]
   } | null>(null)
+
+  /* ── Composer drafts (SessionMeta.draft) ──────────────────────────────
+     The live editor text lives in refs — one map entry per conversation —
+     so keystrokes never re-render the conversation tree. Server persistence
+     is debounced through the event-silent `session::set-draft` (see
+     `setDraftText` below); reads fall back to the meta-restored
+     `conversation.draftText`, so the in-tab value (which knows about sends
+     and edits) always wins over the boot snapshot. */
+  const draftTextsRef = useRef(new Map<string, string>())
+  const lastSavedDraftRef = useRef(new Map<string, string>())
+  const pendingDraftRef = useRef<{ id: string; text: string } | null>(null)
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Per-session tail of the in-flight `session::set-draft` writes: saves
+      chain so an older save can never land after (and clobber) a newer one
+      — the case that matters is the post-send CLEAR racing a stale save. */
+  const draftSaveChainRef = useRef(new Map<string, Promise<void>>())
 
   const patchConversation = useCallback(
     (id: string, patch: (c: Conversation) => Conversation) => {
@@ -694,6 +732,9 @@ export function useConversations(
       const conv = conversations.find((c) => c.id === id)
       setConversations((list) => list.filter((c) => c.id !== id))
       revisionsRef.current.delete(id)
+      draftTextsRef.current.delete(id)
+      lastSavedDraftRef.current.delete(id)
+      if (pendingDraftRef.current?.id === id) pendingDraftRef.current = null
       setActiveId((current) => (current === id ? null : current))
       // Closing the conversation orphans any worktree claim this console
       // flow made for it; release best-effort (no-op for other claims).
@@ -834,6 +875,78 @@ export function useConversations(
     [serverEnabled, conversations, patchConversation],
   )
 
+  /* Live mirror for the draft callbacks: they fire from debounce timers and
+     editor events, where a stale `conversations` closure would misclassify a
+     just-materialised session as still-local. */
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
+
+  const flushDraft = useCallback(() => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = null
+    }
+    const pending = pendingDraftRef.current
+    pendingDraftRef.current = null
+    if (!pending) return
+    if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
+    const chain = draftSaveChainRef.current
+    const tail = (chain.get(pending.id) ?? Promise.resolve())
+      .then(async () => {
+        // Re-check under the chain: an earlier link may have saved this very
+        // value already. The saved-marker moves only AFTER the RPC resolves —
+        // a failed save stays eligible for retry on the next flush.
+        if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
+        await setSessionDraft(pending.id, pending.text || null)
+        lastSavedDraftRef.current.set(pending.id, pending.text)
+      })
+      .catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn('[conversations] set-draft failed', err)
+        }
+      })
+      .finally(() => {
+        if (chain.get(pending.id) === tail) chain.delete(pending.id)
+      })
+    chain.set(pending.id, tail)
+  }, [])
+
+  const setDraftText = useCallback(
+    (id: string, text: string) => {
+      draftTextsRef.current.set(id, text)
+      if (!serverEnabled) return
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      // Local drafts have no session yet; their text still lives in the ref
+      // map so in-tab switches keep it.
+      if (!conv || conv.draft) return
+      if (pendingDraftRef.current && pendingDraftRef.current.id !== id) {
+        flushDraft()
+      }
+      pendingDraftRef.current = { id, text }
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = setTimeout(flushDraft, DRAFT_SAVE_DEBOUNCE_MS)
+    },
+    [serverEnabled, flushDraft],
+  )
+
+  const getDraftText = useCallback((id: string): string | undefined => {
+    const live = draftTextsRef.current.get(id)
+    if (live !== undefined) return live || undefined
+    return conversationsRef.current.find((c) => c.id === id)?.draftText
+  }, [])
+
+  /* A hidden tab may be a refresh in progress — flush the pending save so
+     the debounce window doesn't swallow the last keystrokes. */
+  useEffect(() => {
+    if (!serverEnabled || typeof document === 'undefined') return
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushDraft()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () =>
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [serverEnabled, flushDraft])
+
   return {
     conversations,
     activeId,
@@ -850,6 +963,8 @@ export function useConversations(
     updateMessage,
     compactConversation,
     ensureSession,
+    setDraftText,
+    getDraftText,
   }
 }
 

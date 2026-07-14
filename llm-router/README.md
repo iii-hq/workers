@@ -83,7 +83,10 @@ supports model discovery, `provider::<id>::refresh_models`.
 
 All operator configuration lives in the engine's `llm-router` configuration
 entry — no env vars, no config file. The entry schema is composed at runtime
-from each registered provider's declaration:
+from each registered provider's declaration. The router fetches the complete
+entry at boot and keeps an in-memory snapshot synchronized by the
+`configuration:updated` trigger; request handlers never poll
+`configuration::get`.
 
 ```json
 {
@@ -115,8 +118,8 @@ from each registered provider's declaration:
 
 Per-provider slices additionally accept a nullable `system_prompt`: when set
 (non-empty), it overrides the provider-declared identity prompt served by
-`router::system_prompt::get`; unset/null serves the provider's default. Read
-live per request — no restart, no debounce.
+`router::system_prompt::get`; unset/null serves the provider's default. The
+reactive snapshot makes changes available without a router restart.
 
 Pasting a key into a provider's slice is the whole onboarding flow: the
 router diffs the changed slice, debounces ~2 s, and kicks that provider's

@@ -26,7 +26,9 @@ function calculatePercentile(values: number[], percentile: number): number {
 }
 
 export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
-  const [isExpanded, setIsExpanded] = useState(true)
+  // Collapsed by default — the footer stays a one-line summary until the
+  // user opts into the per-worker rows.
+  const [isExpanded, setIsExpanded] = useState(false)
 
   const { workerStats, percentiles } = useMemo(() => {
     const statsMap = new Map<string, WorkerStats>()

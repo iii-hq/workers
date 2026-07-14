@@ -1,24 +1,28 @@
 /**
- * The TracesV2 masthead: the live Timeline wearing the page-header chrome
- * (header row with the `$ traces` eyebrow + live/paused state on the
- * left, the shared span-filter funnel on the right).
+ * The TracesV2 masthead: the live hierarchical Timeline wearing the
+ * page-header chrome (header row with the `$ traces` eyebrow + live/paused
+ * state on the left, the shared span-filter funnel on the right).
  *
  * Every story is a stateful harness: the sim feed from ./liveFeed is
- * converted to `StoredSpan`s (one bar per span — exactly the all-spans
- * feed the strip consumes in production, live bars while a sim span is
- * still running), the Paused story freezes the feed (the track parks at
- * the last span once everything completes), and clicking a bar selects
- * its trace — in the app that opens the trace's full-canvas detail.
+ * threaded into parent chains and converted to `StoredSpan`s (exactly the
+ * all-spans feed the strip consumes in production — one 3px line per span,
+ * live bars while a sim span is still running), the Paused story freezes
+ * the feed (the track parks at the last span once everything completes),
+ * and clicking a bar selects its trace — in the app that opens the trace's
+ * full-canvas detail.
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useMemo, useRef, useState } from 'react'
 import type { StoredSpan } from '../../api/traces'
-import type { TimelineSpan } from '../../components/timeline/Timeline'
+import type { TimelineSpan } from '../../components/timeline/layout'
 import { TimelineStrip } from '../../components/timeline/TimelineStrip'
 import { LabFrame } from '../harness'
 import {
   BURSTS,
+  IDLE_GAPS,
+  LONG_RUNNING,
+  MIXED,
   OVERLOADED,
   type Scenario,
   SPARSE,
@@ -52,6 +56,51 @@ function toStoredSpans(spans: readonly TimelineSpan[]): StoredSpan[] {
   }))
 }
 
+function hashId(id: string): number {
+  let h = 5381
+  for (let i = 0; i < id.length; i++) {
+    h = ((h << 5) + h + id.charCodeAt(i)) >>> 0
+  }
+  return h
+}
+
+/**
+ * Thread the flat sim feed into parent chains for the strip's hierarchy:
+ * ~70% of spans (gated by an id hash) attach to the NEAREST span that
+ * started 0.15–8s earlier (depth-capped at 4) and inherit its trace id.
+ * Everything derives from immutable ids and start times, so the tree is
+ * stable across feed ticks — no bar ever changes parent as spans settle
+ * or arrive.
+ */
+function toHierarchicalStoredSpans(
+  spans: readonly TimelineSpan[],
+): StoredSpan[] {
+  const MIN_GAP_NS = 150 * 1_000_000
+  const MAX_GAP_NS = 8_000 * 1_000_000
+  const stored = toStoredSpans(spans)
+  const sorted = [...stored].sort(
+    (a, b) => a.start_time_unix_nano - b.start_time_unix_nano,
+  )
+  const depth = new Map<string, number>()
+  for (let i = 0; i < sorted.length; i++) {
+    const span = sorted[i]
+    if (hashId(span.span_id) % 100 >= 70) continue
+    for (let j = i - 1; j >= 0; j--) {
+      const parent = sorted[j]
+      const gap = span.start_time_unix_nano - parent.start_time_unix_nano
+      if (gap < MIN_GAP_NS) continue
+      if (gap > MAX_GAP_NS) break
+      const parentDepth = depth.get(parent.span_id) ?? 0
+      if (parentDepth >= 4) continue
+      span.parent_span_id = parent.span_id
+      span.trace_id = parent.trace_id
+      depth.set(span.span_id, parentDepth + 1)
+      break
+    }
+  }
+  return stored
+}
+
 /** While paused, render the last live snapshot (the feed keeps simulating). */
 function usePausableSpans(scenario: Scenario, paused: boolean): TimelineSpan[] {
   const live = useLiveSpans(scenario)
@@ -68,17 +117,18 @@ function StripHarness({
   initialPaused?: boolean
 }) {
   const [isPaused] = useState(initialPaused)
+  // The strip doesn't render selection — this just mirrors the app's
+  // click contract (toggle a trace's full-canvas detail open/closed).
   const [selected, setSelected] = useState<string | null>(null)
   const simSpans = usePausableSpans(scenario, isPaused)
-  const spans = useMemo(() => toStoredSpans(simSpans), [simSpans])
+  const spans = useMemo(() => toHierarchicalStoredSpans(simSpans), [simSpans])
   return (
     <TimelineStrip
       spans={spans}
       isPaused={isPaused}
       onTraceClick={(traceId) =>
-        setSelected((prev) => (prev === traceId ? null : traceId))
+        setSelected(selected === traceId ? null : traceId)
       }
-      selectedTraceId={selected}
     />
   )
 }
@@ -103,29 +153,51 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-/** Moderate traffic — one chromatic bar per span. */
+/** Dense mixed feed — parents above what they triggered, elbow connectors,
+ *  sequential subtrees sharing lines flame-graph style. */
+export const Hierarchy: Story = {
+  render: () => <StripHarness scenario={MIXED} />,
+}
+
+/** Moderate traffic — the default feel. */
 export const SteadyTraffic: Story = {
   render: () => <StripHarness scenario={STEADY} />,
 }
 
-/** A quiet engine: one span every 6–12s hugging the axis. */
+/** A quiet engine: one span every 6–12s, mostly roots on the top lines. */
 export const Sparse: Story = {
   render: () => <StripHarness scenario={SPARSE} />,
 }
 
-/** 9-span clumps every 14s — overflow fans into chip stacks. */
+/** 9-span clumps every 14s: concurrent subtrees stack downward, then the
+ *  lines clear as the clump scrolls out. */
 export const Bursts: Story = {
   render: () => <StripHarness scenario={BURSTS} />,
 }
 
-/** Permanently past 4 concurrent spans: stacks ride the longest bar. */
+/** Permanently deep concurrency — the viewport scrolls vertically when
+ *  the hierarchy outgrows the strip. */
 export const Overloaded: Story = {
   render: () => <StripHarness scenario={OVERLOADED} />,
+}
+
+/** 15–40s spans — most bars are live, growing width-only along the
+ *  now-edge (the hierarchy owns the left edge). */
+export const LongRunning: Story = {
+  render: () => <StripHarness scenario={LONG_RUNNING} />,
 }
 
 /** 35% error rate — failed spans flip to alert red. */
 export const WithErrors: Story = {
   render: () => <StripHarness scenario={WITH_ERRORS} />,
+}
+
+/**
+ * ~30s of dead air between clumps: the track parks at the last span's end
+ * (nothing moves), then whooshes the gap in when the next clump arrives.
+ */
+export const FreezesWhenIdle: Story = {
+  render: () => <StripHarness scenario={IDLE_GAPS} />,
 }
 
 /** Feed frozen (warn badge up), while the window keeps sliding. */

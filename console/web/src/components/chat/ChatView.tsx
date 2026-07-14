@@ -762,6 +762,23 @@ export function ChatView({
 
   const ensureSession = conversationsCtx?.ensureSession
 
+  // Composer draft persistence: the live text is recorded per conversation
+  // (and, for server-backed sessions, saved through the debounced
+  // `session::set-draft`) so a page refresh restores what was typed.
+  // `getDraftText` already falls back to the meta-restored value — no `??`
+  // here, or a known-emptied draft (sent message) would resurrect the stale
+  // boot snapshot on switch-back. The direct read covers ctx-less mounts
+  // (Storybook).
+  const composerInitialText = conversationsCtx
+    ? conversationsCtx.getDraftText(conversation.id)
+    : conversation.draftText
+  const handleComposerTextChange = useCallback(
+    (text: string) => {
+      conversationsCtx?.setDraftText(conversation.id, text)
+    },
+    [conversationsCtx, conversation.id],
+  )
+
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (harnessBlockedRef.current) return
@@ -1700,6 +1717,8 @@ export function ChatView({
             onPermissionModeChange={(next) =>
               void approvalSettings.setMode(next)
             }
+            initialText={composerInitialText}
+            onTextChange={handleComposerTextChange}
             onSubmit={handleSubmit}
             onStop={handleStop}
             queuedForEdit={backend.editQueued ? queuedForEdit : undefined}

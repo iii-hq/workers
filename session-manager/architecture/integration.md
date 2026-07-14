@@ -94,6 +94,7 @@ type SessionMeta = {
   status: SessionStatus; status_reason?: string;
   metadata?: Record<string, unknown>;     // app-defined; THE tenancy hook
   forked_from?: string;                   // set on sessions created by fork
+  draft?: string;                         // unsent composer input (set-draft only)
   created_at: number; updated_at: number;
   message_count: number;                  // kind:"message" entries only
 };
@@ -134,7 +135,14 @@ session-manager` / `get function info`); the shapes below are the contract.
 
 // session::set-meta — supplied fields replace; metadata replaces WHOLESALE.
 // Fires session::meta-updated (all-fields-absent request is a silent no-op).
+// Never touches SessionMeta.draft (that is session::set-draft's field).
 { session_id, title?, description?, metadata? } -> { meta }
+
+// session::set-draft — park (or clear) the session's unsent composer input,
+// read back as SessionMeta.draft on get/list. Written at keystroke cadence,
+// so deliberately event-SILENT and updated_at-NEUTRAL (a save never re-orders
+// session::list). Empty / whitespace-only text clears.
+{ session_id, draft? } -> { draft: string | null }
 
 // session::set-status — fires session::status-changed; SAME status = no-op,
 // no event (even with a different reason). reason stored only with "error",

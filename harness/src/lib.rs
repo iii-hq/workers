@@ -30,6 +30,7 @@ pub mod state;
 pub mod subagent;
 pub mod subscriptions;
 pub mod surface;
+pub(crate) mod trace_tags;
 pub mod trigger;
 pub mod turn_loop;
 pub mod types;

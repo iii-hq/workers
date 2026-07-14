@@ -214,6 +214,7 @@ mod tests {
             status_reason: None,
             metadata: None,
             forked_from: None,
+            draft: None,
             created_at: 1,
             updated_at: 1,
             message_count: 0,
