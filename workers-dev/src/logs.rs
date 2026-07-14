@@ -262,8 +262,11 @@ mod tests {
         // Timestamp alone fills the pane — the trailing separator must not push
         // the rendered line one column past max_width (would wrap onto two rows).
         let max = 10;
-        let line =
-            log_line_to_ratatui("2026-06-22T15:47:56.851170Z  INFO harness: ready", max, true);
+        let line = log_line_to_ratatui(
+            "2026-06-22T15:47:56.851170Z  INFO harness: ready",
+            max,
+            true,
+        );
         let total: usize = line
             .spans
             .iter()

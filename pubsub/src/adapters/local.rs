@@ -40,7 +40,7 @@ impl PubSubAdapter for LocalAdapter {
             tracing::debug!(topic = %topic, "Event: No subscriptions found");
             return;
         };
-        for (_id, function_id) in sub_info.iter() {
+        for function_id in sub_info.values() {
             tracing::debug!(function_id = %function_id, topic = %topic, "Event: Invoking function");
             let function_id = function_id.clone();
             let data = data.clone();

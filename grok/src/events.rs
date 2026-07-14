@@ -18,7 +18,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn next_item_id(session_id: &str) -> String {
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("{session_id}-{}-{:08}", &*EPOCH, seq)
+    format!("{session_id}-{}-{seq:08}", *EPOCH)
 }
 
 pub async fn emit(iii: &IIIClient, stream_name: &str, session_id: &str, data: Value) {
