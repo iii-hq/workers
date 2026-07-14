@@ -17,8 +17,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
@@ -79,13 +77,41 @@ pub struct Session {
     backend: Arc<dyn Backend>,
     screencast_active: AtomicBool,
     frame_seq: AtomicU64,
-    latest_frame: StdMutex<Option<LatestFrame>>,
+    latest_frame: StdMutex<Option<Arc<LatestFrame>>>,
     screencast_task: Mutex<Option<JoinHandle<()>>>,
     config: SharedConfig,
     iii: Arc<IIIClient>,
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        id: String,
+        endpoint: String,
+        os: String,
+        screen: Screen,
+        created_ms: i64,
+        backend: Arc<dyn Backend>,
+        config: SharedConfig,
+        iii: Arc<IIIClient>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            endpoint,
+            os,
+            screen,
+            created_ms,
+            last_used_ms: AtomicI64::new(now_ms()),
+            backend,
+            screencast_active: AtomicBool::new(false),
+            frame_seq: AtomicU64::new(0),
+            latest_frame: StdMutex::new(None),
+            screencast_task: Mutex::new(None),
+            config,
+            iii,
+        })
+    }
+
     pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.backend
     }
@@ -102,7 +128,7 @@ impl Session {
         self.screencast_active.load(Ordering::Relaxed)
     }
 
-    pub fn latest_frame(&self) -> Option<LatestFrame> {
+    pub fn latest_frame(&self) -> Option<Arc<LatestFrame>> {
         self.latest_frame
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -142,6 +168,9 @@ impl Session {
             handle.abort();
         }
         self.delete_frame_stream().await;
+        // Release the last frame's buffer immediately; a stopped screencast
+        // must not keep a multi-MB image resident.
+        *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     async fn screencast_pump(self: Arc<Self>) {
@@ -157,17 +186,19 @@ impl Session {
             match self.backend.screenshot().await {
                 Ok(shot) => {
                     let seq = self.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
-                    let frame = LatestFrame {
-                        data_b64: STANDARD.encode(&shot.bytes),
+                    let frame = Arc::new(LatestFrame {
+                        data_b64: shot.to_base64(),
                         mime: shot.mime,
                         width: self.screen.width,
                         height: self.screen.height,
                         frame_seq: seq,
                         timestamp: now_ms(),
-                    };
-                    *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) =
-                        Some(frame.clone());
+                    });
+                    // Push first (borrows), then store the Arc (moves): the
+                    // base64 is copied once into the RPC payload and never
+                    // deep-cloned into the slot.
                     self.push_frame_stream(&frame).await;
+                    *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = Some(frame);
                 }
                 Err(e) => {
                     tracing::warn!(session = %self.id, error = %e, "screencast capture failed; stopping pump");
@@ -179,56 +210,36 @@ impl Session {
     }
 
     async fn push_frame_stream(&self, frame: &LatestFrame) {
-        self.side_write(
-            "stream::set",
-            json!({
-                "stream_name": FRAMES_STREAM,
-                "group_id": self.id,
-                "item_id": FRAME_ITEM_ID,
-                "data": {
-                    "data": frame.data_b64,
-                    "mime": frame.mime,
-                    "width": frame.width,
-                    "height": frame.height,
-                    "frame_seq": frame.frame_seq,
-                    "timestamp": frame.timestamp,
-                }
-            }),
-        )
-        .await;
+        let payload = json!({
+            "stream_name": FRAMES_STREAM,
+            "group_id": self.id,
+            "item_id": FRAME_ITEM_ID,
+            "data": {
+                "data": frame.data_b64,
+                "mime": frame.mime,
+                "width": frame.width,
+                "height": frame.height,
+                "frame_seq": frame.frame_seq,
+                "timestamp": frame.timestamp,
+            }
+        });
+        if let Err(e) = side_write(&self.iii, "stream::set", payload).await {
+            tracing::debug!(session = %self.id, error = %e, "frame stream write failed");
+        }
     }
 
     async fn delete_frame_stream(&self) {
-        self.side_write(
-            "stream::delete",
-            json!({ "stream_name": FRAMES_STREAM, "group_id": self.id, "item_id": FRAME_ITEM_ID }),
-        )
-        .await;
-    }
-
-    async fn side_write(&self, function_id: &str, payload: Value) {
-        if let Err(e) = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(SIDE_WRITE_TIMEOUT_MS),
-            })
-            .await
-        {
-            tracing::debug!(function_id, session = %self.id, error = %e, "session side-write failed");
+        let payload =
+            json!({ "stream_name": FRAMES_STREAM, "group_id": self.id, "item_id": FRAME_ITEM_ID });
+        if let Err(e) = side_write(&self.iii, "stream::delete", payload).await {
+            tracing::debug!(session = %self.id, error = %e, "frame stream delete failed");
         }
     }
 
-    /// Tear down: stop the screencast pump, clear the stream, close the
-    /// backend. Idempotent.
+    /// Tear down: stop the screencast pump (clearing its stream and buffer),
+    /// then close the backend. Idempotent.
     async fn shutdown(&self) {
-        self.screencast_active.store(false, Ordering::SeqCst);
-        if let Some(handle) = self.screencast_task.lock().await.take() {
-            handle.abort();
-        }
-        self.delete_frame_stream().await;
+        self.stop_screencast().await;
         if let Err(e) = self.backend.close().await {
             tracing::warn!(session = %self.id, error = %e, "backend close failed");
         }
@@ -285,9 +296,12 @@ impl Sessions {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| cfg.os.clone());
 
-        let client =
-            ComputerServerClient::connect(&endpoint, cfg.connect_timeout_ms, cfg.max_timeout_ms)
-                .await?;
+        let client = ComputerServerClient::connect(
+            &endpoint,
+            cfg.connect_timeout_ms,
+            cfg.command_timeout_ms,
+        )
+        .await?;
         let endpoint_used = client.endpoint().to_string();
         let backend: Arc<dyn Backend> = Arc::new(client);
         let screen = backend
@@ -297,21 +311,16 @@ impl Sessions {
 
         let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
         let id = format!("c{slot}");
-        let session = Arc::new(Session {
-            id: id.clone(),
-            endpoint: endpoint_used,
+        let session = Session::new(
+            id.clone(),
+            endpoint_used,
             os,
             screen,
-            created_ms: now_ms(),
-            last_used_ms: AtomicI64::new(now_ms()),
+            now_ms(),
             backend,
-            screencast_active: AtomicBool::new(false),
-            frame_seq: AtomicU64::new(0),
-            latest_frame: StdMutex::new(None),
-            screencast_task: Mutex::new(None),
-            config: self.config.clone(),
-            iii: self.iii.clone(),
-        });
+            self.config.clone(),
+            self.iii.clone(),
+        );
         self.map.lock().await.insert(id.clone(), session.clone());
         self.persist(&session).await;
         self.emitter
@@ -446,27 +455,22 @@ impl Sessions {
         let client = ComputerServerClient::connect(
             &rec.endpoint,
             cfg.connect_timeout_ms,
-            cfg.max_timeout_ms,
+            cfg.command_timeout_ms,
         )
         .await?;
         let endpoint_used = client.endpoint().to_string();
         let backend: Arc<dyn Backend> = Arc::new(client);
         let screen = backend.screen_size().await?;
-        Ok(Arc::new(Session {
-            id: rec.session_id.clone(),
-            endpoint: endpoint_used,
-            os: rec.os.clone(),
+        Ok(Session::new(
+            rec.session_id.clone(),
+            endpoint_used,
+            rec.os.clone(),
             screen,
-            created_ms: rec.created_ms,
-            last_used_ms: AtomicI64::new(now_ms()),
+            rec.created_ms,
             backend,
-            screencast_active: AtomicBool::new(false),
-            frame_seq: AtomicU64::new(0),
-            latest_frame: StdMutex::new(None),
-            screencast_task: Mutex::new(None),
-            config: self.config.clone(),
-            iii: self.iii.clone(),
-        }))
+            self.config.clone(),
+            self.iii.clone(),
+        ))
     }
 
     /// Keep the id counter ahead of a restored `cN` so a new session never
@@ -492,16 +496,17 @@ impl Sessions {
     }
 
     async fn persist(&self, session: &Session) {
-        self.side_write(
-            "state::set",
-            json!({ "scope": STATE_SCOPE, "key": session.id, "value": session.record() }),
-        )
-        .await;
+        let payload = json!({ "scope": STATE_SCOPE, "key": session.id, "value": session.record() });
+        if let Err(e) = side_write(&self.iii, "state::set", payload).await {
+            tracing::warn!(session = %session.id, error = %e, "failed to persist session record; it may be lost on restart");
+        }
     }
 
     async fn forget(&self, id: &str) {
-        self.side_write("state::delete", json!({ "scope": STATE_SCOPE, "key": id }))
-            .await;
+        let payload = json!({ "scope": STATE_SCOPE, "key": id });
+        if let Err(e) = side_write(&self.iii, "state::delete", payload).await {
+            tracing::warn!(session = %id, error = %e, "failed to delete session record");
+        }
     }
 
     async fn list_records(&self) -> Result<Vec<SessionRecord>, String> {
@@ -523,19 +528,19 @@ impl Sessions {
             _ => Ok(Vec::new()),
         }
     }
+}
 
-    async fn side_write(&self, function_id: &str, payload: Value) {
-        if let Err(e) = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(SIDE_WRITE_TIMEOUT_MS),
-            })
-            .await
-        {
-            tracing::debug!(function_id, error = %e, "sessions side-write failed");
-        }
-    }
+/// Best-effort side-write onto the bus (state/stream mutation). Returns the
+/// error string for the caller to log at the level that fits: durability
+/// writes (persist/forget) at warn, high-volume stream writes at debug.
+async fn side_write(iii: &IIIClient, function_id: &str, payload: Value) -> Result<(), String> {
+    iii.trigger(TriggerRequest {
+        function_id: function_id.to_string(),
+        payload,
+        action: None,
+        timeout_ms: Some(SIDE_WRITE_TIMEOUT_MS),
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }

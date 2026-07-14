@@ -71,52 +71,72 @@ impl ComputerServerClient {
             .ok_or_else(|| format!("{command}: backend connection is closed"))?;
         let frame = json!({ "command": command, "params": params }).to_string();
 
-        // Ok = reply value; Err = (is_transport, message).
-        let outcome: Result<Value, (bool, String)> = timeout(self.command_timeout, async {
+        let outcome: Result<Value, CommandError> = timeout(self.command_timeout, async {
             socket
                 .send(Message::Text(frame))
                 .await
-                .map_err(|e| (true, format!("{command}: send failed: {e}")))?;
+                .map_err(|e| CommandError::Transport(format!("{command}: send failed: {e}")))?;
             loop {
                 match socket.next().await {
                     Some(Ok(Message::Text(t))) => {
-                        return parse_reply(command, &t).map_err(|m| (false, m))
+                        return parse_reply(command, &t).map_err(CommandError::Logical)
                     }
                     Some(Ok(Message::Binary(b))) => {
                         return parse_reply(command, &String::from_utf8_lossy(&b))
-                            .map_err(|m| (false, m))
+                            .map_err(CommandError::Logical)
                     }
                     Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
                     Some(Ok(Message::Close(_))) => {
-                        return Err((true, format!("{command}: server closed the connection")))
+                        return Err(CommandError::Transport(format!(
+                            "{command}: server closed the connection"
+                        )))
                     }
                     Some(Ok(_)) => continue,
-                    Some(Err(e)) => return Err((true, format!("{command}: transport error: {e}"))),
-                    None => return Err((true, format!("{command}: connection ended"))),
+                    Some(Err(e)) => {
+                        return Err(CommandError::Transport(format!(
+                            "{command}: transport error: {e}"
+                        )))
+                    }
+                    None => {
+                        return Err(CommandError::Transport(format!(
+                            "{command}: connection ended"
+                        )))
+                    }
                 }
             }
         })
         .await
         .unwrap_or_else(|_| {
-            Err((
-                true,
-                format!(
-                    "{command}: timed out after {}ms",
-                    self.command_timeout.as_millis()
-                ),
-            ))
+            Err(CommandError::Transport(format!(
+                "{command}: timed out after {}ms",
+                self.command_timeout.as_millis()
+            )))
         });
 
         match outcome {
             Ok(v) => Ok(v),
-            Err((is_transport, msg)) => {
-                if is_transport {
-                    *guard = None;
-                }
+            // A transport failure may leave the socket desynced; drop it so the
+            // next call fails fast instead of hanging on a stale connection.
+            Err(CommandError::Transport(msg)) => {
+                *guard = None;
                 Err(msg)
             }
+            Err(CommandError::Logical(msg)) => Err(msg),
         }
     }
+
+    /// A command whose reply carries nothing beyond success (pointer, keyboard,
+    /// and file-write actions). Collapses the `.await?; Ok(())` boilerplate.
+    async fn command_ok(&self, command: &str, params: Value) -> Result<(), String> {
+        self.command(command, params).await.map(|_| ())
+    }
+}
+
+/// Whether a failed command left the socket usable. Transport failures drop the
+/// connection; logical `success:false` failures keep it.
+enum CommandError {
+    Transport(String),
+    Logical(String),
 }
 
 /// Parse a computer-server reply. `success:true` returns the whole object (so
@@ -181,55 +201,47 @@ impl Backend for ComputerServerClient {
     }
 
     async fn left_click(&self, x: i64, y: i64) -> Result<(), String> {
-        self.command("left_click", json!({ "x": x, "y": y }))
-            .await?;
-        Ok(())
+        self.command_ok("left_click", json!({ "x": x, "y": y }))
+            .await
     }
 
     async fn right_click(&self, x: i64, y: i64) -> Result<(), String> {
-        self.command("right_click", json!({ "x": x, "y": y }))
-            .await?;
-        Ok(())
+        self.command_ok("right_click", json!({ "x": x, "y": y }))
+            .await
     }
 
     async fn double_click(&self, x: i64, y: i64) -> Result<(), String> {
-        self.command("double_click", json!({ "x": x, "y": y }))
-            .await?;
-        Ok(())
+        self.command_ok("double_click", json!({ "x": x, "y": y }))
+            .await
     }
 
     async fn move_cursor(&self, x: i64, y: i64) -> Result<(), String> {
-        self.command("move_cursor", json!({ "x": x, "y": y }))
-            .await?;
-        Ok(())
+        self.command_ok("move_cursor", json!({ "x": x, "y": y }))
+            .await
     }
 
     async fn scroll(&self, x: i64, y: i64, scroll_x: i64, scroll_y: i64) -> Result<(), String> {
-        self.command(
+        self.command_ok(
             "scroll",
             json!({ "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y }),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn drag(&self, from: (i64, i64), to: (i64, i64), button: &str) -> Result<(), String> {
-        self.command(
+        self.command_ok(
             "drag",
             json!({ "path": [[from.0, from.1], [to.0, to.1]], "button": button }),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn type_text(&self, text: &str) -> Result<(), String> {
-        self.command("type_text", json!({ "text": text })).await?;
-        Ok(())
+        self.command_ok("type_text", json!({ "text": text })).await
     }
 
     async fn keypress(&self, keys: &[String]) -> Result<(), String> {
-        self.command("hotkey", json!({ "keys": keys })).await?;
-        Ok(())
+        self.command_ok("hotkey", json!({ "keys": keys })).await
     }
 
     async fn run_command(&self, command: &str) -> Result<CommandOutput, String> {
@@ -264,9 +276,8 @@ impl Backend for ComputerServerClient {
     }
 
     async fn write_text(&self, path: &str, content: &str) -> Result<(), String> {
-        self.command("write_text", json!({ "path": path, "content": content }))
-            .await?;
-        Ok(())
+        self.command_ok("write_text", json!({ "path": path, "content": content }))
+            .await
     }
 
     async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {

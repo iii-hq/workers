@@ -101,9 +101,8 @@ computer:
   max_sessions: 2           # concurrent desktop connections
   idle_stop_ms: 300000      # stop sessions idle this long; 0 disables
   screencast_fps: 15        # live-view frame rate cap
-  default_timeout_ms: 30000 # action default when the caller omits timeout_ms
-  max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
-  connect_timeout_ms: 15000 # backend connect timeout at session start
+  command_timeout_ms: 120000 # timeout for each backend action (fixed at connect)
+  connect_timeout_ms: 15000  # backend connect timeout at session start
 ```
 
 ## Custom trigger types
@@ -114,7 +113,7 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
 | `computer::session-started` | A session connected and is ready | `{ session_id, endpoint, os, screen, timestamp }` |
-| `computer::session-stopped` | A session ended | `{ session_id, reason: "stopped" \| "idle" \| "crashed", timestamp }` |
+| `computer::session-stopped` | A session ended | `{ session_id, reason: "stopped" \| "idle", timestamp }` |
 
 ## Live screen
 

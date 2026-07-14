@@ -80,7 +80,7 @@ pub struct SessionStartedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStoppedEvent {
     pub session_id: String,
-    /// One of `stopped`, `idle`, `crashed`.
+    /// One of `stopped`, `idle`.
     pub reason: String,
     pub timestamp: i64,
 }
@@ -203,7 +203,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         ),
         (
             EventKind::SessionStopped,
-            "A desktop session ended (stopped, idle, or crashed).",
+            "A desktop session ended (stopped or idle).",
         ),
     ];
     for (kind, description) in descriptions {

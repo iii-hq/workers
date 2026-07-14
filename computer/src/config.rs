@@ -1,8 +1,8 @@
-//! Config for the computer worker. Numeric caps are HARD ceilings: a caller
-//! may ask for less per call, never more. Timeouts and the screencast rate are
-//! read per call / per pump tick, so they hot-reload. `default_endpoint` and
-//! `os` are read at session start, so a change applies to sessions started
-//! after it; running sessions keep the backend they were launched against.
+//! Config for the computer worker. `max_sessions` is a hard cap. The screencast
+//! rate is read per pump tick, so it hot-reloads; the action and connect
+//! timeouts are read when a session connects, and `default_endpoint` and `os`
+//! are read at session start, so a change to any of those applies to sessions
+//! started after it. Running sessions keep the backend they were launched with.
 
 use std::sync::Arc;
 
@@ -33,11 +33,8 @@ pub struct WorkerConfig {
     /// Live-view frame rate cap for the screencast (frames/sec). Clamped to
     /// at least 1. The pump polls the backend screenshot at most this often.
     pub screencast_fps: u64,
-    /// Timeout used when a caller omits `timeout_ms` on an action.
-    pub default_timeout_ms: u64,
-    /// Hard ceiling on per-call timeout; caller `timeout_ms` is clamped DOWN
-    /// to this.
-    pub max_timeout_ms: u64,
+    /// Timeout for each backend action (ms). Fixed when a session connects.
+    pub command_timeout_ms: u64,
     /// Timeout for establishing the backend connection at session start (ms).
     pub connect_timeout_ms: u64,
 }
@@ -50,8 +47,7 @@ impl Default for WorkerConfig {
             max_sessions: 2,
             idle_stop_ms: 300_000,
             screencast_fps: 15,
-            default_timeout_ms: 30_000,
-            max_timeout_ms: 120_000,
+            command_timeout_ms: 120_000,
             connect_timeout_ms: 15_000,
         }
     }
@@ -79,14 +75,6 @@ impl WorkerConfig {
         Arc::new(ArcSwap::from_pointee(self))
     }
 
-    /// Clamp a caller-supplied timeout to the configured ceiling, defaulting
-    /// when omitted.
-    pub fn clamp_timeout(&self, requested: Option<u64>) -> u64 {
-        requested
-            .unwrap_or(self.default_timeout_ms)
-            .min(self.max_timeout_ms)
-    }
-
     /// Minimum wall-clock interval between screencast frames (ms), derived
     /// from `screencast_fps` (floored at 1 fps so the divisor is never zero).
     pub fn screencast_interval_ms(&self) -> u64 {
@@ -106,8 +94,7 @@ mod tests {
         assert_eq!(c.max_sessions, 2);
         assert_eq!(c.idle_stop_ms, 300_000);
         assert_eq!(c.screencast_fps, 15);
-        assert_eq!(c.default_timeout_ms, 30_000);
-        assert_eq!(c.max_timeout_ms, 120_000);
+        assert_eq!(c.command_timeout_ms, 120_000);
         assert_eq!(c.connect_timeout_ms, 15_000);
     }
 
@@ -136,14 +123,6 @@ mod tests {
         let v = serde_json::json!({ "computer": { "os": "windows" } });
         let c = WorkerConfig::from_json(&v).unwrap();
         assert_eq!(c.os, "windows");
-    }
-
-    #[test]
-    fn clamp_timeout_defaults_and_ceils() {
-        let c = WorkerConfig::default();
-        assert_eq!(c.clamp_timeout(None), 30_000);
-        assert_eq!(c.clamp_timeout(Some(5_000)), 5_000);
-        assert_eq!(c.clamp_timeout(Some(600_000)), 120_000);
     }
 
     #[test]

@@ -23,6 +23,28 @@ pub struct ContentBlock {
     pub text: Option<String>,
 }
 
+impl ContentBlock {
+    /// An image block: base64 `data` with its `mime`.
+    pub fn image(mime: String, data: String) -> Self {
+        Self {
+            r#type: "image".to_string(),
+            mime: Some(mime),
+            data: Some(data),
+            text: None,
+        }
+    }
+
+    /// A text block.
+    pub fn text(text: String) -> Self {
+        Self {
+            r#type: "text".to_string(),
+            mime: None,
+            data: None,
+            text: Some(text),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ScreenshotDetails {
     pub session_id: String,

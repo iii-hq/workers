@@ -12,8 +12,6 @@ pub mod shell;
 
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 
@@ -247,25 +245,14 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .screenshot()
                     .await
                     .map_err(Error::Handler)?;
-                let bytes = shot.bytes.len();
-                let data = STANDARD.encode(&shot.bytes);
+                let bytes = shot.byte_len();
                 Ok::<_, Error>(screenshot::ScreenshotOutput {
                     content: vec![
-                        screenshot::ContentBlock {
-                            r#type: "image".to_string(),
-                            mime: Some(shot.mime.clone()),
-                            data: Some(data),
-                            text: None,
-                        },
-                        screenshot::ContentBlock {
-                            r#type: "text".to_string(),
-                            mime: None,
-                            data: None,
-                            text: Some(format!(
-                                "Desktop of session {} ({}x{}, {bytes} bytes)",
-                                session.id, session.screen.width, session.screen.height
-                            )),
-                        },
+                        screenshot::ContentBlock::image(shot.mime.clone(), shot.to_base64()),
+                        screenshot::ContentBlock::text(format!(
+                            "Desktop of session {} ({}x{}, {bytes} bytes)",
+                            session.id, session.screen.width, session.screen.height
+                        )),
                     ],
                     details: screenshot::ScreenshotDetails {
                         session_id: session.id.clone(),
@@ -303,33 +290,22 @@ fn register_observe(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 } else {
                     None
                 };
-                let bytes = shot.bytes.len();
-                let data = STANDARD.encode(&shot.bytes);
+                let bytes = shot.byte_len();
                 let has_a11y = accessibility.is_some();
                 Ok::<_, Error>(observe::ObserveOutput {
                     content: vec![
-                        screenshot::ContentBlock {
-                            r#type: "image".to_string(),
-                            mime: Some(shot.mime.clone()),
-                            data: Some(data),
-                            text: None,
-                        },
-                        screenshot::ContentBlock {
-                            r#type: "text".to_string(),
-                            mime: None,
-                            data: None,
-                            text: Some(format!(
-                                "Desktop of session {} ({}x{}, {bytes} bytes){}",
-                                session.id,
-                                session.screen.width,
-                                session.screen.height,
-                                if has_a11y {
-                                    ", accessibility tree attached"
-                                } else {
-                                    ""
-                                }
-                            )),
-                        },
+                        screenshot::ContentBlock::image(shot.mime.clone(), shot.to_base64()),
+                        screenshot::ContentBlock::text(format!(
+                            "Desktop of session {} ({}x{}, {bytes} bytes){}",
+                            session.id,
+                            session.screen.width,
+                            session.screen.height,
+                            if has_a11y {
+                                ", accessibility tree attached"
+                            } else {
+                                ""
+                            }
+                        )),
                     ],
                     details: observe::ObserveDetails {
                         session_id: session.id.clone(),
@@ -543,24 +519,24 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sessions, &req.session_id).await?;
                 let active = session.screencast_active();
                 let out = match session.latest_frame() {
-                    Some(f) if req.since_frame == Some(f.frame_seq) => frame::FrameOutput {
-                        frame: None,
-                        mime: f.mime,
-                        width: f.width,
-                        height: f.height,
-                        frame_seq: f.frame_seq,
-                        timestamp: f.timestamp,
-                        active,
-                    },
-                    Some(f) => frame::FrameOutput {
-                        frame: Some(f.data_b64),
-                        mime: f.mime,
-                        width: f.width,
-                        height: f.height,
-                        frame_seq: f.frame_seq,
-                        timestamp: f.timestamp,
-                        active,
-                    },
+                    Some(f) => {
+                        // Fast no-change poll copies only metadata; the base64
+                        // is cloned once, only when a new frame is delivered.
+                        let unchanged = req.since_frame == Some(f.frame_seq);
+                        frame::FrameOutput {
+                            frame: if unchanged {
+                                None
+                            } else {
+                                Some(f.data_b64.clone())
+                            },
+                            mime: f.mime.clone(),
+                            width: f.width,
+                            height: f.height,
+                            frame_seq: f.frame_seq,
+                            timestamp: f.timestamp,
+                            active,
+                        }
+                    }
                     None => frame::FrameOutput {
                         frame: None,
                         mime: "image/png".to_string(),

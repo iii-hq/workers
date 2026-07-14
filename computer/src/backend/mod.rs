@@ -9,6 +9,8 @@
 pub mod computer_server;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +48,15 @@ impl Shot {
     pub fn new(bytes: Vec<u8>) -> Self {
         let mime = detect_mime(&bytes).to_string();
         Self { bytes, mime }
+    }
+
+    /// Base64 of the encoded image bytes.
+    pub fn to_base64(&self) -> String {
+        STANDARD.encode(&self.bytes)
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.bytes.len()
     }
 }
 
