@@ -6,7 +6,7 @@
     "properties": {
       "endpoint": {
         "default": null,
-        "description": "computer-server endpoint to drive: a `ws://`/`wss://` url, an `http://`/`https://` url, or a bare `host:port` (ws assumed, `/ws` appended). Omit to use the configured `default_endpoint`.",
+        "description": "Desktop to drive. Omit to drive the local machine this worker runs on (native backend, no computer-server needed). Pass a computer-server endpoint (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to drive a remote or sandboxed desktop; falls back to the configured `default_endpoint` when omitted.",
         "type": [
           "string",
           "null"
@@ -50,7 +50,7 @@
     },
     "properties": {
       "endpoint": {
-        "description": "Normalized endpoint the session is connected to.",
+        "description": "The backend the session drives: `native` for the local machine, or the normalized computer-server endpoint.",
         "type": "string"
       },
       "os": {

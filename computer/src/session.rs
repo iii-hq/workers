@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::backend::{Backend, ComputerServerClient, Screen};
+use crate::backend::{Backend, ComputerServerClient, NativeHost, Screen};
 use crate::config::SharedConfig;
 use crate::events::{Emitter, EventKind, SessionStartedEvent, SessionStoppedEvent};
 
@@ -287,27 +287,34 @@ impl Sessions {
             .or_else(|| {
                 let d = cfg.default_endpoint.trim();
                 (!d.is_empty()).then(|| d.to_string())
-            })
-            .ok_or_else(|| {
-                "no endpoint: pass `endpoint` or set `default_endpoint` in the computer config"
-                    .to_string()
-            })?;
-        let os = os
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| cfg.os.clone());
+            });
+        let os = os.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+            if endpoint.is_none() {
+                std::env::consts::OS.to_string()
+            } else {
+                cfg.os.clone()
+            }
+        });
 
-        let client = ComputerServerClient::connect(
-            &endpoint,
-            cfg.connect_timeout_ms,
-            cfg.command_timeout_ms,
-        )
-        .await?;
-        let endpoint_used = client.endpoint().to_string();
-        let backend: Arc<dyn Backend> = Arc::new(client);
+        // No endpoint drives the local machine directly (native backend); an
+        // endpoint drives a remote or sandboxed desktop over computer-server.
+        let (backend, endpoint_used): (Arc<dyn Backend>, String) = match &endpoint {
+            Some(ep) => {
+                let client = ComputerServerClient::connect(
+                    ep,
+                    cfg.connect_timeout_ms,
+                    cfg.command_timeout_ms,
+                )
+                .await?;
+                let label = client.endpoint().to_string();
+                (Arc::new(client), label)
+            }
+            None => (Arc::new(NativeHost::new()), "native".to_string()),
+        };
         let screen = backend
             .screen_size()
             .await
-            .map_err(|e| format!("connected to {endpoint_used} but screen_size failed: {e}"))?;
+            .map_err(|e| format!("backend '{endpoint_used}' screen_size failed: {e}"))?;
 
         let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
         let id = format!("c{slot}");
@@ -452,14 +459,18 @@ impl Sessions {
         rec: &SessionRecord,
         cfg: &crate::config::WorkerConfig,
     ) -> Result<Arc<Session>, String> {
-        let client = ComputerServerClient::connect(
-            &rec.endpoint,
-            cfg.connect_timeout_ms,
-            cfg.command_timeout_ms,
-        )
-        .await?;
-        let endpoint_used = client.endpoint().to_string();
-        let backend: Arc<dyn Backend> = Arc::new(client);
+        let (backend, endpoint_used): (Arc<dyn Backend>, String) = if rec.endpoint == "native" {
+            (Arc::new(NativeHost::new()), "native".to_string())
+        } else {
+            let client = ComputerServerClient::connect(
+                &rec.endpoint,
+                cfg.connect_timeout_ms,
+                cfg.command_timeout_ms,
+            )
+            .await?;
+            let label = client.endpoint().to_string();
+            (Arc::new(client), label)
+        };
         let screen = backend.screen_size().await?;
         Ok(Session::new(
             rec.session_id.clone(),

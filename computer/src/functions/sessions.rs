@@ -7,9 +7,11 @@ use crate::backend::Screen;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartInput {
-    /// computer-server endpoint to drive: a `ws://`/`wss://` url, an
-    /// `http://`/`https://` url, or a bare `host:port` (ws assumed, `/ws`
-    /// appended). Omit to use the configured `default_endpoint`.
+    /// Desktop to drive. Omit to drive the local machine this worker runs on
+    /// (native backend, no computer-server needed). Pass a computer-server
+    /// endpoint (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to
+    /// drive a remote or sandboxed desktop; falls back to the configured
+    /// `default_endpoint` when omitted.
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Guest OS label recorded on the session and surfaced in
@@ -23,7 +25,8 @@ pub struct StartInput {
 pub struct StartOutput {
     /// Pass this to every other computer function.
     pub session_id: String,
-    /// Normalized endpoint the session is connected to.
+    /// The backend the session drives: `native` for the local machine, or the
+    /// normalized computer-server endpoint.
     pub endpoint: String,
     pub os: String,
     /// Desktop pixel dimensions; the coordinate space for `computer::act`.

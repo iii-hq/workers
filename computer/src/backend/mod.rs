@@ -7,6 +7,7 @@
 //! code.
 
 pub mod computer_server;
+pub mod native;
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -15,6 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use computer_server::ComputerServerClient;
+pub use native::NativeHost;
 
 /// Desktop pixel dimensions. Coordinates handed to pointer actions are in this
 /// space: integer pixels, top-left origin, 1:1 with the screenshot.
