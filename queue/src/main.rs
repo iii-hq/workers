@@ -89,6 +89,15 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("loading queue configuration")?;
+    if let Some(seed) = seed.as_ref() {
+        if seed.adapter != config.adapter {
+            tracing::warn!(
+                seed_adapter = ?seed.adapter,
+                stored_adapter = ?config.adapter,
+                "--config seed adapter ignored; the stored configuration is authoritative"
+            );
+        }
+    }
 
     let boot = iii_queue::boot::start(iii.clone(), config).await?;
     configuration::register_config_trigger(

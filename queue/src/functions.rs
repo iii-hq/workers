@@ -94,6 +94,8 @@ pub struct TopicStatsOutput {
     pub depth: u64,
     pub consumer_count: u64,
     pub dlq_depth: u64,
+    pub delivered: u64,
+    pub failed: u64,
     pub config: Option<Value>,
 }
 
@@ -327,6 +329,8 @@ pub async fn topic_stats(
         depth: stats.depth,
         consumer_count: 0,
         dlq_depth: stats.dlq_depth,
+        delivered: stats.delivered,
+        failed: stats.failed,
         config: None,
     })
 }
@@ -713,7 +717,7 @@ mod tests {
         *_mock.topic_stats_result.lock().unwrap() = Some(Ok(TopicStats {
             depth: 1,
             dlq_depth: 1,
-            delivered: 0,
+            delivered: 2,
             failed: 1,
         }));
         let stats = topic_stats(
@@ -726,6 +730,8 @@ mod tests {
         .unwrap();
         assert_eq!(stats.depth, 1);
         assert_eq!(stats.dlq_depth, 1);
+        assert_eq!(stats.delivered, 2);
+        assert_eq!(stats.failed, 1);
     }
 
     #[tokio::test]
