@@ -174,9 +174,17 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
                 .file_path
                 .unwrap_or_else(|| "queue_store_data".to_string());
             let save_interval_ms = builtin.save_interval_ms.unwrap_or(5000);
-            Ok(Arc::new(FileStore::open(path, save_interval_ms).await?))
+            let store = FileStore::open(&path, save_interval_ms).await?;
+            tracing::info!(store = "file_based", path = %path, "queue store ready");
+            Ok(Arc::new(store))
         }
-        "builtin" | "in_memory" => Ok(Arc::new(InMemoryStore::new())),
+        "builtin" | "in_memory" => {
+            tracing::info!(
+                store = "in_memory",
+                "queue store ready; jobs do not survive restarts"
+            );
+            Ok(Arc::new(InMemoryStore::new()))
+        }
         other => anyhow::bail!("unknown builtin queue store_method '{other}'"),
     }
 }
