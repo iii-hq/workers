@@ -20,9 +20,10 @@ siblings veto, hold, or mutate in-path — see [Hooks](#hooks)). Children are or
 sessions/turns; orchestration beyond spawn/join stays out of scope, and hook *logic* (the policy
 itself) always lives in the sibling that registers it.
 
-The harness is the only worker in this spec that depends on the other three, and even those are soft:
-without `context-manager` it sends raw history; without function dispatch it is a plain chat loop. It
-needs `session-manager` (to persist/stream) and `llm-router` (to generate).
+The harness is the only worker in this spec that depends on the other three. Function dispatch is
+optional (without it, the harness is a plain chat loop), while `session-manager`, `context-manager`,
+and `llm-router` are required on the generation path. Context budgeting fails closed because raw
+history cannot be proven safe for the selected model.
 
 ## What it wires
 
@@ -79,11 +80,14 @@ attributable to a turn. One `harness::turn` step does:
    before any model spend.
 2. Load active path: `session::messages` with `include_custom: true` (custom entries carry the
    compaction record, below).
-3. Assemble context: read the latest compaction entry (if any) on the active path, reduce the
-   candidate window to it, and call `context::assemble` with `previous_summary` set (see
-   [Compaction persistence](#compaction-persistence)); skipped if `context-manager` absent -> raw
-   messages + base system prompt. If the response reports `applied.compacted`, persist the new
-   summary (same section). Attach the invocation schemas to the router request: the single
+3. Assemble context: resolve the output strategy and complete invocation surface first, then read
+   the latest compaction entry (if any) on the active path, reduce the candidate window to it, and
+   call `context::assemble` with `previous_summary`, the final invocation schemas, deterministic
+   system aids, and non-message request overhead set (see
+   [Compaction persistence](#compaction-persistence)). Context budgeting is fail-closed: an absent
+   context manager, `context/overflow`, or an empty assembly fails the turn before generation; raw
+   history is never substituted. If the response reports `applied.compacted`, persist the new
+   summary (same section). The invocation surface is the single
    `agent_trigger` schema by default (function discovery is runtime — the model calls
    `engine::functions::list` / `engine::functions::info` through it), or one schema per allowed
    function when `functions.expose: "native"` (see
@@ -91,7 +95,9 @@ attributable to a turn. One `harness::turn` step does:
    schema when an [output contract](#output-contract) uses the fallback strategy. Finally run the
    `pre_generate` [hook chain](#hooks) over the assembled context — hooks may extend the system
    prompt or append bounded messages (memory, RAG, guardrails); a `deny` ends the turn as in
-   step 1.
+   step 1. After hooks and call/result repair, the harness counts the complete final request again.
+   If it exceeds the assembly's `usable` budget, the turn fails with
+   `harness.context_overflow` and `router::chat` is not called.
 4. Generate: open a channel, call `router::chat` with `request_id = <turn_id>:<step>` (recorded on
    the turn record as `stream_request_id` for [`harness::stop`](#harnessstop)) and — when the
    [output contract](#output-contract) rides provider-native structured output —
@@ -1016,7 +1022,9 @@ pattern [approval-gate](approval-gate.md#state-lifecycle) mandates for its own s
 - `session-manager` (`session::*`) — persist messages, stream content via `session::update-message`,
   and set status. Required.
 - `llm-router` (`router::chat`) — generation. Required.
-- `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.
+- `context-manager` (`context::assemble`, `context::count-tokens`) — context budgeting and final
+  request preflight. Required for generation; failures are fail-closed so an unbudgeted request is
+  never sent to a provider.
 - `queue` — the durable `harness-turn` loop. After registering `harness::*` functions, bootstrap
   MUST call `queue::define` and fail before ready if it cannot ensure this queue. Its definition is
   FIFO grouped by `session_id`, concurrency `10`, three retries, 1-second backoff, and 100ms

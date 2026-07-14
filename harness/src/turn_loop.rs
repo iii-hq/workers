@@ -23,6 +23,7 @@ use crate::trigger;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
+use crate::types::model::AgentFunction;
 use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
 };
@@ -39,6 +40,32 @@ const INTERNAL_FAILURE: FailureInfo = FailureInfo {
     phase: "execution",
     retryable: false,
 };
+
+const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.context_overflow",
+    phase: "context_assembly",
+    retryable: false,
+};
+
+/// Provider adapters add framing outside the fields visible to the harness.
+/// Keep a small fixed reserve in addition to the deterministic JSON estimate.
+const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
+
+fn estimate_request_overhead_tokens(
+    response_format: Option<&Value>,
+    provider_options: Option<&Value>,
+) -> u64 {
+    let mut fields = serde_json::Map::new();
+    if let Some(response_format) = response_format {
+        fields.insert("response_format".to_string(), response_format.clone());
+    }
+    if let Some(provider_options) = provider_options {
+        fields.insert("provider_options".to_string(), provider_options.clone());
+    }
+    let serialized_chars = Value::Object(fields).to_string().chars().count() as u64;
+    let serialized_tokens = serialized_chars.saturating_add(3) / 4;
+    PROVIDER_FRAMING_ALLOWANCE_TOKENS.saturating_add(serialized_tokens)
+}
 /// The enqueued `harness::turn` step payload.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TurnStepPayload {
@@ -229,24 +256,15 @@ pub async fn run_step(
     let prev_watermark = record.watermark_entry_id.clone();
     let watermark = entries.last().map(|e| e.entry_id.clone());
 
-    // Assemble the model-ready context (+ compaction persistence).
-    let mut assembled = assemble_context(
-        deps,
-        &session,
-        &record,
-        &entries,
-        payload.step,
-        prev_watermark.as_deref(),
-    )
-    .await?;
-
+    // Build every deterministic model-facing input before context assembly.
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently. Persisted by the
-    // pre-generate put_turn below.
+    // contracts may be stale. First sighting stamps silently.
     let current_generation = deps.functions().await.generation;
+    let mut assembly_system_prompt =
+        with_filesystem_root_aid(record.options.system_prompt.clone(), &record);
     if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
-        assembled.system_prompt = Some(match assembled.system_prompt.take() {
+        assembly_system_prompt = Some(match assembly_system_prompt.take() {
             Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
             _ => notice,
         });
@@ -261,6 +279,45 @@ pub async fn run_step(
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
+    let response_format = strategy.response_format();
+    let provider_options = record
+        .options
+        .provider_options
+        .as_ref()
+        .and_then(|options| serde_json::to_value(options).ok());
+    let request_overhead_tokens =
+        estimate_request_overhead_tokens(response_format.as_ref(), provider_options.as_ref());
+
+    // Assemble the model-ready context (+ compaction persistence). An
+    // impossible fit is a terminal turn outcome, not an unexpected step error.
+    let assembled = match assemble_context(
+        deps,
+        &session,
+        &record,
+        &entries,
+        payload.step,
+        prev_watermark.as_deref(),
+        ContextAssemblyInputs {
+            system_prompt: assembly_system_prompt,
+            tools: &tools,
+            request_overhead_tokens,
+        },
+    )
+    .await
+    {
+        Ok(assembled) => assembled,
+        Err(HarnessError::ContextOverflow(reason)) => {
+            return finalize_failed(
+                deps,
+                &session,
+                &mut record,
+                &reason,
+                CONTEXT_OVERFLOW_FAILURE,
+            )
+            .await;
+        }
+        Err(error) => return Err(error),
+    };
 
     // pre_generate hooks: extend the system prompt / append bounded messages,
     // or veto. Annotations ride the assistant entry's origin (audit trail).
@@ -331,6 +388,37 @@ pub async fn run_step(
         .await;
     }
 
+    // Hooks and orphan repair can change the assembled request. Re-count the
+    // exact final prompt/messages/tools and include the same non-context
+    // overhead reserve before creating an assistant entry or calling router.
+    let final_count = deps
+        .context()
+        .await
+        .count_tokens(crate::clients::context::CountTokensParams {
+            messages: gen_messages.clone(),
+            model_id: record.options.model.clone(),
+            provider: record.options.provider.clone(),
+            system_prompt: gen_system_prompt.clone(),
+            tools: tools.clone(),
+        })
+        .await
+        .map_err(HarnessError::Dependency)?;
+    let final_request_tokens = final_count.tokens.saturating_add(request_overhead_tokens);
+    if final_request_tokens > assembled.usable {
+        let reason = format!(
+            "final model request exceeds the assembled usable budget: {final_request_tokens} tokens > {} usable",
+            assembled.usable
+        );
+        return finalize_failed(
+            deps,
+            &session,
+            &mut record,
+            &reason,
+            CONTEXT_OVERFLOW_FAILURE,
+        )
+        .await;
+    }
+
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
     // Generate: append an empty assistant under a deterministic id, stream
@@ -361,13 +449,9 @@ pub async fn run_step(
         system_prompt: gen_system_prompt,
         messages: gen_messages,
         tools,
-        response_format: strategy.response_format(),
+        response_format,
         thinking_level: record.options.thinking_level,
-        provider_options: record
-            .options
-            .provider_options
-            .as_ref()
-            .and_then(|options| serde_json::to_value(options).ok()),
+        provider_options,
     };
     record.stream_request_id = Some(params.request_id.clone());
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -1442,8 +1526,8 @@ async fn has_user_after_watermark(
 }
 
 /// Build the model-ready context: read the latest compaction entry, reduce the
-/// candidate window to its tail, call `context::assemble` (persisting a new
-/// summary when it compacts), or fall back to raw history.
+/// candidate window to its tail, and call required `context::assemble`,
+/// persisting a new summary when it compacts.
 async fn assemble_context(
     deps: &Deps,
     session: &SessionClient,
@@ -1451,6 +1535,7 @@ async fn assemble_context(
     entries: &[LoadedEntry],
     step: u64,
     prev_watermark: Option<&str>,
+    inputs: ContextAssemblyInputs<'_>,
 ) -> Result<Assembled, HarnessError> {
     // Latest compaction custom entry on the path (if any).
     let mut previous_summary: Option<String> = None;
@@ -1515,75 +1600,79 @@ async fn assemble_context(
 
     let context = deps.context().await;
     let params = crate::clients::AssembleParams {
-        messages: candidate_values.clone(),
+        messages: candidate_values,
         model_id: record.options.model.clone(),
         provider: record.options.provider.clone(),
-        system_prompt: record.options.system_prompt.clone(),
+        system_prompt: inputs.system_prompt,
         previous_summary,
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
+        tools: inputs.tools.to_vec(),
+        request_overhead_tokens: inputs.request_overhead_tokens,
     };
 
-    match context.assemble(params).await {
-        Ok(Some(out)) => {
-            if out.applied.compacted {
-                if let Some(summary) = &out.applied.summary {
-                    let tail_entry = out
-                        .applied
-                        .tail_start_index
-                        .and_then(|i| usize::try_from(i).ok())
-                        .and_then(|i| candidate.get(i))
-                        .map(|(id, _)| id.clone());
-                    let data = json!({
-                        "summary": summary,
-                        "tail_start_entry_id": tail_entry,
-                        "tokens_before": out.applied.tail_start_index,
-                    });
-                    let _ = session
-                        .append_custom(
-                            &record.session_id,
-                            "compaction",
-                            data,
-                            &ids::compaction_entry_id(&record.turn_id, step),
-                            Some(&origin(&record.turn_id)),
-                        )
-                        .await;
-                }
-            }
-            let mut messages: Vec<Value> = out
-                .messages
-                .iter()
-                .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
-                .collect();
-            // Defensive: context::assemble must never strip the model-facing
-            // context down to nothing (the provider rejects an empty messages
-            // array). If it somehow does, fall back to the raw candidate
-            // window — which still begins at a user message.
-            if messages.is_empty() && !candidate_values.is_empty() {
-                tracing::warn!(
-                    session_id = %record.session_id,
-                    "context::assemble returned empty messages; using raw candidate window"
-                );
-                messages = candidate_values.clone();
-            }
-            rotate_mid_generation_users(&mut messages, new_suffix_len);
-            Ok(Assembled {
-                system_prompt: with_filesystem_root_aid(Some(out.system_prompt), record),
-                messages,
-            })
+    let out = match context.assemble(params).await {
+        Ok(out) => out,
+        Err(error) if is_context_overflow_error(&error) => {
+            return Err(HarnessError::ContextOverflow(error));
         }
-        Ok(None) | Err(_) => {
-            let mut messages = candidate_values;
-            rotate_mid_generation_users(&mut messages, new_suffix_len);
-            Ok(Assembled {
-                system_prompt: with_filesystem_root_aid(
-                    record.options.system_prompt.clone(),
-                    record,
-                ),
-                messages,
-            })
+        Err(error) => return Err(HarnessError::Dependency(error)),
+    };
+
+    if out.messages.is_empty() {
+        return Err(HarnessError::ContextOverflow(
+            "context::assemble returned an empty model-facing context".to_string(),
+        ));
+    }
+    // `context::assemble.token_count` already includes tools and the supplied
+    // request overhead; reject any response that violates its hard contract.
+    if out.token_count > out.usable {
+        return Err(HarnessError::ContextOverflow(format!(
+            "context::assemble returned an over-budget context: {} tokens > {} usable",
+            out.token_count, out.usable
+        )));
+    }
+
+    if out.applied.compacted {
+        if let Some(summary) = &out.applied.summary {
+            let tail_entry = out
+                .applied
+                .tail_start_index
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(|i| candidate.get(i))
+                .map(|(id, _)| id.clone());
+            let data = json!({
+                "summary": summary,
+                "tail_start_entry_id": tail_entry,
+                "tokens_before": out.applied.tokens_before,
+            });
+            let _ = session
+                .append_custom(
+                    &record.session_id,
+                    "compaction",
+                    data,
+                    &ids::compaction_entry_id(&record.turn_id, step),
+                    Some(&origin(&record.turn_id)),
+                )
+                .await;
         }
     }
+
+    let mut messages: Vec<Value> = out
+        .messages
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+        .collect();
+    rotate_mid_generation_users(&mut messages, new_suffix_len);
+    Ok(Assembled {
+        system_prompt: Some(out.system_prompt),
+        messages,
+        usable: out.usable,
+    })
+}
+
+fn is_context_overflow_error(error: &str) -> bool {
+    error.contains("context/overflow:")
 }
 
 /// Append model-facing context aid lines to the system prompt: the session id
@@ -1650,6 +1739,13 @@ fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
 struct Assembled {
     system_prompt: Option<String>,
     messages: Vec<Value>,
+    usable: u64,
+}
+
+struct ContextAssemblyInputs<'a> {
+    system_prompt: Option<String>,
+    tools: &'a [AgentFunction],
+    request_overhead_tokens: u64,
 }
 
 /// A user entry appended while a step was generating (or assembling — the
@@ -1870,6 +1966,43 @@ mod tests {
     use super::{cancel_requested, transient_resume_allowed};
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
+
+    #[test]
+    fn request_overhead_always_reserves_provider_framing() {
+        assert_eq!(
+            super::estimate_request_overhead_tokens(None, None),
+            super::PROVIDER_FRAMING_ALLOWANCE_TOKENS + 1
+        );
+    }
+
+    #[test]
+    fn request_overhead_counts_serialized_optional_fields_with_ceiling() {
+        let response_format = serde_json::json!({ "type": "json" });
+        let provider_options = serde_json::json!({ "temperature": 0.25 });
+        let serialized =
+            r#"{"provider_options":{"temperature":0.25},"response_format":{"type":"json"}}"#;
+        let serialized_tokens = (serialized.chars().count() as u64).div_ceil(4);
+        assert_eq!(
+            super::estimate_request_overhead_tokens(
+                Some(&response_format),
+                Some(&provider_options)
+            ),
+            super::PROVIDER_FRAMING_ALLOWANCE_TOKENS + serialized_tokens
+        );
+    }
+
+    #[test]
+    fn context_overflow_classification_requires_the_stable_context_code() {
+        assert!(super::is_context_overflow_error(
+            "context::assemble: handler failed: context/overflow: assembled context requires 101 tokens but usable budget is 100"
+        ));
+        assert!(!super::is_context_overflow_error(
+            "context::assemble: context/model_unresolved: could not resolve model limits"
+        ));
+        assert!(!super::is_context_overflow_error(
+            "context::assemble: request overflowed while parsing"
+        ));
+    }
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {

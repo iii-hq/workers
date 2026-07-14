@@ -4,6 +4,43 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "AgentFunction": {
+        "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count-tokens` so callers can include the `agent_trigger` schema in their estimate.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "execution_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ExecutionMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Invocation surface name (`agent_trigger`, `submit_result`, or a function id in native exposure mode).",
+            "type": "string"
+          },
+          "parameters": {
+            "default": null,
+            "description": "JSON Schema for the function parameters."
+          }
+        },
+        "required": [
+          "description",
+          "name"
+        ],
+        "type": "object"
+      },
       "AgentMessage": {
         "description": "The canonical transcript message union, discriminated by `role`.",
         "oneOf": [
@@ -238,12 +275,22 @@
           },
           "protected_functions": {
             "default": null,
-            "description": "`function_id`s whose outputs are never pruned.",
+            "description": "`function_id`s exempt from the normal prune pass. Emergency safety reduction may still replace their oversized results.",
             "items": {
               "type": "string"
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "request_overhead_tokens": {
+            "default": null,
+            "description": "Estimated tokens for final provider request fields and framing not otherwise represented by the prompt, messages, or tools.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
               "null"
             ]
           },
@@ -423,6 +470,13 @@
         ],
         "type": "string"
       },
+      "ExecutionMode": {
+        "enum": [
+          "parallel",
+          "sequential"
+        ],
+        "type": "string"
+      },
       "ModelInput": {
         "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::get`.",
         "properties": {
@@ -590,6 +644,17 @@
         "description": "Base system prompt to prepend/merge.",
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "tools": {
+        "default": null,
+        "description": "Model-facing invocation schemas included in every budget count.",
+        "items": {
+          "$ref": "#/definitions/AgentFunction"
+        },
+        "type": [
+          "array",
           "null"
         ]
       }
@@ -1081,7 +1146,7 @@
         "type": "string"
       },
       "token_count": {
-        "description": "Estimated tokens of the returned context (messages + system prompt). Can exceed `usable` when prune/compaction were disabled, unavailable, or insufficient — best effort, visible.",
+        "description": "Estimated tokens of the returned context, including the system prompt, tools, and request overhead. Always at most `usable`.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

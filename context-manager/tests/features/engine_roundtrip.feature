@@ -58,10 +58,9 @@ Feature: engine round trip — the production surface over a live bus
     And the response field "applied.compacted" is false
     And the response field "system_prompt" is "You are helpful."
 
-  # Prevents: a missing router erroring the hot path — an over-budget
-  # assemble must still answer (best effort), exercising a REAL
-  # state::* lease acquire/release around the failed summarisation.
-  Scenario: over budget without a router degrades to best effort
+  # A missing summariser cannot weaken the hard assembly budget. The
+  # real state::* lease cycle still has to release before overflow returns.
+  Scenario: over budget without a router fails closed
     Given a user message of ~3000 tokens
     And a user message of ~3000 tokens
     And a user message "recent"
@@ -71,9 +70,7 @@ Feature: engine round trip — the production surface over a live bus
         "model": { "id": "small",
                    "limits": { "context_window": 5000, "max_output_tokens": 500 } } }
       """
-    Then the call succeeds
-    And the response field "applied.compacted" is false
-    And the response field "token_count" exceeds 4000
+    Then the call fails with code "context/overflow"
 
   # Prevents: "router absent" surfacing as anything but the documented
   # overflow status — and proves the real lease cycle completes (a

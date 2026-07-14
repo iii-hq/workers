@@ -127,3 +127,22 @@ async fn assemble_system_options(
     });
     world.call_pure("context::assemble", payload).await;
 }
+
+#[when(regex = r#"^I assemble the history with model "([^"]+)" and request fields:$"#)]
+async fn assemble_request_fields(world: &mut ContextWorld, model: String, step: &Step) {
+    let extras = docstring_payload(world, step);
+    let mut payload = json!({
+        "messages": history(world),
+        "model": world.model_input(&model),
+    });
+    let payload_object = payload
+        .as_object_mut()
+        .expect("assemble payload is an object");
+    let extras_object = extras
+        .as_object()
+        .expect("assemble request fields must be a JSON object");
+    for (key, value) in extras_object {
+        payload_object.insert(key.clone(), value.clone());
+    }
+    world.call_pure("context::assemble", payload).await;
+}
