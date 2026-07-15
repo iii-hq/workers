@@ -142,9 +142,10 @@ siblings over one on-disk contract, not a monolith with modes.
 
 - **`memory`** (this spec) — banks, rules, memories: storage, injection, capture, recall, trigger
   types. Owns the files and the wire surface; runs no scheduler.
-- **`memory-consolidate`** — background hygiene on a schedule with catch-up-on-boot semantics
-  (last completed pass persisted in the state worker; a pass missed while down runs shortly after
-  boot): deterministic dedup of near-duplicate memories (normalized-text or token-set equality;
+- **`memory-consolidate`** — background hygiene on the engine's cron trigger infrastructure (an
+  hourly heartbeat tick; the pass runs only when `interval_hours` elapsed) with catch-up-on-boot
+  semantics (last completed pass persisted in the state worker; a pass missed while down runs
+  shortly after boot, via a backstop loop that also covers cron-less rigs): deterministic dedup of near-duplicate memories (normalized-text or token-set equality;
   one differing word never merges), survivor = pinned > corroboration > oldest. Strictly
   supersede-only through `memory::supersede` + `memory::save`, never touches pinned records; every
   change lands as a `memory::item-changed` event. `dry_run` plans without writing;

@@ -29,6 +29,11 @@ pub const STATUS_DESC: &str =
     "Schedule and last-pass report: enabled, interval, last run, whether a pass is due, and \
      the most recent per-bank results.";
 
+pub const TICK_ID: &str = "memory-consolidate::on-tick";
+pub const TICK_DESC: &str =
+    "Internal: schedule heartbeat (cron trigger + boot catch-up backstop). Runs a pass only \
+     when interval_hours have elapsed since the last one.";
+
 const STATE_SCOPE: &str = "memory_consolidate";
 const STATE_LAST_RUN: &str = "last_run";
 const STATE_LAST_REPORT: &str = "last_report";
@@ -71,6 +76,10 @@ pub struct StatusResponse {
 pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub config: ConfigCell,
+    /// Serializes passes: the cron heartbeat and the catch-up backstop can
+    /// fire close together; the gate plus a due re-check under it makes
+    /// that a no-op instead of a double run.
+    pub run_gate: tokio::sync::Mutex<()>,
 }
 
 impl Deps {
@@ -183,6 +192,42 @@ pub async fn status(deps: &Deps, _req: StatusRequest) -> Result<StatusResponse, 
         due,
         last_report: state_get(&deps.iii, STATE_LAST_REPORT).await,
     })
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TickResponse {
+    /// A pass actually ran (false = not due yet or disabled).
+    pub ran: bool,
+}
+
+/// Heartbeat body shared by the cron trigger and the backstop loop: run a
+/// pass only when due, serialized behind the run gate.
+pub async fn tick(deps: &Deps) -> Result<TickResponse, Error> {
+    let cfg = deps.config().await;
+    if !cfg.enabled {
+        return Ok(TickResponse { ran: false });
+    }
+    let _gate = deps.run_gate.lock().await;
+    let last = last_run_ms(&deps.iii).await;
+    let interval_ms = cfg.interval_hours.saturating_mul(3_600_000);
+    // A small slack keeps an hourly heartbeat that lands minutes early
+    // from postponing the pass a whole extra hour.
+    let slack_ms = 300_000u64.min(interval_ms / 10);
+    if now_ms().saturating_sub(last) + slack_ms < interval_ms {
+        return Ok(TickResponse { ran: false });
+    }
+    tracing::info!(
+        last_run_ms = last,
+        interval_hours = cfg.interval_hours,
+        "scheduled consolidation pass due"
+    );
+    let res = run(deps, RunRequest::default()).await?;
+    tracing::info!(
+        superseded = res.superseded,
+        dry_run = res.dry_run,
+        "scheduled pass complete"
+    );
+    Ok(TickResponse { ran: true })
 }
 
 /// One registered function's wire pin (mirrors the memory worker's

@@ -8,7 +8,7 @@ Scheduled hygiene sibling of the [`memory`](../memory) worker. Finds near-duplic
 iii worker add memory-consolidate
 ```
 
-Requires the `memory` worker. Runs one pass every `interval_hours` (default 24) with **catch-up-on-boot** semantics: the last completed pass is persisted in the state worker, so a pass missed while this worker was down runs shortly after boot instead of waiting a full interval.
+Requires the `memory` worker. Scheduling reuses the engine's cron trigger infrastructure: an hourly heartbeat binds `memory-consolidate::on-tick`, and the tick runs a pass only when `interval_hours` (default 24) have elapsed since the last one — the last completed pass persists in the state worker. **Catch-up-on-boot**: a pass missed while this worker was down runs shortly after boot instead of waiting for the next heartbeat; a slim backstop loop also keeps the schedule alive on rigs with no cron trigger owner.
 
 ## Quickstart
 
