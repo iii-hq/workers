@@ -27,11 +27,11 @@ use crate::error::MemoryError;
 
 pub const BANK_CREATE_ID: &str = "memory::bank::create";
 pub const BANK_CREATE_DESC: &str =
-    "Create (or idempotently ensure) a named memory bank — an isolated scope of blocks and \
-     facts, e.g. one per project or persona. Sessions select it via metadata `memory_bank`.";
+    "Create (or idempotently ensure) a named memory bank — an isolated scope of rules and \
+     memories, e.g. one per project or persona. Sessions select it via metadata `memory_bank`.";
 
 pub const BANK_LIST_ID: &str = "memory::bank::list";
-pub const BANK_LIST_DESC: &str = "List every memory bank with fact/block/pin counts.";
+pub const BANK_LIST_DESC: &str = "List every memory bank with memory/rule/pin counts.";
 
 pub const BANK_DELETE_ID: &str = "memory::bank::delete";
 pub const BANK_DELETE_DESC: &str =
@@ -39,44 +39,45 @@ pub const BANK_DELETE_DESC: &str =
 
 pub const SAVE_ID: &str = "memory::save";
 pub const SAVE_DESC: &str =
-    "Save one fact explicitly. Content-fingerprinted: re-saving the same text reinforces the \
-     existing fact instead of duplicating it. Use when the user says `remember this`.";
+    "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces \
+     the existing memory instead of duplicating it. Use when the user says `remember this`.";
 
 pub const GET_ID: &str = "memory::get";
-pub const GET_DESC: &str = "Fetch one fact by id, including superseded/tombstoned records.";
+pub const GET_DESC: &str = "Fetch one memory by id, including superseded/tombstoned records.";
 
 pub const LIST_ID: &str = "memory::list";
 pub const LIST_DESC: &str =
-    "Page through a bank's facts, newest first. `include_superseded` shows history records too.";
+    "Page through a bank's memories, newest first. `include_superseded` shows history too.";
 
 pub const UPDATE_ID: &str = "memory::update";
 pub const UPDATE_DESC: &str =
-    "Revise a fact's text, entities, or pin flag in place (same id, bumped revision; the prior \
-     revision stays in the on-disk log).";
+    "Revise a memory's text, entities, or pin flag in place (same id, bumped revision; the \
+     prior revision stays in the on-disk log).";
 
 pub const DELETE_ID: &str = "memory::delete";
 pub const DELETE_DESC: &str =
-    "Tombstone a fact (sets invalid_at). It leaves recall immediately but stays on disk and \
-     readable with include_superseded.";
+    "Tombstone a memory (sets invalid_at). It leaves recall immediately but stays on disk \
+     and readable with include_superseded.";
 
 pub const PIN_ID: &str = "memory::pin";
 pub const PIN_DESC: &str =
-    "Pin or unpin a fact. Pinned facts rank higher in recall and are untouchable by every \
-     automatic path.";
+    "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by \
+     every automatic path.";
 
 pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
-    "Rank a bank's facts against a query (BM25 + entity match + corroboration + recency; no \
-     LLM). The same scorer the pre-generate hook uses — call it to preview an injection.";
+    "Rank a bank's memories against a query (BM25 + entity match + corroboration + recency; \
+     no LLM). The same scorer the pre-generate hook uses — call it to preview an injection.";
 
 pub const BLOCK_LIST_ID: &str = "memory::block::list";
 pub const BLOCK_LIST_DESC: &str =
-    "List a bank's markdown blocks (always injected whole into the system prompt).";
+    "List a bank's rules (markdown, injected whole into the system prompt on every turn). \
+     Rules are stored as blocks: the wire name and the on-disk blocks/ folder are stable.";
 
 pub const BLOCK_SET_ID: &str = "memory::block::set";
 pub const BLOCK_SET_DESC: &str =
-    "Create or replace one markdown block (atomic write; empty content removes it). Blocks are \
-     plain files under the bank's blocks/ folder.";
+    "Create or replace one rule (atomic write; empty content removes it). Rules are plain \
+     markdown files under the bank's blocks/ folder (blocks is the stable wire/disk name).";
 
 pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =

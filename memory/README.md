@@ -1,6 +1,8 @@
 # memory
 
-Durable cross-session agent memory. Named **banks** hold two kinds of content: **blocks** (markdown documents injected whole into every turn's system prompt) and **facts** (auto-extracted items recalled on demand). Everything is a plain file you can open, a function you can call, and an event you can watch: memory that acts visibly, not magically.
+Durable cross-session agent memory. Named **banks** hold two kinds of content: **rules** (markdown documents injected whole into every turn's system prompt) and **memories** (auto-extracted facts recalled on demand). Everything is a plain file you can open, a function you can call, and an event you can watch: memory that acts visibly, not magically.
+
+Terminology note: rules and memories are the product names (per team review). The stable wire surface keeps its original names: rules = `memory::block::*` + the on-disk `blocks/` folder; memories = the fact records on `memory::save/list/recall`. Renaming the API or disk layout would break existing banks and callers, so those never change.
 
 ## Why this shape
 
