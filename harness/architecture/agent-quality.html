@@ -1,0 +1,1698 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Worker-based real-model evaluation
+architecture for harness workflow outcomes, validation, reliability, and
+efficiency.">
+  <title>Harness Agent-Quality E2E Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..700&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap">
+  <style>
+    :root {
+      --paper: oklch(0.976 0.009 80);
+      --paper-raised: oklch(0.992 0.005 80);
+      --paper-soft: oklch(0.946 0.016 80);
+      --ink: oklch(0.225 0.022 68);
+      --ink-muted: oklch(0.47 0.027 70);
+      --rule: oklch(0.82 0.022 76);
+      --orange: oklch(0.59 0.16 55);
+      --orange-soft: oklch(0.925 0.057 67);
+      --violet: oklch(0.52 0.14 304);
+      --violet-soft: oklch(0.925 0.038 304);
+      --green: oklch(0.49 0.105 177);
+      --green-soft: oklch(0.925 0.038 177);
+      --red: oklch(0.52 0.16 28);
+      --red-soft: oklch(0.93 0.045 28);
+      --grid: color-mix(in oklch, var(--rule) 42%, transparent);
+      --display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+      --gutter: clamp(1rem, 3vw, 2.25rem);
+      --rail: 16rem;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: oklch(0.158 0.013 72);
+        --paper-raised: oklch(0.19 0.016 72);
+        --paper-soft: oklch(0.235 0.019 72);
+        --ink: oklch(0.94 0.013 80);
+        --ink-muted: oklch(0.72 0.022 78);
+        --rule: oklch(0.34 0.025 73);
+        --orange: oklch(0.77 0.165 61);
+        --orange-soft: oklch(0.28 0.065 56);
+        --violet: oklch(0.76 0.135 304);
+        --violet-soft: oklch(0.28 0.05 304);
+        --green: oklch(0.73 0.12 177);
+        --green-soft: oklch(0.27 0.045 177);
+        --red: oklch(0.74 0.145 28);
+        --red-soft: oklch(0.28 0.05 28);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 2rem;
+      background: var(--paper);
+    }
+
+    body {
+      min-width: 18rem;
+      margin: 0;
+      background:
+        linear-gradient(90deg, transparent calc(50% - 44rem), var(--grid) calc(50% - 44rem), var(--grid) calc(50% - 43.94rem), transparent calc(50% - 43.94rem)),
+        linear-gradient(90deg, transparent calc(50% + 43.94rem), var(--grid) calc(50% + 43.94rem), var(--grid) calc(50% + 44rem), transparent calc(50% + 44rem)),
+        var(--paper);
+      color: var(--ink);
+      font-family: var(--display);
+      font-feature-settings: "ss01", "ss02", "cv11";
+      font-optical-sizing: auto;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.66;
+    }
+
+    a {
+      color: var(--orange);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.2em;
+    }
+
+    a:hover { color: color-mix(in oklch, var(--orange) 75%, var(--ink)); }
+
+    a:focus-visible,
+    summary:focus-visible {
+      outline: 3px solid color-mix(in oklch, var(--orange) 58%, transparent);
+      outline-offset: 4px;
+      border-radius: 0.15rem;
+    }
+
+    .progress {
+      position: fixed;
+      inset: 0 auto auto 0;
+      z-index: 20;
+      width: 100%;
+      height: 0.22rem;
+      transform: scaleX(0);
+      transform-origin: left;
+      background: var(--orange);
+    }
+
+    .page {
+      width: min(100%, 90rem);
+      margin: 0 auto;
+      padding: 0 var(--gutter) clamp(4rem, 9vw, 8rem);
+    }
+
+    .hero {
+      position: relative;
+      padding: clamp(3.5rem, 8vw, 7.5rem) 0 clamp(3rem, 6vw, 5rem);
+      border-top: 0.42rem solid var(--orange);
+      border-bottom: 1px solid var(--rule);
+      overflow: hidden;
+    }
+
+    .hero::after {
+      position: absolute;
+      top: clamp(1rem, 3vw, 2.5rem);
+      right: 0;
+      z-index: -1;
+      color: color-mix(in oklch, var(--orange) 8%, transparent);
+      content: "02";
+      font-family: var(--mono);
+      font-size: clamp(11rem, 28vw, 25rem);
+      font-weight: 600;
+      line-height: 0.8;
+      letter-spacing: -0.12em;
+    }
+
+    .kicker {
+      margin: 0 0 1.25rem;
+      color: var(--orange);
+      font-family: var(--mono);
+      font-size: 0.69rem;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, h4 { font-family: var(--display); text-wrap: balance; }
+
+    h1 {
+      max-width: 11ch;
+      margin: 0;
+      font-size: clamp(3.4rem, 9vw, 7.8rem);
+      font-weight: 550;
+      line-height: 0.91;
+      letter-spacing: -0.06em;
+    }
+
+    .hero-lead {
+      max-width: 62ch;
+      margin: clamp(1.75rem, 4vw, 3rem) 0 0;
+      color: var(--ink-muted);
+      font-size: clamp(1.05rem, 1.6vw, 1.28rem);
+      line-height: 1.58;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem clamp(1.25rem, 3vw, 2.5rem);
+      margin-top: 1.5rem;
+      color: var(--ink-muted);
+      font-family: var(--mono);
+      font-size: 0.65rem;
+    }
+
+    .hero-meta span::before {
+      margin-right: 0.45rem;
+      color: var(--orange);
+      content: "/";
+    }
+
+    .questions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: clamp(3rem, 7vw, 5.5rem);
+      border-top: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .question {
+      min-width: 0;
+      padding: 1.4rem clamp(0.8rem, 2vw, 1.4rem) 1.65rem;
+      border-left: 1px solid var(--rule);
+    }
+
+    .question:first-child { border-left: 0; }
+    .question:nth-child(2) .question-label { color: var(--violet); }
+    .question:nth-child(3) .question-label { color: var(--green); }
+
+    .question-label {
+      margin: 0;
+      color: var(--orange);
+      font-family: var(--mono);
+      font-size: 0.61rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .question p:last-child {
+      margin: 0.65rem 0 0;
+      font-size: 0.83rem;
+      line-height: 1.48;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: var(--rail) minmax(0, 1fr);
+      gap: clamp(2.25rem, 5vw, 6rem);
+      align-items: start;
+      padding-top: clamp(2rem, 4vw, 3.5rem);
+    }
+
+    .toc {
+      position: sticky;
+      top: 1.5rem;
+      max-height: calc(100vh - 3rem);
+      overflow: auto;
+      padding-bottom: 1rem;
+      scrollbar-width: thin;
+      scrollbar-color: var(--rule) transparent;
+    }
+
+    .toc-label {
+      margin: 0 0 1rem;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .toc ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc li { margin: 0; }
+    .toc li li { display: none; }
+
+    .toc a {
+      display: block;
+      padding: 0.34rem 0;
+      color: var(--ink-muted);
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      line-height: 1.36;
+      text-decoration: none;
+    }
+
+    .toc a:hover,
+    .toc a[aria-current="true"] { color: var(--orange); }
+
+    .document {
+      min-width: 0;
+      max-width: 72rem;
+    }
+
+    .document > blockquote:first-child {
+      display: grid;
+      gap: 0;
+      margin: 0 0 clamp(4rem, 8vw, 7rem);
+      padding: 0;
+      border: 1px solid color-mix(in oklch, var(--orange) 42%, var(--rule));
+      border-radius: 0.3rem;
+      background: var(--orange-soft);
+    }
+
+    .document > blockquote:first-child p {
+      margin: 0;
+      padding: 0.75rem 1rem;
+      border-top: 1px solid color-mix(in oklch, var(--orange) 30%, var(--rule));
+      font-family: var(--mono);
+      font-size: 0.71rem;
+      line-height: 1.5;
+    }
+
+    .document > blockquote:first-child p:first-child { border-top: 0; }
+
+    section.level2 {
+      padding: clamp(3.5rem, 7vw, 6.5rem) 0;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    section.level2:first-of-type { padding-top: 0; }
+
+    h2 {
+      max-width: 22ch;
+      margin: 0 0 1.5rem;
+      font-size: clamp(2.05rem, 4.4vw, 3.75rem);
+      font-weight: 550;
+      line-height: 1.01;
+      letter-spacing: -0.045em;
+    }
+
+    h3 {
+      margin: clamp(2.5rem, 5vw, 4.25rem) 0 1rem;
+      font-size: clamp(1.3rem, 2vw, 1.75rem);
+      font-weight: 580;
+      line-height: 1.12;
+      letter-spacing: -0.025em;
+    }
+
+    h4 {
+      margin: 2.1rem 0 0.75rem;
+      font-size: 1rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    p, li, dd { max-width: 72ch; }
+    p { margin: 0.85rem 0; }
+    ul, ol { padding-left: 1.25rem; }
+    li + li { margin-top: 0.38rem; }
+
+    section.level2 > p:first-of-type {
+      max-width: 66ch;
+      color: var(--ink-muted);
+      font-size: 1.04rem;
+    }
+
+    strong { font-weight: 650; }
+
+    code, pre { font-family: var(--mono); }
+
+    code {
+      padding: 0.08rem 0.3rem;
+      border: 1px solid color-mix(in oklch, var(--rule) 72%, transparent);
+      border-radius: 0.2rem;
+      background: color-mix(in oklch, var(--paper-soft) 78%, transparent);
+      color: color-mix(in oklch, var(--ink) 88%, var(--orange));
+      font-size: 0.86em;
+    }
+
+    pre {
+      width: 100%;
+      margin: 1.5rem 0 2rem;
+      padding: clamp(1rem, 2.5vw, 1.6rem);
+      overflow: auto;
+      border: 1px solid var(--rule);
+      border-radius: 0.35rem;
+      background: var(--paper-soft);
+      font-size: 0.76rem;
+      line-height: 1.62;
+      tab-size: 2;
+      scrollbar-width: thin;
+      scrollbar-color: var(--rule) transparent;
+    }
+
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+    }
+
+    blockquote:not(:first-child) {
+      margin: 2rem 0;
+      padding: 1.1rem 1.25rem;
+      border: 1px solid color-mix(in oklch, var(--orange) 34%, var(--rule));
+      border-radius: 0.3rem;
+      background: var(--orange-soft);
+    }
+
+    blockquote:not(:first-child) p { margin: 0; }
+
+    table {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      margin: 1.5rem 0 2.4rem;
+      overflow-x: auto;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      scrollbar-width: thin;
+      scrollbar-color: var(--rule) transparent;
+    }
+
+    thead, tbody { display: table; width: 100%; min-width: 44rem; table-layout: auto; }
+    th, td { padding: 0.85rem 0.75rem 0.85rem 0; text-align: left; vertical-align: top; }
+    th, td { border-bottom: 1px solid var(--rule); }
+
+    th {
+      border-top: 2px solid var(--ink);
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.085em;
+      text-transform: uppercase;
+    }
+
+    td { color: var(--ink-muted); }
+    tbody tr:hover { background: color-mix(in oklch, var(--orange-soft) 35%, transparent); }
+
+    .mermaid-shell {
+      position: relative;
+      margin: clamp(2rem, 5vw, 3.75rem) 0;
+      padding: clamp(1rem, 2.5vw, 1.8rem);
+      overflow-x: auto;
+      border: 1px solid oklch(0.36 0.025 70);
+      border-radius: 0.35rem;
+      background:
+        linear-gradient(oklch(0.32 0.022 70) 1px, transparent 1px),
+        linear-gradient(90deg, oklch(0.32 0.022 70) 1px, transparent 1px),
+        oklch(0.205 0.018 70);
+      background-size: 36px 36px;
+      color: oklch(0.94 0.012 80);
+      scrollbar-width: thin;
+      scrollbar-color: oklch(0.42 0.025 70) transparent;
+    }
+
+    .mermaid-shell .mermaid { min-width: 58rem; text-align: center; }
+    .mermaid-shell svg { max-width: none !important; height: auto; }
+
+    .mermaid-label {
+      margin: 0 0 0.75rem;
+      color: oklch(0.75 0.02 78);
+      font-family: var(--mono);
+      font-size: 0.61rem;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .status-key {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 3rem 0 0;
+      border-top: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .status-key div { padding: 1rem; border-left: 1px solid var(--rule); }
+    .status-key div:first-child { border-left: 0; }
+    .status-key dt { color: var(--ink); font-family: var(--mono); font-size: 0.63rem; font-weight: 600; }
+    .status-key dd { margin: 0.35rem 0 0; color: var(--ink-muted); font-size: 0.75rem; line-height: 1.42; }
+    .status-key .pass dt { color: var(--green); }
+    .status-key .fail dt { color: var(--red); }
+    .status-key .open dt { color: var(--orange); }
+    .status-key .quality dt { color: var(--violet); }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 2rem;
+      padding: 2rem 0 0 calc(var(--rail) + clamp(2.25rem, 5vw, 6rem));
+      color: var(--ink-muted);
+      font-family: var(--mono);
+      font-size: 0.63rem;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 960px) {
+      .questions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .question:nth-child(3) { border-top: 1px solid var(--rule); border-left: 0; }
+      .question:nth-child(4) { border-top: 1px solid var(--rule); }
+      .shell { grid-template-columns: 1fr; }
+      .toc {
+        position: static;
+        max-height: none;
+        padding-bottom: 2rem;
+        border-bottom: 1px solid var(--rule);
+      }
+      .toc ul { columns: 2; column-gap: 2rem; }
+      .toc li { break-inside: avoid; }
+      .footer { padding-left: 0; }
+    }
+
+    @media (max-width: 620px) {
+      body { background: var(--paper); }
+      .hero::after { top: 3rem; font-size: 12rem; }
+      h1 { font-size: clamp(3.1rem, 18vw, 5.3rem); }
+      .questions { grid-template-columns: 1fr; }
+      .question, .question:nth-child(3), .question:nth-child(4) { border-top: 1px solid var(--rule); border-left: 0; }
+      .question:first-child { border-top: 0; }
+      .toc ul { columns: 1; }
+      section.level2 { padding: 4rem 0; }
+      .status-key { grid-template-columns: 1fr; }
+      .status-key div, .status-key div:first-child { border-top: 1px solid var(--rule); border-left: 0; }
+      .status-key div:first-child { border-top: 0; }
+      .footer { display: block; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+
+    @media print {
+      :root {
+        --paper: oklch(0.99 0.004 80);
+        --paper-raised: oklch(0.99 0.004 80);
+        --ink: oklch(0.18 0.015 70);
+        --ink-muted: oklch(0.39 0.02 70);
+        --rule: oklch(0.75 0.018 75);
+      }
+      body { background: var(--paper); }
+      .progress, .toc { display: none; }
+      .shell { display: block; }
+      .hero { padding-top: 3rem; }
+      .hero::after { color: oklch(0.92 0.015 70); }
+      section.level2 { break-before: auto; }
+      h2, h3, pre, table, .mermaid-shell, blockquote { break-inside: avoid; }
+      .mermaid-shell { background: oklch(0.22 0.015 70); print-color-adjust: exact; }
+      .footer { padding-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <div class="page">
+    <header class="hero">
+      <p class="kicker">Real-model evaluation · July 2026</p>
+      <h1>Agent-Quality E2E</h1>
+      <p class="hero-lead">A worker-based evaluation suite for
+representative workflows, reusable validation functions, bounded
+feedback, and transparent baseline comparison.</p>
+      <div class="hero-meta" aria-label="Document metadata">
+        <span>Real model · production provider path</span>
+        <span>Reviewed 2026-07-14</span>
+        <span>Proposed architecture</span>
+      </div>
+    </header>
+
+    <div class="shell">
+      <aside class="toc" aria-label="Document sections">
+        <p class="toc-label">Section index</p>
+        <ul>
+        <li><a href="#decision-summary"
+        id="toc-decision-summary">Decision summary</a></li>
+        <li><a href="#goals" id="toc-goals">Goals</a></li>
+        <li><a href="#non-goals" id="toc-non-goals">Non-goals</a></li>
+        <li><a href="#test-taxonomy" id="toc-test-taxonomy">Test
+        taxonomy</a></li>
+        <li><a href="#validator-visibility-and-trust"
+        id="toc-validator-visibility-and-trust">Validator visibility and
+        trust</a></li>
+        <li><a href="#what-end-to-end-means"
+        id="toc-what-end-to-end-means">What end to end means</a></li>
+        <li><a href="#validation-functions-as-a-product-extension"
+        id="toc-validation-functions-as-a-product-extension">Validation
+        functions as a product extension</a></li>
+        <li><a href="#agent-quality-execution-and-scenario-inputs"
+        id="toc-agent-quality-execution-and-scenario-inputs">Agent-quality
+        execution and scenario inputs</a></li>
+        <li><a href="#validation-protocol"
+        id="toc-validation-protocol">Validation protocol</a></li>
+        <li><a href="#adding-a-new-rule"
+        id="toc-adding-a-new-rule">Adding a new rule</a></li>
+        <li><a href="#scenario-corpus" id="toc-scenario-corpus">Scenario
+        corpus</a></li>
+        <li><a href="#evaluating-system-prompts-with-real-models"
+        id="toc-evaluating-system-prompts-with-real-models">Evaluating
+        system prompts with real models</a></li>
+        <li><a href="#browser-validation"
+        id="toc-browser-validation">Browser validation</a></li>
+        <li><a href="#metrics-and-regression-policy"
+        id="toc-metrics-and-regression-policy">Metrics and regression
+        policy</a></li>
+        <li><a href="#execution-ownership-and-artifacts"
+        id="toc-execution-ownership-and-artifacts">Execution ownership
+        and artifacts</a></li>
+        <li><a href="#delivery-sequence"
+        id="toc-delivery-sequence">Delivery sequence</a></li>
+        <li><a href="#open-decisions" id="toc-open-decisions">Open
+        decisions</a></li>
+        <li><a href="#references"
+        id="toc-references">References</a></li>
+        <li><a href="#related-repository-material"
+        id="toc-related-repository-material">Related repository
+        material</a></li>
+        </ul>
+      </aside>
+      <main class="document" id="document">
+        <blockquote>
+        <p>Status: proposed architecture; implementation has not
+        started.</p>
+        <p>Last reviewed: 2026-07-14.</p>
+        <p>Decision source: July 14 development sync. Where the
+        discussion left alternatives open, this document gives
+        precedence to Mike's concrete implementation direction.</p>
+        </blockquote>
+        <p>Agent-quality E2E is the real-model evaluation track for the
+        harness. It measures whether a pinned model, system prompt, tool
+        catalog, worker set, and harness implementation can complete
+        representative user workflows, then makes quality and efficiency
+        changes visible against a pinned baseline.</p>
+        <p>This suite is implemented as one iii worker or a small worker
+        set. Validation is expressed as dynamic iii functions that
+        developers or agents can add to a workflow. A thin CLI or CI
+        launcher selects configuration, applies global budgets, starts
+        the evaluation worker, and collects artifacts.</p>
+        <p>Agent quality and deterministic <a
+        href="conformance-e2e.md">harness conformance</a> are the two
+        E2E test types in the evaluation program. They may share
+        scenario vocabulary and report envelopes, but they have
+        different model boundaries, execution owners, cadence, and pass
+        policies.</p>
+        <section id="decision-summary" class="level2">
+        <h2>Decision summary</h2>
+        <ol type="1">
+        <li>The suite itself is one iii worker or a small set of
+        workers.</li>
+        <li>A scenario supplies the default or custom system prompt,
+        task prompt, pinned model, optional initial workers, and
+        optional validator.</li>
+        <li>Scenarios may require the agent to discover, install,
+        create, or register a worker dynamically.</li>
+        <li>A validator may be supplied by the scenario, authored by the
+        agent during the workflow, or omitted when no open runtime
+        objective is needed.</li>
+        <li>After-turn validation begins from durable
+        <code>harness::turn-completed</code> lifecycle handling, never
+        from a slow synchronous hook.</li>
+        <li>A failed open validator may provide structured feedback for
+        another bounded turn. The attempt stops at pass, terminal
+        failure, cancellation, deadline, or budget exhaustion.</li>
+        <li>Independent or held-out graders remain outside the subject
+        agent's tool catalog and context.</li>
+        <li>Outcome and efficiency metrics are calculated after the
+        attempt is terminal.</li>
+        <li>Outputs and metrics are stored so prompts, models, tool
+        catalogs, worker versions, and harness versions can be compared
+        A/B.</li>
+        <li>The corpus covers varied orchestration patterns rather than
+        one canonical way to use tools or sub-agents.</li>
+        <li>Real-model comparisons report reliability, spans, turns,
+        latency, context, tokens, errors, and cost in addition to
+        outcome quality.</li>
+        <li>Browser functions may provide DOM, network, console,
+        snapshot, screenshot, and real-interaction evidence, with
+        deterministic state preferred.</li>
+        </ol>
+        <p>The exact worker split, function schemas, report format,
+        rollup weights, model matrix, repetition count, and gating
+        thresholds remain open decisions.</p>
+        </section>
+        <section id="goals" class="level2">
+        <h2>Goals</h2>
+        <p>The agent-quality suite should answer three questions:</p>
+        <ol type="1">
+        <li><strong>Capability:</strong> can the harness and a real
+        model complete a representative user workflow?</li>
+        <li><strong>Quality:</strong> is a candidate system prompt,
+        model, tool catalog, worker set, or harness implementation
+        better than the pinned baseline?</li>
+        <li><strong>Product validation:</strong> can users express the
+        desired outcome as reusable validation functions and use the
+        result to guide a bounded workflow?</li>
+        </ol>
+        <p>The system should make the cause of a failure visible. A
+        model failure, harness failure, validator error, and unavailable
+        dependency must not collapse into one generic failing score.</p>
+        </section>
+        <section id="non-goals" class="level2">
+        <h2>Non-goals</h2>
+        <p>This document does not propose:</p>
+        <ul>
+        <li>one composite number that hides correctness, cost, latency,
+        and reliability;</li>
+        <li>deterministic protocol conformance, which belongs to <a
+        href="conformance-e2e.md">the conformance suite</a>;</li>
+        <li>exact-output matching when several correct tool trajectories
+        are possible;</li>
+        <li>an unbounded loop that retries until a validator eventually
+        passes;</li>
+        <li>exposing private evaluation expectations to the subject
+        agent;</li>
+        <li>placing project-specific validation logic in the harness
+        core;</li>
+        <li>using the console UI as the only source of truth for
+        lifecycle events;</li>
+        <li>a no-code rule authoring UI in the first version.</li>
+        </ul>
+        </section>
+        <section id="test-taxonomy" class="level2">
+        <h2>Test taxonomy</h2>
+        <p>The July 14 discussion used "unitish", "mocked E2E", and
+        "E2E" for different boundaries. Use the following names in code,
+        reports, and CI so the result is unambiguous:</p>
+        <table>
+        <thead>
+        <tr>
+        <th>Layer</th>
+        <th>Boundary under test</th>
+        <th>Model behavior</th>
+        <th>Primary oracle</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>Unit</td>
+        <td>One module, parser, state transition, or pure contract</td>
+        <td>None or in-process fake</td>
+        <td>Direct code assertions</td>
+        </tr>
+        <tr>
+        <td>Integration</td>
+        <td>Several harness components; internal entry points may be
+        used</td>
+        <td>Fake or scripted</td>
+        <td>Component state and contracts</td>
+        </tr>
+        <tr>
+        <td>Conformance E2E</td>
+        <td>Public entry point through the real engine, queue, harness,
+        persistence, and lifecycle</td>
+        <td>Scripted router or recorded replay</td>
+        <td>Durable public state and exact effects</td>
+        </tr>
+        <tr>
+        <td>Agent-quality E2E</td>
+        <td>Public workflow plus production provider path and real
+        tools</td>
+        <td>Real model</td>
+        <td>Outcome validators plus quality and efficiency metrics</td>
+        </tr>
+        </tbody>
+        </table>
+        <p>Conformance is E2E by system boundary even though one
+        dependency is controlled. "Mock-server E2E" is a useful
+        explanatory label for it. Tests that seed private turn records
+        or invoke continuation internals remain integration tests.</p>
+        </section>
+        <section id="validator-visibility-and-trust" class="level2">
+        <h2>Validator visibility and trust</h2>
+        <p>The evaluation track and validator visibility are separate
+        decisions. Within agent quality, an open runtime objective and
+        an independent release grader have different trust boundaries
+        even when they inspect the same evidence.</p>
+        <table>
+        <thead>
+        <tr>
+        <th>Visibility</th>
+        <th style="text-align: right;">Subject agent can inspect
+        it?</th>
+        <th>Purpose</th>
+        <th style="text-align: right;">Suitable as the only release
+        grader?</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>Open runtime validator</td>
+        <td style="text-align: right;">Yes, when the workflow
+        intentionally uses it as its definition of done</td>
+        <td>Guide planning, provide feedback, and decide whether another
+        turn is needed</td>
+        <td style="text-align: right;">No</td>
+        </tr>
+        <tr>
+        <td>Independent deterministic grader</td>
+        <td style="text-align: right;">No</td>
+        <td>Verify durable state and invariants without changing agent
+        behavior</td>
+        <td style="text-align: right;">Yes</td>
+        </tr>
+        <tr>
+        <td>Held-out model grader</td>
+        <td style="text-align: right;">No</td>
+        <td>Judge subjective or visual properties that deterministic
+        code cannot express</td>
+        <td style="text-align: right;">Only with calibration and
+        deterministic checks</td>
+        </tr>
+        <tr>
+        <td>Human grader</td>
+        <td style="text-align: right;">No</td>
+        <td>Adjudicate ambiguity, safety, or high-risk cases</td>
+        <td style="text-align: right;">Yes, but not as an automated
+        gate</td>
+        </tr>
+        </tbody>
+        </table>
+        <p>An open validator is useful product functionality. It lets a
+        user say, for example, that a scan is complete only when the
+        number of database rows equals the number of source files.
+        However, if the agent can inspect that condition, passing it
+        proves that the agent satisfied the published objective; it does
+        not prove that the objective was complete or could not be
+        gamed.</p>
+        </section>
+        <section id="what-end-to-end-means" class="level2">
+        <h2>What end to end means</h2>
+        <p>An agent-quality E2E scenario starts at a supported external
+        boundary, uses the production provider path and real tools, and
+        ends at durable, consumer-visible state. Project validation
+        functions are invoked through the same iii function and trigger
+        mechanisms available to product workflows.</p>
+        <pre class="mermaid"><code>flowchart LR
+  launcher[&quot;CLI or CI launcher&quot;]
+  quality[&quot;Agent-quality worker(s)&quot;]
+  send[&quot;harness::send&quot;]
+  loop[&quot;Real engine, queue, harness, and persistence&quot;]
+  realModel[&quot;Production provider and real model&quot;]
+  complete[&quot;harness::turn-completed&quot;]
+  validators[&quot;Optional validators&quot;]
+  independent[&quot;Independent or held-out graders&quot;]
+  report[&quot;Evidence, metrics, and comparison&quot;]
+
+  launcher --&gt; quality --&gt; send
+  send --&gt; loop --&gt; realModel --&gt; loop
+  loop --&gt; complete
+  complete --&gt; quality --&gt; validators --&gt; quality
+  quality --&gt;|&quot;no open validator&quot;| report
+  validators --&gt; report
+  quality --&gt; independent --&gt; report</code></pre>
+        <p>The engine, routing contract, provider path, model, queue
+        delivery, state, stream handling, harness process, session
+        persistence, and allowed tool workers are real. The model and
+        external dependencies introduce variance, so comparable runs pin
+        their inputs and use repeated attempts.</p>
+        <p>A public-path scenario should:</p>
+        <ul>
+        <li>enter through <code>harness::send</code> or another
+        documented consumer entry point;</li>
+        <li>allow the real queue to invoke
+        <code>harness::turn</code>;</li>
+        <li>observe transcripts, statuses, target invocations,
+        validation results, and terminal lifecycle events;</li>
+        <li>avoid seeding internal turn records or invoking continuation
+        internals;</li>
+        <li>invoke validators through a documented external
+        boundary;</li>
+        <li>fail loudly when required infrastructure is
+        unavailable;</li>
+        <li>preserve enough evidence to replay or diagnose the run.</li>
+        </ul>
+        <p>Tests that seed state or call internal continuation functions
+        remain valuable integration tests, but they do not demonstrate
+        the workflow users actually run.</p>
+        <p>The launcher does not own orchestration. It selects a target,
+        starts or contacts the quality worker set, supplies budgets, and
+        collects the resulting artifact. The quality workers own
+        scenario execution, completion handling, validator invocation,
+        bounded continuation, metric calculation, and reporting.</p>
+        </section>
+        <section id="validation-functions-as-a-product-extension"
+        class="level2">
+        <h2>Validation functions as a product extension</h2>
+        <p>A validation function describes an observable definition of
+        done for one workflow. It should be possible to add a project
+        rule without modifying the harness core or a monolithic external
+        test suite.</p>
+        <p>Examples include:</p>
+        <ul>
+        <li>database row count equals the number of discovered
+        inputs;</li>
+        <li>an expected state transition occurred exactly once;</li>
+        <li>all fan-out children completed before the parent
+        finalized;</li>
+        <li>no protected function executed before approval;</li>
+        <li>an HTTP endpoint returns the expected schema and persistent
+        effect;</li>
+        <li>a browser is at the expected URL and a DOM condition is
+        true;</li>
+        <li>the browser emitted no unexpected console errors or failed
+        requests;</li>
+        <li>a screenshot is sufficiently similar to a reviewed
+        reference.</li>
+        </ul>
+        <p>The initial authoring surface should be code-first. The
+        expected authors are:</p>
+        <ul>
+        <li>harness maintainers, for built-in protocol and regression
+        rules;</li>
+        <li>application developers, for project-specific outcomes;</li>
+        <li>the agent itself, when creating a runtime definition of done
+        as part of the requested workflow.</li>
+        </ul>
+        <p>Agent-authored validators must be reviewed or paired with an
+        independent grader before they become regression gates.
+        Otherwise the same subject can weaken both the implementation
+        and the test that judges it.</p>
+        <section id="responsibilities" class="level3">
+        <h3>Responsibilities</h3>
+        <p>The separation of responsibilities should be explicit:</p>
+        <table>
+        <thead>
+        <tr>
+        <th>Component</th>
+        <th>Responsibilities</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>Harness</td>
+        <td>Durable turn execution, lifecycle events, dispatch,
+        persistence, and resumption</td>
+        </tr>
+        <tr>
+        <td>Validation function</td>
+        <td>Evaluate one scoped outcome and return structured
+        evidence</td>
+        </tr>
+        <tr>
+        <td>Feedback-loop orchestrator</td>
+        <td>Decide whether to stop, start another turn, or exhaust the
+        attempt budget</td>
+        </tr>
+        <tr>
+        <td>Agent-quality worker(s)</td>
+        <td>Register scenarios, start real-model attempts, handle
+        completion, invoke validators, enforce bounded continuation,
+        calculate metrics, and report</td>
+        </tr>
+        <tr>
+        <td>Thin CLI or CI launcher</td>
+        <td>Select the target and scenario set, apply global budgets,
+        trigger the quality worker, and collect artifacts</td>
+        </tr>
+        <tr>
+        <td>Independent grader</td>
+        <td>Verify assertions that must not influence the subject
+        agent</td>
+        </tr>
+        </tbody>
+        </table>
+        <p>A validation function should not silently start an unlimited
+        new turn, mutate its own expected result, or mark the overall
+        run as passed. The quality worker owns continuation policy and
+        the final attempt result.</p>
+        </section>
+        <section id="lifecycle-model" class="level3">
+        <h3>Lifecycle model</h3>
+        <p>Use three distinct terms:</p>
+        <ul>
+        <li><strong>Turn:</strong> one normal harness turn, potentially
+        containing several model and function-call steps.</li>
+        <li><strong>Validation cycle:</strong> the completed turn plus
+        the validators invoked for that result.</li>
+        <li><strong>Scenario attempt:</strong> one bounded sequence of
+        validation cycles evaluated as a single attempt.</li>
+        </ul>
+        <p>The intended runtime loop is:</p>
+        <ol type="1">
+        <li>Start a turn through <code>harness::send</code>.</li>
+        <li>Observe the matching <code>harness::turn-completed</code>
+        trigger and confirm terminal durable state through
+        <code>harness::status</code> and the transcript.</li>
+        <li>Invoke the configured after-turn validation functions.</li>
+        <li>If an open validator fails with actionable feedback, append
+        that feedback through a supported consumer path and start the
+        next bounded cycle.</li>
+        <li>Stop on pass, terminal error, cancellation, deadline, or
+        maximum cycles.</li>
+        <li>Run independent graders against the final artifacts.</li>
+        <li>After terminal completion, calculate the complete outcome
+        and efficiency metrics and record every intermediate failure
+        rather than only the eventual pass.</li>
+        </ol>
+        <p>This exact continuation contract is still a design decision.
+        It should use public lifecycle events and entry points rather
+        than coupling validation to private turn-loop state.</p>
+        </section>
+        <section id="hooks-are-not-the-general-eval-api" class="level3">
+        <h3>Hooks are not the general eval API</h3>
+        <p>Synchronous <code>harness::hook::*</code> extensions are
+        appropriate when the behavior under test is itself a hook
+        contract: mutation, rejection, approval hold, timeout, or
+        failure policy. They are also useful for in-path policy
+        enforcement.</p>
+        <p>General after-turn validation should use the durable
+        completion boundary, not a synchronous hook, because it may
+        perform slow database, browser, network, or model-based work. A
+        slow grader must not keep a harness queue job open. Hooks remain
+        scenarios within the eval corpus, while validation functions are
+        the general outcome mechanism.</p>
+        <p>The meeting occasionally used "hook" to mean any lifecycle
+        callback. In the current harness vocabulary,
+        <code>harness::hook::*</code> means the synchronous in-path
+        extension points; <code>harness::turn-completed</code> is the
+        asynchronous lifecycle trigger used by the quality worker for
+        after-turn validation.</p>
+        </section>
+        </section>
+        <section id="agent-quality-execution-and-scenario-inputs"
+        class="level2">
+        <h2>Agent-quality execution and scenario inputs</h2>
+        <p>Agent quality is implemented as one worker or a small worker
+        set, not as a large external test program. One possible split
+        is:</p>
+        <ul>
+        <li>an <strong>orchestrator worker</strong> that registers
+        scenarios, starts attempts, applies limits, handles
+        <code>harness::turn-completed</code>, and decides whether to
+        continue;</li>
+        <li>a <strong>validator worker</strong> or project-provided
+        validator functions that return structured checks and
+        evidence;</li>
+        <li>an <strong>evidence worker</strong> that reads transcripts,
+        traces, context and compaction counters, token usage, errors,
+        and artifacts, then writes the final report.</li>
+        </ul>
+        <p>This split is illustrative. A first version may combine the
+        responsibilities in one worker, but the external launcher
+        remains thin.</p>
+        <p>The scenario surface starts with only the inputs identified
+        in the meeting:</p>
+        <table>
+        <thead>
+        <tr>
+        <th>Input</th>
+        <th>Requirement</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>System prompt</td>
+        <td>Optional explicit prompt; omission means the current default
+        prompt</td>
+        </tr>
+        <tr>
+        <td>Task prompt</td>
+        <td>Normally the task objective; may be omitted when an external
+        trigger or event supplies the work</td>
+        </tr>
+        <tr>
+        <td>Model</td>
+        <td>Pinned real model and settings for a comparable run</td>
+        </tr>
+        <tr>
+        <td>Initial workers</td>
+        <td>Optional; some scenarios start with all required workers and
+        others require dynamic discovery or installation</td>
+        </tr>
+        <tr>
+        <td>Validator</td>
+        <td>Optional; may be scenario-provided, agent-authored, or
+        absent</td>
+        </tr>
+        </tbody>
+        </table>
+        <p>Validator modes have distinct meanings:</p>
+        <ul>
+        <li><code>provided</code>: the scenario registers a known
+        validator;</li>
+        <li><code>agent_authored</code>: the task requires the agent to
+        create and register a validator on turn completion during the
+        workflow;</li>
+        <li><code>none</code>: the scenario intentionally measures
+        behavior without an open after-turn objective, though an
+        independent grader may still evaluate it.</li>
+        </ul>
+        <p>For <code>provided</code>, the quality worker can invoke the
+        known function after the matching completion event. For
+        <code>agent_authored</code>, the workflow creates the function
+        and a run-scoped binding to
+        <code>harness::turn-completed</code>; the quality worker still
+        observes the result, enforces the cycle budget, and owns the
+        final report. The binding, correlation, and feedback schemas
+        remain open.</p>
+        <p>The quality worker registers the configured completion
+        handler before sending the task, so a very fast turn cannot be
+        missed. It calculates aggregate metrics only after the attempt
+        reaches pass, terminal failure, cancellation, deadline, or cycle
+        exhaustion.</p>
+        </section>
+        <section id="validation-protocol" class="level2">
+        <h2>Validation protocol</h2>
+        <p>The exact iii schemas remain to be designed, but all
+        validation functions should share a versioned envelope. A
+        conceptual request is:</p>
+        <div class="sourceCode" id="cb2"><pre
+        class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;protocol_version&quot;</span><span class="fu">:</span> <span class="st">&quot;1&quot;</span><span class="fu">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;run&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;run_id&quot;</span><span class="fu">:</span> <span class="st">&quot;eval_123&quot;</span><span class="fu">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;scenario_id&quot;</span><span class="fu">:</span> <span class="st">&quot;repository-security-scan&quot;</span><span class="fu">,</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;attempt&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;cycle&quot;</span><span class="fu">:</span> <span class="dv">2</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">},</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;subject&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;session_id&quot;</span><span class="fu">:</span> <span class="st">&quot;session_123&quot;</span><span class="fu">,</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;turn_id&quot;</span><span class="fu">:</span> <span class="st">&quot;turn_456&quot;</span><span class="fu">,</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;trace_id&quot;</span><span class="fu">:</span> <span class="st">&quot;trace_789&quot;</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>  <span class="fu">},</span></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;validator&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;validation::database::rows-match-files&quot;</span><span class="fu">,</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;1&quot;</span><span class="fu">,</span></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;mode&quot;</span><span class="fu">:</span> <span class="st">&quot;runtime&quot;</span></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>  <span class="fu">},</span></span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;parameters&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;repository_fixture&quot;</span><span class="fu">:</span> <span class="st">&quot;repo_123&quot;</span><span class="fu">,</span></span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;table&quot;</span><span class="fu">:</span> <span class="st">&quot;security_findings&quot;</span></span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+        <p>The response should distinguish a failed outcome from a
+        broken validator:</p>
+        <div class="sourceCode" id="cb3"><pre
+        class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;fail&quot;</span><span class="fu">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;checks&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;one-row-per-file&quot;</span><span class="fu">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;passed&quot;</span><span class="fu">:</span> <span class="kw">false</span><span class="fu">,</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;expected&quot;</span><span class="fu">:</span> <span class="dv">42</span><span class="fu">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;actual&quot;</span><span class="fu">:</span> <span class="dv">39</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;feedback&quot;</span><span class="fu">:</span> <span class="st">&quot;Three repository files do not have a persisted result.&quot;</span><span class="fu">,</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;evidence&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;artifact_refs&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;eval_123/database/row-count.json&quot;</span><span class="ot">]</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>  <span class="fu">},</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;metrics&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;duration_ms&quot;</span><span class="fu">:</span> <span class="dv">18</span><span class="fu">,</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;input_tokens&quot;</span><span class="fu">:</span> <span class="dv">0</span><span class="fu">,</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;output_tokens&quot;</span><span class="fu">:</span> <span class="dv">0</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+        <p>Allowed statuses should have unambiguous semantics:</p>
+        <ul>
+        <li><code>pass</code>: all required checks passed;</li>
+        <li><code>fail</code>: the subject outcome did not meet the
+        rule;</li>
+        <li><code>error</code>: the validator or one of its dependencies
+        failed;</li>
+        <li><code>inconclusive</code>: evidence was insufficient to
+        decide.</li>
+        </ul>
+        <p>Only <code>pass</code> is green. <code>error</code> and
+        <code>inconclusive</code> must never become passing skips in a
+        release gate.</p>
+        <p>Every result should include the validator id, version or
+        content digest, run id, scenario id, subject identifiers,
+        individual checks, evidence references, and duration.
+        Model-backed validators must also report their model, prompt
+        digest, tokens, and cost.</p>
+        <section id="isolation-and-permissions" class="level3">
+        <h3>Isolation and permissions</h3>
+        <p>Every run needs a unique <code>run_id</code> even if a
+        broader iii namespace mechanism is introduced later. Sessions,
+        database rows, state keys, browser sessions, artifacts, traces,
+        and validator queries should be scoped by that id.</p>
+        <p>Validation functions should:</p>
+        <ul>
+        <li>use read-only access by default;</li>
+        <li>receive only credentials and resources required by the
+        check;</li>
+        <li>avoid being automatically exposed in the subject model's
+        tool catalog;</li>
+        <li>write evidence to a run-scoped artifact location;</li>
+        <li>have bounded time, network, token, and cost budgets;</li>
+        <li>support deterministic cleanup or a documented retention
+        period.</li>
+        </ul>
+        <p>Some browser validations necessarily perform actions. Those
+        should be labeled as active validators, record each action, and
+        run before a separate read-only assertion when possible.</p>
+        </section>
+        </section>
+        <section id="adding-a-new-rule" class="level2">
+        <h2>Adding a new rule</h2>
+        <p>Adding a rule should be an extension workflow, not a
+        harness-core change:</p>
+        <ol type="1">
+        <li>Define the invariant in observable terms.</li>
+        <li>Choose its visibility: open runtime objective, independent
+        grader, or both.</li>
+        <li>Implement a versioned validation function with structured
+        checks and evidence.</li>
+        <li>Register it in a scenario manifest with its lifecycle phase
+        and limits.</li>
+        <li>Create isolated fixtures tagged with
+        <code>run_id</code>.</li>
+        <li>Run it repeatedly against a known passing and deliberately
+        failing case.</li>
+        <li>Review agent-authored rules before promoting them to a
+        shared baseline.</li>
+        <li>Record the validator digest and baseline result with the
+        scenario.</li>
+        </ol>
+        <p>A conceptual scenario manifest could look like this:</p>
+        <div class="sourceCode" id="cb4"><pre
+        class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">id</span><span class="kw">:</span><span class="at"> fan-out-security-scan</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fu">track</span><span class="kw">:</span><span class="at"> agent-quality</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="fu">entrypoint</span><span class="kw">:</span><span class="at"> harness::send</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="fu">subject</span><span class="kw">:</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">system_prompt</span><span class="kw">:</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">strategy</span><span class="kw">:</span><span class="at"> custom</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">ref</span><span class="kw">:</span><span class="at"> prompts/fan-out-v2.md</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">task_prompt</span><span class="kw">:</span><span class="at"> prompts/scan-repository.md</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">model</span><span class="kw">:</span><span class="at"> pinned-provider-model</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">initial_workers</span><span class="kw">:</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> state</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> database</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">dynamic_workers</span><span class="kw">:</span><span class="at"> allowed</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">functions_allow</span><span class="kw">:</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> state::*</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> database::*</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> harness::spawn</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="fu">validators</span><span class="kw">:</span></span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">function</span><span class="kw">:</span><span class="at"> validation::workflow::all-files-processed</span></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">mode</span><span class="kw">:</span><span class="at"> provided</span></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">phase</span><span class="kw">:</span><span class="at"> after_turn</span></span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">visibility</span><span class="kw">:</span><span class="at"> open</span></span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">on_fail</span><span class="kw">:</span><span class="at"> continue_with_feedback</span></span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">function</span><span class="kw">:</span><span class="at"> eval-private::workflow::no-duplicate-results</span></span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">phase</span><span class="kw">:</span><span class="at"> final</span></span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">visibility</span><span class="kw">:</span><span class="at"> held_out</span></span>
+<span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a><span class="fu">limits</span><span class="kw">:</span></span>
+<span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">max_cycles</span><span class="kw">:</span><span class="at"> </span><span class="dv">4</span></span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">attempt_timeout_seconds</span><span class="kw">:</span><span class="at"> </span><span class="dv">300</span></span>
+<span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">max_total_tokens</span><span class="kw">:</span><span class="at"> </span><span class="dv">100000</span></span></code></pre></div>
+        <p>This is illustrative, not a proposed stable file format.</p>
+        </section>
+        <section id="scenario-corpus" class="level2">
+        <h2>Scenario corpus</h2>
+        <p>The corpus should demonstrate that the harness supports
+        different user-defined patterns instead of enforcing one
+        orchestration opinion. Begin with a small, diagnosable set, then
+        grow toward approximately 20 to 30 representative prompt and
+        system-prompt combinations.</p>
+        <p>Recommended families are:</p>
+        <table>
+        <thead>
+        <tr>
+        <th>Family</th>
+        <th>Representative outcome</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>Plain response</td>
+        <td>Streamed text reaches durable completion without
+        duplication</td>
+        </tr>
+        <tr>
+        <td>Single function</td>
+        <td>Allowed target executes exactly once and its result reaches
+        the next generation</td>
+        </tr>
+        <tr>
+        <td>Sequential workflow</td>
+        <td>Steps occur in the required order and resume correctly</td>
+        </tr>
+        <tr>
+        <td>Fan-out and fan-in</td>
+        <td>Children may finish out of order, but the parent resolves
+        exactly once after all required work</td>
+        </tr>
+        <tr>
+        <td>Batched sub-agents</td>
+        <td>Work is divided into bounded batches, all child results are
+        collected, and no item is lost or processed twice</td>
+        </tr>
+        <tr>
+        <td>State and queues</td>
+        <td>State transitions and queued work remain durable across
+        turns</td>
+        </tr>
+        <tr>
+        <td>Dynamic state watch</td>
+        <td>A state change or event starts the next workflow stage
+        without polling or duplicate reactions</td>
+        </tr>
+        <tr>
+        <td>Database workflow</td>
+        <td>Expected rows are written exactly once and match source
+        inputs</td>
+        </tr>
+        <tr>
+        <td>Approval</td>
+        <td>Protected work never runs before approval and resumes or
+        denies correctly</td>
+        </tr>
+        <tr>
+        <td>HTTP, webhook, and event input</td>
+        <td>External input or callback starts the correct workflow and
+        produces durable output</td>
+        </tr>
+        <tr>
+        <td>Human-in-the-loop callback</td>
+        <td>Work parks for an external decision and resumes exactly once
+        with the supplied decision</td>
+        </tr>
+        <tr>
+        <td>Steering</td>
+        <td>A user message arriving during work is neither lost nor
+        duplicated</td>
+        </tr>
+        <tr>
+        <td>Structured output</td>
+        <td>Valid output completes; invalid output follows the bounded
+        retry or failure contract</td>
+        </tr>
+        <tr>
+        <td>Browser workflow</td>
+        <td>Real navigation and interaction produce deterministic DOM or
+        network evidence</td>
+        </tr>
+        <tr>
+        <td>System-prompt variation</td>
+        <td>Different orchestration instructions reach the same required
+        outcome without policy violations</td>
+        </tr>
+        <tr>
+        <td>Dynamic worker availability</td>
+        <td>A worker added during development becomes discoverable and
+        usable without restarting the whole stack</td>
+        </tr>
+        <tr>
+        <td>Worker creation</td>
+        <td>The agent creates or configures a missing capability,
+        registers it, and uses the verified public contract</td>
+        </tr>
+        <tr>
+        <td>Console and registry stability</td>
+        <td>Transient disconnects or an inactive browser tab do not
+        create registration loops, duplicate subscriptions, or trace
+        storms</td>
+        </tr>
+        </tbody>
+        </table>
+        </section>
+        <section id="evaluating-system-prompts-with-real-models"
+        class="level2">
+        <h2>Evaluating system prompts with real models</h2>
+        <p>A system prompt should not be graded by checking its wording.
+        Treat the exact prompt as a versioned input and grade the
+        resulting behavior.</p>
+        <p>For each scenario, record:</p>
+        <ul>
+        <li>system-prompt content or immutable artifact reference and
+        digest;</li>
+        <li>user prompt and fixture version;</li>
+        <li>harness, engine, and worker versions;</li>
+        <li>provider, model identifier, and sampling or reasoning
+        settings;</li>
+        <li>exposed function catalog and schemas;</li>
+        <li>open-validator ids and independent-grader digests;</li>
+        <li>run id, timestamps, and environment metadata.</li>
+        </ul>
+        <p>Compare a candidate and baseline on the same task set,
+        environment, model, and time window. Run multiple attempts in
+        randomized order to reduce provider and warm-cache bias. A
+        cross-model matrix is useful only after each prompt variant has
+        been compared on the same model; otherwise model differences
+        obscure prompt effects.</p>
+        <p>Run a small real-model suite locally and in CI on a periodic
+        or release cadence, not in the deterministic pull-request gate.
+        A lower-cost pinned hosted model can provide frequent signal;
+        selected reference-provider runs can check whether the
+        conclusion generalizes. Provider names and models belong in
+        versioned run configuration, not in the architecture contract.
+        Persist the output transcript, artifacts, validator evidence,
+        and metrics for side-by-side A/B comparison.</p>
+        <p>Grade observable properties such as:</p>
+        <ul>
+        <li>task completion and independent invariant pass rate;</li>
+        <li>correct function and argument selection;</li>
+        <li>policy and approval compliance;</li>
+        <li>exactly-once side effects;</li>
+        <li>recovery from tool and dependency failures;</li>
+        <li>number of turns, model calls, spans, and function
+        calls;</li>
+        <li>context growth, tokens, latency, and cost;</li>
+        <li>quality of the final artifact when deterministic checks are
+        insufficient.</li>
+        </ul>
+        <p>Use <code>pass@1</code> for direct reliability,
+        <code>pass@k</code> for the chance of at least one success in
+        <code>k</code> independent attempts, and <code>pass^k</code> for
+        consistency across all <code>k</code> attempts. Do not count
+        cycles within one feedback loop as independent attempts.</p>
+        </section>
+        <section id="browser-validation" class="level2">
+        <h2>Browser validation</h2>
+        <p>Browser functions expand the possible evidence, but
+        screenshots should not become the default oracle.</p>
+        <p>Prefer checks in this order:</p>
+        <ol type="1">
+        <li>URL, DOM, accessibility state, or application state;</li>
+        <li>network requests and responses;</li>
+        <li>browser console errors;</li>
+        <li>stable snapshots;</li>
+        <li>screenshot comparison or a calibrated visual model
+        grader.</li>
+        </ol>
+        <p>Useful adapters include:</p>
+        <ul>
+        <li><code>validation::browser::url</code>;</li>
+        <li><code>validation::browser::dom</code>;</li>
+        <li><code>validation::browser::network</code>;</li>
+        <li><code>validation::browser::console-errors</code>;</li>
+        <li><code>validation::browser::snapshot</code>;</li>
+        <li><code>validation::browser::screenshot</code>.</li>
+        </ul>
+        <p>Visual comparisons need explicit viewport, browser version,
+        fonts, animation policy, device scale, data fixtures, masks, and
+        tolerance. Store the screenshot and comparison output as
+        evidence. A real click or form submission should be followed by
+        an independent state assertion rather than inferred only from
+        the appearance of the page.</p>
+        </section>
+        <section id="metrics-and-regression-policy" class="level2">
+        <h2>Metrics and regression policy</h2>
+        <p>Report correctness and efficiency separately. A faster run
+        that violates an invariant is not an improvement, and one
+        aggregate score should not conceal the tradeoff.</p>
+        <p>Calculate this rollup only after the attempt is terminal.
+        Intermediate cycles remain part of the evidence and cost, but
+        they do not produce a competing final score.</p>
+        <p>Report:</p>
+        <ul>
+        <li><code>pass@1</code>, <code>pass@k</code>, and
+        <code>pass^k</code>;</li>
+        <li>independent-grader pass rate;</li>
+        <li>cycles and turns required to reach the open objective;</li>
+        <li>sub-agents created, maximum depth, fan-out, and unresolved
+        children;</li>
+        <li>tool-selection and argument accuracy;</li>
+        <li>policy-violation rate;</li>
+        <li>model calls, function calls, and spans;</li>
+        <li>trace size, span errors, tool errors, provider errors, and
+        terminal errors;</li>
+        <li>input, output, cached, and context tokens where
+        available;</li>
+        <li>peak context size, context growth, and compaction
+        count;</li>
+        <li>latency and provider cost;</li>
+        <li>final-artifact score and grader agreement where subjective
+        grading is used.</li>
+        </ul>
+        <p>Separate subject cost from evaluation overhead:</p>
+        <ul>
+        <li><code>agent_input_tokens</code>,
+        <code>agent_output_tokens</code>, and
+        <code>agent_cost</code>;</li>
+        <li><code>validator_input_tokens</code>,
+        <code>validator_output_tokens</code>, and
+        <code>validator_cost</code>;</li>
+        <li><code>agent_duration</code> and
+        <code>validation_duration</code>.</li>
+        </ul>
+        <p>Deterministic validation functions should normally consume no
+        model tokens. A model-backed validator that materially increases
+        cost must be visible rather than attributed to the subject
+        agent.</p>
+        <p>Establish a baseline only from repeated stable runs. A
+        candidate becomes a regression when it crosses an agreed
+        correctness, reliability, cost, or latency threshold on the same
+        scenario set. Thresholds should be declared before the
+        comparison and reported per dimension.</p>
+        <p>The requested "better or worse" rollup is useful as a
+        comparison aid, but it must be transparent. A versioned formula
+        may normalize outcome, reliability, time-to-goal, tokens,
+        context pressure, errors, and cost with declared weights. Every
+        report must still expose the raw dimensions, formula version,
+        and weight set. Required validator or safety failures remain
+        disqualifying and cannot be offset by lower latency or cost. The
+        initial formula and gate relationship are open policy
+        decisions.</p>
+        </section>
+        <section id="execution-ownership-and-artifacts" class="level2">
+        <h2>Execution ownership and artifacts</h2>
+        <p>The iii worker set owns registration, execution, validation,
+        bounded continuation, time/token/cost limits, browser or project
+        evidence, metrics, and the report. The external CLI or CI
+        launcher only selects configuration, applies global budgets,
+        triggers the worker, and collects its output. Domain assertions
+        belong in validation functions; the launcher must not become a
+        central collection of every database query, browser condition,
+        or application rule.</p>
+        <p>A possible artifact layout is:</p>
+        <pre class="text"><code>harness/evals/
+  shared/
+    protocol/
+    evidence/
+  quality/
+    workers/
+      orchestrator/
+      evidence/
+    launcher/
+    scenarios/
+    prompts/
+    validators/
+      open/
+      independent/
+    baselines/
+  reports/</code></pre>
+        <p>The layout is illustrative. The important boundary is that
+        scenarios, validators, prompts, and baselines are versioned
+        independently but referenced by immutable ids or digests in
+        every run.</p>
+        </section>
+        <section id="delivery-sequence" class="level2">
+        <h2>Delivery sequence</h2>
+        <ol type="1">
+        <li>Define the validation request and result envelopes, status
+        semantics, and versioning rules.</li>
+        <li>Implement the first quality orchestrator as an iii worker
+        and add one deterministic project validation function invoked
+        after durable turn completion.</li>
+        <li>Add a bounded second cycle using structured validation
+        feedback.</li>
+        <li>Add an independent grader that catches a deliberately
+        incomplete open validator.</li>
+        <li>Record terminal transcripts, traces, errors, tokens,
+        context, timing, cost, and version metadata in one
+        machine-readable report.</li>
+        <li>Introduce a small real-model dataset with repeated baseline
+        and candidate attempts in randomized order.</li>
+        <li>Add approval, batched sub-agents, fan-in, steering, queues,
+        state, database, HTTP/webhook callbacks, human approval, and
+        dynamic worker creation.</li>
+        <li>Grow toward 20 to 30 prompt and system-prompt patterns.</li>
+        <li>Add browser evidence and calibrated subjective graders only
+        where deterministic state cannot express the requirement.</li>
+        <li>Establish release thresholds only after repeated runs
+        characterize provider variance and infrastructure noise.</li>
+        </ol>
+        <p>The first prototype is successful when:</p>
+        <ul>
+        <li>an iii quality worker can start and finish a real-model
+        attempt through public harness boundaries;</li>
+        <li>a user-defined validation function can assess a real
+        completed workflow;</li>
+        <li>a failed open validator can drive one bounded follow-up
+        turn;</li>
+        <li>an independent grader can detect a superficially satisfied
+        objective;</li>
+        <li>no unavailable dependency or validator error can produce a
+        green result.</li>
+        </ul>
+        </section>
+        <section id="open-decisions" class="level2">
+        <h2>Open decisions</h2>
+        <p>The following questions require explicit product and
+        implementation decisions:</p>
+        <ul>
+        <li>How should quality orchestration, validation, and evidence
+        collection be split across one or more iii workers?</li>
+        <li>What iii function schemas register, discover, and invoke
+        validators?</li>
+        <li>Which worker owns the idempotent
+        <code>harness::turn-completed</code> subscription and how does
+        it recover from duplicate or out-of-order delivery?</li>
+        <li>How is validation feedback appended without conflating it
+        with a new user instruction?</li>
+        <li>Which validators are visible to the agent, and how are
+        held-out functions kept outside its catalog and context?</li>
+        <li>How are agent-authored validators reviewed, frozen, signed,
+        or content-addressed?</li>
+        <li>What permissions and sandbox boundaries apply to database,
+        network, shell, and browser validation?</li>
+        <li>What is the canonical report and artifact storage and
+        retention format?</li>
+        <li>What normalization, weights, and eligibility rules define
+        the transparent comparison rollup, and can it ever gate a
+        release?</li>
+        <li>How should run isolation interact with future iii namespace
+        support?</li>
+        <li>Which initial scenarios represent real user workflows, and
+        who owns their expected outcomes?</li>
+        <li>When should a model or visual grader be trusted as a release
+        gate?</li>
+        <li>Which low-cost and reference-model configurations run at
+        each cadence, and how many repeated attempts are required?</li>
+        <li>Is a future UI needed for selecting, configuring, or
+        authoring validation functions?</li>
+        </ul>
+        </section>
+        <section id="references" class="level2">
+        <h2>References</h2>
+        <ul>
+        <li>Anthropic, <a
+        href="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents">Demystifying
+        evals for AI agents</a></li>
+        <li>OpenAI, <a
+        href="https://developers.openai.com/api/docs/guides/agent-evals/">Evaluate
+        agent workflows</a></li>
+        <li>OpenAI, <a
+        href="https://developers.openai.com/api/docs/guides/evaluation-best-practices">Evaluation
+        best practices</a></li>
+        <li>Yao et al., <a
+        href="https://arxiv.org/abs/2406.12045">tau-bench: A Benchmark
+        for Tool-Agent-User Interaction in Real-World Domains</a></li>
+        <li>Anthropic, <a
+        href="https://www.anthropic.com/engineering/infrastructure-noise">When
+        good models go bad: Infrastructure noise in model
+        evaluations</a></li>
+        <li>UK AI Security Institute, <a
+        href="https://inspect.aisi.org.uk/tasks.html">Inspect AI
+        tasks</a></li>
+        </ul>
+        </section>
+        <section id="related-repository-material" class="level2">
+        <h2>Related repository material</h2>
+        <ul>
+        <li><a href="conformance-e2e.html">Harness conformance E2E
+        architecture</a></li>
+        <li><a href="README.md">Harness architecture overview</a></li>
+        <li><a
+        href="../../tech-specs/2026-06-agentic/harness.md">Harness
+        design specification</a></li>
+        <li><a
+        href="../src/functions/send.rs"><code>harness::send</code>
+        implementation</a></li>
+        <li><a href="../src/turn_loop.rs">Durable turn loop</a></li>
+        <li><a href="../src/events.rs">Turn lifecycle events</a></li>
+        <li><a href="../src/hooks/mod.rs">Hook contracts</a></li>
+        <li><a href="../../.github/workflows/ci.yml">Harness CI
+        workflow</a></li>
+        </ul>
+        </section>
+        <dl class="status-key" aria-label="Evaluation result distinctions">
+          <div class="pass"><dt>Pass</dt><dd>Every required check has affirmative evidence.</dd></div>
+          <div class="fail"><dt>Fail</dt><dd>The subject violated an observable requirement.</dd></div>
+          <div class="open"><dt>Error or inconclusive</dt><dd>The evaluator could not make a valid decision. Never green.</dd></div>
+          <div class="quality"><dt>Comparison</dt><dd>Raw quality and efficiency dimensions remain visible.</dd></div>
+        </dl>
+      </main>
+    </div>
+
+    <footer class="footer">
+      <span>Harness agent-quality E2E architecture</span>
+      <span>Real-model outcomes, reliability, and efficiency</span>
+    </footer>
+  </div>
+
+  <script type="module">
+    const progress = document.querySelector('.progress');
+    const updateProgress = () => {
+      const range = document.documentElement.scrollHeight - innerHeight;
+      progress.style.transform = `scaleX(${range > 0 ? scrollY / range : 0})`;
+    };
+    addEventListener('scroll', updateProgress, { passive: true });
+    addEventListener('resize', updateProgress, { passive: true });
+    updateProgress();
+
+    const links = [...document.querySelectorAll('.toc a[href^="#"]')];
+    const sections = links.map(link => document.querySelector(link.hash)).filter(Boolean);
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        for (const link of links) link.removeAttribute('aria-current');
+        const current = links.find(link => link.hash === `#${entry.target.id}`);
+        if (current) current.setAttribute('aria-current', 'true');
+      }
+    }, { rootMargin: '-12% 0px -76% 0px' });
+    for (const section of sections) observer.observe(section);
+
+    const mermaidPre = document.querySelector('pre.mermaid');
+    if (mermaidPre) {
+      const source = mermaidPre.textContent;
+      const shell = document.createElement('figure');
+      shell.className = 'mermaid-shell';
+      shell.setAttribute('role', 'img');
+      shell.setAttribute('aria-label', 'Evaluation architecture flow from launcher through conformance or quality execution to evidence and reporting');
+      const label = document.createElement('figcaption');
+      label.className = 'mermaid-label';
+      label.textContent = 'System flow · public entry to durable evidence';
+      const diagram = document.createElement('div');
+      diagram.className = 'mermaid';
+      diagram.textContent = source;
+      shell.append(label, diagram);
+      mermaidPre.replaceWith(shell);
+
+      try {
+        const { default: mermaid } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'base',
+          themeVariables: {
+            fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+            primaryColor: '#3b3530',
+            primaryTextColor: '#f3eee7',
+            primaryBorderColor: '#d47a42',
+            lineColor: '#a99c90',
+            secondaryColor: '#4d384f',
+            tertiaryColor: '#294a45',
+            background: '#24201d'
+          },
+          flowchart: { curve: 'basis', htmlLabels: true }
+        });
+        await mermaid.run({ nodes: [diagram] });
+      } catch (error) {
+        diagram.textContent = source;
+        diagram.style.whiteSpace = 'pre';
+        diagram.style.textAlign = 'left';
+        diagram.style.fontFamily = 'var(--mono)';
+        diagram.style.fontSize = '0.72rem';
+      }
+    }
+  </script>
+</body>
+</html>

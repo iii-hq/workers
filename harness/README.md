@@ -100,6 +100,12 @@ contract in
 [`architecture/integration.md`](architecture/integration.md): the functions to
 trigger, the triggers to bind, and the canonical consumer patterns.
 
+Studying evaluation for the turn loop? Use the focused
+[`architecture/conformance-e2e.md`](architecture/conformance-e2e.md) spec for
+the deterministic public-path suite and
+[`architecture/agent-quality.md`](architecture/agent-quality.md) for the
+worker-based real-model suite.
+
 ## Working with iii
 
 iii is a WebSocket-routed worker mesh. One engine holds a live registry of every
