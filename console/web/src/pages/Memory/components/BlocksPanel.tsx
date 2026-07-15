@@ -69,7 +69,7 @@ function BlockEditor({
           setContent(e.target.value)
           setTouched(true)
         }}
-        rows={Math.max(4, content.split('\n').length + 1)}
+        rows={Math.min(24, Math.max(4, content.split('\n').length + 1))}
         spellCheck={false}
         aria-label={`block ${name}`}
         className="w-full bg-bg text-ink font-mono text-[13px] leading-relaxed p-3 outline-none resize-y placeholder:text-ink-ghost"

@@ -94,14 +94,19 @@ export async function deleteBank(name: string): Promise<void> {
   await client.trigger('memory::bank::delete', { name })
 }
 
+export const FACTS_PAGE_SIZE = 100
+
 export async function listFacts(
   bank: string,
   includeSuperseded: boolean,
+  offset = 0,
+  limit = FACTS_PAGE_SIZE,
 ): Promise<{ facts: MemoryFact[]; total: number }> {
   const client = await getIiiClient()
   const res = await client.trigger<unknown>('memory::list', {
     bank,
-    limit: 200,
+    limit,
+    offset,
     include_superseded: includeSuperseded,
   })
   const parsed = factListSchema.safeParse(res)
@@ -169,12 +174,13 @@ export async function setBlock(
 export async function recall(
   bank: string,
   query: string,
+  limit = 20,
 ): Promise<{ retrieval: string; facts: RecalledFact[] }> {
   const client = await getIiiClient()
   const res = await client.trigger<unknown>('memory::recall', {
     bank,
     query,
-    limit: 20,
+    limit,
   })
   const parsed = recallSchema.safeParse(res)
   if (!parsed.success) return { retrieval: '', facts: [] }

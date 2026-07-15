@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useMemoryEvents } from '@/hooks/use-memory-events'
 import {
+  FACTS_PAGE_SIZE,
   listBanks,
   listBlocks,
   listFacts,
@@ -24,6 +25,9 @@ export interface MemoryLive {
   setSelected: (bank: string) => void
   facts: MemoryFact[]
   total: number
+  offset: number
+  setOffset: (next: number) => void
+  pageSize: number
   blocks: MemoryBlock[]
   includeSuperseded: boolean
   setIncludeSuperseded: (next: boolean) => void
@@ -39,6 +43,7 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
   const [selected, setSelected] = useState<string | null>(null)
   const [facts, setFacts] = useState<MemoryFact[]>([])
   const [total, setTotal] = useState(0)
+  const [offset, setOffset] = useState(0)
   const [blocks, setBlocks] = useState<MemoryBlock[]>([])
   const [includeSuperseded, setIncludeSuperseded] = useState(false)
   const [loading, setLoading] = useState(enabled)
@@ -46,6 +51,16 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
   const [token, setToken] = useState(0)
 
   const refresh = useCallback(() => setToken((t) => t + 1), [])
+
+  const selectBank = useCallback((bank: string) => {
+    setOffset(0)
+    setSelected(bank)
+  }, [])
+
+  const setIncludeSupersededReset = useCallback((next: boolean) => {
+    setOffset(0)
+    setIncludeSuperseded(next)
+  }, [])
 
   const { bound } = useMemoryEvents({ enabled, onEvent: refresh })
 
@@ -74,7 +89,7 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
         }
         if (bank) {
           const [factPage, nextBlocks] = await Promise.all([
-            listFacts(bank, includeSuperseded),
+            listFacts(bank, includeSuperseded, offset),
             listBlocks(bank),
           ])
           if (cancelled) return
@@ -97,7 +112,7 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
     return () => {
       cancelled = true
     }
-  }, [enabled, token, selected, includeSuperseded])
+  }, [enabled, token, selected, includeSuperseded, offset])
 
   useEffect(() => {
     if (!enabled || bound) return
@@ -111,12 +126,15 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
   return {
     banks,
     selected,
-    setSelected,
+    setSelected: selectBank,
     facts,
     total,
+    offset,
+    setOffset,
+    pageSize: FACTS_PAGE_SIZE,
     blocks,
     includeSuperseded,
-    setIncludeSuperseded,
+    setIncludeSuperseded: setIncludeSupersededReset,
     loading,
     error,
     live: bound,

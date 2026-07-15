@@ -52,6 +52,9 @@ export function Memory() {
     setSelected,
     facts,
     total,
+    offset,
+    setOffset,
+    pageSize,
     blocks,
     includeSuperseded,
     setIncludeSuperseded,
@@ -183,8 +186,12 @@ export function Memory() {
                 </div>
                 {panel === 'facts' ? (
                   <FactsPanel
+                    bank={selected}
                     facts={facts}
                     total={total}
+                    offset={offset}
+                    pageSize={pageSize}
+                    onOffsetChange={setOffset}
                     includeSuperseded={includeSuperseded}
                     onToggleSuperseded={setIncludeSuperseded}
                     onSave={(text) =>
@@ -204,6 +211,8 @@ export function Memory() {
                 ) : panel === 'graph' ? (
                   <MemoryGraph
                     facts={facts}
+                    totalFacts={total}
+                    onShowFacts={() => setPanel('facts')}
                     onPin={(fact: MemoryFact) =>
                       void act(() => pinFact(selected, fact.id, !fact.pinned))
                     }
