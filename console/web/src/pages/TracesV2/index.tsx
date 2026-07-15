@@ -40,7 +40,6 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
-import { loadFollowTurns, saveFollowTurns } from '@/lib/storage'
 import { startTraceSpansStream } from '@/lib/traces-stream'
 import { cn } from '@/lib/utils'
 import { fetchTraces, type StoredSpan } from './api/traces'
@@ -58,6 +57,7 @@ import { WaterfallChart } from './components/WaterfallChart'
 import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
 import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
+import { useFollowTurns } from './hooks/useFollowTurns'
 import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
@@ -261,13 +261,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // `harness.turn` steps; sub-agent turns never steal the view. Null outside
   // the app shell (Storybook), which also hides the strip's toggle.
   const conversationsCtx = useConversationsCtxOptional()
-  const [followTurns, setFollowTurns] = useState(loadFollowTurns)
-  const toggleFollowTurns = useCallback(() => {
-    setFollowTurns((on) => {
-      saveFollowTurns(!on)
-      return !on
-    })
-  }, [])
+  const { followTurns, toggleFollowTurns } = useFollowTurns()
 
   const totalPages = Math.max(
     1,

@@ -65,29 +65,6 @@ export function saveDefaultAllowlist(list: string[]): void {
   }
 }
 
-const TRACES_FOLLOW_TURNS_KEY = 'iii-traces-follow-turns'
-
-/**
- * Per-browser "follow" toggle on the traces masthead: when on, the surface
- * auto-opens the trace of the active chat's live turn (user interactions
- * only — sub-agent turns never steal the view).
- */
-export function loadFollowTurns(): boolean {
-  try {
-    return localStorage.getItem(TRACES_FOLLOW_TURNS_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-export function saveFollowTurns(on: boolean): void {
-  try {
-    localStorage.setItem(TRACES_FOLLOW_TURNS_KEY, on ? '1' : '0')
-  } catch {
-    /* best-effort */
-  }
-}
-
 export function loadActiveId(): string | null {
   try {
     return localStorage.getItem(ACTIVE_KEY)
