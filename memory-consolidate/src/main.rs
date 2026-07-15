@@ -163,13 +163,19 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("registering memory-consolidate configuration schema")?;
     // Convention for worker binaries: a config-load failure degrades to
-    // the built-in defaults instead of crashing, so the worker still
-    // registers and hot-reload can repair it later.
+    // an INERT registration instead of crashing — the worker comes up
+    // with the schedule disabled (manual runs still work), and hot
+    // reload repairs it once the real configuration is readable. A
+    // worker that could not read its config must not start rewriting
+    // memory history on default settings.
     let cfg = match configuration::fetch_config(&iii).await {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to load configuration; falling back to defaults");
-            config::WorkerConfig::default()
+            tracing::warn!(error = %e, "failed to load configuration; registering inert (schedule disabled)");
+            config::WorkerConfig {
+                enabled: false,
+                ..config::WorkerConfig::default()
+            }
         }
     };
 

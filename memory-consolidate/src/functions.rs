@@ -130,9 +130,18 @@ pub async fn last_run_ms(iii: &IIIClient) -> u64 {
         .unwrap_or(0)
 }
 
-/// Run one full pass and persist schedule state. Also the body of the
-/// scheduled tick.
+/// Run one full pass and persist schedule state (the public
+/// `memory-consolidate::run`). Serialized behind the run gate with the
+/// scheduled tick: a manual run and a heartbeat pass must never
+/// interleave their writes.
 pub async fn run(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> {
+    let _gate = deps.run_gate.lock().await;
+    run_locked(deps, req).await
+}
+
+/// Pass body; caller MUST hold the run gate (tokio mutexes are not
+/// reentrant, so gate-holding paths call this directly).
+async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> {
     let cfg = deps.config().await;
     let dry_run = req.dry_run.unwrap_or(cfg.dry_run);
     let banks = match &req.bank {
@@ -242,7 +251,7 @@ pub async fn tick(deps: &Deps) -> Result<TickResponse, Error> {
         interval_hours = cfg.interval_hours,
         "scheduled consolidation pass due"
     );
-    let res = run(deps, RunRequest::default()).await?;
+    let res = run_locked(deps, RunRequest::default()).await?;
     tracing::info!(
         superseded = res.superseded,
         dry_run = res.dry_run,
