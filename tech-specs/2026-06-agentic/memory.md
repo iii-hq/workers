@@ -149,6 +149,14 @@ The seam is the store's append-only contract: any sibling that mutates memory go
 same `memory::*` functions and the same last-wins replay, so the family shares one durability
 story.
 
+Why this split and not finer: an earlier decomposition had store, recall, and hook-observer as
+three workers, but all three share the hot in-RAM index — separating them puts a wire hop on the
+pre-generate path or duplicates the index per process. They fused into this worker; consolidation
+stays a sibling precisely because it is the one concern that never needs the hot index. The other
+planned concerns became reuse instead of new workers: transcripts (session-manager), extraction
+and embeddings (llm-router + providers), cursors (state), durable jobs (queue), REST (http),
+configuration (configuration worker).
+
 ## Boundaries
 
 - Not per-turn context compression (context-manager) and not a transcript store (session-manager);
