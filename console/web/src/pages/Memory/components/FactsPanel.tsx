@@ -82,7 +82,7 @@ function FactRow({
             value={editText}
             onChange={setEditText}
             preserveCase
-            aria-label="edit fact"
+            aria-label="edit memory"
             className="flex-1"
           />
           <Button type="submit" variant="primary" size="sm">
@@ -122,7 +122,7 @@ function FactRow({
           size="icon"
           onClick={() => onPin(fact)}
           disabled={busy || superseded}
-          aria-label={fact.pinned ? 'unpin fact' : 'pin fact'}
+          aria-label={fact.pinned ? 'unpin memory' : 'pin memory'}
           title={
             fact.pinned
               ? 'unpin (allows automatic consolidation again)'
@@ -143,7 +143,7 @@ function FactRow({
             setEditing(true)
           }}
           disabled={busy || superseded}
-          aria-label="edit fact"
+          aria-label="edit memory"
         >
           <Pencil className="w-3.5 h-3.5" aria-hidden />
         </Button>
@@ -152,7 +152,7 @@ function FactRow({
           size="icon"
           onClick={() => onDelete(fact)}
           disabled={busy || superseded}
-          aria-label="delete fact"
+          aria-label="delete memory"
           title="tombstone (leaves recall; stays on disk under show history)"
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden />
@@ -221,7 +221,7 @@ export function FactsPanel({
           onChange={setDraft}
           preserveCase
           placeholder="remember something..."
-          aria-label="new fact"
+          aria-label="new memory"
           className="flex-1"
         />
         <Button
@@ -248,8 +248,8 @@ export function FactsPanel({
             if (!next.trim()) setResults(null)
           }}
           preserveCase
-          placeholder={`search ${total} facts (ranked recall)...`}
-          aria-label="search facts"
+          placeholder={`search ${total} memories (ranked recall)...`}
+          aria-label="search memories"
           className="flex-1"
         />
         <Button
@@ -283,7 +283,7 @@ export function FactsPanel({
         <span className="font-mono text-[11px] lowercase text-ink-faint">
           {searchMode
             ? `${results.length} matches (top 50 by score)`
-            : `${total} facts · page ${page}/${pages}`}
+            : `${total} memories · page ${page}/${pages}`}
         </span>
         <div className="flex items-center gap-2">
           {!searchMode && pages > 1 ? (
@@ -343,8 +343,8 @@ export function FactsPanel({
         )
       ) : facts.length === 0 ? (
         <EmptyState
-          title="no facts in this bank yet"
-          description="facts arrive automatically after each completed turn, or save one above. sessions pick this bank via session metadata memory_bank."
+          title="no memories in this bank yet"
+          description="memories arrive automatically after each completed turn, or save one above. sessions pick this bank via session metadata memory_bank."
         />
       ) : (
         <ul className="border border-rule divide-y divide-rule-2">

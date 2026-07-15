@@ -35,10 +35,14 @@ import { useMemoryLive } from './hooks/useMemoryLive'
 
 type Panel = 'facts' | 'graph' | 'blocks' | 'recall'
 
+// Team review decision: rules (blocks) are the most important surface,
+// what goes in the system prompt, so they lead; facts render as
+// "memories". Internal keys and the memory::* wire surface keep their
+// names for API stability.
 const PANEL_OPTIONS: { value: Panel; label: string }[] = [
-  { value: 'facts', label: 'facts' },
+  { value: 'blocks', label: 'rules' },
+  { value: 'facts', label: 'memories' },
   { value: 'graph', label: 'graph' },
-  { value: 'blocks', label: 'blocks' },
   { value: 'recall', label: 'recall' },
 ]
 
@@ -65,7 +69,7 @@ export function Memory() {
     refresh,
   } = useMemoryLive(available)
 
-  const [panel, setPanel] = useState<Panel>('facts')
+  const [panel, setPanel] = useState<Panel>('blocks')
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 

@@ -341,7 +341,7 @@ export function MemoryGraph({
           {layout.hiddenHubs > 0 &&
             ` (top ${MAX_HUBS} shown, ${layout.hiddenHubs} more — search to focus)`}
           {totalFacts > live.length &&
-            ` · mapping newest ${live.length} of ${totalFacts} facts`}
+            ` · mapping newest ${live.length} of ${totalFacts} memories`}
         </span>
         <span className="flex-1" />
         <Button variant="ghost" size="sm" onClick={() => setView(null)}>
@@ -630,7 +630,7 @@ export function MemoryGraph({
             entity (click to expand)
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-ink" /> fact
+            <span className="inline-block w-2 h-2 rounded-full bg-ink" /> memory
           </span>
           <span className="flex items-center gap-1">
             <span className="inline-block w-2 h-2 rounded-full bg-accent" />{' '}

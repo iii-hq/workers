@@ -71,9 +71,9 @@ function BlockEditor({
         }}
         rows={Math.min(24, Math.max(4, content.split('\n').length + 1))}
         spellCheck={false}
-        aria-label={`block ${name}`}
+        aria-label={`rule ${name}`}
         className="w-full bg-bg text-ink font-mono text-[13px] leading-relaxed p-3 outline-none resize-y placeholder:text-ink-ghost"
-        placeholder="empty content removes this block on save"
+        placeholder="empty content removes this rule on save"
       />
     </div>
   )
@@ -86,17 +86,17 @@ export function BlocksPanel({ blocks, onSet, busy }: BlocksPanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <p className="font-mono text-[11px] lowercase text-ink-faint">
-        facts are recalled only when they match the question; blocks are in the
-        system prompt on EVERY turn, guaranteed — no retrieval lottery. use them
-        for rules that must always hold: writing style, answer format, coding
-        conventions, project constants. each block is a markdown file under the
+        rules go into the system prompt on EVERY turn, guaranteed — unlike
+        memories, which are recalled only when they match the question. use
+        rules for what must always hold: writing style, answer format, coding
+        conventions, project constants. each rule is a markdown file under the
         bank's blocks/ folder (editing the file and editing here are the same
-        thing).
+        thing), and the agent updates rules as you correct it.
       </p>
       {blocks.length === 0 ? (
         <EmptyState
-          title="no blocks in this bank"
-          description="try one: add a block named `assistant-rules` with 'always answer tersely, prefer code examples' — then ask anything in chat and watch every reply obey it, on any topic."
+          title="no rules in this bank"
+          description="try one: add a rule named `assistant-rules` with 'always answer tersely, prefer code examples' — then ask anything in chat and watch every reply obey it, on any topic."
         />
       ) : (
         blocks.map((block) => (
@@ -121,8 +121,8 @@ export function BlocksPanel({ blocks, onSet, busy }: BlocksPanelProps) {
         <Input
           value={newName}
           onChange={setNewName}
-          placeholder="new block name (e.g. style)"
-          aria-label="new block name"
+          placeholder="new rule name (e.g. style)"
+          aria-label="new rule name"
           className="flex-1"
         />
         <Button
@@ -133,7 +133,7 @@ export function BlocksPanel({ blocks, onSet, busy }: BlocksPanelProps) {
           className="gap-1"
         >
           <Plus className="w-3.5 h-3.5" aria-hidden />
-          add block
+          add rule
         </Button>
       </form>
     </div>

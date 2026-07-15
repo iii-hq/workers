@@ -27,9 +27,9 @@ export function MemoryChip({ memory }: MemoryChipProps) {
 
   const parts = []
   if (memory.facts > 0)
-    parts.push(`${memory.facts} fact${memory.facts === 1 ? '' : 's'}`)
+    parts.push(`${memory.facts} memor${memory.facts === 1 ? 'y' : 'ies'}`)
   if (memory.blocks)
-    parts.push(`${memory.blocks} block${memory.blocks === 1 ? '' : 's'}`)
+    parts.push(`${memory.blocks} rule${memory.blocks === 1 ? '' : 's'}`)
   if (parts.length === 0) return null
 
   const toggle = async () => {
@@ -53,7 +53,7 @@ export function MemoryChip({ memory }: MemoryChipProps) {
       <button
         type="button"
         onClick={() => void toggle()}
-        title="what the memory worker fed this reply — click for the exact facts"
+        title="what the memory worker fed this reply — click for the exact memories"
         className={cn(
           'font-mono text-[10px] lowercase px-1.5 py-0.5 border transition-colors',
           open
@@ -69,7 +69,7 @@ export function MemoryChip({ memory }: MemoryChipProps) {
         <span className="mt-1 flex flex-col gap-1 border border-rule-2 bg-panel px-2 py-1.5 max-w-md">
           {loading ? (
             <span className="font-mono text-[10px] lowercase text-ink-ghost">
-              loading facts…
+              loading memories…
             </span>
           ) : facts && facts.length > 0 ? (
             facts.map((fact) => (
@@ -86,8 +86,8 @@ export function MemoryChip({ memory }: MemoryChipProps) {
           ) : (
             <span className="font-mono text-[10px] lowercase text-ink-ghost">
               {memory.factIds.length === 0
-                ? 'only blocks fed this turn (always-injected markdown)'
-                : 'facts no longer available (superseded or bank changed)'}
+                ? 'only rules fed this turn (always-injected markdown)'
+                : 'memories no longer available (superseded or bank changed)'}
             </span>
           )}
         </span>
