@@ -15,13 +15,23 @@ use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
 use crate::types::Model;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelBudget {
+    pub model: Model,
+    pub effective_max_output_tokens: u64,
+}
+
 /// Resolves a model id to its router catalog record.
 #[async_trait]
 pub trait ModelResolver: Send + Sync {
     /// `Ok(None)` when the router is installed but does not know the
     /// model; `Err` when the router is unreachable or absent. Both
     /// degrade to the conservative fallback (when allowed).
-    async fn get_model(&self, provider: Option<&str>, id: &str) -> Result<Option<Model>, String>;
+    async fn get_model_budget(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+    ) -> Result<Option<ModelBudget>, String>;
 }
 
 /// One summariser call. The core renders the prompts (template,

@@ -12,7 +12,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use context_manager::ports::{
-    Clock, LeaseRecord, LeaseStore, ModelResolver, SummarizeError, SummarizeRequest, Summarizer,
+    Clock, LeaseRecord, LeaseStore, ModelBudget, ModelResolver, SummarizeError, SummarizeRequest,
+    Summarizer,
 };
 use context_manager::types::Model;
 
@@ -79,7 +80,11 @@ impl FakeModelResolver {
 
 #[async_trait]
 impl ModelResolver for FakeModelResolver {
-    async fn get_model(&self, provider: Option<&str>, id: &str) -> Result<Option<Model>, String> {
+    async fn get_model_budget(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+    ) -> Result<Option<ModelBudget>, String> {
         self.calls
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -92,7 +97,11 @@ impl ModelResolver for FakeModelResolver {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .get(id)
-            .cloned())
+            .cloned()
+            .map(|model| ModelBudget {
+                effective_max_output_tokens: model.max_output_tokens,
+                model,
+            }))
     }
 }
 

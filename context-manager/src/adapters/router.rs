@@ -1,5 +1,5 @@
 //! `llm-router` adapters: model-limit resolution via
-//! `router::models::get` and the summariser via `router::chat`.
+//! `router::models::budget` and the summariser via `router::chat`.
 //!
 //! Both are soft dependencies — when the router is absent the resolver
 //! errors (callers degrade to the conservative fallback) and the
@@ -17,7 +17,7 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::configuration::ConfigCell;
-use crate::ports::{ModelResolver, SummarizeError, SummarizeRequest, Summarizer};
+use crate::ports::{ModelBudget, ModelResolver, SummarizeError, SummarizeRequest, Summarizer};
 use crate::types::Model;
 
 const MODELS_GET_TIMEOUT_MS: u64 = 5_000;
@@ -31,7 +31,7 @@ fn is_unroutable(err: &Error) -> bool {
     msg.contains("function_not_found") || msg.contains("not found") || msg.contains("no function")
 }
 
-/// `router::models::get` — `{ model: Model } | null`.
+/// `router::models::budget` — `{ model, effective_max_output_tokens } | null`.
 pub struct RouterModelResolver {
     iii: Arc<IIIClient>,
 }
@@ -44,21 +44,60 @@ impl RouterModelResolver {
 
 #[async_trait]
 impl ModelResolver for RouterModelResolver {
-    async fn get_model(&self, provider: Option<&str>, id: &str) -> Result<Option<Model>, String> {
+    async fn get_model_budget(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+    ) -> Result<Option<ModelBudget>, String> {
         let mut payload = json!({ "id": id });
         if let Some(p) = provider {
             payload["provider"] = json!(p);
         }
-        let resp = self
+        let resp = match self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::models::get".to_string(),
-                payload,
+                function_id: "router::models::budget".to_string(),
+                payload: payload.clone(),
                 action: None,
                 timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
             })
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(resp) => resp,
+            Err(err) if is_unroutable(&err) => {
+                // Rolling upgrades may briefly run a context-manager newer than
+                // the router. Preserve the former, conservative behavior until
+                // `models::budget` is registered instead of dropping all the way
+                // to the 8k fallback model.
+                let response = self
+                    .iii
+                    .trigger(TriggerRequest {
+                        function_id: "router::models::get".to_string(),
+                        payload,
+                        action: None,
+                        timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if response.is_null() {
+                    return Ok(None);
+                }
+                let model = response.get("model").cloned().ok_or_else(|| {
+                    "router::models::get response has no `model` field".to_string()
+                })?;
+                if model.is_null() {
+                    return Ok(None);
+                }
+                let model = serde_json::from_value::<Model>(model).map_err(|e| {
+                    format!("router::models::get returned an unparseable model: {e}")
+                })?;
+                return Ok(Some(ModelBudget {
+                    effective_max_output_tokens: model.max_output_tokens,
+                    model,
+                }));
+            }
+            Err(err) => return Err(err.to_string()),
+        };
 
         if resp.is_null() {
             return Ok(None);
@@ -66,13 +105,25 @@ impl ModelResolver for RouterModelResolver {
         let model = resp
             .get("model")
             .cloned()
-            .ok_or_else(|| "router::models::get response has no `model` field".to_string())?;
+            .ok_or_else(|| "router::models::budget response has no `model` field".to_string())?;
         if model.is_null() {
             return Ok(None);
         }
+        let effective_max_output_tokens = resp
+            .get("effective_max_output_tokens")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "router::models::budget response has no `effective_max_output_tokens` field"
+                    .to_string()
+            })?;
         serde_json::from_value::<Model>(model)
-            .map(Some)
-            .map_err(|e| format!("router::models::get returned an unparseable model: {e}"))
+            .map(|model| {
+                Some(ModelBudget {
+                    model,
+                    effective_max_output_tokens,
+                })
+            })
+            .map_err(|e| format!("router::models::budget returned an unparseable model: {e}"))
     }
 }
 

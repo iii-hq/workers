@@ -10,7 +10,7 @@
 //!      `configuration` is a required boot dependency: a failed
 //!      register/fetch aborts startup.
 //!   4. Wire production adapters behind the ports: model limits via
-//!      `router::models::get` and the summariser via `router::chat`
+//!      `router::models::budget` and the summariser via `router::chat`
 //!      (both soft — only compaction degrades without `llm-router`), plus
 //!      compaction leases on the local filesystem (`lease_dir`). The
 //!      summariser reads `summarizer_timeout_ms` from the live snapshot per
