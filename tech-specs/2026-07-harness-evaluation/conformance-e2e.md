@@ -3,10 +3,6 @@
 > Status: proposed architecture; implementation has not started.
 >
 > Last reviewed: 2026-07-14.
->
-> Decision source: July 14 development sync. Where the discussion left
-> alternatives open, this document gives precedence to Mike's concrete
-> implementation direction.
 
 Harness conformance is the deterministic regression track for the harness. It
 proves that a checkout or release artifact still obeys the public turn
@@ -53,9 +49,9 @@ Conformance answers a narrower question than the agent-quality track:
 | Harness conformance | Did the harness preserve its public contracts and invariants? | Scripted and deterministic | Pass or fail by invariant |
 | Agent quality | Can a pinned real model complete representative workflows, and did quality regress? | Real provider model | Reliability, quality, latency, tokens, and cost |
 
-The meeting direction to implement the evaluation as a worker or worker set
-applies to the second, real-model agent-quality suite. It does not replace the
-small deterministic Rust supervisor selected for conformance.
+The worker-based evaluation architecture applies to the real-model
+agent-quality suite. It does not replace the small deterministic Rust supervisor
+selected for conformance.
 
 A conformance failure should identify a harness or environment defect without
 provider variance. An agent-quality failure may come from the model, prompt,
@@ -70,8 +66,8 @@ subject and pass policy are different.
 
 ### Placement in the test taxonomy
 
-The meeting used terms such as "unitish" and "mocked E2E" for this suite. To
-avoid ambiguity, the repository should use this four-layer taxonomy:
+To avoid ambiguity between terms such as "unitish" and "mocked E2E", the
+repository should use this four-layer taxonomy:
 
 | Layer | Boundary | Internal calls allowed? | Model boundary |
 |---|---|---:|---|
@@ -542,8 +538,8 @@ E2E concern, not a harness conformance oracle.
 
 ## Hooks and validation functions
 
-The meeting sometimes used "hook" as a general term for lifecycle callbacks.
-In the current harness contract these are different mechanisms:
+`Hook` is not a general term for every lifecycle callback in this
+specification. In the current harness contract these are different mechanisms:
 
 - `harness::hook::*` functions are synchronous, in-path extension points;
 - `harness::turn-completed` is an asynchronous lifecycle trigger and is the
@@ -636,18 +632,19 @@ The first prototype is complete when:
 - repeated successful runs require no model key and produce the same invariant
   results.
 
-## Open implementation decisions
+## Open questions
 
-The architecture leaves these details for the prototype to measure:
+The following questions require answers from the prototype:
 
-- the exact pinned engine acquisition mechanism in CI;
-- the cassette schema, sanitization rules, and capture command;
-- the minimal trace export path that gives useful diagnostics without making
-  traces a required oracle;
-- the observation window and flake threshold required before the CI job becomes
-  a mandatory pull-request gate;
-- when subprocess startup cost justifies isolated stack reuse or a container
-  profile.
+- How should CI acquire the exact pinned engine artifact?
+- What cassette schema, sanitization rules, and capture command should the suite
+  use?
+- What minimal trace export path gives useful diagnostics without making traces
+  a required oracle?
+- What observation window and flake threshold are required before the CI job
+  becomes a mandatory pull-request gate?
+- When does subprocess startup cost justify isolated stack reuse or a container
+  profile?
 
 These decisions must not weaken the public-path, deterministic-oracle,
 isolation, or fail-loudly requirements.

@@ -3,10 +3,6 @@
 > Status: proposed architecture; implementation has not started.
 >
 > Last reviewed: 2026-07-14.
->
-> Decision source: July 14 development sync. Where the discussion left
-> alternatives open, this document gives precedence to Mike's concrete
-> implementation direction.
 
 Agent-quality E2E is the real-model evaluation track for the harness. It
 measures whether a pinned model, system prompt, tool catalog, worker set, and
@@ -49,9 +45,6 @@ policies.
     tokens, errors, and cost in addition to outcome quality.
 12. Browser functions may provide DOM, network, console, snapshot, screenshot,
     and real-interaction evidence, with deterministic state preferred.
-
-The exact worker split, function schemas, report format, rollup weights, model
-matrix, repetition count, and gating thresholds remain open decisions.
 
 ## Goals
 
@@ -240,9 +233,8 @@ The intended runtime loop is:
    metrics and record every intermediate failure rather than only the eventual
    pass.
 
-This exact continuation contract is still a design decision. It should use
-public lifecycle events and entry points rather than coupling validation to
-private turn-loop state.
+Continuation must use public lifecycle events and entry points rather than
+coupling validation to private turn-loop state.
 
 ### Hooks are not the general eval API
 
@@ -256,10 +248,11 @@ model-based work. A slow grader must not keep a harness queue job open. Hooks
 remain scenarios within the eval corpus, while validation functions are the
 general outcome mechanism.
 
-The meeting occasionally used "hook" to mean any lifecycle callback. In the
-current harness vocabulary, `harness::hook::*` means the synchronous in-path
-extension points; `harness::turn-completed` is the asynchronous lifecycle
-trigger used by the quality worker for after-turn validation.
+`Hook` is not a general term for every lifecycle callback in this
+specification. In the current harness vocabulary, `harness::hook::*` means the
+synchronous in-path extension points; `harness::turn-completed` is the
+asynchronous lifecycle trigger used by the quality worker for after-turn
+validation.
 
 ## Agent-quality execution and scenario inputs
 
@@ -273,10 +266,10 @@ large external test program. One possible split is:
 - an **evidence worker** that reads transcripts, traces, context and compaction
   counters, token usage, errors, and artifacts, then writes the final report.
 
-This split is illustrative. A first version may combine the responsibilities in
-one worker, but the external launcher remains thin.
+The first version may combine these responsibilities in one worker, but the
+external launcher remains thin.
 
-The scenario surface starts with only the inputs identified in the meeting:
+The initial scenario surface has five inputs:
 
 | Input | Requirement |
 |---|---|
@@ -298,7 +291,7 @@ For `provided`, the quality worker can invoke the known function after the
 matching completion event. For `agent_authored`, the workflow creates the
 function and a run-scoped binding to `harness::turn-completed`; the quality
 worker still observes the result, enforces the cycle budget, and owns the final
-report. The binding, correlation, and feedback schemas remain open.
+report.
 
 The quality worker registers the configured completion handler before sending
 the task, so a very fast turn cannot be missed. It calculates aggregate metrics
@@ -307,8 +300,8 @@ or cycle exhaustion.
 
 ## Validation protocol
 
-The exact iii schemas remain to be designed, but all validation functions
-should share a versioned envelope. A conceptual request is:
+All validation functions should share a versioned envelope. A conceptual
+request is:
 
 ```json
 {
@@ -409,7 +402,7 @@ Adding a rule should be an extension workflow, not a harness-core change:
 7. Review agent-authored rules before promoting them to a shared baseline.
 8. Record the validator digest and baseline result with the scenario.
 
-A conceptual scenario manifest could look like this:
+A candidate scenario manifest is:
 
 ```yaml
 id: fan-out-security-scan
@@ -446,8 +439,6 @@ limits:
   attempt_timeout_seconds: 300
   max_total_tokens: 100000
 ```
-
-This is illustrative, not a proposed stable file format.
 
 ## Scenario corpus
 
@@ -608,7 +599,7 @@ global budgets, triggers the worker, and collects its output. Domain assertions
 belong in validation functions; the launcher must not become a central
 collection of every database query, browser condition, or application rule.
 
-A possible artifact layout is:
+A candidate artifact layout is:
 
 ```text
 harness/evals/
@@ -629,9 +620,9 @@ harness/evals/
   reports/
 ```
 
-The layout is illustrative. The important boundary is that scenarios,
-validators, prompts, and baselines are versioned independently but referenced by
-immutable ids or digests in every run.
+Regardless of layout, scenarios, validators, prompts, and baselines are
+versioned independently but referenced by immutable ids or digests in every
+run.
 
 ## Delivery sequence
 
@@ -664,22 +655,25 @@ The first prototype is successful when:
 - an independent grader can detect a superficially satisfied objective;
 - no unavailable dependency or validator error can produce a green result.
 
-## Open decisions
+## Open questions
 
-The following questions require explicit product and implementation decisions:
+The following questions require explicit product and implementation answers:
 
 - How should quality orchestration, validation, and evidence collection be split
   across one or more iii workers?
-- What iii function schemas register, discover, and invoke validators?
+- What versioned iii function schemas register, discover, and invoke validators?
 - Which worker owns the idempotent `harness::turn-completed` subscription and
-  how does it recover from duplicate or out-of-order delivery?
-- How is validation feedback appended without conflating it with a new user
-  instruction?
+  how does it handle binding, correlation, duplicate delivery, and out-of-order
+  delivery?
+- What public continuation contract appends validation feedback without
+  conflating it with a new user instruction, starts a bounded follow-up turn,
+  and enforces cycle limits?
 - Which validators are visible to the agent, and how are held-out functions kept
   outside its catalog and context?
 - How are agent-authored validators reviewed, frozen, signed, or content-addressed?
 - What permissions and sandbox boundaries apply to database, network, shell,
   and browser validation?
+- What is the canonical scenario-manifest format?
 - What is the canonical report and artifact storage and retention format?
 - What normalization, weights, and eligibility rules define the transparent
   comparison rollup, and can it ever gate a release?

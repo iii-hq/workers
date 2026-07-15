@@ -568,8 +568,8 @@ feedback, and transparent baseline comparison.</p>
         and artifacts</a></li>
         <li><a href="#delivery-sequence"
         id="toc-delivery-sequence">Delivery sequence</a></li>
-        <li><a href="#open-decisions" id="toc-open-decisions">Open
-        decisions</a></li>
+        <li><a href="#open-questions" id="toc-open-questions">Open
+        questions</a></li>
         <li><a href="#references"
         id="toc-references">References</a></li>
         <li><a href="#related-repository-material"
@@ -582,9 +582,6 @@ feedback, and transparent baseline comparison.</p>
         <p>Status: proposed architecture; implementation has not
         started.</p>
         <p>Last reviewed: 2026-07-14.</p>
-        <p>Decision source: July 14 development sync. Where the
-        discussion left alternatives open, this document gives
-        precedence to Mike's concrete implementation direction.</p>
         </blockquote>
         <p>Agent-quality E2E is the real-model evaluation track for the
         harness. It measures whether a pinned model, system prompt, tool
@@ -637,9 +634,6 @@ feedback, and transparent baseline comparison.</p>
         snapshot, screenshot, and real-interaction evidence, with
         deterministic state preferred.</li>
         </ol>
-        <p>The exact worker split, function schemas, report format,
-        rollup weights, model matrix, repetition count, and gating
-        thresholds remain open decisions.</p>
         </section>
         <section id="goals" class="level2">
         <h2>Goals</h2>
@@ -955,9 +949,9 @@ feedback, and transparent baseline comparison.</p>
         and efficiency metrics and record every intermediate failure
         rather than only the eventual pass.</li>
         </ol>
-        <p>This exact continuation contract is still a design decision.
-        It should use public lifecycle events and entry points rather
-        than coupling validation to private turn-loop state.</p>
+        <p>Continuation must use public lifecycle events and entry
+        points rather than coupling validation to private turn-loop
+        state.</p>
         </section>
         <section id="hooks-are-not-the-general-eval-api" class="level3">
         <h3>Hooks are not the general eval API</h3>
@@ -972,8 +966,8 @@ feedback, and transparent baseline comparison.</p>
         slow grader must not keep a harness queue job open. Hooks remain
         scenarios within the eval corpus, while validation functions are
         the general outcome mechanism.</p>
-        <p>The meeting occasionally used "hook" to mean any lifecycle
-        callback. In the current harness vocabulary,
+        <p><code>Hook</code> is not a general term for every lifecycle
+        callback in this specification. In the current harness vocabulary,
         <code>harness::hook::*</code> means the synchronous in-path
         extension points; <code>harness::turn-completed</code> is the
         asynchronous lifecycle trigger used by the quality worker for
@@ -998,11 +992,9 @@ feedback, and transparent baseline comparison.</p>
         traces, context and compaction counters, token usage, errors,
         and artifacts, then writes the final report.</li>
         </ul>
-        <p>This split is illustrative. A first version may combine the
-        responsibilities in one worker, but the external launcher
-        remains thin.</p>
-        <p>The scenario surface starts with only the inputs identified
-        in the meeting:</p>
+        <p>The first version may combine these responsibilities in one
+        worker, but the external launcher remains thin.</p>
+        <p>The initial scenario surface has five inputs:</p>
         <table>
         <thead>
         <tr>
@@ -1054,8 +1046,7 @@ feedback, and transparent baseline comparison.</p>
         and a run-scoped binding to
         <code>harness::turn-completed</code>; the quality worker still
         observes the result, enforces the cycle budget, and owns the
-        final report. The binding, correlation, and feedback schemas
-        remain open.</p>
+        final report.</p>
         <p>The quality worker registers the configured completion
         handler before sending the task, so a very fast turn cannot be
         missed. It calculates aggregate metrics only after the attempt
@@ -1064,9 +1055,8 @@ feedback, and transparent baseline comparison.</p>
         </section>
         <section id="validation-protocol" class="level2">
         <h2>Validation protocol</h2>
-        <p>The exact iii schemas remain to be designed, but all
-        validation functions should share a versioned envelope. A
-        conceptual request is:</p>
+        <p>All validation functions should share a versioned envelope.
+        A conceptual request is:</p>
         <div class="sourceCode" id="cb2"><pre
         class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;protocol_version&quot;</span><span class="fu">:</span> <span class="st">&quot;1&quot;</span><span class="fu">,</span></span>
@@ -1176,7 +1166,7 @@ feedback, and transparent baseline comparison.</p>
         <li>Record the validator digest and baseline result with the
         scenario.</li>
         </ol>
-        <p>A conceptual scenario manifest could look like this:</p>
+        <p>A candidate scenario manifest is:</p>
         <div class="sourceCode" id="cb4"><pre
         class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">id</span><span class="kw">:</span><span class="at"> fan-out-security-scan</span></span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fu">track</span><span class="kw">:</span><span class="at"> agent-quality</span></span>
@@ -1211,7 +1201,6 @@ feedback, and transparent baseline comparison.</p>
 <span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">max_cycles</span><span class="kw">:</span><span class="at"> </span><span class="dv">4</span></span>
 <span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">attempt_timeout_seconds</span><span class="kw">:</span><span class="at"> </span><span class="dv">300</span></span>
 <span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">max_total_tokens</span><span class="kw">:</span><span class="at"> </span><span class="dv">100000</span></span></code></pre></div>
-        <p>This is illustrative, not a proposed stable file format.</p>
         </section>
         <section id="scenario-corpus" class="level2">
         <h2>Scenario corpus</h2>
@@ -1471,7 +1460,7 @@ feedback, and transparent baseline comparison.</p>
         belong in validation functions; the launcher must not become a
         central collection of every database query, browser condition,
         or application rule.</p>
-        <p>A possible artifact layout is:</p>
+        <p>A candidate artifact layout is:</p>
         <pre class="text"><code>harness/evals/
   shared/
     protocol/
@@ -1488,10 +1477,9 @@ feedback, and transparent baseline comparison.</p>
       independent/
     baselines/
   reports/</code></pre>
-        <p>The layout is illustrative. The important boundary is that
-        scenarios, validators, prompts, and baselines are versioned
-        independently but referenced by immutable ids or digests in
-        every run.</p>
+        <p>Regardless of layout, scenarios, validators, prompts, and
+        baselines are versioned independently but referenced by
+        immutable ids or digests in every run.</p>
         </section>
         <section id="delivery-sequence" class="level2">
         <h2>Delivery sequence</h2>
@@ -1533,26 +1521,29 @@ feedback, and transparent baseline comparison.</p>
         green result.</li>
         </ul>
         </section>
-        <section id="open-decisions" class="level2">
-        <h2>Open decisions</h2>
+        <section id="open-questions" class="level2">
+        <h2>Open questions</h2>
         <p>The following questions require explicit product and
-        implementation decisions:</p>
+        implementation answers:</p>
         <ul>
         <li>How should quality orchestration, validation, and evidence
         collection be split across one or more iii workers?</li>
-        <li>What iii function schemas register, discover, and invoke
-        validators?</li>
+        <li>What versioned iii function schemas register, discover, and
+        invoke validators?</li>
         <li>Which worker owns the idempotent
         <code>harness::turn-completed</code> subscription and how does
-        it recover from duplicate or out-of-order delivery?</li>
-        <li>How is validation feedback appended without conflating it
-        with a new user instruction?</li>
+        it handle binding, correlation, duplicate delivery, and
+        out-of-order delivery?</li>
+        <li>What public continuation contract appends validation
+        feedback without conflating it with a new user instruction,
+        starts a bounded follow-up turn, and enforces cycle limits?</li>
         <li>Which validators are visible to the agent, and how are
         held-out functions kept outside its catalog and context?</li>
         <li>How are agent-authored validators reviewed, frozen, signed,
         or content-addressed?</li>
         <li>What permissions and sandbox boundaries apply to database,
         network, shell, and browser validation?</li>
+        <li>What is the canonical scenario-manifest format?</li>
         <li>What is the canonical report and artifact storage and
         retention format?</li>
         <li>What normalization, weights, and eligibility rules define

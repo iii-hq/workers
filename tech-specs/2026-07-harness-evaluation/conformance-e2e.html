@@ -576,9 +576,8 @@ reproducible evidence.</p>
         href="#acceptance-criteria-for-the-architecture-prototype"
         id="toc-acceptance-criteria-for-the-architecture-prototype">Acceptance
         criteria for the architecture prototype</a></li>
-        <li><a href="#open-implementation-decisions"
-        id="toc-open-implementation-decisions">Open implementation
-        decisions</a></li>
+        <li><a href="#open-questions"
+        id="toc-open-questions">Open questions</a></li>
         <li><a href="#related-repository-material"
         id="toc-related-repository-material">Related repository
         material</a></li>
@@ -589,9 +588,6 @@ reproducible evidence.</p>
         <p>Status: proposed architecture; implementation has not
         started.</p>
         <p>Last reviewed: 2026-07-14.</p>
-        <p>Decision source: July 14 development sync. Where the
-        discussion left alternatives open, this document gives
-        precedence to Mike's concrete implementation direction.</p>
         </blockquote>
         <p>Harness conformance is the deterministic regression track for
         the harness. It proves that a checkout or release artifact still
@@ -671,10 +667,9 @@ reproducible evidence.</p>
         </tr>
         </tbody>
         </table>
-        <p>The meeting direction to implement the evaluation as a worker
-        or worker set applies to the second, real-model agent-quality
-        suite. It does not replace the small deterministic Rust
-        supervisor selected for conformance.</p>
+        <p>The worker-based evaluation architecture applies to the
+        real-model agent-quality suite. It does not replace the small
+        deterministic Rust supervisor selected for conformance.</p>
         <p>A conformance failure should identify a harness or
         environment defect without provider variance. An agent-quality
         failure may come from the model, prompt, tool catalog, harness,
@@ -688,9 +683,9 @@ reproducible evidence.</p>
         shared; the subject and pass policy are different.</p>
         <section id="placement-in-the-test-taxonomy" class="level3">
         <h3>Placement in the test taxonomy</h3>
-        <p>The meeting used terms such as "unitish" and "mocked E2E" for
-        this suite. To avoid ambiguity, the repository should use this
-        four-layer taxonomy:</p>
+        <p>To avoid ambiguity between terms such as "unitish" and
+        "mocked E2E", the repository should use this four-layer
+        taxonomy:</p>
         <table>
         <thead>
         <tr>
@@ -1470,9 +1465,9 @@ harness/
         </section>
         <section id="hooks-and-validation-functions" class="level2">
         <h2>Hooks and validation functions</h2>
-        <p>The meeting sometimes used "hook" as a general term for
-        lifecycle callbacks. In the current harness contract these are
-        different mechanisms:</p>
+        <p><code>Hook</code> is not a general term for every lifecycle
+        callback in this specification. In the current harness contract
+        these are different mechanisms:</p>
         <ul>
         <li><code>harness::hook::*</code> functions are synchronous,
         in-path extension points;</li>
@@ -1578,20 +1573,20 @@ harness/
         the same invariant results.</li>
         </ul>
         </section>
-        <section id="open-implementation-decisions" class="level2">
-        <h2>Open implementation decisions</h2>
-        <p>The architecture leaves these details for the prototype to
-        measure:</p>
+        <section id="open-questions" class="level2">
+        <h2>Open questions</h2>
+        <p>The following questions require answers from the
+        prototype:</p>
         <ul>
-        <li>the exact pinned engine acquisition mechanism in CI;</li>
-        <li>the cassette schema, sanitization rules, and capture
-        command;</li>
-        <li>the minimal trace export path that gives useful diagnostics
-        without making traces a required oracle;</li>
-        <li>the observation window and flake threshold required before
-        the CI job becomes a mandatory pull-request gate;</li>
-        <li>when subprocess startup cost justifies isolated stack reuse
-        or a container profile.</li>
+        <li>How should CI acquire the exact pinned engine artifact?</li>
+        <li>What cassette schema, sanitization rules, and capture command
+        should the suite use?</li>
+        <li>What minimal trace export path gives useful diagnostics
+        without making traces a required oracle?</li>
+        <li>What observation window and flake threshold are required
+        before the CI job becomes a mandatory pull-request gate?</li>
+        <li>When does subprocess startup cost justify isolated stack
+        reuse or a container profile?</li>
         </ul>
         <p>These decisions must not weaken the public-path,
         deterministic-oracle, isolation, or fail-loudly
