@@ -50,8 +50,8 @@ export function BankRail({
                 : 'border-l-2 border-l-transparent',
             )}
           >
-            <span className="rule text-[13px] text-ink">{bank.name}</span>
-            <span className="rule text-[11px] text-ink-faint mt-0.5">
+            <span className="block text-[13px] text-ink">{bank.name}</span>
+            <span className="block text-[11px] text-ink-faint mt-0.5">
               {bank.memories} memories · {bank.pinned} pinned · {bank.rules} rules
             </span>
           </button>

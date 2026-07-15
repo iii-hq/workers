@@ -626,14 +626,14 @@ export function MemoryGraph({
 
         <div className="absolute bottom-2 left-2 flex items-center gap-3 font-mono text-[10px] lowercase text-ink-ghost bg-bg/90 border border-rule-2 px-2 py-1">
           <span className="flex items-center gap-1">
-            <span className="inline-rule w-2 h-2 border border-ink-faint bg-panel" />{' '}
+            <span className="inline-block w-2 h-2 border border-ink-faint bg-panel" />{' '}
             entity (click to expand)
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-rule w-2 h-2 rounded-full bg-ink" /> memory
+            <span className="inline-block w-2 h-2 rounded-full bg-ink" /> memory
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-rule w-2 h-2 rounded-full bg-accent" />{' '}
+            <span className="inline-block w-2 h-2 rounded-full bg-accent" />{' '}
             pinned
           </span>
           <span>wheel: zoom · drag: pan</span>
