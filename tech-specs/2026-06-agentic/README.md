@@ -24,6 +24,7 @@ flowchart LR
   router["llm-router"]
   tpBottom["third-party-worker"]
   gate["approval-gate"]
+  mem["memory"]
 
   %% Chat flow
   chat -->|"send message"| harness
@@ -49,6 +50,10 @@ flowchart LR
   harness -.->|"pre_trigger hook"| gate
   gate -.->|"function::resolve"| harness
 
+  %% Optional memory sibling (pre-generate hook + post-turn extraction)
+  harness -.->|"pre-generate hook<br/>turn-completed"| mem
+  mem -.->|"read transcripts"| session
+
   %% LLM routing
   harness -->|"send messages from<br/>context + last message"| router
 
@@ -66,7 +71,7 @@ flowchart LR
   class chat,tg,tpTop,tpBottom green;
   class ctx,harness,session,router red;
   class funcs white;
-  class gate sibling;
+  class gate,mem sibling;
 ```
 
 ### How to read the diagram
@@ -80,9 +85,11 @@ flowchart LR
   registered iii function; the harness invokes them with `iii.trigger(...)`. The model discovers what
   exists at runtime via `engine::functions::list` (through the `agent_trigger` invocation surface by
   default — see [Terminology](#terminology)). There is no separate "tools" worker.
-- **Dashed** (`approval-gate`) is an **optional policy sibling**, specified in
-  [approval-gate.md](approval-gate.md): it plugs into the harness via a `pre_trigger` hook and
-  `harness::function::resolve` — the four core workers run with or without it.
+- **Dashed** (`approval-gate`, `memory`) are **optional siblings**. approval-gate
+  ([approval-gate.md](approval-gate.md)) plugs into the harness via a `pre_trigger` hook and
+  `harness::function::resolve`; memory ([memory.md](memory.md)) binds the `pre-generate` hook
+  (inject rules + recalled memories) and `turn-completed` (background extraction) for durable
+  cross-session memory. The four core workers run with or without them.
 
 ## The four workers
 

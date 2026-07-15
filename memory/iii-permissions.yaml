@@ -1,0 +1,20 @@
+# Agent permissions for the memory worker.
+# Spec: tech-specs/2026-06-agentic/memory.md § Security.
+version: 1
+
+rules:
+  # Internal seams: the harness invokes the hook, the queue delivers
+  # extraction jobs, session-manager GC and the configuration worker drive
+  # the rest. Never agent-callable.
+  - '!memory::hook::pre-generate'
+  - '!memory::on-turn-completed'
+  - '!memory::on-session-deleted'
+  - '!memory::extract-job'
+  - '!memory::on-config-change'
+  # Bank and rule writes are human-owned surfaces (console, REST, CLI) by
+  # default; agents read and save memories but do not reshape banks or the
+  # always-injected rules without an explicit grant.
+  - '!memory::bank::create'
+  - '!memory::bank::delete'
+  - '!memory::rule::set'
+  - '!memory::reload'

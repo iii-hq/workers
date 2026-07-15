@@ -1,48 +1,87 @@
 ---
 name: memory
-description: Remember and recall durable memories across sessions using the memory worker: explicit saves, previews of what will be injected, bank and rule management, and fixing wrong memories.
+tags: memory, banks, rules, recall, cross-session, pinning
+description: >-
+  Durable cross-session memory: named banks of always-injected markdown rules
+  and auto-extracted memories with hybrid recall. Reach for it when the user
+  asks you to remember, forget, or inspect what is remembered.
 ---
 
 # memory
 
-Cross-session memory is automatic: the session's bank's rules and relevant memories arrive in your context each turn, and new memories are extracted after each turn. Use the functions below when the user asks you to remember, forget, or inspect memory. **Rules** are always-injected markdown (`memory::rule::*`, on disk under the bank's `rules/` folder); **memories** are recalled records (`memory::save/list/recall`).
+Cross-session memory is automatic here. The session's bank injects its rules
+and relevant memories into your context each turn, new memories are extracted
+in the background after each turn, and standing instructions (style directives,
+workflow corrections) graduate into the bank's auto-managed `learned` rule on
+their own. When the user asks you to remember something, acknowledge it — no
+save call is required, though an explicit `memory::save` makes it durable
+immediately instead of after the turn.
 
-## Remember something now
+**Rules** are markdown documents injected whole into the system prompt on every
+turn (`memory::rule::*`, on disk under the bank's `rules/` folder). **Memories**
+are recalled records, ranked against the current question
+(`memory::save/list/recall`). Durable identity-grade guidance belongs in a
+rule; point-in-time information belongs in memories.
 
-When the user says "remember X" (or corrects you in a way that should stick), save it immediately instead of waiting for extraction:
+## When to Use
 
-```
-memory::save { "text": "Mike writes blog posts in a formal register, no em-dashes", "entities": ["mike", "blog"], "pinned": true }
-```
+- The user says "remember X", or corrects you in a way that should stick —
+  save it now: `memory::save { "text": "...", "entities": [...], "pinned": true }`.
+  Pin anything they explicitly ask to keep. Re-saving reinforces, never duplicates.
+- The user asks what you remember about a topic — `memory::recall { "query": "..." }`
+  returns the exact ranked memories a turn on that topic would be given.
+- The user asks to fix or forget something — find it via recall/list, then
+  `memory::update` (corrected text) or `memory::delete` (tombstone), and
+  `memory::pin` to protect the corrected version.
+- The user wants a style or convention set enforced everywhere —
+  `memory::rule::set { "bank": "...", "name": "style", "content": "..." }`.
+- Separate contexts deserve separate banks (`blog` vs `coding`): a session
+  selects its bank via session metadata `memory_bank` (`session::set-meta`)
+  or the console composer's bank picker; `memory::bank::create` makes one.
+- Memory seems absent — `memory::doctor {}` runs a real save→recall roundtrip
+  and names which sibling (router, session-manager) is degraded.
 
-Pin anything the user explicitly asks to keep. Re-saving the same text reinforces instead of duplicating.
+## Boundaries
 
-## See what memory knows
+- Not a transcript store: session history lives in session-manager; memory
+  keeps distilled records that point back at their source session.
+- Not per-turn context compression: that is context-manager's job. This worker
+  is the durable cross-session sibling.
+- Deletes are tombstones and bank deletion moves to `.trash/` — nothing is
+  destroyed; `include_superseded: true` on list/recall shows history.
+- Extraction never edits or removes existing memories (ADD-only, fingerprint
+  reinforced); consolidation/merging belongs to a separate worker.
+- Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
+  over-budget rule is truncated visibly, never silently dropped.
 
-- `memory::recall { "query": "<topic>" }`: the exact ranked memories a turn on this topic would be given.
-- `memory::list { "limit": 20 }`: newest memories in the current bank.
-- `memory::bank::list {}`: all banks with counts.
+## Functions
 
-## Fix a wrong memory
+- `memory::save` — explicit save; content-fingerprinted, repeat saves reinforce.
+- `memory::get / list / update / delete / pin` — memory CRUD; delete tombstones,
+  update bumps a revision, pinned records are untouchable by automatic paths.
+- `memory::recall` — rank a bank's memories against a query (the injection
+  hook's exact scorer); response names the retrieval mode that ran.
+- `memory::bank::create / list / delete` — named memory scopes; delete trashes.
+- `memory::rule::list / set` — always-injected markdown rules; empty content
+  removes a rule.
+- `memory::doctor` — end-to-end self-test plus sibling reachability.
+- `memory::reload` — re-read every bank from disk after hand-editing files.
 
-1. Find it: `memory::recall` or `memory::list`.
-2. Correct it: `memory::update { "id": "<id>", "text": "<corrected>" }`, or tombstone it with `memory::delete { "id": "<id>" }`.
-3. Protect it: `memory::pin { "id": "<id>", "pinned": true }`.
+## Reactive triggers
 
-Deletes are tombstones; nothing is destroyed. `include_superseded: true` on list/recall shows history.
+The worker emits two trigger types; bind to them for live views instead of
+polling `memory::list` / `memory::bank::list`.
 
-## Banks
-
-Separate contexts get separate banks (e.g. `blog`, `coding`, `personal`). The session picks its bank via session metadata `memory_bank` (`session::set-meta { "session_id": "...", "metadata": { "memory_bank": "blog" } }`) or the console's composer picker. Create one with `memory::bank::create { "name": "blog" }`.
-
-## Rules (standing instructions)
-
-Durable identity-grade guidance (writing style, coding conventions, answer format) belongs in a rule, not a memory: rules are injected whole into the system prompt every turn, guaranteed, while memories are recalled only when they match the question. When the user asks you to save a style or convention set, write it as a rule:
-
-```
-memory::rule::set { "bank": "blog", "name": "style", "content": "# Style\nFormal register. Short paragraphs. Never: 'dive in', em-dashes." }
-```
-
-## Health
-
-If memory seems absent, run `memory::doctor {}`: it performs a real save→recall roundtrip and reports which siblings are unreachable, naming what is degraded.
+1. **Why bind** — `memory::item-changed` fires on every memory create / update /
+   supersede / delete (`{ event_type, bank, memory }`); `memory::bank-changed`
+   fires on bank create / trash and rule changes (`{ event_type, bank }`). A
+   consumer that mutates memory already has the new record in its return
+   payload — bind only when you need to observe changes made by OTHERS
+   (extraction, other sessions, the console).
+2. **When to bind** — a UI or index that must stay current with background
+   extraction; a worker reacting to new memories in a specific bank (use the
+   `bank` filter in the binding config).
+3. **How to bind** — two steps: register a handler function, then register a
+   trigger of the wanted type pointing at it, optionally with
+   `config: { "bank": "blog" }` to filter. Delivery is fire-and-forget,
+   at-least-once, unordered.

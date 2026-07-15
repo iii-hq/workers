@@ -98,6 +98,9 @@ incremented `revision`.
 The full function surface (14 `session::*` functions: lifecycle,
 messages, branching/fork) is documented in the spec and on each
 function's registered schema — see `iii worker info session-manager`.
+`session::messages` items carry the entry `origin` (hook annotations —
+e.g. which memory bank fed a generate), so consumers can render
+provenance without a second lookup.
 
 ## Custom trigger types
 

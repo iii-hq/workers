@@ -374,4 +374,5 @@ and `context::compact` can trigger a summariser LLM call. `context::count-tokens
 - Does **not** decide *when* to compact a live session on its own — that is the caller's policy (the
   harness pre-flight, or the optional reactive trigger above).
 - Does **not** talk to LLM providers directly — summarisation goes through `llm-router`.
-- Does **not** implement long-term/vector memory in v1; that belongs in a dedicated sibling worker.
+- Does **not** implement long-term/vector memory in v1; that lives in the dedicated `memory`
+  sibling worker (see [memory.md](memory.md)).

@@ -2,6 +2,35 @@
 
 Durable cross-session agent memory. Named **banks** hold two kinds of content: **rules** (markdown documents injected whole into every turn's system prompt) and **memories** (auto-extracted records recalled on demand). Everything is a plain file you can open, a function you can call, and an event you can watch: memory that acts visibly, not magically.
 
+## Install
+
+```
+iii worker add memory
+```
+
+The default bank `main` materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.
+
+## Quickstart
+
+Save something, then see exactly what a turn on that topic would be given:
+
+```bash
+iii trigger memory::save text="User publishes blog posts on Tuesday mornings" pinned=true
+iii trigger memory::recall query="when do I publish articles"
+```
+
+Give the bank a standing instruction — injected into the system prompt of every session using it:
+
+```bash
+iii trigger memory::rule::set name=style content="# Style\nFormal register. No em-dashes."
+```
+
+With the harness running there is nothing else to wire: chat normally and memory captures in the background. Say "never start replies with the word Certainly" in a conversation and it lands in the bank's auto-managed `learned` rule; state something durable and it appears as a memory after the turn. If memory seems absent, `iii trigger memory::doctor` runs a real save→recall roundtrip and names what is degraded.
+
+## Configuration
+
+All fields hot-reload through the `configuration` worker (rendered as a form in the console); `data_dir` reopens the store on the fly. Fields: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days`, `embeddings_enabled`, `embedding_model`.
+
 ## Why this shape
 
 - **Files are the source of truth.** `rules/*.md` and `memories.jsonl` under the data dir. Edit them in any editor; `memory::reload` (or a restart) picks the edits up. The search index is a RAM-only cache rebuilt from the files at boot, so store and index can never diverge across restarts.
@@ -11,14 +40,6 @@ Durable cross-session agent memory. Named **banks** hold two kinds of content: *
 - **One LLM call per turn, zero at query time.** Extraction runs in the background after a turn completes (ADD-only, content-fingerprinted so redelivery reinforces instead of duplicating). Recall is BM25 + entity match + corroboration + recency, plus a semantic signal when `router::embed` is available: sub-millisecond at this scale.
 - **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat updates the system prompt for every later turn. Hand-authored rules are never touched; dedup by content fingerprint; `rule_learning_enabled` turns it off.
 - **Honest health.** `memory::doctor` runs a real save→recall→trash roundtrip and reports sibling reachability. `memory::recall` names the retrieval mode it ran. Degradation is explicit, never silent.
-
-## Install
-
-```
-iii worker add memory
-```
-
-The default bank `main` materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.
 
 ## How it hooks into the harness
 
@@ -41,7 +62,12 @@ Bank selection order: turn metadata `memory_bank` → session metadata `memory_b
 | `memory::doctor` | End-to-end self-test (roundtrip + sibling reachability) |
 | `memory::reload` | Reload every bank from disk after hand-editing files |
 
-Trigger types: `memory::item-changed` (`{event_type, bank, memory}`) and `memory::bank-changed` (`{event_type, bank}`), filterable by `bank`: bind live views here.
+## Custom trigger types
+
+Bind live views here instead of polling; both are filterable by `bank` in the binding config, delivery is fire-and-forget, at-least-once, unordered.
+
+- `memory::item-changed` — a memory was created / updated / superseded / deleted. Payload: `{event_type, bank, memory}`.
+- `memory::bank-changed` — a bank was created / trashed, or its rules changed. Payload: `{event_type, bank}`.
 
 ## Storage layout
 
@@ -55,14 +81,10 @@ Trigger types: `memory::item-changed` (`{event_type, bank, memory}`) and `memory
   .trash/              # trashed banks, timestamped
 ```
 
-## Configuration
-
-All fields hot-reload; `data_dir` reopens the store on the fly. See the schema (rendered as a form in the console) for: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days`, `embeddings_enabled`, `embedding_model`.
-
 ## Permissions
 
-Suggested `iii-permissions.yaml` rules: allow agents `memory::recall`, `memory::save`, `memory::get`, `memory::list`; deny `'!memory::on-config-change'`, `'!memory::hook::pre-generate'`, `'!memory::on-turn-completed'`. Bank and rule writes are human-owned surfaces (console, REST, CLI) by default.
+Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
 
 ## Boundaries
 
-Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves. Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Background consolidation (dedup/merge/promote) is a separate worker so it can be stopped or removed without touching stored memory.
+Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves (see [tech-specs/2026-06-agentic/memory.md](../tech-specs/2026-06-agentic/memory.md)). Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Background consolidation (dedup/merge/promote) is a separate worker so it can be stopped or removed without touching stored memory.

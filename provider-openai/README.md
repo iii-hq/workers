@@ -4,10 +4,13 @@ OpenAI Responses provider worker behind [llm-router](../llm-router/), with a
 Chat Completions compatibility path for custom gateways.
 Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::openai::stream`
-(SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
+(SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
 `provider::openai::refresh_models` (live `GET /v1/models` filtered to
 chat/reasoning families ∪ curated capability snapshot →
-`router::models::reconcile`).
+`router::models::reconcile`), and `provider::openai::embed` (batch text
+embeddings behind `router::embed`; the endpoint derives from the configured
+`api_url`, so OpenAI-compatible local servers — llama.cpp `--embeddings`,
+Ollama, vLLM, LM Studio — and gateways work through the same surface).
 
 ## Behavior
 

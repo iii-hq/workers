@@ -57,6 +57,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::models::list` | List catalog models, filterable by `provider` / `capability`. |
 | `router::models::get` | Fetch one model record (`null` when unknown). |
 | `router::models::supports` | Check one capability flag for one model. |
+| `router::embed` | Batch text embeddings through the first embed-capable provider in the registry (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
 | `router::provider::list` | Registered providers with `configured` / `available` status. |
 | `router::system_prompt::get` | Effective identity prompt for `{provider?}` (the configured `default_provider` when omitted): operator override when set → provider-declared → `null`. `null` also when the provider is unknown — callers fall back to their own default prompt. |
 

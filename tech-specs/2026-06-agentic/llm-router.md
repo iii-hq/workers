@@ -177,6 +177,10 @@ Consumer-facing:
 - `router::models::get` — Look up one model's capabilities by `(provider, id)`.
 - `router::models::supports` — Check whether a model supports a capability.
 - `router::provider::list` — Enumerate declared providers and their configured/available state.
+- `router::embed` — Batch text embeddings: walks the provider registry and calls the first
+  reachable `provider::<id>::embed` (a provider without an embed surface is skipped via
+  `function_not_found`). Response carries the provider, the model that ran, and one vector per
+  input; the router rejects a count mismatch.
 
 Provider protocol (router side):
 
@@ -186,6 +190,8 @@ Provider protocol (router side):
 - `router::provider::update_credential` — A provider persists a refreshed/rotated credential
   (OAuth). **Agent-gated.**
 - `router::models::reconcile` — A provider replaces its catalog slice in one write.
+- `provider::<id>::embed` — OPTIONAL provider surface: batch embeddings for `router::embed`.
+  Providers whose upstream has no embeddings API simply do not register it.
 
 ## Triggers
 
