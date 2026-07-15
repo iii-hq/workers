@@ -28,16 +28,29 @@ use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
 
 const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
 Return ONLY a JSON array (no prose, no code fences). Each element:\n\
-{\"text\": string, \"entities\": [string], \"confidence\": \"extracted\"|\"inferred\"}\n\
+{\"text\": string, \"entities\": [string], \"confidence\": \"extracted\"|\"inferred\", \
+\"kind\": \"memory\"|\"rule\"}\n\
 Rules:\n\
-- Only durable memories worth remembering across sessions: stable preferences, corrections, \
+- Only durable content worth remembering across sessions: stable preferences, corrections, \
 identities, project constants, standing instructions.\n\
 - Never ephemeral state (current task progress, one-off values), never secrets, API keys, \
 tokens, or passwords.\n\
 - text: one self-contained sentence, max 200 characters, in the language of the source.\n\
 - entities: short lowercase handles for the people/projects/tools the memory is about.\n\
 - confidence: \"extracted\" when stated directly, \"inferred\" when derived.\n\
+- kind \"rule\" ONLY for standing instructions about how the assistant should behave going \
+forward — style directives, formatting conventions, workflow corrections (\"never use \
+em-dashes\", \"always write tests first\"). Facts about the user, projects, or the world are \
+kind \"memory\". When unsure, use \"memory\".\n\
 - Return [] when nothing qualifies. Most turns have nothing worth keeping.";
+
+/// Name of the auto-managed rule that captured standing instructions
+/// append to. Hand-authored rules are never touched by extraction.
+const LEARNED_RULE: &str = "learned";
+const LEARNED_HEADER: &str = "# Learned\nStanding instructions captured automatically from \
+conversations. Edit or delete lines freely — extraction only ever appends new ones.\n";
+/// Cap on rule promotions accepted from a single extraction pass.
+const MAX_RULES_PER_TURN: usize = 3;
 
 #[derive(Debug, Deserialize)]
 struct ExtractedItem {
@@ -46,6 +59,43 @@ struct ExtractedItem {
     entities: Vec<String>,
     #[serde(default)]
     confidence: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+impl ExtractedItem {
+    fn is_rule(&self) -> bool {
+        self.kind.as_deref() == Some("rule")
+    }
+}
+
+/// Append new standing instructions to the learned rule, skipping any whose
+/// content fingerprint already appears (re-observation is a no-op). Returns
+/// the merged content and how many lines were actually added.
+fn merge_learned(existing: &str, additions: &[String]) -> (String, usize) {
+    let mut seen: std::collections::HashSet<String> = existing
+        .lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .map(fingerprint)
+        .collect();
+    let fresh: Vec<&String> = additions
+        .iter()
+        .filter(|t| seen.insert(fingerprint(t)))
+        .collect();
+    if fresh.is_empty() {
+        return (existing.to_string(), 0);
+    }
+    let mut out = if existing.trim().is_empty() {
+        LEARNED_HEADER.to_string()
+    } else {
+        existing.trim_end().to_string() + "\n"
+    };
+    for t in &fresh {
+        out.push_str("- ");
+        out.push_str(t);
+        out.push('\n');
+    }
+    (out, fresh.len())
 }
 
 /// Resolve the bank for a session: session metadata `memory_bank` wins,
@@ -145,6 +195,36 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
         .ensure_bank(&bank_name, None)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Standing instructions graduate straight into the always-injected
+    // `learned` rule (visible + editable in the rules tab) instead of the
+    // recall pool — Mike's loop: correct in chat, review the rules page.
+    let (rules, items): (Vec<ExtractedItem>, Vec<ExtractedItem>) =
+        items.into_iter().partition(ExtractedItem::is_rule);
+    if cfg.rule_learning_enabled && !rules.is_empty() {
+        let additions: Vec<String> = rules
+            .into_iter()
+            .take(MAX_RULES_PER_TURN)
+            .map(|r| r.text.trim().to_string())
+            .filter(|t| t.len() >= 3 && t.len() <= 500)
+            .collect();
+        let existing = bank
+            .list_rules()
+            .ok()
+            .and_then(|rs| rs.into_iter().find(|r| r.name == LEARNED_RULE))
+            .map(|r| r.content)
+            .unwrap_or_default();
+        let (merged, added) = merge_learned(&existing, &additions);
+        if added > 0 {
+            match bank.set_rule(LEARNED_RULE, &merged) {
+                Ok(()) => {
+                    deps.emitter.bank("rules-changed", &bank_name).await;
+                    tracing::info!(session_id, bank = %bank_name, added, "extraction pass learned rules");
+                }
+                Err(e) => tracing::warn!(error = %e, "learned rule write failed"),
+            }
+        }
+    }
 
     let mut saved = 0usize;
     for item in items.into_iter().take(cfg.max_memories_per_turn) {
@@ -436,6 +516,51 @@ mod tests {
     fn parse_empty_and_no_array_are_empty() {
         assert!(parse_items("[]").unwrap().is_empty());
         assert!(parse_items("nothing worth keeping").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_reads_rule_kind() {
+        let raw = r#"[
+            {"text": "never use em-dashes", "kind": "rule"},
+            {"text": "user publishes on tuesdays", "kind": "memory"},
+            {"text": "user lives in pune"}
+        ]"#;
+        let items = parse_items(raw).unwrap();
+        assert_eq!(items.len(), 3);
+        assert!(items[0].is_rule());
+        assert!(!items[1].is_rule());
+        assert!(!items[2].is_rule());
+    }
+
+    #[test]
+    fn merge_learned_appends_and_dedups() {
+        let (first, added) = merge_learned(
+            "",
+            &["Never use em-dashes.".into(), "Always write tests.".into()],
+        );
+        assert_eq!(added, 2);
+        assert!(first.starts_with("# Learned\n"));
+        assert!(first.contains("- Never use em-dashes.\n"));
+        assert!(first.contains("- Always write tests.\n"));
+
+        // Re-observation (case/whitespace-insensitive) is a no-op.
+        let (second, added) = merge_learned(&first, &["never  use em-dashes.".into()]);
+        assert_eq!(added, 0);
+        assert_eq!(second, first);
+
+        // A genuinely new line appends without disturbing hand edits.
+        let edited = first.replace("Always write tests.", "Always write tests first.");
+        let (third, added) = merge_learned(&edited, &["Prefer short names.".into()]);
+        assert_eq!(added, 1);
+        assert!(third.contains("Always write tests first."));
+        assert!(third.ends_with("- Prefer short names.\n"));
+
+        // Duplicates WITHIN one pass collapse to a single line.
+        let (batch, added) = merge_learned(
+            "",
+            &["Prefer short names.".into(), "prefer  short names.".into()],
+        );
+        assert_eq!(added, 1);
     }
 
     #[test]

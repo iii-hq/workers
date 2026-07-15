@@ -31,6 +31,7 @@ pub fn build_manifest() -> ModuleManifest {
             "extraction_window": 12,
             "extraction_timeout_ms": 60_000,
             "max_memories_per_turn": 8,
+            "rule_learning_enabled": true,
             "max_rule_chars": 6_000,
             "decay_half_life_days": 30,
             "embeddings_enabled": true,

@@ -72,6 +72,14 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_memories_per_turn")]
     pub max_memories_per_turn: usize,
 
+    /// Let extraction promote standing instructions (style directives,
+    /// workflow corrections) into the bank's auto-managed `learned` rule,
+    /// so correcting the agent in chat updates the system prompt for every
+    /// later turn. Hand-authored rules are never touched; the learned rule
+    /// only ever gains appended lines.
+    #[serde(default = "default_true")]
+    pub rule_learning_enabled: bool,
+
     /// Hard character budget for the injected rules section. Rules are
     /// injected into the system prompt on EVERY turn, so an unbounded rule
     /// taxes every call forever; over-budget content is truncated with a

@@ -9,6 +9,7 @@ Durable cross-session agent memory. Named **banks** hold two kinds of content: *
 - **Supersede, never delete.** Updates append revisions; deletes append tombstones; trashed banks move to `.trash/`. Any state is recoverable.
 - **Pinning.** A pinned memory ranks higher in recall and is untouchable by every automatic path.
 - **One LLM call per turn, zero at query time.** Extraction runs in the background after a turn completes (ADD-only, content-fingerprinted so redelivery reinforces instead of duplicating). Recall is BM25 + entity match + corroboration + recency, plus a semantic signal when `router::embed` is available: sub-millisecond at this scale.
+- **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat updates the system prompt for every later turn. Hand-authored rules are never touched; dedup by content fingerprint; `rule_learning_enabled` turns it off.
 - **Honest health.** `memory::doctor` runs a real save→recall→trash roundtrip and reports sibling reachability. `memory::recall` names the retrieval mode it ran. Degradation is explicit, never silent.
 
 ## Install
@@ -56,7 +57,7 @@ Trigger types: `memory::item-changed` (`{event_type, bank, memory}`) and `memory
 
 ## Configuration
 
-All fields hot-reload; `data_dir` reopens the store on the fly. See the schema (rendered as a form in the console) for: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `max_rule_chars`, `decay_half_life_days`, `embeddings_enabled`, `embedding_model`.
+All fields hot-reload; `data_dir` reopens the store on the fly. See the schema (rendered as a form in the console) for: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days`, `embeddings_enabled`, `embedding_model`.
 
 ## Permissions
 
