@@ -13,9 +13,8 @@ prose explains how to use them.
 
 | Document | Audience | Read it when |
 |---|---|---|
-| [integration.md](integration.md) | Authors of consumers / siblings | You are building something on top of the harness — a chat UI, a Telegram / WhatsApp / Slack bridge, a cron or webhook worker, an event-driven agent loop, a notification sibling. This file is the handoff contract. |
-| [conformance-e2e.md](../../tech-specs/2026-07-harness-evaluation/conformance-e2e.md) ([HTML](../../tech-specs/2026-07-harness-evaluation/conformance-e2e.html)) | Harness maintainers | You are implementing the deterministic public-path regression suite for lifecycle, durability, and exactly-once contracts. |
-| [agent-quality.md](../../tech-specs/2026-07-harness-evaluation/agent-quality.md) ([HTML](../../tech-specs/2026-07-harness-evaluation/agent-quality.html)) | Harness and evaluation maintainers | You are implementing worker-based real-model evaluation, validation functions, metrics, and comparison policy. |
+| [conformance-e2e.md](../../tech-specs/2026-07-15-harness-evaluation/conformance-e2e.md) | Harness maintainers | You are implementing the deterministic public-path regression suite for lifecycle, durability, and exactly-once contracts. |
+| [agent-quality.md](../../tech-specs/2026-07-15-harness-evaluation/agent-quality.md) | Harness and evaluation maintainers | You are implementing worker-based real-model evaluation, validation functions, metrics, and comparison policy. |
 
 The two E2E documents are the canonical evaluation architecture. Conformance
 controls the model boundary and grades exact public invariants. Agent quality
@@ -36,7 +35,7 @@ take an incoming message, persist it, assemble a context, stream a completion,
 run any function calls the model requests, and repeat until the turn stops —
 all as durable, enqueued steps so a crash or restart resumes mid-turn. It owns
 sequencing and nothing else. Consumers are deliberately thin: they **kick off**
-a turn (`harness::send` / `harness::run`), **render** the conversation by
+a turn (`harness::send`), **render** the conversation by
 binding `session-manager`'s transcript events, and **react** to boundaries
 (`harness::turn-completed`) and human-gated calls (approval-gate's
 `approval::*` triggers). There is no `agent::events` firehose — the transcript
@@ -48,7 +47,7 @@ is the stream, and turn lifecycle rides discrete triggers.
 flowchart LR
   consumer["consumer<br/>(chat UI / bridge / cron)"]
   subgraph harness [harness]
-    entry["send / run / spawn"]
+    entry["send"]
     loopStep["turn (durable step)"]
     events["turn-started / turn-completed"]
     hooks["hook::* (sync)"]
@@ -59,7 +58,7 @@ flowchart LR
   gate["approval-gate"]
   fns["iii functions"]
 
-  consumer -->|"trigger harness::send / run"| entry
+  consumer -->|"trigger harness::send"| entry
   entry --> loopStep
   loopStep -->|"append / update-message"| session
   loopStep -->|"assemble"| ctx
@@ -82,7 +81,7 @@ flowchart LR
 | **Steering / merge** | A `harness::send` for a session that already has a running turn folds the new message into it instead of starting a second turn (the response carries `merged: true`). |
 | **Dispatch policy** | The fail-closed `options.functions.allow` / `deny` globs deciding which functions the model may call. Absent or empty `allow` → a plain chat loop. |
 | **Exposure mode** | How allowed functions reach the model: one generic `agent_trigger` schema (default) or one schema per allowed function (`native`). |
-| **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result rides `harness::turn-completed` and `harness::run`. |
+| **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result is available from `harness::turn-completed` and `harness::status`. |
 | **Hook** | A synchronous extension point (`harness::hook::*`) a sibling binds to veto / hold / mutate in-path. Hook *logic* lives in the sibling, never the harness. |
 | **Pending / parked** | A dispatch that cannot resolve inline (a sub-agent, or an approval hold) checkpoints `pending`; the turn parks and `harness::function::resolve` resumes it later. |
 | **Sub-agent** | A child turn in a child session, started by `harness::spawn` from a parent turn; its completion resolves the parent's parked call. |

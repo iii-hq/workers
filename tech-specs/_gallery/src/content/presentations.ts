@@ -65,6 +65,16 @@ export const GALLERY_META: GalleryMeta = {
  */
 export const PRESENTATIONS: Presentation[] = [
   {
+    slug: '2026-07-15-harness-evaluation',
+    title: 'harness evaluation — conformance and agent quality',
+    tagline:
+      'deterministic contract checks and real-model workflow evaluation for the durable harness.',
+    spec: 'tech-specs/2026-07-15-harness-evaluation',
+    date: '2026-07-15',
+    tags: ['agents', 'evaluation', 'harness'],
+    status: 'draft',
+  },
+  {
     slug: '2026-06-agentic',
     title: 'agentic workers, an architecture overview',
     tagline:

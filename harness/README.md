@@ -95,15 +95,14 @@ The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
 
 Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
-any event-driven loop on top of the harness? Start with the integration
-contract in
-[`architecture/integration.md`](architecture/integration.md): the functions to
-trigger, the triggers to bind, and the canonical consumer patterns.
+any event-driven loop on top of the harness? Start with the
+[`architecture` overview](architecture/README.md) and inspect the live request
+and response schemas with `iii worker info harness`.
 
 Studying evaluation for the turn loop? Use the focused
-[`conformance-e2e.md`](../tech-specs/2026-07-harness-evaluation/conformance-e2e.md)
+[`conformance-e2e.md`](../tech-specs/2026-07-15-harness-evaluation/conformance-e2e.md)
 spec for the deterministic public-path suite and
-[`agent-quality.md`](../tech-specs/2026-07-harness-evaluation/agent-quality.md)
+[`agent-quality.md`](../tech-specs/2026-07-15-harness-evaluation/agent-quality.md)
 for the worker-based real-model suite.
 
 ## Working with iii
