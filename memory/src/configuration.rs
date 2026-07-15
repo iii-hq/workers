@@ -80,7 +80,14 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// missing-entry codes vary in case, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
-        Ok(resp) => Ok(resp.get("value").cloned()),
+        // A successful reply MUST carry `value`; treating its absence as
+        // "no entry" would let a malformed response seed defaults over an
+        // intended configuration.
+        Ok(resp) => resp
+            .get("value")
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| "configuration::get returned no `value` field".to_string()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
@@ -122,7 +129,9 @@ pub fn register_config_trigger(
             let store = store_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell, &store).await;
+                on_config_change(&engine, &cell, &store)
+                    .await
+                    .map_err(Error::Handler)?;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -146,38 +155,39 @@ pub fn register_config_trigger(
     Ok(())
 }
 
+/// Serializes reloads: concurrent configuration events would otherwise
+/// race the store/config swaps and could commit an older fetch over a
+/// newer one.
+static RELOAD_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Reload from the AUTHORITATIVE configuration. When `data_dir` changed,
 /// reopen the store first; a reopen failure keeps the previous store AND
 /// config (last-good) so the live snapshot's `data_dir` never diverges
-/// from the store actually in use.
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, store: &StoreCell) {
-    let cfg = match fetch_config(iii).await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!(error = %e, "config-change: fetch failed; keeping previous config");
-            return;
-        }
-    };
+/// from the store actually in use. Store and config commit under one held
+/// config write guard, so no handler can observe the new store with the
+/// old configuration. Errors propagate so the configuration worker sees
+/// the failed update instead of `{ ok: true }`.
+async fn on_config_change(
+    iii: &IIIClient,
+    cell: &ConfigCell,
+    store: &StoreCell,
+) -> Result<(), String> {
+    let _reload = RELOAD_GATE.lock().await;
+    let cfg = fetch_config(iii)
+        .await
+        .map_err(|e| format!("config-change fetch failed (previous config kept): {e}"))?;
 
-    let data_dir_changed = cell.read().await.boot_signature() != cfg.boot_signature();
-    if data_dir_changed {
-        match Store::open(cfg.resolved_data_dir()) {
-            Ok(next) => {
-                *store.write().await = Arc::new(next);
-                tracing::info!("memory store reopened (data_dir changed)");
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "config-change: reopening the store failed; keeping the previous store and config (last-good)"
-                );
-                return;
-            }
-        }
+    let mut cfg_guard = cell.write().await;
+    if cfg_guard.boot_signature() != cfg.boot_signature() {
+        let next = Store::open(cfg.resolved_data_dir()).map_err(|e| {
+            format!("config-change store reopen failed (previous store and config kept): {e}")
+        })?;
+        *store.write().await = Arc::new(next);
+        tracing::info!("memory store reopened (data_dir changed)");
     }
-
-    apply_config(cell, cfg).await;
+    *cfg_guard = Arc::new(cfg);
     tracing::info!("memory configuration reloaded");
+    Ok(())
 }
 
 async fn trigger_with_retry(

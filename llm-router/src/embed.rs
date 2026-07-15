@@ -65,8 +65,13 @@ async fn try_provider(
     let model = reply
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+        .map(str::to_string)
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| {
+            Error::Handler(format!(
+                "router/bad_provider_response: provider::{provider}::embed returned no model"
+            ))
+        })?;
     let embeddings: Vec<Vec<f32>> = reply
         .get("embeddings")
         .cloned()
@@ -76,6 +81,15 @@ async fn try_provider(
                 "router/bad_provider_response: provider::{provider}::embed returned no embeddings array"
             ))
         })?;
+    // Callers zip vectors back onto their inputs by position; a count
+    // mismatch would misattribute every vector after the gap.
+    if embeddings.len() != input.len() {
+        return Err(Error::Handler(format!(
+            "router/bad_provider_response: provider::{provider}::embed returned {} embeddings for {} inputs",
+            embeddings.len(),
+            input.len()
+        )));
+    }
     Ok(Some(RouterEmbedResponse {
         provider: provider.to_string(),
         model,

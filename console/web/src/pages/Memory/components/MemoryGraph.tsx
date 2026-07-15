@@ -482,7 +482,16 @@ export function MemoryGraph({
                 })
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') e.preventDefault()
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  if (autoExpand) return
+                  setExpanded((cur) => {
+                    const next = new Set(cur)
+                    if (next.has(hub.entity)) next.delete(hub.entity)
+                    else next.add(hub.entity)
+                    return next
+                  })
+                }
               }}
             >
               <rect

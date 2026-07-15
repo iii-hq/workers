@@ -197,13 +197,16 @@ impl Store {
     pub async fn trash_bank(&self, name: &str) -> Result<String, MemoryError> {
         validate_name(name)?;
         let mut banks = self.banks.write().await;
-        if banks.remove(name).is_none() {
+        if !banks.contains_key(name) {
             return Err(MemoryError::BankNotFound(name.to_string()));
         }
         let trash = self.root.join(TRASH_DIR);
         std::fs::create_dir_all(&trash)?;
         let dest = trash.join(format!("{name}-{}", now_ms()));
+        // Filesystem first: a failed rename must leave the bank usable,
+        // not stranded on disk with no RAM entry until a reload.
         std::fs::rename(self.root.join(name), &dest)?;
+        banks.remove(name);
         Ok(dest.display().to_string())
     }
 
@@ -336,13 +339,26 @@ impl Bank {
         let mut inner = self.inner.write().await;
         let line = serde_json::to_string(&memory)
             .map_err(|e| MemoryError::Storage(format!("serialize memory: {e}")))?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(MEMORIES_FILE))?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
-        file.sync_data()?;
+        // The write lock must span the fsync (append order = replay
+        // order), but a slow disk must not stall this Tokio worker thread:
+        // on the multi-thread runtime, block_in_place keeps the ordering
+        // while letting other tasks run (current-thread runtimes — tests —
+        // cannot yield this way and just run inline).
+        let path = self.dir.join(MEMORIES_FILE);
+        let append = move || -> Result<(), MemoryError> {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+            file.sync_data()?;
+            Ok(())
+        };
+        match tokio::runtime::Handle::current().runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(append)?,
+            _ => append()?,
+        }
 
         let kind = if inner.memories.contains_key(&memory.id) {
             CommitKind::Updated
@@ -353,6 +369,15 @@ impl Bank {
             inner.index.add(&memory);
         } else {
             inner.index.remove(&memory.id);
+        }
+        // The text changed under this id: any stored vector embeds the old
+        // text. Drop it so unembedded() re-lists the record for backfill.
+        let stale_vector = inner
+            .memories
+            .get(&memory.id)
+            .is_some_and(|prev| prev.text != memory.text);
+        if stale_vector {
+            inner.vectors.remove(&memory.id);
         }
         inner.memories.insert(memory.id.clone(), memory);
         Ok(kind)
@@ -421,6 +446,16 @@ impl Bank {
         }
         let inner = self.inner.read().await;
         let mut bm25 = inner.index.score(&query_tokens);
+        // The BM25 index only holds LIVE records, so a history query must
+        // seed non-live candidates itself (score 0.0: entity, pin,
+        // corroboration, and recency fusion still rank them).
+        if include_superseded {
+            for (id, m) in &inner.memories {
+                if !m.is_live() {
+                    bm25.entry(id.clone()).or_insert(0.0);
+                }
+            }
+        }
         // Semantic candidates join the pool even without a lexical hit.
         let mut sem: HashMap<String, f32> = HashMap::new();
         if let Some(qv) = query_vec {

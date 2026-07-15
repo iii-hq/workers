@@ -476,6 +476,10 @@ export function useConversations(
                   ? md.model
                   : c.model,
               mode: isMode(md.mode) ? md.mode : c.mode,
+              memoryBank:
+                typeof md.memory_bank === 'string' && md.memory_bank.length > 0
+                  ? md.memory_bank
+                  : null,
               parentId:
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id

@@ -56,15 +56,28 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     let id = fingerprint(&text);
     let now = now_ms();
     let (memory, event, created) = match bank.get(&id).await {
-        Some(existing) if existing.is_live() => {
+        Some(existing) => {
+            // Same fingerprint: reinforce a live record, RESURRECT a
+            // tombstoned/superseded one. Building a fresh revision-0 record
+            // here would roll the revision counter back, and last-wins
+            // replay would silently restore the tombstone on the next boot.
+            let live = existing.is_live();
             let mut f = existing;
+            if !live {
+                f.invalid_at = None;
+                f.superseded_by = None;
+            }
             f.corroboration = f.corroboration.saturating_add(1);
             f.pinned = f.pinned || req.pinned;
             f.updated_at = now;
             f.revision += 1;
-            (f, ItemEvent::Updated, false)
+            if live {
+                (f, ItemEvent::Updated, false)
+            } else {
+                (f, ItemEvent::Created, true)
+            }
         }
-        _ => (
+        None => (
             Memory {
                 id,
                 text,

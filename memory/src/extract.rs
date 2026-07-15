@@ -181,12 +181,11 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
 
     let text = assistant_text(&reply);
     let items = parse_items(&text)?;
-    // The pass succeeded (whatever it yielded): advance the cursor so the
-    // next turn's extraction reads only newer messages.
-    if let Some(id) = newest_id {
-        cursor_set(&deps.iii, session_id, &id).await;
-    }
     if items.is_empty() {
+        // Nothing to write: the span is done, advance past it.
+        if let Some(id) = newest_id {
+            cursor_set(&deps.iii, session_id, &id).await;
+        }
         return Ok(());
     }
 
@@ -281,8 +280,15 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
                 deps.emitter.item(event, &bank_name, &memory).await;
                 saved += 1;
             }
-            Err(e) => tracing::warn!(error = %e, "memory commit failed"),
+            // Propagate: the cursor must not advance past a span whose
+            // writes did not all land. The queue retries the pass;
+            // fingerprints make the retry reinforce, not duplicate.
+            Err(e) => return Err(format!("memory commit failed: {e}")),
         }
+    }
+    // Every durable write landed: NOW the span is processed.
+    if let Some(id) = newest_id {
+        cursor_set(&deps.iii, session_id, &id).await;
     }
     if saved > 0 {
         tracing::info!(session_id, bank = %bank_name, saved, "extraction pass saved memories");
@@ -303,10 +309,14 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
 }
 
 const CURSOR_SCOPE: &str = "memory_cursor";
-/// Page size while walking a session; bounded so a pathological session
-/// costs at most PAGE_LIMIT * MAX_PAGES wire reads (never LLM tokens).
+/// Page size while walking a session. The walk follows `next_cursor` to
+/// the leaf (a hard page cap would permanently strand sessions longer
+/// than the cap: `session::messages` is root->leaf, so the new turn lives
+/// on the LAST page); RAM stays bounded because only the window tail and
+/// the span after the stored cursor are retained. MAX_PAGES only bounds a
+/// pathological/looping cursor, sized far above any real session.
 const PAGE_SIZE: usize = 100;
-const MAX_PAGES: usize = 10;
+const MAX_PAGES: usize = 10_000;
 
 /// Last processed entry id for a session, from the state worker. Any
 /// failure (state absent, no cursor yet) means "no cursor" — the pass
@@ -372,6 +382,7 @@ async fn fetch_transcript_since(
     window: usize,
 ) -> Result<(String, Option<String>), String> {
     let mut collected: Vec<(String, String, String)> = Vec::new();
+    let mut since_seen = false;
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_PAGES {
         let mut payload = json!({
@@ -410,6 +421,22 @@ async fn fetch_transcript_since(
                 collected.push((entry_id, role, text));
             }
         }
+        // Bound RAM on long sessions: everything at or before the stored
+        // cursor is already extracted, so once the cursor id streams past
+        // we only need what follows it; without a cursor only the window
+        // tail is ever read.
+        if let Some(s) = since {
+            if let Some(pos) = collected.iter().position(|(id, _, _)| id == s) {
+                since_seen = true;
+                collected.drain(..=pos);
+            } else if !since_seen && collected.len() > window {
+                let excess = collected.len() - window;
+                collected.drain(..excess);
+            }
+        } else if collected.len() > window {
+            let excess = collected.len() - window;
+            collected.drain(..excess);
+        }
         match reply.get("next_cursor").and_then(Value::as_str) {
             Some(next) => cursor = Some(next.to_string()),
             None => break,
@@ -418,12 +445,10 @@ async fn fetch_transcript_since(
 
     let newest_id = collected.last().map(|(id, _, _)| id.clone());
 
-    // Keep only entries strictly after the stored cursor; an unknown
-    // cursor id (branch switch, trimmed history) falls back to the tail.
-    let start = since
-        .and_then(|s| collected.iter().position(|(id, _, _)| id == s))
-        .map(|p| p + 1)
-        .unwrap_or_else(|| collected.len().saturating_sub(window));
+    // `collected` now holds entries strictly after the stored cursor (or
+    // the tail when the cursor id was never seen: branch switch, trimmed
+    // history); cap the LLM excerpt to the newest `window` either way.
+    let start = collected.len().saturating_sub(window);
 
     let mut lines = Vec::new();
     for (_, role, text) in collected.into_iter().skip(start).rev().take(window) {
@@ -432,7 +457,11 @@ async fn fetch_transcript_since(
             continue;
         }
         let mut excerpt = trimmed;
-        excerpt.truncate(2_000);
+        let mut cut = 2_000.min(excerpt.len());
+        while cut > 0 && !excerpt.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        excerpt.truncate(cut);
         lines.push(format!("{role}: {excerpt}"));
     }
     lines.reverse();
@@ -561,6 +590,7 @@ mod tests {
             &["Prefer short names.".into(), "prefer  short names.".into()],
         );
         assert_eq!(added, 1);
+        assert_eq!(batch.matches("- ").count(), 1);
     }
 
     #[test]

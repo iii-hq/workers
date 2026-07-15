@@ -14,7 +14,7 @@ import type { MemoryRule } from '@/lib/memory'
 
 interface RulesPanelProps {
   rules: MemoryRule[]
-  onSet: (name: string, content: string) => void
+  onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
 }
 
@@ -26,7 +26,7 @@ function RuleEditor({
 }: {
   name: string
   initial: string
-  onSet: (name: string, content: string) => void
+  onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
 }) {
   const [content, setContent] = useState(initial)
@@ -56,8 +56,9 @@ function RuleEditor({
                 size="sm"
                 disabled={busy}
                 onClick={() => {
-                  onSet(name, content)
-                  setTouched(false)
+                  void onSet(name, content).then((ok) => {
+                    if (ok) setTouched(false)
+                  })
                 }}
               >
                 save
@@ -72,7 +73,7 @@ function RuleEditor({
                 disabled={busy}
                 className="text-danger"
                 onClick={() => {
-                  onSet(name, '')
+                  void onSet(name, '')
                   setConfirmDelete(false)
                 }}
               >
@@ -150,8 +151,9 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
         onSubmit={(e) => {
           e.preventDefault()
           if (!validName || busy) return
-          onSet(newName, `# ${newName}\n`)
-          setNewName('')
+          void onSet(newName, `# ${newName}\n`).then((ok) => {
+            if (ok) setNewName('')
+          })
         }}
       >
         <Input

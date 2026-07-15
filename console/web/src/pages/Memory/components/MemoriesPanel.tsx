@@ -33,9 +33,9 @@ interface MemoriesPanelProps {
   onOffsetChange: (next: number) => void
   includeSuperseded: boolean
   onToggleSuperseded: (next: boolean) => void
-  onSave: (text: string) => void
+  onSave: (text: string) => Promise<boolean>
   onPin: (memory: MemoryItem) => void
-  onEdit: (memory: MemoryItem, text: string) => void
+  onEdit: (memory: MemoryItem, text: string) => Promise<boolean>
   onDelete: (memory: MemoryItem) => void
   busy: boolean
 }
@@ -50,7 +50,7 @@ function FactRow({
 }: {
   memory: MemoryItem
   onPin: (memory: MemoryItem) => void
-  onEdit: (memory: MemoryItem, text: string) => void
+  onEdit: (memory: MemoryItem, text: string) => Promise<boolean>
   onDelete: (memory: MemoryItem) => void
   busy: boolean
   score?: number
@@ -74,8 +74,9 @@ function FactRow({
             e.preventDefault()
             const text = editText.trim()
             if (text.length < 3) return
-            onEdit(memory, text)
-            setEditing(false)
+            void onEdit(memory, text).then((ok) => {
+              if (ok) setEditing(false)
+            })
           }}
         >
           <Input
@@ -212,8 +213,9 @@ export function MemoriesPanel({
           e.preventDefault()
           const text = draft.trim()
           if (text.length < 3 || busy) return
-          onSave(text)
-          setDraft('')
+          void onSave(text).then((ok) => {
+            if (ok) setDraft('')
+          })
         }}
       >
         <Input

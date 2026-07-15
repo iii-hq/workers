@@ -35,10 +35,8 @@ import { useMemoryLive } from './hooks/useMemoryLive'
 
 type Panel = 'memories' | 'graph' | 'rules' | 'recall'
 
-// Team review decision: rules (rules) are the most important surface,
-// what goes in the system prompt, so they lead; memories render as
-// "memories". Internal keys and the memory::* wire surface keep their
-// names for API stability.
+// Team review decision: rules are the most important surface — what goes
+// in the system prompt — so they lead the tab order.
 const PANEL_OPTIONS: { value: Panel; label: string }[] = [
   { value: 'rules', label: 'rules' },
   { value: 'memories', label: 'memories' },
@@ -73,15 +71,19 @@ export function Memory() {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
+  // Resolves to whether the mutation landed, so children keep their
+  // drafts when it did not (a failed save must not eat the input).
   const act = useCallback(
-    async (action: () => Promise<void>) => {
+    async (action: () => Promise<void>): Promise<boolean> => {
       setBusy(true)
       setActionError(null)
       try {
         await action()
         refresh()
+        return true
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err))
+        return false
       } finally {
         setBusy(false)
       }
@@ -160,7 +162,7 @@ export function Memory() {
             banks={banks}
             selected={selected}
             onSelect={setSelected}
-            onCreate={(name) => void act(() => createBank(name))}
+            onCreate={(name) => act(() => createBank(name))}
             creating={busy}
           />
           <div className="flex-1 overflow-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col gap-4 min-w-0">
@@ -195,6 +197,7 @@ export function Memory() {
                 </div>
                 {panel === 'memories' ? (
                   <MemoriesPanel
+                    key={selected}
                     bank={selected}
                     memories={memories}
                     total={total}
@@ -203,14 +206,12 @@ export function Memory() {
                     onOffsetChange={setOffset}
                     includeSuperseded={includeSuperseded}
                     onToggleSuperseded={setIncludeSuperseded}
-                    onSave={(text) =>
-                      void act(() => saveMemory(selected, text, false))
-                    }
+                    onSave={(text) => act(() => saveMemory(selected, text, false))}
                     onPin={(memory: MemoryItem) =>
                       void act(() => pinMemory(selected, memory.id, !memory.pinned))
                     }
                     onEdit={(memory, text) =>
-                      void act(() => updateMemory(selected, memory.id, text))
+                      act(() => updateMemory(selected, memory.id, text))
                     }
                     onDelete={(memory) =>
                       void act(() => deleteMemory(selected, memory.id))
@@ -234,12 +235,12 @@ export function Memory() {
                   <RulesPanel
                     rules={rules}
                     onSet={(name, content) =>
-                      void act(() => setRule(selected, name, content))
+                      act(() => setRule(selected, name, content))
                     }
                     busy={busy}
                   />
                 ) : (
-                  <RecallPanel bank={selected} />
+                  <RecallPanel key={selected} bank={selected} />
                 )}
               </>
             )}

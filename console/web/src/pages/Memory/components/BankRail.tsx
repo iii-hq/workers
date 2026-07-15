@@ -15,7 +15,7 @@ interface BankRailProps {
   banks: MemoryBank[]
   selected: string | null
   onSelect: (bank: string) => void
-  onCreate: (name: string) => void
+  onCreate: (name: string) => Promise<boolean>
   creating: boolean
 }
 
@@ -62,8 +62,9 @@ export function BankRail({
         onSubmit={(e) => {
           e.preventDefault()
           if (!valid || creating) return
-          onCreate(draft)
-          setDraft('')
+          void onCreate(draft).then((ok) => {
+            if (ok) setDraft('')
+          })
         }}
       >
         <Input

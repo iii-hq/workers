@@ -94,8 +94,23 @@ pub async fn handle(
         .await
         .map_err(|e| Error::Handler(format!("provider/bad_response: {e}")))?;
 
+    // One-vector-per-input contract: sorting alone cannot prove every
+    // input got exactly one result. A silent gap here would attach the
+    // wrong vector to the wrong text downstream.
+    let expected = req.input.len();
+    if wire.data.len() != expected {
+        return Err(Error::Handler(format!(
+            "provider/bad_response: {} embeddings for {expected} inputs",
+            wire.data.len()
+        )));
+    }
     let mut data = wire.data;
     data.sort_by_key(|d| d.index);
+    if data.iter().enumerate().any(|(i, d)| d.index != i) {
+        return Err(Error::Handler(
+            "provider/bad_response: duplicate or out-of-range embedding indices".into(),
+        ));
+    }
     Ok(EmbedResponse {
         model: wire.model,
         embeddings: data.into_iter().map(|d| d.embedding).collect(),
@@ -105,6 +120,37 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_contract_is_enforced() {
+        let dup = vec![
+            WireEmbedding {
+                index: 0,
+                embedding: vec![0.1],
+            },
+            WireEmbedding {
+                index: 0,
+                embedding: vec![0.2],
+            },
+        ];
+        let mut data = dup;
+        data.sort_by_key(|d| d.index);
+        assert!(data.iter().enumerate().any(|(i, d)| d.index != i));
+
+        let gap = vec![
+            WireEmbedding {
+                index: 0,
+                embedding: vec![0.1],
+            },
+            WireEmbedding {
+                index: 2,
+                embedding: vec![0.2],
+            },
+        ];
+        let mut data = gap;
+        data.sort_by_key(|d| d.index);
+        assert!(data.iter().enumerate().any(|(i, d)| d.index != i));
+    }
 
     #[test]
     fn wire_response_parses_and_orders() {
