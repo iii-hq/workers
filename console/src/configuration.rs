@@ -45,6 +45,10 @@ fn schema() -> Value {
                             "required": ["id", "name"],
                             "additionalProperties": true
                         }
+                    },
+                    "activeViewId": {
+                        "type": ["string", "null"],
+                        "description": "Id of the selected view; null = the unfiltered all-traces list. When absent the UI selects the seeded sessions view."
                     }
                 },
                 "additionalProperties": true
@@ -58,9 +62,9 @@ fn schema() -> Value {
 /// configured.
 ///
 /// - `views`: `view-sessions` groups traces by session and labels rows with
-///   the tag message; the frontend selects it by default in browsers that
-///   never made an explicit view choice (`DEFAULT_VIEW_ID` in web
-///   tracesViews.ts — keep the id in sync).
+///   the tag message; `activeViewId` selects it out of the box, and the
+///   frontend falls back to the same id when the pointer is absent
+///   (`DEFAULT_VIEW_ID` in web tracesViews.ts — keep the id in sync).
 /// - `spanFilters`: detail-view funnel defaults — hide the chatty
 ///   `harness::send` span group and the session/context bookkeeping workers.
 fn default_value() -> Value {
@@ -74,6 +78,7 @@ fn default_value() -> Value {
                 "label": { "mode": "attribute", "attribute": "iii.tag.message" },
                 "filters": {}
             }],
+            "activeViewId": "view-sessions",
             "spanFilters": {
                 "hiddenGroups": ["harness::send"],
                 "hiddenWorkers": ["context-manager", "session-manager"]
@@ -103,7 +108,8 @@ pub async fn register_console_config(iii: &IIIClient) {
         "id": CONFIG_ID,
         "name": "Console",
         "description": "Console UI preferences — Traces V2 saved views \
-                        (grouping, filters, display settings, hidden functions).",
+                        (grouping, filters, display settings, hidden functions) \
+                        and the selected view.",
         "schema": schema(),
     });
     if seed {

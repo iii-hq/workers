@@ -65,38 +65,6 @@ export function saveDefaultAllowlist(list: string[]): void {
   }
 }
 
-const TRACES_ACTIVE_VIEW_KEY = 'iii-traces-active-view'
-/** Stored when the user explicitly picks "all traces", so an absent key
- *  (fresh browser) stays distinguishable and can default to the seeded view.
- *  Real ids never collide: they are `view-*`. */
-const TRACES_NO_VIEW = 'none'
-
-/**
- * Per-browser pointer to the active traces view. The views themselves are
- * server-side (`console` configuration entry); only the selection is local
- * so two tabs can look at different views without fighting.
- *
- * `undefined` = no choice recorded yet (callers may pick a default);
- * `null` = the user explicitly chose "all traces".
- */
-export function loadActiveTracesViewId(): string | null | undefined {
-  try {
-    const raw = localStorage.getItem(TRACES_ACTIVE_VIEW_KEY)
-    if (raw === null) return undefined
-    return raw === TRACES_NO_VIEW ? null : raw
-  } catch {
-    return undefined
-  }
-}
-
-export function saveActiveTracesViewId(id: string | null): void {
-  try {
-    localStorage.setItem(TRACES_ACTIVE_VIEW_KEY, id ?? TRACES_NO_VIEW)
-  } catch {
-    /* best-effort */
-  }
-}
-
 const TRACES_FOLLOW_TURNS_KEY = 'iii-traces-follow-turns'
 
 /**

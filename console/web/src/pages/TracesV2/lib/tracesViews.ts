@@ -2,9 +2,9 @@
 //
 // A view is a named snapshot of EVERYTHING that shapes the list: grouping,
 // hidden functions, row-label display, filters, and sort. Views live in the
-// server-side `console` configuration entry (`traces.views`), so they follow
-// the engine, not the browser; the ACTIVE view id is per-browser
-// (localStorage) so two tabs can look at different views.
+// server-side `console` configuration entry (`traces.views`), and the
+// ACTIVE view pointer next to them (`traces.activeViewId`) — both follow
+// the engine, not the browser.
 //
 // Pure module — capture/apply/compare only. Transport lives in
 // `@/lib/console-config`, React state in `hooks/useTraceViews.ts`.
@@ -49,8 +49,8 @@ export interface TracesView extends TracesViewConfig {
 
 /**
  * Id of the "sessions" view the console worker seeds into a fresh `console`
- * configuration entry (src/configuration.rs — keep the id in sync). Browsers
- * with no recorded view choice select it by default.
+ * configuration entry (src/configuration.rs — keep the id in sync). Selected
+ * by default whenever the config records no `traces.activeViewId` pointer.
  */
 export const DEFAULT_VIEW_ID = 'view-sessions'
 
@@ -168,6 +168,38 @@ export function parseViews(configValue: Record<string, unknown>): TracesView[] {
       typeof (v as TracesView).id === 'string' &&
       typeof (v as TracesView).name === 'string',
   )
+}
+
+/**
+ * Parse the `traces.activeViewId` pointer out of the raw console-config
+ * value. `undefined` = no choice recorded yet (callers may pick a default);
+ * `null` = an explicit "all traces" choice.
+ */
+export function parseActiveViewId(
+  configValue: Record<string, unknown>,
+): string | null | undefined {
+  const traces = configValue.traces
+  if (!traces || typeof traces !== 'object') return undefined
+  if (!('activeViewId' in traces)) return undefined
+  const id = (traces as Record<string, unknown>).activeViewId
+  return typeof id === 'string' && id.length > 0 ? id : null
+}
+
+/**
+ * Write the active-view pointer into a (copied) console-config value.
+ * `null` is written out explicitly so "all traces" stays distinguishable
+ * from a fresh entry (which defaults to the seeded sessions view).
+ */
+export function withActiveViewId(
+  configValue: Record<string, unknown>,
+  id: string | null,
+): Record<string, unknown> {
+  const traces =
+    configValue.traces && typeof configValue.traces === 'object'
+      ? { ...(configValue.traces as Record<string, unknown>) }
+      : {}
+  traces.activeViewId = id
+  return { ...configValue, traces }
 }
 
 /** Write the views array back into a (copied) console-config value. */

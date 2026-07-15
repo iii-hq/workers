@@ -639,10 +639,9 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                     if (activeViewId) void renameView(activeViewId, name)
                   }}
                   onDeleteActive={() => {
-                    if (activeViewId) {
-                      void deleteView(activeViewId)
-                      setActiveViewId(null)
-                    }
+                    // deleteView clears the selection itself, in the same
+                    // config write.
+                    if (activeViewId) void deleteView(activeViewId)
                   }}
                 />
               ) : undefined
