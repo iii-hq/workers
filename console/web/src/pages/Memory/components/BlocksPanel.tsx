@@ -86,14 +86,17 @@ export function BlocksPanel({ blocks, onSet, busy }: BlocksPanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <p className="font-mono text-[11px] lowercase text-ink-faint">
-        blocks are injected whole into the system prompt on every turn using
-        this bank — durable, identity-grade guidance (style, preferences,
-        standing instructions)
+        facts are recalled only when they match the question; blocks are in the
+        system prompt on EVERY turn, guaranteed — no retrieval lottery. use them
+        for rules that must always hold: writing style, answer format, coding
+        conventions, project constants. each block is a markdown file under the
+        bank's blocks/ folder (editing the file and editing here are the same
+        thing).
       </p>
       {blocks.length === 0 ? (
         <EmptyState
           title="no blocks in this bank"
-          description="add one below — e.g. a `style` block with writing rules. blocks are markdown files under the bank's blocks/ folder."
+          description="try one: add a block named `assistant-rules` with 'always answer tersely, prefer code examples' — then ask anything in chat and watch every reply obey it, on any topic."
         />
       ) : (
         blocks.map((block) => (
