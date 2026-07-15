@@ -69,7 +69,6 @@ fn worker_metadata() -> WorkerMetadata {
 
 /// Best-effort binding: in standalone deployments the harness's trigger
 /// types may not exist (yet); a failed binding must not prevent boot.
-/// Restart the worker after the sibling appears to re-bind.
 fn bind_best_effort(
     iii: &Arc<IIIClient>,
     trigger_type: &str,
@@ -88,6 +87,76 @@ fn bind_best_effort(
             tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed (sibling absent?)")
         }
     }
+}
+
+/// The bindings this worker needs, as (trigger_type, function_id, config).
+fn required_bindings() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+    vec![
+        (
+            "harness::hook::pre-generate",
+            hooks::PRE_GENERATE_FN,
+            json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" }),
+        ),
+        (
+            "harness::turn-completed",
+            hooks::TURN_COMPLETED_FN,
+            json!({}),
+        ),
+        ("session::deleted", hooks::SESSION_DELETED_FN, json!({})),
+        (
+            "durable:subscriber",
+            hooks::EXTRACT_JOB_FN,
+            json!({ "queue": hooks::EXTRACTION_QUEUE, "max_retries": 3, "backoff_ms": 2_000 }),
+        ),
+    ]
+}
+
+/// Boot-order safety net: in an orderly startup wave the siblings that
+/// own these trigger types (harness, session-manager, queue) may register
+/// AFTER this worker, so the boot-time binding requests die with
+/// `trigger_type_not_found` — silently, since registration acks are
+/// async. Poll `engine::triggers::info` and re-request each binding until
+/// every one is live; without this, injection and extraction never run
+/// after an unlucky boot (mirrors approval-gate's hook retry).
+fn retry_bindings(iii: Arc<IIIClient>) {
+    tokio::spawn(async move {
+        loop {
+            let mut all_ready = true;
+            for (trigger_type, function_id, config) in required_bindings() {
+                let count = iii
+                    .trigger(iii_sdk::protocol::TriggerRequest {
+                        function_id: "engine::triggers::info".into(),
+                        payload: json!({ "id": trigger_type }),
+                        action: None,
+                        timeout_ms: Some(5_000),
+                    })
+                    .await
+                    .ok()
+                    .and_then(|v| v.get("instance_count").and_then(serde_json::Value::as_u64));
+                let ready = count.is_some_and(|c| c > 0);
+                if !ready {
+                    all_ready = false;
+                    bind_best_effort(&iii, trigger_type, function_id, config);
+                }
+            }
+            // The extraction queue definition is idempotent; keep asking
+            // until the queue worker is up.
+            let defined = iii
+                .trigger(iii_sdk::protocol::TriggerRequest {
+                    function_id: "queue::define".into(),
+                    payload: json!({ "queue": hooks::EXTRACTION_QUEUE, "config": {} }),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await
+                .is_ok();
+            if all_ready && defined {
+                tracing::info!("memory bindings confirmed (hooks, turn events, session GC, queue)");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
 }
 
 #[tokio::main]
@@ -165,53 +234,16 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &deps);
     register_hook_functions(&iii, &deps);
 
-    // Injection: fail-OPEN and generously time-bounded — a memory failure
-    // must never block or fail a turn.
-    bind_best_effort(
-        &iii,
-        "harness::hook::pre-generate",
-        hooks::PRE_GENERATE_FN,
-        json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" }),
-    );
-    // Extraction: async observation of completed turns.
-    bind_best_effort(
-        &iii,
-        "harness::turn-completed",
-        hooks::TURN_COMPLETED_FN,
-        json!({}),
-    );
-    // GC the per-session extraction cursor when its session goes away.
-    bind_best_effort(
-        &iii,
-        "session::deleted",
-        hooks::SESSION_DELETED_FN,
-        json!({}),
-    );
-
-    // Reuse the queue surface (iii-queue builtin or the queue worker) for
-    // durable extraction jobs: retries + DLQ instead of a lost pass on a
-    // mid-extraction restart. Best-effort — without a queue the
-    // turn-completed handler falls back to inline extraction.
-    match iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "queue::define".into(),
-            payload: json!({ "queue": hooks::EXTRACTION_QUEUE, "config": {} }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-    {
-        Ok(_) => tracing::info!(queue = hooks::EXTRACTION_QUEUE, "extraction queue defined"),
-        Err(e) => {
-            tracing::info!(error = %e, "queue::define unavailable (builtin queue or none); extraction enqueues best-effort")
-        }
+    // Bind the harness/session/queue seams (injection fail-OPEN — a
+    // memory failure must never block a turn — plus turn-completed
+    // extraction, session GC, and the durable extraction consumer), then
+    // keep retrying until every binding is confirmed live: in an orderly
+    // boot wave the owning siblings may register their trigger types
+    // after this worker.
+    for (trigger_type, function_id, config) in required_bindings() {
+        bind_best_effort(&iii, trigger_type, function_id, config);
     }
-    bind_best_effort(
-        &iii,
-        "durable:subscriber",
-        hooks::EXTRACT_JOB_FN,
-        json!({ "queue": hooks::EXTRACTION_QUEUE, "max_retries": 3, "backoff_ms": 2_000 }),
-    );
+    retry_bindings(iii.clone());
 
     // Reuse the http worker: every public function doubles as a REST
     // route (`POST /memory/...`). Best-effort — without the http worker

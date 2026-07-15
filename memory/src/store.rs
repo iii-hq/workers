@@ -302,7 +302,10 @@ impl Bank {
         (live, pinned)
     }
 
-    /// BM25 + fusion over live facts. Read-only; zero LLM.
+    /// BM25 + fusion over live facts. Read-only; zero LLM. First-person
+    /// pronouns expand to the `user` entity handle so identity questions
+    /// ("who am i", "what do you know about me") reach the facts that are
+    /// all phrased third-person about the user.
     pub async fn recall(
         &self,
         query: &str,
@@ -310,7 +313,14 @@ impl Bank {
         half_life_days: u64,
         include_superseded: bool,
     ) -> Vec<(Fact, f32)> {
-        let query_tokens = crate::index::tokenize(query);
+        let mut query_tokens = crate::index::tokenize(query);
+        if query_tokens
+            .iter()
+            .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"))
+            && !query_tokens.iter().any(|t| t == "user")
+        {
+            query_tokens.push("user".to_string());
+        }
         if query_tokens.is_empty() {
             return Vec::new();
         }
@@ -329,6 +339,21 @@ impl Bank {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
         scored
+    }
+
+    /// The bank's strongest facts with no query: pinned first, then
+    /// corroboration, then recency. The injection floor for turns whose
+    /// query recalls little (identity questions, session openers).
+    pub async fn top_facts(&self, limit: usize) -> Vec<Fact> {
+        let inner = self.inner.read().await;
+        let mut all: Vec<&Fact> = inner.facts.values().filter(|f| f.is_live()).collect();
+        all.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.corroboration.cmp(&a.corroboration))
+                .then(b.updated_at.cmp(&a.updated_at))
+        });
+        all.into_iter().take(limit).cloned().collect()
     }
 
     // ---- blocks -----------------------------------------------------------

@@ -22,7 +22,7 @@ use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
 use crate::extract;
-use crate::types::now_ms;
+use crate::types::{now_ms, Fact};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
@@ -214,9 +214,25 @@ pub async fn pre_generate(
             let hits = bank
                 .recall(&query, cfg.recall_limit, cfg.decay_half_life_days, false)
                 .await;
+            // Ambient floor: lexical recall misses identity questions and
+            // session openers entirely (their words never appear in fact
+            // texts), so pad thin results with the bank's strongest facts
+            // — still bounded by the same count and token budget.
+            let mut facts: Vec<Fact> = hits.into_iter().map(|(f, _)| f).collect();
+            const AMBIENT_FLOOR: usize = 3;
+            if facts.len() < AMBIENT_FLOOR.min(cfg.recall_limit) {
+                for fact in bank.top_facts(cfg.recall_limit).await {
+                    if facts.len() >= AMBIENT_FLOOR.min(cfg.recall_limit) {
+                        break;
+                    }
+                    if !facts.iter().any(|f| f.id == fact.id) {
+                        facts.push(fact);
+                    }
+                }
+            }
             let mut budget = (cfg.recall_budget_tokens * 4) as usize;
             let mut lines = Vec::new();
-            for (fact, _) in &hits {
+            for fact in &facts {
                 if fact.text.len() > budget {
                     break;
                 }
