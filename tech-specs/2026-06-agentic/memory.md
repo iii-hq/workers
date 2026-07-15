@@ -132,11 +132,28 @@ the hook/pipeline internals are denied, and bank/rule writes plus `memory::reloa
 surfaces (console, REST, CLI) by default — the always-injected rules shape every future turn's
 system prompt, so writing them is a privileged operation.
 
+## The memory family
+
+Memory follows the same decomposition as `llm-router` + its provider workers: a family of narrow
+siblings over one on-disk contract, not a monolith with modes.
+
+- **`memory`** (this spec) — banks, rules, memories: storage, injection, capture, recall, trigger
+  types. Owns the files and the wire surface; runs no scheduler.
+- **`memory-consolidate`** (planned) — background hygiene on a cron schedule with catch-up-on-boot
+  semantics: dedup and merge near-duplicate memories, promote corroborated clusters toward rules.
+  Strictly supersede-only through the same public functions, never touches pinned records, emits
+  audit events for every change. Installable, stoppable, and removable without touching stored
+  memory.
+
+The seam is the store's append-only contract: any sibling that mutates memory goes through the
+same `memory::*` functions and the same last-wins replay, so the family shares one durability
+story.
+
 ## Boundaries
 
 - Not per-turn context compression (context-manager) and not a transcript store (session-manager);
   every extracted memory carries provenance pointing back at its source session.
-- Background consolidation (dedup/merge/promote across memories) is a separate worker so it can be
-  stopped or removed without touching stored memory.
+- Consolidation (dedup/merge/promote across memories) belongs to the `memory-consolidate` sibling
+  (see the family section) — this worker never grows a scheduler.
 - Extraction never rewrites or deletes existing records; pinned records are untouchable by every
   automatic path including rule learning.

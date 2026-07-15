@@ -85,6 +85,17 @@ Bind live views here instead of polling; both are filterable by `bank` in the bi
 
 Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
 
+## The memory family
+
+Like `llm-router` and its provider workers, memory is a family of narrow siblings rather than one grown monolith — this worker owns the store, per-turn injection, capture, and recall, and stays deliberately small:
+
+| Worker | Role | Status |
+|---|---|---|
+| `memory` (this) | Banks, rules, memories: storage, harness injection, background capture, hybrid recall, live trigger types | shipped |
+| `memory-consolidate` | Background hygiene on a schedule: dedup and merge near-duplicate memories, promote corroborated clusters, catch-up-on-boot cron semantics. Supersede-only, never touches pinned records, emits audit events | planned |
+
+The split is the point: consolidation can be installed, stopped, or removed without touching stored memory, and this worker never grows a scheduler.
+
 ## Boundaries
 
-Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves (see [tech-specs/2026-06-agentic/memory.md](../tech-specs/2026-06-agentic/memory.md)). Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Background consolidation (dedup/merge/promote) is a separate worker so it can be stopped or removed without touching stored memory.
+Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves (see [tech-specs/2026-06-agentic/memory.md](../tech-specs/2026-06-agentic/memory.md)). Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Consolidation belongs to the `memory-consolidate` sibling, not here.

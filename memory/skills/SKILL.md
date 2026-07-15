@@ -50,7 +50,8 @@ rule; point-in-time information belongs in memories.
 - Deletes are tombstones and bank deletion moves to `.trash/` — nothing is
   destroyed; `include_superseded: true` on list/recall shows history.
 - Extraction never edits or removes existing memories (ADD-only, fingerprint
-  reinforced); consolidation/merging belongs to a separate worker.
+  reinforced); dedup/merge/promote hygiene belongs to the `memory-consolidate`
+  sibling worker.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
   over-budget rule is truncated visibly, never silently dropped.
 
