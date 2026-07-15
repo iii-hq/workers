@@ -45,9 +45,16 @@ pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, M
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
+    let query_vec = crate::embed_client::query_vector(deps, &req.query).await;
+    let retrieval = if query_vec.is_some() {
+        "bm25-entity-semantic"
+    } else {
+        "bm25-entity"
+    };
     let hits = bank
         .recall(
             &req.query,
+            query_vec.as_deref(),
             limit,
             cfg.decay_half_life_days,
             req.include_superseded.unwrap_or(false),
@@ -59,6 +66,6 @@ pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, M
             .into_iter()
             .map(|(fact, score)| ScoredFact { fact, score })
             .collect(),
-        retrieval: "bm25-entity".into(),
+        retrieval: retrieval.into(),
     })
 }

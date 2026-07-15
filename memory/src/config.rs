@@ -83,6 +83,18 @@ pub struct WorkerConfig {
     /// rank weight as they age; they never lose the data.
     #[serde(default = "default_decay_half_life_days")]
     pub decay_half_life_days: u64,
+
+    /// Add a semantic signal to recall via `router::embed` (fact vectors
+    /// in a per-bank sidecar, query embedded per recall). Degrades to
+    /// BM25 + entities when no embed-capable provider is configured;
+    /// recall responses name the mode that actually ran.
+    #[serde(default = "default_true")]
+    pub embeddings_enabled: bool,
+
+    /// Embedding model id passed to `router::embed`. Empty uses the
+    /// provider's default.
+    #[serde(default)]
+    pub embedding_model: String,
 }
 
 fn default_data_dir() -> String {

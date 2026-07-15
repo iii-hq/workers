@@ -33,6 +33,8 @@ pub fn build_manifest() -> ModuleManifest {
             "max_facts_per_turn": 8,
             "max_block_chars": 6_000,
             "decay_half_life_days": 30,
+            "embeddings_enabled": true,
+            "embedding_model": "",
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }

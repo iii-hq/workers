@@ -245,6 +245,10 @@ async fn main() -> Result<()> {
     }
     retry_bindings(iii.clone());
 
+    // Catch-up vector backfill for facts saved while embeddings were
+    // unavailable (delayed so the router and providers finish booting).
+    memory::embed_client::backfill_all(deps.clone());
+
     // Reuse the http worker: every public function doubles as a REST
     // route (`POST /memory/...`). Best-effort — without the http worker
     // the bus surface still serves everything.

@@ -11,6 +11,7 @@
 pub mod config;
 pub mod configuration;
 pub mod deps;
+pub mod embed_client;
 pub mod error;
 pub mod events;
 pub mod extract;

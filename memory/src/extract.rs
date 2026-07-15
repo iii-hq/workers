@@ -206,6 +206,18 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     }
     if saved > 0 {
         tracing::info!(session_id, bank = %bank_name, saved, "extraction pass saved facts");
+        // Embed the new facts off this path; recall degrades gracefully
+        // until the vectors land.
+        let deps_bg = crate::deps::Deps {
+            iii: deps.iii.clone(),
+            store: deps.store.clone(),
+            config: deps.config.clone(),
+            emitter: deps.emitter.clone(),
+        };
+        tokio::spawn(crate::embed_client::backfill_bank(
+            Arc::new(deps_bg),
+            bank_name.clone(),
+        ));
     }
     Ok(())
 }

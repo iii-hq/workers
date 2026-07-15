@@ -211,8 +211,19 @@ pub async fn pre_generate(
     if cfg.inject_facts {
         let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
         if !query.trim().is_empty() {
+            // Fail-soft semantic signal; lexical-only when it misses.
+            let query_vec = crate::embed_client::query_vector(deps, &query).await;
+            if query_vec.is_some() {
+                annotations.insert("memory_retrieval".into(), json!("bm25-entity-semantic"));
+            }
             let hits = bank
-                .recall(&query, cfg.recall_limit, cfg.decay_half_life_days, false)
+                .recall(
+                    &query,
+                    query_vec.as_deref(),
+                    cfg.recall_limit,
+                    cfg.decay_half_life_days,
+                    false,
+                )
                 .await;
             // Ambient floor: lexical recall misses identity questions and
             // session openers entirely (their words never appear in fact

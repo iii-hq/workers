@@ -29,9 +29,15 @@ use crate::index::Bm25Index;
 use crate::types::{now_ms, Block, Fact};
 
 const FACTS_FILE: &str = "facts.jsonl";
+const VECTORS_FILE: &str = "vectors.jsonl";
 const BLOCKS_DIR: &str = "blocks";
 const BANK_META: &str = "bank.yaml";
 const TRASH_DIR: &str = ".trash";
+/// Weight of the cosine similarity in the fused recall score, sized so a
+/// strong semantic match competes with a solid BM25 hit.
+const SEMANTIC_WEIGHT: f32 = 2.2;
+/// Semantic candidates below this cosine are noise, not recall.
+const SEMANTIC_FLOOR: f32 = 0.25;
 
 pub struct Store {
     root: PathBuf,
@@ -48,6 +54,32 @@ pub struct Bank {
 struct BankInner {
     facts: HashMap<String, Fact>,
     index: Bm25Index,
+    /// Fact id -> embedding, loaded from the `vectors.jsonl` sidecar.
+    /// Like the BM25 index this is a derived cache: rebuildable, never
+    /// authoritative, and absent vectors just mean no semantic signal for
+    /// that fact yet.
+    vectors: HashMap<String, Vec<f32>>,
+}
+
+/// One sidecar line: a fact's embedding (last-wins by id on replay).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VectorRecord {
+    id: String,
+    model: String,
+    v: Vec<f32>,
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na * nb)
 }
 
 /// What a commit did — callers translate this into the emitted event.
@@ -230,12 +262,71 @@ impl Bank {
             index.add(fact);
         }
 
+        // Vector sidecar: last-wins by id, entries for unknown facts
+        // dropped (they belong to trimmed history), corrupt lines skipped.
+        let mut vectors: HashMap<String, Vec<f32>> = HashMap::new();
+        let vectors_path = dir.join(VECTORS_FILE);
+        if vectors_path.exists() {
+            let file = std::fs::File::open(&vectors_path)?;
+            for line in std::io::BufReader::new(file).lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
+                    if facts.contains_key(&rec.id) {
+                        vectors.insert(rec.id, rec.v);
+                    }
+                }
+            }
+        }
+
         Ok(Self {
             name: name.to_string(),
             dir,
             description,
-            inner: RwLock::new(BankInner { facts, index }),
+            inner: RwLock::new(BankInner {
+                facts,
+                index,
+                vectors,
+            }),
         })
+    }
+
+    /// Persist one fact's embedding (sidecar append + RAM). Best-effort
+    /// derived data: failures cost a re-embed, never fact integrity.
+    pub async fn set_vector(&self, id: &str, model: &str, v: Vec<f32>) -> Result<(), MemoryError> {
+        let mut inner = self.inner.write().await;
+        let line = serde_json::to_string(&VectorRecord {
+            id: id.to_string(),
+            model: model.to_string(),
+            v: v.clone(),
+        })
+        .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join(VECTORS_FILE))?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+        inner.vectors.insert(id.to_string(), v);
+        Ok(())
+    }
+
+    /// Live facts that have no embedding yet (backfill work list).
+    pub async fn unembedded(&self, limit: usize) -> Vec<Fact> {
+        let inner = self.inner.read().await;
+        inner
+            .facts
+            .values()
+            .filter(|f| f.is_live() && !inner.vectors.contains_key(&f.id))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    pub async fn vector_count(&self) -> usize {
+        self.inner.read().await.vectors.len()
     }
 
     /// THE single mutation choke point: append the full record (fsync),
@@ -302,13 +393,17 @@ impl Bank {
         (live, pinned)
     }
 
-    /// BM25 + fusion over live facts. Read-only; zero LLM. First-person
-    /// pronouns expand to the `user` entity handle so identity questions
-    /// ("who am i", "what do you know about me") reach the facts that are
-    /// all phrased third-person about the user.
+    /// Hybrid recall over live facts: BM25 + entity/corroboration/pin
+    /// fusion, plus an optional semantic signal (cosine against the
+    /// vector sidecar) that surfaces facts sharing MEANING but zero
+    /// vocabulary with the query. Read-only; zero LLM at query time (the
+    /// caller embeds the query, if at all). First-person pronouns expand
+    /// to the `user` entity handle so identity questions reach the facts
+    /// phrased third-person about the user.
     pub async fn recall(
         &self,
         query: &str,
+        query_vec: Option<&[f32]>,
         limit: usize,
         half_life_days: u64,
         include_superseded: bool,
@@ -321,18 +416,33 @@ impl Bank {
         {
             query_tokens.push("user".to_string());
         }
-        if query_tokens.is_empty() {
+        if query_tokens.is_empty() && query_vec.is_none() {
             return Vec::new();
         }
         let inner = self.inner.read().await;
-        let bm25 = inner.index.score(&query_tokens);
+        let mut bm25 = inner.index.score(&query_tokens);
+        // Semantic candidates join the pool even without a lexical hit.
+        let mut sem: HashMap<String, f32> = HashMap::new();
+        if let Some(qv) = query_vec {
+            for (id, v) in &inner.vectors {
+                let c = cosine(qv, v);
+                if c > SEMANTIC_FLOOR {
+                    sem.insert(id.clone(), c);
+                    bm25.entry(id.clone()).or_insert(0.0);
+                }
+            }
+        }
         let now = now_ms();
         let mut scored: Vec<(Fact, f32)> = bm25
             .into_iter()
-            .filter_map(|(id, s)| inner.facts.get(&id).map(|f| (f.clone(), s)))
-            .filter(|(f, _)| include_superseded || f.is_live())
-            .map(|(f, s)| {
-                let fused = crate::index::fused_score(s, &f, &query_tokens, now, half_life_days);
+            .filter_map(|(id, s)| inner.facts.get(&id).map(|f| (f.clone(), s, id)))
+            .filter(|(f, _, _)| include_superseded || f.is_live())
+            .map(|(f, s, id)| {
+                let mut fused =
+                    crate::index::fused_score(s, &f, &query_tokens, now, half_life_days);
+                if let Some(c) = sem.get(&id) {
+                    fused += SEMANTIC_WEIGHT * c;
+                }
                 (f, fused)
             })
             .collect();
@@ -454,7 +564,7 @@ mod tests {
         // Simulate a restart: reopen from disk only.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
-        let hits = bank2.recall("formal writing", 5, 30, false).await;
+        let hits = bank2.recall("formal writing", None, 5, 30, false).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.text, "mike prefers formal writing");
     }
@@ -480,13 +590,16 @@ mod tests {
         f.invalid_at = Some(now_ms());
         f.revision = 2;
         bank.commit(f.clone()).await.unwrap();
-        assert!(bank.recall("api port", 5, 30, false).await.is_empty());
+        assert!(bank.recall("api port", None, 5, 30, false).await.is_empty());
         assert!(bank.get(&f.id).await.unwrap().invalid_at.is_some());
 
         // And the same is true after a reopen.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
-        assert!(bank2.recall("api port", 5, 30, false).await.is_empty());
+        assert!(bank2
+            .recall("api port", None, 5, 30, false)
+            .await
+            .is_empty());
         let (facts, total) = bank2.list(10, 0, true).await;
         assert_eq!(total, 1);
         assert!(facts[0].invalid_at.is_some());
