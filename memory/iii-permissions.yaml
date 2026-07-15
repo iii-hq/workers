@@ -14,6 +14,9 @@ rules:
   # Bank and rule writes are human-owned surfaces (console, REST, CLI) by
   # default; agents read and save memories but do not reshape banks or the
   # always-injected rules without an explicit grant.
+  # Consolidation seam: sibling workers retire duplicates through this;
+  # agents never rewrite history directly.
+  - '!memory::supersede'
   - '!memory::bank::create'
   - '!memory::bank::delete'
   - '!memory::rule::set'

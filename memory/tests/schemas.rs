@@ -20,6 +20,7 @@ fn catalog_has_all_public_functions() {
             "memory::update",
             "memory::delete",
             "memory::pin",
+            "memory::supersede",
             "memory::recall",
             "memory::rule::list",
             "memory::rule::set",

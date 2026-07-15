@@ -59,6 +59,7 @@ Bank selection order: turn metadata `memory_bank` → session metadata `memory_b
 | `memory::get / list / update / delete / pin` | Memory CRUD; delete tombstones; update bumps a revision in the log |
 | `memory::recall` | The exact scorer the hook uses: preview what a turn would be given |
 | `memory::rule::list / set` | The always-injected markdown rules; empty content removes |
+| `memory::supersede` | Retire one memory in favor of another (tombstone + pointer) — the consolidation seam |
 | `memory::doctor` | End-to-end self-test (roundtrip + sibling reachability) |
 | `memory::reload` | Reload every bank from disk after hand-editing files |
 
@@ -92,7 +93,7 @@ Like `llm-router` and its provider workers, memory is a family of narrow sibling
 | Worker | Role | Status |
 |---|---|---|
 | `memory` (this) | Banks, rules, memories: storage, harness injection, background capture, hybrid recall, live trigger types | shipped |
-| `memory-consolidate` | Background hygiene on a schedule: dedup and merge near-duplicate memories, promote corroborated clusters, catch-up-on-boot cron semantics. Supersede-only, never touches pinned records, emits audit events | planned |
+| [`memory-consolidate`](../memory-consolidate/) | Background hygiene on a schedule: deterministic dedup of near-duplicate memories, catch-up-on-boot scheduling. Supersede-only through `memory::supersede`, never touches pinned records; every change lands as a `memory::item-changed` event | shipped |
 
 The split is the point: consolidation can be installed, stopped, or removed without touching stored memory, and this worker never grows a scheduler.
 

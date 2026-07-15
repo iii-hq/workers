@@ -69,6 +69,9 @@ Consumer-facing:
   moves the folder to `.trash/` (recoverable).
 - `memory::rule::list` / `memory::rule::set` — the always-injected markdown rules; empty content
   removes a rule (an empty set against a nonexistent bank is a no-op).
+- `memory::supersede` — retire one memory in favor of another: tombstone with a `superseded_by`
+  pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded.
+  Agent-denied by default.
 - `memory::doctor` — real save→recall→trash roundtrip plus sibling reachability; names degraded
   states instead of a bare process-up health.
 - `memory::reload` — drop RAM state and re-read every bank from disk (the recovery hatch after
@@ -139,11 +142,14 @@ siblings over one on-disk contract, not a monolith with modes.
 
 - **`memory`** (this spec) — banks, rules, memories: storage, injection, capture, recall, trigger
   types. Owns the files and the wire surface; runs no scheduler.
-- **`memory-consolidate`** (planned) — background hygiene on a cron schedule with catch-up-on-boot
-  semantics: dedup and merge near-duplicate memories, promote corroborated clusters toward rules.
-  Strictly supersede-only through the same public functions, never touches pinned records, emits
-  audit events for every change. Installable, stoppable, and removable without touching stored
-  memory.
+- **`memory-consolidate`** — background hygiene on a schedule with catch-up-on-boot semantics
+  (last completed pass persisted in the state worker; a pass missed while down runs shortly after
+  boot): deterministic dedup of near-duplicate memories (normalized-text or token-set equality;
+  one differing word never merges), survivor = pinned > corroboration > oldest. Strictly
+  supersede-only through `memory::supersede` + `memory::save`, never touches pinned records; every
+  change lands as a `memory::item-changed` event. `dry_run` plans without writing;
+  `max_supersedes_per_run` caps a pass. Promotion of corroborated clusters toward rules is its
+  next tier. Installable, stoppable, and removable without touching stored memory.
 
 The seam is the store's append-only contract: any sibling that mutates memory goes through the
 same `memory::*` functions and the same last-wins replay, so the family shares one durability

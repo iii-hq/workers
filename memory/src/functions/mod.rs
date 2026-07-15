@@ -64,6 +64,11 @@ pub const PIN_DESC: &str =
     "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by \
      every automatic path.";
 
+pub const SUPERSEDE_ID: &str = "memory::supersede";
+pub const SUPERSEDE_DESC: &str =
+    "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
+     plain delete. The consolidation seam; pinned memories cannot be superseded.";
+
 pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
     "Rank a bank's memories against a query (BM25 + entity match + corroboration + recency; \
@@ -177,6 +182,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(
         iii,
         deps,
+        SUPERSEDE_ID,
+        SUPERSEDE_DESC,
+        false,
+        |d, r| async move { items::supersede(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
         RECALL_ID,
         RECALL_DESC,
         false,
@@ -268,6 +281,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<items::UpdateRequest, items::MemoryResponse>(UPDATE_ID, UPDATE_DESC),
         spec::<items::DeleteRequest, items::MemoryResponse>(DELETE_ID, DELETE_DESC),
         spec::<items::PinRequest, items::MemoryResponse>(PIN_ID, PIN_DESC),
+        spec::<items::SupersedeRequest, items::MemoryResponse>(SUPERSEDE_ID, SUPERSEDE_DESC),
         spec::<recall::RecallRequest, recall::RecallResponse>(RECALL_ID, RECALL_DESC),
         spec::<rules::RuleListRequest, rules::RuleListResponse>(RULE_LIST_ID, RULE_LIST_DESC),
         spec::<rules::RuleSetRequest, rules::RuleSetResponse>(RULE_SET_ID, RULE_SET_DESC),

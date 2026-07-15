@@ -277,3 +277,59 @@ pub async fn pin(deps: &Deps, req: PinRequest) -> Result<MemoryResponse, MemoryE
     )
     .await
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SupersedeRequest {
+    #[serde(default)]
+    pub bank: Option<String>,
+    /// Memory to retire.
+    pub id: String,
+    /// Live memory that replaces it.
+    pub superseded_by: String,
+}
+
+/// Retire one memory in favor of another: tombstone with a pointer, never a
+/// plain delete. The consolidation seam — siblings merge duplicates through
+/// this instead of touching files. Pinned memories cannot be superseded.
+pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryResponse, MemoryError> {
+    if req.id == req.superseded_by {
+        return Err(MemoryError::InvalidInput(
+            "a memory cannot supersede itself".into(),
+        ));
+    }
+    let cfg = deps.config().await;
+    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let store = deps.store().await;
+    let bank = store.bank(&bank_name).await?;
+    let winner = bank
+        .get(&req.superseded_by)
+        .await
+        .ok_or_else(|| MemoryError::MemoryNotFound(req.superseded_by.clone()))?;
+    if !winner.is_live() {
+        return Err(MemoryError::InvalidInput(format!(
+            "superseded_by `{}` is not a live memory",
+            req.superseded_by
+        )));
+    }
+    let mut memory = bank
+        .get(&req.id)
+        .await
+        .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    if memory.pinned {
+        return Err(MemoryError::InvalidInput(format!(
+            "memory `{}` is pinned; pinned memories are untouchable by automatic paths",
+            req.id
+        )));
+    }
+    if memory.is_live() {
+        memory.invalid_at = Some(now_ms());
+        memory.superseded_by = Some(req.superseded_by);
+        memory.updated_at = now_ms();
+        memory.revision += 1;
+        bank.commit(memory.clone()).await?;
+        deps.emitter
+            .item(ItemEvent::Superseded, &bank_name, &memory)
+            .await;
+    }
+    Ok(MemoryResponse { memory })
+}

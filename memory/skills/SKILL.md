@@ -65,6 +65,8 @@ rule; point-in-time information belongs in memories.
 - `memory::bank::create / list / delete` — named memory scopes; delete trashes.
 - `memory::rule::list / set` — always-injected markdown rules; empty content
   removes a rule.
+- `memory::supersede` — retire one memory in favor of another (tombstone +
+  pointer); the consolidation seam, agent-denied by default.
 - `memory::doctor` — end-to-end self-test plus sibling reachability.
 - `memory::reload` — re-read every bank from disk after hand-editing files.
 

@@ -331,8 +331,11 @@ async fn cursor_get(iii: &IIIClient, session_id: &str) -> Option<String> {
         })
         .await
         .ok()?;
+    // state::get returns the stored value at the top level; older engines
+    // wrapped it under `value` — accept both.
     reply
-        .pointer("/value/last_entry_id")
+        .pointer("/last_entry_id")
+        .or_else(|| reply.pointer("/value/last_entry_id"))
         .and_then(Value::as_str)
         .map(str::to_string)
 }
