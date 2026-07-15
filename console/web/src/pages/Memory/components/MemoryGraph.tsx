@@ -118,19 +118,48 @@ function layoutGraph(
   const hiddenHubs = Math.max(0, hubEntries.length - MAX_HUBS)
   hubEntries = hubEntries.slice(0, MAX_HUBS)
 
-  // Spiral spacing scales with how much room each hub needs when
-  // expanded, so clusters cannot sit inside each other.
+  // Placement: few hubs sit on a centered ring (one hub sits dead
+  // center), many fall back to a golden-angle spiral. Spacing derives
+  // from the widest cluster (hub + its spoke ring) so dandelions never
+  // overlap but never drift into empty space either.
   const hubs: HubNode[] = []
   const hubPos = new Map<string, HubNode>()
+  const clusterRadius = (entity: string, count: number) => {
+    const expanded = autoExpand || expandedHubs.has(entity)
+    if (!expanded) return hubRadius(count) + 8
+    const rings = Math.ceil(Math.min(count, MAX_SPOKES) / 14)
+    return hubRadius(count) + 44 + 16 * (rings - 1) + 14
+  }
+  const maxCluster = Math.max(
+    60,
+    ...hubEntries.map(([entity, list]) => clusterRadius(entity, list.length)),
+  )
   hubEntries.forEach(([entity, list], i) => {
     const expanded = autoExpand || expandedHubs.has(entity)
-    const step = expanded ? 150 : 95
-    const r = step * Math.sqrt(i + (i === 0 ? 0 : 1.4))
-    const theta = i * GOLDEN_ANGLE
+    const n = hubEntries.length
+    let x = 0
+    let y = 0
+    if (n === 1) {
+      // centered
+    } else if (n <= 8) {
+      const ringR = Math.max(
+        (maxCluster * 2 + 40) / (2 * Math.sin(Math.PI / n)),
+        maxCluster + 60,
+      )
+      const theta = -Math.PI / 2 + i * ((2 * Math.PI) / n)
+      x = Math.round(ringR * Math.cos(theta))
+      y = Math.round(ringR * Math.sin(theta))
+    } else {
+      const step = maxCluster * 1.15
+      const r = step * Math.sqrt(i + 1)
+      const theta = i * GOLDEN_ANGLE
+      x = Math.round(r * Math.cos(theta))
+      y = Math.round(r * Math.sin(theta))
+    }
     const node: HubNode = {
       entity,
-      x: Math.round(r * Math.cos(theta)),
-      y: Math.round(r * Math.sin(theta)),
+      x,
+      y,
       count: list.length,
       r: hubRadius(list.length),
       expanded,
@@ -148,21 +177,26 @@ function layoutGraph(
     const shown = list.slice(0, MAX_SPOKES)
     const hidden = list.length - shown.length
     const slots = shown.length + (hidden > 0 ? 1 : 0)
+    // Even full-circle spokes: a clean dandelion regardless of count.
     shown.forEach((fact, j) => {
-      const ring = hub.r + 34 + 12 * Math.floor(j / 12)
-      // Start angles at the upper-right and skip the straight-down slot
-      // band where the hub label sits.
+      const ringIdx = Math.floor(j / 14)
+      const ring = hub.r + 44 + 16 * ringIdx
+      const perRing = Math.min(slots - ringIdx * 14, 14)
       const angle =
-        -0.6 + (j % 12) * ((2 * Math.PI - 0.7) / Math.min(slots, 12))
+        -Math.PI / 2 + (j % 14) * ((2 * Math.PI) / Math.max(perRing, 1))
       const x = hub.x + Math.round(ring * Math.cos(angle))
       const y = hub.y + Math.round(ring * Math.sin(angle))
       nodes.push({ fact, hub: hub.entity, x, y })
       edges.push({ x1: hub.x, y1: hub.y, x2: x, y2: y, factId: fact.id })
     })
     if (hidden > 0) {
-      const ring = hub.r + 34
-      const x = hub.x + Math.round(ring * Math.cos(-0.6 - 0.5))
-      const y = hub.y + Math.round(ring * Math.sin(-0.6 - 0.5))
+      const ring = hub.r + 44
+      const perRing = Math.min(slots, 14)
+      const angle =
+        -Math.PI / 2 +
+        (shown.length % 14) * ((2 * Math.PI) / Math.max(perRing, 1))
+      const x = hub.x + Math.round(ring * Math.cos(angle))
+      const y = hub.y + Math.round(ring * Math.sin(angle))
       more.push({ hub: hub.entity, x, y, hidden })
     }
   }
@@ -310,6 +344,24 @@ export function MemoryGraph({
             drag.current = null
           }}
         >
+          <defs>
+            <pattern
+              id="memory-grid"
+              width={28}
+              height={28}
+              patternUnits="userSpaceOnUse"
+            >
+              <circle cx={1} cy={1} r={1} className="fill-rule-2" />
+            </pattern>
+          </defs>
+          <rect
+            x={vb.x - vb.w}
+            y={vb.y - vb.h}
+            width={vb.w * 3}
+            height={vb.h * 3}
+            fill="url(#memory-grid)"
+          />
+
           {layout.edges.map((edge) => (
             <line
               key={`${edge.factId}:${edge.x2}:${edge.y2}`}
@@ -321,7 +373,8 @@ export function MemoryGraph({
                 'stroke-rule',
                 activeId === edge.factId && 'stroke-accent',
               )}
-              strokeWidth={activeId === edge.factId ? 1.6 : 1}
+              strokeWidth={activeId === edge.factId ? 1.8 : 1}
+              opacity={activeId && activeId !== edge.factId ? 0.35 : 1}
             />
           ))}
 
@@ -366,20 +419,37 @@ export function MemoryGraph({
               >
                 {hub.count}
               </text>
-              <text
-                x={hub.x}
-                y={hub.y - hub.r - 8}
-                textAnchor="middle"
-                fontSize={11}
-                className="fill-ink-faint font-mono lowercase pointer-events-none"
-                paintOrder="stroke"
-                stroke="var(--color-bg, #111110)"
-                strokeWidth={4}
-              >
-                {hub.entity.length > 24
-                  ? `${hub.entity.slice(0, 22)}…`
-                  : hub.entity}
-              </text>
+              {(() => {
+                const label =
+                  hub.entity.length > 24
+                    ? `${hub.entity.slice(0, 22)}…`
+                    : hub.entity
+                const w = label.length * 6.8 + 14
+                return (
+                  <g className="pointer-events-none">
+                    <rect
+                      x={hub.x - w / 2}
+                      y={hub.y - hub.r - 24}
+                      width={w}
+                      height={17}
+                      className="fill-bg stroke-rule"
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={hub.x}
+                      y={hub.y - hub.r - 12}
+                      textAnchor="middle"
+                      fontSize={11}
+                      className={cn(
+                        'font-mono lowercase',
+                        hub.expanded ? 'fill-ink' : 'fill-ink-faint',
+                      )}
+                    >
+                      {label}
+                    </text>
+                  </g>
+                )
+              })()}
             </g>
           ))}
 
@@ -407,13 +477,30 @@ export function MemoryGraph({
               <circle
                 cx={x}
                 cy={y}
-                r={activeId === fact.id ? 7 : 5}
+                r={activeId === fact.id ? 8 : 6}
                 className={cn(
+                  'stroke-bg',
                   fact.pinned ? 'fill-accent' : 'fill-ink',
                   activeId === fact.id && 'stroke-accent',
                 )}
-                strokeWidth={1.5}
+                strokeWidth={activeId === fact.id ? 2 : 1.5}
               />
+              {hoverId === fact.id && selectedId !== fact.id ? (
+                <text
+                  x={x}
+                  y={y - 14}
+                  textAnchor="middle"
+                  fontSize={11}
+                  className="fill-ink font-mono pointer-events-none"
+                  paintOrder="stroke"
+                  stroke="var(--color-bg, #f2f0ed)"
+                  strokeWidth={5}
+                >
+                  {fact.text.length > 52
+                    ? `${fact.text.slice(0, 50)}…`
+                    : fact.text}
+                </text>
+              ) : null}
             </g>
           ))}
 

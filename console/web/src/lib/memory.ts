@@ -171,6 +171,13 @@ export async function setBlock(
   await client.trigger('memory::block::set', { bank, name, content })
 }
 
+/** Drop the worker's RAM state and re-read every bank from disk — picks
+ * up hand-edited blocks/facts files. */
+export async function reloadStore(): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('memory::reload', {})
+}
+
 export async function recall(
   bank: string,
   query: string,

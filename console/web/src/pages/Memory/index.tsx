@@ -11,6 +11,7 @@ import {
   deleteFact,
   type MemoryFact,
   pinFact,
+  reloadStore,
   saveFact,
   setBlock,
   updateFact,
@@ -116,15 +117,19 @@ export function Memory() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={refresh}
-              disabled={loading}
+              onClick={() => void act(() => reloadStore())}
+              disabled={loading || busy}
               className="gap-1.5"
+              title="re-read every bank from disk — picks up hand-edited blocks/facts files (live events already keep this page current otherwise)"
             >
               <RefreshCw
-                className={cn('w-3.5 h-3.5', loading && 'animate-spin')}
+                className={cn(
+                  'w-3.5 h-3.5',
+                  (loading || busy) && 'animate-spin',
+                )}
                 aria-hidden
               />
-              refresh
+              reload from disk
             </Button>
           </div>
         ) : null}
