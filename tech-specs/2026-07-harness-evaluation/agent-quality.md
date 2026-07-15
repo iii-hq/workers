@@ -704,10 +704,10 @@ The following questions require explicit product and implementation decisions:
 ## Related repository material
 
 - [Harness conformance E2E architecture](conformance-e2e.md)
-- [Harness architecture overview](README.md)
-- [Harness design specification](../../tech-specs/2026-06-agentic/harness.md)
-- [`harness::send` implementation](../src/functions/send.rs)
-- [Durable turn loop](../src/turn_loop.rs)
-- [Turn lifecycle events](../src/events.rs)
-- [Hook contracts](../src/hooks/mod.rs)
+- [Harness architecture overview](../../harness/architecture/README.md)
+- [Harness design specification](../2026-06-agentic/harness.md)
+- [`harness::send` implementation](../../harness/src/functions/send.rs)
+- [Durable turn loop](../../harness/src/turn_loop.rs)
+- [Turn lifecycle events](../../harness/src/events.rs)
+- [Hook contracts](../../harness/src/hooks/mod.rs)
 - [Harness CI workflow](../../.github/workflows/ci.yml)

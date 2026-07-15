@@ -14,8 +14,8 @@ prose explains how to use them.
 | Document | Audience | Read it when |
 |---|---|---|
 | [integration.md](integration.md) | Authors of consumers / siblings | You are building something on top of the harness — a chat UI, a Telegram / WhatsApp / Slack bridge, a cron or webhook worker, an event-driven agent loop, a notification sibling. This file is the handoff contract. |
-| [conformance-e2e.md](conformance-e2e.md) ([HTML](conformance-e2e.html)) | Harness maintainers | You are implementing the deterministic public-path regression suite for lifecycle, durability, and exactly-once contracts. |
-| [agent-quality.md](agent-quality.md) ([HTML](agent-quality.html)) | Harness and evaluation maintainers | You are implementing worker-based real-model evaluation, validation functions, metrics, and comparison policy. |
+| [conformance-e2e.md](../../tech-specs/2026-07-harness-evaluation/conformance-e2e.md) ([HTML](../../tech-specs/2026-07-harness-evaluation/conformance-e2e.html)) | Harness maintainers | You are implementing the deterministic public-path regression suite for lifecycle, durability, and exactly-once contracts. |
+| [agent-quality.md](../../tech-specs/2026-07-harness-evaluation/agent-quality.md) ([HTML](../../tech-specs/2026-07-harness-evaluation/agent-quality.html)) | Harness and evaluation maintainers | You are implementing worker-based real-model evaluation, validation functions, metrics, and comparison policy. |
 
 The two E2E documents are the canonical evaluation architecture. Conformance
 controls the model boundary and grades exact public invariants. Agent quality

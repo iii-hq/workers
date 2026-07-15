@@ -416,9 +416,10 @@ The conformance runner is a separate executable package for dependency and CI
 isolation, but remains part of the same harness evaluation project:
 
 ```text
-harness/
-  architecture/
+tech-specs/
+  2026-07-harness-evaluation/
     conformance-e2e.md
+harness/
   evals/
     shared/
       schemas/
@@ -654,12 +655,12 @@ isolation, or fail-loudly requirements.
 ## Related repository material
 
 - [Harness agent-quality E2E architecture](agent-quality.md)
-- [Harness architecture overview](README.md)
-- [Harness design specification](../../tech-specs/2026-06-agentic/harness.md)
-- [`harness::send` implementation](../src/functions/send.rs)
-- [Durable turn loop](../src/turn_loop.rs)
-- [Harness queue provisioning](../src/queue.rs)
-- [Turn lifecycle events](../src/events.rs)
-- [Router streaming event vocabulary](../src/types/event.rs)
-- [Hook contracts](../src/hooks/mod.rs)
+- [Harness architecture overview](../../harness/architecture/README.md)
+- [Harness design specification](../2026-06-agentic/harness.md)
+- [`harness::send` implementation](../../harness/src/functions/send.rs)
+- [Durable turn loop](../../harness/src/turn_loop.rs)
+- [Harness queue provisioning](../../harness/src/queue.rs)
+- [Turn lifecycle events](../../harness/src/events.rs)
+- [Router streaming event vocabulary](../../harness/src/types/event.rs)
+- [Hook contracts](../../harness/src/hooks/mod.rs)
 - [Harness CI workflow](../../.github/workflows/ci.yml)

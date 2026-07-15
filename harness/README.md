@@ -101,10 +101,10 @@ contract in
 trigger, the triggers to bind, and the canonical consumer patterns.
 
 Studying evaluation for the turn loop? Use the focused
-[`architecture/conformance-e2e.md`](architecture/conformance-e2e.md) spec for
-the deterministic public-path suite and
-[`architecture/agent-quality.md`](architecture/agent-quality.md) for the
-worker-based real-model suite.
+[`conformance-e2e.md`](../tech-specs/2026-07-harness-evaluation/conformance-e2e.md)
+spec for the deterministic public-path suite and
+[`agent-quality.md`](../tech-specs/2026-07-harness-evaluation/agent-quality.md)
+for the worker-based real-model suite.
 
 ## Working with iii
 

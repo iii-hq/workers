@@ -1242,9 +1242,10 @@ reproducible evidence.</p>
         <p>The conformance runner is a separate executable package for
         dependency and CI isolation, but remains part of the same
         harness evaluation project:</p>
-        <pre class="text"><code>harness/
-  architecture/
+        <pre class="text"><code>tech-specs/
+  2026-07-harness-evaluation/
     conformance-e2e.md
+harness/
   evals/
     shared/
       schemas/
@@ -1601,20 +1602,24 @@ reproducible evidence.</p>
         <ul>
         <li><a href="agent-quality.html">Harness agent-quality E2E
         architecture</a></li>
-        <li><a href="README.md">Harness architecture overview</a></li>
+        <li><a href="../../harness/architecture/README.md">Harness
+        architecture overview</a></li>
         <li><a
-        href="../../tech-specs/2026-06-agentic/harness.md">Harness
+        href="../2026-06-agentic/harness.md">Harness
         design specification</a></li>
         <li><a
-        href="../src/functions/send.rs"><code>harness::send</code>
+        href="../../harness/src/functions/send.rs"><code>harness::send</code>
         implementation</a></li>
-        <li><a href="../src/turn_loop.rs">Durable turn loop</a></li>
-        <li><a href="../src/queue.rs">Harness queue
+        <li><a href="../../harness/src/turn_loop.rs">Durable turn
+        loop</a></li>
+        <li><a href="../../harness/src/queue.rs">Harness queue
         provisioning</a></li>
-        <li><a href="../src/events.rs">Turn lifecycle events</a></li>
-        <li><a href="../src/types/event.rs">Router streaming event
-        vocabulary</a></li>
-        <li><a href="../src/hooks/mod.rs">Hook contracts</a></li>
+        <li><a href="../../harness/src/events.rs">Turn lifecycle
+        events</a></li>
+        <li><a href="../../harness/src/types/event.rs">Router
+        streaming event vocabulary</a></li>
+        <li><a href="../../harness/src/hooks/mod.rs">Hook
+        contracts</a></li>
         <li><a href="../../.github/workflows/ci.yml">Harness CI
         workflow</a></li>
         </ul>
