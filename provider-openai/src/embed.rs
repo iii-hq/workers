@@ -14,6 +14,28 @@ use crate::{router_client, state};
 
 pub const DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
 const EMBED_URL: &str = "https://api.openai.com/v1/embeddings";
+
+/// Embeddings endpoint for the configured chat `api_url`: the sibling
+/// `/embeddings` on the same host and version prefix. This is what makes
+/// OpenAI-compatible local servers and gateways (llama.cpp --embeddings,
+/// Ollama, vLLM, LM Studio) work through this provider — hardcoding
+/// api.openai.com would send their embeddings to the wrong host.
+fn embed_url(chat_api_url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(chat_api_url) else {
+        return EMBED_URL.to_string();
+    };
+    let path = url.path().trim_end_matches('/').to_string();
+    let new_path = if let Some(base) = path.strip_suffix("/chat/completions") {
+        format!("{base}/embeddings")
+    } else if let Some(base) = path.strip_suffix("/responses") {
+        format!("{base}/embeddings")
+    } else {
+        format!("{path}/embeddings")
+    };
+    url.set_path(&new_path);
+    url.set_query(None);
+    url.to_string()
+}
 /// Embeddings requests are bounded and non-streaming; a tight budget keeps
 /// hook callers (memory recall) inside their own timeouts.
 const EMBED_TIMEOUT_SECS: u64 = 20;
@@ -64,7 +86,8 @@ pub async fn handle(
     let token = state::load_token(iii).await;
     let resolved = router_client::resolve(iii, token.as_deref()).await?;
     // Reuse the chat-path credential validation; the api_url from resolve
-    // targets the chat endpoint, so embeddings always use their own URL.
+    // targets the chat endpoint, so embeddings derive their sibling URL
+    // from it (same host and version prefix).
     let cfg = config_from_resolve(&model, None, &resolved).map_err(|e| match e {
         ConfigError::NotConfigured => Error::Handler(
             "provider/not_configured: no api_key in the llm-router entry for openai".into(),
@@ -73,7 +96,7 @@ pub async fn handle(
     })?;
 
     let response = http
-        .post(EMBED_URL)
+        .post(embed_url(&cfg.api_url))
         .bearer_auth(&cfg.credential_value)
         .timeout(std::time::Duration::from_secs(EMBED_TIMEOUT_SECS))
         .json(&serde_json::json!({ "model": model, "input": req.input }))
@@ -120,6 +143,27 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_url_follows_the_configured_endpoint() {
+        assert_eq!(
+            embed_url("https://api.openai.com/v1/responses"),
+            "https://api.openai.com/v1/embeddings"
+        );
+        assert_eq!(
+            embed_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/embeddings"
+        );
+        assert_eq!(
+            embed_url("http://127.0.0.1:8080/v1/chat/completions"),
+            "http://127.0.0.1:8080/v1/embeddings"
+        );
+        assert_eq!(
+            embed_url("http://localhost:11434/v1/chat/completions"),
+            "http://localhost:11434/v1/embeddings"
+        );
+        assert_eq!(embed_url("not a url"), EMBED_URL);
+    }
 
     #[test]
     fn index_contract_is_enforced() {
