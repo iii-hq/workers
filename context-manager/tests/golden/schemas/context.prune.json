@@ -344,7 +344,7 @@
         "type": "string"
       },
       "ModelInput": {
-        "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::get`.",
+        "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::budget`.",
         "properties": {
           "id": {
             "description": "Model id, e.g. `claude-sonnet-4`.",

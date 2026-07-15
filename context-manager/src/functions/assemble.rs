@@ -89,6 +89,9 @@ pub enum ModelResolvedWire {
 /// What the pipeline actually did this call.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Applied {
+    /// Full estimated request size before pruning or compaction, including the
+    /// system prompt, tool schemas, and provider framing overhead.
+    pub initial_token_count: u64,
     pub pruned: bool,
     pub pruned_tokens: u64,
     pub compacted: bool,
@@ -103,6 +106,10 @@ pub struct Applied {
     /// Present when compacted: estimated tokens of the summarised head.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_before: Option<u64>,
+    /// Unambiguous alias for `tokens_before`; retained separately so callers
+    /// do not mistake the summarised head for the full pre-compaction request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summarized_head_tokens: Option<u64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -115,6 +122,9 @@ pub struct AssembleResponse {
     pub token_count: u64,
     /// The budget the context was fit into.
     pub usable: u64,
+    /// Effective output allocation used to derive `usable`. This is the
+    /// router-resolved request limit, not the model catalog ceiling.
+    pub effective_max_output_tokens: u64,
     pub model_resolved: ModelResolvedWire,
     pub applied: Applied,
 }
@@ -175,16 +185,19 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         count_context(messages, prompt, tools, request_overhead_tokens, estimator)
     };
 
+    let initial_token_count = count(&working, &system_prompt);
     let mut applied = Applied {
+        initial_token_count,
         pruned: false,
         pruned_tokens: 0,
         compacted: false,
         summary: None,
         tail_start_index: None,
         tokens_before: None,
+        summarized_head_tokens: None,
     };
 
-    let mut token_count = count(&working, &system_prompt);
+    let mut token_count = initial_token_count;
 
     // Step 1: prune function outputs.
     if token_count > usable_budget && options.allow_prune.unwrap_or(true) {
@@ -227,6 +240,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             applied.compacted = true;
             applied.tail_start_index = Some(compaction.tail_start_view.map(|v| view_to_orig[v]));
             applied.tokens_before = Some(compaction.tokens_before);
+            applied.summarized_head_tokens = Some(compaction.tokens_before);
             applied.summary = Some(compaction.summary);
             token_count = count(&working, &system_prompt);
         }
@@ -260,6 +274,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         messages: working,
         token_count,
         usable: usable_budget,
+        effective_max_output_tokens: resolved.limits.max_output_tokens,
         model_resolved: match resolved.resolved {
             crate::core::budget::ModelResolved::Inline => ModelResolvedWire::Inline,
             crate::core::budget::ModelResolved::Router => ModelResolvedWire::Router,

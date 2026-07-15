@@ -66,11 +66,11 @@ impl ResolvedModel {
         }
     }
 
-    pub fn from_router(model: &Model) -> Self {
+    pub fn from_router(model: &Model, effective_max_output_tokens: u64) -> Self {
         Self {
             limits: ModelLimits {
                 context_window: model.context_window,
-                max_output_tokens: model.max_output_tokens,
+                max_output_tokens: effective_max_output_tokens.min(model.max_output_tokens),
                 input_limit: model.input_limit,
             },
             thinking_budgets: model.thinking_budgets.clone(),
@@ -184,6 +184,25 @@ mod tests {
         assert_eq!(f.limits.context_window, 8_192);
         assert_eq!(f.limits.max_output_tokens, 1_024);
         assert_eq!(f.resolved, ModelResolved::Fallback);
+    }
+
+    #[test]
+    fn router_effective_output_cap_prevents_premature_compaction() {
+        let model = Model {
+            id: "gpt-5.4".to_string(),
+            provider: "codex".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 128_000,
+            input_limit: None,
+            thinking_budgets: None,
+        };
+
+        // The model accepts up to 128k output, but the router's configured
+        // request cap is 32k. Context assembly must reserve the amount the
+        // router will actually request, not the catalog ceiling.
+        let resolved = ResolvedModel::from_router(&model, 32_000);
+        assert_eq!(resolved.limits.max_output_tokens, 32_000);
+        assert_eq!(usable(&resolved.limits, 20_000, 0), 220_000);
     }
 
     #[test]

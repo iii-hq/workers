@@ -226,7 +226,7 @@ pub struct ModelLimits {
 
 /// How callers identify the target model (context-manager.md § Model
 /// input). Inline `limits` keep the call standalone; `id`/`provider`
-/// alone defer limit resolution to `router::models::get`.
+/// alone defer limit resolution to `router::models::budget`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelInput {
     /// Model id, e.g. `claude-sonnet-4`.

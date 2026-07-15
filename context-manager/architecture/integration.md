@@ -47,7 +47,7 @@ Integration is always some subset of four moves:
 - **Model input**: functions that need limits take a `ModelInput`. Supply
   inline `limits` to stay fully standalone (no `llm-router` needed); supply
   only `id`/`provider` to have the worker resolve limits via
-  `router::models::get`. Resolution order: inline → router → conservative
+  `router::models::budget`. Resolution order: inline → router → conservative
   fallback (`8192`/`1024`); the response's `model_resolved` tells you which ran.
 - **Tokens are estimates.** v1 uses a `chars/4` heuristic for every model
   (`estimator: "heuristic"`). Treat `token_count`/`tokens` as approximate and
@@ -355,7 +355,7 @@ overflow` union, and persists `summary` + `tail_start_index` itself.
 |---|---|---|
 | `configuration` (required) | the worker's own runtime config: schema registration + the authoritative value, hot-reloaded on change | the worker **cannot boot** — `register`/`get` run at startup and a failure aborts it. Not a per-request dependency: once booted, `context::*` calls never touch it. |
 | local filesystem (`lease_dir`) | compaction leases only | a filesystem error makes `compact`/`assemble` treat the lease as busy → compaction is skipped (best effort); `count-tokens`/`prune` unaffected. |
-| `llm-router` (soft) | model-limit resolution (`router::models::get`) + the summariser (`router::chat`) | Limits fall back to `8192`/`1024` (`model_resolved: "fallback"`) unless you pass inline `limits`; `compact` returns `overflow`; `assemble` can prune but not summarise. |
+| `llm-router` (soft) | effective model-budget resolution (`router::models::budget`) + the summariser (`router::chat`) | Limits fall back to `8192`/`1024` (`model_resolved: "fallback"`) unless you pass inline `limits`; `compact` returns `overflow`; `assemble` can prune but not summarise. |
 
 The fully standalone *request* path — inline `limits` + `count-tokens`/`prune`,
 or `assemble` with compaction off — needs no `llm-router` and writes no lease

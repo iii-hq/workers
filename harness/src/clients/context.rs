@@ -20,12 +20,15 @@ pub struct AssembleOutput {
     pub messages: Vec<AgentMessage>,
     pub token_count: u64,
     pub usable: u64,
+    pub effective_max_output_tokens: u64,
     #[serde(default)]
     pub applied: Applied,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Applied {
+    #[serde(default)]
+    pub initial_token_count: u64,
     #[serde(default)]
     pub compacted: bool,
     #[serde(default)]
@@ -34,6 +37,8 @@ pub struct Applied {
     pub tail_start_index: Option<i64>,
     #[serde(default)]
     pub tokens_before: Option<u64>,
+    #[serde(default)]
+    pub summarized_head_tokens: Option<u64>,
 }
 
 pub struct AssembleParams {

@@ -47,7 +47,7 @@ pub const COUNT_TOKENS_DESC: &str =
      prompt) vs a model.";
 
 /// Resolve model limits per the spec order: inline `limits` ->
-/// `router::models::get` -> conservative fallback (when allowed).
+/// `router::models::budget` -> conservative fallback (when allowed).
 pub(crate) async fn resolve_model(
     deps: &Deps,
     input: &ModelInput,
@@ -57,10 +57,15 @@ pub(crate) async fn resolve_model(
     }
     let reason = match deps
         .resolver
-        .get_model(input.provider.as_deref(), &input.id)
+        .get_model_budget(input.provider.as_deref(), &input.id)
         .await
     {
-        Ok(Some(model)) => return Ok(ResolvedModel::from_router(&model)),
+        Ok(Some(budget)) => {
+            return Ok(ResolvedModel::from_router(
+                &budget.model,
+                budget.effective_max_output_tokens,
+            ))
+        }
         Ok(None) => format!("model {} is not in the router catalog", input.id),
         Err(e) => format!("router unavailable: {e}"),
     };

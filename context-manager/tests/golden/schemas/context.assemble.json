@@ -478,7 +478,7 @@
         "type": "string"
       },
       "ModelInput": {
-        "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::get`.",
+        "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::budget`.",
         "properties": {
           "id": {
             "description": "Model id, e.g. `claude-sonnet-4`.",
@@ -872,6 +872,12 @@
           "compacted": {
             "type": "boolean"
           },
+          "initial_token_count": {
+            "description": "Full estimated request size before pruning or compaction, including the system prompt, tool schemas, and provider framing overhead.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "pruned": {
             "type": "boolean"
           },
@@ -879,6 +885,15 @@
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "summarized_head_tokens": {
+            "description": "Unambiguous alias for `tokens_before`; retained separately so callers do not mistake the summarised head for the full pre-compaction request.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "summary": {
             "description": "Present when compacted; the caller should persist it and pass it back as `options.previous_summary` (compaction round trip).",
@@ -908,6 +923,7 @@
         },
         "required": [
           "compacted",
+          "initial_token_count",
           "pruned",
           "pruned_tokens"
         ],
@@ -1132,6 +1148,12 @@
       "applied": {
         "$ref": "#/definitions/Applied"
       },
+      "effective_max_output_tokens": {
+        "description": "Effective output allocation used to derive `usable`. This is the router-resolved request limit, not the model catalog ceiling.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "messages": {
         "description": "Budgeted, ready to send to llm-router.",
         "items": {
@@ -1160,6 +1182,7 @@
     },
     "required": [
       "applied",
+      "effective_max_output_tokens",
       "messages",
       "model_resolved",
       "system_prompt",
