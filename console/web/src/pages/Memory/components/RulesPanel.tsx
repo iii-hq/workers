@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -18,7 +18,7 @@ interface RulesPanelProps {
   busy: boolean
 }
 
-function BlockEditor({
+function RuleEditor({
   name,
   initial,
   onSet,
@@ -33,6 +33,7 @@ function BlockEditor({
   // Re-seed the editor when a live refresh changes the rule on disk and
   // the user has no local edits in flight.
   const [touched, setTouched] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   useEffect(() => {
     if (!touched) setContent(initial)
   }, [initial, touched])
@@ -46,21 +47,56 @@ function BlockEditor({
         </span>
         <div className="flex items-center gap-2">
           {dirty ? (
-            <span className="font-mono text-[10px] lowercase text-warn">
-              unsaved
-            </span>
+            <>
+              <span className="font-mono text-[10px] lowercase text-warn">
+                unsaved
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => {
+                  onSet(name, content)
+                  setTouched(false)
+                }}
+              >
+                save
+              </Button>
+            </>
           ) : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!dirty || busy}
-            onClick={() => {
-              onSet(name, content)
-              setTouched(false)
-            }}
-          >
-            save
-          </Button>
+          {confirmDelete ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                className="text-danger"
+                onClick={() => {
+                  onSet(name, '')
+                  setConfirmDelete(false)
+                }}
+              >
+                delete {name}.md?
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDelete(false)}
+              >
+                keep
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={busy}
+              aria-label={`delete rule ${name}`}
+              onClick={() => setConfirmDelete(true)}
+            >
+              <X className="w-3.5 h-3.5" aria-hidden />
+            </Button>
+          )}
         </div>
       </div>
       <textarea
@@ -100,7 +136,7 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
         />
       ) : (
         rules.map((rule) => (
-          <BlockEditor
+          <RuleEditor
             key={rule.name}
             name={rule.name}
             initial={rule.content}
