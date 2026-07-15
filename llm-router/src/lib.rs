@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod channels;
 pub mod chat;
 pub mod config;
+pub mod embed;
 pub mod manifest;
 pub mod register;
 pub mod registry;

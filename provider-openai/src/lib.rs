@@ -5,6 +5,7 @@
 pub mod config;
 pub mod curated;
 pub mod discovery;
+pub mod embed;
 pub mod errors;
 pub mod manifest;
 pub mod reasoning;

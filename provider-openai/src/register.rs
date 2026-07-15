@@ -142,6 +142,19 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .description(surface::REFRESH_MODELS_DESC)
             .metadata(json!({ "internal": true })),
     );
+    {
+        let iii_embed = iii.clone();
+        let http_embed = http.clone();
+        iii.register_function(
+            surface::EMBED_ID,
+            RegisterFunction::new_async(move |req: crate::embed::EmbedRequest| {
+                let (iii, http) = (iii_embed.clone(), http_embed.clone());
+                async move { crate::embed::handle(&iii, &http, req).await }
+            })
+            .description(surface::EMBED_DESC)
+            .metadata(json!({ "internal": true })),
+        );
+    }
 
     // Re-declare when the router restarts: bind to the router::ready trigger type.
     {
