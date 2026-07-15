@@ -8,40 +8,40 @@ import { isMemoryAvailable, useMemoryStatus } from '@/hooks/use-memory-status'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import {
   createBank,
-  deleteFact,
-  type MemoryFact,
-  pinFact,
+  deleteMemory,
+  type MemoryItem,
+  pinMemory,
   reloadStore,
-  saveFact,
-  setBlock,
-  updateFact,
+  saveMemory,
+  setRule,
+  updateMemory,
 } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 import { BankRail } from './components/BankRail'
-import { BlocksPanel } from './components/BlocksPanel'
-import { FactsPanel } from './components/FactsPanel'
+import { RulesPanel } from './components/RulesPanel'
+import { MemoriesPanel } from './components/MemoriesPanel'
 import { MemoryGraph } from './components/MemoryGraph'
 import { RecallPanel } from './components/RecallPanel'
 import { useMemoryLive } from './hooks/useMemoryLive'
 
 /**
  * The memory worker's visible-and-editable surface: banks in a left rail,
- * the selected bank's facts (pin/edit/tombstone in place), its
- * always-injected markdown blocks, and a recall dry-run. Everything
+ * the selected bank's memories (pin/edit/tombstone in place), its
+ * always-injected markdown rules, and a recall dry-run. Everything
  * re-reads live off `memory::item-changed` / `memory::bank-changed`
  * (poll fallback while bindings are unavailable). Memory that acts
- * visibly, not magically — watch a fact appear the moment it's learned.
+ * visibly, not magically — watch a memory appear the moment it's learned.
  */
 
-type Panel = 'facts' | 'graph' | 'blocks' | 'recall'
+type Panel = 'memories' | 'graph' | 'rules' | 'recall'
 
-// Team review decision: rules (blocks) are the most important surface,
-// what goes in the system prompt, so they lead; facts render as
+// Team review decision: rules (rules) are the most important surface,
+// what goes in the system prompt, so they lead; memories render as
 // "memories". Internal keys and the memory::* wire surface keep their
 // names for API stability.
 const PANEL_OPTIONS: { value: Panel; label: string }[] = [
-  { value: 'blocks', label: 'rules' },
-  { value: 'facts', label: 'memories' },
+  { value: 'rules', label: 'rules' },
+  { value: 'memories', label: 'memories' },
   { value: 'graph', label: 'graph' },
   { value: 'recall', label: 'recall' },
 ]
@@ -55,12 +55,12 @@ export function Memory() {
     banks,
     selected,
     setSelected,
-    facts,
+    memories,
     total,
     offset,
     setOffset,
     pageSize,
-    blocks,
+    rules,
     includeSuperseded,
     setIncludeSuperseded,
     loading,
@@ -69,7 +69,7 @@ export function Memory() {
     refresh,
   } = useMemoryLive(available)
 
-  const [panel, setPanel] = useState<Panel>('blocks')
+  const [panel, setPanel] = useState<Panel>('rules')
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
@@ -124,7 +124,7 @@ export function Memory() {
               onClick={() => void act(() => reloadStore())}
               disabled={loading || busy}
               className="gap-1.5"
-              title="re-read every bank from disk — picks up hand-edited blocks/facts files (live events already keep this page current otherwise)"
+              title="re-read every bank from disk — picks up hand-edited rules/memories files (live events already keep this page current otherwise)"
             >
               <RefreshCw
                 className={cn(
@@ -176,7 +176,7 @@ export function Memory() {
                 <Brain className="w-6 h-6 text-ink-ghost" aria-hidden />
                 <p className="font-mono text-[12px] lowercase text-ink-faint text-center max-w-md">
                   no banks yet — create one on the left, or just chat: the
-                  default bank materializes when the first fact is saved
+                  default bank materializes when the first memory is saved
                 </p>
               </div>
             ) : (
@@ -193,10 +193,10 @@ export function Memory() {
                     </span>
                   ) : null}
                 </div>
-                {panel === 'facts' ? (
-                  <FactsPanel
+                {panel === 'memories' ? (
+                  <MemoriesPanel
                     bank={selected}
-                    facts={facts}
+                    memories={memories}
                     total={total}
                     offset={offset}
                     pageSize={pageSize}
@@ -204,37 +204,37 @@ export function Memory() {
                     includeSuperseded={includeSuperseded}
                     onToggleSuperseded={setIncludeSuperseded}
                     onSave={(text) =>
-                      void act(() => saveFact(selected, text, false))
+                      void act(() => saveMemory(selected, text, false))
                     }
-                    onPin={(fact: MemoryFact) =>
-                      void act(() => pinFact(selected, fact.id, !fact.pinned))
+                    onPin={(memory: MemoryItem) =>
+                      void act(() => pinMemory(selected, memory.id, !memory.pinned))
                     }
-                    onEdit={(fact, text) =>
-                      void act(() => updateFact(selected, fact.id, text))
+                    onEdit={(memory, text) =>
+                      void act(() => updateMemory(selected, memory.id, text))
                     }
-                    onDelete={(fact) =>
-                      void act(() => deleteFact(selected, fact.id))
+                    onDelete={(memory) =>
+                      void act(() => deleteMemory(selected, memory.id))
                     }
                     busy={busy}
                   />
                 ) : panel === 'graph' ? (
                   <MemoryGraph
-                    facts={facts}
+                    memories={memories}
                     totalFacts={total}
-                    onShowFacts={() => setPanel('facts')}
-                    onPin={(fact: MemoryFact) =>
-                      void act(() => pinFact(selected, fact.id, !fact.pinned))
+                    onShowFacts={() => setPanel('memories')}
+                    onPin={(memory: MemoryItem) =>
+                      void act(() => pinMemory(selected, memory.id, !memory.pinned))
                     }
-                    onDelete={(fact) =>
-                      void act(() => deleteFact(selected, fact.id))
+                    onDelete={(memory) =>
+                      void act(() => deleteMemory(selected, memory.id))
                     }
                     busy={busy}
                   />
-                ) : panel === 'blocks' ? (
-                  <BlocksPanel
-                    blocks={blocks}
+                ) : panel === 'rules' ? (
+                  <RulesPanel
+                    rules={rules}
                     onSet={(name, content) =>
-                      void act(() => setBlock(selected, name, content))
+                      void act(() => setRule(selected, name, content))
                     }
                     busy={busy}
                   />

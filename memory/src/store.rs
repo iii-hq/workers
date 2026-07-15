@@ -1,20 +1,20 @@
-//! Filesystem store: one folder per bank, facts in an append-only
-//! `facts.jsonl`, blocks as `blocks/<name>.md`.
+//! Filesystem store: one folder per bank, memories in an append-only
+//! `memories.jsonl`, rules as `rules/<name>.md`.
 //!
 //! Layout under the configured `data_dir`:
 //!
 //! ```text
-//! <data_dir>/<bank>/bank.yaml       # description
-//! <data_dir>/<bank>/blocks/*.md     # always-injected markdown blocks
-//! <data_dir>/<bank>/facts.jsonl     # append-only fact log (full records)
-//! <data_dir>/.trash/<bank>-<ms>/    # deleted banks (never destroyed)
+//! <data_dir>/<bank>/bank.yaml         # description
+//! <data_dir>/<bank>/rules/*.md        # always-injected markdown rules
+//! <data_dir>/<bank>/memories.jsonl    # append-only memory log (full records)
+//! <data_dir>/.trash/<bank>-<ms>/      # deleted banks (never destroyed)
 //! ```
 //!
 //! Crash-safety by construction: every mutation appends one fsynced line
-//! BEFORE touching RAM, replay is last-wins by fact id, and the search
+//! BEFORE touching RAM, replay is last-wins by memory id, and the search
 //! index lives only in RAM (rebuilt from the file at boot) — there is no
 //! index persistence to diverge and no shutdown flush to get wrong.
-//! [`Store::commit`] is the single choke point through which every fact
+//! [`Store::commit`] is the single choke point through which every memory
 //! mutation flows: file, map, and index update together or not at all.
 
 use std::collections::HashMap;
@@ -26,11 +26,11 @@ use tokio::sync::RwLock;
 
 use crate::error::MemoryError;
 use crate::index::Bm25Index;
-use crate::types::{now_ms, Block, Fact};
+use crate::types::{now_ms, Memory, Rule};
 
-const FACTS_FILE: &str = "facts.jsonl";
+const MEMORIES_FILE: &str = "memories.jsonl";
 const VECTORS_FILE: &str = "vectors.jsonl";
-const BLOCKS_DIR: &str = "blocks";
+const RULES_DIR: &str = "rules";
 const BANK_META: &str = "bank.yaml";
 const TRASH_DIR: &str = ".trash";
 /// Weight of the cosine similarity in the fused recall score, sized so a
@@ -52,16 +52,16 @@ pub struct Bank {
 }
 
 struct BankInner {
-    facts: HashMap<String, Fact>,
+    memories: HashMap<String, Memory>,
     index: Bm25Index,
-    /// Fact id -> embedding, loaded from the `vectors.jsonl` sidecar.
+    /// Memory id -> embedding, loaded from the `vectors.jsonl` sidecar.
     /// Like the BM25 index this is a derived cache: rebuildable, never
     /// authoritative, and absent vectors just mean no semantic signal for
-    /// that fact yet.
+    /// that memory yet.
     vectors: HashMap<String, Vec<f32>>,
 }
 
-/// One sidecar line: a fact's embedding (last-wins by id on replay).
+/// One sidecar line: a memory's embedding (last-wins by id on replay).
 #[derive(serde::Serialize, serde::Deserialize)]
 struct VectorRecord {
     id: String,
@@ -89,7 +89,7 @@ pub enum CommitKind {
     Updated,
 }
 
-/// `[a-z0-9]` then `[a-z0-9_-]`, max 64 — bank and block names become
+/// `[a-z0-9]` then `[a-z0-9_-]`, max 64 — bank and rule names become
 /// directory entries, so the charset is locked down.
 pub fn validate_name(name: &str) -> Result<(), MemoryError> {
     let ok = !name.is_empty()
@@ -178,7 +178,7 @@ impl Store {
             return Ok((existing.clone(), false));
         }
         let dir = self.root.join(name);
-        std::fs::create_dir_all(dir.join(BLOCKS_DIR))?;
+        std::fs::create_dir_all(dir.join(RULES_DIR))?;
         let desc = description.unwrap_or_default();
         std::fs::write(
             dir.join(BANK_META),
@@ -229,10 +229,10 @@ impl Bank {
             })
             .unwrap_or_default();
 
-        let mut facts: HashMap<String, Fact> = HashMap::new();
-        let facts_path = dir.join(FACTS_FILE);
-        if facts_path.exists() {
-            let file = std::fs::File::open(&facts_path)?;
+        let mut memories: HashMap<String, Memory> = HashMap::new();
+        let memories_path = dir.join(MEMORIES_FILE);
+        if memories_path.exists() {
+            let file = std::fs::File::open(&memories_path)?;
             for (lineno, line) in std::io::BufReader::new(file).lines().enumerate() {
                 let line = line?;
                 if line.trim().is_empty() {
@@ -241,28 +241,28 @@ impl Bank {
                 // A corrupt line (partial write from a crash) is skipped with
                 // a warning, never a boot failure — the rest of the log is
                 // intact by construction.
-                match serde_json::from_str::<Fact>(&line) {
-                    Ok(fact) => {
-                        let keep = facts
-                            .get(&fact.id)
-                            .is_none_or(|prev| fact.revision >= prev.revision);
+                match serde_json::from_str::<Memory>(&line) {
+                    Ok(memory) => {
+                        let keep = memories
+                            .get(&memory.id)
+                            .is_none_or(|prev| memory.revision >= prev.revision);
                         if keep {
-                            facts.insert(fact.id.clone(), fact);
+                            memories.insert(memory.id.clone(), memory);
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(bank = name, line = lineno + 1, error = %e, "skipping corrupt fact line");
+                        tracing::warn!(bank = name, line = lineno + 1, error = %e, "skipping corrupt memory line");
                     }
                 }
             }
         }
 
         let mut index = Bm25Index::default();
-        for fact in facts.values().filter(|f| f.is_live()) {
-            index.add(fact);
+        for memory in memories.values().filter(|f| f.is_live()) {
+            index.add(memory);
         }
 
-        // Vector sidecar: last-wins by id, entries for unknown facts
+        // Vector sidecar: last-wins by id, entries for unknown memories
         // dropped (they belong to trimmed history), corrupt lines skipped.
         let mut vectors: HashMap<String, Vec<f32>> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
@@ -274,7 +274,7 @@ impl Bank {
                     continue;
                 }
                 if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
-                    if facts.contains_key(&rec.id) {
+                    if memories.contains_key(&rec.id) {
                         vectors.insert(rec.id, rec.v);
                     }
                 }
@@ -286,15 +286,15 @@ impl Bank {
             dir,
             description,
             inner: RwLock::new(BankInner {
-                facts,
+                memories,
                 index,
                 vectors,
             }),
         })
     }
 
-    /// Persist one fact's embedding (sidecar append + RAM). Best-effort
-    /// derived data: failures cost a re-embed, never fact integrity.
+    /// Persist one memory's embedding (sidecar append + RAM). Best-effort
+    /// derived data: failures cost a re-embed, never memory integrity.
     pub async fn set_vector(&self, id: &str, model: &str, v: Vec<f32>) -> Result<(), MemoryError> {
         let mut inner = self.inner.write().await;
         let line = serde_json::to_string(&VectorRecord {
@@ -313,11 +313,11 @@ impl Bank {
         Ok(())
     }
 
-    /// Live facts that have no embedding yet (backfill work list).
-    pub async fn unembedded(&self, limit: usize) -> Vec<Fact> {
+    /// Live memories that have no embedding yet (backfill work list).
+    pub async fn unembedded(&self, limit: usize) -> Vec<Memory> {
         let inner = self.inner.read().await;
         inner
-            .facts
+            .memories
             .values()
             .filter(|f| f.is_live() && !inner.vectors.contains_key(&f.id))
             .take(limit)
@@ -332,34 +332,34 @@ impl Bank {
     /// THE single mutation choke point: append the full record (fsync),
     /// then update the map and the index together. Every save / update /
     /// pin / supersede / tombstone flows through here.
-    pub async fn commit(&self, fact: Fact) -> Result<CommitKind, MemoryError> {
+    pub async fn commit(&self, memory: Memory) -> Result<CommitKind, MemoryError> {
         let mut inner = self.inner.write().await;
-        let line = serde_json::to_string(&fact)
-            .map_err(|e| MemoryError::Storage(format!("serialize fact: {e}")))?;
+        let line = serde_json::to_string(&memory)
+            .map_err(|e| MemoryError::Storage(format!("serialize memory: {e}")))?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.dir.join(FACTS_FILE))?;
+            .open(self.dir.join(MEMORIES_FILE))?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         file.sync_data()?;
 
-        let kind = if inner.facts.contains_key(&fact.id) {
+        let kind = if inner.memories.contains_key(&memory.id) {
             CommitKind::Updated
         } else {
             CommitKind::Created
         };
-        if fact.is_live() {
-            inner.index.add(&fact);
+        if memory.is_live() {
+            inner.index.add(&memory);
         } else {
-            inner.index.remove(&fact.id);
+            inner.index.remove(&memory.id);
         }
-        inner.facts.insert(fact.id.clone(), fact);
+        inner.memories.insert(memory.id.clone(), memory);
         Ok(kind)
     }
 
-    pub async fn get(&self, id: &str) -> Option<Fact> {
-        self.inner.read().await.facts.get(id).cloned()
+    pub async fn get(&self, id: &str) -> Option<Memory> {
+        self.inner.read().await.memories.get(id).cloned()
     }
 
     /// Newest-first page. `include_superseded` also returns tombstoned /
@@ -369,10 +369,10 @@ impl Bank {
         limit: usize,
         offset: usize,
         include_superseded: bool,
-    ) -> (Vec<Fact>, usize) {
+    ) -> (Vec<Memory>, usize) {
         let inner = self.inner.read().await;
-        let mut all: Vec<&Fact> = inner
-            .facts
+        let mut all: Vec<&Memory> = inner
+            .memories
             .values()
             .filter(|f| include_superseded || f.is_live())
             .collect();
@@ -384,21 +384,21 @@ impl Bank {
 
     pub async fn counts(&self) -> (usize, usize) {
         let inner = self.inner.read().await;
-        let live = inner.facts.values().filter(|f| f.is_live()).count();
+        let live = inner.memories.values().filter(|f| f.is_live()).count();
         let pinned = inner
-            .facts
+            .memories
             .values()
             .filter(|f| f.is_live() && f.pinned)
             .count();
         (live, pinned)
     }
 
-    /// Hybrid recall over live facts: BM25 + entity/corroboration/pin
+    /// Hybrid recall over live memories: BM25 + entity/corroboration/pin
     /// fusion, plus an optional semantic signal (cosine against the
-    /// vector sidecar) that surfaces facts sharing MEANING but zero
+    /// vector sidecar) that surfaces memories sharing MEANING but zero
     /// vocabulary with the query. Read-only; zero LLM at query time (the
     /// caller embeds the query, if at all). First-person pronouns expand
-    /// to the `user` entity handle so identity questions reach the facts
+    /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user.
     pub async fn recall(
         &self,
@@ -407,7 +407,7 @@ impl Bank {
         limit: usize,
         half_life_days: u64,
         include_superseded: bool,
-    ) -> Vec<(Fact, f32)> {
+    ) -> Vec<(Memory, f32)> {
         let mut query_tokens = crate::index::tokenize(query);
         if query_tokens
             .iter()
@@ -433,9 +433,9 @@ impl Bank {
             }
         }
         let now = now_ms();
-        let mut scored: Vec<(Fact, f32)> = bm25
+        let mut scored: Vec<(Memory, f32)> = bm25
             .into_iter()
-            .filter_map(|(id, s)| inner.facts.get(&id).map(|f| (f.clone(), s, id)))
+            .filter_map(|(id, s)| inner.memories.get(&id).map(|f| (f.clone(), s, id)))
             .filter(|(f, _, _)| include_superseded || f.is_live())
             .map(|(f, s, id)| {
                 let mut fused =
@@ -451,12 +451,12 @@ impl Bank {
         scored
     }
 
-    /// The bank's strongest facts with no query: pinned first, then
+    /// The bank's strongest memories with no query: pinned first, then
     /// corroboration, then recency. The injection floor for turns whose
     /// query recalls little (identity questions, session openers).
-    pub async fn top_facts(&self, limit: usize) -> Vec<Fact> {
+    pub async fn top_memories(&self, limit: usize) -> Vec<Memory> {
         let inner = self.inner.read().await;
-        let mut all: Vec<&Fact> = inner.facts.values().filter(|f| f.is_live()).collect();
+        let mut all: Vec<&Memory> = inner.memories.values().filter(|f| f.is_live()).collect();
         all.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
@@ -466,18 +466,18 @@ impl Bank {
         all.into_iter().take(limit).cloned().collect()
     }
 
-    // ---- blocks -----------------------------------------------------------
+    // ---- rules ------------------------------------------------------------
 
-    fn blocks_dir(&self) -> PathBuf {
-        self.dir.join(BLOCKS_DIR)
+    fn rules_dir(&self) -> PathBuf {
+        self.dir.join(RULES_DIR)
     }
 
-    pub fn list_blocks(&self) -> Result<Vec<Block>, MemoryError> {
-        let dir = self.blocks_dir();
+    pub fn list_rules(&self) -> Result<Vec<Rule>, MemoryError> {
+        let dir = self.rules_dir();
         if !dir.exists() {
             return Ok(Vec::new());
         }
-        let mut blocks = Vec::new();
+        let mut rules = Vec::new();
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -496,20 +496,20 @@ impl Bank {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            blocks.push(Block {
+            rules.push(Rule {
                 name,
                 content,
                 updated_at,
             });
         }
-        blocks.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(blocks)
+        rules.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(rules)
     }
 
-    /// Atomic write (tmp + rename); empty content removes the block.
-    pub fn set_block(&self, name: &str, content: &str) -> Result<(), MemoryError> {
+    /// Atomic write (tmp + rename); empty content removes the rule.
+    pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
-        let dir = self.blocks_dir();
+        let dir = self.rules_dir();
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{name}.md"));
         if content.trim().is_empty() {
@@ -534,8 +534,8 @@ mod tests {
     use super::*;
     use crate::types::{fingerprint, Confidence};
 
-    fn fact(text: &str) -> Fact {
-        Fact {
+    fn memory(text: &str) -> Memory {
+        Memory {
             id: fingerprint(text),
             text: text.into(),
             entities: vec![],
@@ -557,7 +557,7 @@ mod tests {
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, created) = store.ensure_bank("main", None).await.unwrap();
         assert!(created);
-        bank.commit(fact("mike prefers formal writing"))
+        bank.commit(memory("mike prefers formal writing"))
             .await
             .unwrap();
 
@@ -575,7 +575,7 @@ mod tests {
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
 
-        let mut f = fact("the api port is 3000");
+        let mut f = memory("the api port is 3000");
         bank.commit(f.clone()).await.unwrap();
         f.text = "the api port is 4000".into();
         f.revision = 1;
@@ -600,9 +600,9 @@ mod tests {
             .recall("api port", None, 5, 30, false)
             .await
             .is_empty());
-        let (facts, total) = bank2.list(10, 0, true).await;
+        let (memories, total) = bank2.list(10, 0, true).await;
         assert_eq!(total, 1);
-        assert!(facts[0].invalid_at.is_some());
+        assert!(memories[0].invalid_at.is_some());
     }
 
     #[tokio::test]
@@ -610,17 +610,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
-        bank.commit(fact("good fact one")).await.unwrap();
+        bank.commit(memory("good memory one")).await.unwrap();
         // Simulate a torn write.
         {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
-                .open(bank.dir().join(FACTS_FILE))
+                .open(bank.dir().join(MEMORIES_FILE))
                 .unwrap();
             file.write_all(b"{\"id\": \"fp-torn").unwrap();
             file.write_all(b"\n").unwrap();
         }
-        bank.commit(fact("good fact two")).await.unwrap();
+        bank.commit(memory("good memory two")).await.unwrap();
 
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
@@ -629,16 +629,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocks_roundtrip_and_empty_deletes() {
+    async fn rules_roundtrip_and_empty_deletes() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("blog", Some("blog voice")).await.unwrap();
-        bank.set_block("style", "# Style\nNo em-dashes.").unwrap();
-        let blocks = bank.list_blocks().unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].name, "style");
-        bank.set_block("style", "").unwrap();
-        assert!(bank.list_blocks().unwrap().is_empty());
+        bank.set_rule("style", "# Style\nNo em-dashes.").unwrap();
+        let rules = bank.list_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "style");
+        bank.set_rule("style", "").unwrap();
+        assert!(bank.list_rules().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -646,9 +646,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("scratch", None).await.unwrap();
-        bank.commit(fact("keep me recoverable")).await.unwrap();
+        bank.commit(memory("keep me recoverable")).await.unwrap();
         let dest = store.trash_bank("scratch").await.unwrap();
-        assert!(std::path::Path::new(&dest).join(FACTS_FILE).exists());
+        assert!(std::path::Path::new(&dest).join(MEMORIES_FILE).exists());
         assert!(store.bank("scratch").await.is_err());
     }
 

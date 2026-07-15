@@ -13,20 +13,20 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { type MemoryFact, recall } from '@/lib/memory'
+import { type MemoryItem, recall } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 
 /**
- * The selected bank's facts, built for large banks: server-side pages of
+ * The selected bank's memories, built for large banks: server-side pages of
  * `pageSize` (newest first) with explicit paging controls, and a search
  * box that runs `memory::recall` (the ranked scorer, not a client filter)
- * so finding one fact among 10k costs one call. Every row is editable in
+ * so finding one memory among 10k costs one call. Every row is editable in
  * place: pin, edit text (revision bump), tombstone delete.
  */
 
-interface FactsPanelProps {
+interface MemoriesPanelProps {
   bank: string
-  facts: MemoryFact[]
+  memories: MemoryItem[]
   total: number
   offset: number
   pageSize: number
@@ -34,36 +34,36 @@ interface FactsPanelProps {
   includeSuperseded: boolean
   onToggleSuperseded: (next: boolean) => void
   onSave: (text: string) => void
-  onPin: (fact: MemoryFact) => void
-  onEdit: (fact: MemoryFact, text: string) => void
-  onDelete: (fact: MemoryFact) => void
+  onPin: (memory: MemoryItem) => void
+  onEdit: (memory: MemoryItem, text: string) => void
+  onDelete: (memory: MemoryItem) => void
   busy: boolean
 }
 
 function FactRow({
-  fact,
+  memory,
   onPin,
   onEdit,
   onDelete,
   busy,
   score,
 }: {
-  fact: MemoryFact
-  onPin: (fact: MemoryFact) => void
-  onEdit: (fact: MemoryFact, text: string) => void
-  onDelete: (fact: MemoryFact) => void
+  memory: MemoryItem
+  onPin: (memory: MemoryItem) => void
+  onEdit: (memory: MemoryItem, text: string) => void
+  onDelete: (memory: MemoryItem) => void
   busy: boolean
   score?: number
 }) {
   const [editing, setEditing] = useState(false)
-  const [editText, setEditText] = useState(fact.text)
-  const superseded = fact.invalid_at != null
+  const [editText, setEditText] = useState(memory.text)
+  const superseded = memory.invalid_at != null
 
   return (
     <li
       className={cn(
         'px-3 py-2 flex flex-col gap-1.5',
-        fact.pinned && 'border-l-2 border-l-accent',
+        memory.pinned && 'border-l-2 border-l-accent',
         superseded && 'opacity-50',
       )}
     >
@@ -74,7 +74,7 @@ function FactRow({
             e.preventDefault()
             const text = editText.trim()
             if (text.length < 3) return
-            onEdit(fact, text)
+            onEdit(memory, text)
             setEditing(false)
           }}
         >
@@ -99,7 +99,7 @@ function FactRow({
         </form>
       ) : (
         <p className="font-mono text-[13px] text-ink leading-snug">
-          {fact.text}
+          {memory.text}
         </p>
       )}
       <div className="flex items-center gap-2 flex-wrap">
@@ -108,28 +108,28 @@ function FactRow({
             {score.toFixed(2)}
           </span>
         ) : null}
-        {fact.entities.map((entity) => (
+        {memory.entities.map((entity) => (
           <Badge key={entity}>{entity}</Badge>
         ))}
         <span className="font-mono text-[10px] lowercase text-ink-ghost">
-          {fact.confidence}
-          {fact.corroboration > 0 && ` · seen ×${fact.corroboration + 1}`}
+          {memory.confidence}
+          {memory.corroboration > 0 && ` · seen ×${memory.corroboration + 1}`}
           {superseded && ' · superseded'}
         </span>
         <span className="flex-1" />
         <Button
           variant="icon"
           size="icon"
-          onClick={() => onPin(fact)}
+          onClick={() => onPin(memory)}
           disabled={busy || superseded}
-          aria-label={fact.pinned ? 'unpin memory' : 'pin memory'}
+          aria-label={memory.pinned ? 'unpin memory' : 'pin memory'}
           title={
-            fact.pinned
+            memory.pinned
               ? 'unpin (allows automatic consolidation again)'
               : 'pin (untouchable by every automatic path)'
           }
         >
-          {fact.pinned ? (
+          {memory.pinned ? (
             <PinOff className="w-3.5 h-3.5" aria-hidden />
           ) : (
             <Pin className="w-3.5 h-3.5" aria-hidden />
@@ -139,7 +139,7 @@ function FactRow({
           variant="icon"
           size="icon"
           onClick={() => {
-            setEditText(fact.text)
+            setEditText(memory.text)
             setEditing(true)
           }}
           disabled={busy || superseded}
@@ -150,7 +150,7 @@ function FactRow({
         <Button
           variant="icon"
           size="icon"
-          onClick={() => onDelete(fact)}
+          onClick={() => onDelete(memory)}
           disabled={busy || superseded}
           aria-label="delete memory"
           title="tombstone (leaves recall; stays on disk under show history)"
@@ -162,9 +162,9 @@ function FactRow({
   )
 }
 
-export function FactsPanel({
+export function MemoriesPanel({
   bank,
-  facts,
+  memories,
   total,
   offset,
   pageSize,
@@ -176,11 +176,11 @@ export function FactsPanel({
   onEdit,
   onDelete,
   busy,
-}: FactsPanelProps) {
+}: MemoriesPanelProps) {
   const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<
-    { fact: MemoryFact; score: number }[] | null
+    { memory: MemoryItem; score: number }[] | null
   >(null)
   const [searching, setSearching] = useState(false)
 
@@ -195,7 +195,7 @@ export function FactsPanel({
     setSearching(true)
     try {
       const res = await recall(bank, q, 50)
-      setResults(res.facts)
+      setResults(res.memories)
     } finally {
       setSearching(false)
     }
@@ -328,10 +328,10 @@ export function FactsPanel({
           />
         ) : (
           <ul className="border border-rule divide-y divide-rule-2">
-            {results.map(({ fact, score }) => (
+            {results.map(({ memory, score }) => (
               <FactRow
-                key={fact.id}
-                fact={fact}
+                key={memory.id}
+                memory={memory}
                 score={score}
                 onPin={onPin}
                 onEdit={onEdit}
@@ -341,17 +341,17 @@ export function FactsPanel({
             ))}
           </ul>
         )
-      ) : facts.length === 0 ? (
+      ) : memories.length === 0 ? (
         <EmptyState
           title="no memories in this bank yet"
           description="memories arrive automatically after each completed turn, or save one above. sessions pick this bank via session metadata memory_bank."
         />
       ) : (
         <ul className="border border-rule divide-y divide-rule-2">
-          {facts.map((fact) => (
+          {memories.map((memory) => (
             <FactRow
-              key={fact.id}
-              fact={fact}
+              key={memory.id}
+              memory={memory}
               onPin={onPin}
               onEdit={onEdit}
               onDelete={onDelete}

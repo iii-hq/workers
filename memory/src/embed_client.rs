@@ -1,7 +1,7 @@
 //! Fail-soft client for `router::embed` plus the vector backfill task.
 //! Embeddings are derived data: every failure here degrades recall to
 //! BM25 + entities (and recall responses say so), never blocks a turn,
-//! and never touches fact integrity.
+//! and never touches memory integrity.
 
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ pub async fn query_vector(deps: &Deps, query: &str) -> Option<Vec<f32>> {
     .and_then(|mut v| v.pop())
 }
 
-/// One backfill pass over a single bank: embed live facts that have no
+/// One backfill pass over a single bank: embed live memories that have no
 /// vector yet, in bounded batches. Spawn-and-forget.
 pub async fn backfill_bank(deps: Arc<Deps>, bank_name: String) {
     let cfg = deps.config().await;
@@ -90,8 +90,8 @@ pub async fn backfill_bank(deps: Arc<Deps>, bank_name: String) {
             // Router or provider unavailable; a later pass retries.
             return;
         };
-        for (fact, v) in pending.iter().zip(vectors) {
-            if let Err(e) = bank.set_vector(&fact.id, &cfg.embedding_model, v).await {
+        for (memory, v) in pending.iter().zip(vectors) {
+            if let Err(e) = bank.set_vector(&memory.id, &cfg.embedding_model, v).await {
                 tracing::warn!(bank = %bank_name, error = %e, "vector write failed");
                 return;
             }

@@ -34,15 +34,15 @@ pub async fn create(
     if created {
         deps.emitter.bank("created", &req.name).await;
     }
-    let (facts, pinned) = bank.counts().await;
-    let blocks = bank.list_blocks().map(|b| b.len()).unwrap_or(0);
+    let (memories, pinned) = bank.counts().await;
+    let rules = bank.list_rules().map(|b| b.len()).unwrap_or(0);
     Ok(BankCreateResponse {
         bank: BankInfo {
             name: bank.name.clone(),
             description: bank.description.clone(),
-            facts,
+            memories,
             pinned,
-            blocks,
+            rules,
         },
         created,
     })
@@ -63,14 +63,14 @@ pub async fn list(deps: &Deps, _req: BankListRequest) -> Result<BankListResponse
         let Ok(bank) = store.bank(&name).await else {
             continue;
         };
-        let (facts, pinned) = bank.counts().await;
-        let blocks = bank.list_blocks().map(|b| b.len()).unwrap_or(0);
+        let (memories, pinned) = bank.counts().await;
+        let rules = bank.list_rules().map(|b| b.len()).unwrap_or(0);
         banks.push(BankInfo {
             name: bank.name.clone(),
             description: bank.description.clone(),
-            facts,
+            memories,
             pinned,
-            blocks,
+            rules,
         });
     }
     Ok(BankListResponse { banks })

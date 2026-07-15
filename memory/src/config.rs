@@ -18,8 +18,8 @@ use serde_json::Value;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
-    /// Directory holding one folder per memory bank (`blocks/*.md` +
-    /// `facts.jsonl`). A leading `~/` expands to the home directory. An
+    /// Directory holding one folder per memory bank (`rules/*.md` +
+    /// `memories.jsonl`). A leading `~/` expands to the home directory. An
     /// unwritable directory is boot-fatal — memory must never silently run
     /// in RAM.
     #[serde(default = "default_data_dir")]
@@ -30,28 +30,28 @@ pub struct WorkerConfig {
     #[serde(default = "default_bank")]
     pub default_bank: String,
 
-    /// Inject the bank's markdown blocks into the system prompt on every
+    /// Inject the bank's markdown rules into the system prompt on every
     /// turn (`harness::hook::pre-generate`).
     #[serde(default = "default_true")]
-    pub inject_blocks: bool,
+    pub inject_rules: bool,
 
-    /// Recall facts against the latest user message and append them as one
-    /// bounded message on every turn. Appending (rather than mutating the
-    /// system prompt) keeps the provider prompt cache warm.
+    /// Recall memories against the latest user message and append them as
+    /// one bounded message on every turn. Appending (rather than mutating
+    /// the system prompt) keeps the provider prompt cache warm.
     #[serde(default = "default_true")]
-    pub inject_facts: bool,
+    pub inject_memories: bool,
 
-    /// Maximum facts injected per turn.
+    /// Maximum memories injected per turn.
     #[serde(default = "default_recall_limit")]
     pub recall_limit: usize,
 
-    /// Token budget (estimated at 4 chars/token) for the injected facts.
+    /// Token budget (estimated at 4 chars/token) for the injected memories.
     #[serde(default = "default_recall_budget_tokens")]
     pub recall_budget_tokens: u64,
 
-    /// Extract new facts after each completed turn (one `router::complete`
-    /// call, off the hot path). Disable to run memory as a purely manual
-    /// store.
+    /// Extract new memories after each completed turn (one
+    /// `router::complete` call, off the hot path). Disable to run memory as
+    /// a purely manual store.
     #[serde(default = "default_true")]
     pub extraction_enabled: bool,
 
@@ -68,23 +68,23 @@ pub struct WorkerConfig {
     #[serde(default = "default_extraction_timeout_ms")]
     pub extraction_timeout_ms: u64,
 
-    /// Cap on facts accepted from a single extraction pass.
-    #[serde(default = "default_max_facts_per_turn")]
-    pub max_facts_per_turn: usize,
+    /// Cap on memories accepted from a single extraction pass.
+    #[serde(default = "default_max_memories_per_turn")]
+    pub max_memories_per_turn: usize,
 
-    /// Hard character budget for the injected blocks section. Blocks are
-    /// injected into the system prompt on EVERY turn, so an unbounded
-    /// block taxes every call forever; over-budget content is truncated
-    /// with a visible marker.
-    #[serde(default = "default_max_block_chars")]
-    pub max_block_chars: usize,
+    /// Hard character budget for the injected rules section. Rules are
+    /// injected into the system prompt on EVERY turn, so an unbounded rule
+    /// taxes every call forever; over-budget content is truncated with a
+    /// visible marker.
+    #[serde(default = "default_max_rule_chars")]
+    pub max_rule_chars: usize,
 
-    /// Recency half-life in days for recall ranking. Unpinned facts lose
-    /// rank weight as they age; they never lose the data.
+    /// Recency half-life in days for recall ranking. Unpinned memories
+    /// lose rank weight as they age; they never lose the data.
     #[serde(default = "default_decay_half_life_days")]
     pub decay_half_life_days: u64,
 
-    /// Add a semantic signal to recall via `router::embed` (fact vectors
+    /// Add a semantic signal to recall via `router::embed` (memory vectors
     /// in a per-bank sidecar, query embedded per recall). Degrades to
     /// BM25 + entities when no embed-capable provider is configured;
     /// recall responses name the mode that actually ran.
@@ -118,10 +118,10 @@ fn default_extraction_window() -> usize {
 fn default_extraction_timeout_ms() -> u64 {
     60_000
 }
-fn default_max_facts_per_turn() -> usize {
+fn default_max_memories_per_turn() -> usize {
     8
 }
-fn default_max_block_chars() -> usize {
+fn default_max_rule_chars() -> usize {
     6_000
 }
 fn default_decay_half_life_days() -> u64 {

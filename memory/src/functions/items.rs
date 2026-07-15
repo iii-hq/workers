@@ -1,4 +1,4 @@
-//! `memory::save/get/list/update/delete/pin` — fact CRUD. Every mutation
+//! `memory::save/get/list/update/delete/pin` — memory CRUD. Every mutation
 //! goes through the bank's commit choke point and emits an item event.
 
 use schemars::JsonSchema;
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::MemoryError;
 use crate::events::ItemEvent;
-use crate::types::{fingerprint, now_ms, Confidence, Fact, Provenance};
+use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
 
 fn default_bank_name(req_bank: &Option<String>, cfg_default: &str) -> String {
     req_bank.clone().unwrap_or_else(|| cfg_default.to_string())
@@ -18,7 +18,7 @@ pub struct SaveRequest {
     /// Target bank; the configured default when omitted.
     #[serde(default)]
     pub bank: Option<String>,
-    /// The fact, one self-contained sentence.
+    /// The memory, one self-contained sentence.
     pub text: String,
     /// Entity handles (people/projects/tools) used as a retrieval signal.
     #[serde(default)]
@@ -32,8 +32,8 @@ pub struct SaveRequest {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SaveResponse {
-    pub fact: Fact,
-    /// False when the text fingerprint matched an existing fact (it was
+    pub memory: Memory,
+    /// False when the text fingerprint matched an existing memory (it was
     /// reinforced instead).
     pub created: bool,
 }
@@ -55,7 +55,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
 
     let id = fingerprint(&text);
     let now = now_ms();
-    let (fact, event, created) = match bank.get(&id).await {
+    let (memory, event, created) = match bank.get(&id).await {
         Some(existing) if existing.is_live() => {
             let mut f = existing;
             f.corroboration = f.corroboration.saturating_add(1);
@@ -65,7 +65,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
             (f, ItemEvent::Updated, false)
         }
         _ => (
-            Fact {
+            Memory {
                 id,
                 text,
                 entities: req
@@ -93,9 +93,9 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
             true,
         ),
     };
-    bank.commit(fact.clone()).await?;
-    deps.emitter.item(event, &bank_name, &fact).await;
-    Ok(SaveResponse { fact, created })
+    bank.commit(memory.clone()).await?;
+    deps.emitter.item(event, &bank_name, &memory).await;
+    Ok(SaveResponse { memory, created })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -107,7 +107,7 @@ pub struct GetRequest {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetResponse {
-    pub fact: Fact,
+    pub memory: Memory,
 }
 
 pub async fn get(deps: &Deps, req: GetRequest) -> Result<GetResponse, MemoryError> {
@@ -115,11 +115,11 @@ pub async fn get(deps: &Deps, req: GetRequest) -> Result<GetResponse, MemoryErro
     let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
-    let fact = bank
+    let memory = bank
         .get(&req.id)
         .await
-        .ok_or_else(|| MemoryError::FactNotFound(req.id.clone()))?;
-    Ok(GetResponse { fact })
+        .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    Ok(GetResponse { memory })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -138,7 +138,7 @@ pub struct ListRequest {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListResponse {
-    pub facts: Vec<Fact>,
+    pub memories: Vec<Memory>,
     pub total: usize,
 }
 
@@ -148,20 +148,20 @@ pub async fn list(deps: &Deps, req: ListRequest) -> Result<ListResponse, MemoryE
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let limit = req.limit.unwrap_or(50).min(500);
-    let (facts, total) = bank
+    let (memories, total) = bank
         .list(
             limit,
             req.offset.unwrap_or(0),
             req.include_superseded.unwrap_or(false),
         )
         .await;
-    Ok(ListResponse { facts, total })
+    Ok(ListResponse { memories, total })
 }
 
 /// Shared response for update/delete/pin.
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct FactResponse {
-    pub fact: Fact,
+pub struct MemoryResponse {
+    pub memory: Memory,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -177,15 +177,15 @@ pub struct UpdateRequest {
     pub pinned: Option<bool>,
 }
 
-pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<FactResponse, MemoryError> {
+pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, MemoryError> {
     let cfg = deps.config().await;
     let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
-    let mut fact = bank
+    let mut memory = bank
         .get(&req.id)
         .await
-        .ok_or_else(|| MemoryError::FactNotFound(req.id.clone()))?;
+        .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
     if let Some(text) = req.text {
         let text = text.trim().to_string();
         if text.len() < 3 || text.len() > 2_000 {
@@ -193,10 +193,10 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<FactResponse, Mem
                 "text must be 3..2000 characters".into(),
             ));
         }
-        fact.text = text;
+        memory.text = text;
     }
     if let Some(entities) = req.entities {
-        fact.entities = entities
+        memory.entities = entities
             .into_iter()
             .map(|e| e.trim().to_lowercase())
             .filter(|e| !e.is_empty())
@@ -204,15 +204,15 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<FactResponse, Mem
             .collect();
     }
     if let Some(pinned) = req.pinned {
-        fact.pinned = pinned;
+        memory.pinned = pinned;
     }
-    fact.updated_at = now_ms();
-    fact.revision += 1;
-    bank.commit(fact.clone()).await?;
+    memory.updated_at = now_ms();
+    memory.revision += 1;
+    bank.commit(memory.clone()).await?;
     deps.emitter
-        .item(ItemEvent::Updated, &bank_name, &fact)
+        .item(ItemEvent::Updated, &bank_name, &memory)
         .await;
-    Ok(FactResponse { fact })
+    Ok(MemoryResponse { memory })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -222,25 +222,25 @@ pub struct DeleteRequest {
     pub id: String,
 }
 
-pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<FactResponse, MemoryError> {
+pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, MemoryError> {
     let cfg = deps.config().await;
     let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
-    let mut fact = bank
+    let mut memory = bank
         .get(&req.id)
         .await
-        .ok_or_else(|| MemoryError::FactNotFound(req.id.clone()))?;
-    if fact.invalid_at.is_none() {
-        fact.invalid_at = Some(now_ms());
-        fact.updated_at = now_ms();
-        fact.revision += 1;
-        bank.commit(fact.clone()).await?;
+        .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    if memory.invalid_at.is_none() {
+        memory.invalid_at = Some(now_ms());
+        memory.updated_at = now_ms();
+        memory.revision += 1;
+        bank.commit(memory.clone()).await?;
         deps.emitter
-            .item(ItemEvent::Deleted, &bank_name, &fact)
+            .item(ItemEvent::Deleted, &bank_name, &memory)
             .await;
     }
-    Ok(FactResponse { fact })
+    Ok(MemoryResponse { memory })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -251,7 +251,7 @@ pub struct PinRequest {
     pub pinned: bool,
 }
 
-pub async fn pin(deps: &Deps, req: PinRequest) -> Result<FactResponse, MemoryError> {
+pub async fn pin(deps: &Deps, req: PinRequest) -> Result<MemoryResponse, MemoryError> {
     update(
         deps,
         UpdateRequest {

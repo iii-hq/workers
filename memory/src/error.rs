@@ -7,8 +7,8 @@ pub enum MemoryError {
     #[error("bank_not_found: {0}")]
     BankNotFound(String),
 
-    #[error("fact_not_found: {0}")]
-    FactNotFound(String),
+    #[error("memory_not_found: {0}")]
+    MemoryNotFound(String),
 
     #[error("invalid_input: {0}")]
     InvalidInput(String),

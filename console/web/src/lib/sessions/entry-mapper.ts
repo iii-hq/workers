@@ -429,15 +429,15 @@ export function entrySegments(
     case 'assistant': {
       const segments = assistantSegments(item.entry_id, message, sessionId)
       // Hook annotations from the entry origin: which memory bank and
-      // facts fed this generate. Tag the first assistant segment so the
-      // chat renders one memory chip per reply.
+      // memories fed this generate. Tag the first assistant segment so
+      // the chat renders one memory chip per reply.
       const md = item.origin as
         | {
             memory_bank?: unknown
-            memory_facts?: unknown
-            memory_fact_ids?: unknown
-            memory_blocks?: unknown
-            memory_blocks_truncated?: unknown
+            memory_recalled?: unknown
+            memory_ids?: unknown
+            memory_rules?: unknown
+            memory_rules_truncated?: unknown
             memory_retrieval?: unknown
           }
         | undefined
@@ -446,16 +446,15 @@ export function entrySegments(
         if (first && first.role === 'assistant') {
           first.memory = {
             bank: md.memory_bank,
-            facts: typeof md.memory_facts === 'number' ? md.memory_facts : 0,
-            factIds: Array.isArray(md.memory_fact_ids)
-              ? md.memory_fact_ids.filter(
-                  (v): v is string => typeof v === 'string',
-                )
+            memories:
+              typeof md.memory_recalled === 'number' ? md.memory_recalled : 0,
+            memoryIds: Array.isArray(md.memory_ids)
+              ? md.memory_ids.filter((v): v is string => typeof v === 'string')
               : [],
-            ...(typeof md.memory_blocks === 'number'
-              ? { blocks: md.memory_blocks }
+            ...(typeof md.memory_rules === 'number'
+              ? { rules: md.memory_rules }
               : {}),
-            ...(md.memory_blocks_truncated === true ? { truncated: true } : {}),
+            ...(md.memory_rules_truncated === true ? { truncated: true } : {}),
             ...(md.memory_retrieval === 'bm25-entity-semantic'
               ? { semantic: true }
               : {}),

@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 
 /**
  * Left rail: the bank list (first-class named memory scopes) plus an
- * inline create form. Selecting a bank scopes the facts/blocks/recall
+ * inline create form. Selecting a bank scopes the memories/rules/recall
  * panels; sessions pick their bank via session metadata `memory_bank`.
  */
 
@@ -50,9 +50,9 @@ export function BankRail({
                 : 'border-l-2 border-l-transparent',
             )}
           >
-            <span className="block text-[13px] text-ink">{bank.name}</span>
-            <span className="block text-[11px] text-ink-faint mt-0.5">
-              {bank.facts} memories · {bank.pinned} pinned · {bank.blocks} rules
+            <span className="rule text-[13px] text-ink">{bank.name}</span>
+            <span className="rule text-[11px] text-ink-faint mt-0.5">
+              {bank.memories} memories · {bank.pinned} pinned · {bank.rules} rules
             </span>
           </button>
         ))}

@@ -1,12 +1,12 @@
-//! Post-turn fact extraction: one `router::complete` call per completed
+//! Post-turn memory extraction: one `router::complete` call per completed
 //! turn, off the hot path (spawned from the `harness::turn-completed`
 //! handler, never inside a turn).
 //!
-//! ADD-only by design: extraction never rewrites or deletes existing facts.
+//! ADD-only by design: extraction never rewrites or deletes existing memories.
 //! The content fingerprint makes redelivery and re-observation idempotent —
-//! a known fact is reinforced (`corroboration += 1`), never duplicated.
+//! a known memory is reinforced (`corroboration += 1`), never duplicated.
 //! Memory's own function calls never reach this path: the transcript is
-//! fetched with `roles: [user, assistant]`, and only text blocks are read.
+//! fetched with `roles: [user, assistant]`, and only text parts are read.
 //!
 //! INCREMENTAL: a per-session cursor (last processed entry id, kept in the
 //! `state` worker under scope `memory_cursor`) means each pass reads and
@@ -24,18 +24,18 @@ use serde_json::{json, Value};
 use crate::deps::Deps;
 use crate::events::ItemEvent;
 use crate::store::CommitKind;
-use crate::types::{fingerprint, now_ms, Confidence, Fact, Provenance};
+use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
 
-const EXTRACT_SYSTEM: &str = "You extract durable memory facts from a conversation excerpt.\n\
+const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
 Return ONLY a JSON array (no prose, no code fences). Each element:\n\
 {\"text\": string, \"entities\": [string], \"confidence\": \"extracted\"|\"inferred\"}\n\
 Rules:\n\
-- Only durable facts worth remembering across sessions: stable preferences, corrections, \
+- Only durable memories worth remembering across sessions: stable preferences, corrections, \
 identities, project constants, standing instructions.\n\
 - Never ephemeral state (current task progress, one-off values), never secrets, API keys, \
 tokens, or passwords.\n\
 - text: one self-contained sentence, max 200 characters, in the language of the source.\n\
-- entities: short lowercase handles for the people/projects/tools the fact is about.\n\
+- entities: short lowercase handles for the people/projects/tools the memory is about.\n\
 - confidence: \"extracted\" when stated directly, \"inferred\" when derived.\n\
 - Return [] when nothing qualifies. Most turns have nothing worth keeping.";
 
@@ -147,15 +147,15 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let mut saved = 0usize;
-    for item in items.into_iter().take(cfg.max_facts_per_turn) {
+    for item in items.into_iter().take(cfg.max_memories_per_turn) {
         let text = item.text.trim();
         if text.len() < 3 || text.len() > 500 {
             continue;
         }
         let id = fingerprint(text);
         let now = now_ms();
-        let (fact, event) = match bank.get(&id).await {
-            // Known fact re-observed: reinforce, never duplicate. A pinned
+        let (memory, event) = match bank.get(&id).await {
+            // Known memory re-observed: reinforce, never duplicate. A pinned
             // or tombstoned record is left exactly as it is.
             Some(existing) if existing.is_live() && !existing.pinned => {
                 let mut f = existing;
@@ -166,7 +166,7 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
             }
             Some(_) => continue,
             None => (
-                Fact {
+                Memory {
                     id,
                     text: text.to_string(),
                     entities: item
@@ -196,17 +196,17 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
                 ItemEvent::Created,
             ),
         };
-        match bank.commit(fact.clone()).await {
+        match bank.commit(memory.clone()).await {
             Ok(CommitKind::Created | CommitKind::Updated) => {
-                deps.emitter.item(event, &bank_name, &fact).await;
+                deps.emitter.item(event, &bank_name, &memory).await;
                 saved += 1;
             }
-            Err(e) => tracing::warn!(error = %e, "fact commit failed"),
+            Err(e) => tracing::warn!(error = %e, "memory commit failed"),
         }
     }
     if saved > 0 {
-        tracing::info!(session_id, bank = %bank_name, saved, "extraction pass saved facts");
-        // Embed the new facts off this path; recall degrades gracefully
+        tracing::info!(session_id, bank = %bank_name, saved, "extraction pass saved memories");
+        // Embed the new memories off this path; recall degrades gracefully
         // until the vectors land.
         let deps_bg = crate::deps::Deps {
             iii: deps.iii.clone(),
@@ -359,13 +359,13 @@ async fn fetch_transcript_since(
     Ok((lines.join("\n"), newest_id))
 }
 
-/// Concatenated text blocks of one message's content array.
+/// Concatenated text parts of one message's content array.
 pub fn content_text(content: Option<&Value>) -> String {
-    let Some(blocks) = content.and_then(Value::as_array) else {
+    let Some(parts) = content.and_then(Value::as_array) else {
         // Tolerate plain-string content from non-harness agents.
         return content.and_then(Value::as_str).unwrap_or("").to_string();
     };
-    blocks
+    parts
         .iter()
         .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
         .filter_map(|b| b.get("text").and_then(Value::as_str))
@@ -439,13 +439,13 @@ mod tests {
     }
 
     #[test]
-    fn content_text_reads_blocks_and_plain_strings() {
-        let blocks = json!([
+    fn content_text_reads_parts_and_plain_strings() {
+        let parts = json!([
             { "type": "text", "text": "hello" },
             { "type": "image", "mime": "image/png", "data": "…" },
             { "type": "text", "text": "world" },
         ]);
-        assert_eq!(content_text(Some(&blocks)), "hello\nworld");
+        assert_eq!(content_text(Some(&parts)), "hello\nworld");
         let plain = json!("just a string");
         assert_eq!(content_text(Some(&plain)), "just a string");
     }

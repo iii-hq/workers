@@ -81,14 +81,14 @@ export interface AssistantMessage extends BaseMessage {
   streaming?: boolean
   /**
    * What the memory worker fed this turn (from the entry origin's hook
-   * annotations): the bank, how many facts were injected, and their ids
-   * so the chip can fetch details on demand.
+   * annotations): the bank, how many memories were injected, and their
+   * ids so the chip can fetch details on demand.
    */
   memory?: {
     bank: string
-    facts: number
-    factIds: string[]
-    blocks?: number
+    memories: number
+    memoryIds: string[]
+    rules?: number
     truncated?: boolean
     /** Recall ran with the semantic (embedding) signal fused in. */
     semantic?: boolean
@@ -239,8 +239,8 @@ export interface Conversation {
   workingDir?: string | null
   /**
    * Named memory bank for this chat (session metadata `memory_bank`). The
-   * memory worker injects that bank's blocks + recalled facts into every
-   * turn and extracts new facts back into it. Null = the worker's
+   * memory worker injects that bank's rules + recalled memories into every
+   * turn and extracts new memories back into it. Null = the worker's
    * configured default bank.
    */
   memoryBank?: string | null

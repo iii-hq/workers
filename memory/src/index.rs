@@ -1,14 +1,14 @@
 //! In-RAM BM25 index plus the fused recall scorer.
 //!
-//! The index is deliberately a cache: it is rebuilt from `facts.jsonl` at
+//! The index is deliberately a cache: it is rebuilt from `memories.jsonl` at
 //! boot and updated through the store's single commit choke point, so it can
 //! never diverge from disk across a restart. At memory scale (10^3–10^5
-//! facts) a plain inverted index scores in well under a millisecond — no
+//! memories) a plain inverted index scores in well under a millisecond — no
 //! ANN machinery, no external engine, no query-time LLM.
 
 use std::collections::HashMap;
 
-use crate::types::Fact;
+use crate::types::Memory;
 
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
@@ -16,9 +16,9 @@ const BM25_B: f32 = 0.75;
 const ENTITY_WEIGHT: f32 = 0.6;
 /// Weight of `ln(1 + corroboration)`.
 const CORROBORATION_WEIGHT: f32 = 0.3;
-/// Flat bonus for pinned facts that matched at all.
+/// Flat bonus for pinned memories that matched at all.
 const PINNED_BONUS: f32 = 0.75;
-/// Recency floor so old-but-relevant facts stay reachable.
+/// Recency floor so old-but-relevant memories stay reachable.
 const RECENCY_FLOOR: f32 = 0.35;
 
 /// Lowercased alphanumeric runs; CJK codepoints additionally emit character
@@ -61,7 +61,7 @@ fn is_cjk(ch: char) -> bool {
         0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF)
 }
 
-/// Inverted index over fact text + entity handles.
+/// Inverted index over memory text + entity handles.
 #[derive(Default)]
 pub struct Bm25Index {
     postings: HashMap<String, HashMap<String, u32>>,
@@ -71,10 +71,10 @@ pub struct Bm25Index {
 }
 
 impl Bm25Index {
-    pub fn add(&mut self, fact: &Fact) {
-        self.remove(&fact.id);
-        let mut text = fact.text.clone();
-        for e in &fact.entities {
+    pub fn add(&mut self, memory: &Memory) {
+        self.remove(&memory.id);
+        let mut text = memory.text.clone();
+        for e in &memory.entities {
             text.push(' ');
             text.push_str(e);
         }
@@ -84,15 +84,15 @@ impl Bm25Index {
                 .postings
                 .entry(t.clone())
                 .or_default()
-                .entry(fact.id.clone())
+                .entry(memory.id.clone())
                 .or_insert(0) += 1;
         }
-        self.doc_len.insert(fact.id.clone(), tokens.len());
+        self.doc_len.insert(memory.id.clone(), tokens.len());
         self.total_len += tokens.len();
-        self.doc_tokens.insert(fact.id.clone(), tokens);
+        self.doc_tokens.insert(memory.id.clone(), tokens);
     }
 
-    /// Removal is part of the same choke point as insertion: a fact that
+    /// Removal is part of the same choke point as insertion: a memory that
     /// leaves the map always leaves the index in the same call.
     pub fn remove(&mut self, id: &str) {
         let Some(tokens) = self.doc_tokens.remove(id) else {
@@ -144,17 +144,17 @@ impl Bm25Index {
     }
 }
 
-/// Fused recall score for one already-BM25-matched fact: entity overlap,
+/// Fused recall score for one already-BM25-matched memory: entity overlap,
 /// corroboration, and pin bonus added, then a recency multiplier with a
-/// floor. Superseded facts are excluded by the caller.
+/// floor. Superseded memories are excluded by the caller.
 pub fn fused_score(
     bm25: f32,
-    fact: &Fact,
+    memory: &Memory,
     query_tokens: &[String],
     now_ms: u64,
     half_life_days: u64,
 ) -> f32 {
-    let entity_hits = fact
+    let entity_hits = memory
         .entities
         .iter()
         .flat_map(|e| tokenize(e))
@@ -162,9 +162,9 @@ pub fn fused_score(
         .count() as f32;
     let base = bm25
         + ENTITY_WEIGHT * entity_hits
-        + CORROBORATION_WEIGHT * (1.0 + fact.corroboration as f32).ln()
-        + if fact.pinned { PINNED_BONUS } else { 0.0 };
-    let age_days = (now_ms.saturating_sub(fact.updated_at)) as f32 / 86_400_000.0;
+        + CORROBORATION_WEIGHT * (1.0 + memory.corroboration as f32).ln()
+        + if memory.pinned { PINNED_BONUS } else { 0.0 };
+    let age_days = (now_ms.saturating_sub(memory.updated_at)) as f32 / 86_400_000.0;
     let half_life = half_life_days.max(1) as f32;
     let recency = 0.5_f32.powf(age_days / half_life).max(RECENCY_FLOOR);
     base * recency
@@ -175,8 +175,8 @@ mod tests {
     use super::*;
     use crate::types::{fingerprint, now_ms, Confidence};
 
-    fn fact(text: &str, entities: &[&str]) -> Fact {
-        Fact {
+    fn memory(text: &str, entities: &[&str]) -> Memory {
+        Memory {
             id: fingerprint(text),
             text: text.into(),
             entities: entities.iter().map(|s| s.to_string()).collect(),
@@ -207,8 +207,8 @@ mod tests {
     #[test]
     fn bm25_ranks_the_matching_doc_first() {
         let mut idx = Bm25Index::default();
-        let a = fact("Mike prefers formal writing with short paragraphs", &[]);
-        let b = fact("The deploy pipeline uses nine cross-compile targets", &[]);
+        let a = memory("Mike prefers formal writing with short paragraphs", &[]);
+        let b = memory("The deploy pipeline uses nine cross-compile targets", &[]);
         idx.add(&a);
         idx.add(&b);
         let scores = idx.score(&tokenize("formal writing style"));
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn remove_unindexes_completely() {
         let mut idx = Bm25Index::default();
-        let a = fact("temporary fact about kubernetes", &[]);
+        let a = memory("temporary memory about kubernetes", &[]);
         idx.add(&a);
         assert_eq!(idx.len(), 1);
         idx.remove(&a.id);
@@ -231,8 +231,8 @@ mod tests {
     fn pinned_and_entities_boost_rank() {
         let now = now_ms();
         let q = tokenize("grafana dashboards");
-        let plain = fact("team uses grafana", &[]);
-        let mut boosted = fact("observability stack is grafana", &["grafana"]);
+        let plain = memory("team uses grafana", &[]);
+        let mut boosted = memory("observability stack is grafana", &["grafana"]);
         boosted.pinned = true;
         let s_plain = fused_score(1.0, &plain, &q, now, 30);
         let s_boosted = fused_score(1.0, &boosted, &q, now, 30);
@@ -242,10 +242,10 @@ mod tests {
     #[test]
     fn recency_decays_but_floors() {
         let now = now_ms();
-        let recent = fact("recent fact", &[]);
-        let mut ancient = fact("ancient fact", &[]);
+        let recent = memory("recent memory", &[]);
+        let mut ancient = memory("ancient memory", &[]);
         ancient.updated_at = now.saturating_sub(400 * 86_400_000);
-        let q = tokenize("fact");
+        let q = tokenize("memory");
         let s_recent = fused_score(1.0, &recent, &q, now, 30);
         let s_ancient = fused_score(1.0, &ancient, &q, now, 30);
         assert!(s_recent > s_ancient);

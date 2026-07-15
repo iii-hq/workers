@@ -4,19 +4,19 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import type { MemoryFact } from '@/lib/memory'
+import type { MemoryItem } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 
 /**
  * The bank as a schematic constellation, built to stay readable at 10k+
- * facts via level-of-detail:
+ * memories via level-of-detail:
  *
- * - Default view draws ENTITY HUBS ONLY, sized by fact count, capped to
+ * - Default view draws ENTITY HUBS ONLY, sized by memory count, capped to
  *   the top `MAX_HUBS` by degree (a banner names what's hidden; the
  *   search box refocuses on anything).
- * - Clicking a hub expands its facts as spokes, capped to `MAX_SPOKES`
+ * - Clicking a hub expands its memories as spokes, capped to `MAX_SPOKES`
  *   (pinned first, then newest) with a "+N more" node linking to the
- *   facts tab. Small banks (<= AUTO_EXPAND_FACTS facts) auto-expand.
+ *   memories tab. Small banks (<= AUTO_EXPAND_MEMORIES memories) auto-expand.
  * - Wheel zooms around the cursor, drag pans, Fit resets. Pure SVG
  *   viewBox math, no graph library.
  *
@@ -27,17 +27,17 @@ import { cn } from '@/lib/utils'
  */
 
 interface MemoryGraphProps {
-  facts: MemoryFact[]
+  memories: MemoryItem[]
   totalFacts: number
-  onPin: (fact: MemoryFact) => void
-  onDelete: (fact: MemoryFact) => void
+  onPin: (memory: MemoryItem) => void
+  onDelete: (memory: MemoryItem) => void
   onShowFacts: () => void
   busy: boolean
 }
 
 const MAX_HUBS = 40
 const MAX_SPOKES = 20
-const AUTO_EXPAND_FACTS = 30
+const AUTO_EXPAND_MEMORIES = 30
 const GOLDEN_ANGLE = 2.399963
 const NO_ENTITY_HUB = '(no entities)'
 
@@ -51,7 +51,7 @@ interface HubNode {
 }
 
 interface FactNode {
-  fact: MemoryFact
+  memory: MemoryItem
   hub: string
   x: number
   y: number
@@ -69,7 +69,7 @@ interface Edge {
   y1: number
   x2: number
   y2: number
-  factId: string
+  memoryId: string
 }
 
 interface Layout {
@@ -85,23 +85,23 @@ function hubRadius(count: number): number {
   return Math.min(22, 6 + 2.4 * Math.sqrt(count))
 }
 
-function spokeOrder(a: MemoryFact, b: MemoryFact): number {
+function spokeOrder(a: MemoryItem, b: MemoryItem): number {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
   return b.updated_at - a.updated_at
 }
 
 function layoutGraph(
-  facts: MemoryFact[],
+  memories: MemoryItem[],
   filter: string,
   expandedHubs: ReadonlySet<string>,
   autoExpand: boolean,
 ): Layout {
-  const byEntity = new Map<string, MemoryFact[]>()
-  for (const fact of facts) {
-    const keys = fact.entities.length > 0 ? fact.entities : [NO_ENTITY_HUB]
+  const byEntity = new Map<string, MemoryItem[]>()
+  for (const memory of memories) {
+    const keys = memory.entities.length > 0 ? memory.entities : [NO_ENTITY_HUB]
     for (const entity of keys) {
       const list = byEntity.get(entity) ?? []
-      list.push(fact)
+      list.push(memory)
       byEntity.set(entity, list)
     }
   }
@@ -178,7 +178,7 @@ function layoutGraph(
     const hidden = list.length - shown.length
     const slots = shown.length + (hidden > 0 ? 1 : 0)
     // Even full-circle spokes: a clean dandelion regardless of count.
-    shown.forEach((fact, j) => {
+    shown.forEach((memory, j) => {
       const ringIdx = Math.floor(j / 14)
       const ring = hub.r + 44 + 16 * ringIdx
       const perRing = Math.min(slots - ringIdx * 14, 14)
@@ -186,8 +186,8 @@ function layoutGraph(
         -Math.PI / 2 + (j % 14) * ((2 * Math.PI) / Math.max(perRing, 1))
       const x = hub.x + Math.round(ring * Math.cos(angle))
       const y = hub.y + Math.round(ring * Math.sin(angle))
-      nodes.push({ fact, hub: hub.entity, x, y })
-      edges.push({ x1: hub.x, y1: hub.y, x2: x, y2: y, factId: fact.id })
+      nodes.push({ memory, hub: hub.entity, x, y })
+      edges.push({ x1: hub.x, y1: hub.y, x2: x, y2: y, memoryId: memory.id })
     })
     if (hidden > 0) {
       const ring = hub.r + 44
@@ -222,19 +222,19 @@ function layoutGraph(
 }
 
 export function MemoryGraph({
-  facts,
+  memories,
   totalFacts,
   onPin,
   onDelete,
   onShowFacts,
   busy,
 }: MemoryGraphProps) {
-  const live = useMemo(() => facts.filter((f) => f.invalid_at == null), [facts])
+  const live = useMemo(() => memories.filter((f) => f.invalid_at == null), [memories])
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [hoverId, setHoverId] = useState<string | null>(null)
-  const autoExpand = live.length <= AUTO_EXPAND_FACTS && !filter
+  const autoExpand = live.length <= AUTO_EXPAND_MEMORIES && !filter
 
   const baseLayout = useMemo(
     () => layoutGraph(live, filter, expanded, autoExpand),
@@ -242,7 +242,7 @@ export function MemoryGraph({
   )
 
   // Manual placement: users drag hubs (the whole dandelion follows) and
-  // individual fact dots. Offsets overlay the deterministic layout so
+  // individual memory dots. Offsets overlay the deterministic layout so
   // live refreshes never snap moved nodes back.
   const [offsets, setOffsets] = useState<Map<string, { x: number; y: number }>>(
     new Map(),
@@ -257,7 +257,7 @@ export function MemoryGraph({
     const hubAt = new Map(hubs.map((h) => [h.entity, h]))
     const nodes = baseLayout.nodes.map((n) => {
       const ho = off(`h:${n.hub}`)
-      const fo = off(`f:${n.fact.id}:${n.hub}`)
+      const fo = off(`f:${n.memory.id}:${n.hub}`)
       return { ...n, x: n.x + ho.x + fo.x, y: n.y + ho.y + fo.y }
     })
     const edges = nodes.map((n) => {
@@ -267,7 +267,7 @@ export function MemoryGraph({
         y1: hub?.y ?? 0,
         x2: n.x,
         y2: n.y,
-        factId: n.fact.id,
+        memoryId: n.memory.id,
       }
     })
     const more = baseLayout.more.map((m) => {
@@ -321,7 +321,7 @@ export function MemoryGraph({
     return (
       <EmptyState
         title="nothing to map yet"
-        description="the graph draws entity hubs with their facts as spokes. save or extract a few facts with entities and they appear here."
+        description="the graph draws entity hubs with their memories as spokes. save or extract a few memories with entities and they appear here."
       />
     )
   }
@@ -374,7 +374,7 @@ export function MemoryGraph({
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
           className="w-full h-full min-h-[440px] cursor-grab active:cursor-grabbing select-none"
           role="img"
-          aria-label="memory graph: entity hubs and fact nodes"
+          aria-label="memory graph: entity hubs and memory nodes"
           onWheel={(e) => {
             const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15
             const at = clientToWorld(e.clientX, e.clientY)
@@ -449,17 +449,17 @@ export function MemoryGraph({
 
           {layout.edges.map((edge) => (
             <line
-              key={`${edge.factId}:${edge.x2}:${edge.y2}`}
+              key={`${edge.memoryId}:${edge.x2}:${edge.y2}`}
               x1={edge.x1}
               y1={edge.y1}
               x2={edge.x2}
               y2={edge.y2}
               className={cn(
                 'stroke-rule',
-                activeId === edge.factId && 'stroke-accent',
+                activeId === edge.memoryId && 'stroke-accent',
               )}
-              strokeWidth={activeId === edge.factId ? 1.8 : 1}
-              opacity={activeId && activeId !== edge.factId ? 0.35 : 1}
+              strokeWidth={activeId === edge.memoryId ? 1.8 : 1}
+              opacity={activeId && activeId !== edge.memoryId ? 0.35 : 1}
             />
           ))}
 
@@ -469,7 +469,7 @@ export function MemoryGraph({
               key={hub.entity}
               role="button"
               tabIndex={0}
-              aria-label={`entity ${hub.entity}: ${hub.count} facts`}
+              aria-label={`entity ${hub.entity}: ${hub.count} memories`}
               className="cursor-grab active:cursor-grabbing focus:outline-none"
               onPointerDown={(e) => startNodeDrag(e, `h:${hub.entity}`)}
               onClick={() => {
@@ -539,41 +539,41 @@ export function MemoryGraph({
             </g>
           ))}
 
-          {layout.nodes.map(({ fact, hub, x, y }) => (
+          {layout.nodes.map(({ memory, hub, x, y }) => (
             // biome-ignore lint/a11y/useSemanticElements: SVG nodes act as buttons
             <g
-              key={`${fact.id}:${x}`}
+              key={`${memory.id}:${x}`}
               role="button"
               tabIndex={0}
-              aria-label={`fact: ${fact.text.slice(0, 60)}`}
+              aria-label={`memory: ${memory.text.slice(0, 60)}`}
               className="cursor-grab active:cursor-grabbing focus:outline-none"
-              onPointerDown={(e) => startNodeDrag(e, `f:${fact.id}:${hub}`)}
+              onPointerDown={(e) => startNodeDrag(e, `f:${memory.id}:${hub}`)}
               onClick={(e) => {
                 e.stopPropagation()
                 if (wasDrag()) return
-                setSelectedId((cur) => (cur === fact.id ? null : fact.id))
+                setSelectedId((cur) => (cur === memory.id ? null : memory.id))
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
-                  setSelectedId((cur) => (cur === fact.id ? null : fact.id))
+                  setSelectedId((cur) => (cur === memory.id ? null : memory.id))
                 }
               }}
-              onMouseEnter={() => setHoverId(fact.id)}
+              onMouseEnter={() => setHoverId(memory.id)}
               onMouseLeave={() => setHoverId(null)}
             >
               <circle
                 cx={x}
                 cy={y}
-                r={activeId === fact.id ? 8 : 6}
+                r={activeId === memory.id ? 8 : 6}
                 className={cn(
                   'stroke-bg',
-                  fact.pinned ? 'fill-accent' : 'fill-ink',
-                  activeId === fact.id && 'stroke-accent',
+                  memory.pinned ? 'fill-accent' : 'fill-ink',
+                  activeId === memory.id && 'stroke-accent',
                 )}
-                strokeWidth={activeId === fact.id ? 2 : 1.5}
+                strokeWidth={activeId === memory.id ? 2 : 1.5}
               />
-              {hoverId === fact.id && selectedId !== fact.id ? (
+              {hoverId === memory.id && selectedId !== memory.id ? (
                 <text
                   x={x}
                   y={y - 14}
@@ -584,9 +584,9 @@ export function MemoryGraph({
                   stroke="var(--color-bg, #f2f0ed)"
                   strokeWidth={5}
                 >
-                  {fact.text.length > 52
-                    ? `${fact.text.slice(0, 50)}…`
-                    : fact.text}
+                  {memory.text.length > 52
+                    ? `${memory.text.slice(0, 50)}…`
+                    : memory.text}
                 </text>
               ) : null}
             </g>
@@ -598,7 +598,7 @@ export function MemoryGraph({
               key={`more:${m.hub}`}
               role="button"
               tabIndex={0}
-              aria-label={`${m.hidden} more facts for ${m.hub} — open the facts tab`}
+              aria-label={`${m.hidden} more memories for ${m.hub} — open the memories tab`}
               className="cursor-pointer focus:outline-none"
               onClick={onShowFacts}
               onKeyDown={(e) => {
@@ -626,14 +626,14 @@ export function MemoryGraph({
 
         <div className="absolute bottom-2 left-2 flex items-center gap-3 font-mono text-[10px] lowercase text-ink-ghost bg-bg/90 border border-rule-2 px-2 py-1">
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 border border-ink-faint bg-panel" />{' '}
+            <span className="inline-rule w-2 h-2 border border-ink-faint bg-panel" />{' '}
             entity (click to expand)
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-ink" /> memory
+            <span className="inline-rule w-2 h-2 rounded-full bg-ink" /> memory
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-accent" />{' '}
+            <span className="inline-rule w-2 h-2 rounded-full bg-accent" />{' '}
             pinned
           </span>
           <span>wheel: zoom · drag: pan</span>
@@ -649,7 +649,7 @@ export function MemoryGraph({
                 variant="icon"
                 size="icon"
                 onClick={() => setSelectedId(null)}
-                aria-label="close fact card"
+                aria-label="close memory card"
               >
                 <X className="w-3.5 h-3.5" aria-hidden />
               </Button>

@@ -6,8 +6,8 @@ import {
 
 /**
  * Presence probe for the `memory` worker. Memory owns cross-session agent
- * memory: named banks of always-injected markdown blocks plus auto-extracted
- * facts (`memory::*`). It is OPTIONAL, so the console gates the Memory page
+ * memory: named banks of always-injected markdown rules plus auto-extracted
+ * memories (`memory::*`). It is OPTIONAL, so the console gates the Memory page
  * on its presence rather than rendering controls that would call functions
  * that don't exist. Thin wrapper over the generic worker-presence probe.
  */

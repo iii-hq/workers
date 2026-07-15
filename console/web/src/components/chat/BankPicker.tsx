@@ -4,7 +4,7 @@ import { listBanks, type MemoryBank } from '@/lib/memory'
 
 /**
  * In-chat memory bank picker — the "which memory am I using" control.
- * Writing blogs? Pick the blog bank and its style blocks + facts feed
+ * Writing blogs? Pick the blog bank and its style rules + memories feed
  * every turn. Switch to coding and a different memory applies; contexts
  * never bleed. Selecting `auto` defers to the memory worker's configured
  * default bank. Lives next to the composer as one compact dropdown and
@@ -46,7 +46,7 @@ export function BankPicker({ value, onChange, disabled }: BankPickerProps) {
     ...banks.map((b) => ({
       value: b.name,
       label: `memory: ${b.name}`,
-      title: `${b.facts} facts · ${b.blocks} blocks — blocks + recalled facts from this bank feed every turn`,
+      title: `${b.memories} memories · ${b.rules} rules — rules + recalled memories from this bank feed every turn`,
     })),
     // A bank set elsewhere (CLI, another client) that we haven't listed.
     ...(value && !known

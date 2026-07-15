@@ -4,12 +4,12 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { type RecalledFact, recall } from '@/lib/memory'
+import { type RecalledMemory, recall } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 
 /**
  * Recall dry-run: the exact scorer the pre-generate hook uses, so a user
- * can preview precisely which facts a turn on some topic would be given
+ * can preview precisely which memories a turn on some topic would be given
  * (and why — scores shown). Zero LLM; instant.
  */
 
@@ -19,7 +19,7 @@ interface RecallPanelProps {
 
 export function RecallPanel({ bank }: RecallPanelProps) {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<RecalledFact[] | null>(null)
+  const [results, setResults] = useState<RecalledMemory[] | null>(null)
   const [retrieval, setRetrieval] = useState('')
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,7 +31,7 @@ export function RecallPanel({ bank }: RecallPanelProps) {
     setError(null)
     try {
       const res = await recall(bank, q)
-      setResults(res.facts)
+      setResults(res.memories)
       setRetrieval(res.retrieval)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -84,7 +84,7 @@ export function RecallPanel({ bank }: RecallPanelProps) {
         results.length === 0 ? (
           <EmptyState
             title="nothing recalled"
-            description="no facts in this bank matched the query. facts match on words and entity handles."
+            description="no memories in this bank matched the query. memories match on words and entity handles."
           />
         ) : (
           <div className="flex flex-col gap-2">
@@ -92,8 +92,8 @@ export function RecallPanel({ bank }: RecallPanelProps) {
               retrieval: {retrieval || 'bm25-entity'}
             </span>
             <ul className="border border-rule divide-y divide-rule-2">
-              {results.map(({ fact, score }) => (
-                <li key={fact.id} className="px-3 py-2 flex flex-col gap-1">
+              {results.map(({ memory, score }) => (
+                <li key={memory.id} className="px-3 py-2 flex flex-col gap-1">
                   <div className="flex items-center gap-2">
                     <span
                       className={cn('h-1.5 bg-accent shrink-0')}
@@ -105,12 +105,12 @@ export function RecallPanel({ bank }: RecallPanelProps) {
                     <span className="font-mono text-[10px] text-ink-ghost tabular-nums">
                       {score.toFixed(2)}
                     </span>
-                    {fact.pinned ? (
+                    {memory.pinned ? (
                       <Badge variant="accent">pinned</Badge>
                     ) : null}
                   </div>
                   <p className="font-mono text-[13px] text-ink leading-snug">
-                    {fact.text}
+                    {memory.text}
                   </p>
                 </li>
               ))}

@@ -4,7 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: memory
-description: Durable cross-session agent memory — named banks of always-injected markdown blocks and auto-extracted facts, hybrid BM25 + entity recall, pinning, and supersede-never-delete history. Plain files on disk; every operation is a traced function.
+description: Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity recall, pinning, and supersede-never-delete history. Plain files on disk; every operation is a traced function.
 
 dependencies:
   configuration: "^0.21.3"

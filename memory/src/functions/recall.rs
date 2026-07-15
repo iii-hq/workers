@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
-use crate::types::Fact;
+use crate::types::Memory;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecallRequest {
@@ -15,7 +15,7 @@ pub struct RecallRequest {
     #[serde(default)]
     pub bank: Option<String>,
     pub query: String,
-    /// Max facts returned (default: the configured recall_limit).
+    /// Max memories returned (default: the configured recall_limit).
     #[serde(default)]
     pub limit: Option<usize>,
     /// Also rank superseded/tombstoned records (the history view).
@@ -24,15 +24,15 @@ pub struct RecallRequest {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct ScoredFact {
-    pub fact: Fact,
+pub struct ScoredMemory {
+    pub memory: Memory,
     pub score: f32,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RecallResponse {
     pub bank: String,
-    pub facts: Vec<ScoredFact>,
+    pub memories: Vec<ScoredMemory>,
     /// Retrieval mode actually used — degradation is explicit, never
     /// silent. Currently always `bm25-entity`; a semantic signal joins
     /// when the router grows an embeddings surface.
@@ -62,9 +62,9 @@ pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, M
         .await;
     Ok(RecallResponse {
         bank: bank_name,
-        facts: hits
+        memories: hits
             .into_iter()
-            .map(|(fact, score)| ScoredFact { fact, score })
+            .map(|(memory, score)| ScoredMemory { memory, score })
             .collect(),
         retrieval: retrieval.into(),
     })

@@ -3,17 +3,17 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import type { MemoryBlock } from '@/lib/memory'
+import type { MemoryRule } from '@/lib/memory'
 
 /**
- * The bank's markdown blocks — injected whole into the system prompt of
- * every session using this bank. Each block is a plain `.md` file on disk;
+ * The bank's markdown rules — injected whole into the system prompt of
+ * every session using this bank. Each rule is a plain `.md` file on disk;
  * editing here and editing the file are equivalent. Saving empty content
- * removes a block.
+ * removes a rule.
  */
 
-interface BlocksPanelProps {
-  blocks: MemoryBlock[]
+interface RulesPanelProps {
+  rules: MemoryRule[]
   onSet: (name: string, content: string) => void
   busy: boolean
 }
@@ -30,7 +30,7 @@ function BlockEditor({
   busy: boolean
 }) {
   const [content, setContent] = useState(initial)
-  // Re-seed the editor when a live refresh changes the block on disk and
+  // Re-seed the editor when a live refresh changes the rule on disk and
   // the user has no local edits in flight.
   const [touched, setTouched] = useState(false)
   useEffect(() => {
@@ -79,7 +79,7 @@ function BlockEditor({
   )
 }
 
-export function BlocksPanel({ blocks, onSet, busy }: BlocksPanelProps) {
+export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
   const [newName, setNewName] = useState('')
   const validName = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(newName)
 
@@ -90,20 +90,20 @@ export function BlocksPanel({ blocks, onSet, busy }: BlocksPanelProps) {
         memories, which are recalled only when they match the question. use
         rules for what must always hold: writing style, answer format, coding
         conventions, project constants. each rule is a markdown file under the
-        bank's blocks/ folder (editing the file and editing here are the same
+        bank's rules/ folder (editing the file and editing here are the same
         thing), and the agent updates rules as you correct it.
       </p>
-      {blocks.length === 0 ? (
+      {rules.length === 0 ? (
         <EmptyState
           title="no rules in this bank"
           description="try one: add a rule named `assistant-rules` with 'always answer tersely, prefer code examples' — then ask anything in chat and watch every reply obey it, on any topic."
         />
       ) : (
-        blocks.map((block) => (
+        rules.map((rule) => (
           <BlockEditor
-            key={block.name}
-            name={block.name}
-            initial={block.content}
+            key={rule.name}
+            name={rule.name}
+            initial={rule.content}
             onSet={onSet}
             busy={busy}
           />

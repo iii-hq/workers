@@ -5,9 +5,7 @@ description: Remember and recall durable memories across sessions using the memo
 
 # memory
 
-Cross-session memory is automatic: the session's bank's rules and relevant memories arrive in your context each turn, and new memories are extracted after each turn. Use the functions below when the user asks you to remember, forget, or inspect memory.
-
-Terminology: the UI says **rules** (always-injected markdown) and **memories** (recalled facts). The stable wire names are `memory::block::*` for rules and the fact fields on `memory::save/list/recall` for memories; rules live on disk under the bank's `blocks/` folder.
+Cross-session memory is automatic: the session's bank's rules and relevant memories arrive in your context each turn, and new memories are extracted after each turn. Use the functions below when the user asks you to remember, forget, or inspect memory. **Rules** are always-injected markdown (`memory::rule::*`, on disk under the bank's `rules/` folder); **memories** are recalled records (`memory::save/list/recall`).
 
 ## Remember something now
 
@@ -42,7 +40,7 @@ Separate contexts get separate banks (e.g. `blog`, `coding`, `personal`). The se
 Durable identity-grade guidance (writing style, coding conventions, answer format) belongs in a rule, not a memory: rules are injected whole into the system prompt every turn, guaranteed, while memories are recalled only when they match the question. When the user asks you to save a style or convention set, write it as a rule:
 
 ```
-memory::block::set { "bank": "blog", "name": "style", "content": "# Style\nFormal register. Short paragraphs. Never: 'dive in', em-dashes." }
+memory::rule::set { "bank": "blog", "name": "style", "content": "# Style\nFormal register. Short paragraphs. Never: 'dive in', em-dashes." }
 ```
 
 ## Health

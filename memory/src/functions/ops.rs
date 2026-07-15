@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
-use crate::types::{fingerprint, now_ms, Confidence, Fact};
+use crate::types::{fingerprint, now_ms, Confidence, Memory};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DoctorRequest {}
@@ -70,11 +70,11 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
 async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
     let store = deps.store().await;
     let scratch = format!("doctor-{}", now_ms() % 1_000_000);
-    let probe_text = "doctor probe fact: memory roundtrip";
+    let probe_text = "doctor probe memory: memory roundtrip";
     let result: Result<String, MemoryError> = async {
         let (bank, _) = store.ensure_bank(&scratch, Some("doctor scratch")).await?;
         let now = now_ms();
-        bank.commit(Fact {
+        bank.commit(Memory {
             id: fingerprint(probe_text),
             text: probe_text.into(),
             entities: vec![],
@@ -95,7 +95,7 @@ async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
         let trashed = store.trash_bank(&scratch).await?;
         if hits.is_empty() {
             return Err(MemoryError::Storage(
-                "probe fact was saved but not recallable".into(),
+                "probe memory was saved but not recallable".into(),
             ));
         }
         Ok(format!("save→recall→trash ok (scratch at {trashed})"))

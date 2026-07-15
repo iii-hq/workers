@@ -1,20 +1,20 @@
 import { useState } from 'react'
-import { getFact, type MemoryFact } from '@/lib/memory'
+import { getMemory, type MemoryItem } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 
 /**
  * The "what fed this reply" chip on assistant messages: bank name + how
- * many facts the memory worker injected into the generate. Click to
- * expand the exact facts (fetched by id on first open) — memory acting
+ * many memories the memory worker injected into the generate. Click to
+ * expand the exact memories (fetched by id on first open) — memory acting
  * visibly inside the conversation, not just in traces.
  */
 
 interface MemoryChipProps {
   memory: {
     bank: string
-    facts: number
-    factIds: string[]
-    blocks?: number
+    memories: number
+    memoryIds: string[]
+    rules?: number
     truncated?: boolean
     semantic?: boolean
   }
@@ -22,26 +22,26 @@ interface MemoryChipProps {
 
 export function MemoryChip({ memory }: MemoryChipProps) {
   const [open, setOpen] = useState(false)
-  const [facts, setFacts] = useState<MemoryFact[] | null>(null)
+  const [memories, setFacts] = useState<MemoryItem[] | null>(null)
   const [loading, setLoading] = useState(false)
 
   const parts = []
-  if (memory.facts > 0)
-    parts.push(`${memory.facts} memor${memory.facts === 1 ? 'y' : 'ies'}`)
-  if (memory.blocks)
-    parts.push(`${memory.blocks} rule${memory.blocks === 1 ? '' : 's'}`)
+  if (memory.memories > 0)
+    parts.push(`${memory.memories} memor${memory.memories === 1 ? 'y' : 'ies'}`)
+  if (memory.rules)
+    parts.push(`${memory.rules} rule${memory.rules === 1 ? '' : 's'}`)
   if (parts.length === 0) return null
 
   const toggle = async () => {
     const next = !open
     setOpen(next)
-    if (next && facts === null && memory.factIds.length > 0) {
+    if (next && memories === null && memory.memoryIds.length > 0) {
       setLoading(true)
       try {
         const loaded = await Promise.all(
-          memory.factIds.map((id) => getFact(memory.bank, id)),
+          memory.memoryIds.map((id) => getMemory(memory.bank, id)),
         )
-        setFacts(loaded.filter((f): f is MemoryFact => f !== null))
+        setFacts(loaded.filter((f): f is MemoryItem => f !== null))
       } finally {
         setLoading(false)
       }
@@ -71,21 +71,21 @@ export function MemoryChip({ memory }: MemoryChipProps) {
             <span className="font-mono text-[10px] lowercase text-ink-ghost">
               loading memories…
             </span>
-          ) : facts && facts.length > 0 ? (
-            facts.map((fact) => (
+          ) : memories && memories.length > 0 ? (
+            memories.map((memory) => (
               <span
-                key={fact.id}
+                key={memory.id}
                 className="font-mono text-[11px] text-ink leading-snug"
               >
-                - {fact.text}
-                {fact.pinned ? (
+                - {memory.text}
+                {memory.pinned ? (
                   <span className="text-accent"> ·pinned</span>
                 ) : null}
               </span>
             ))
           ) : (
             <span className="font-mono text-[10px] lowercase text-ink-ghost">
-              {memory.factIds.length === 0
+              {memory.memoryIds.length === 0
                 ? 'only rules fed this turn (always-injected markdown)'
                 : 'memories no longer available (superseded or bank changed)'}
             </span>

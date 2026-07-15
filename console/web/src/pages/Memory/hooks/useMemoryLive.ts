@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useMemoryEvents } from '@/hooks/use-memory-events'
 import {
-  FACTS_PAGE_SIZE,
+  MEMORIES_PAGE_SIZE,
   listBanks,
-  listBlocks,
-  listFacts,
+  listRules,
+  listMemories,
   type MemoryBank,
-  type MemoryBlock,
-  type MemoryFact,
+  type MemoryRule,
+  type MemoryItem,
 } from '@/lib/memory'
 
 /**
- * Live state for the memory page: banks + the selected bank's facts and
- * blocks, re-read on both memory trigger types (`memory::item-changed`,
+ * Live state for the memory page: banks + the selected bank's memories and
+ * rules, re-read on both memory trigger types (`memory::item-changed`,
  * `memory::bank-changed`). While the event bindings are unavailable a
  * modest poll keeps the page honest — skipped while the tab is hidden.
  */
@@ -23,12 +23,12 @@ export interface MemoryLive {
   banks: MemoryBank[]
   selected: string | null
   setSelected: (bank: string) => void
-  facts: MemoryFact[]
+  memories: MemoryItem[]
   total: number
   offset: number
   setOffset: (next: number) => void
   pageSize: number
-  blocks: MemoryBlock[]
+  rules: MemoryRule[]
   includeSuperseded: boolean
   setIncludeSuperseded: (next: boolean) => void
   loading: boolean
@@ -41,10 +41,10 @@ export interface MemoryLive {
 export function useMemoryLive(enabled: boolean): MemoryLive {
   const [banks, setBanks] = useState<MemoryBank[]>([])
   const [selected, setSelected] = useState<string | null>(null)
-  const [facts, setFacts] = useState<MemoryFact[]>([])
+  const [memories, setMemories] = useState<MemoryItem[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
-  const [blocks, setBlocks] = useState<MemoryBlock[]>([])
+  const [rules, setRules] = useState<MemoryRule[]>([])
   const [includeSuperseded, setIncludeSuperseded] = useState(false)
   const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState<string | null>(null)
@@ -88,18 +88,18 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
           setSelected(bank)
         }
         if (bank) {
-          const [factPage, nextBlocks] = await Promise.all([
-            listFacts(bank, includeSuperseded, offset),
-            listBlocks(bank),
+          const [memoryPage, nextBlocks] = await Promise.all([
+            listMemories(bank, includeSuperseded, offset),
+            listRules(bank),
           ])
           if (cancelled) return
-          setFacts(factPage.facts)
-          setTotal(factPage.total)
-          setBlocks(nextBlocks)
+          setMemories(memoryPage.memories)
+          setTotal(memoryPage.total)
+          setRules(nextBlocks)
         } else {
-          setFacts([])
+          setMemories([])
           setTotal(0)
-          setBlocks([])
+          setRules([])
         }
         setError(null)
       } catch (err) {
@@ -127,12 +127,12 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
     banks,
     selected,
     setSelected: selectBank,
-    facts,
+    memories,
     total,
     offset,
     setOffset,
-    pageSize: FACTS_PAGE_SIZE,
-    blocks,
+    pageSize: MEMORIES_PAGE_SIZE,
+    rules,
     includeSuperseded,
     setIncludeSuperseded: setIncludeSupersededReset,
     loading,

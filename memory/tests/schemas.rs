@@ -21,8 +21,8 @@ fn catalog_has_all_public_functions() {
             "memory::delete",
             "memory::pin",
             "memory::recall",
-            "memory::block::list",
-            "memory::block::set",
+            "memory::rule::list",
+            "memory::rule::set",
             "memory::doctor",
             "memory::reload",
         ]
@@ -78,6 +78,6 @@ fn recall_response_reports_retrieval_mode() {
     let resp = serde_json::to_value(&spec.response_schema).unwrap();
     let props = resp["properties"].as_object().unwrap();
     assert!(props.contains_key("retrieval"));
-    assert!(props.contains_key("facts"));
+    assert!(props.contains_key("memories"));
     assert!(props.contains_key("bank"));
 }

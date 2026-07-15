@@ -17,12 +17,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::types::Fact;
+use crate::types::Memory;
 
 pub const ITEM_CHANGED: &str = "memory::item-changed";
 pub const ITEM_CHANGED_DESC: &str =
-    "A fact was created, updated, superseded, or deleted in a memory bank. \
-     Payload: { event_type, bank, fact }. Bind console/live views here.";
+    "A memory was created, updated, superseded, or deleted in a memory bank. \
+     Payload: { event_type, bank, memory }. Bind console/live views here.";
 
 pub const BANK_CHANGED: &str = "memory::bank-changed";
 pub const BANK_CHANGED_DESC: &str =
@@ -151,7 +151,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     sets
 }
 
-/// Fact event kinds carried in `event_type`.
+/// Memory event kinds carried in `event_type`.
 #[derive(Debug, Clone, Copy)]
 pub enum ItemEvent {
     Created,
@@ -182,11 +182,11 @@ impl Emitter {
         Self { sets, iii }
     }
 
-    pub async fn item(&self, event: ItemEvent, bank: &str, fact: &Fact) {
+    pub async fn item(&self, event: ItemEvent, bank: &str, memory: &Memory) {
         let payload = json!({
             "event_type": event.as_str(),
             "bank": bank,
-            "fact": fact,
+            "memory": memory,
         });
         self.fan_out(&self.sets.items, bank, payload).await;
     }

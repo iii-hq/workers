@@ -39,7 +39,7 @@ use memory::{config, functions, hooks, manifest};
 #[derive(Parser, Debug)]
 #[command(
     name = "memory",
-    about = "Durable cross-session agent memory: named banks, always-injected blocks, auto-extracted facts, hybrid recall."
+    about = "Durable cross-session agent memory: named banks, always-injected rules, auto-extracted memories, hybrid recall."
 )]
 struct Cli {
     /// Optional seed config.yaml used to populate `initial_value` on the
@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
     }
     retry_bindings(iii.clone());
 
-    // Catch-up vector backfill for facts saved while embeddings were
+    // Catch-up vector backfill for memories saved while embeddings were
     // unavailable (delayed so the router and providers finish booting).
     memory::embed_client::backfill_all(deps.clone());
 
@@ -297,11 +297,11 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             async move { hooks::pre_generate(&d, input).await }
         })
         .description(
-            "Internal: harness pre-generate hook — injects the session bank's blocks into the \
-             system prompt and recalled facts as one appended message. Never denies.",
+            "Internal: harness pre-generate hook — injects the session bank's rules into the \
+             system prompt and recalled memories as one appended message. Never denies.",
         )
         // Deliberately NOT trace_hidden: seeing memory feed each turn (which
-        // bank, which facts) in the trace timeline is a product requirement,
+        // bank, which memories) in the trace timeline is a product requirement,
         // not plumbing noise.
         .metadata(json!({ "internal": true })),
     );

@@ -3,7 +3,7 @@ import { getIiiClient } from '@/lib/iii-client'
 
 /**
  * Page-scoped feed of the memory worker's two trigger types, for surfaces
- * that re-read banks/facts on any change. Same browser-local binding
+ * that re-read banks/memories on any change. Same browser-local binding
  * pattern as the worktree lifecycle feed: register a local handler, bind an
  * engine trigger of that type to it, fall back to polling while unbound.
  */

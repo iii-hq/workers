@@ -2,9 +2,9 @@
 //! `turn-completed` extraction trigger.
 //!
 //! Injection contract (harness/src/hooks/runner.rs):
-//! - blocks extend the SYSTEM PROMPT (stable per session → provider prompt
+//! - rules extend the SYSTEM PROMPT (stable per session → provider prompt
 //!   cache stays warm across turns),
-//! - recalled facts arrive as ONE APPENDED MESSAGE (they vary per turn;
+//! - recalled memories arrive as ONE APPENDED MESSAGE (they vary per turn;
 //!   appending never invalidates the cached system-prompt prefix).
 //!
 //! Both handlers are registered `internal` and the harness binding is
@@ -22,7 +22,7 @@ use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
 use crate::extract;
-use crate::types::{now_ms, Fact};
+use crate::types::{now_ms, Memory};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
@@ -108,7 +108,7 @@ pub struct AckResponse {
     pub ok: bool,
 }
 
-/// Inject the bank's blocks + recalled facts for one turn. Every failure
+/// Inject the bank's rules + recalled memories for one turn. Every failure
 /// path degrades to a plain `continue` — never an error, never a
 /// cross-bank fallback.
 pub async fn pre_generate(
@@ -116,7 +116,7 @@ pub async fn pre_generate(
     input: PreGenerateInput,
 ) -> Result<HookResponse, Error> {
     let cfg = deps.config().await;
-    if !cfg.inject_blocks && !cfg.inject_facts {
+    if !cfg.inject_rules && !cfg.inject_memories {
         return Ok(HookResponse::pass());
     }
     if input.session_id.is_empty() {
@@ -157,18 +157,18 @@ pub async fn pre_generate(
     let generate = input.generate.as_ref();
     let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
     let mut section = format!(
-        "\n\n# Memory — bank: {bank_name}\nMemory is automatic here: durable facts and \
+        "\n\n# Memory — bank: {bank_name}\nMemory is automatic here: durable memories and \
          preferences from this conversation are extracted and saved after each turn, and \
          relevant memories are provided to you when they exist. When the user asks you to \
          remember something, acknowledge it — no save call is needed.\n"
     );
 
-    if cfg.inject_blocks {
-        if let Ok(blocks) = bank.list_blocks() {
-            if !blocks.is_empty() {
-                let mut budget = cfg.max_block_chars;
+    if cfg.inject_rules {
+        if let Ok(rules) = bank.list_rules() {
+            if !rules.is_empty() {
+                let mut budget = cfg.max_rule_chars;
                 let mut truncated = false;
-                for b in &blocks {
+                for b in &rules {
                     let content = b.content.trim();
                     if content.len() <= budget {
                         budget -= content.len();
@@ -179,10 +179,10 @@ pub async fn pre_generate(
                             cut -= 1;
                         }
                         section.push_str(&format!(
-                            "\n## {}\n{}\n[block truncated: over the {} char injection budget — trim it in the memory page]\n",
+                            "\n## {}\n{}\n[rule truncated: over the {} char injection budget — trim it in the memory page]\n",
                             b.name,
                             &content[..cut],
-                            cfg.max_block_chars,
+                            cfg.max_rule_chars,
                         ));
                         budget = 0;
                         truncated = true;
@@ -197,18 +197,18 @@ pub async fn pre_generate(
                 if truncated {
                     tracing::warn!(
                         bank = %bank_name,
-                        max_block_chars = cfg.max_block_chars,
-                        "memory blocks exceed the injection budget; truncated"
+                        max_block_chars = cfg.max_rule_chars,
+                        "memory rules exceed the injection budget; truncated"
                     );
-                    annotations.insert("memory_blocks_truncated".into(), json!(true));
+                    annotations.insert("memory_rules_truncated".into(), json!(true));
                 }
-                annotations.insert("memory_blocks".into(), json!(blocks.len()));
+                annotations.insert("memory_rules".into(), json!(rules.len()));
             }
         }
     }
     mutations.system_prompt = Some(format!("{base}{section}"));
 
-    if cfg.inject_facts {
+    if cfg.inject_memories {
         let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
         if !query.trim().is_empty() {
             // Fail-soft semantic signal; lexical-only when it misses.
@@ -226,33 +226,33 @@ pub async fn pre_generate(
                 )
                 .await;
             // Ambient floor: lexical recall misses identity questions and
-            // session openers entirely (their words never appear in fact
-            // texts), so pad thin results with the bank's strongest facts
+            // session openers entirely (their words never appear in memory
+            // texts), so pad thin results with the bank's strongest memories
             // — still bounded by the same count and token budget.
-            let mut facts: Vec<Fact> = hits.into_iter().map(|(f, _)| f).collect();
+            let mut memories: Vec<Memory> = hits.into_iter().map(|(f, _)| f).collect();
             const AMBIENT_FLOOR: usize = 3;
-            if facts.len() < AMBIENT_FLOOR.min(cfg.recall_limit) {
-                for fact in bank.top_facts(cfg.recall_limit).await {
-                    if facts.len() >= AMBIENT_FLOOR.min(cfg.recall_limit) {
+            if memories.len() < AMBIENT_FLOOR.min(cfg.recall_limit) {
+                for memory in bank.top_memories(cfg.recall_limit).await {
+                    if memories.len() >= AMBIENT_FLOOR.min(cfg.recall_limit) {
                         break;
                     }
-                    if !facts.iter().any(|f| f.id == fact.id) {
-                        facts.push(fact);
+                    if !memories.iter().any(|f| f.id == memory.id) {
+                        memories.push(memory);
                     }
                 }
             }
             let mut budget = (cfg.recall_budget_tokens * 4) as usize;
             let mut lines = Vec::new();
-            for fact in &facts {
-                if fact.text.len() > budget {
+            for memory in &memories {
+                if memory.text.len() > budget {
                     break;
                 }
-                budget -= fact.text.len();
-                lines.push(format!("- {}", fact.text));
+                budget -= memory.text.len();
+                lines.push(format!("- {}", memory.text));
             }
             if !lines.is_empty() {
                 let body = format!(
-                    "<memory bank=\"{bank_name}\">\nRelevant remembered facts (auto-recalled; verify anything surprising):\n{}\n</memory>",
+                    "<memory bank=\"{bank_name}\">\nRelevant remembered memories (auto-recalled; verify anything surprising):\n{}\n</memory>",
                     lines.join("\n")
                 );
                 mutations.append_messages.push(json!({
@@ -260,12 +260,12 @@ pub async fn pre_generate(
                     "content": [{ "type": "text", "text": body }],
                     "timestamp": now_ms() as i64,
                 }));
-                annotations.insert("memory_facts".into(), json!(lines.len()));
-                // Ids (not texts) so chat surfaces can render "which facts
+                annotations.insert("memory_recalled".into(), json!(lines.len()));
+                // Ids (not texts) so chat surfaces can render "which memories
                 // fed this turn" chips and fetch details on demand.
                 annotations.insert(
-                    "memory_fact_ids".into(),
-                    json!(facts
+                    "memory_ids".into(),
+                    json!(memories
                         .iter()
                         .take(lines.len())
                         .map(|f| f.id.clone())
@@ -341,7 +341,7 @@ pub struct SessionDeletedInput {
     pub session_id: String,
 }
 
-/// GC the per-session extraction cursor. Facts keep their provenance ids
+/// GC the per-session extraction cursor. Memories keep their provenance ids
 /// (history), but the operational cursor has nothing left to point at.
 pub async fn session_deleted(
     deps: &Arc<Deps>,

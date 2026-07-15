@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// How a fact entered the store.
+/// How a memory entered the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
@@ -15,7 +15,7 @@ pub enum Confidence {
     Stated,
 }
 
-/// Where a fact came from. Every extracted fact points back into
+/// Where a memory came from. Every extracted memory points back into
 /// session-manager; nothing in memory duplicates the transcript store.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Provenance {
@@ -27,12 +27,12 @@ pub struct Provenance {
     pub agent: Option<String>,
 }
 
-/// One memory item. Serialized whole as a `facts.jsonl` line; replay is
+/// One memory item. Serialized whole as a `memories.jsonl` line; replay is
 /// last-wins by `id`, so an update appends a full record with a bumped
 /// `revision` and a delete appends a tombstoned record (`invalid_at` set) —
 /// history is never destroyed, only superseded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Fact {
+pub struct Memory {
     /// Content fingerprint (`fp` + FNV-1a of the normalized text), so
     /// re-ingesting the same source reinforces instead of duplicating.
     pub id: String,
@@ -41,10 +41,10 @@ pub struct Fact {
     #[serde(default)]
     pub entities: Vec<String>,
     pub confidence: Confidence,
-    /// Times this fact was independently re-observed. Boosts recall rank.
+    /// Times this memory was independently re-observed. Boosts recall rank.
     #[serde(default)]
     pub corroboration: u32,
-    /// Pinned facts are never touched by any automatic path (consolidation,
+    /// Pinned memories are never touched by any automatic path (consolidation,
     /// decay); only an explicit `memory::pin`/`memory::update` changes them.
     #[serde(default)]
     pub pinned: bool,
@@ -53,12 +53,12 @@ pub struct Fact {
     /// Milliseconds since epoch.
     pub created_at: u64,
     pub updated_at: u64,
-    /// Set when the fact stopped being true (superseded or deleted). The
+    /// Set when the memory stopped being true (superseded or deleted). The
     /// record stays on disk and remains queryable with
     /// `include_superseded: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalid_at: Option<u64>,
-    /// Fact id that replaced this one, when superseded by content.
+    /// Memory id that replaced this one, when superseded by content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
     /// Bumped on every appended revision of this id; replay keeps the
@@ -67,17 +67,17 @@ pub struct Fact {
     pub revision: u64,
 }
 
-impl Fact {
+impl Memory {
     pub fn is_live(&self) -> bool {
         self.invalid_at.is_none()
     }
 }
 
-/// One markdown block: always injected whole into the system prompt for
-/// sessions using its bank. Stored as `blocks/<name>.md` — open it in any
+/// One markdown rule: always injected whole into the system prompt for
+/// sessions using its bank. Stored as `rules/<name>.md` — open it in any
 /// editor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Block {
+pub struct Rule {
     pub name: String,
     pub content: String,
     /// Milliseconds since epoch (file mtime).
@@ -90,9 +90,11 @@ pub struct BankInfo {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    pub facts: usize,
+    /// Live memory (memory) count.
+    pub memories: usize,
     pub pinned: usize,
-    pub blocks: usize,
+    /// Rule (always-injected markdown) count.
+    pub rules: usize,
 }
 
 /// Milliseconds since the Unix epoch.
@@ -136,8 +138,8 @@ mod tests {
     }
 
     #[test]
-    fn fact_roundtrips_json() {
-        let f = Fact {
+    fn memory_roundtrips_json() {
+        let f = Memory {
             id: fingerprint("x"),
             text: "x".into(),
             entities: vec!["mike".into()],
@@ -156,7 +158,7 @@ mod tests {
             revision: 3,
         };
         let s = serde_json::to_string(&f).unwrap();
-        let back: Fact = serde_json::from_str(&s).unwrap();
+        let back: Memory = serde_json::from_str(&s).unwrap();
         assert_eq!(f, back);
     }
 }

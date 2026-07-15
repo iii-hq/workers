@@ -16,22 +16,22 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
-            "Durable cross-session agent memory: named banks of always-injected markdown blocks and auto-extracted facts, hybrid BM25 + entity recall, pinning, and supersede-never-delete history."
+            "Durable cross-session agent memory: named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity recall, pinning, and supersede-never-delete history."
                 .to_string(),
         // Mirrors config::WorkerConfig::default() field-for-field.
         default_config: serde_json::json!({
             "data_dir": "~/.iii/data/memory",
             "default_bank": "main",
-            "inject_blocks": true,
-            "inject_facts": true,
+            "inject_rules": true,
+            "inject_memories": true,
             "recall_limit": 6,
             "recall_budget_tokens": 1_200,
             "extraction_enabled": true,
             "extraction_model": "",
             "extraction_window": 12,
             "extraction_timeout_ms": 60_000,
-            "max_facts_per_turn": 8,
-            "max_block_chars": 6_000,
+            "max_memories_per_turn": 8,
+            "max_rule_chars": 6_000,
             "decay_half_life_days": 30,
             "embeddings_enabled": true,
             "embedding_model": "",

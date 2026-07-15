@@ -7,10 +7,10 @@
 //! production code path.
 
 pub mod banks;
-pub mod blocks;
 pub mod items;
 pub mod ops;
 pub mod recall;
+pub mod rules;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -69,15 +69,15 @@ pub const RECALL_DESC: &str =
     "Rank a bank's memories against a query (BM25 + entity match + corroboration + recency; \
      no LLM). The same scorer the pre-generate hook uses — call it to preview an injection.";
 
-pub const BLOCK_LIST_ID: &str = "memory::block::list";
-pub const BLOCK_LIST_DESC: &str =
+pub const RULE_LIST_ID: &str = "memory::rule::list";
+pub const RULE_LIST_DESC: &str =
     "List a bank's rules (markdown, injected whole into the system prompt on every turn). \
-     Rules are stored as blocks: the wire name and the on-disk blocks/ folder are stable.";
+     Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent.";
 
-pub const BLOCK_SET_ID: &str = "memory::block::set";
-pub const BLOCK_SET_DESC: &str =
+pub const RULE_SET_ID: &str = "memory::rule::set";
+pub const RULE_SET_DESC: &str =
     "Create or replace one rule (atomic write; empty content removes it). Rules are plain \
-     markdown files under the bank's blocks/ folder (blocks is the stable wire/disk name).";
+     markdown files under the bank's rules/ folder.";
 
 pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =
@@ -185,18 +185,18 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(
         iii,
         deps,
-        BLOCK_LIST_ID,
-        BLOCK_LIST_DESC,
+        RULE_LIST_ID,
+        RULE_LIST_DESC,
         false,
-        |d, r| async move { blocks::list(&d, r).await },
+        |d, r| async move { rules::list(&d, r).await },
     );
     register(
         iii,
         deps,
-        BLOCK_SET_ID,
-        BLOCK_SET_DESC,
+        RULE_SET_ID,
+        RULE_SET_DESC,
         false,
-        |d, r| async move { blocks::set(&d, r).await },
+        |d, r| async move { rules::set(&d, r).await },
     );
     register(
         iii,
@@ -265,12 +265,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<items::SaveRequest, items::SaveResponse>(SAVE_ID, SAVE_DESC),
         spec::<items::GetRequest, items::GetResponse>(GET_ID, GET_DESC),
         spec::<items::ListRequest, items::ListResponse>(LIST_ID, LIST_DESC),
-        spec::<items::UpdateRequest, items::FactResponse>(UPDATE_ID, UPDATE_DESC),
-        spec::<items::DeleteRequest, items::FactResponse>(DELETE_ID, DELETE_DESC),
-        spec::<items::PinRequest, items::FactResponse>(PIN_ID, PIN_DESC),
+        spec::<items::UpdateRequest, items::MemoryResponse>(UPDATE_ID, UPDATE_DESC),
+        spec::<items::DeleteRequest, items::MemoryResponse>(DELETE_ID, DELETE_DESC),
+        spec::<items::PinRequest, items::MemoryResponse>(PIN_ID, PIN_DESC),
         spec::<recall::RecallRequest, recall::RecallResponse>(RECALL_ID, RECALL_DESC),
-        spec::<blocks::BlockListRequest, blocks::BlockListResponse>(BLOCK_LIST_ID, BLOCK_LIST_DESC),
-        spec::<blocks::BlockSetRequest, blocks::BlockSetResponse>(BLOCK_SET_ID, BLOCK_SET_DESC),
+        spec::<rules::RuleListRequest, rules::RuleListResponse>(RULE_LIST_ID, RULE_LIST_DESC),
+        spec::<rules::RuleSetRequest, rules::RuleSetResponse>(RULE_SET_ID, RULE_SET_DESC),
         spec::<ops::DoctorRequest, ops::DoctorResponse>(DOCTOR_ID, DOCTOR_DESC),
         spec::<ops::ReloadRequest, ops::ReloadResponse>(RELOAD_ID, RELOAD_DESC),
     ]

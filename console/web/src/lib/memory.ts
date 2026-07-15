@@ -14,7 +14,7 @@ const provenanceSchema = z.object({
   agent: z.string().nullish(),
 })
 
-const factSchema = z.object({
+const memorySchema = z.object({
   id: z.string(),
   text: z.string(),
   entities: z.array(z.string()).default([]),
@@ -28,45 +28,45 @@ const factSchema = z.object({
   superseded_by: z.string().nullish(),
   revision: z.number().default(0),
 })
-export type MemoryFact = z.infer<typeof factSchema>
+export type MemoryItem = z.infer<typeof memorySchema>
 
 const bankInfoSchema = z.object({
   name: z.string(),
   description: z.string().default(''),
-  facts: z.number().default(0),
+  memories: z.number().default(0),
   pinned: z.number().default(0),
-  blocks: z.number().default(0),
+  rules: z.number().default(0),
 })
 export type MemoryBank = z.infer<typeof bankInfoSchema>
 
-const blockSchema = z.object({
+const ruleSchema = z.object({
   name: z.string(),
   content: z.string(),
   updated_at: z.number().default(0),
 })
-export type MemoryBlock = z.infer<typeof blockSchema>
+export type MemoryRule = z.infer<typeof ruleSchema>
 
 const bankListSchema = z.object({ banks: z.array(z.unknown()).default([]) })
-const factListSchema = z.object({
-  facts: z.array(z.unknown()).default([]),
+const memoryListSchema = z.object({
+  memories: z.array(z.unknown()).default([]),
   total: z.number().default(0),
 })
-const blockListSchema = z.object({ blocks: z.array(z.unknown()).default([]) })
+const ruleListSchema = z.object({ rules: z.array(z.unknown()).default([]) })
 const recallSchema = z.object({
   bank: z.string(),
   retrieval: z.string().default(''),
-  facts: z
-    .array(z.object({ fact: z.unknown(), score: z.number() }))
+  memories: z
+    .array(z.object({ memory: z.unknown(), score: z.number() }))
     .default([]),
 })
 
-export interface RecalledFact {
-  fact: MemoryFact
+export interface RecalledMemory {
+  memory: MemoryItem
   score: number
 }
 
-function parseFact(raw: unknown): MemoryFact | null {
-  const parsed = factSchema.safeParse(raw)
+function parseMemory(raw: unknown): MemoryItem | null {
+  const parsed = memorySchema.safeParse(raw)
   return parsed.success ? parsed.data : null
 }
 
@@ -94,14 +94,14 @@ export async function deleteBank(name: string): Promise<void> {
   await client.trigger('memory::bank::delete', { name })
 }
 
-export const FACTS_PAGE_SIZE = 100
+export const MEMORIES_PAGE_SIZE = 100
 
-export async function listFacts(
+export async function listMemories(
   bank: string,
   includeSuperseded: boolean,
   offset = 0,
-  limit = FACTS_PAGE_SIZE,
-): Promise<{ facts: MemoryFact[]; total: number }> {
+  limit = MEMORIES_PAGE_SIZE,
+): Promise<{ memories: MemoryItem[]; total: number }> {
   const client = await getIiiClient()
   const res = await client.trigger<unknown>('memory::list', {
     bank,
@@ -109,17 +109,17 @@ export async function listFacts(
     offset,
     include_superseded: includeSuperseded,
   })
-  const parsed = factListSchema.safeParse(res)
-  if (!parsed.success) return { facts: [], total: 0 }
+  const parsed = memoryListSchema.safeParse(res)
+  if (!parsed.success) return { memories: [], total: 0 }
   return {
-    facts: parsed.data.facts
-      .map(parseFact)
-      .filter((f): f is MemoryFact => f !== null),
+    memories: parsed.data.memories
+      .map(parseMemory)
+      .filter((m): m is MemoryItem => m !== null),
     total: parsed.data.total,
   }
 }
 
-export async function saveFact(
+export async function saveMemory(
   bank: string,
   text: string,
   pinned: boolean,
@@ -128,7 +128,7 @@ export async function saveFact(
   await client.trigger('memory::save', { bank, text, pinned })
 }
 
-export async function updateFact(
+export async function updateMemory(
   bank: string,
   id: string,
   text: string,
@@ -137,7 +137,7 @@ export async function updateFact(
   await client.trigger('memory::update', { bank, id, text })
 }
 
-export async function pinFact(
+export async function pinMemory(
   bank: string,
   id: string,
   pinned: boolean,
@@ -146,44 +146,44 @@ export async function pinFact(
   await client.trigger('memory::pin', { bank, id, pinned })
 }
 
-export async function deleteFact(bank: string, id: string): Promise<void> {
+export async function deleteMemory(bank: string, id: string): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('memory::delete', { bank, id })
 }
 
-export async function listBlocks(bank: string): Promise<MemoryBlock[]> {
+export async function listRules(bank: string): Promise<MemoryRule[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<unknown>('memory::block::list', { bank })
-  const parsed = blockListSchema.safeParse(res)
+  const res = await client.trigger<unknown>('memory::rule::list', { bank })
+  const parsed = ruleListSchema.safeParse(res)
   if (!parsed.success) return []
-  return parsed.data.blocks
-    .map((b) => blockSchema.safeParse(b))
-    .filter((p): p is { success: true; data: MemoryBlock } => p.success)
+  return parsed.data.rules
+    .map((r) => ruleSchema.safeParse(r))
+    .filter((p): p is { success: true; data: MemoryRule } => p.success)
     .map((p) => p.data)
 }
 
-export async function setBlock(
+export async function setRule(
   bank: string,
   name: string,
   content: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('memory::block::set', { bank, name, content })
+  await client.trigger('memory::rule::set', { bank, name, content })
 }
 
-export async function getFact(
+export async function getMemory(
   bank: string,
   id: string,
-): Promise<MemoryFact | null> {
+): Promise<MemoryItem | null> {
   const client = await getIiiClient()
   const res = await client.trigger<unknown>('memory::get', { bank, id })
-  const parsed = z.object({ fact: z.unknown() }).safeParse(res)
+  const parsed = z.object({ memory: z.unknown() }).safeParse(res)
   if (!parsed.success) return null
-  return parseFact(parsed.data.fact)
+  return parseMemory(parsed.data.memory)
 }
 
 /** Drop the worker's RAM state and re-read every bank from disk — picks
- * up hand-edited blocks/facts files. */
+ * up hand-edited rule/memory files. */
 export async function reloadStore(): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('memory::reload', {})
@@ -193,7 +193,7 @@ export async function recall(
   bank: string,
   query: string,
   limit = 20,
-): Promise<{ retrieval: string; facts: RecalledFact[] }> {
+): Promise<{ retrieval: string; memories: RecalledMemory[] }> {
   const client = await getIiiClient()
   const res = await client.trigger<unknown>('memory::recall', {
     bank,
@@ -201,14 +201,14 @@ export async function recall(
     limit,
   })
   const parsed = recallSchema.safeParse(res)
-  if (!parsed.success) return { retrieval: '', facts: [] }
+  if (!parsed.success) return { retrieval: '', memories: [] }
   return {
     retrieval: parsed.data.retrieval,
-    facts: parsed.data.facts
+    memories: parsed.data.memories
       .map((r) => {
-        const fact = parseFact(r.fact)
-        return fact ? { fact, score: r.score } : null
+        const memory = parseMemory(r.memory)
+        return memory ? { memory, score: r.score } : null
       })
-      .filter((r): r is RecalledFact => r !== null),
+      .filter((r): r is RecalledMemory => r !== null),
   }
 }
