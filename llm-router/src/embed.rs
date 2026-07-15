@@ -1,11 +1,13 @@
 //! `router::embed` — one front door for text embeddings, mirroring the
-//! chat surface's shape: callers name a provider or let the router find
-//! one. Providers implement `provider::<id>::embed` (batch in, one vector
-//! per input, order preserved); the router discovers implementations from
-//! the live function registry, so a new provider needs zero router
+//! chat surface's shape: callers name a provider or let the router pick
+//! one from its own provider registry. Providers implement
+//! `provider::<id>::embed` (batch in, one vector per input, order
+//! preserved); registered providers without the surface are skipped on a
+//! function-not-found, so a new embed-capable provider needs zero router
 //! changes to serve embeddings.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
@@ -13,6 +15,8 @@ use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use crate::registry::store::RegistryStore;
 
 const EMBED_TIMEOUT_MS: u64 = 30_000;
 
@@ -37,93 +41,89 @@ pub struct RouterEmbedResponse {
     pub embeddings: Vec<Vec<f32>>,
 }
 
-/// Embed-capable provider ids from the live function registry
-/// (`provider::<id>::embed`), stable-sorted with `openai` preferred so the
-/// default choice is deterministic.
-async fn discover_providers(iii: &IIIClient) -> Vec<String> {
+/// One provider attempt. `Ok(None)` = this provider has no embed surface
+/// (function not found) — try the next.
+async fn try_provider(
+    iii: &IIIClient,
+    provider: &str,
+    model: &Option<String>,
+    input: &[String],
+) -> Result<Option<RouterEmbedResponse>, Error> {
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "engine::functions::list".into(),
-            payload: json!({ "search": "embed" }),
+            function_id: format!("provider::{provider}::embed"),
+            payload: json!({ "model": model, "input": input }),
             action: None,
-            timeout_ms: Some(5_000),
+            timeout_ms: Some(EMBED_TIMEOUT_MS),
         })
         .await;
-    let mut ids: Vec<String> = reply
-        .ok()
-        .and_then(|v| v.get("functions").cloned())
-        .and_then(|f| serde_json::from_value::<Vec<Value>>(f).ok())
-        .map(|fns| {
-            fns.iter()
-                .filter_map(|f| f.get("function_id").and_then(Value::as_str))
-                .filter_map(|id| {
-                    id.strip_prefix("provider::")
-                        .and_then(|rest| rest.strip_suffix("::embed"))
-                        .map(str::to_string)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    ids.sort();
-    ids.dedup();
-    if let Some(pos) = ids.iter().position(|p| p == "openai") {
-        ids.swap(0, pos);
-    }
-    ids
+    let reply = match reply {
+        Ok(v) => v,
+        Err(e) if e.to_string().contains("function_not_found") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let model = reply
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let embeddings: Vec<Vec<f32>> = reply
+        .get("embeddings")
+        .cloned()
+        .and_then(|e| serde_json::from_value(e).ok())
+        .ok_or_else(|| {
+            Error::Handler(format!(
+                "router/bad_provider_response: provider::{provider}::embed returned no embeddings array"
+            ))
+        })?;
+    Ok(Some(RouterEmbedResponse {
+        provider: provider.to_string(),
+        model,
+        embeddings,
+    }))
 }
 
 pub fn make_embed(
     iii: IIIClient,
+    registry: Arc<RegistryStore>,
 ) -> impl Fn(RouterEmbedRequest) -> BoxedEmbedFuture + Send + Sync + 'static {
     move |req: RouterEmbedRequest| {
         let iii = iii.clone();
+        let registry = registry.clone();
         Box::pin(async move {
             if req.input.is_empty() {
                 return Err(Error::Handler(
                     "router/invalid_input: input must not be empty".into(),
                 ));
             }
-            let provider = match req.provider.filter(|p| !p.trim().is_empty()) {
-                Some(p) => p,
-                None => discover_providers(&iii)
-                    .await
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        Error::Handler(
-                            "router/no_embed_provider: no provider::<id>::embed function is \
-                             registered; add a provider worker with an embeddings surface"
-                                .into(),
-                        )
-                    })?,
+            let candidates: Vec<String> = match req.provider.filter(|p| !p.trim().is_empty()) {
+                Some(p) => vec![p],
+                None => {
+                    // Registered providers, `openai` preferred so the
+                    // default choice is deterministic.
+                    let mut ids = registry.ids().await;
+                    ids.sort();
+                    if let Some(pos) = ids.iter().position(|p| p == "openai") {
+                        ids.swap(0, pos);
+                    }
+                    ids
+                }
             };
-            let reply = iii
-                .trigger(TriggerRequest {
-                    function_id: format!("provider::{provider}::embed"),
-                    payload: json!({ "model": req.model, "input": req.input }),
-                    action: None,
-                    timeout_ms: Some(EMBED_TIMEOUT_MS),
-                })
-                .await?;
-            let model = reply
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let embeddings: Vec<Vec<f32>> = reply
-                .get("embeddings")
-                .cloned()
-                .and_then(|e| serde_json::from_value(e).ok())
-                .ok_or_else(|| {
-                    Error::Handler(format!(
-                        "router/bad_provider_response: provider::{provider}::embed returned no embeddings array"
-                    ))
-                })?;
-            Ok(RouterEmbedResponse {
-                provider,
-                model,
-                embeddings,
-            })
+            if candidates.is_empty() {
+                return Err(Error::Handler(
+                    "router/no_embed_provider: no providers are registered".into(),
+                ));
+            }
+            for provider in &candidates {
+                if let Some(resp) = try_provider(&iii, provider, &req.model, &req.input).await? {
+                    return Ok(resp);
+                }
+            }
+            Err(Error::Handler(format!(
+                "router/no_embed_provider: none of the registered providers ({}) implement \
+                 provider::<id>::embed",
+                candidates.join(", ")
+            )))
         })
     }
 }
