@@ -45,7 +45,7 @@ Trigger types: `memory::item-changed` (`{event_type, bank, memory}`) and `memory
 
 ## Storage layout
 
-```
+```text
 ~/.iii/data/memory/
   main/
     bank.yaml          # description

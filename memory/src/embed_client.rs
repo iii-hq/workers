@@ -79,7 +79,7 @@ pub async fn backfill_bank(deps: Arc<Deps>, bank_name: String) {
     };
     let mut total = 0usize;
     for _ in 0..BACKFILL_ROUNDS {
-        let pending = bank.unembedded(BACKFILL_BATCH).await;
+        let pending = bank.unembedded(BACKFILL_BATCH, &cfg.embedding_model).await;
         if pending.is_empty() {
             break;
         }

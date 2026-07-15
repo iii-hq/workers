@@ -31,12 +31,15 @@ function RuleEditor({
 }) {
   const [content, setContent] = useState(initial)
   // Re-seed the editor when a live refresh changes the rule on disk and
-  // the user has no local edits in flight.
+  // the user has no local edits in flight. After a successful save,
+  // `touched` stays set until the refreshed `initial` catches up with the
+  // saved content — clearing it earlier would flash the stale text back.
   const [touched, setTouched] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   useEffect(() => {
     if (!touched) setContent(initial)
-  }, [initial, touched])
+    else if (content === initial) setTouched(false)
+  }, [initial, touched, content])
 
   const dirty = content !== initial
   return (
@@ -56,9 +59,13 @@ function RuleEditor({
                 size="sm"
                 disabled={busy}
                 onClick={() => {
-                  void onSet(name, content).then((ok) => {
-                    if (ok) setTouched(false)
-                  })
+                  // Emptied content means delete — that path gets the
+                  // explicit confirm, never a silent removal via save.
+                  if (content.trim() === '') {
+                    setConfirmDelete(true)
+                    return
+                  }
+                  void onSet(name, content)
                 }}
               >
                 save
@@ -110,7 +117,7 @@ function RuleEditor({
         spellCheck={false}
         aria-label={`rule ${name}`}
         className="w-full bg-bg text-ink font-mono text-[13px] leading-relaxed p-3 outline-none resize-y placeholder:text-ink-ghost"
-        placeholder="empty content removes this rule on save"
+        placeholder="empty the content and save to remove this rule (asks to confirm)"
       />
     </div>
   )

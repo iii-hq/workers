@@ -54,11 +54,11 @@ pub struct Bank {
 struct BankInner {
     memories: HashMap<String, Memory>,
     index: Bm25Index,
-    /// Memory id -> embedding, loaded from the `vectors.jsonl` sidecar.
-    /// Like the BM25 index this is a derived cache: rebuildable, never
-    /// authoritative, and absent vectors just mean no semantic signal for
-    /// that memory yet.
-    vectors: HashMap<String, Vec<f32>>,
+    /// Memory id -> (embedding model, embedding), loaded from the
+    /// `vectors.jsonl` sidecar. Like the BM25 index this is a derived
+    /// cache: rebuildable, never authoritative, and absent vectors just
+    /// mean no semantic signal for that record yet.
+    vectors: HashMap<String, (String, Vec<f32>)>,
 }
 
 /// One sidecar line: a memory's embedding (last-wins by id on replay).
@@ -66,6 +66,10 @@ struct BankInner {
 struct VectorRecord {
     id: String,
     model: String,
+    /// Memory revision the text was embedded at; an older revision means
+    /// the text changed since, so the vector is stale.
+    #[serde(default)]
+    revision: u64,
     v: Vec<f32>,
 }
 
@@ -80,6 +84,19 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (na * nb)
+}
+
+/// Run blocking filesystem work without stalling the async worker thread:
+/// `block_in_place` on the multi-thread runtime, inline on current-thread
+/// runtimes (tests), which cannot yield this way.
+fn run_blocking<T>(
+    f: impl FnOnce() -> Result<T, MemoryError>,
+) -> impl std::future::Future<Output = Result<T, MemoryError>> {
+    let out = match tokio::runtime::Handle::current().runtime_flavor() {
+        tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
+    };
+    std::future::ready(out)
 }
 
 /// What a commit did — callers translate this into the emitted event.
@@ -178,16 +195,21 @@ impl Store {
             return Ok((existing.clone(), false));
         }
         let dir = self.root.join(name);
-        std::fs::create_dir_all(dir.join(RULES_DIR))?;
-        let desc = description.unwrap_or_default();
-        std::fs::write(
-            dir.join(BANK_META),
-            format!(
-                "description: {}\n",
-                serde_yaml::to_string(desc).unwrap_or_default().trim()
-            ),
-        )?;
-        let bank = Arc::new(Bank::load(name, dir)?);
+        let desc = description.unwrap_or_default().to_string();
+        let bank_name = name.to_string();
+        let bank = run_blocking(move || {
+            std::fs::create_dir_all(dir.join(RULES_DIR))?;
+            std::fs::write(
+                dir.join(BANK_META),
+                format!(
+                    "description: {}\n",
+                    serde_yaml::to_string(&desc).unwrap_or_default().trim()
+                ),
+            )?;
+            Bank::load(&bank_name, dir)
+        })
+        .await?;
+        let bank = Arc::new(bank);
         banks.insert(name.to_string(), bank.clone());
         Ok((bank, true))
     }
@@ -211,9 +233,11 @@ impl Store {
     }
 
     /// Drop all in-RAM state and reload from disk (the recovery hatch after
-    /// hand-editing files).
+    /// hand-editing files). The full-disk replay runs off the async worker
+    /// thread on the multi-thread runtime.
     pub async fn reload(&self) -> Result<usize, MemoryError> {
-        let fresh = Store::open(self.root.clone())?;
+        let root = self.root.clone();
+        let fresh = run_blocking(move || Store::open(root)).await?;
         let loaded = fresh.banks.into_inner();
         let count = loaded.values().len();
         *self.banks.write().await = loaded;
@@ -267,7 +291,7 @@ impl Bank {
 
         // Vector sidecar: last-wins by id, entries for unknown memories
         // dropped (they belong to trimmed history), corrupt lines skipped.
-        let mut vectors: HashMap<String, Vec<f32>> = HashMap::new();
+        let mut vectors: HashMap<String, (String, Vec<f32>)> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
         if vectors_path.exists() {
             let file = std::fs::File::open(&vectors_path)?;
@@ -277,8 +301,13 @@ impl Bank {
                     continue;
                 }
                 if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
-                    if memories.contains_key(&rec.id) {
-                        vectors.insert(rec.id, rec.v);
+                    // Keep only vectors embedded at the record's CURRENT
+                    // revision — an edit since the embed makes it stale.
+                    let current = memories
+                        .get(&rec.id)
+                        .is_some_and(|m| m.revision == rec.revision);
+                    if current {
+                        vectors.insert(rec.id, (rec.model, rec.v));
                     }
                 }
             }
@@ -300,9 +329,15 @@ impl Bank {
     /// derived data: failures cost a re-embed, never memory integrity.
     pub async fn set_vector(&self, id: &str, model: &str, v: Vec<f32>) -> Result<(), MemoryError> {
         let mut inner = self.inner.write().await;
+        let revision = match inner.memories.get(id) {
+            Some(m) => m.revision,
+            // The record vanished between embed and store; nothing to attach.
+            None => return Ok(()),
+        };
         let line = serde_json::to_string(&VectorRecord {
             id: id.to_string(),
             model: model.to_string(),
+            revision,
             v: v.clone(),
         })
         .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
@@ -312,17 +347,26 @@ impl Bank {
             .open(self.dir.join(VECTORS_FILE))?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
-        inner.vectors.insert(id.to_string(), v);
+        inner.vectors.insert(id.to_string(), (model.to_string(), v));
         Ok(())
     }
 
     /// Live memories that have no embedding yet (backfill work list).
-    pub async fn unembedded(&self, limit: usize) -> Vec<Memory> {
+    pub async fn unembedded(&self, limit: usize, active_model: &str) -> Vec<Memory> {
         let inner = self.inner.read().await;
         inner
             .memories
             .values()
-            .filter(|f| f.is_live() && !inner.vectors.contains_key(&f.id))
+            .filter(|f| {
+                f.is_live()
+                    && match inner.vectors.get(&f.id) {
+                        None => true,
+                        // A vector from a different model than the active
+                        // one is due a re-embed; empty active model means
+                        // "provider default" and accepts whatever exists.
+                        Some((model, _)) => !active_model.is_empty() && model != active_model,
+                    }
+            })
             .take(limit)
             .cloned()
             .collect()
@@ -345,7 +389,7 @@ impl Bank {
         // while letting other tasks run (current-thread runtimes — tests —
         // cannot yield this way and just run inline).
         let path = self.dir.join(MEMORIES_FILE);
-        let append = move || -> Result<(), MemoryError> {
+        run_blocking(move || -> Result<(), MemoryError> {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -354,11 +398,8 @@ impl Bank {
             file.write_all(b"\n")?;
             file.sync_data()?;
             Ok(())
-        };
-        match tokio::runtime::Handle::current().runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(append)?,
-            _ => append()?,
-        }
+        })
+        .await?;
 
         let kind = if inner.memories.contains_key(&memory.id) {
             CommitKind::Updated
@@ -459,7 +500,7 @@ impl Bank {
         // Semantic candidates join the pool even without a lexical hit.
         let mut sem: HashMap<String, f32> = HashMap::new();
         if let Some(qv) = query_vec {
-            for (id, v) in &inner.vectors {
+            for (id, (_, v)) in &inner.vectors {
                 let c = cosine(qv, v);
                 if c > SEMANTIC_FLOOR {
                     sem.insert(id.clone(), c);
@@ -523,7 +564,13 @@ impl Bank {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let content = std::fs::read_to_string(&path)?;
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "skipping unreadable rule file");
+                    continue;
+                }
+            };
             let updated_at = entry
                 .metadata()
                 .and_then(|m| m.modified())

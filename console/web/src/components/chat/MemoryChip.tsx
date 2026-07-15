@@ -22,8 +22,9 @@ interface MemoryChipProps {
 
 export function MemoryChip({ memory }: MemoryChipProps) {
   const [open, setOpen] = useState(false)
-  const [memories, setFacts] = useState<MemoryItem[] | null>(null)
+  const [memories, setMemories] = useState<MemoryItem[] | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
 
   const parts = []
   if (memory.memories > 0)
@@ -37,11 +38,16 @@ export function MemoryChip({ memory }: MemoryChipProps) {
     setOpen(next)
     if (next && memories === null && memory.memoryIds.length > 0) {
       setLoading(true)
+      setLoadError(false)
       try {
         const loaded = await Promise.all(
           memory.memoryIds.map((id) => getMemory(memory.bank, id)),
         )
-        setFacts(loaded.filter((f): f is MemoryItem => f !== null))
+        setMemories(loaded.filter((m): m is MemoryItem => m !== null))
+      } catch {
+        // A failed fetch is not "no memories": show it as an error and
+        // let the next open retry.
+        setLoadError(true)
       } finally {
         setLoading(false)
       }
@@ -70,6 +76,10 @@ export function MemoryChip({ memory }: MemoryChipProps) {
           {loading ? (
             <span className="font-mono text-[10px] lowercase text-ink-ghost">
               loading memories…
+            </span>
+          ) : loadError ? (
+            <span className="font-mono text-[10px] lowercase text-alert">
+              could not load memories — click to retry
             </span>
           ) : memories && memories.length > 0 ? (
             memories.map((memory) => (

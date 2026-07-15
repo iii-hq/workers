@@ -55,11 +55,22 @@ pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, Me
     let cfg = deps.config().await;
     let bank_name = req.bank.unwrap_or_else(|| cfg.default_bank.clone());
     let store = deps.store().await;
+    let exists = !req.content.trim().is_empty();
+    // Deleting from a bank that does not exist must not create it: an
+    // empty-content set against a missing bank is a no-op, not a
+    // bank-plus-events side effect.
+    if !exists {
+        let Ok(bank) = store.bank(&bank_name).await else {
+            return Ok(RuleSetResponse { ok: true, exists });
+        };
+        bank.set_rule(&req.name, &req.content)?;
+        deps.emitter.bank("rules-changed", &bank_name).await;
+        return Ok(RuleSetResponse { ok: true, exists });
+    }
     let (bank, created) = store.ensure_bank(&bank_name, None).await?;
     if created {
         deps.emitter.bank("created", &bank_name).await;
     }
-    let exists = !req.content.trim().is_empty();
     bank.set_rule(&req.name, &req.content)?;
     deps.emitter.bank("rules-changed", &bank_name).await;
     Ok(RuleSetResponse { ok: true, exists })
