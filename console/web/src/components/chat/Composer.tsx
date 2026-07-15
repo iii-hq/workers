@@ -32,7 +32,7 @@ export interface ComposerSubmitPayload {
 
 /** Round icon action button (send / queue / stop) at the composer's edge. */
 const actionButtonClass = cn(
-  'inline-flex items-center justify-center size-8 rounded-full bg-bg text-ink',
+  'inline-flex size-9 items-center justify-center rounded-full bg-bg text-ink',
   '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
   'hover:opacity-80 transition-opacity duration-150',
   'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
@@ -320,62 +320,76 @@ export function Composer({
         />
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
-        <ModePicker value={mode} onChange={onModeChange} />
-        {showWorkingDir && onWorkingDirChange ? (
-          <DirectoryPicker
-            value={workingDir ?? null}
-            onChange={onWorkingDirChange}
-            locked={workingDirLocked}
+      <div className="flex min-w-0 items-center gap-2 border-t border-rule-2 px-3 py-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ModePicker
+            value={mode}
+            onChange={onModeChange}
+            className="shrink-0"
+          />
+          {showWorkingDir && onWorkingDirChange ? (
+            <DirectoryPicker
+              value={workingDir ?? null}
+              onChange={onWorkingDirChange}
+              locked={workingDirLocked}
+              disabled={optionsDisabled}
+              externalError={workingDirError}
+              defaultDir={defaultWorkingDir}
+              worktrees={worktreePicker}
+              className="shrink-0"
+            />
+          ) : null}
+          {showPermissionMode ? (
+            <PermissionModePicker
+              value={permissionMode}
+              onChange={onPermissionModeChange}
+              disabled={optionsDisabled || !!permissionModeLoading}
+            />
+          ) : null}
+          <ModelPicker
+            value={model}
+            options={modelOptions}
+            thinkingLevel={thinkingLevel}
+            onChange={onModelChange}
+            onThinkingLevelChange={onThinkingLevelChange}
             disabled={optionsDisabled}
-            externalError={workingDirError}
-            defaultDir={defaultWorkingDir}
-            worktrees={worktreePicker}
+            loading={catalogLoading}
+            className="min-w-0 flex-1"
           />
-        ) : null}
-        {showPermissionMode ? (
-          <PermissionModePicker
-            value={permissionMode}
-            onChange={onPermissionModeChange}
-            disabled={optionsDisabled || !!permissionModeLoading}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <AttachmentButton
+            onAttach={handleAttach}
+            disabled={inputDisabled}
+            className="size-9"
           />
-        ) : null}
-        <ModelPicker
-          value={model}
-          options={modelOptions}
-          thinkingLevel={thinkingLevel}
-          onChange={onModelChange}
-          onThinkingLevelChange={onThinkingLevelChange}
-          disabled={optionsDisabled}
-          loading={catalogLoading}
-        />
-        <div className="flex-1 min-w-0" />
-        <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
-        {/* ONE action button. Mid-stream the slot shows Stop, but the moment
-            the composer holds queueable content (text or attachments) it
-            flips to send — the editor advertises "queue a message…", and the
-            click must queue it, not kill the turn. */}
-        {isStreaming &&
-        !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
-          <button
-            type="button"
-            onClick={onStop}
-            aria-label="stop generating"
-            className={actionButtonClass}
-          >
-            <Square size={16} aria-hidden className="fill-black/90" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={blocked}
-            aria-label={isStreaming ? 'queue message' : 'send message'}
-            className={actionButtonClass}
-          >
-            <ArrowUp size={20} aria-hidden />
-          </button>
-        )}
+          {/* ONE action button. Mid-stream the slot shows Stop, but the moment
+              the composer holds queueable content (text or attachments) it
+              flips to send — the editor advertises "queue a message…", and the
+              click must queue it, not kill the turn. */}
+          {isStreaming &&
+          !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="stop generating"
+              className={actionButtonClass}
+            >
+              <Square size={16} aria-hidden className="fill-black/90" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={blocked}
+              aria-label={isStreaming ? 'queue message' : 'send message'}
+              className={actionButtonClass}
+            >
+              <ArrowUp size={20} aria-hidden />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

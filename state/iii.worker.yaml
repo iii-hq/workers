@@ -12,4 +12,4 @@ config:
       store_method: file_based
       file_path: ./data/state_store.db
 dependencies:
-  configuration: "^0.19.0"
+  configuration: "^0.21.6"

@@ -134,7 +134,10 @@ in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 ### `context::assemble`
 
 Build a model-ready context. Applies prune and/or compaction as needed to fit `usable`, in this
-order: count -> (if over) prune function outputs -> (if still over) compact head -> assemble final list.
+order: count the complete request -> (if over) prune function outputs -> (if still over) compact
+the head -> (if still over) replace oversized function results with bounded transcript references
+-> assemble the final list. A successful response has the hard postcondition
+`token_count <= usable`.
 
 - Invocation: **sync**
 
@@ -145,12 +148,14 @@ type AssembleRequest = {
   messages: AgentMessage[];        // full candidate history, oldest first
   model: ModelInput;
   system_prompt?: string;          // base system prompt to prepend/merge
+  tools?: AgentFunction[];          // complete invocation schema sent with the request
   options?: {
     reserved_tokens?: number;      // override the default reserve
+    request_overhead_tokens?: number; // response format/provider fields not represented above
     tail_turns?: number;           // user+assistant pairs always kept verbatim (default 2)
     allow_compaction?: boolean;    // default true
     allow_prune?: boolean;         // default true
-    protected_functions?: string[];    // function_ids whose outputs are never pruned
+    protected_functions?: string[];    // function_ids exempt from the normal prune pass
     thinking_level?: ThinkingLevel;    // reserve the model's thinking budget for this tier
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id); default: hash of the message set
     previous_summary?: string;     // persisted summary from a prior compaction (see "The compaction round trip")
@@ -164,7 +169,7 @@ Response:
 type AssembleResponse = {
   system_prompt: string;
   messages: AgentMessage[];        // budgeted, ready to send to llm-router
-  token_count: number;             // estimated tokens of the returned context
+  token_count: number;             // messages + prompt + tools + request overhead
   usable: number;                  // the budget it was fit into
   model_resolved: "inline" | "router" | "fallback";
   applied: {
@@ -178,8 +183,16 @@ type AssembleResponse = {
 };
 ```
 
+The emergency reduction pass is a safety boundary, not a preference. It may replace a recent or
+normally protected `function_result` when that single result would otherwise overflow the model.
+The replacement preserves message order and `function_call_id`, and carries a bounded reference
+with the original size, hash, preview, and transcript retrieval hint; the durable session transcript
+retains the full result.
+
 Errors (thrown): `messages is required`; `could not resolve model limits` (only when neither inline
-limits nor `llm-router` are available and the fallback is explicitly disabled).
+limits nor `llm-router` are available and the fallback is explicitly disabled); `context/overflow`
+when no safe combination of pruning and compaction can fit the complete request. An overflow error
+never includes a model-ready response for the caller to send anyway.
 
 Example:
 

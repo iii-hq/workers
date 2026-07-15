@@ -18,7 +18,7 @@ name = "cron"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.20.0"
+iii-sdk = "=0.21.6"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

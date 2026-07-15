@@ -15,8 +15,8 @@ name = "codex"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.20.0"
-iii-helpers = "=0.20.0"
+iii-sdk = "=0.21.6"
+iii-helpers = "=0.21.6"
 schemars = { version = "0.8", features = ["uuid1"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util"] }
 serde = { version = "1", features = ["derive"] }

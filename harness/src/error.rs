@@ -28,6 +28,10 @@ pub enum HarnessError {
     #[error("harness/dependency: {0}")]
     Dependency(String),
 
+    /// No provider-safe context can fit inside the resolved model budget.
+    #[error("harness/context_overflow: {0}")]
+    ContextOverflow(String),
+
     /// A state read/write backing the loop failed.
     #[error("harness/state: {0}")]
     State(String),
@@ -46,6 +50,7 @@ impl HarnessError {
             HarnessError::SpawnDepthExceeded(_) => "harness/spawn_depth_exceeded",
             HarnessError::SpawnFanoutExceeded(_) => "harness/spawn_fanout_exceeded",
             HarnessError::Dependency(_) => "harness/dependency",
+            HarnessError::ContextOverflow(_) => "harness/context_overflow",
             HarnessError::State(_) => "harness/state",
             HarnessError::Internal(_) => "harness/internal",
         }
@@ -70,6 +75,7 @@ mod tests {
             HarnessError::SpawnDepthExceeded("m".into()),
             HarnessError::SpawnFanoutExceeded("m".into()),
             HarnessError::Dependency("m".into()),
+            HarnessError::ContextOverflow("m".into()),
             HarnessError::State("m".into()),
             HarnessError::Internal("m".into()),
         ];
@@ -80,5 +86,15 @@ mod tests {
                 v.code()
             );
         }
+    }
+
+    #[test]
+    fn context_overflow_has_stable_code() {
+        let error = HarnessError::ContextOverflow("request does not fit".into());
+        assert_eq!(error.code(), "harness/context_overflow");
+        assert_eq!(
+            error.to_string(),
+            "harness/context_overflow: request does not fit"
+        );
     }
 }

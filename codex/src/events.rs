@@ -21,7 +21,7 @@ fn next_item_id(session_id: &str) -> String {
     let n = map.entry(session_id.to_string()).or_insert(0);
     let seq = *n;
     *n += 1;
-    format!("{session_id}-{}-{:08}", &*EPOCH, seq)
+    format!("{session_id}-{}-{seq:08}", *EPOCH)
 }
 
 pub async fn emit(iii: &IIIClient, stream_name: &str, session_id: &str, data: Value) {

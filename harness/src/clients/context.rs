@@ -1,6 +1,5 @@
-//! `context-manager` client: `context::assemble`. Soft dependency — when the
-//! worker is absent (function not found) the caller degrades to raw history
-//! plus the base system prompt.
+//! Required `context-manager` client: context assembly and final token
+//! preflight both fail closed so the harness never bypasses provider budgets.
 
 use std::sync::Arc;
 
@@ -10,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::types::message::AgentMessage;
-use crate::types::model::ThinkingLevel;
+use crate::types::model::{AgentFunction, ThinkingLevel};
 
 /// The budgeted context returned by `context::assemble`.
 #[derive(Debug, Clone, Deserialize)]
@@ -19,6 +18,8 @@ pub struct AssembleOutput {
     pub system_prompt: String,
     #[serde(default)]
     pub messages: Vec<AgentMessage>,
+    pub token_count: u64,
+    pub usable: u64,
     #[serde(default)]
     pub applied: Applied,
 }
@@ -31,6 +32,8 @@ pub struct Applied {
     pub summary: Option<String>,
     #[serde(default)]
     pub tail_start_index: Option<i64>,
+    #[serde(default)]
+    pub tokens_before: Option<u64>,
 }
 
 pub struct AssembleParams {
@@ -41,6 +44,21 @@ pub struct AssembleParams {
     pub previous_summary: Option<String>,
     pub lease_key: String,
     pub thinking_level: Option<ThinkingLevel>,
+    pub tools: Vec<AgentFunction>,
+    pub request_overhead_tokens: u64,
+}
+
+pub struct CountTokensParams {
+    pub messages: Vec<Value>,
+    pub model_id: String,
+    pub provider: Option<String>,
+    pub system_prompt: Option<String>,
+    pub tools: Vec<AgentFunction>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CountTokensOutput {
+    pub tokens: u64,
 }
 
 #[derive(Clone)]
@@ -54,14 +72,17 @@ impl ContextClient {
         Self { iii, timeout_ms }
     }
 
-    /// Assemble a model-ready context. Returns `Ok(None)` when the worker is
-    /// unreachable (soft dependency → raw-history fallback).
-    pub async fn assemble(&self, params: AssembleParams) -> Result<Option<AssembleOutput>, String> {
+    /// Assemble a model-ready context. The context manager is a required
+    /// dependency: callers must never fall back to unbudgeted raw history.
+    pub async fn assemble(&self, params: AssembleParams) -> Result<AssembleOutput, String> {
         let mut model = json!({ "id": params.model_id });
         if let Some(p) = &params.provider {
             model["provider"] = json!(p);
         }
-        let mut options = json!({ "lease_key": params.lease_key });
+        let mut options = json!({
+            "lease_key": params.lease_key,
+            "request_overhead_tokens": params.request_overhead_tokens,
+        });
         if let Some(s) = &params.previous_summary {
             options["previous_summary"] = json!(s);
         }
@@ -72,6 +93,7 @@ impl ContextClient {
             "messages": params.messages,
             "model": model,
             "options": options,
+            "tools": params.tools,
         });
         if let Some(sp) = &params.system_prompt {
             payload["system_prompt"] = json!(sp);
@@ -89,18 +111,43 @@ impl ContextClient {
 
         match resp {
             Ok(v) => serde_json::from_value::<AssembleOutput>(v)
-                .map(Some)
                 .map_err(|e| format!("context::assemble parse: {e}")),
-            Err(e) if is_unroutable(&e.to_string()) => {
-                tracing::info!("context-manager absent; using raw history");
-                Ok(None)
-            }
             Err(e) => Err(format!("context::assemble: {e}")),
         }
     }
-}
 
-fn is_unroutable(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    m.contains("function_not_found") || m.contains("not found") || m.contains("no function")
+    /// Count the final model-facing messages, prompt, and complete tool list.
+    pub async fn count_tokens(
+        &self,
+        params: CountTokensParams,
+    ) -> Result<CountTokensOutput, String> {
+        let mut model = json!({ "id": params.model_id });
+        if let Some(p) = &params.provider {
+            model["provider"] = json!(p);
+        }
+        let mut payload = json!({
+            "messages": params.messages,
+            "model": model,
+            "tools": params.tools,
+        });
+        if let Some(sp) = &params.system_prompt {
+            payload["system_prompt"] = json!(sp);
+        }
+
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "context::count-tokens".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
+
+        match resp {
+            Ok(v) => serde_json::from_value::<CountTokensOutput>(v)
+                .map_err(|e| format!("context::count-tokens parse: {e}")),
+            Err(e) => Err(format!("context::count-tokens: {e}")),
+        }
+    }
 }

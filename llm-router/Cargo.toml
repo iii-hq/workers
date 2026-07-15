@@ -4,7 +4,7 @@
 # this lineage starts above them so Create Tag never collides.
 [package]
 name = "llm-router"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -18,12 +18,12 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.3"
+iii-sdk = "=0.21.6"
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
-# 0.21.3 adds the live span-start push, so `router::chat` renders in the
+# 0.21.5 adds the live span-start push, so `router::chat` renders in the
 # console while it streams instead of on close.
-iii-helpers = "=0.21.3"
+iii-helpers = "=0.21.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived
