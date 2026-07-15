@@ -79,6 +79,18 @@ export interface AssistantMessage extends BaseMessage {
   model?: ModelId
   mode?: Mode
   streaming?: boolean
+  /**
+   * What the memory worker fed this turn (from the entry origin's hook
+   * annotations): the bank, how many facts were injected, and their ids
+   * so the chip can fetch details on demand.
+   */
+  memory?: {
+    bank: string
+    facts: number
+    factIds: string[]
+    blocks?: number
+    truncated?: boolean
+  }
 }
 
 export interface ThoughtMessage extends BaseMessage {

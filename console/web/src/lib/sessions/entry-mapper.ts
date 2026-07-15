@@ -426,8 +426,40 @@ export function entrySegments(
       }
       return [msg]
     }
-    case 'assistant':
-      return assistantSegments(item.entry_id, message, sessionId)
+    case 'assistant': {
+      const segments = assistantSegments(item.entry_id, message, sessionId)
+      // Hook annotations from the entry origin: which memory bank and
+      // facts fed this generate. Tag the first assistant segment so the
+      // chat renders one memory chip per reply.
+      const md = item.origin as
+        | {
+            memory_bank?: unknown
+            memory_facts?: unknown
+            memory_fact_ids?: unknown
+            memory_blocks?: unknown
+            memory_blocks_truncated?: unknown
+          }
+        | undefined
+      if (typeof md?.memory_bank === 'string') {
+        const first = segments.find((s) => s.role === 'assistant')
+        if (first && first.role === 'assistant') {
+          first.memory = {
+            bank: md.memory_bank,
+            facts: typeof md.memory_facts === 'number' ? md.memory_facts : 0,
+            factIds: Array.isArray(md.memory_fact_ids)
+              ? md.memory_fact_ids.filter(
+                  (v): v is string => typeof v === 'string',
+                )
+              : [],
+            ...(typeof md.memory_blocks === 'number'
+              ? { blocks: md.memory_blocks }
+              : {}),
+            ...(md.memory_blocks_truncated === true ? { truncated: true } : {}),
+          }
+        }
+      }
+      return segments
+    }
     case 'function_result':
       return []
     case 'custom': {

@@ -449,6 +449,14 @@
                 "type": "null"
               }
             ]
+          },
+          "origin": {
+            "additionalProperties": true,
+            "description": "The entry's writer-supplied origin (turn correlation plus hook annotations, e.g. which memory bank and facts fed the generate). Absent on custom entries and on entries written without one.",
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [

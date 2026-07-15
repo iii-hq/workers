@@ -250,6 +250,16 @@ pub async fn pre_generate(
                     "timestamp": now_ms() as i64,
                 }));
                 annotations.insert("memory_facts".into(), json!(lines.len()));
+                // Ids (not texts) so chat surfaces can render "which facts
+                // fed this turn" chips and fetch details on demand.
+                annotations.insert(
+                    "memory_fact_ids".into(),
+                    json!(facts
+                        .iter()
+                        .take(lines.len())
+                        .map(|f| f.id.clone())
+                        .collect::<Vec<_>>()),
+                );
             }
         }
     }

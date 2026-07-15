@@ -171,6 +171,17 @@ export async function setBlock(
   await client.trigger('memory::block::set', { bank, name, content })
 }
 
+export async function getFact(
+  bank: string,
+  id: string,
+): Promise<MemoryFact | null> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>('memory::get', { bank, id })
+  const parsed = z.object({ fact: z.unknown() }).safeParse(res)
+  if (!parsed.success) return null
+  return parseFact(parsed.data.fact)
+}
+
 /** Drop the worker's RAM state and re-read every bank from disk — picks
  * up hand-edited blocks/facts files. */
 export async function reloadStore(): Promise<void> {
