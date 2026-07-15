@@ -223,6 +223,13 @@ export interface Conversation {
    * shown as a full-path banner, and re-scopable mid-conversation.
    */
   workingDir?: string | null
+  /**
+   * Named memory bank for this chat (session metadata `memory_bank`). The
+   * memory worker injects that bank's blocks + recalled facts into every
+   * turn and extracts new facts back into it. Null = the worker's
+   * configured default bank.
+   */
+  memoryBank?: string | null
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's

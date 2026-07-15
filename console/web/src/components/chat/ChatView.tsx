@@ -1705,6 +1705,14 @@ export function ChatView({
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             showWorkingDir={workingDirEnabled}
             workingDir={conversation.workingDir ?? null}
+            showMemoryBank={
+              backend.id === 'real' &&
+              (conversationsCtx?.memoryAvailable ?? false)
+            }
+            memoryBank={conversation.memoryBank ?? null}
+            onMemoryBankChange={(next) =>
+              conversationsCtx?.setMemoryBank(conversation.id, next)
+            }
             workingDirLocked={false}
             workingDirError={workingDirError}
             defaultWorkingDir={defaultWorkingDir}

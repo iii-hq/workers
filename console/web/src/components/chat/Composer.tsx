@@ -19,6 +19,7 @@ import type {
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
+import { BankPicker } from './BankPicker'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
@@ -61,6 +62,11 @@ interface ComposerProps {
   /** Show the per-session working-directory picker (real backend only). */
   showWorkingDir?: boolean
   workingDir?: string | null
+  /** Show the memory bank picker (memory worker present, real backend). */
+  showMemoryBank?: boolean
+  /** This chat's memory bank; null = the worker's default bank. */
+  memoryBank?: string | null
+  onMemoryBankChange?: (next: string | null) => void
   /**
    * When true, the picker renders read-only. NOT set after the first send —
    * the working dir stays re-scopable mid-conversation (ChatView always
@@ -140,6 +146,9 @@ export function Composer({
   thinkingLevel,
   showWorkingDir,
   workingDir,
+  showMemoryBank,
+  memoryBank,
+  onMemoryBankChange,
   workingDirLocked,
   workingDirError,
   defaultWorkingDir,
@@ -337,6 +346,13 @@ export function Composer({
               defaultDir={defaultWorkingDir}
               worktrees={worktreePicker}
               className="shrink-0"
+            />
+          ) : null}
+          {showMemoryBank && onMemoryBankChange ? (
+            <BankPicker
+              value={memoryBank ?? null}
+              onChange={onMemoryBankChange}
+              disabled={optionsDisabled}
             />
           ) : null}
           {showPermissionMode ? (
