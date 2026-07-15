@@ -236,10 +236,47 @@ export function MemoryGraph({
   const [hoverId, setHoverId] = useState<string | null>(null)
   const autoExpand = live.length <= AUTO_EXPAND_FACTS && !filter
 
-  const layout = useMemo(
+  const baseLayout = useMemo(
     () => layoutGraph(live, filter, expanded, autoExpand),
     [live, filter, expanded, autoExpand],
   )
+
+  // Manual placement: users drag hubs (the whole dandelion follows) and
+  // individual fact dots. Offsets overlay the deterministic layout so
+  // live refreshes never snap moved nodes back.
+  const [offsets, setOffsets] = useState<Map<string, { x: number; y: number }>>(
+    new Map(),
+  )
+  const off = (key: string) => offsets.get(key) ?? { x: 0, y: 0 }
+
+  const layout = useMemo(() => {
+    const hubs = baseLayout.hubs.map((h) => {
+      const o = off(`h:${h.entity}`)
+      return { ...h, x: h.x + o.x, y: h.y + o.y }
+    })
+    const hubAt = new Map(hubs.map((h) => [h.entity, h]))
+    const nodes = baseLayout.nodes.map((n) => {
+      const ho = off(`h:${n.hub}`)
+      const fo = off(`f:${n.fact.id}:${n.hub}`)
+      return { ...n, x: n.x + ho.x + fo.x, y: n.y + ho.y + fo.y }
+    })
+    const edges = nodes.map((n) => {
+      const hub = hubAt.get(n.hub)
+      return {
+        x1: hub?.x ?? 0,
+        y1: hub?.y ?? 0,
+        x2: n.x,
+        y2: n.y,
+        factId: n.fact.id,
+      }
+    })
+    const more = baseLayout.more.map((m) => {
+      const ho = off(`h:${m.hub}`)
+      return { ...m, x: m.x + ho.x, y: m.y + ho.y }
+    })
+    return { ...baseLayout, hubs, nodes, edges, more }
+    // biome-ignore lint/correctness/useExhaustiveDependencies: off reads offsets, listed
+  }, [baseLayout, offsets])
 
   // Zoom/pan as a controlled viewBox; null = fit to layout bounds.
   const [view, setView] = useState<{
@@ -249,8 +286,24 @@ export function MemoryGraph({
     h: number
   } | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const drag = useRef<{ x: number; y: number } | null>(null)
+  const drag = useRef<{
+    kind: 'pan' | 'node'
+    key?: string
+    x: number
+    y: number
+    moved: number
+  } | null>(null)
   const vb = view ?? layout.bounds
+
+  const startNodeDrag = (e: React.PointerEvent, key: string) => {
+    e.stopPropagation()
+    drag.current = { kind: 'node', key, x: e.clientX, y: e.clientY, moved: 0 }
+    ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+  }
+
+  /** True when the pointer travelled far enough that the trailing click
+   * should be swallowed (it was a drag, not a click). */
+  const wasDrag = () => (drag.current?.moved ?? 0) > 4
 
   const clientToWorld = (cx: number, cy: number) => {
     const rect = svgRef.current?.getBoundingClientRect()
@@ -294,6 +347,16 @@ export function MemoryGraph({
         <Button variant="ghost" size="sm" onClick={() => setView(null)}>
           fit
         </Button>
+        {offsets.size > 0 ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setOffsets(new Map())}
+            title="snap every moved node back to the computed layout"
+          >
+            reset layout
+          </Button>
+        ) : null}
         {!autoExpand && expanded.size > 0 ? (
           <Button
             variant="ghost"
@@ -328,20 +391,42 @@ export function MemoryGraph({
             })
           }}
           onPointerDown={(e) => {
-            drag.current = { x: e.clientX, y: e.clientY }
+            drag.current = {
+              kind: 'pan',
+              x: e.clientX,
+              y: e.clientY,
+              moved: 0,
+            }
             ;(e.target as Element).setPointerCapture?.(e.pointerId)
           }}
           onPointerMove={(e) => {
-            if (!drag.current) return
+            const d = drag.current
+            if (!d) return
             const rect = svgRef.current?.getBoundingClientRect()
             if (!rect) return
-            const dx = ((e.clientX - drag.current.x) / rect.width) * vb.w
-            const dy = ((e.clientY - drag.current.y) / rect.height) * vb.h
-            drag.current = { x: e.clientX, y: e.clientY }
-            setView({ x: vb.x - dx, y: vb.y - dy, w: vb.w, h: vb.h })
+            const dx = ((e.clientX - d.x) / rect.width) * vb.w
+            const dy = ((e.clientY - d.y) / rect.height) * vb.h
+            d.moved += Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y)
+            d.x = e.clientX
+            d.y = e.clientY
+            if (d.kind === 'node' && d.key) {
+              const key = d.key
+              setOffsets((cur) => {
+                const next = new Map(cur)
+                const o = next.get(key) ?? { x: 0, y: 0 }
+                next.set(key, { x: o.x + dx, y: o.y + dy })
+                return next
+              })
+            } else {
+              setView({ x: vb.x - dx, y: vb.y - dy, w: vb.w, h: vb.h })
+            }
           }}
           onPointerUp={() => {
-            drag.current = null
+            // Keep the moved distance briefly so trailing click handlers
+            // can tell a drag from a click, then clear.
+            window.setTimeout(() => {
+              drag.current = null
+            }, 0)
           }}
         >
           <defs>
@@ -385,9 +470,10 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`entity ${hub.entity}: ${hub.count} facts`}
-              className="cursor-pointer focus:outline-none"
+              className="cursor-grab active:cursor-grabbing focus:outline-none"
+              onPointerDown={(e) => startNodeDrag(e, `h:${hub.entity}`)}
               onClick={() => {
-                if (autoExpand) return
+                if (wasDrag() || autoExpand) return
                 setExpanded((cur) => {
                   const next = new Set(cur)
                   if (next.has(hub.entity)) next.delete(hub.entity)
@@ -453,16 +539,18 @@ export function MemoryGraph({
             </g>
           ))}
 
-          {layout.nodes.map(({ fact, x, y }) => (
+          {layout.nodes.map(({ fact, hub, x, y }) => (
             // biome-ignore lint/a11y/useSemanticElements: SVG nodes act as buttons
             <g
               key={`${fact.id}:${x}`}
               role="button"
               tabIndex={0}
               aria-label={`fact: ${fact.text.slice(0, 60)}`}
-              className="cursor-pointer focus:outline-none"
+              className="cursor-grab active:cursor-grabbing focus:outline-none"
+              onPointerDown={(e) => startNodeDrag(e, `f:${fact.id}:${hub}`)}
               onClick={(e) => {
                 e.stopPropagation()
+                if (wasDrag()) return
                 setSelectedId((cur) => (cur === fact.id ? null : fact.id))
               }}
               onKeyDown={(e) => {
