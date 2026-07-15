@@ -73,7 +73,11 @@ import { IconToggleButton } from '../IconToggleButton'
 import { computeTicks, effectiveEnd, type TimelineSpan } from './layout'
 import { SpanFilterMenu } from './SpanFilterMenu'
 import { SpanHoverCard } from './SpanHoverCard'
-import { deriveSpanGroups, reparentThroughHidden } from './spanVisibility'
+import {
+  deriveSpanGroups,
+  isSpanBarHidden,
+  reparentThroughHidden,
+} from './spanVisibility'
 import { resolveColor } from './spanVisuals'
 
 export interface TimelineStripProps {
@@ -781,15 +785,10 @@ export function TimelineStrip({
   // nearest kept ancestor so the hierarchy stays connected.
   const spans = useMemo(() => {
     if (!spanFilter) return allSpans
-    return reparentThroughHidden(allSpans, (s: TimelineSpan) => {
-      // Internal bars hide by default; the family must be explicitly shown.
-      if (s.internalKey != null && !spanFilter.shownInternal.has(s.internalKey))
-        return false
-      return (
-        !(s.groupKey != null && spanFilter.hiddenGroups.has(s.groupKey)) &&
-        !(s.workerKey != null && spanFilter.hiddenWorkers.has(s.workerKey))
-      )
-    })
+    return reparentThroughHidden(
+      allSpans,
+      (s: TimelineSpan) => !isSpanBarHidden(s, spanFilter),
+    )
   }, [allSpans, spanFilter])
 
   // While any bar is live, tick the evaluation clock so the prune window
