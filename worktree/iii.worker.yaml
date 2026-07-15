@@ -7,6 +7,6 @@ bin: worktree
 description: Git worktree lifecycle for parallel agents — mint, claim, and track isolated worktrees per repo, emit lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge).
 
 dependencies:
-  configuration: "^0.19.0"
-  iii-state: "^0.19.0"
+  configuration: "^0.21.6"
+  iii-state: "^0.21.6"
   shell: "^0.7.0"

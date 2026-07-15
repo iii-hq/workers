@@ -12,5 +12,5 @@ scripts:
   start: node ./index.mjs
 
 dependencies:
-  iii-state: "^0.17.0"
-  iii-stream: "^0.17.0"
+  iii-state: "^0.21.6"
+  iii-stream: "^0.21.6"

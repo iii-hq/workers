@@ -14,4 +14,4 @@ config:
     allowed_origins: ['*']
     allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
 dependencies:
-  configuration: "^0.19.0"
+  configuration: "^0.21.6"

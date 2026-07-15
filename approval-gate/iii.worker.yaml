@@ -7,7 +7,7 @@ bin: approval-gate
 description: Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session permission settings, and two notification trigger types.
 
 dependencies:
-  iii-state: "^0.21.3"
-  configuration: "^0.21.3"
+  iii-state: "^0.21.6"
+  configuration: "^0.21.6"
   iii-directory: "^1.0.0"
   session-manager: "^1.0.0"
