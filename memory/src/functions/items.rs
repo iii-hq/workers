@@ -321,15 +321,22 @@ pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryRespo
             req.id
         )));
     }
-    if memory.is_live() {
-        memory.invalid_at = Some(now_ms());
-        memory.superseded_by = Some(req.superseded_by);
-        memory.updated_at = now_ms();
-        memory.revision += 1;
-        bank.commit(memory.clone()).await?;
-        deps.emitter
-            .item(ItemEvent::Superseded, &bank_name, &memory)
-            .await;
+    // An already-retired target is an error, not a silent success:
+    // concurrent consolidation passes would otherwise count the same
+    // retirement twice and double-reinforce the survivor.
+    if !memory.is_live() {
+        return Err(MemoryError::InvalidInput(format!(
+            "memory `{}` is already retired (superseded_by: {:?})",
+            req.id, memory.superseded_by
+        )));
     }
+    memory.invalid_at = Some(now_ms());
+    memory.superseded_by = Some(req.superseded_by);
+    memory.updated_at = now_ms();
+    memory.revision += 1;
+    bank.commit(memory.clone()).await?;
+    deps.emitter
+        .item(ItemEvent::Superseded, &bank_name, &memory)
+        .await;
     Ok(MemoryResponse { memory })
 }

@@ -55,6 +55,9 @@ pub struct RunResponse {
     pub banks: Vec<BankReport>,
     /// Total supersedes applied across banks this pass.
     pub superseded: usize,
+    /// The pass completed cleanly AND its last-run checkpoint persisted.
+    /// False = the schedule will retry the pass next check.
+    pub checkpointed: bool,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -108,18 +111,16 @@ async fn state_get(iii: &IIIClient, key: &str) -> Option<Value> {
     .filter(|v| !v.is_null())
 }
 
-async fn state_set(iii: &IIIClient, key: &str, value: Value) {
-    let res = iii
-        .trigger(TriggerRequest {
-            function_id: "state::set".into(),
-            payload: json!({ "scope": STATE_SCOPE, "key": key, "value": value }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    if let Err(e) = res {
-        tracing::warn!(key, error = %e, "schedule state write failed (state worker absent?)");
-    }
+async fn state_set(iii: &IIIClient, key: &str, value: Value) -> Result<(), String> {
+    iii.trigger(TriggerRequest {
+        function_id: "state::set".into(),
+        payload: json!({ "scope": STATE_SCOPE, "key": key, "value": value }),
+        action: None,
+        timeout_ms: Some(5_000),
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("state::set {key}: {e}"))
 }
 
 pub async fn last_run_ms(iii: &IIIClient) -> u64 {
@@ -155,27 +156,47 @@ pub async fn run(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> {
     }
     let superseded = reports.iter().map(|r| r.superseded).sum();
 
-    // Dry runs also count as a completed pass for the schedule: the
-    // operator chose planning mode; rerunning it early adds nothing.
-    state_set(&deps.iii, STATE_LAST_RUN, json!({ "ms": now_ms() })).await;
+    // The report is best-effort telemetry; the CHECKPOINT is not. Only a
+    // clean pass (no bank errors) advances last_run — an errored or
+    // checkpoint-failed pass stays due, so the schedule retries it
+    // instead of silently waiting out a full interval. Dry runs count:
+    // the operator chose planning mode.
     let report_json = serde_json::to_value(&reports).unwrap_or(Value::Null);
-    state_set(
+    if let Err(e) = state_set(
         &deps.iii,
         STATE_LAST_REPORT,
         json!({ "dry_run": dry_run, "banks": report_json }),
     )
-    .await;
+    .await
+    {
+        tracing::warn!(error = %e, "last-report write failed");
+    }
+    let clean = reports.iter().all(|r| r.errors.is_empty());
+    let checkpointed = if clean {
+        match state_set(&deps.iii, STATE_LAST_RUN, json!({ "ms": now_ms() })).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "last-run checkpoint failed; pass stays due");
+                false
+            }
+        }
+    } else {
+        tracing::warn!("pass finished with bank errors; not checkpointed, stays due");
+        false
+    };
 
     tracing::info!(
         banks = banks.len(),
         superseded,
         dry_run,
+        checkpointed,
         "consolidation pass complete"
     );
     Ok(RunResponse {
         dry_run,
         banks: reports,
         superseded,
+        checkpointed,
     })
 }
 

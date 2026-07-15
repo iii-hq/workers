@@ -162,10 +162,16 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering memory-consolidate configuration schema")?;
-    let cfg = configuration::fetch_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("loading memory-consolidate configuration")?;
+    // Convention for worker binaries: a config-load failure degrades to
+    // the built-in defaults instead of crashing, so the worker still
+    // registers and hot-reload can repair it later.
+    let cfg = match configuration::fetch_config(&iii).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load configuration; falling back to defaults");
+            config::WorkerConfig::default()
+        }
+    };
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
     let deps = Arc::new(Deps {

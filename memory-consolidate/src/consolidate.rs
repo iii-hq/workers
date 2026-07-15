@@ -4,12 +4,14 @@
 //! pointer, `memory::save` reinforces the survivor. This worker never
 //! touches memory's files; the append-only store contract is the seam.
 //!
-//! v1 detection is deliberately conservative and fully deterministic: two
-//! memories are duplicates only when their normalized text matches
-//! (case/punctuation/whitespace-insensitive) or their token SETS are equal
-//! (word order shuffles). Semantic near-duplicate merging is a later,
-//! LLM-assisted tier. Grouping keys are designed to grow: when memories
-//! gain tags, tags join the group key next to entities.
+//! v1 detection is deliberately conservative and fully deterministic:
+//! automatic writes happen ONLY for normalized-text equality
+//! (case/punctuation/whitespace-insensitive). Token-set equality (word
+//! order shuffles) is surfaced as REPORT-ONLY candidates — "Alice manages
+//! Bob" and "Bob manages Alice" sort to the same tokens but mean opposite
+//! things, so reordering never authorizes a write; a human or a stronger
+//! verifier promotes those. Grouping keys are designed to grow: when
+//! memories gain tags, tags join the group key next to entities.
 
 use std::collections::BTreeMap;
 
@@ -45,6 +47,11 @@ pub struct PlannedGroup {
     /// Losers left alone because they are pinned (pinned is untouchable).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_pinned: Vec<String>,
+    /// True = surfaced for review only (token-set match: same words,
+    /// different order — potentially different meaning). Never written
+    /// automatically.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report_only: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]
@@ -87,14 +94,32 @@ pub fn token_key(text: &str) -> String {
     tokens.join(" ")
 }
 
-/// Group live memories by duplicate key and pick a survivor per group:
-/// pinned first (a pinned record always wins), then highest corroboration,
-/// then the OLDEST record (it carries the original provenance), then id
-/// for a stable total order.
+/// Group live memories and pick a survivor per group: pinned first (a
+/// pinned record always wins), then highest corroboration, then the
+/// OLDEST record (it carries the original provenance), then id for a
+/// stable total order. Normalized-text groups are writable; token-set
+/// groups (same words, different order) are report-only.
 pub fn plan(rows: &[MemoryRow]) -> Vec<PlannedGroup> {
+    let mut planned = group_by(rows, normalize, false);
+    // Token-set candidates: only members NOT already merged by the
+    // normalized pass (a normalized group is a token-set group too).
+    let mut norm_groups: BTreeMap<String, usize> = BTreeMap::new();
+    for row in rows {
+        *norm_groups.entry(normalize(&row.text)).or_default() += 1;
+    }
+    let reorder_only: Vec<MemoryRow> = rows
+        .iter()
+        .filter(|r| norm_groups.get(&normalize(&r.text)).copied().unwrap_or(0) < 2)
+        .cloned()
+        .collect();
+    planned.extend(group_by(&reorder_only, token_key, true));
+    planned
+}
+
+fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> Vec<PlannedGroup> {
     let mut groups: BTreeMap<String, Vec<&MemoryRow>> = BTreeMap::new();
     for row in rows {
-        groups.entry(token_key(&row.text)).or_default().push(row);
+        groups.entry(key(&row.text)).or_default().push(row);
     }
     let mut planned = Vec::new();
     for (_, mut members) in groups {
@@ -126,6 +151,7 @@ pub fn plan(rows: &[MemoryRow]) -> Vec<PlannedGroup> {
             winner_text: winner.text.clone(),
             loser_ids,
             skipped_pinned,
+            report_only,
         });
     }
     planned
@@ -157,8 +183,13 @@ pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>
         .collect())
 }
 
-/// Every LIVE memory in a bank, paged.
-async fn fetch_live(iii: &IIIClient, bank: &str) -> Result<Vec<MemoryRow>, String> {
+/// Every LIVE memory in a bank, paged. Undecodable rows are reported —
+/// a partial scan must not read as a complete one.
+async fn fetch_live(
+    iii: &IIIClient,
+    bank: &str,
+    errors: &mut Vec<String>,
+) -> Result<Vec<MemoryRow>, String> {
     let mut rows = Vec::new();
     let mut offset = 0usize;
     loop {
@@ -174,8 +205,12 @@ async fn fetch_live(iii: &IIIClient, bank: &str) -> Result<Vec<MemoryRow>, Strin
             .ok_or("memory::list returned no memories array")?;
         let got = page.len();
         for m in page {
-            if let Ok(row) = serde_json::from_value::<MemoryRow>(m.clone()) {
-                rows.push(row);
+            match serde_json::from_value::<MemoryRow>(m.clone()) {
+                Ok(row) => rows.push(row),
+                Err(e) => {
+                    let id = m.get("id").and_then(Value::as_str).unwrap_or("<no id>");
+                    errors.push(format!("undecodable memory `{id}`: {e}"));
+                }
             }
         }
         let total = reply.get("total").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -199,7 +234,7 @@ pub async fn run_bank(
         bank: bank.to_string(),
         ..BankReport::default()
     };
-    let rows = match fetch_live(iii, bank).await {
+    let rows = match fetch_live(iii, bank, &mut report.errors).await {
         Ok(rows) => rows,
         Err(e) => {
             report.errors.push(e);
@@ -211,7 +246,7 @@ pub async fn run_bank(
 
     for group in &groups {
         for loser in &group.loser_ids {
-            if dry_run {
+            if dry_run || group.report_only {
                 continue;
             }
             if *budget == 0 {
@@ -273,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_and_word_order_duplicates_group() {
+    fn normalized_duplicates_write_but_reorders_are_report_only() {
         let rows = vec![
             row("fp1", "User publishes on Tuesday mornings.", false, 2, 100),
             row("fp2", "user publishes on tuesday mornings", false, 0, 200),
@@ -281,10 +316,23 @@ mod tests {
             row("fp4", "Something entirely different", false, 0, 400),
         ];
         let groups = plan(&rows);
+        // One writable group (normalized equality) — the reorder joined
+        // no writable group and stands alone, so no report-only group
+        // forms from a single leftover row either.
         assert_eq!(groups.len(), 1);
-        // Highest corroboration wins; the rest retire.
+        assert!(!groups[0].report_only);
         assert_eq!(groups[0].winner_id, "fp1");
-        assert_eq!(groups[0].loser_ids, vec!["fp2", "fp3"]);
+        assert_eq!(groups[0].loser_ids, vec!["fp2"]);
+
+        // Two reorderings of each other with NO normalized twin: surfaced,
+        // never written ("Alice manages Bob" vs "Bob manages Alice").
+        let rows = vec![
+            row("fpa", "Alice manages Bob", false, 0, 100),
+            row("fpb", "Bob manages Alice", false, 0, 200),
+        ];
+        let groups = plan(&rows);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].report_only);
     }
 
     #[test]
