@@ -16,6 +16,7 @@ interface MemoryChipProps {
     factIds: string[]
     blocks?: number
     truncated?: boolean
+    semantic?: boolean
   }
 }
 
@@ -61,6 +62,7 @@ export function MemoryChip({ memory }: MemoryChipProps) {
         )}
       >
         memory: {memory.bank} · {parts.join(' · ')}
+        {memory.semantic ? ' · semantic' : ''}
         {memory.truncated ? ' · truncated' : ''}
       </button>
       {open ? (

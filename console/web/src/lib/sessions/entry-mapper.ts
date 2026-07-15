@@ -438,6 +438,7 @@ export function entrySegments(
             memory_fact_ids?: unknown
             memory_blocks?: unknown
             memory_blocks_truncated?: unknown
+            memory_retrieval?: unknown
           }
         | undefined
       if (typeof md?.memory_bank === 'string') {
@@ -455,6 +456,9 @@ export function entrySegments(
               ? { blocks: md.memory_blocks }
               : {}),
             ...(md.memory_blocks_truncated === true ? { truncated: true } : {}),
+            ...(md.memory_retrieval === 'bm25-entity-semantic'
+              ? { semantic: true }
+              : {}),
           }
         }
       }

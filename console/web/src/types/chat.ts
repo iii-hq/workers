@@ -90,6 +90,8 @@ export interface AssistantMessage extends BaseMessage {
     factIds: string[]
     blocks?: number
     truncated?: boolean
+    /** Recall ran with the semantic (embedding) signal fused in. */
+    semantic?: boolean
   }
 }
 
