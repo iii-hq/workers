@@ -3,6 +3,10 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
+// Engine WebSocket URL, same knob as the console binary's `--url`
+// (DEFAULT_ENGINE_URL in src/config.rs).
+const ENGINE_URL = process.env.III_ENGINE_URL ?? 'ws://127.0.0.1:49134'
+
 export default defineConfig({
   // Relative asset paths so the embedded SPA works behind a reverse
   // proxy that mounts the console at an arbitrary subpath.
@@ -13,14 +17,22 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  // Dev twin of the console worker's HTTP server (src/server.rs): the same
+  // /ws proxy contract, bound on 0.0.0.0 like the binary so the dev server
+  // is reachable from containers/LAN. The binary's proxy additionally stamps
+  // `metadata.internal = true` on browser `registerfunction` frames, but
+  // only as defense against STALE bundles — dev always serves the current
+  // bundle, which stamps its own registrations (src/lib/iii-client.ts) —
+  // so this proxy stays a dumb pipe.
   server: {
+    host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
       // iii-browser-sdk hits ws(s)://${host}/ws by default; the proxy
-      // forwards to the local engine WebSocket on :49134 in dev. In
-      // prod the `console` worker exposes the same /ws contract.
+      // forwards to the engine WebSocket. In prod the `console` worker
+      // exposes the same /ws contract.
       '/ws': {
-        target: 'ws://127.0.0.1:49134',
+        target: ENGINE_URL,
         ws: true,
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/ws/, ''),
