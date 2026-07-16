@@ -833,6 +833,7 @@ pub async fn run_step(
                     &call.id,
                     &call.function_id,
                     &trusted_call_args,
+                    None,
                 )
                 .await
             {
@@ -869,10 +870,13 @@ pub async fn run_step(
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold { held_by, .. } => {
+                crate::hooks::runner::PreTriggerOutcome::Hold {
+                    held_by, arguments, ..
+                } => {
                     let info = trigger::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
+                        held_arguments: Some(arguments),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -918,6 +922,7 @@ pub async fn run_step(
                     child_session_id: None,
                     child_turn_id: None,
                     held_by: None,
+                    held_arguments: None,
                     pending_timeout_ms: None,
                     pending_at: None,
                 },
@@ -963,6 +968,9 @@ pub async fn run_step(
                     let info = trigger::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
+                        // A post-trigger release re-invokes the target: keep
+                        // the fully pre-mutated args, not the model originals.
+                        held_arguments: Some(eff_args.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1537,6 +1545,7 @@ fn checkpoint_pending(
             child_session_id: info.child_session_id.clone(),
             child_turn_id: info.child_turn_id.clone(),
             held_by: info.held_by.clone(),
+            held_arguments: info.held_arguments.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
         },
@@ -1556,6 +1565,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             child_session_id: None,
             child_turn_id: None,
             held_by: None,
+            held_arguments: None,
             pending_timeout_ms: None,
             pending_at: None,
         },

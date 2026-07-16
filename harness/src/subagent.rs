@@ -88,6 +88,7 @@ pub async fn spawn_pending(
     Ok(PendingInfo {
         pending_timeout_ms: Some(pending_timeout_ms),
         held_by: None,
+        held_arguments: None,
         child_session_id: Some(child.session_id),
         child_turn_id: Some(child.turn_id),
     })

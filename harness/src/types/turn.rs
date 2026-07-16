@@ -172,6 +172,12 @@ pub struct CallCheckpoint {
     pub child_turn_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held_by: Option<String>,
+    /// The call's arguments as mutated by the hook chain up to the hold, so a
+    /// release executes the mutated call — not the model's original arguments
+    /// re-read from the transcript. Absent on records written before this
+    /// field existed; release falls back to transcript recovery then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_arguments: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -335,6 +341,7 @@ mod tests {
             child_session_id: child.map(|s| s.to_string()),
             child_turn_id: child.map(|_| "t_child".to_string()),
             held_by: None,
+            held_arguments: None,
             pending_timeout_ms: None,
             pending_at: None,
         }

@@ -81,17 +81,98 @@ pub async fn resolve(
             })
         }
         "execute" => {
-            // `execute` releases a `pre_trigger` hook-held call: invoke the
-            // target (the holding hook already decided to allow), run the
-            // post_trigger chain, append the result, and resume — bypassing
-            // the approver's own re-evaluation (harness.md § `function::resolve`).
-            if checkpoint.held_by.is_none() {
+            // `execute` releases a `pre_trigger` hook-held call: resume the
+            // pre_trigger chain AFTER the holding hook (earlier hooks and the
+            // holder's own decision already ran — harness.md §
+            // `function::resolve`), invoke the target, run the post_trigger
+            // chain, append the result, and resume the turn.
+            let Some(held_by) = checkpoint.held_by.clone() else {
                 return Ok(not_resolved());
-            }
+            };
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
-            let arguments = find_call_arguments(deps, &record, &req.function_call_id)
+            // The checkpoint carries the arguments as mutated by the chain up
+            // to the hold (issue #506); transcript recovery — the model's
+            // ORIGINAL arguments — is only the fallback for records written
+            // before held arguments were persisted.
+            let arguments = match checkpoint.held_arguments.clone() {
+                Some(args) => args,
+                None => find_call_arguments(deps, &record, &req.function_call_id)
+                    .await
+                    .unwrap_or(Value::Null),
+            };
+            let (arguments, pre_annotations) = match deps
+                .hooks
+                .run_pre_trigger(
+                    &record,
+                    record.step,
+                    &req.function_call_id,
+                    &function_id,
+                    &arguments,
+                    Some(&held_by),
+                )
                 .await
-                .unwrap_or(Value::Null);
+            {
+                crate::hooks::runner::PreTriggerOutcome::Continue {
+                    arguments,
+                    annotations,
+                } => (arguments, annotations),
+                crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
+                    let data = crate::trigger::ResultData {
+                        content: vec![ContentBlock::text(reason.clone())],
+                        is_error: true,
+                        details: json!({ "error": "hook_denied", "message": reason }),
+                    };
+                    let entry_id =
+                        ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+                    let message = AgentMessage::FunctionResult(FunctionResultMessage {
+                        role: FunctionResultRoleTag::FunctionResult,
+                        function_call_id: req.function_call_id.clone(),
+                        function_id,
+                        content: data.content,
+                        details: data.details,
+                        is_error: data.is_error,
+                        timestamp: AgentMessage::now_ms(),
+                    });
+                    session
+                        .append(
+                            &record.session_id,
+                            &message,
+                            Some(&entry_id),
+                            None,
+                            Some(&json!({ "turn_id": record.turn_id })),
+                        )
+                        .await?;
+                    if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                        cp.state = CallState::Done;
+                        cp.entry_id = Some(entry_id);
+                    }
+                    let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+                    return Ok(FunctionResolveResponse {
+                        resolved: true,
+                        turn_resumed,
+                    });
+                }
+                crate::hooks::runner::PreTriggerOutcome::Hold {
+                    held_by,
+                    arguments,
+                    annotations: _,
+                } => {
+                    // A later hook held the released call: re-park under the
+                    // new holder, keeping the chain's mutations so far.
+                    if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                        cp.held_by = Some(held_by);
+                        cp.held_arguments = Some(arguments);
+                        cp.pending_at = Some(AgentMessage::now_ms());
+                    }
+                    record.status = TurnStatus::AwaitingFunctions;
+                    record.updated_at = AgentMessage::now_ms();
+                    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                    return Ok(FunctionResolveResponse {
+                        resolved: true,
+                        turn_resumed: false,
+                    });
+                }
+            };
             // The release path runs OUTSIDE the turn loop, so re-apply the
             // filesystem scope stamp the loop would have added: without it an
             // approved shell/coder call runs un-scoped (the session's picked
@@ -163,6 +244,7 @@ pub async fn resolve(
                     if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                         cp.state = CallState::Pending;
                         cp.held_by = Some(held_by);
+                        cp.held_arguments = Some(arguments.clone());
                         cp.pending_at = Some(AgentMessage::now_ms());
                     }
                     record.status = TurnStatus::AwaitingFunctions;
@@ -178,6 +260,9 @@ pub async fn resolve(
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
             let mut origin = serde_json::Map::new();
             origin.insert("turn_id".into(), json!(record.turn_id));
+            for (k, v) in pre_annotations {
+                origin.insert(k, v);
+            }
             for (k, v) in annotations {
                 origin.insert(k, v);
             }
@@ -244,9 +329,10 @@ async fn persist_and_maybe_resume(
     Ok(true)
 }
 
-/// Recover a held call's (unwrapped) arguments from the transcript so
-/// `execute` can invoke the target. Scans assistant messages for the
-/// function_call block with this id.
+/// Recover a held call's (unwrapped) arguments from the transcript — the
+/// model's ORIGINAL arguments, without any hook-chain mutations. Fallback for
+/// checkpoints written before `held_arguments` was persisted; scans assistant
+/// messages for the function_call block with this id.
 async fn find_call_arguments(
     deps: &Deps,
     record: &crate::types::turn::TurnRecord,
@@ -428,6 +514,7 @@ mod tests {
                 None
             },
             held_by: held_by.map(str::to_string),
+            held_arguments: None,
             pending_timeout_ms: timeout_ms,
             pending_at: Some(pending_at),
         }
