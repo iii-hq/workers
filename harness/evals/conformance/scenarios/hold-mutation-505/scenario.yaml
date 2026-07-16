@@ -8,17 +8,14 @@
 # The runner releases the parked call with
 # `harness::function::resolve { action: "execute" }`.
 #
-# QUARANTINED: the invariants assert the issue's EXPECTED behavior — the
-# released call executes with the gate's mutated arguments. Source inspection
-# shows the mutations are discarded at parse time (`parse_output` in
-# harness/src/hooks/runner.rs maps `decision: "hold"` to a mutation-less
-# outcome), and the release path re-reads the transcript's original args
-# regardless (#506). Unquarantine when #505 lands.
+# Regression gate for #505 (fixed: a holding hook's own `mutations` are
+# parsed and folded into the effective arguments checkpointed at hold, and
+# the release runs with those). Pairs with #506, which persists and resumes
+# the chain over the checkpointed args.
 schema_version: "1"
 id: C-E2E-505
 description: A pre-trigger hook that holds AND mutates must have its mutation applied to the released call.
 stack_profile: harness-core
-quarantine: true
 send:
   session_id: "{{session_id}}"
   message: "Call the recorder once."

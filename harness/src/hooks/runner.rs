@@ -29,7 +29,9 @@ struct HookMutations {
 enum HookOutcome {
     Continue(HookMutations),
     Deny(String),
-    Hold,
+    // A holding hook may mutate as it holds (approval-gate: park the call AND
+    // stamp validated context onto it) — its mutations must not be dropped.
+    Hold(HookMutations),
 }
 
 /// Outcome of the `pre_generate` chain.
@@ -91,7 +93,7 @@ impl HookRegistry {
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(_) => {}
                 HookOutcome::Deny(reason) => return Err(reason),
-                HookOutcome::Hold => {}
+                HookOutcome::Hold(_) => {}
             }
         }
         Ok(())
@@ -128,7 +130,7 @@ impl HookRegistry {
                     merge(&mut annotations, m.annotations);
                 }
                 HookOutcome::Deny(reason) => return PreGenerateOutcome::Deny(reason),
-                HookOutcome::Hold => {}
+                HookOutcome::Hold(_) => {}
             }
         }
         PreGenerateOutcome::Continue {
@@ -178,12 +180,18 @@ impl HookRegistry {
                     merge(&mut annotations, m.annotations);
                 }
                 HookOutcome::Deny(reason) => return PreTriggerOutcome::Deny(reason),
-                HookOutcome::Hold => {
+                HookOutcome::Hold(m) => {
+                    // Apply the holding hook's own rewrite before parking, so
+                    // the release runs with the full chain's effective args.
+                    if let Some(a) = m.arguments {
+                        args = a;
+                    }
+                    merge(&mut annotations, m.annotations);
                     return PreTriggerOutcome::Hold {
                         held_by: binding.function_id.clone(),
                         arguments: args,
                         annotations,
-                    }
+                    };
                 }
             }
         }
@@ -238,7 +246,7 @@ impl HookRegistry {
                 // Deny is not valid at post_trigger; fail-open like existing
                 // post-trigger error handling.
                 HookOutcome::Deny(_) => {}
-                HookOutcome::Hold => {
+                HookOutcome::Hold(_) => {
                     return PostTriggerOutcome::Hold {
                         held_by: binding.function_id.clone(),
                         annotations,
@@ -298,30 +306,34 @@ fn parse_output(value: Value) -> HookOutcome {
                 .unwrap_or("denied by hook")
                 .to_string(),
         ),
-        Some("hold") => HookOutcome::Hold,
-        _ => {
-            let mut muts = HookMutations::default();
-            if let Some(m) = value.get("mutations") {
-                muts.system_prompt = m
-                    .get("system_prompt")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if let Some(arr) = m.get("append_messages").and_then(Value::as_array) {
-                    muts.append_messages = arr.clone();
-                }
-                muts.arguments = m.get("arguments").cloned();
-                if let Some(c) = m.get("content") {
-                    muts.content = serde_json::from_value(c.clone()).ok();
-                }
-                muts.details = m.get("details").cloned();
-                muts.is_error = m.get("is_error").and_then(Value::as_bool);
-            }
-            if let Some(Value::Object(ann)) = value.get("annotations") {
-                muts.annotations = ann.clone();
-            }
-            HookOutcome::Continue(muts)
-        }
+        Some("hold") => HookOutcome::Hold(parse_mutations(&value)),
+        _ => HookOutcome::Continue(parse_mutations(&value)),
     }
+}
+
+/// Parse a hook's `mutations`/`annotations` — shared by the continue and hold
+/// branches so a holding hook's rewrites are honored, not dropped.
+fn parse_mutations(value: &Value) -> HookMutations {
+    let mut muts = HookMutations::default();
+    if let Some(m) = value.get("mutations") {
+        muts.system_prompt = m
+            .get("system_prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(arr) = m.get("append_messages").and_then(Value::as_array) {
+            muts.append_messages = arr.clone();
+        }
+        muts.arguments = m.get("arguments").cloned();
+        if let Some(c) = m.get("content") {
+            muts.content = serde_json::from_value(c.clone()).ok();
+        }
+        muts.details = m.get("details").cloned();
+        muts.is_error = m.get("is_error").and_then(Value::as_bool);
+    }
+    if let Some(Value::Object(ann)) = value.get("annotations") {
+        muts.annotations = ann.clone();
+    }
+    muts
 }
 
 fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
@@ -399,14 +411,30 @@ mod tests {
             _ => panic!("expected deny"),
         }
         match parse_output(json!({ "decision": "hold" })) {
-            HookOutcome::Hold => {}
+            HookOutcome::Hold(m) => assert!(m.arguments.is_none()),
             _ => panic!("expected hold"),
         }
         // Legacy hooks may still send pending_timeout_ms; it is ignored.
         assert!(matches!(
             parse_output(json!({ "decision": "hold", "pending_timeout_ms": 1000 })),
-            HookOutcome::Hold
+            HookOutcome::Hold(_)
         ));
+    }
+
+    #[test]
+    fn hold_keeps_mutations_and_annotations() {
+        let out = parse_output(json!({
+            "decision": "hold",
+            "mutations": { "arguments": { "value": "expected+approved" } },
+            "annotations": { "approved_by": "gate" }
+        }));
+        match out {
+            HookOutcome::Hold(m) => {
+                assert_eq!(m.arguments, Some(json!({ "value": "expected+approved" })));
+                assert_eq!(m.annotations.get("approved_by"), Some(&json!("gate")));
+            }
+            _ => panic!("expected hold"),
+        }
     }
 
     #[test]
