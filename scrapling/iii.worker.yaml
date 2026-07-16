@@ -31,5 +31,8 @@ resources:
 scripts:
   # Runs once (first boot): deps + browsers (`scrapling install` downloads the
   # Camoufox/Chromium used by stealthy-fetch / dynamic-fetch / screenshot).
-  install: "pip install -e . && scrapling install"
+  # TEMP (MOT-3966 live test): overlay the locally-built SDK wheels from
+  # vendor/ over the published pin so the guest runs the fixed reconnect
+  # loop. Revert to plain `pip install -e . && scrapling install` after.
+  install: "pip install -e . && pip install --no-deps --force-reinstall vendor/iii_helpers-0.21.4-py3-none-any.whl vendor/iii_sdk-0.21.4-py3-none-any.whl && scrapling install"
   start: "python -m src.main"
