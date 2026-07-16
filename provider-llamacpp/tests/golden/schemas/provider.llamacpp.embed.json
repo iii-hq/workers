@@ -9,6 +9,8 @@
         "items": {
           "type": "string"
         },
+        "maxItems": 512,
+        "minItems": 1,
         "type": "array"
       },
       "model": {

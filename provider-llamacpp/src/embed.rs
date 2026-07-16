@@ -26,6 +26,7 @@ pub struct EmbedRequest {
     #[serde(default)]
     pub model: Option<String>,
     /// Texts to embed, one vector returned per input, order preserved.
+    #[schemars(length(min = 1, max = 512))]
     pub input: Vec<String>,
 }
 
