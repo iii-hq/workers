@@ -1,0 +1,129 @@
+{
+  "schema_version": "1",
+  "scenario_id": "C-E2E-001",
+  "model": {
+    "id": "fixture-model",
+    "provider": "scripted",
+    "context_window": 32768,
+    "max_output_tokens": 4096,
+    "supports_thinking": false,
+    "supports_tools": true,
+    "supports_vision": false,
+    "supports_cache": false,
+    "supports_structured_output": true
+  },
+  "generations": [
+    {
+      "ordinal": 1,
+      "match": {
+        "writer_ref": { "mode": "subset", "expected": { "direction": "write" } },
+        "request_id": { "mode": "regex", "pattern": "^t_[0-9a-f]{32}:[0-9]+$" },
+        "model": { "mode": "exact", "expected": "fixture-model" },
+        "provider": { "mode": "exact", "expected": "scripted" },
+        "system_prompt": { "mode": "sha256", "expected": "{{system_prompt_sha256}}" },
+        "messages": {
+          "mode": "exact",
+          "expected": [
+            {
+              "role": "user",
+              "content": [{ "type": "text", "text": "Return the fixture phrase." }]
+            }
+          ],
+          "normalize": [{ "pointer": "/0/timestamp", "operation": "delete" }]
+        },
+        "tools": { "mode": "exact", "expected": [] },
+        "response_format": { "mode": "absent" },
+        "thinking_level": { "mode": "absent" },
+        "max_output_tokens": { "mode": "absent" },
+        "provider_options": { "mode": "absent" },
+        "metadata": { "mode": "absent" }
+      },
+      "frames": [
+        {
+          "type": "start",
+          "partial": {
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "end",
+            "model": "fixture-model",
+            "provider": "scripted",
+            "timestamp": 1
+          }
+        },
+        {
+          "type": "text_start",
+          "partial": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "" }],
+            "stop_reason": "end",
+            "model": "fixture-model",
+            "provider": "scripted",
+            "timestamp": 1
+          }
+        },
+        {
+          "type": "text_delta",
+          "partial": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "fixture " }],
+            "stop_reason": "end",
+            "model": "fixture-model",
+            "provider": "scripted",
+            "timestamp": 1
+          },
+          "delta": "fixture "
+        },
+        {
+          "type": "text_delta",
+          "partial": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "fixture complete" }],
+            "stop_reason": "end",
+            "model": "fixture-model",
+            "provider": "scripted",
+            "timestamp": 1
+          },
+          "delta": "complete"
+        },
+        {
+          "type": "text_end",
+          "partial": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "fixture complete" }],
+            "stop_reason": "end",
+            "model": "fixture-model",
+            "provider": "scripted",
+            "timestamp": 1
+          }
+        },
+        {
+          "type": "usage",
+          "usage": { "input": 8, "output": 2 }
+        },
+        {
+          "type": "stop",
+          "stop_reason": "end"
+        },
+        {
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "fixture complete" }],
+            "stop_reason": "end",
+            "usage": { "input": 8, "output": 2 },
+            "model": "fixture-model",
+            "provider": "scripted",
+            "timestamp": 1
+          }
+        }
+      ],
+      "response": {
+        "ok": true,
+        "provider": "scripted",
+        "model": "fixture-model",
+        "stop_reason": "end",
+        "usage": { "input": 8, "output": 2 }
+      }
+    }
+  ]
+}

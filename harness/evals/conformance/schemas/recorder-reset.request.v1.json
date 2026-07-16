@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "SchemaVersion1": {
+      "description": "The literal string `\"1\"`; any other value is a schema error.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/definitions/SchemaVersion1"
+    }
+  },
+  "required": [
+    "run_id",
+    "schema_version"
+  ],
+  "title": "RecorderResetRequestV1",
+  "type": "object"
+}

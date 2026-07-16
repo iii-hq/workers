@@ -1,0 +1,47 @@
+# Standalone workspace: keeps this crate out of any parent workspace, per the
+# repo-wide one-worker-one-workspace convention and the conformance spec.
+[workspace]
+
+[package]
+name = "harness-conformance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "harness-conformance"
+path = "src/main.rs"
+
+[lib]
+name = "harness_conformance"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.21.6"
+iii-helpers = "=0.21.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "fs", "io-util", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+# Must stay on the same schemars major as iii-sdk so derived `JsonSchema`
+# impls satisfy `RegisterFunction::new_async`.
+schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+sha2 = "0.10"
+toml = "0.8"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+nix = { version = "0.29", features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# stack.json digests every spawned binary (spec: recorded before boot);
+# debug-mode sha2 turns ~800MB of debug worker binaries into a ~40s stall.
+[profile.dev.package.sha2]
+opt-level = 3

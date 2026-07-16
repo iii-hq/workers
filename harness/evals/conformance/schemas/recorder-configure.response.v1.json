@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "SchemaVersion1": {
+      "description": "The literal string `\"1\"`; any other value is a schema error.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "$ref": "#/definitions/SchemaVersion1"
+    },
+    "target_schema_sha256": {
+      "description": "SHA-256 of the canonical JSON of the registered request schema.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "target_schema_sha256"
+  ],
+  "title": "RecorderConfigureResponseV1",
+  "type": "object"
+}

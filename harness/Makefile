@@ -6,19 +6,23 @@ ENGINE_URL   ?= ws://127.0.0.1:49134
 ENGINE_PORT  ?= 49134
 CONSOLE_PORT ?= 3113
 RUST_LOG     ?= info
+PYTHON       ?= python3
 
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT    := $(abspath $(MAKEFILE_DIR)/..)
 WORKTREE_ROOT ?= $(REPO_ROOT)
 WORKTREE_ROOT_ABS := $(abspath $(if $(filter /%,$(WORKTREE_ROOT)),$(WORKTREE_ROOT),$(REPO_ROOT)/$(WORKTREE_ROOT)))
 ENGINE_CONFIG ?= $(MAKEFILE_DIR)engine.config.yaml
+SCRAPLING_ROOT := $(WORKTREE_ROOT_ABS)/scrapling
+SCRAPLING_VENV := $(SCRAPLING_ROOT)/.venv
+SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 
 STACK := iii-directory llm-router session-manager context-manager \
-         provider-anthropic provider-openai provider-openai-codex shell web queue harness approval-gate console
+         provider-anthropic provider-openai provider-openai-codex shell scrapling queue harness approval-gate console
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
                     engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session require-engine where,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where conformance-e2e,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -29,7 +33,8 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 .DEFAULT_GOAL := help
 
 .PHONY: help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart engine wait-engine \
-        restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session require-engine where $(STACK)
+        restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
+        require-engine where conformance-e2e $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -49,10 +54,18 @@ help:
 	  '  make logs                           attach to the tmux session' \
 	  '  make build [workers...]             cargo build stack or selected workers' \
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
-	  '  make install-local [workers...]     build and symlink into ~/.iii/workers'
+	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
+	  '  make conformance-e2e III_BIN=<iii>  run the harness conformance scenarios (evals/conformance)'
 
 install-iii-next:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next
+
+$(SCRAPLING_STAMP): $(SCRAPLING_ROOT)/pyproject.toml
+	@test -x "$(SCRAPLING_VENV)/bin/python" || "$(PYTHON)" -m venv --without-pip "$(SCRAPLING_VENV)"
+	@"$(PYTHON)" -m pip --python "$(SCRAPLING_VENV)/bin/python" install --disable-pip-version-check -e "$(SCRAPLING_ROOT)"
+	@touch "$@"
+
+prepare-scrapling: $(SCRAPLING_STAMP)
 
 build:
 	@if [ -n "$(UNKNOWN_WORKERS)" ]; then \
@@ -164,7 +177,11 @@ restart:
 	  exit 2; \
 	fi
 	@for w in $(SELECTED_WORKERS); do \
-	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
+	  if [ "$$w" = "scrapling" ]; then \
+	    manifest="$(SCRAPLING_ROOT)/pyproject.toml"; \
+	  else \
+	    manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
+	  fi; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	done
 	@$(MAKE) --no-print-directory require-engine
@@ -180,12 +197,18 @@ restart-worker:
 	  *) echo "unknown worker: $(WORKER)"; echo "valid workers: $(STACK)"; exit 2 ;; \
 	esac
 	@worker="$(WORKER)"; \
-	manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
-	test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
-	args="--url $(ENGINE_URL)"; \
-	if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
-	if [ "$$worker" = "console" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
-	cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
+	if [ "$$worker" = "scrapling" ]; then \
+	  test -f "$(SCRAPLING_ROOT)/pyproject.toml" || { echo "missing $(SCRAPLING_ROOT)/pyproject.toml"; exit 2; }; \
+	  $(MAKE) --no-print-directory prepare-scrapling || exit 1; \
+	  cmd="cd '$(SCRAPLING_ROOT)' && III_URL='$(ENGINE_URL)' '$(SCRAPLING_VENV)/bin/python' -m src.main"; \
+	else \
+	  manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
+	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
+	  args="--url $(ENGINE_URL)"; \
+	  if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
+	  if [ "$$worker" = "console" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
+	  cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
+	fi; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq "$$worker"; then \
 	  tmux respawn-window -k -t "$(TMUX_SESSION):$$worker" -c "$(WORKTREE_ROOT_ABS)" "$$cmd"; \
 	else \
@@ -268,6 +291,41 @@ where:
 	@echo 'tmux windows:'
 	@tmux list-windows -t "$(TMUX_SESSION)" -F '#I:#W #{pane_current_path} #{pane_current_command}' 2>/dev/null || \
 	  echo "  no tmux session named $(TMUX_SESSION)"
+
+# ---------------------------------------------------------------------------
+# Harness conformance E2E (tech-specs/2026-07-15-harness-evaluation/conformance-e2e.md)
+#
+# Builds the subject stack + the standalone runner (evals/conformance, its own
+# workspace) and runs every scenario against the pinned engine binary. The
+# engine is never downloaded here: pass III_BIN (CI builds it from
+# evals/conformance/engine.lock; locally see that file for the pinned source).
+CONFORMANCE_WORKERS := queue iii-directory session-manager context-manager
+CONFORMANCE_PROFILE ?= release
+CONFORMANCE_FLAG    := $(if $(filter release,$(CONFORMANCE_PROFILE)),--release,)
+CONFORMANCE_SCENARIO ?= all
+CONFORMANCE_ARTIFACTS ?= $(REPO_ROOT)/target/conformance
+
+conformance-e2e:
+	@if [ -z "$(III_BIN)" ]; then \
+	  echo "III_BIN is required: path to the pinned iii engine binary."; \
+	  echo "Pinned source: harness/evals/conformance/engine.lock"; \
+	  exit 3; \
+	fi
+	@for w in $(CONFORMANCE_WORKERS) harness; do \
+	  echo "building $$w ($(CONFORMANCE_PROFILE))"; \
+	  cargo build $(CONFORMANCE_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	done
+	@echo "building harness-conformance ($(CONFORMANCE_PROFILE))"
+	@cargo build $(CONFORMANCE_FLAG) --manifest-path "$(MAKEFILE_DIR)evals/conformance/Cargo.toml"
+	@"$(MAKEFILE_DIR)evals/conformance/target/$(CONFORMANCE_PROFILE)/harness-conformance" \
+	  --engine-bin "$(III_BIN)" \
+	  --harness-bin "$(REPO_ROOT)/harness/target/$(CONFORMANCE_PROFILE)/harness" \
+	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(CONFORMANCE_PROFILE)/queue" \
+	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(CONFORMANCE_PROFILE)/iii-directory" \
+	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(CONFORMANCE_PROFILE)/session-manager" \
+	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(CONFORMANCE_PROFILE)/context-manager" \
+	  --scenario "$(CONFORMANCE_SCENARIO)" \
+	  --artifacts-dir "$(CONFORMANCE_ARTIFACTS)"
 
 $(STACK):
 	@:

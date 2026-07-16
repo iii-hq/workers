@@ -1,0 +1,235 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "DeadlinesV1": {
+      "additionalProperties": false,
+      "properties": {
+        "readiness_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scenario_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "teardown_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "readiness_ms",
+        "scenario_ms",
+        "teardown_ms"
+      ],
+      "type": "object"
+    },
+    "FaultKind": {
+      "oneOf": [
+        {
+          "description": "SIGKILL the engine process, then respawn it from the same config and data directories after `restart_delay_ms`.",
+          "enum": [
+            "engine_sigkill"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "FaultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "after_target_calls": {
+          "description": "Inject once the recorder has durably observed this many target calls (the dispatched call is executing inside its response delay).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/definitions/FaultKind"
+        },
+        "restart_delay_ms": {
+          "description": "Downtime before the engine is respawned.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "after_target_calls",
+        "kind",
+        "restart_delay_ms"
+      ],
+      "type": "object"
+    },
+    "InvariantSpecV1": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "LifecycleFunctionId": {
+      "enum": [
+        "conformance-recorder::lifecycle"
+      ],
+      "type": "string"
+    },
+    "LifecycleTriggerType": {
+      "enum": [
+        "harness::turn-started",
+        "harness::turn-completed"
+      ],
+      "type": "string"
+    },
+    "RecorderConfigV1": {
+      "additionalProperties": false,
+      "properties": {
+        "lifecycle": {
+          "$ref": "#/definitions/RecorderLifecycleV1"
+        },
+        "target": {
+          "$ref": "#/definitions/RecorderTargetV1"
+        }
+      },
+      "required": [
+        "lifecycle",
+        "target"
+      ],
+      "type": "object"
+    },
+    "RecorderLifecycleV1": {
+      "additionalProperties": false,
+      "properties": {
+        "function_id": {
+          "$ref": "#/definitions/LifecycleFunctionId"
+        },
+        "trigger_type": {
+          "$ref": "#/definitions/LifecycleTriggerType"
+        }
+      },
+      "required": [
+        "function_id",
+        "trigger_type"
+      ],
+      "type": "object"
+    },
+    "RecorderTargetV1": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "function_id": {
+          "description": "Must be prefixed by `<run_id>::` — enforced by `configure`.",
+          "type": "string"
+        },
+        "request_schema": {
+          "additionalProperties": true,
+          "description": "Registered verbatim; the same schema must appear in native tool exposure (that registration is part of the oracle).",
+          "type": "object"
+        },
+        "response": {
+          "description": "Declared response returned for every target call."
+        },
+        "response_delay_ms": {
+          "description": "Delay between the durable append and the response, opening a window for fault injection while the dispatched call is executing (crash-recovery scenarios). Omitted = respond immediately.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "description",
+        "function_id",
+        "request_schema",
+        "response"
+      ],
+      "type": "object"
+    },
+    "SchemaVersion1": {
+      "description": "The literal string `\"1\"`; any other value is a schema error.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "deadlines": {
+      "$ref": "#/definitions/DeadlinesV1"
+    },
+    "description": {
+      "type": "string"
+    },
+    "fault": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/FaultV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Explicit fault seed (spec § Goals: \"reproduce process crashes and restart boundaries with explicit fault seeds\"). Absent = no fault."
+    },
+    "id": {
+      "type": "string"
+    },
+    "invariants": {
+      "items": {
+        "$ref": "#/definitions/InvariantSpecV1"
+      },
+      "type": "array"
+    },
+    "quarantine": {
+      "description": "Quarantined scenarios reproduce a known-open defect: they assert the EXPECTED behavior, fail until the defect is fixed, and are excluded from `--scenario all` (runnable only by explicit id).",
+      "type": "boolean"
+    },
+    "recorder": {
+      "$ref": "#/definitions/RecorderConfigV1"
+    },
+    "router_script": {
+      "description": "Path to the router script, relative to the scenario directory.",
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/definitions/SchemaVersion1"
+    },
+    "send": {
+      "description": "The exact `harness::send` request (after placeholder expansion). Kept as raw JSON: the harness owns this schema and the send response is graded against the request as-sent."
+    },
+    "stack_profile": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "deadlines",
+    "description",
+    "id",
+    "invariants",
+    "recorder",
+    "router_script",
+    "schema_version",
+    "send",
+    "stack_profile"
+  ],
+  "title": "ConformanceScenarioV1",
+  "type": "object"
+}
