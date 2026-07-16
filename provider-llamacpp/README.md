@@ -12,6 +12,10 @@ Default upstream: `http://127.0.0.1:8080/v1/chat/completions` — `llama-server`
 own default bind address and port. Point `api_url` at any running
 `llama-server` instance (local, LAN, or a remote box) to use it.
 
+## Embeddings
+
+`provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `router::embed`, this gives the memory worker fully local semantic recall with no cloud call.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
