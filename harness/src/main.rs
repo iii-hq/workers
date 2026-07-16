@@ -84,6 +84,11 @@ async fn main() -> Result<()> {
         },
     ));
 
+    // Seed the engine boot-epoch baseline before any turn dispatches a call,
+    // so an engine restart under an in-flight dispatch is detectable even
+    // when it lands within the dispatch's first probe interval (#507).
+    tokio::spawn(harness::clients::engine::seed_engine_epoch(iii.clone()));
+
     // A `--config` file only SEEDS the first registration; a failed parse
     // WARNS and falls through to None (the authoritative value comes from the
     // configuration worker).
