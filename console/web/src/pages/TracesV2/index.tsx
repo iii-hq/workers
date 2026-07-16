@@ -40,7 +40,6 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
-import { loadFollowTurns, saveFollowTurns } from '@/lib/storage'
 import { startTraceSpansStream } from '@/lib/traces-stream'
 import { cn } from '@/lib/utils'
 import { fetchTraces, type StoredSpan } from './api/traces'
@@ -58,6 +57,8 @@ import { WaterfallChart } from './components/WaterfallChart'
 import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
 import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
+import { useFollowTurns } from './hooks/useFollowTurns'
+import { useSpanFilteredTraceRows } from './hooks/useSpanFilteredTraceRows'
 import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
@@ -261,20 +262,25 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // `harness.turn` steps; sub-agent turns never steal the view. Null outside
   // the app shell (Storybook), which also hides the strip's toggle.
   const conversationsCtx = useConversationsCtxOptional()
-  const [followTurns, setFollowTurns] = useState(loadFollowTurns)
-  const toggleFollowTurns = useCallback(() => {
-    setFollowTurns((on) => {
-      saveFollowTurns(!on)
-      return !on
-    })
-  }, [])
+  const { followTurns, toggleFollowTurns } = useFollowTurns()
+
+  // Span-filter fallout on the LIST: a row hides while its trace has no
+  // visible span left under the funnel selection (composition read from the
+  // all-spans feed — see the hook). Everything list-shaped below (paging,
+  // stats, empty state) works off the filtered rows; the raw `traceGroups`
+  // keep feeding the group-by key suggestions above.
+  const visibleTraceGroups = useSpanFilteredTraceRows(
+    traceGroups,
+    allSpans,
+    spanFilter,
+  )
 
   const totalPages = Math.max(
     1,
-    Math.ceil(traceGroups.length / filterState.pageSize),
+    Math.ceil(visibleTraceGroups.length / filterState.pageSize),
   )
   const start = (filterState.page - 1) * filterState.pageSize
-  const paged = traceGroups.slice(start, start + filterState.pageSize)
+  const paged = visibleTraceGroups.slice(start, start + filterState.pageSize)
 
   // Liveness evaluation instant for the list rows' pulsing dot — only ticked
   // while a visible row is actually live, mirroring the strip's clock
@@ -303,15 +309,15 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
 
   const stats = useMemo(
     () => ({
-      totalTraces: traceGroups.length,
-      errorCount: traceGroups.filter((t) => t.status === 'error').length,
+      totalTraces: visibleTraceGroups.length,
+      errorCount: visibleTraceGroups.filter((t) => t.status === 'error').length,
       avgDuration:
-        traceGroups.length > 0
-          ? traceGroups.reduce((sum, t) => sum + (t.duration ?? 0), 0) /
-            traceGroups.length
+        visibleTraceGroups.length > 0
+          ? visibleTraceGroups.reduce((sum, t) => sum + (t.duration ?? 0), 0) /
+            visibleTraceGroups.length
           : 0,
     }),
-    [traceGroups],
+    [visibleTraceGroups],
   )
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -639,10 +645,9 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                     if (activeViewId) void renameView(activeViewId, name)
                   }}
                   onDeleteActive={() => {
-                    if (activeViewId) {
-                      void deleteView(activeViewId)
-                      setActiveViewId(null)
-                    }
+                    // deleteView clears the selection itself, in the same
+                    // config write.
+                    if (activeViewId) void deleteView(activeViewId)
                   }}
                 />
               ) : undefined
@@ -677,7 +682,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
               </div>
             ) : (
               <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-                {isQueryLoading && traceGroups.length === 0 ? (
+                {isQueryLoading && visibleTraceGroups.length === 0 ? (
                   <div className="flex flex-col">
                     {(
                       [
@@ -704,7 +709,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                       </div>
                     ))}
                   </div>
-                ) : traceGroups.length === 0 ? (
+                ) : visibleTraceGroups.length === 0 ? (
                   <div className="p-9">
                     <EmptyState
                       icon={GitBranch}
@@ -764,7 +769,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                       <Pagination
                         currentPage={filterState.page}
                         totalPages={totalPages}
-                        totalItems={traceGroups.length}
+                        totalItems={visibleTraceGroups.length}
                         pageSize={filterState.pageSize}
                         onPageChange={(p) => updateFilter('page', p)}
                         onPageSizeChange={(s) => {

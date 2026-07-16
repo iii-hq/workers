@@ -38,6 +38,39 @@ export type SpanGroupKey = (
 /** Grouping key for the filter menu's workers section. */
 export const workerGroupKey: SpanGroupKey = (span) => getWorkerName(span)
 
+/** The resolved filter-key triple a bar carries (a `TimelineSpan`'s
+ *  `groupKey` / `workerKey` / `internalKey`). */
+export interface SpanFilterKeys {
+  groupKey?: string
+  workerKey?: string
+  internalKey?: string
+}
+
+/**
+ * THE hidden-span predicate: whether the selection hides a span carrying
+ * these keys. Internal spans hide by DEFAULT — `shownInternal` lists the
+ * families the user revealed; groups and workers hide only when picked.
+ * Every surface that applies the funnel selection (the strip's bars, the
+ * detail views via [`applyHiddenSpanFilters`], the trace list's rows via
+ * `hooks/useSpanFilteredTraceRows`) routes through this one function so
+ * they can never disagree on what "hidden" means.
+ */
+export function isSpanBarHidden(
+  keys: SpanFilterKeys,
+  selection: SpanFilterSelection,
+): boolean {
+  if (
+    keys.internalKey != null &&
+    !selection.shownInternal.has(keys.internalKey)
+  ) {
+    return true
+  }
+  if (keys.groupKey != null && selection.hiddenGroups.has(keys.groupKey)) {
+    return true
+  }
+  return keys.workerKey != null && selection.hiddenWorkers.has(keys.workerKey)
+}
+
 export interface SpanGroup {
   key: string
   /** Spans carrying this key (subtree descendants not included). */
@@ -86,18 +119,16 @@ export function applyHiddenSpanFilters(
   keyOf: SpanGroupKey,
   selection: SpanFilterSelection,
 ): WaterfallData {
-  const { hiddenGroups, hiddenWorkers, shownInternal } = selection
-
   const spansById = new Map(data.spans.map((s) => [s.span_id, s]))
-  const matches = (span: VisualizationSpan) => {
-    // Internal spans (`iii.tag.hidden` call-site tag) hide by DEFAULT;
-    // `shownInternal` holds the families the user revealed.
-    const family = internalFamilyOf(span.attributes)
-    if (family != null && !shownInternal.has(family)) return true
-    if (hiddenWorkers.has(getWorkerName(span))) return true
-    const key = keyOf(span, spansById)
-    return key != null && hiddenGroups.has(key)
-  }
+  const matches = (span: VisualizationSpan) =>
+    isSpanBarHidden(
+      {
+        groupKey: keyOf(span, spansById) ?? undefined,
+        workerKey: getWorkerName(span),
+        internalKey: internalFamilyOf(span.attributes) ?? undefined,
+      },
+      selection,
+    )
 
   const hidden = new Set<string>()
   for (const span of data.spans) {

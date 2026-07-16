@@ -148,18 +148,20 @@ export function isTraceLive(
  *  then tag ROOTS under their own span name (a producer's scope span like
  *  `harness::turn step` is a first-class segment, not machinery of the
  *  function whose baggage it inherits), then the baggage-stamped
- *  `iii.function.id`, then the span name. */
-function storedSpanGroupKey(
-  span: StoredSpan,
+ *  `iii.function.id`, then the span name. Also keys the trace LIST's root
+ *  rows (`useSpanFilteredTraceRows`), which is why it takes the bare
+ *  name + normalized attributes rather than a `StoredSpan`. */
+export function spanFilterGroupKey(
+  name: string,
   attrs: Record<string, unknown>,
   inheritedKind: string | undefined,
 ): string {
-  const explicit = explicitFunctionId({ name: span.name, attributes: attrs })
+  const explicit = explicitFunctionId({ name, attributes: attrs })
   if (explicit) return explicit
-  if (tagRootKind(attrs, inheritedKind)) return span.name
+  if (tagRootKind(attrs, inheritedKind)) return name
   const baggage = attrs['iii.function.id']
   if (typeof baggage === 'string' && baggage !== '') return baggage
-  return span.name
+  return name
 }
 
 interface ShapedStoredSpan {
@@ -261,7 +263,7 @@ export function storedSpansToTimelineSpans(
       kind: kindForOtelSpan({ ...shaped, kind: span.kind }),
       label: resolveSpanLabel(shaped, inherited.displayName),
       meta: `${worker} · ${span.trace_id.slice(0, 8)}`,
-      groupKey: storedSpanGroupKey(span, attrs, inherited.kind),
+      groupKey: spanFilterGroupKey(span.name, attrs, inherited.kind),
       workerKey: worker,
       internalKey: internalFamilyOf(attrs) ?? undefined,
     })

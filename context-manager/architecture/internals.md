@@ -31,7 +31,7 @@ in tests.
 | [src/core/selection.rs](../src/core/selection.rs) | Turn partitioning and token-aware verbatim-tail selection with the safe-cut invariant. |
 | [src/core/summary.rs](../src/core/summary.rs) | Summariser prompt construction (template, previous-summary anchoring), `strip_media`, and the `# Conversation summary` system-prompt rendering. |
 | [src/core/lease.rs](../src/core/lease.rs) | Compaction lease acquire/release protocol + the default sha256 lease key. |
-| [src/adapters/router.rs](../src/adapters/router.rs) | `RouterModelResolver` (`router::models::get`) and `RouterSummarizer` (`router::chat` over an SDK channel). |
+| [src/adapters/router.rs](../src/adapters/router.rs) | `RouterModelResolver` (`router::models::budget`) and `RouterSummarizer` (`router::chat` over an SDK channel). |
 | [src/adapters/fs_lease.rs](../src/adapters/fs_lease.rs) | `FsLeaseStore`: one JSON file per lease key under `lease_dir/<scope>/`, a process-local `Mutex` cache, and atomic `tmp + rename` writes (session-manager's `FsStore` strategy). |
 | [tests/](../tests) | Cucumber BDD (`tests/bdd.rs`, `harness = false`) + schema goldens + manifest subprocess test. See §13. |
 
@@ -331,7 +331,7 @@ The four ports in [ports.rs](../src/ports.rs), production adapters in
 
 | Port | Production adapter | Backed by | Failure posture |
 |---|---|---|---|
-| `ModelResolver` | `RouterModelResolver` | `router::models::get` (5s timeout) | `Ok(None)` = router up but model unknown; `Err` = router absent/unreachable. Both → fallback when allowed. |
+| `ModelResolver` | `RouterModelResolver` | `router::models::budget` (5s timeout; `models::get` compatibility fallback) | `Ok(None)` = router up but model unknown; `Err` = router absent/unreachable. Both → fallback when allowed. |
 | `Summarizer` | `RouterSummarizer` | `router::chat` over an SDK channel | `Unavailable` (router not routable) vs `Failed` (provider/stream error) vs `Empty`. |
 | `LeaseStore` | `FsLeaseStore` | one JSON file per key under `lease_dir` (atomic `tmp + rename`; process-local `Mutex` for `swap`) | Errors surface as busy via `core::lease`. |
 | `Clock` | `SystemClock` | wall clock (ms since epoch) | — |
@@ -367,7 +367,7 @@ I/O is synchronous and never crosses an `.await` while the guard is held.
 
 1. `input.limits` present → `ResolvedModel::from_inline` (`model_resolved:
    "inline"`); no router call. This is the standalone path.
-2. else `router::models::get(provider, id)`:
+2. else `router::models::budget(provider, id)`:
    - `Ok(Some(model))` → `from_router` (`"router"`), carrying the model's
      `thinking_budgets`.
    - `Ok(None)` (unknown) or `Err` (router down/absent) → fall through.

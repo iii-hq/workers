@@ -13,12 +13,12 @@
 use crate::chat::chat::{ChatCall, ChatFnInput};
 use crate::types::router::{
     AbortRequest, AbortResponse, ChatResponse, CompleteResponse, ConfigChangedEvent,
-    ModelGetRequest, ModelGetResponse, ModelsListRequest, ModelsListResponse,
-    ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse,
-    ProviderListRequest, ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
-    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
-    SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
-    UpdateCredentialResponse,
+    ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest, ModelGetResponse, ModelsListRequest,
+    ModelsListResponse, ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest,
+    ModelsSupportsResponse, ProviderListRequest, ProviderListResponse, ProviderRegisterRequest,
+    ProviderRegisterResponse, ProviderResolveRequest, ProviderResolveResponse, RouteRequest,
+    RouteResponse, RouterAck, SystemPromptGetRequest, SystemPromptGetResponse,
+    UpdateCredentialRequest, UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
@@ -50,6 +50,10 @@ pub const MODELS_LIST_DESC: &str =
 pub const MODELS_GET_ID: &str = "router::models::get";
 pub const MODELS_GET_DESC: &str =
     "Read one catalog model by {provider, id}; null when the model is not registered.";
+
+pub const MODELS_BUDGET_ID: &str = "router::models::budget";
+pub const MODELS_BUDGET_DESC: &str =
+    "Resolve the effective model output budget using the same precedence as router::chat.";
 
 pub const MODELS_SUPPORTS_ID: &str = "router::models::supports";
 pub const MODELS_SUPPORTS_DESC: &str =
@@ -129,6 +133,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<ModelsListRequest, ModelsListResponse>(MODELS_LIST_ID, MODELS_LIST_DESC),
         spec::<ModelGetRequest, Option<ModelGetResponse>>(MODELS_GET_ID, MODELS_GET_DESC),
+        spec::<ModelBudgetRequest, Option<ModelBudgetResponse>>(
+            MODELS_BUDGET_ID,
+            MODELS_BUDGET_DESC,
+        ),
         spec::<ModelsSupportsRequest, ModelsSupportsResponse>(
             MODELS_SUPPORTS_ID,
             MODELS_SUPPORTS_DESC,

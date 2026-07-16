@@ -1645,6 +1645,11 @@ async fn assemble_context(
                 "summary": summary,
                 "tail_start_entry_id": tail_entry,
                 "tokens_before": out.applied.tokens_before,
+                "summarized_head_tokens": out.applied.summarized_head_tokens,
+                "initial_token_count": out.applied.initial_token_count,
+                "assembled_token_count": out.token_count,
+                "usable_input_tokens": out.usable,
+                "effective_max_output_tokens": out.effective_max_output_tokens,
             });
             let _ = session
                 .append_custom(

@@ -309,6 +309,28 @@ pub struct ModelGetResponse {
     pub model: Model,
 }
 
+/// Input of `router::models::budget`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelBudgetRequest {
+    /// Provider id that owns the model. Empty resolves an unambiguous model id.
+    #[serde(default)]
+    pub provider: String,
+    /// Model id to budget.
+    #[serde(default)]
+    pub id: String,
+    /// Optional caller-requested output budget. When absent, the same provider
+    /// and router defaults used by `router::chat` apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+}
+
+/// Effective limits `router::chat` will use for this model and request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelBudgetResponse {
+    pub model: Model,
+    pub effective_max_output_tokens: u64,
+}
+
 /// Input of `router::models::supports`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsSupportsRequest {

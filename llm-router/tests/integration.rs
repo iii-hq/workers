@@ -865,6 +865,15 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     .await
     .unwrap();
     assert_eq!(got["model"]["id"], "disc-1");
+    let budget = call(
+        &router_iii,
+        "router::models::budget",
+        json!({ "provider": "real", "id": "disc-1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(budget["model"]["id"], "disc-1");
+    assert_eq!(budget["effective_max_output_tokens"], 8192);
     let sup = call(
         &router_iii,
         "router::models::supports",

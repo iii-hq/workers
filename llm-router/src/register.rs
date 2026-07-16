@@ -15,7 +15,9 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
-use crate::catalog::handlers::{make_models_get, make_models_list, make_models_supports};
+use crate::catalog::handlers::{
+    make_models_budget, make_models_get, make_models_list, make_models_supports,
+};
 use crate::catalog::reconcile::make_models_reconcile;
 use crate::catalog::store::CatalogStore;
 use crate::channels::open_sink;
@@ -137,6 +139,16 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         surface::MODELS_GET_ID,
         RegisterFunction::new_async(make_models_get(catalog.clone()))
             .description(surface::MODELS_GET_DESC),
+    );
+    iii.register_function(
+        surface::MODELS_BUDGET_ID,
+        RegisterFunction::new_async(make_models_budget(
+            catalog.clone(),
+            registry.clone(),
+            config.clone(),
+        ))
+        .description(surface::MODELS_BUDGET_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::MODELS_SUPPORTS_ID,

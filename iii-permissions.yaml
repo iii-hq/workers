@@ -158,6 +158,7 @@ rules:
   - state::list
   - router::models::list
   - router::models::get
+  - router::models::budget
   - router::models::supports
   - router::provider::list
   # harness::status is read-only (current turn status for a session).

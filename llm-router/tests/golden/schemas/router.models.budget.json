@@ -1,0 +1,222 @@
+{
+  "description": "Resolve the effective model output budget using the same precedence as router::chat.",
+  "function_id": "router::models::budget",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::models::budget`.",
+    "properties": {
+      "id": {
+        "default": "",
+        "description": "Model id to budget.",
+        "type": "string"
+      },
+      "max_output_tokens": {
+        "description": "Optional caller-requested output budget. When absent, the same provider and router defaults used by `router::chat` apply.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "provider": {
+        "default": "",
+        "description": "Provider id that owns the model. Empty resolves an unambiguous model id.",
+        "type": "string"
+      }
+    },
+    "title": "ModelBudgetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/ModelBudgetResponse"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "Model": {
+        "description": "The capability record (README § Model descriptor).",
+        "properties": {
+          "context_window": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_limit": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Pricing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reasoning_efforts": {
+            "items": {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "supports_cache": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_structured_output": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_thinking": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_tools": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_vision": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supports_xhigh": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "thinking_budgets": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "context_window",
+          "id",
+          "max_output_tokens",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "ModelBudgetResponse": {
+        "description": "Effective limits `router::chat` will use for this model and request.",
+        "properties": {
+          "effective_max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "model": {
+            "$ref": "#/definitions/Model"
+          }
+        },
+        "required": [
+          "effective_max_output_tokens",
+          "model"
+        ],
+        "type": "object"
+      },
+      "Pricing": {
+        "properties": {
+          "cache_read": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ReasoningEffort": {
+        "description": "One provider-native reasoning effort advertised for a specific model.\n\nValues intentionally remain strings: provider catalogs can add efforts without requiring a router-wide enum release first.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "effort"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "Nullable_ModelBudgetResponse"
+  }
+}
