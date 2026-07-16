@@ -330,7 +330,7 @@ export function Composer({
       </div>
 
       <div className="flex min-w-0 items-center gap-2 border-t border-rule-2 px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <ModePicker
             value={mode}
             onChange={onModeChange}
