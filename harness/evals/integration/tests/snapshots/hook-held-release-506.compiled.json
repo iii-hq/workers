@@ -327,7 +327,6 @@
         }
       }
     ],
-    "quarantine": true,
     "recorder": {
       "extra_functions": [
         {
