@@ -123,6 +123,7 @@ pub async fn handle(
                 &req.call.id,
                 &req.call.function_id,
                 &arguments,
+                None,
             )
             .await
         {
