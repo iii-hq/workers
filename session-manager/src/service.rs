@@ -818,10 +818,16 @@ impl SessionService {
         let items = page
             .iter()
             .map(|entry| match entry {
-                SessionEntry::Message { id, message, .. } => MessageItem {
+                SessionEntry::Message {
+                    id,
+                    message,
+                    origin,
+                    ..
+                } => MessageItem {
                     entry_id: id.clone(),
                     message: Some(message.clone()),
                     custom: None,
+                    origin: origin.clone(),
                 },
                 SessionEntry::Custom {
                     id,
@@ -835,6 +841,7 @@ impl SessionService {
                         custom_type: custom_type.clone(),
                         data: data.clone(),
                     }),
+                    origin: None,
                 },
             })
             .collect();

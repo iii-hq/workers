@@ -79,6 +79,20 @@ export interface AssistantMessage extends BaseMessage {
   model?: ModelId
   mode?: Mode
   streaming?: boolean
+  /**
+   * What the memory worker fed this turn (from the entry origin's hook
+   * annotations): the bank, how many memories were injected, and their
+   * ids so the chip can fetch details on demand.
+   */
+  memory?: {
+    bank: string
+    memories: number
+    memoryIds: string[]
+    rules?: number
+    truncated?: boolean
+    /** Recall ran with the semantic (embedding) signal fused in. */
+    semantic?: boolean
+  }
 }
 
 export interface ThoughtMessage extends BaseMessage {
@@ -223,6 +237,13 @@ export interface Conversation {
    * shown as a full-path banner, and re-scopable mid-conversation.
    */
   workingDir?: string | null
+  /**
+   * Named memory bank for this chat (session metadata `memory_bank`). The
+   * memory worker injects that bank's rules + recalled memories into every
+   * turn and extracts new memories back into it. Null = the worker's
+   * configured default bank.
+   */
+  memoryBank?: string | null
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's

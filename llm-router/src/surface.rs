@@ -37,6 +37,12 @@ pub const ABORT_ID: &str = "router::abort";
 pub const ABORT_DESC: &str =
     "Abort an in-flight router::chat/complete by request_id; reports whether a live request was cancelled.";
 
+pub const EMBED_ID: &str = "router::embed";
+pub const EMBED_DESC: &str =
+    "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider \
+     or discovers the first embed-capable one from the live registry; one vector per input, \
+     order preserved.";
+
 pub const MODELS_LIST_ID: &str = "router::models::list";
 pub const MODELS_LIST_DESC: &str =
     "List catalog models, optionally filtered by provider and/or a capability flag.";
@@ -122,6 +128,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ChatFnInput, ChatResponse>(CHAT_ID, CHAT_DESC),
         spec::<ChatCall, CompleteResponse>(COMPLETE_ID, COMPLETE_DESC),
         spec::<AbortRequest, AbortResponse>(ABORT_ID, ABORT_DESC),
+        spec::<crate::embed::RouterEmbedRequest, crate::embed::RouterEmbedResponse>(
+            EMBED_ID, EMBED_DESC,
+        ),
         spec::<ModelsListRequest, ModelsListResponse>(MODELS_LIST_ID, MODELS_LIST_DESC),
         spec::<ModelGetRequest, Option<ModelGetResponse>>(MODELS_GET_ID, MODELS_GET_DESC),
         spec::<ModelBudgetRequest, Option<ModelBudgetResponse>>(

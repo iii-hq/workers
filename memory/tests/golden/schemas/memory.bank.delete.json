@@ -1,0 +1,35 @@
+{
+  "description": "Move a bank's folder into the store's .trash (recoverable by hand); never destroys data.",
+  "function_id": "memory::bank::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "title": "BankDeleteRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "trashed_to": {
+        "description": "Where the bank folder was moved (under the store's `.trash/`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ok",
+      "trashed_to"
+    ],
+    "title": "BankDeleteResponse",
+    "type": "object"
+  }
+}

@@ -116,7 +116,10 @@ function isMode(v: unknown): v is Mode {
 
 /** The console's session metadata convention (replaces wholesale on writes). */
 function metadataFor(
-  c: Pick<Conversation, 'model' | 'mode' | 'titleManual' | 'workingDir'>,
+  c: Pick<
+    Conversation,
+    'model' | 'mode' | 'titleManual' | 'workingDir' | 'memoryBank'
+  >,
 ): Record<string, unknown> {
   return {
     surface: 'console',
@@ -124,6 +127,7 @@ function metadataFor(
     mode: c.mode,
     ...(c.titleManual ? { title_manual: true } : {}),
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
+    ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
   }
 }
 
@@ -142,6 +146,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof (md.fs_scope as Record<string, unknown>).root === 'string' &&
       ((md.fs_scope as Record<string, unknown>).root as string).length > 0
         ? ((md.fs_scope as Record<string, unknown>).root as string)
+        : null,
+    memoryBank:
+      typeof md.memory_bank === 'string' && md.memory_bank.length > 0
+        ? md.memory_bank
         : null,
     parentId:
       typeof md.parent_session_id === 'string'
@@ -258,6 +266,8 @@ export interface ConversationsApi {
   rename: (id: string, title: string) => void
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
+  /** Point this chat at a named memory bank (null = worker default). */
+  setMemoryBank: (id: string, memoryBank: string | null) => void
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; only meaningful while the chat is a draft. */
   setWorkingDir: (id: string, dir: string) => void
@@ -466,6 +476,10 @@ export function useConversations(
                   ? md.model
                   : c.model,
               mode: isMode(md.mode) ? md.mode : c.mode,
+              memoryBank:
+                typeof md.memory_bank === 'string' && md.memory_bank.length > 0
+                  ? md.memory_bank
+                  : null,
               parentId:
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id
@@ -781,6 +795,19 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setMemoryBank = useCallback(
+    (id: string, memoryBank: string | null) => {
+      patchConversation(id, (c) => ({
+        ...c,
+        memoryBank,
+        updatedAt: Date.now(),
+      }))
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta({ ...conv, memoryBank })
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const setWorkingDir = useCallback(
     (id: string, dir: string) => {
       patchConversation(id, (c) => ({
@@ -956,6 +983,7 @@ export function useConversations(
     rename,
     remove,
     setModel,
+    setMemoryBank,
     setMode,
     setWorkingDir,
     prefillWorkingDir,

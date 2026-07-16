@@ -1,0 +1,10 @@
+# Agent permissions for the memory-consolidate worker.
+# Spec: tech-specs/2026-06-agentic/memory.md § The memory family.
+version: 1
+
+rules:
+  # A run rewrites memory history (supersede + reinforce) — operator-owned,
+  # never agent-callable; the schedule and the console drive it.
+  - '!memory-consolidate::run'
+  - '!memory-consolidate::on-tick'
+  - '!memory-consolidate::on-config-change'

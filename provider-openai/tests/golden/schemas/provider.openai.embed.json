@@ -1,0 +1,54 @@
+{
+  "description": "Batch text embeddings via the OpenAI embeddings endpoint, using the router-resolved credential. One vector per input, order preserved. Default model text-embedding-3-small.",
+  "function_id": "provider::openai::embed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "input": {
+        "description": "Texts to embed, one vector returned per input, order preserved.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "model": {
+        "default": null,
+        "description": "Embedding model id; the provider default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "input"
+    ],
+    "title": "EmbedRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "embeddings": {
+        "description": "One embedding per input, in input order.",
+        "items": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "type": "array"
+      },
+      "model": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "embeddings",
+      "model"
+    ],
+    "title": "EmbedResponse",
+    "type": "object"
+  }
+}

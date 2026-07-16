@@ -1,0 +1,712 @@
+import { Pin, PinOff, Trash2, X } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { Input } from '@/components/ui/Input'
+import type { MemoryItem } from '@/lib/memory'
+import { cn } from '@/lib/utils'
+
+/**
+ * The bank as a schematic constellation, built to stay readable at 10k+
+ * memories via level-of-detail:
+ *
+ * - Default view draws ENTITY HUBS ONLY, sized by memory count, capped to
+ *   the top `MAX_HUBS` by degree (a banner names what's hidden; the
+ *   search box refocuses on anything).
+ * - Clicking a hub expands its memories as spokes, capped to `MAX_SPOKES`
+ *   (pinned first, then newest) with a "+N more" node linking to the
+ *   memories tab. Small banks (<= AUTO_EXPAND_MEMORIES memories) auto-expand.
+ * - Wheel zooms around the cursor, drag pans, Fit resets. Pure SVG
+ *   viewBox math, no graph library.
+ *
+ * Layout is deterministic (golden-angle spiral over hubs sorted by
+ * degree), so the same bank always draws the same map. This is a
+ * render-time projection of the flat store: `entities[]` IS the edge
+ * list; storage stays flat.
+ */
+
+interface MemoryGraphProps {
+  memories: MemoryItem[]
+  totalFacts: number
+  onPin: (memory: MemoryItem) => void
+  onDelete: (memory: MemoryItem) => void
+  onShowFacts: () => void
+  busy: boolean
+}
+
+const MAX_HUBS = 40
+const MAX_SPOKES = 20
+const AUTO_EXPAND_MEMORIES = 30
+const GOLDEN_ANGLE = 2.399963
+const NO_ENTITY_HUB = '(no entities)'
+
+interface HubNode {
+  entity: string
+  x: number
+  y: number
+  count: number
+  r: number
+  expanded: boolean
+}
+
+interface FactNode {
+  memory: MemoryItem
+  hub: string
+  x: number
+  y: number
+}
+
+interface MoreNode {
+  hub: string
+  x: number
+  y: number
+  hidden: number
+}
+
+interface Edge {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  memoryId: string
+}
+
+interface Layout {
+  hubs: HubNode[]
+  nodes: FactNode[]
+  more: MoreNode[]
+  edges: Edge[]
+  hiddenHubs: number
+  bounds: { x: number; y: number; w: number; h: number }
+}
+
+function hubRadius(count: number): number {
+  return Math.min(22, 6 + 2.4 * Math.sqrt(count))
+}
+
+function spokeOrder(a: MemoryItem, b: MemoryItem): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+  return b.updated_at - a.updated_at
+}
+
+function layoutGraph(
+  memories: MemoryItem[],
+  filter: string,
+  expandedHubs: ReadonlySet<string>,
+  autoExpand: boolean,
+): Layout {
+  const byEntity = new Map<string, MemoryItem[]>()
+  for (const memory of memories) {
+    const keys = memory.entities.length > 0 ? memory.entities : [NO_ENTITY_HUB]
+    for (const entity of keys) {
+      const list = byEntity.get(entity) ?? []
+      list.push(memory)
+      byEntity.set(entity, list)
+    }
+  }
+
+  const needle = filter.trim().toLowerCase()
+  let hubEntries = [...byEntity.entries()].sort(
+    (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
+  )
+  if (needle) {
+    hubEntries = hubEntries.filter(([entity]) =>
+      entity.toLowerCase().includes(needle),
+    )
+  }
+  const hiddenHubs = Math.max(0, hubEntries.length - MAX_HUBS)
+  hubEntries = hubEntries.slice(0, MAX_HUBS)
+
+  // Placement: few hubs sit on a centered ring (one hub sits dead
+  // center), many fall back to a golden-angle spiral. Spacing derives
+  // from the widest cluster (hub + its spoke ring) so dandelions never
+  // overlap but never drift into empty space either.
+  const hubs: HubNode[] = []
+  const hubPos = new Map<string, HubNode>()
+  const clusterRadius = (entity: string, count: number) => {
+    const expanded = autoExpand || expandedHubs.has(entity)
+    if (!expanded) return hubRadius(count) + 8
+    const rings = Math.ceil(Math.min(count, MAX_SPOKES) / 14)
+    return hubRadius(count) + 44 + 16 * (rings - 1) + 14
+  }
+  const maxCluster = Math.max(
+    60,
+    ...hubEntries.map(([entity, list]) => clusterRadius(entity, list.length)),
+  )
+  hubEntries.forEach(([entity, list], i) => {
+    const expanded = autoExpand || expandedHubs.has(entity)
+    const n = hubEntries.length
+    let x = 0
+    let y = 0
+    if (n === 1) {
+      // centered
+    } else if (n <= 8) {
+      const ringR = Math.max(
+        (maxCluster * 2 + 40) / (2 * Math.sin(Math.PI / n)),
+        maxCluster + 60,
+      )
+      const theta = -Math.PI / 2 + i * ((2 * Math.PI) / n)
+      x = Math.round(ringR * Math.cos(theta))
+      y = Math.round(ringR * Math.sin(theta))
+    } else {
+      const step = maxCluster * 1.15
+      const r = step * Math.sqrt(i + 1)
+      const theta = i * GOLDEN_ANGLE
+      x = Math.round(r * Math.cos(theta))
+      y = Math.round(r * Math.sin(theta))
+    }
+    const node: HubNode = {
+      entity,
+      x,
+      y,
+      count: list.length,
+      r: hubRadius(list.length),
+      expanded,
+    }
+    hubs.push(node)
+    hubPos.set(entity, node)
+  })
+
+  const nodes: FactNode[] = []
+  const more: MoreNode[] = []
+  const edges: Edge[] = []
+  for (const hub of hubs) {
+    if (!hub.expanded) continue
+    const list = [...(byEntity.get(hub.entity) ?? [])].sort(spokeOrder)
+    const shown = list.slice(0, MAX_SPOKES)
+    const hidden = list.length - shown.length
+    const slots = shown.length + (hidden > 0 ? 1 : 0)
+    // Even full-circle spokes: a clean dandelion regardless of count.
+    shown.forEach((memory, j) => {
+      const ringIdx = Math.floor(j / 14)
+      const ring = hub.r + 44 + 16 * ringIdx
+      const perRing = Math.min(slots - ringIdx * 14, 14)
+      const angle =
+        -Math.PI / 2 + (j % 14) * ((2 * Math.PI) / Math.max(perRing, 1))
+      const x = hub.x + Math.round(ring * Math.cos(angle))
+      const y = hub.y + Math.round(ring * Math.sin(angle))
+      nodes.push({ memory, hub: hub.entity, x, y })
+      edges.push({ x1: hub.x, y1: hub.y, x2: x, y2: y, memoryId: memory.id })
+    })
+    if (hidden > 0) {
+      const ring = hub.r + 44
+      const perRing = Math.min(slots, 14)
+      const angle =
+        -Math.PI / 2 +
+        (shown.length % 14) * ((2 * Math.PI) / Math.max(perRing, 1))
+      const x = hub.x + Math.round(ring * Math.cos(angle))
+      const y = hub.y + Math.round(ring * Math.sin(angle))
+      more.push({ hub: hub.entity, x, y, hidden })
+    }
+  }
+
+  const xs = [...hubs.map((h) => h.x), ...nodes.map((n) => n.x), 0]
+  const ys = [...hubs.map((h) => h.y), ...nodes.map((n) => n.y), 0]
+  const pad = 110
+  const minX = Math.min(...xs) - pad
+  const minY = Math.min(...ys) - pad
+  return {
+    hubs,
+    nodes,
+    more,
+    edges,
+    hiddenHubs,
+    bounds: {
+      x: minX,
+      y: minY,
+      w: Math.max(...xs) + pad - minX,
+      h: Math.max(...ys) + pad - minY,
+    },
+  }
+}
+
+export function MemoryGraph({
+  memories,
+  totalFacts,
+  onPin,
+  onDelete,
+  onShowFacts,
+  busy,
+}: MemoryGraphProps) {
+  const live = useMemo(() => memories.filter((f) => f.invalid_at == null), [memories])
+  const [filter, setFilter] = useState('')
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [hoverId, setHoverId] = useState<string | null>(null)
+  const autoExpand = live.length <= AUTO_EXPAND_MEMORIES && !filter
+
+  const baseLayout = useMemo(
+    () => layoutGraph(live, filter, expanded, autoExpand),
+    [live, filter, expanded, autoExpand],
+  )
+
+  // Manual placement: users drag hubs (the whole dandelion follows) and
+  // individual memory dots. Offsets overlay the deterministic layout so
+  // live refreshes never snap moved nodes back.
+  const [offsets, setOffsets] = useState<Map<string, { x: number; y: number }>>(
+    new Map(),
+  )
+  const off = (key: string) => offsets.get(key) ?? { x: 0, y: 0 }
+
+  const layout = useMemo(() => {
+    const hubs = baseLayout.hubs.map((h) => {
+      const o = off(`h:${h.entity}`)
+      return { ...h, x: h.x + o.x, y: h.y + o.y }
+    })
+    const hubAt = new Map(hubs.map((h) => [h.entity, h]))
+    const nodes = baseLayout.nodes.map((n) => {
+      const ho = off(`h:${n.hub}`)
+      const fo = off(`f:${n.memory.id}:${n.hub}`)
+      return { ...n, x: n.x + ho.x + fo.x, y: n.y + ho.y + fo.y }
+    })
+    const edges = nodes.map((n) => {
+      const hub = hubAt.get(n.hub)
+      return {
+        x1: hub?.x ?? 0,
+        y1: hub?.y ?? 0,
+        x2: n.x,
+        y2: n.y,
+        memoryId: n.memory.id,
+      }
+    })
+    const more = baseLayout.more.map((m) => {
+      const ho = off(`h:${m.hub}`)
+      return { ...m, x: m.x + ho.x, y: m.y + ho.y }
+    })
+    return { ...baseLayout, hubs, nodes, edges, more }
+    // biome-ignore lint/correctness/useExhaustiveDependencies: off reads offsets, listed
+  }, [baseLayout, offsets])
+
+  // Zoom/pan as a controlled viewBox; null = fit to layout bounds.
+  const [view, setView] = useState<{
+    x: number
+    y: number
+    w: number
+    h: number
+  } | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const drag = useRef<{
+    kind: 'pan' | 'node'
+    key?: string
+    x: number
+    y: number
+    moved: number
+  } | null>(null)
+  const vb = view ?? layout.bounds
+
+  const startNodeDrag = (e: React.PointerEvent, key: string) => {
+    e.stopPropagation()
+    drag.current = { kind: 'node', key, x: e.clientX, y: e.clientY, moved: 0 }
+    ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+  }
+
+  /** True when the pointer travelled far enough that the trailing click
+   * should be swallowed (it was a drag, not a click). */
+  const wasDrag = () => (drag.current?.moved ?? 0) > 4
+
+  const clientToWorld = (cx: number, cy: number) => {
+    const rect = svgRef.current?.getBoundingClientRect()
+    if (!rect) return { x: 0, y: 0 }
+    return {
+      x: vb.x + ((cx - rect.left) / rect.width) * vb.w,
+      y: vb.y + ((cy - rect.top) / rect.height) * vb.h,
+    }
+  }
+
+  const selected = live.find((f) => f.id === selectedId) ?? null
+  const activeId = selectedId ?? hoverId
+
+  if (live.length === 0) {
+    return (
+      <EmptyState
+        title="nothing to map yet"
+        description="the graph draws entity hubs with their memories as spokes. save or extract a few memories with entities and they appear here."
+      />
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-2 flex-1 min-h-0">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Input
+          value={filter}
+          onChange={setFilter}
+          placeholder="focus entities..."
+          aria-label="filter entities"
+          className="w-56"
+        />
+        <span className="font-mono text-[11px] lowercase text-ink-faint">
+          {layout.hubs.length} entities
+          {layout.hiddenHubs > 0 &&
+            ` (top ${MAX_HUBS} shown, ${layout.hiddenHubs} more — search to focus)`}
+          {totalFacts > live.length &&
+            ` · mapping newest ${live.length} of ${totalFacts} memories`}
+        </span>
+        <span className="flex-1" />
+        <Button variant="ghost" size="sm" onClick={() => setView(null)}>
+          fit
+        </Button>
+        {offsets.size > 0 ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setOffsets(new Map())}
+            title="snap every moved node back to the computed layout"
+          >
+            reset layout
+          </Button>
+        ) : null}
+        {!autoExpand && expanded.size > 0 ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setExpanded(new Set())}
+          >
+            collapse all
+          </Button>
+        ) : null}
+      </div>
+
+      <div className="relative flex-1 min-h-0 border border-rule">
+        <svg
+          ref={svgRef}
+          viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+          className="w-full h-full min-h-[440px] cursor-grab active:cursor-grabbing select-none"
+          role="img"
+          aria-label="memory graph: entity hubs and memory nodes"
+          onWheel={(e) => {
+            const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15
+            const at = clientToWorld(e.clientX, e.clientY)
+            const w = Math.min(
+              Math.max(vb.w * factor, 120),
+              layout.bounds.w * 4,
+            )
+            const h = (w / vb.w) * vb.h
+            setView({
+              x: at.x - ((at.x - vb.x) / vb.w) * w,
+              y: at.y - ((at.y - vb.y) / vb.h) * h,
+              w,
+              h,
+            })
+          }}
+          onPointerDown={(e) => {
+            drag.current = {
+              kind: 'pan',
+              x: e.clientX,
+              y: e.clientY,
+              moved: 0,
+            }
+            ;(e.target as Element).setPointerCapture?.(e.pointerId)
+          }}
+          onPointerMove={(e) => {
+            const d = drag.current
+            if (!d) return
+            const rect = svgRef.current?.getBoundingClientRect()
+            if (!rect) return
+            const dx = ((e.clientX - d.x) / rect.width) * vb.w
+            const dy = ((e.clientY - d.y) / rect.height) * vb.h
+            d.moved += Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y)
+            d.x = e.clientX
+            d.y = e.clientY
+            if (d.kind === 'node' && d.key) {
+              const key = d.key
+              setOffsets((cur) => {
+                const next = new Map(cur)
+                const o = next.get(key) ?? { x: 0, y: 0 }
+                next.set(key, { x: o.x + dx, y: o.y + dy })
+                return next
+              })
+            } else {
+              setView({ x: vb.x - dx, y: vb.y - dy, w: vb.w, h: vb.h })
+            }
+          }}
+          onPointerUp={() => {
+            // Keep the moved distance briefly so trailing click handlers
+            // can tell a drag from a click, then clear.
+            window.setTimeout(() => {
+              drag.current = null
+            }, 0)
+          }}
+        >
+          <defs>
+            <pattern
+              id="memory-grid"
+              width={28}
+              height={28}
+              patternUnits="userSpaceOnUse"
+            >
+              <circle cx={1} cy={1} r={1} className="fill-rule-2" />
+            </pattern>
+          </defs>
+          <rect
+            x={vb.x - vb.w}
+            y={vb.y - vb.h}
+            width={vb.w * 3}
+            height={vb.h * 3}
+            fill="url(#memory-grid)"
+          />
+
+          {layout.edges.map((edge) => (
+            <line
+              key={`${edge.memoryId}:${edge.x2}:${edge.y2}`}
+              x1={edge.x1}
+              y1={edge.y1}
+              x2={edge.x2}
+              y2={edge.y2}
+              className={cn(
+                'stroke-rule',
+                activeId === edge.memoryId && 'stroke-accent',
+              )}
+              strokeWidth={activeId === edge.memoryId ? 1.8 : 1}
+              opacity={activeId && activeId !== edge.memoryId ? 0.35 : 1}
+            />
+          ))}
+
+          {layout.hubs.map((hub) => (
+            // biome-ignore lint/a11y/useSemanticElements: SVG nodes act as buttons
+            <g
+              key={hub.entity}
+              role="button"
+              tabIndex={0}
+              aria-label={`entity ${hub.entity}: ${hub.count} memories`}
+              className="cursor-grab active:cursor-grabbing focus:outline-none"
+              onPointerDown={(e) => startNodeDrag(e, `h:${hub.entity}`)}
+              onClick={() => {
+                if (wasDrag() || autoExpand) return
+                setExpanded((cur) => {
+                  const next = new Set(cur)
+                  if (next.has(hub.entity)) next.delete(hub.entity)
+                  else next.add(hub.entity)
+                  return next
+                })
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  if (autoExpand) return
+                  setExpanded((cur) => {
+                    const next = new Set(cur)
+                    if (next.has(hub.entity)) next.delete(hub.entity)
+                    else next.add(hub.entity)
+                    return next
+                  })
+                }
+              }}
+            >
+              <rect
+                x={hub.x - hub.r}
+                y={hub.y - hub.r}
+                width={hub.r * 2}
+                height={hub.r * 2}
+                className={cn(
+                  'fill-panel stroke-ink-faint',
+                  hub.expanded && 'stroke-accent',
+                )}
+                strokeWidth={1.5}
+              />
+              <text
+                x={hub.x}
+                y={hub.y + 4}
+                textAnchor="middle"
+                className="fill-ink font-mono tabular-nums pointer-events-none"
+                fontSize={11}
+              >
+                {hub.count}
+              </text>
+              {(() => {
+                const label =
+                  hub.entity.length > 24
+                    ? `${hub.entity.slice(0, 22)}…`
+                    : hub.entity
+                const w = label.length * 6.8 + 14
+                return (
+                  <g className="pointer-events-none">
+                    <rect
+                      x={hub.x - w / 2}
+                      y={hub.y - hub.r - 24}
+                      width={w}
+                      height={17}
+                      className="fill-bg stroke-rule"
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={hub.x}
+                      y={hub.y - hub.r - 12}
+                      textAnchor="middle"
+                      fontSize={11}
+                      className={cn(
+                        'font-mono lowercase',
+                        hub.expanded ? 'fill-ink' : 'fill-ink-faint',
+                      )}
+                    >
+                      {label}
+                    </text>
+                  </g>
+                )
+              })()}
+            </g>
+          ))}
+
+          {layout.nodes.map(({ memory, hub, x, y }) => (
+            // biome-ignore lint/a11y/useSemanticElements: SVG nodes act as buttons
+            <g
+              key={`${memory.id}:${x}`}
+              role="button"
+              tabIndex={0}
+              aria-label={`memory: ${memory.text.slice(0, 60)}`}
+              className="cursor-grab active:cursor-grabbing focus:outline-none"
+              onPointerDown={(e) => startNodeDrag(e, `f:${memory.id}:${hub}`)}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (wasDrag()) return
+                setSelectedId((cur) => (cur === memory.id ? null : memory.id))
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setSelectedId((cur) => (cur === memory.id ? null : memory.id))
+                }
+              }}
+              onMouseEnter={() => setHoverId(memory.id)}
+              onMouseLeave={() => setHoverId(null)}
+            >
+              <circle
+                cx={x}
+                cy={y}
+                r={activeId === memory.id ? 8 : 6}
+                className={cn(
+                  'stroke-bg',
+                  memory.pinned ? 'fill-accent' : 'fill-ink',
+                  activeId === memory.id && 'stroke-accent',
+                )}
+                strokeWidth={activeId === memory.id ? 2 : 1.5}
+              />
+              {hoverId === memory.id && selectedId !== memory.id ? (
+                <text
+                  x={x}
+                  y={y - 14}
+                  textAnchor="middle"
+                  fontSize={11}
+                  className="fill-ink font-mono pointer-events-none"
+                  paintOrder="stroke"
+                  stroke="var(--color-bg, #f2f0ed)"
+                  strokeWidth={5}
+                >
+                  {memory.text.length > 52
+                    ? `${memory.text.slice(0, 50)}…`
+                    : memory.text}
+                </text>
+              ) : null}
+            </g>
+          ))}
+
+          {layout.more.map((m) => (
+            // biome-ignore lint/a11y/useSemanticElements: SVG nodes act as buttons
+            <g
+              key={`more:${m.hub}`}
+              role="button"
+              tabIndex={0}
+              aria-label={`${m.hidden} more memories for ${m.hub} — open the memories tab`}
+              className="cursor-pointer focus:outline-none"
+              onClick={onShowFacts}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onShowFacts()
+                }
+              }}
+            >
+              <text
+                x={m.x}
+                y={m.y}
+                textAnchor="middle"
+                fontSize={11}
+                className="fill-accent font-mono lowercase"
+                paintOrder="stroke"
+                stroke="var(--color-bg, #111110)"
+                strokeWidth={4}
+              >
+                +{m.hidden} more
+              </text>
+            </g>
+          ))}
+        </svg>
+
+        <div className="absolute bottom-2 left-2 flex items-center gap-3 font-mono text-[10px] lowercase text-ink-ghost bg-bg/90 border border-rule-2 px-2 py-1">
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 border border-ink-faint bg-panel" />{' '}
+            entity (click to expand)
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-ink" /> memory
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-accent" />{' '}
+            pinned
+          </span>
+          <span>wheel: zoom · drag: pan</span>
+        </div>
+
+        {selected ? (
+          <div className="absolute top-2 right-2 w-72 border border-rule bg-bg p-3 flex flex-col gap-2">
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-mono text-[12px] text-ink leading-snug">
+                {selected.text}
+              </p>
+              <Button
+                variant="icon"
+                size="icon"
+                onClick={() => setSelectedId(null)}
+                aria-label="close memory card"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden />
+              </Button>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {selected.entities.map((entity) => (
+                <Badge key={entity}>{entity}</Badge>
+              ))}
+              <span className="font-mono text-[10px] lowercase text-ink-ghost">
+                {selected.confidence}
+                {selected.corroboration > 0 &&
+                  ` · seen ×${selected.corroboration + 1}`}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onPin(selected)}
+                disabled={busy}
+                className="gap-1"
+              >
+                {selected.pinned ? (
+                  <>
+                    <PinOff className="w-3 h-3" aria-hidden /> unpin
+                  </>
+                ) : (
+                  <>
+                    <Pin className="w-3 h-3" aria-hidden /> pin
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  onDelete(selected)
+                  setSelectedId(null)
+                }}
+                disabled={busy}
+                className="gap-1"
+              >
+                <Trash2 className="w-3 h-3" aria-hidden /> delete
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}

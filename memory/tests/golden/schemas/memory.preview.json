@@ -1,0 +1,239 @@
+{
+  "description": "Full injection dry-run for a hypothetical chat message: the exact system-prompt memory section (rules, budgets, truncation markers), the memories the turn would be handed (post ambient floor and token budget), and the appended message verbatim. Runs the same code as the pre-generate hook.",
+  "function_id": "memory::preview",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "description": "Bank to preview; the configured default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "query": {
+        "description": "The hypothetical user message (what someone would type in chat).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "PreviewRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Confidence": {
+        "description": "How a memory entered the store.",
+        "oneOf": [
+          {
+            "description": "Stated directly in the source conversation.",
+            "enum": [
+              "extracted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Derived by the extraction model rather than stated verbatim.",
+            "enum": [
+              "inferred"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "enum": [
+              "stated"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Memory": {
+        "description": "One memory item. Serialized whole as a `memories.jsonl` line; replay is last-wins by `id`, so an update appends a full record with a bumped `revision` and a delete appends a tombstoned record (`invalid_at` set) — history is never destroyed, only superseded.",
+        "properties": {
+          "confidence": {
+            "$ref": "#/definitions/Confidence"
+          },
+          "corroboration": {
+            "default": 0,
+            "description": "Times this memory was independently re-observed. Boosts recall rank.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entities": {
+            "default": [],
+            "description": "Entity handles used as an exact-match retrieval signal.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Content fingerprint (`fp` + FNV-1a of the normalized text), so re-ingesting the same source reinforces instead of duplicating.",
+            "type": "string"
+          },
+          "invalid_at": {
+            "description": "Set when the memory stopped being true (superseded or deleted). The record stays on disk and remains queryable with `include_superseded: true`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pinned": {
+            "default": false,
+            "description": "Pinned memories are never touched by any automatic path (consolidation, decay); only an explicit `memory::pin`/`memory::update` changes them.",
+            "type": "boolean"
+          },
+          "revision": {
+            "default": 0,
+            "description": "Bumped on every appended revision of this id; replay keeps the highest.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Provenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "superseded_by": {
+            "description": "Memory id that replaced this one, when superseded by content.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Topical labels for filtering WITHIN a bank (\"iii\", \"workers\", \"billing\") — organization, not ranking. Normalized lowercase, capped like entities. Old records without the field load as untagged.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confidence",
+          "created_at",
+          "id",
+          "text",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PreviewMemory": {
+        "properties": {
+          "memory": {
+            "$ref": "#/definitions/Memory"
+          },
+          "score": {
+            "description": "Recall score; 0.0 for memories added by the ambient floor.",
+            "format": "float",
+            "type": "number"
+          }
+        },
+        "required": [
+          "memory",
+          "score"
+        ],
+        "type": "object"
+      },
+      "Provenance": {
+        "description": "Where a memory came from. Every extracted memory points back into session-manager; nothing in memory duplicates the transcript store.",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "bank": {
+        "type": "string"
+      },
+      "memories": {
+        "description": "Memories the turn would be handed, post ambient floor and token budget, in injection order.",
+        "items": {
+          "$ref": "#/definitions/PreviewMemory"
+        },
+        "type": "array"
+      },
+      "message": {
+        "description": "The appended `<memory>` message body, verbatim; absent when no memory fits the budget.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "retrieval": {
+        "description": "Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`).",
+        "type": "string"
+      },
+      "rules": {
+        "description": "Rules included, and whether any were cut by `max_rule_chars`.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "rules_truncated": {
+        "type": "boolean"
+      },
+      "system_prompt_section": {
+        "description": "The memory section appended to the system prompt (ambient header + rules), exactly as injected — truncation markers included.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "bank",
+      "memories",
+      "retrieval",
+      "rules",
+      "rules_truncated",
+      "system_prompt_section"
+    ],
+    "title": "PreviewResponse",
+    "type": "object"
+  }
+}

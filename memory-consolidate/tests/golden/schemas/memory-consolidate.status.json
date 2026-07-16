@@ -1,0 +1,45 @@
+{
+  "description": "Schedule and last-pass report: enabled, interval, last run, whether a pass is due, and the most recent per-bank results.",
+  "function_id": "memory-consolidate::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "dry_run": {
+        "type": "boolean"
+      },
+      "due": {
+        "description": "A scheduled pass is overdue right now.",
+        "type": "boolean"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "interval_hours": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "last_report": true,
+      "last_run": {
+        "description": "Milliseconds since epoch of the last completed pass; 0 = never.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "dry_run",
+      "due",
+      "enabled",
+      "interval_hours",
+      "last_run"
+    ],
+    "title": "StatusResponse",
+    "type": "object"
+  }
+}

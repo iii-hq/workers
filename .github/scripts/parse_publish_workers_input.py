@@ -20,6 +20,7 @@ ALLOWED_WORKERS: tuple[str, ...] = (
     "iii-directory",
     "image-resize",
     "mcp",
+    "memory",
     "scrapling",
     "shell",
     "storage",

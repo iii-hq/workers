@@ -26,6 +26,11 @@ pub const ON_ROUTER_READY_ID: &str = "provider::openai::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
     "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
+pub const EMBED_ID: &str = "provider::openai::embed";
+pub const EMBED_DESC: &str =
+    "Batch text embeddings via the OpenAI embeddings endpoint, using the router-resolved \
+     credential. One vector per input, order preserved. Default model text-embedding-3-small.";
+
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
 pub struct FunctionSpec {
@@ -61,5 +66,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ProviderStreamInput, ProviderStreamOutput>(STREAM_ID, STREAM_DESC),
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
+        spec::<crate::embed::EmbedRequest, crate::embed::EmbedResponse>(EMBED_ID, EMBED_DESC),
     ]
 }

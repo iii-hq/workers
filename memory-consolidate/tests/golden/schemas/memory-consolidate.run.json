@@ -1,0 +1,166 @@
+{
+  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup applied strictly through memory::supersede + memory::save; pinned memories are untouchable. dry_run plans without writing.",
+  "function_id": "memory-consolidate::run",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "description": "Consolidate only this bank (must be in the configured allowlist, when one is set).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "dry_run": {
+        "default": null,
+        "description": "Override the configured dry_run for this call.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "title": "RunRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BankReport": {
+        "properties": {
+          "bank": {
+            "type": "string"
+          },
+          "capped": {
+            "description": "Work left behind by the per-run cap; the next pass picks it up.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/definitions/PlannedGroup"
+            },
+            "type": "array"
+          },
+          "llm_merged": {
+            "description": "Reorder groups merged after the LLM judge confirmed equivalence.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "promoted": {
+            "description": "Standing-instruction lines the judge promoted into the bank's `learned` rule.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reinforced": {
+            "description": "Winner reinforcements applied (one per absorbed duplicate).",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scanned": {
+            "description": "Live memories scanned.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "superseded": {
+            "description": "Supersedes actually applied (0 on dry runs).",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bank",
+          "groups",
+          "reinforced",
+          "scanned",
+          "superseded"
+        ],
+        "type": "object"
+      },
+      "PlannedGroup": {
+        "description": "One planned merge: `losers` retire in favor of `winner`.",
+        "properties": {
+          "loser_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "loser_texts": {
+            "description": "Texts of the losers, aligned with `loser_ids` (the judge tier and human review need the words, not just ids).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "report_only": {
+            "description": "True = surfaced for review only (token-set match: same words, different order — potentially different meaning). Never written automatically.",
+            "type": "boolean"
+          },
+          "skipped_pinned": {
+            "description": "Losers left alone because they are pinned (pinned is untouchable).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "winner_id": {
+            "type": "string"
+          },
+          "winner_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "loser_ids",
+          "loser_texts",
+          "winner_id",
+          "winner_text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "banks": {
+        "items": {
+          "$ref": "#/definitions/BankReport"
+        },
+        "type": "array"
+      },
+      "checkpointed": {
+        "description": "The pass completed cleanly AND its last-run checkpoint persisted. False = the schedule will retry the pass next check.",
+        "type": "boolean"
+      },
+      "dry_run": {
+        "type": "boolean"
+      },
+      "superseded": {
+        "description": "Total supersedes applied across banks this pass.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "banks",
+      "checkpointed",
+      "dry_run",
+      "superseded"
+    ],
+    "title": "RunResponse",
+    "type": "object"
+  }
+}

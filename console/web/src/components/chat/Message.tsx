@@ -12,6 +12,7 @@ import type {
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { AttachmentChip } from './AttachmentChip'
+import { MemoryChip } from './MemoryChip'
 import { ThoughtMessage } from './ThoughtMessage'
 
 interface MessageProps {
@@ -292,7 +293,7 @@ function AssistantMessage({ message }: { message: AssistantMessageType }) {
   const showCaret = !!message.streaming
   return (
     <article className="flex flex-col gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
         <Prompt symbol=">">assistant</Prompt>
         {message.model ? (
           <span className="text-ink-ghost">· {message.model}</span>
@@ -300,6 +301,7 @@ function AssistantMessage({ message }: { message: AssistantMessageType }) {
         {message.mode ? (
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
+        {message.memory ? <MemoryChip memory={message.memory} /> : null}
       </header>
       <div className="pr-1">
         {message.content ? (

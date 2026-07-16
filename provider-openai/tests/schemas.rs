@@ -42,6 +42,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::openai::stream",
             "provider::openai::refresh_models",
             "provider::openai::on_router_ready",
+            "provider::openai::embed",
         ]
     );
 }

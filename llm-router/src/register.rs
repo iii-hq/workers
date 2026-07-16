@@ -125,6 +125,12 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .metadata(internal_meta()),
     );
     iii.register_function(
+        surface::EMBED_ID,
+        RegisterFunction::new_async(crate::embed::make_embed(iii.clone(), registry.clone()))
+            .description(surface::EMBED_DESC)
+            .metadata(internal_meta()),
+    );
+    iii.register_function(
         surface::MODELS_LIST_ID,
         RegisterFunction::new_async(make_models_list(catalog.clone()))
             .description(surface::MODELS_LIST_DESC),

@@ -11,6 +11,7 @@ export type View =
   | 'workers'
   | 'worktrees'
   | 'browser'
+  | 'memory'
 
 export interface WorkersConfigurationRoute {
   configurationId: string | null
@@ -93,6 +94,9 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/worktrees') {
     return 'worktrees'
   }
+  if (hash === '#/memory') {
+    return 'memory'
+  }
   if (hash === '#/browser' || hash.startsWith('#/browser/')) {
     return 'browser'
   }
@@ -124,6 +128,8 @@ function hashFor(view: View): string {
       return '#/worktrees'
     case 'browser':
       return '#/browser'
+    case 'memory':
+      return '#/memory'
     case 'configuration':
       return '#/configuration'
   }

@@ -43,6 +43,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "router::chat",
             "router::complete",
             "router::abort",
+            "router::embed",
             "router::models::list",
             "router::models::get",
             "router::models::budget",

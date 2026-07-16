@@ -22,6 +22,7 @@ import {
   isHarnessAvailable,
   useHarnessStatus,
 } from '@/hooks/use-harness-status'
+import { isMemoryAvailable, useMemoryStatus } from '@/hooks/use-memory-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
 import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import {
@@ -85,6 +86,12 @@ interface ConversationsContextValue extends ConversationsApi {
    * session-start notices. Only meaningful on the real backend.
    */
   browserAvailable: boolean
+  /**
+   * Whether the optional `memory` worker is connected. Gates the Memory
+   * page nav entry and its `memory::*` RPC. Only meaningful on the real
+   * backend.
+   */
+  memoryAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -115,6 +122,9 @@ export function ConversationsProvider({
   )
   const browserAvailable = isBrowserAvailable(
     useBrowserStatus(backend.id === 'real'),
+  )
+  const memoryAvailable = isMemoryAvailable(
+    useMemoryStatus(backend.id === 'real'),
   )
   const {
     modelOptions,
@@ -164,6 +174,7 @@ export function ConversationsProvider({
     shellAvailable,
     worktreeAvailable,
     browserAvailable,
+    memoryAvailable,
   }
 
   return (

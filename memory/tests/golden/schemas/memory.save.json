@@ -1,0 +1,219 @@
+{
+  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. Use when the user says `remember this`.",
+  "function_id": "memory::save",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "description": "Target bank; the configured default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "entities": {
+        "default": [],
+        "description": "Entity handles (people/projects/tools) used as a retrieval signal.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "pinned": {
+        "default": false,
+        "type": "boolean"
+      },
+      "session_id": {
+        "default": null,
+        "description": "Provenance session, when saved on behalf of a conversation.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tags": {
+        "default": [],
+        "description": "Topical labels for filtering within the bank (organization, not ranking).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "text": {
+        "description": "The memory, one self-contained sentence.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "title": "SaveRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Confidence": {
+        "description": "How a memory entered the store.",
+        "oneOf": [
+          {
+            "description": "Stated directly in the source conversation.",
+            "enum": [
+              "extracted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Derived by the extraction model rather than stated verbatim.",
+            "enum": [
+              "inferred"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "enum": [
+              "stated"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Memory": {
+        "description": "One memory item. Serialized whole as a `memories.jsonl` line; replay is last-wins by `id`, so an update appends a full record with a bumped `revision` and a delete appends a tombstoned record (`invalid_at` set) — history is never destroyed, only superseded.",
+        "properties": {
+          "confidence": {
+            "$ref": "#/definitions/Confidence"
+          },
+          "corroboration": {
+            "default": 0,
+            "description": "Times this memory was independently re-observed. Boosts recall rank.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entities": {
+            "default": [],
+            "description": "Entity handles used as an exact-match retrieval signal.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Content fingerprint (`fp` + FNV-1a of the normalized text), so re-ingesting the same source reinforces instead of duplicating.",
+            "type": "string"
+          },
+          "invalid_at": {
+            "description": "Set when the memory stopped being true (superseded or deleted). The record stays on disk and remains queryable with `include_superseded: true`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pinned": {
+            "default": false,
+            "description": "Pinned memories are never touched by any automatic path (consolidation, decay); only an explicit `memory::pin`/`memory::update` changes them.",
+            "type": "boolean"
+          },
+          "revision": {
+            "default": 0,
+            "description": "Bumped on every appended revision of this id; replay keeps the highest.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Provenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "superseded_by": {
+            "description": "Memory id that replaced this one, when superseded by content.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Topical labels for filtering WITHIN a bank (\"iii\", \"workers\", \"billing\") — organization, not ranking. Normalized lowercase, capped like entities. Old records without the field load as untagged.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confidence",
+          "created_at",
+          "id",
+          "text",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "Provenance": {
+        "description": "Where a memory came from. Every extracted memory points back into session-manager; nothing in memory duplicates the transcript store.",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "created": {
+        "description": "False when the text fingerprint matched an existing memory (it was reinforced instead).",
+        "type": "boolean"
+      },
+      "memory": {
+        "$ref": "#/definitions/Memory"
+      }
+    },
+    "required": [
+      "created",
+      "memory"
+    ],
+    "title": "SaveResponse",
+    "type": "object"
+  }
+}

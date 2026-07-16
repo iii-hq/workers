@@ -25,6 +25,8 @@ on:
       - 'image-resize/v*'
       - 'llm-router/v*'
       - 'mcp/v*'
+      - 'memory/v*'
+      - 'memory-consolidate/v*'
       - 'opencode/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'

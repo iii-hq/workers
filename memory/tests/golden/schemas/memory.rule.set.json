@@ -1,0 +1,49 @@
+{
+  "description": "Create or replace one rule (atomic write; empty content removes it). Rules are plain markdown files under the bank's rules/ folder.",
+  "function_id": "memory::rule::set",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "description": "Bank to write into; the configured default when omitted. Created on first use.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "content": {
+        "description": "Markdown content. Empty removes the rule.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Rule name, `[a-z0-9][a-z0-9_-]{0,63}` (it becomes `<name>.md`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "name"
+    ],
+    "title": "RuleSetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "exists": {
+        "description": "False when the empty content removed the rule.",
+        "type": "boolean"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "exists",
+      "ok"
+    ],
+    "title": "RuleSetResponse",
+    "type": "object"
+  }
+}

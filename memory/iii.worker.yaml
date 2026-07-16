@@ -1,0 +1,14 @@
+iii: v1
+name: memory
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: memory
+description: Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity recall, pinning, and supersede-never-delete history. Plain files on disk; every operation is a traced function.
+
+dependencies:
+  configuration: "^0.21.3"
+  session-manager: "^1.0.0"
+  llm-router: "^1.0.0"
+  iii-state: "^0.21.3"
+  queue: "^0.2.0"

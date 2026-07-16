@@ -1,0 +1,222 @@
+{
+  "description": "Page through a bank's memories, newest first. `include_superseded` shows history too.",
+  "function_id": "memory::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "include_superseded": {
+        "default": null,
+        "description": "Include superseded/tombstoned records (the history view).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "limit": {
+        "default": null,
+        "description": "Page size, default 50, max 500.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "default": null,
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "tag": {
+        "default": null,
+        "description": "Only memories carrying this tag.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Confidence": {
+        "description": "How a memory entered the store.",
+        "oneOf": [
+          {
+            "description": "Stated directly in the source conversation.",
+            "enum": [
+              "extracted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Derived by the extraction model rather than stated verbatim.",
+            "enum": [
+              "inferred"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "enum": [
+              "stated"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Memory": {
+        "description": "One memory item. Serialized whole as a `memories.jsonl` line; replay is last-wins by `id`, so an update appends a full record with a bumped `revision` and a delete appends a tombstoned record (`invalid_at` set) — history is never destroyed, only superseded.",
+        "properties": {
+          "confidence": {
+            "$ref": "#/definitions/Confidence"
+          },
+          "corroboration": {
+            "default": 0,
+            "description": "Times this memory was independently re-observed. Boosts recall rank.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entities": {
+            "default": [],
+            "description": "Entity handles used as an exact-match retrieval signal.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Content fingerprint (`fp` + FNV-1a of the normalized text), so re-ingesting the same source reinforces instead of duplicating.",
+            "type": "string"
+          },
+          "invalid_at": {
+            "description": "Set when the memory stopped being true (superseded or deleted). The record stays on disk and remains queryable with `include_superseded: true`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pinned": {
+            "default": false,
+            "description": "Pinned memories are never touched by any automatic path (consolidation, decay); only an explicit `memory::pin`/`memory::update` changes them.",
+            "type": "boolean"
+          },
+          "revision": {
+            "default": 0,
+            "description": "Bumped on every appended revision of this id; replay keeps the highest.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Provenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "superseded_by": {
+            "description": "Memory id that replaced this one, when superseded by content.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Topical labels for filtering WITHIN a bank (\"iii\", \"workers\", \"billing\") — organization, not ranking. Normalized lowercase, capped like entities. Old records without the field load as untagged.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confidence",
+          "created_at",
+          "id",
+          "text",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "Provenance": {
+        "description": "Where a memory came from. Every extracted memory points back into session-manager; nothing in memory duplicates the transcript store.",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "memories": {
+        "items": {
+          "$ref": "#/definitions/Memory"
+        },
+        "type": "array"
+      },
+      "total": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "memories",
+      "total"
+    ],
+    "title": "ListResponse",
+    "type": "object"
+  }
+}

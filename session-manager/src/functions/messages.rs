@@ -33,6 +33,11 @@ pub struct MessageItem {
     pub message: Option<AgentMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomPayload>,
+    /// The entry's writer-supplied origin (turn correlation plus hook
+    /// annotations, e.g. which memory bank and facts fed the generate).
+    /// Absent on custom entries and on entries written without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::types::JsonMap>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]

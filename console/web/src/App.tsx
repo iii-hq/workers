@@ -22,6 +22,7 @@ import { buildViewOptions } from '@/lib/nav-options'
 import { cn } from '@/lib/utils'
 import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
+import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import { Worktrees } from '@/pages/Worktrees'
@@ -97,6 +98,8 @@ export function App() {
               <Worktrees />
             ) : view === 'browser' ? (
               <Browser />
+            ) : view === 'memory' ? (
+              <Memory />
             ) : (
               <TracesV2 />
             )}
@@ -126,8 +129,13 @@ function Header({
   // Optional-worker entries appear only while their worker is present; a
   // direct #/worktrees or #/browser hit still lands on that page's install
   // notice.
-  const { worktreeAvailable, browserAvailable } = useConversationsCtx()
-  const viewOptions = buildViewOptions(worktreeAvailable, browserAvailable)
+  const { worktreeAvailable, browserAvailable, memoryAvailable } =
+    useConversationsCtx()
+  const viewOptions = buildViewOptions(
+    worktreeAvailable,
+    browserAvailable,
+    memoryAvailable,
+  )
   const onConsoleSettings = view === 'configuration'
   return (
     <header className="flex items-center justify-between pl-3 pr-6 h-12 border-b border-rule shrink-0">
