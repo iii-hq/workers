@@ -24,6 +24,7 @@ on:
       - 'lsp/v*'
       - 'image-resize/v*'
       - 'llm-router/v*'
+      - 'fp/v*'
       - 'mcp/v*'
       - 'memory/v*'
       - 'memory-consolidate/v*'

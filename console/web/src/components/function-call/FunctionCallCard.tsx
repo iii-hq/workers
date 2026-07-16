@@ -14,6 +14,7 @@ import {
   HarnessFunctionIdLabel,
   HarnessToolView,
 } from '@/components/chat/harness'
+import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   SandboxFunctionIdLabel,
@@ -237,6 +238,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (HarnessToolView.isHarnessFunction(functionId)) {
     return <HarnessFunctionIdLabel functionId={functionId} />
   }
+  if (FpToolView.isFpFunction(functionId)) {
+    return <FpFunctionIdLabel functionId={functionId} />
+  }
   if (StateToolView.isStateFunction(functionId)) {
     return <StateFunctionIdLabel functionId={functionId} />
   }
@@ -288,6 +292,7 @@ export function FunctionCallCard({
     WorkflowToolView.tryRenderPreview(message) ??
     RouterToolView.tryRenderPreview(message) ??
     HarnessToolView.tryRenderPreview(message) ??
+    FpToolView.tryRenderPreview(message) ??
     StateToolView.tryRenderPreview(message) ??
     BrowserToolView.tryRenderPreview(message)
   const customTerminal = !pending
@@ -302,6 +307,7 @@ export function FunctionCallCard({
       WorkflowToolView.tryRender(message) ??
       RouterToolView.tryRender(message) ??
       HarnessToolView.tryRender(message) ??
+      FpToolView.tryRender(message) ??
       StateToolView.tryRender(message) ??
       BrowserToolView.tryRender(message))
     : null
