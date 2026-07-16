@@ -8,3 +8,4 @@ rules:
   - '!provider::llamacpp::stream'
   - '!provider::llamacpp::refresh_models'
   - '!provider::llamacpp::on_router_ready'
+  - '!provider::llamacpp::embed'
