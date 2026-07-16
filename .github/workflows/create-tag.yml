@@ -31,6 +31,8 @@ on:
           - image-resize
           - llm-router
           - mcp
+          - memory
+          - memory-consolidate
           - opencode
           - pi
           - provider-anthropic
