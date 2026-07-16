@@ -1,6 +1,6 @@
 # provider-openai
 
-OpenAI Responses provider worker behind [llm-router](../llm-router/), with a
+OpenAI Responses provider worker behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router), with a
 Chat Completions compatibility path for custom gateways.
 Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::openai::stream`

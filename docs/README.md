@@ -2,7 +2,7 @@
 
 This folder collects **procedures** (SOPs) and **shared architecture** for
 workers in this monorepo. Per-worker deep docs stay inside each worker folder
-(e.g. [`session-manager/architecture/`](../session-manager/architecture/)).
+(e.g. [`session-manager/architecture/`](https://github.com/iii-hq/workers/tree/main/session-manager/architecture)).
 
 ## I want to…
 
@@ -12,11 +12,11 @@ workers in this monorepo. Per-worker deep docs stay inside each worker folder
 | Scaffold a Rust `deploy: binary` worker | [`sops/binary-worker.md`](sops/binary-worker.md) |
 | Ship a version to the registry | [`sops/release.md`](sops/release.md) |
 | Fix a failed release | [`sops/release.md`](sops/release.md) § Troubleshooting |
-| Write a consumer `README.md` | [`worker-readme.md`](../worker-readme.md) |
-| Author `skills/SKILL.md` | [`DOCUMENTATION_GUIDELINES.md`](../DOCUMENTATION_GUIDELINES.md) |
+| Write a consumer `README.md` | [`worker-readme.md`](https://github.com/iii-hq/workers/blob/main/worker-readme.md) |
+| Author `skills/SKILL.md` | [`DOCUMENTATION_GUIDELINES.md`](https://github.com/iii-hq/workers/blob/main/DOCUMENTATION_GUIDELINES.md) |
 | Understand `iii.worker.yaml` fields | [`architecture/iii-worker-yaml.md`](architecture/iii-worker-yaml.md) |
 | Understand CI gates on a PR | [`architecture/testing-and-ci.md`](architecture/testing-and-ci.md) |
-| Integrate with session-manager | [`session-manager/architecture/integration.md`](../session-manager/architecture/integration.md) |
+| Integrate with session-manager | [`session-manager/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/session-manager/architecture/integration.md) |
 
 ## Layout
 
@@ -38,6 +38,6 @@ docs/
 
 ## Related docs (repo root)
 
-- [`worker-readme.md`](../worker-readme.md) — consumer README contract
-- [`DOCUMENTATION_GUIDELINES.md`](../DOCUMENTATION_GUIDELINES.md) — `skills/SKILL.md` authoring
-- [`tech-specs/`](../tech-specs/) — product-level specs before or alongside implementation
+- [`worker-readme.md`](https://github.com/iii-hq/workers/blob/main/worker-readme.md) — consumer README contract
+- [`DOCUMENTATION_GUIDELINES.md`](https://github.com/iii-hq/workers/blob/main/DOCUMENTATION_GUIDELINES.md) — `skills/SKILL.md` authoring
+- [`tech-specs/`](https://github.com/iii-hq/workers/tree/main/tech-specs) — product-level specs before or alongside implementation

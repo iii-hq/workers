@@ -1,7 +1,7 @@
 # provider-llamacpp
 
 llama.cpp server ([`llama-server`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md))
-Chat Completions provider worker behind [llm-router](../llm-router/).
+Chat Completions provider worker behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router).
 Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::llamacpp::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and

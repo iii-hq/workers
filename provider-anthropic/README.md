@@ -1,6 +1,6 @@
 # provider-anthropic
 
-Claude models behind [llm-router](../llm-router/). Install this worker next
+Claude models behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router). Install this worker next
 to the router, give it an API key, and the Anthropic catalog — streaming,
 extended thinking, tool use, vision, automatic prompt caching — appears
 behind the router's single front door (`router::chat` / `router::complete`).
@@ -46,7 +46,7 @@ const res = await iii.trigger('router::complete', {
 ```
 
 For token-by-token streaming, call `router::chat` with an iii channel — the
-walkthrough lives in [llm-router's Quickstart](../llm-router/README.md).
+walkthrough lives in [llm-router's Quickstart](https://github.com/iii-hq/workers/blob/main/llm-router/README.md).
 Request extended thinking with `thinking_level`; the worker maps the level
 to an Anthropic thinking budget from the model's catalog record. `xhigh`
 degrades to `high` on models that don't support it, and the level is

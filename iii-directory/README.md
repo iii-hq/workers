@@ -155,7 +155,7 @@ paths / prompt names that were materialised in this run.
 
 After every successful download the worker fires the
 `directory::skills::on-change` and/or `directory::prompts::on-change`
-trigger types so that subscribers like the [`mcp`](../mcp/) worker can
+trigger types so that subscribers like the [`mcp`](https://github.com/iii-hq/workers/tree/main/mcp) worker can
 forward MCP `notifications/list_changed` to their clients.
 
 ---

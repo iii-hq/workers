@@ -8,6 +8,15 @@ and it is the page on the registry. Treat it as a **how-to**, not a
 reference. The reference lives in the code — rustdoc, source links,
 `iii worker info`, IDE autocomplete on function ids.
 
+## Links must be absolute
+
+The README renders on the registry page, not just on GitHub. A relative
+link that escapes the worker folder (`../tech-specs/...`, `../console`)
+resolves against the registry origin and 404s there. Link to anything
+outside the worker folder with a full GitHub URL
+(`https://github.com/iii-hq/workers/tree/main/<dir>` or
+`.../blob/main/<file>`).
+
 ## What the README answers
 
 In order, three questions:

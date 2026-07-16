@@ -7,7 +7,7 @@ description, coarse status, app-defined metadata). Any worker or client
 appends and reads over the bus; every mutation fires a trigger type
 consumers bind to, so a chat UI, bot, or dashboard renders live with no
 polling and no separate publish call. It runs no agent logic — it is
-the conversation database the [harness](../harness) family drives, and
+the conversation database the [harness](https://github.com/iii-hq/workers/tree/main/harness) family drives, and
 it is independently useful as a real-time chat store for any app.
 
 ## Install

@@ -6,7 +6,7 @@ model's usable token budget. It owns *what the model sees this turn* — token
 counting, function-result pruning, and history compaction (summarisation) —
 and nothing else. It is stateless with respect to conversation storage: pass
 messages in, get results back, persist them yourself (or with
-[`session-manager`](../session-manager/)). Summarisation and model-limit
+[`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager)). Summarisation and model-limit
 lookups go through `llm-router` when installed; token counting and pruning
 work standalone.
 
