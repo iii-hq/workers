@@ -48,15 +48,16 @@ are fully captured.
 |---|---|---|
 | C-E2E-001 | `scenarios/streamed-text` | green — streamed text reaches durable completion |
 | C-E2E-002 | `scenarios/exactly-once-function` | green — allowed function executes exactly once |
-| C-E2E-505 | `scenarios/hold-mutation-505` | quarantined — [iii-hq/workers#505](https://github.com/iii-hq/workers/issues/505) |
-| C-E2E-506 | `scenarios/hook-held-release-506` | quarantined — [iii-hq/workers#506](https://github.com/iii-hq/workers/issues/506) |
-| C-E2E-507 | `scenarios/crash-recovery-507` | quarantined — [iii-hq/workers#507](https://github.com/iii-hq/workers/issues/507) |
+| C-E2E-505 | `scenarios/hold-mutation-505` | regression gate for [iii-hq/workers#505](https://github.com/iii-hq/workers/issues/505); quarantined until its fix PR merges |
+| C-E2E-506 | `scenarios/hook-held-release-506` | regression gate for [iii-hq/workers#506](https://github.com/iii-hq/workers/issues/506); quarantined until its fix PR merges |
+| C-E2E-507 | `scenarios/crash-recovery-507` | regression gate for [iii-hq/workers#507](https://github.com/iii-hq/workers/issues/507); quarantined until its fix PR merges |
 
-Quarantined scenarios reproduce a known-open defect: they assert the
-EXPECTED behavior, fail until the fix lands, are excluded from
-`--scenario all`, and run by explicit id. Unquarantine (delete the
-`quarantine: true` line) when the fix merges — the repro becomes the
-permanent regression gate.
+Quarantine policy: a scenario reproducing a known-open defect asserts the
+EXPECTED behavior, is marked `quarantine: true` (excluded from
+`--scenario all`, runnable by explicit id), and is un-quarantined in the
+same PR as its fix — landing the fix and its permanent regression gate
+atomically. The CI job runs `--scenario all` on every PR, so an
+un-quarantined scenario gates from the moment it merges.
 
 ## Invariant registry (v1)
 

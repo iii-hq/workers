@@ -385,43 +385,19 @@ jobs:
   # Harness conformance E2E (non-required): deterministic public-path
   # regression scenarios against the engine pinned in
   # harness/evals/conformance/engine.lock (see that crate's README; the
-  # architecture spec lives in the iii repo).
-  # The engine is BUILT from the pinned source, never downloaded; a
-  # cache hit is still re-hashed before use. "Non-required" is enforced
-  # by branch protection, not continue-on-error.
+  # architecture spec lives in the iii repo). Runs on EVERY PR — the
+  # suite is the harness stack's public-contract gate, and engine/worker
+  # builds are cached. The engine is BUILT from the pinned source, never
+  # downloaded; a cache hit is still re-hashed before use. "Non-required"
+  # is enforced by branch protection, not continue-on-error.
   # ──────────────────────────────────────────────────────────────
   harness-conformance:
     name: harness conformance e2e
-    needs: discover
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check conformance-relevant paths changed
-        id: gate
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          changed=$(git diff --name-only "origin/$BASE_REF"...HEAD -- \
-            'harness/**' 'session-manager/**' 'context-manager/**' 'queue/**' \
-            'llm-router/src/surface.rs' 'llm-router/src/types/**' 'llm-router/src/chat/**' \
-            '.github/workflows/ci.yml')
-          if [[ -n "$changed" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No conformance-relevant changes; skipping."
-          fi
 
       - name: Read and validate engine.lock
-        if: steps.gate.outputs.run == 'true'
         id: lock
         run: |
           set -euo pipefail
@@ -443,7 +419,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout pinned engine source
-        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.lock.outputs.repository }}
@@ -451,22 +426,18 @@ jobs:
           path: target/conformance-engine-src
 
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.gate.outputs.run == 'true'
 
       - name: Cache engine build
-        if: steps.gate.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: target/conformance-engine-src/target
           key: conformance-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/conformance-engine-src/Cargo.lock') }}
 
       - name: Build pinned engine
-        if: steps.gate.outputs.run == 'true'
         working-directory: target/conformance-engine-src
         run: cargo build --locked --release -p ${{ steps.lock.outputs.package }}
 
       - name: Record engine digest
-        if: steps.gate.outputs.run == 'true'
         id: engine
         run: |
           set -euo pipefail
@@ -476,7 +447,6 @@ jobs:
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
       - uses: Swatinem/rust-cache@v2
-        if: steps.gate.outputs.run == 'true'
         with:
           workspaces: |
             harness -> target
@@ -486,12 +456,14 @@ jobs:
             iii-directory -> target
             harness/evals/conformance -> target
 
+      - name: Conformance crate unit tests
+        run: cargo test --manifest-path harness/evals/conformance/Cargo.toml
+
       - name: Run conformance scenarios
-        if: steps.gate.outputs.run == 'true'
         run: make -C harness conformance-e2e III_BIN="${{ steps.engine.outputs.bin }}"
 
       - name: Upload compact results
-        if: steps.gate.outputs.run == 'true' && always()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: conformance-results
@@ -499,7 +471,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload full non-pass artifacts
-        if: steps.gate.outputs.run == 'true' && failure()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: conformance-artifacts
