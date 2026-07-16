@@ -80,6 +80,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Deprecation banner. `iii-directory` has been renamed to `directory`;
+    // this is the final release under the old name. Emitted at boot (skipped
+    // in `--manifest` mode above so machine-readable output stays clean).
+    tracing::warn!(
+        "DEPRECATED: `iii-directory` is now `directory`. v{} is the FINAL \
+         release under the `iii-directory` name and will receive no further \
+         updates. Migrate to the `directory` worker: `iii worker add directory`.",
+        env!("CARGO_PKG_VERSION")
+    );
+
     // Connect to the engine first so the configuration RPCs are reachable.
     let iii = register_worker(
         &cli.url,

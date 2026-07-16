@@ -1,5 +1,17 @@
 # iii-directory
 
+> [!WARNING]
+> **`iii-directory` is deprecated and has been renamed to `directory`.**
+> **This is the final release under the `iii-directory` name** — it will
+> receive no further updates. Migrate to the `directory` worker:
+>
+> ```bash
+> iii worker add directory
+> ```
+>
+> The public API is unchanged (the function namespace was already
+> `directory::*`); only the worker/package name changes.
+
 Workers registry HTTP proxy and filesystem-backed skill + prompt
 reader for the [iii engine](https://github.com/iii-hq/iii). Every
 public function sits under a single `directory::*` namespace, split

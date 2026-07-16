@@ -4,7 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-directory
-description: Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader.
+description: "[DEPRECATED — renamed to `directory`; final iii-directory release] Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader."
 
 dependencies:
   configuration: "^0.21.6"
