@@ -5,7 +5,7 @@ isolated, locked worktree off any ref and registers it in a cross-agent
 registry; agents work inside it through their turn's filesystem scope
 (`metadata.fs_scope.root`); `worktree::land`
 rebases the branch onto a target, runs an optional test gate through the
-[shell](../shell) worker, fast-forwards the target with an atomic
+[shell](https://github.com/iii-hq/workers/tree/main/shell) worker, fast-forwards the target with an atomic
 compare-and-swap, and cleans up. Every lifecycle change emits a trigger type
 sibling workers can subscribe to, so a Slack bot can announce lands or a
 harness can react when a sibling's branch merges.

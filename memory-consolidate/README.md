@@ -1,6 +1,6 @@
 # memory-consolidate
 
-Scheduled hygiene sibling of the [`memory`](../memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. Strictly supersede-only through memory's public functions, pinned memories untouchable, every change visible as a `memory::item-changed` event. Install, stop, or remove it without touching stored memory.
+Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. Strictly supersede-only through memory's public functions, pinned memories untouchable, every change visible as a `memory::item-changed` event. Install, stop, or remove it without touching stored memory.
 
 ## Install
 

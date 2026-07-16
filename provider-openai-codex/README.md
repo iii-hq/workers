@@ -1,7 +1,7 @@
 # provider-openai-codex
 
 OpenAI **Codex (ChatGPT subscription)** provider worker behind
-[llm-router](../llm-router/). It lets the stack generate against a ChatGPT/Codex
+[llm-router](https://github.com/iii-hq/workers/tree/main/llm-router). It lets the stack generate against a ChatGPT/Codex
 subscription (billed to the plan, "Sign in with ChatGPT") instead of a
 pay-per-token API key, by speaking OpenAI's **Responses API** at the Codex
 backend.

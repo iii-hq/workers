@@ -144,7 +144,7 @@ within seconds — no restart.
 ## Security model
 
 The agent-callable surface is governed by the engine-wide permission policy
-(repo-root [`iii-permissions.yaml`](../iii-permissions.yaml)), not a per-worker
+(repo-root [`iii-permissions.yaml`](https://github.com/iii-hq/workers/blob/main/iii-permissions.yaml)), not a per-worker
 file. In-run agents may only **read** the catalog and provider list:
 
 - **Allowed:** `router::models::list`, `router::models::get`,
@@ -209,9 +209,9 @@ and serves it (unless the config slice sets an override) via
 `router::system_prompt::get`; the harness fetches it at turn creation.
 
 The first real provider implementing this protocol is
-[`provider-anthropic/`](../provider-anthropic/) — useful as a reference
+[`provider-anthropic/`](https://github.com/iii-hq/workers/tree/main/provider-anthropic) — useful as a reference
 implementation alongside the scripted provider in the integration tests.
-[`provider-openai/`](../provider-openai/) follows the same structure for the
+[`provider-openai/`](https://github.com/iii-hq/workers/tree/main/provider-openai) follows the same structure for the
 OpenAI Chat Completions API (native structured output, reasoning_effort).
 
 ## Local development & testing

@@ -15,7 +15,7 @@ listener, while at the boundary it:
 - **rewrites the results of the eight `engine::*` discovery functions** so a
   caller only ever sees the surface it is allowed to invoke.
 
-It is the [`console`](../console) reverse-proxy pattern (`src/proxy.rs`: one
+It is the [`console`](https://github.com/iii-hq/workers/tree/main/console) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection) with an RBAC interceptor
 spliced into the pump and a second proxied route for `/ws/channels/{id}`.
 
@@ -27,7 +27,7 @@ out-of-process *home* for the same contract (it can front a remote or managed
 engine, scale and harden independently, and shrink an auth bug's blast radius
 to the proxy alone).
 
-Full design: [`tech-specs/2026-06-rbac-proxy-worker/`](../tech-specs/2026-06-rbac-proxy-worker/README.md).
+Full design: [`tech-specs/2026-06-rbac-proxy-worker/`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-rbac-proxy-worker/README.md).
 
 ## Install
 

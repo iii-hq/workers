@@ -5,7 +5,7 @@ bus. Agents start a session, read the page as an accessibility-tree outline,
 click and type against element refs, and read the page's own console and
 network history back as data. The single most important thing it gives you:
 "why is my dev server page blank?" becomes answerable, because the page's
-console errors are one `browser::console::read` away. The [console](../console)
+console errors are one `browser::console::read` away. The [console](https://github.com/iii-hq/workers/tree/main/console)
 worker adds the human window: a live Browser page with a streaming viewport
 (Chromium-pushed screencast frames), the console feed, and click-to-pick
 elements into chat.
@@ -45,7 +45,7 @@ machine; point `executable` at a specific binary if auto-detection picks the
 wrong one.
 
 To watch sessions live, pick elements into chat, and follow the agent's
-browsing from a UI, add the [console](../console) worker as well:
+browsing from a UI, add the [console](https://github.com/iii-hq/workers/tree/main/console) worker as well:
 
 ```bash
 iii worker add console

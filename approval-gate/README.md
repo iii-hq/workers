@@ -1,7 +1,7 @@
 # approval-gate
 
 The policy and decision surface for human-held function calls
-([spec](../tech-specs/2026-06-agentic/approval-gate.md)). Four surfaces, one
+([spec](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/approval-gate.md)). Four surfaces, one
 worker:
 
 1. **The gate** — `approval::gate`, a `pre_trigger` hook the worker binds

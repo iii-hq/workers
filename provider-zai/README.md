@@ -1,6 +1,6 @@
 # provider-zai
 
-Z.AI (GLM) Chat Completions provider worker behind [llm-router](../llm-router/).
+Z.AI (GLM) Chat Completions provider worker behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router).
 Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::zai::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and

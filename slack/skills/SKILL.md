@@ -53,5 +53,5 @@ All fields hot-reload.
 
 Each typed function names the common Slack parameters and passes any extra
 parameters through; the full Slack response payload is returned. See the
-[README](../README.md) for the full list. Use `slack::call` for anything not yet
+[README](https://github.com/iii-hq/workers/blob/main/slack/README.md) for the full list. Use `slack::call` for anything not yet
 typed.

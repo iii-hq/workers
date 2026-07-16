@@ -96,10 +96,10 @@ Like `llm-router` and its provider workers, memory is a family of narrow sibling
 | Worker | Role | Status |
 |---|---|---|
 | `memory` (this) | Banks, rules, memories: storage, harness injection, background capture, hybrid recall, live trigger types | shipped |
-| [`memory-consolidate`](../memory-consolidate/) | Background hygiene on a schedule: deterministic dedup of near-duplicate memories, catch-up-on-boot scheduling. Supersede-only through `memory::supersede`, never touches pinned records; every change lands as a `memory::item-changed` event | shipped |
+| [`memory-consolidate`](https://github.com/iii-hq/workers/tree/main/memory-consolidate) | Background hygiene on a schedule: deterministic dedup of near-duplicate memories, catch-up-on-boot scheduling. Supersede-only through `memory::supersede`, never touches pinned records; every change lands as a `memory::item-changed` event | shipped |
 
 The split is the point: consolidation can be installed, stopped, or removed without touching stored memory, and this worker never grows a scheduler.
 
 ## Boundaries
 
-Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves (see [tech-specs/2026-06-agentic/memory.md](../tech-specs/2026-06-agentic/memory.md)). Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Consolidation belongs to the `memory-consolidate` sibling, not here.
+Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves (see [tech-specs/2026-06-agentic/memory.md](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/memory.md)). Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Consolidation belongs to the `memory-consolidate` sibling, not here.

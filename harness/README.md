@@ -34,9 +34,9 @@
 workers into an agent. It takes an incoming message, persists it, assembles a
 context, streams a completion, runs any function calls the model requests, and
 repeats until the turn stops — all as durable, resumable steps so a crash or
-restart picks up mid-turn. It wires [`session-manager`](../session-manager)
-(transcript), [`context-manager`](../context-manager) (token budgeting, soft
-dependency), and [`llm-router`](../llm-router) (generation); install those
+restart picks up mid-turn. It wires [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager)
+(transcript), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (token budgeting, soft
+dependency), and [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation); install those
 alongside it for the full loop.
 
 ## Quickstart
@@ -89,7 +89,7 @@ same recovery, partial-output, and blocked-reaction explanation after refresh.
 The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat
 loop. Allow functions in per-send (`options.functions.allow`) and gate them
-with the optional [`approval-gate`](../approval-gate) sibling.
+with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) sibling.
 
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
@@ -188,5 +188,5 @@ plug into in-path. Bind with the standard two-step pattern.
 
 Event configs accept `{ session_id?, parent_session_id? }`; hook configs accept
 `{ functions?, priority?, timeout_ms?, on_error? }`. See the spec at
-[`tech-specs/2026-06-agentic/harness.md`](../tech-specs/2026-06-agentic/harness.md)
+[`tech-specs/2026-06-agentic/harness.md`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/harness.md)
 for the hook contract and chain semantics.
