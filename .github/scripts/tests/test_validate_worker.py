@@ -6,8 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from _test_helpers import GIT_HERMETIC_ENV
 
 SCRIPT = Path(__file__).resolve().parents[1] / "validate_worker.py"
@@ -100,6 +98,23 @@ class TestValidateWorker:
         r = run_script(repo, "smoke", source_changed=["smoke"])
         assert r.returncode != 0
         assert "deploy" in r.stdout + r.stderr
+
+    def test_invalid_tags_fail(self, tmp_path):
+        for case, tags_yaml, expected in [
+            ("scalar", "tags: sql\n", "must be a list"),
+            ("entry", "tags:\n  - sql\n  - 7\n", "entries must be strings"),
+        ]:
+            case_root = tmp_path / case
+            case_root.mkdir()
+            repo = make_worker(case_root, "smoke")
+            meta = repo / "smoke" / "iii.worker.yaml"
+            meta.write_text(meta.read_text() + tags_yaml)
+            init_git(repo)
+
+            r = run_script(repo, "smoke", source_changed=["smoke"])
+
+            assert r.returncode != 0
+            assert expected in r.stdout + r.stderr
 
     def test_binary_bin_name_mismatch_fails(self, tmp_path):
         # A binary worker whose `bin` differs from the worker name ships a

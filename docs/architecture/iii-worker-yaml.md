@@ -33,6 +33,19 @@ aarch64 gnu, and armv7 gnueabihf (the matrix lives in
 | `interface_smoke: false` | Skip interface boot smoke + registry publish | `ci.yml`, `release.yml` |
 | `runtime` / `scripts.start` | Local boot definition; presence routes publish boot to `iii-add` for non-binary/bundle deploys | `manifest_version.py deploy-mode`, `iii worker add` |
 | `scripts.install` | Build command for local install | `iii worker add` (local source) |
+| `tags` | Optional discovery aliases included in `POST /publish` | `build_publish_payload.py` |
+
+`tags` must be a list of strings. The publish pipeline trims values, converts them to lowercase,
+removes duplicates, and omits the field when no non-empty tags remain.
+Workers with `interface_smoke: false` skip registry publishing entirely, so their manifests do not
+declare tags.
+
+```yaml
+tags:
+  - http
+  - rest
+  - api
+```
 
 ## Bundle-specific
 

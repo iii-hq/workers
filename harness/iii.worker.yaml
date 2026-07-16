@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: harness
+tags: [agent, harness, loop, autonomous]
 description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop; spawns sub-agents as child sessions.
 
 dependencies:

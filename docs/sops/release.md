@@ -84,7 +84,7 @@ flowchart LR
    - `cargo-run` — `cargo run` from source (remaining Rust workers)
 3. Uses `config.collect.yaml` when present (sidecar-free boot).
 4. Collects function + trigger interface (120 s timeout); asserts non-empty.
-5. Resolves release assets into `payload.json`.
+5. Resolves release assets and normalized manifest `tags` into `payload.json`.
 6. `POST /publish` to `https://api.workers.iii.dev`.
 7. `POST /w/<worker>/skills` when `skills/*.md` exist (skipped when absent).
 

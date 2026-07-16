@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: pubsub
+tags: [pubsub, messaging, events, topics]
 description: Topic-based publish/subscribe messaging — registers the `subscribe` trigger type and the `publish` function.
 config:
   adapter:

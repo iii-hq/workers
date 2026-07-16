@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: worktree
+tags: [git, worktree, parallel, agents, branches, ci]
 description: Git worktree lifecycle for parallel agents — mint, claim, and track isolated worktrees per repo, emit lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge).
 
 dependencies:

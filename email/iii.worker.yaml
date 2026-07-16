@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: email
+tags: [email, smtp, imap, inbox, messaging]
 description: Email worker — SMTP send and real-time IMAP read with IDLE push (email::*).
 
 runtime:

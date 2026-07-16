@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: telegram-bot
+tags: [telegram, bot, messaging, chat, webhook]
 description: Telegram bridge to the harness stack — polling or webhook ingress, live message edits, approvals, and configurable verbosity.
 
 dependencies:
