@@ -460,15 +460,20 @@ async fn fetch_transcript_since(
             continue;
         }
         let mut excerpt = trimmed;
-        let mut cut = 2_000.min(excerpt.len());
-        while cut > 0 && !excerpt.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        excerpt.truncate(cut);
+        excerpt.truncate(clamp_char_boundary(&excerpt, 2_000));
         lines.push(format!("{role}: {excerpt}"));
     }
     lines.reverse();
     Ok((lines.join("\n"), newest_id))
+}
+
+/// Largest index <= `max` that lands on a UTF-8 char boundary of `s`.
+pub(crate) fn clamp_char_boundary(s: &str, max: usize) -> usize {
+    let mut cut = max.min(s.len());
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
 }
 
 /// Concatenated text parts of one message's content array.
@@ -548,6 +553,39 @@ mod tests {
     fn parse_empty_and_no_array_are_empty() {
         assert!(parse_items("[]").unwrap().is_empty());
         assert!(parse_items("nothing worth keeping").unwrap().is_empty());
+    }
+
+    #[test]
+    fn clamp_never_splits_a_code_point() {
+        let s = format!("{}é", "a".repeat(1_999));
+        let cut = clamp_char_boundary(&s, 2_000);
+        assert_eq!(cut, 1_999, "the two-byte é at 1999..2001 must not split");
+        assert!(s.is_char_boundary(cut));
+        assert_eq!(clamp_char_boundary("short", 2_000), 5);
+        assert_eq!(clamp_char_boundary("", 10), 0);
+    }
+
+    #[test]
+    fn parse_unknown_kind_is_a_memory_not_a_rule() {
+        let raw = r#"[{"text": "x y z", "kind": "directive"}]"#;
+        let items = parse_items(raw).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(!items[0].is_rule());
+    }
+
+    #[test]
+    fn parse_rejects_non_array_json_objects() {
+        assert!(parse_items(r#"{"text": "not a list"}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn merge_learned_never_touches_existing_lines() {
+        let existing = "# Learned\nintro\n- Keep me exactly.\n";
+        let (merged, added) = merge_learned(existing, &["New line.".into()]);
+        assert_eq!(added, 1);
+        assert!(merged.contains("- Keep me exactly.\n"));
+        assert!(merged.contains("intro"));
+        assert!(merged.ends_with("- New line.\n"));
     }
 
     #[test]

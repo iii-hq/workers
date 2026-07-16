@@ -734,6 +734,169 @@ mod tests {
         assert!(store.bank("scratch").await.is_err());
     }
 
+    #[tokio::test]
+    async fn editing_text_invalidates_the_stored_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut m = memory("the port is 3000");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "test-model", vec![0.1, 0.2])
+            .await
+            .unwrap();
+        assert_eq!(bank.vector_count().await, 1);
+        assert!(bank.unembedded(10, "").await.is_empty());
+
+        // Text edit: the vector embeds the OLD text — must re-enter backfill.
+        m.text = "the port is 4000".into();
+        m.revision += 1;
+        bank.commit(m.clone()).await.unwrap();
+        assert_eq!(bank.vector_count().await, 0);
+        assert_eq!(bank.unembedded(10, "").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reload_drops_vectors_from_older_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut m = memory("stable memory");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "test-model", vec![0.5])
+            .await
+            .unwrap();
+        // Bump the record AFTER the vector was written.
+        m.revision += 1;
+        bank.commit(m.clone()).await.unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        assert_eq!(
+            bank2.vector_count().await,
+            0,
+            "a vector stamped with an older revision is stale on load"
+        );
+        assert_eq!(bank2.unembedded(10, "").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unembedded_treats_a_model_mismatch_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("model tracked");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "old-model", vec![0.5])
+            .await
+            .unwrap();
+
+        assert!(bank.unembedded(10, "old-model").await.is_empty());
+        assert_eq!(bank.unembedded(10, "new-model").await.len(), 1);
+        // Empty active model = provider default: whatever exists counts.
+        assert!(bank.unembedded(10, "").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn history_recall_surfaces_tombstones_lexical_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut m = memory("the retired convention");
+        bank.commit(m.clone()).await.unwrap();
+        m.invalid_at = Some(now_ms());
+        m.revision += 1;
+        bank.commit(m.clone()).await.unwrap();
+
+        assert!(bank
+            .recall("retired convention", None, 5, 30, false)
+            .await
+            .is_empty());
+        let hits = bank.recall("retired convention", None, 5, 30, true).await;
+        assert_eq!(
+            hits.len(),
+            1,
+            "history mode must reach non-live records with no query vector"
+        );
+        assert_eq!(hits[0].0.id, m.id);
+    }
+
+    #[tokio::test]
+    async fn top_memories_order_pinned_then_corroboration_then_recency() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut a = memory("plain old");
+        a.updated_at = 10;
+        let mut b = memory("corroborated");
+        b.corroboration = 5;
+        b.updated_at = 10;
+        let mut c = memory("pinned one");
+        c.pinned = true;
+        c.updated_at = 1;
+        let mut d = memory("plain new");
+        d.updated_at = 20;
+        for m in [&a, &b, &c, &d] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        let top = bank.top_memories(10).await;
+        let texts: Vec<&str> = top.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["pinned one", "corroborated", "plain new", "plain old"]
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_bank_is_idempotent_and_keeps_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, created) = store.ensure_bank("main", Some("first")).await.unwrap();
+        assert!(created);
+        bank.commit(memory("keep across ensure")).await.unwrap();
+        let (bank2, created2) = store.ensure_bank("main", Some("second")).await.unwrap();
+        assert!(!created2);
+        let (memories, total) = bank2.list(10, 0, false).await;
+        assert_eq!(total, 1);
+        assert_eq!(memories[0].text, "keep across ensure");
+    }
+
+    #[tokio::test]
+    async fn reload_picks_up_hand_edited_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        bank.set_rule("style", "# Original").unwrap();
+
+        // Hand-edit the file on disk, as an operator would.
+        std::fs::write(dir.path().join("main/rules/style.md"), "# Edited by hand").unwrap();
+        std::fs::write(dir.path().join("main/rules/added.md"), "# Added by hand").unwrap();
+        let count = store.reload().await.unwrap();
+        assert_eq!(count, 1);
+        let bank = store.bank("main").await.unwrap();
+        let rules = bank.list_rules().unwrap();
+        let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["added", "style"]);
+        assert_eq!(rules[1].content, "# Edited by hand");
+    }
+
+    #[tokio::test]
+    async fn list_pages_newest_first_with_stable_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        for i in 0..5 {
+            let mut m = memory(&format!("memory number {i}"));
+            m.updated_at = i;
+            bank.commit(m).await.unwrap();
+        }
+        let (page1, total) = bank.list(2, 0, false).await;
+        let (page2, _) = bank.list(2, 2, false).await;
+        assert_eq!(total, 5);
+        assert_eq!(page1[0].updated_at, 4);
+        assert_eq!(page1[1].updated_at, 3);
+        assert_eq!(page2[0].updated_at, 2);
+    }
+
     #[test]
     fn name_validation() {
         assert!(validate_name("main").is_ok());

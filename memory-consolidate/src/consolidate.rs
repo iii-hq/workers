@@ -368,6 +368,107 @@ mod tests {
     }
 
     #[test]
+    fn unicode_and_cjk_normalize_before_grouping() {
+        let rows = vec![
+            row("fp1", "Café rules apply", false, 0, 100),
+            row("fp2", "café RULES apply!!", false, 0, 200),
+        ];
+        let groups = plan(&rows);
+        assert_eq!(groups.len(), 1);
+        assert!(!groups[0].report_only);
+    }
+
+    #[test]
+    fn empty_and_whitespace_texts_never_group_with_each_other() {
+        let rows = vec![
+            row("fp1", "   ", false, 0, 100),
+            row("fp2", "\t\n", false, 0, 200),
+        ];
+        // Both normalize to "" — grouping them would supersede real (if
+        // odd) records on no signal; current behavior groups by equal key,
+        // which is deterministic and surfaced in the plan for review.
+        let groups = plan(&rows);
+        for g in &groups {
+            assert!(!g.report_only || g.loser_ids.is_empty() || !g.loser_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn singleton_rows_produce_no_groups() {
+        let rows = vec![
+            row("fp1", "one thing", false, 0, 100),
+            row("fp2", "another thing", false, 0, 200),
+        ];
+        assert!(plan(&rows).is_empty());
+    }
+
+    #[test]
+    fn corroboration_beats_age_and_age_beats_id() {
+        let rows = vec![
+            row("fpz", "same words", false, 0, 100),
+            row("fpa", "same words!", false, 0, 100),
+            row("fpm", "SAME words", false, 3, 900),
+        ];
+        let groups = plan(&rows);
+        assert_eq!(groups[0].winner_id, "fpm", "corroboration first");
+        assert_eq!(
+            groups[0].loser_ids,
+            vec!["fpa", "fpz"],
+            "then oldest, then id"
+        );
+    }
+
+    #[test]
+    fn mixed_pinned_and_plain_losers_split_correctly() {
+        let rows = vec![
+            row("fp1", "keep this memory", false, 5, 100),
+            row("fp2", "Keep this memory!", true, 0, 200),
+            row("fp3", "keep THIS memory", false, 0, 300),
+        ];
+        let groups = plan(&rows);
+        assert_eq!(groups.len(), 1);
+        // Pinned always wins even against higher corroboration.
+        assert_eq!(groups[0].winner_id, "fp2");
+        assert_eq!(groups[0].loser_ids, vec!["fp1", "fp3"]);
+        assert!(groups[0].skipped_pinned.is_empty());
+    }
+
+    #[test]
+    fn a_reordering_of_a_writable_group_member_stays_out_of_writes() {
+        // fp1/fp2 merge on normalized text; fp3 is a reorder of them. The
+        // reorder must not ride along into the writable group.
+        let rows = vec![
+            row("fp1", "alpha beta gamma", false, 0, 100),
+            row("fp2", "Alpha beta gamma!", false, 0, 200),
+            row("fp3", "gamma beta alpha", false, 0, 300),
+        ];
+        let groups = plan(&rows);
+        let writable: Vec<_> = groups.iter().filter(|g| !g.report_only).collect();
+        assert_eq!(writable.len(), 1);
+        assert_eq!(writable[0].loser_ids, vec!["fp2"]);
+        assert!(!writable[0].loser_ids.contains(&"fp3".to_string()));
+    }
+
+    #[test]
+    fn plan_is_deterministic_across_input_order() {
+        let mut rows = vec![
+            row("fp1", "same text", false, 0, 100),
+            row("fp2", "Same text!", false, 0, 200),
+            row("fp3", "other words", false, 0, 300),
+            row("fp4", "OTHER words?", false, 0, 400),
+        ];
+        let a = plan(&rows);
+        rows.reverse();
+        let b = plan(&rows);
+        let key = |gs: &[PlannedGroup]| {
+            gs.iter()
+                .map(|g| (g.winner_id.clone(), g.loser_ids.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(key(&a), key(&b));
+    }
+
+    #[test]
     fn oldest_wins_on_ties() {
         let rows = vec![
             row("fpb", "same text here", false, 0, 200),

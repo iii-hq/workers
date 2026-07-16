@@ -125,13 +125,7 @@ pub async fn pre_generate(
 
     // Turn metadata wins, then session metadata, then the default. A
     // session-lookup failure injects nothing (scope-safe).
-    let turn_bank = input
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("memory_bank"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let bank_name = match turn_bank {
+    let bank_name = match select_turn_bank(input.metadata.as_ref()) {
         Some(b) => b,
         None => {
             match extract::resolve_bank(&deps.iii, &input.session_id, &cfg.default_bank).await {
@@ -166,38 +160,12 @@ pub async fn pre_generate(
     if cfg.inject_rules {
         if let Ok(rules) = bank.list_rules() {
             if !rules.is_empty() {
-                let mut budget = cfg.max_rule_chars;
-                let mut truncated = false;
-                for b in &rules {
-                    let content = b.content.trim();
-                    if content.len() <= budget {
-                        budget -= content.len();
-                        section.push_str(&format!("\n## {}\n{content}\n", b.name));
-                    } else if budget > 200 {
-                        let mut cut = budget.min(content.len());
-                        while cut > 0 && !content.is_char_boundary(cut) {
-                            cut -= 1;
-                        }
-                        section.push_str(&format!(
-                            "\n## {}\n{}\n[rule truncated: over the {} char injection budget — trim it in the memory page]\n",
-                            b.name,
-                            &content[..cut],
-                            cfg.max_rule_chars,
-                        ));
-                        budget = 0;
-                        truncated = true;
-                    } else {
-                        section.push_str(&format!(
-                            "\n## {} [omitted: over the injection budget]\n",
-                            b.name
-                        ));
-                        truncated = true;
-                    }
-                }
+                let (rules_part, truncated) = build_rules_section(&rules, cfg.max_rule_chars);
+                section.push_str(&rules_part);
                 if truncated {
                     tracing::warn!(
                         bank = %bank_name,
-                        max_block_chars = cfg.max_rule_chars,
+                        max_rule_chars = cfg.max_rule_chars,
                         "memory rules exceed the injection budget; truncated"
                     );
                     annotations.insert("memory_rules_truncated".into(), json!(true));
@@ -229,48 +197,22 @@ pub async fn pre_generate(
             // session openers entirely (their words never appear in memory
             // texts), so pad thin results with the bank's strongest memories
             // — still bounded by the same count and token budget.
-            let mut memories: Vec<Memory> = hits.into_iter().map(|(f, _)| f).collect();
-            const AMBIENT_FLOOR: usize = 3;
-            if memories.len() < AMBIENT_FLOOR.min(cfg.recall_limit) {
-                for memory in bank.top_memories(cfg.recall_limit).await {
-                    if memories.len() >= AMBIENT_FLOOR.min(cfg.recall_limit) {
-                        break;
-                    }
-                    if !memories.iter().any(|f| f.id == memory.id) {
-                        memories.push(memory);
-                    }
-                }
-            }
-            let mut budget = (cfg.recall_budget_tokens * 4) as usize;
-            let mut lines = Vec::new();
-            for memory in &memories {
-                if memory.text.len() > budget {
-                    break;
-                }
-                budget -= memory.text.len();
-                lines.push(format!("- {}", memory.text));
-            }
-            if !lines.is_empty() {
-                let body = format!(
-                    "<memory bank=\"{bank_name}\">\nRelevant remembered memories (auto-recalled; verify anything surprising):\n{}\n</memory>",
-                    lines.join("\n")
-                );
+            let hits: Vec<Memory> = hits.into_iter().map(|(f, _)| f).collect();
+            let top = bank.top_memories(cfg.recall_limit).await;
+            let memories = apply_ambient_floor(hits, top, cfg.recall_limit);
+            if let Some((body, ids)) =
+                memories_message(&bank_name, &memories, cfg.recall_budget_tokens)
+            {
+                let count = ids.len();
                 mutations.append_messages.push(json!({
                     "role": "user",
                     "content": [{ "type": "text", "text": body }],
                     "timestamp": now_ms() as i64,
                 }));
-                annotations.insert("memory_recalled".into(), json!(lines.len()));
+                annotations.insert("memory_recalled".into(), json!(count));
                 // Ids (not texts) so chat surfaces can render "which memories
                 // fed this turn" chips and fetch details on demand.
-                annotations.insert(
-                    "memory_ids".into(),
-                    json!(memories
-                        .iter()
-                        .take(lines.len())
-                        .map(|f| f.id.clone())
-                        .collect::<Vec<_>>()),
-                );
+                annotations.insert("memory_ids".into(), json!(ids));
             }
         }
     }
@@ -353,6 +295,106 @@ pub async fn session_deleted(
     Ok(AckResponse { ok: true })
 }
 
+/// Turn-scoped bank override: `memory_bank` in the turn metadata.
+pub(crate) fn select_turn_bank(metadata: Option<&Value>) -> Option<String> {
+    metadata
+        .and_then(|m| m.get("memory_bank"))
+        .and_then(Value::as_str)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+}
+
+/// The rules part of the injected system-prompt section, hard-bounded by
+/// `max_rule_chars`. Over-budget content truncates on a char boundary
+/// with a visible marker when at least 200 chars of budget remain, and is
+/// omitted (named) otherwise. Returns `(section_part, truncated)`.
+pub(crate) fn build_rules_section(
+    rules: &[crate::types::Rule],
+    max_rule_chars: usize,
+) -> (String, bool) {
+    let mut out = String::new();
+    let mut budget = max_rule_chars;
+    let mut truncated = false;
+    for rule in rules {
+        let content = rule.content.trim();
+        if content.len() <= budget {
+            budget -= content.len();
+            out.push_str(&format!("\n## {}\n{content}\n", rule.name));
+        } else if budget > 200 {
+            let mut cut = budget.min(content.len());
+            while cut > 0 && !content.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            out.push_str(&format!(
+                "\n## {}\n{}\n[rule truncated: over the {} char injection budget — trim it in the memory page]\n",
+                rule.name,
+                &content[..cut],
+                max_rule_chars,
+            ));
+            budget = 0;
+            truncated = true;
+        } else {
+            out.push_str(&format!(
+                "\n## {} [omitted: over the injection budget]\n",
+                rule.name
+            ));
+            truncated = true;
+        }
+    }
+    (out, truncated)
+}
+
+/// Pad thin recall results with the bank's strongest memories, deduped by
+/// id and bounded by `min(AMBIENT_FLOOR, recall_limit)`.
+pub(crate) fn apply_ambient_floor(
+    mut memories: Vec<Memory>,
+    top: Vec<Memory>,
+    recall_limit: usize,
+) -> Vec<Memory> {
+    const AMBIENT_FLOOR: usize = 3;
+    let floor = AMBIENT_FLOOR.min(recall_limit);
+    if memories.len() < floor {
+        for memory in top {
+            if memories.len() >= floor {
+                break;
+            }
+            if !memories.iter().any(|f| f.id == memory.id) {
+                memories.push(memory);
+            }
+        }
+    }
+    memories
+}
+
+/// The one appended `<memory>` message: bulleted memory texts under a
+/// 4-chars-per-token budget, plus the ids of the memories that made the
+/// cut. `None` when nothing fits.
+pub(crate) fn memories_message(
+    bank: &str,
+    memories: &[Memory],
+    recall_budget_tokens: u64,
+) -> Option<(String, Vec<String>)> {
+    let mut budget = (recall_budget_tokens * 4) as usize;
+    let mut lines = Vec::new();
+    let mut ids = Vec::new();
+    for memory in memories {
+        if memory.text.len() > budget {
+            break;
+        }
+        budget -= memory.text.len();
+        lines.push(format!("- {}", memory.text));
+        ids.push(memory.id.clone());
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let body = format!(
+        "<memory bank=\"{bank}\">\nRelevant remembered memories (auto-recalled; verify anything surprising):\n{}\n</memory>",
+        lines.join("\n")
+    );
+    Some((body, ids))
+}
+
 /// The newest user message's text — the recall query.
 fn last_user_text(messages: Option<&Value>) -> String {
     let Some(items) = messages.and_then(Value::as_array) else {
@@ -384,6 +426,193 @@ mod tests {
         ]);
         assert_eq!(last_user_text(Some(&messages)), "newest question");
         assert_eq!(last_user_text(None), "");
+    }
+
+    fn rule(name: &str, content: &str) -> crate::types::Rule {
+        crate::types::Rule {
+            name: name.into(),
+            content: content.into(),
+            updated_at: 0,
+        }
+    }
+
+    fn memory(id: &str, text: &str) -> Memory {
+        Memory {
+            id: id.into(),
+            text: text.into(),
+            entities: vec![],
+            confidence: crate::types::Confidence::Stated,
+            corroboration: 0,
+            pinned: false,
+            source: None,
+            created_at: 1,
+            updated_at: 1,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+        }
+    }
+
+    #[test]
+    fn turn_bank_override_wins_and_empty_is_none() {
+        assert_eq!(
+            select_turn_bank(Some(&json!({ "memory_bank": "blog" }))),
+            Some("blog".to_string())
+        );
+        assert_eq!(select_turn_bank(Some(&json!({ "memory_bank": "" }))), None);
+        assert_eq!(select_turn_bank(Some(&json!({ "memory_bank": 7 }))), None);
+        assert_eq!(select_turn_bank(Some(&json!({ "other": "x" }))), None);
+        assert_eq!(select_turn_bank(None), None);
+    }
+
+    #[test]
+    fn rules_within_budget_inject_whole_and_unmarked() {
+        let rules = vec![rule("style", "No em-dashes."), rule("tone", "Formal.")];
+        let (section, truncated) = build_rules_section(&rules, 6_000);
+        assert!(!truncated);
+        assert!(section.contains(
+            "## style
+No em-dashes."
+        ));
+        assert!(section.contains(
+            "## tone
+Formal."
+        ));
+        assert!(!section.contains("truncated"));
+    }
+
+    #[test]
+    fn over_budget_rule_truncates_with_visible_marker() {
+        let big = "x".repeat(1_000);
+        let (section, truncated) = build_rules_section(&[rule("big", &big)], 300);
+        assert!(truncated);
+        assert!(section.contains("[rule truncated: over the 300 char injection budget"));
+        // The kept prefix respects the budget.
+        assert!(section.contains(&"x".repeat(300)));
+        assert!(!section.contains(&"x".repeat(301)));
+    }
+
+    #[test]
+    fn truncation_cuts_on_a_char_boundary() {
+        // é is two bytes; an odd budget must not split it.
+        let content = "é".repeat(400);
+        let (section, truncated) = build_rules_section(&[rule("uni", &content)], 301);
+        assert!(truncated);
+        assert!(section.contains("[rule truncated"));
+    }
+
+    #[test]
+    fn tiny_leftover_budget_omits_by_name_instead_of_truncating() {
+        let rules = vec![
+            rule("first", &"a".repeat(900)),
+            rule("second", &"b".repeat(500)),
+        ];
+        // First consumes 900 of 1000; 100 left is under the 200-char floor.
+        let (section, truncated) = build_rules_section(&rules, 1_000);
+        assert!(truncated);
+        assert!(section.contains("## second [omitted: over the injection budget]"));
+        assert!(!section.contains("bbbb"));
+    }
+
+    #[test]
+    fn ambient_floor_pads_thin_results_and_dedups() {
+        let hits = vec![memory("fp1", "hit")];
+        let top = vec![
+            memory("fp1", "hit"),
+            memory("fp2", "strong"),
+            memory("fp3", "also strong"),
+            memory("fp4", "never reached"),
+        ];
+        let out = apply_ambient_floor(hits, top, 6);
+        let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["fp1", "fp2", "fp3"]);
+    }
+
+    #[test]
+    fn ambient_floor_respects_a_small_recall_limit() {
+        let out = apply_ambient_floor(vec![], vec![memory("fp1", "a"), memory("fp2", "b")], 1);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn ambient_floor_leaves_rich_results_alone() {
+        let hits = vec![memory("fp1", "a"), memory("fp2", "b"), memory("fp3", "c")];
+        let out = apply_ambient_floor(hits.clone(), vec![memory("fp9", "top")], 6);
+        assert_eq!(out.len(), 3);
+        assert!(!out.iter().any(|m| m.id == "fp9"));
+    }
+
+    #[test]
+    fn memories_message_formats_body_and_ids_in_lockstep() {
+        let ms = vec![memory("fp1", "first"), memory("fp2", "second")];
+        let (body, ids) = memories_message("blog", &ms, 1_200).unwrap();
+        assert!(body.starts_with("<memory bank=\"blog\">"));
+        assert!(body.contains("- first\n- second"));
+        assert!(body.ends_with("</memory>"));
+        assert_eq!(ids, vec!["fp1", "fp2"]);
+    }
+
+    #[test]
+    fn memories_message_stops_at_the_token_budget() {
+        // Budget of 1 token = 4 chars: the 5-char text does not fit.
+        let ms = vec![memory("fp1", "12345"), memory("fp2", "abc")];
+        let out = memories_message("b", &ms, 1);
+        // First memory over budget stops the loop entirely (ordered list,
+        // no skipping ahead) — nothing fits.
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn memories_message_budget_boundary_is_inclusive() {
+        let ms = vec![memory("fp1", "1234")];
+        let (_, ids) = memories_message("b", &ms, 1).unwrap();
+        assert_eq!(ids, vec!["fp1"]);
+    }
+
+    #[test]
+    fn pre_generate_input_tolerates_the_harness_envelope() {
+        // Captured shape of a real harness pre-generate call: extra fields
+        // must be ignored, not rejected.
+        let raw = json!({
+            "session_id": "s_123",
+            "turn_id": "t_9",
+            "hook_point": "pre-generate",
+            "metadata": { "memory_bank": "blog", "other": true },
+            "generate": {
+                "system_prompt": "You are helpful.",
+                "messages": [
+                    { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }
+                ],
+                "model": "claude-sonnet-5"
+            }
+        });
+        let input: PreGenerateInput = serde_json::from_value(raw).unwrap();
+        assert_eq!(input.session_id, "s_123");
+        assert_eq!(
+            select_turn_bank(input.metadata.as_ref()),
+            Some("blog".to_string())
+        );
+        let generate = input.generate.unwrap();
+        assert_eq!(generate.system_prompt, "You are helpful.");
+        assert_eq!(last_user_text(Some(&generate.messages)), "hi");
+    }
+
+    #[test]
+    fn turn_completed_input_defaults_status_to_completed_semantics() {
+        let input: TurnCompletedInput =
+            serde_json::from_value(json!({ "session_id": "s_1", "turn_id": "t_1" })).unwrap();
+        assert!(input.status.as_deref().is_none_or(|s| s == "completed"));
+        let failed: TurnCompletedInput =
+            serde_json::from_value(json!({ "session_id": "s_1", "status": "failed" })).unwrap();
+        assert!(failed.status.as_deref().is_some_and(|s| s != "completed"));
+    }
+
+    #[test]
+    fn pass_response_carries_no_mutations() {
+        let v = serde_json::to_value(HookResponse::pass()).unwrap();
+        assert_eq!(v["decision"], "continue");
+        assert!(v.get("mutations").is_none());
+        assert!(v.get("annotations").is_none());
     }
 
     #[test]

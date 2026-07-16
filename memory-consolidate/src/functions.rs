@@ -91,6 +91,22 @@ impl Deps {
     }
 }
 
+/// Schedule policy, pure for testability: a pass is due when
+/// `interval_hours` have elapsed since the last one, with a small slack
+/// (5 min, capped at a tenth of the interval) so an hourly heartbeat that
+/// lands minutes early does not postpone the pass a whole extra hour.
+pub(crate) fn is_due(now_ms: u64, last_run_ms: u64, interval_hours: u64) -> bool {
+    let interval_ms = interval_hours.saturating_mul(3_600_000);
+    let slack_ms = 300_000u64.min(interval_ms / 10);
+    now_ms.saturating_sub(last_run_ms) + slack_ms >= interval_ms
+}
+
+/// Checkpoint policy: only a pass with zero bank errors advances
+/// `last_run` — an errored pass must stay due so the schedule retries it.
+pub(crate) fn should_checkpoint(reports: &[BankReport]) -> bool {
+    reports.iter().all(|r| r.errors.is_empty())
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -180,7 +196,7 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
     {
         tracing::warn!(error = %e, "last-report write failed");
     }
-    let clean = reports.iter().all(|r| r.errors.is_empty());
+    let clean = should_checkpoint(&reports);
     let checkpointed = if clean {
         match state_set(&deps.iii, STATE_LAST_RUN, json!({ "ms": now_ms() })).await {
             Ok(()) => true,
@@ -239,11 +255,7 @@ pub async fn tick(deps: &Deps) -> Result<TickResponse, Error> {
     }
     let _gate = deps.run_gate.lock().await;
     let last = last_run_ms(&deps.iii).await;
-    let interval_ms = cfg.interval_hours.saturating_mul(3_600_000);
-    // A small slack keeps an hourly heartbeat that lands minutes early
-    // from postponing the pass a whole extra hour.
-    let slack_ms = 300_000u64.min(interval_ms / 10);
-    if now_ms().saturating_sub(last) + slack_ms < interval_ms {
+    if !is_due(now_ms(), last, cfg.interval_hours) {
         return Ok(TickResponse { ran: false });
     }
     tracing::info!(
@@ -333,4 +345,58 @@ pub fn register_all(iii: &IIIClient, deps: &Arc<Deps>) {
         |d, r| async move { status(&d, r).await },
     );
     tracing::info!("all memory-consolidate::* functions registered");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn never_run_is_due_on_any_realistic_clock() {
+        // last_run = 0 (never): elapsed = the full epoch, always past any
+        // interval. This is exactly the catch-up-on-boot path.
+        assert!(is_due(1_784_000_000_000, 0, 24));
+        assert!(is_due(1_784_000_000_000, 0, 1));
+    }
+
+    #[test]
+    fn due_flips_at_the_interval_minus_slack() {
+        let h = 3_600_000u64;
+        let last = 1_000_000;
+        // 24h interval, 5 min slack: due from 23h55m onward.
+        assert!(!is_due(last + 23 * h + 54 * 60_000, last, 24));
+        assert!(is_due(last + 23 * h + 55 * 60_000, last, 24));
+        assert!(is_due(last + 24 * h, last, 24));
+    }
+
+    #[test]
+    fn slack_caps_at_a_tenth_of_short_intervals() {
+        let last = 0u64;
+        // 1h interval: slack = min(5min, 6min) = 5min -> due at 55m.
+        assert!(!is_due(54 * 60_000, last, 1));
+        assert!(is_due(55 * 60_000, last, 1));
+    }
+
+    #[test]
+    fn clock_regression_is_not_due_immediately() {
+        // now < last_run (clock skew): saturating math keeps it quiet
+        // instead of underflowing into "due".
+        assert!(!is_due(1_000, 2_000_000, 24));
+    }
+
+    #[test]
+    fn checkpoint_requires_every_bank_clean() {
+        let clean = crate::consolidate::BankReport {
+            bank: "a".into(),
+            ..Default::default()
+        };
+        let mut dirty = crate::consolidate::BankReport {
+            bank: "b".into(),
+            ..Default::default()
+        };
+        dirty.errors.push("memory::list: timeout".into());
+        assert!(should_checkpoint(std::slice::from_ref(&clean)));
+        assert!(should_checkpoint(&[]));
+        assert!(!should_checkpoint(&[clean, dirty]));
+    }
 }

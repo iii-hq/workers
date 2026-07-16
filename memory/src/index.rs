@@ -255,3 +255,110 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod scoring_tests {
+    use super::*;
+    use crate::types::{fingerprint, Confidence, Memory};
+
+    fn memory(text: &str, entities: &[&str]) -> Memory {
+        Memory {
+            id: fingerprint(text),
+            text: text.into(),
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            confidence: Confidence::Stated,
+            corroboration: 0,
+            pinned: false,
+            source: None,
+            created_at: 0,
+            updated_at: 0,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+        }
+    }
+
+    #[test]
+    fn tokenize_folds_case_and_splits_punctuation() {
+        assert_eq!(
+            tokenize("User PREFERS terse-answers!"),
+            vec!["user", "prefers", "terse", "answers"]
+        );
+    }
+
+    #[test]
+    fn tokenize_emits_cjk_bigrams() {
+        let tokens = tokenize("周二发布");
+        assert!(
+            tokens.iter().any(|t| t == "周二"),
+            "bigrams expected, got {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn removed_memories_stop_scoring() {
+        let mut index = Bm25Index::default();
+        let m = memory("the api port is 3000", &[]);
+        index.add(&m);
+        assert!(!index.score(&tokenize("api port")).is_empty());
+        index.remove(&m.id);
+        assert!(index.score(&tokenize("api port")).is_empty());
+    }
+
+    #[test]
+    fn rarer_terms_score_higher() {
+        let mut index = Bm25Index::default();
+        for i in 0..5 {
+            index.add(&memory(&format!("common filler text {i}"), &[]));
+        }
+        let rare = memory("unique zanzibar reference", &[]);
+        index.add(&rare);
+        let scores = index.score(&tokenize("zanzibar"));
+        assert_eq!(scores.len(), 1);
+        let common = index.score(&tokenize("common"));
+        assert!(scores[&rare.id] > *common.values().next().unwrap());
+    }
+
+    #[test]
+    fn pinned_and_corroborated_outrank_plain_at_equal_lexical_score() {
+        let now = 1_000_000_000;
+        let plain = memory("shared words here", &[]);
+        let mut pinned = memory("shared words here!", &[]);
+        pinned.pinned = true;
+        let mut corroborated = memory("shared words here?", &[]);
+        corroborated.corroboration = 4;
+        let q = tokenize("shared words");
+        let base = fused_score(1.0, &plain, &q, now, 30);
+        assert!(fused_score(1.0, &pinned, &q, now, 30) > base);
+        assert!(fused_score(1.0, &corroborated, &q, now, 30) > base);
+    }
+
+    #[test]
+    fn entity_match_boosts() {
+        let now = 1_000_000_000;
+        let plain = memory("likes coffee", &[]);
+        let tagged = memory("likes coffee!", &["mike"]);
+        let q = tokenize("what does mike like");
+        assert!(fused_score(1.0, &tagged, &q, now, 30) > fused_score(1.0, &plain, &q, now, 30));
+    }
+
+    #[test]
+    fn recency_decay_is_monotonic_and_spares_pinned() {
+        let now: u64 = 90 * 24 * 3_600 * 1_000;
+        let q = tokenize("x");
+        let mut fresh = memory("x fresh", &[]);
+        fresh.updated_at = now;
+        let mut stale = memory("x stale", &[]);
+        stale.updated_at = 0;
+        assert!(fused_score(1.0, &fresh, &q, now, 30) > fused_score(1.0, &stale, &q, now, 30));
+
+        // Pinning lifts a record against peers of the same age; decay
+        // still applies to everything (design: pinned protects data and
+        // rank WITHIN an age band, it is not an absolute trump).
+        let mut stale_pinned = stale.clone();
+        stale_pinned.pinned = true;
+        assert!(
+            fused_score(1.0, &stale_pinned, &q, now, 30) > fused_score(1.0, &stale, &q, now, 30)
+        );
+    }
+}
