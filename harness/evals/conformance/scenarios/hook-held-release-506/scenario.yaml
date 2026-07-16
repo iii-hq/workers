@@ -8,18 +8,14 @@
 # The turn's call parks pending; the runner releases it with the public
 # approval surface `harness::function::resolve { action: "execute" }`.
 #
-# QUARANTINED: the invariants assert the issue's EXPECTED behavior — the
-# target executes with the hook-mutated arguments. Source inspection
-# (harness/src/deferred.rs `find_call_arguments`) shows the execute path
-# recovers the ORIGINAL arguments from the transcript and skips the
-# pre-trigger chain, so this fails until #506 lands. The hook-envelope
-# invariants double as chain-order evidence: the mutator saw the original
-# args, the holder saw the mutated args.
+# Regression gate for #506 (fixed: release resumes the pre-trigger chain
+# after the holder over the checkpointed hold-point arguments). The
+# hook-envelope invariants double as chain-order evidence: the mutator saw
+# the original args, the holder saw the mutated args.
 schema_version: "1"
 id: C-E2E-506
 description: A held call released with resolve(action=execute) must run with hook-mutated arguments.
 stack_profile: harness-core
-quarantine: true
 send:
   session_id: "{{session_id}}"
   message: "Call the recorder once."
