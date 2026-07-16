@@ -8,8 +8,8 @@
 //!   5. Build ConfigCell + Deps.
 //!   6. Register all functions.
 //!   7. Bind the cron sweep trigger (retain handle for hot-reload).
-//!   8. Set up the harness hooks: react to `engine::workers-available` and bind the
-//!      turn-completed / pre-trigger / pre-generate hooks once the harness is up (no poll).
+//!   8. Set up the harness hooks: one-shot binds for turn-completed / pre-trigger /
+//!      pre-generate (the engine parks them until the harness registers the types).
 //!   9. Resume-scan: re-enqueue a tick for every non-terminal run (crash recovery).
 //!  10. LAST: bind the configuration-change trigger so its handler closes over
 //!      the fully-built snapshot cell + the cron handle.
@@ -123,12 +123,10 @@ async fn main() -> Result<()> {
     });
 
     // Bind the three HARNESS-provided hooks (turn-completed → wake, hook::pre-trigger
-    // → reply stamping, hook::pre-generate → guidance injection). register_trigger
-    // is fire-and-forget — the engine silently drops a bind to a trigger type it does
-    // not know yet — so on a cold start where this worker boots before the harness has
-    // registered them the binds would be lost. setup_harness_hooks reacts to
-    // engine::workers-available (no polling) and binds once the harness's types appear.
-    configuration::setup_harness_hooks(&iii).await;
+    // → reply stamping, hook::pre-generate → guidance injection). One shot: the engine
+    // parks each binding until the harness registers the trigger type (recoverable
+    // triggers, iii #1962) and re-activates them across harness restarts.
+    configuration::setup_harness_hooks(&iii);
 
     // Crash recovery: a parked AwaitingNodes run has no enqueued tick.
     // Re-drive each non-terminal run so it can make progress.

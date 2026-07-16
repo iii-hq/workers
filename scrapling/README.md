@@ -6,6 +6,14 @@ on the iii bus: fast HTTP with TLS impersonation, a Camoufox anti-bot browser, a
 full Playwright/Chromium browser, screenshots, and CSS/XPath/regex/adaptive
 extraction.
 
+While connected it also injects a usage section into the agent system prompt
+via the harness `pre-generate` hook (`scrapling::inject-guidance`), so the
+guidance is presence-gated: no scrapling worker, no prompt text. The binding is
+one-shot at startup and relies on the engine's recoverable triggers (iii #1962,
+engine ≥ 0.21.8): bound before the harness is up, it parks as a pending intent
+and activates when the harness registers the trigger type. On older engines the
+bind is silently dropped.
+
 ## Install
 
 ```bash

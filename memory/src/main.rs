@@ -111,64 +111,13 @@ fn required_bindings() -> Vec<(&'static str, &'static str, serde_json::Value)> {
     ]
 }
 
-/// Boot-order safety net: in an orderly startup wave the siblings that
-/// own these trigger types (harness, session-manager, queue) may register
-/// AFTER this worker, so the boot-time binding requests die with
-/// `trigger_type_not_found` — silently, since registration acks are
-/// async. Poll `engine::triggers::info` and re-request each binding until
-/// every one is live; without this, injection and extraction never run
-/// after an unlucky boot (mirrors approval-gate's hook retry).
-fn retry_bindings(iii: Arc<IIIClient>) {
+/// Ensure the extraction queue exists. Trigger parking covers the binds
+/// (recoverable triggers, iii #1962), but `queue::define` is an RPC the
+/// queue worker must be up to serve — enqueue rejects an undefined queue —
+/// so poll until the (idempotent) definition lands.
+fn ensure_extraction_queue(iii: Arc<IIIClient>) {
     tokio::spawn(async move {
-        // engine::triggers::info exposes only an AGGREGATE instance_count,
-        // and other workers bind the same trigger types (web also binds
-        // pre-generate; several workers use durable:subscriber). A bare
-        // `count > 0` therefore confirms SOMEONE's binding, not ours —
-        // observed live: memory's hook binding died at boot while web's
-        // kept the count positive, and injection silently never ran.
-        // Until the engine exposes binding membership, attribute by
-        // DELTA: snapshot the count, re-request our binding, and treat
-        // only an increase over the snapshot as our registration landing.
-        let mut baselines: std::collections::HashMap<&'static str, u64> =
-            std::collections::HashMap::new();
-        let mut confirmed: std::collections::HashSet<&'static str> =
-            std::collections::HashSet::new();
         loop {
-            let mut all_ready = true;
-            for (trigger_type, function_id, config) in required_bindings() {
-                if confirmed.contains(trigger_type) {
-                    continue;
-                }
-                let count = iii
-                    .trigger(iii_sdk::protocol::TriggerRequest {
-                        function_id: "engine::triggers::info".into(),
-                        payload: json!({ "id": trigger_type }),
-                        action: None,
-                        timeout_ms: Some(5_000),
-                    })
-                    .await
-                    .ok()
-                    .and_then(|v| v.get("instance_count").and_then(serde_json::Value::as_u64));
-                let Some(count) = count else {
-                    // Trigger type not registered yet (owner still booting).
-                    all_ready = false;
-                    baselines.remove(trigger_type);
-                    continue;
-                };
-                match baselines.get(trigger_type) {
-                    Some(&baseline) if count > baseline => {
-                        // The count rose after our request: ours landed.
-                        confirmed.insert(trigger_type);
-                    }
-                    _ => {
-                        all_ready = false;
-                        baselines.insert(trigger_type, count);
-                        bind_best_effort(&iii, trigger_type, function_id, config);
-                    }
-                }
-            }
-            // The extraction queue definition is idempotent; keep asking
-            // until the queue worker is up.
             let defined = iii
                 .trigger(iii_sdk::protocol::TriggerRequest {
                     function_id: "queue::define".into(),
@@ -178,8 +127,8 @@ fn retry_bindings(iii: Arc<IIIClient>) {
                 })
                 .await
                 .is_ok();
-            if all_ready && defined {
-                tracing::info!("memory bindings confirmed (hooks, turn events, session GC, queue)");
+            if defined {
+                tracing::info!("memory extraction queue defined");
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
@@ -264,14 +213,14 @@ async fn main() -> Result<()> {
 
     // Bind the harness/session/queue seams (injection fail-OPEN — a
     // memory failure must never block a turn — plus turn-completed
-    // extraction, session GC, and the durable extraction consumer), then
-    // keep retrying until every binding is confirmed live: in an orderly
-    // boot wave the owning siblings may register their trigger types
-    // after this worker.
+    // extraction, session GC, and the durable extraction consumer).
+    // One shot: if an owning sibling boots after this worker, the engine
+    // parks the binding and activates it when the trigger type registers
+    // (recoverable triggers, iii #1962).
     for (trigger_type, function_id, config) in required_bindings() {
         bind_best_effort(&iii, trigger_type, function_id, config);
     }
-    retry_bindings(iii.clone());
+    ensure_extraction_queue(iii.clone());
 
     // Catch-up vector backfill for memories saved while embeddings were
     // unavailable (delayed so the router and providers finish booting).

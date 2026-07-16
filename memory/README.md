@@ -51,6 +51,11 @@ All fields hot-reload through the `configuration` worker (rendered as a form in 
 
 Bank selection order: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → configured `default_bank`. A session-lookup failure injects nothing rather than falling back across banks.
 
+All seam bindings are one-shot at startup and rely on the engine's recoverable
+triggers (iii #1962, engine ≥ 0.21.8): bound before the owning sibling (harness,
+session-manager, queue) is up, they park as pending intents and activate when
+the trigger type registers. On older engines the binds are silently dropped.
+
 ## Functions
 
 | Function | Purpose |

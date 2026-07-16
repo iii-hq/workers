@@ -8,7 +8,6 @@
 //! Every other field is a per-call tuning knob read from the live snapshot via
 //! [`Deps::cfg`](crate::functions::Deps::cfg); a change swaps the snapshot.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,154 +108,19 @@ fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -
     }
 }
 
-/// Harness-PROVIDED trigger types the workflow worker binds to (NOT engine
-/// built-ins like `cron`). On a cold start the workflow worker can boot before the
-/// harness has registered these; since `register_trigger` is fire-and-forget (the
-/// engine async-rejects a bind to an unknown trigger type and silently drops it),
-/// binding too early loses the wake / reply-stamp / guidance hooks, so we bind only
-/// once these are present (driven by `setup_harness_hooks`).
-const HARNESS_TRIGGER_TYPES: [&str; 3] = [
-    "harness::turn-completed",
-    "harness::hook::pre-trigger",
-    "harness::hook::pre-generate",
-];
-
-/// True iff every id in `needed` appears as a trigger-type `id` in an
-/// `engine::triggers::list` response. Pure, so it's unit-testable.
-fn all_trigger_types_present(resp: &Value, needed: &[&str]) -> bool {
-    let Some(types) = resp.get("triggers").and_then(|v| v.as_array()) else {
-        return false;
-    };
-    needed.iter().all(|n| {
-        types
-            .iter()
-            .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(*n))
-    })
-}
-
-/// One probe: are all harness trigger types registered on the engine right now?
-async fn harness_trigger_types_ready(iii: &IIIClient) -> bool {
-    match iii
-        .trigger(TriggerRequest {
-            function_id: "engine::triggers::list".into(),
-            payload: json!({ "include_internal": true }),
-            action: None,
-            timeout_ms: Some(CONFIG_TIMEOUT_MS),
-        })
-        .await
-    {
-        Ok(resp) => all_trigger_types_present(&resp, &HARNESS_TRIGGER_TYPES),
-        Err(_) => false, // engine not reachable / harness not up yet
-    }
-}
-
-const ON_REGISTRY_CHANGED_FN_ID: &str = "workflow::on-registry-changed";
-/// Two mandatory in-process engine triggers we subscribe to so we bind the harness hooks
-/// as soon as the harness is up. Binding to them never races (both registered at engine
-/// boot). They cover DIFFERENT timings, and the harness needs the second one:
-///   - `engine::workers-available` fires IMMEDIATELY on any worker connect / metadata /
-///     disconnect. But the SDK auto-sends a worker's metadata register right after connect,
-///     which can PRECEDE that worker registering its own trigger types: the harness
-///     registers `harness::hook::*` only after two awaited config RPCs (harness main.rs),
-///     so its workers-available firings land BEFORE its types exist — a probe then misses.
-///   - `engine::functions-available` fires via the engine's internal function-set poll,
-///     AFTER a worker registers its functions. The harness registers its trigger types
-///     before its functions, so this firing reliably post-dates the harness's types. This
-///     is the event that closes the cold-start hole workers-available alone left open.
-const WORKERS_AVAILABLE_TRIGGER_TYPE: &str = "engine::workers-available";
-const FUNCTIONS_AVAILABLE_TRIGGER_TYPE: &str = "engine::functions-available";
-
 /// Bind the three harness hooks (turn-completed → wake, pre-trigger → stamp-reply,
-/// pre-generate → inject-guidance) EXACTLY ONCE, and only after the harness has
-/// registered their trigger types (one `engine::triggers::list` probe). Because
-/// `register_trigger` is fire-and-forget — the engine silently drops a bind to an
-/// unknown trigger type — binding before the harness is up would lose the hooks. The
-/// shared `bound` flag keeps this idempotent across the boot-time attempt and every
-/// registry-change firing (which may run concurrently). After the first success the
-/// engine re-binds these automatically if the harness later restarts
-/// (`register_trigger_type` re-scans stored triggers), so one pass is enough.
-async fn try_bind_harness_hooks(iii: &IIIClient, bound: &AtomicBool) {
-    if bound.load(Ordering::Acquire) {
-        return;
-    }
-    if !harness_trigger_types_ready(iii).await {
-        return; // harness not up yet; a later registry-change event retries
-    }
-    // Win the bind race exactly once even if several worker events fire together.
-    if bound
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-    let turn_completed = bind_turn_completed(iii).is_some();
-    let pre_trigger = bind_pre_trigger_hook(iii).is_some();
-    let pre_generate = bind_pre_generate_hook(iii).is_some();
-    if turn_completed && pre_trigger && pre_generate {
-        tracing::info!(
-            "workflow harness hooks registered: turn-completed → wake, pre-trigger → \
-             stamp-reply, pre-generate → inject-guidance (guidance injection active)"
-        );
-    } else {
-        // A bind transiently failed. Release the claim so a later engine::*-available
-        // event retries, instead of leaving the missing hook(s) unbound until restart.
-        // Re-binding an already-bound hook on retry is tolerated: the bound hooks
-        // (turn-completed → wake, pre-trigger → stamp) are idempotent downstream.
-        bound.store(false, Ordering::Release);
-        tracing::warn!(
-            turn_completed,
-            pre_trigger,
-            pre_generate,
-            "not all workflow harness hooks bound; releasing the bind claim to retry on the \
-             next registry-change event"
-        );
-    }
-}
-
-/// Bind the harness hooks without racing the harness's startup — and without polling.
-///
-/// The workflow worker can boot before the harness has registered its hook trigger types.
-/// Rather than poll, we subscribe to two engine registry-change triggers and (re)try the
-/// binds on each firing; `try_bind_harness_hooks` no-ops until the harness's types appear,
-/// then binds once. We need BOTH because they fire at different moments (see the trigger
-/// consts): `engine::workers-available` is immediate but can precede a worker's own type
-/// registration, while `engine::functions-available` fires after function registration and
-/// so reliably post-dates the harness's types. The initial attempt covers the warm-start
-/// case (harness already connected, so no new event fires for it).
-pub async fn setup_harness_hooks(iii: &Arc<IIIClient>) {
-    let bound = Arc::new(AtomicBool::new(false));
-
-    let iii_for_fn = iii.clone();
-    let bound_for_fn = bound.clone();
-    iii.register_function(
-        ON_REGISTRY_CHANGED_FN_ID,
-        RegisterFunction::new_async(move |_event: Value| {
-            let iii = iii_for_fn.clone();
-            let bound = bound_for_fn.clone();
-            async move {
-                try_bind_harness_hooks(&iii, &bound).await;
-                Ok::<Value, Error>(json!({ "ok": true }))
-            }
-        })
-        .description(
-            "Internal: on engine::workers-available / engine::functions-available, bind the \
-             workflow harness hooks (turn-completed, pre-trigger, pre-generate) once the \
-             harness has registered their trigger types. Not called directly.",
-        ),
+/// pre-generate → inject-guidance). One shot: if the harness is not up yet, the
+/// engine parks each binding as a pending intent and activates it when the trigger
+/// type registers (recoverable triggers, iii #1962) — and re-parks/re-activates
+/// them across harness restarts. Nothing to watch or retry.
+pub fn setup_harness_hooks(iii: &IIIClient) {
+    let _ = bind_turn_completed(iii);
+    let _ = bind_pre_trigger_hook(iii);
+    let _ = bind_pre_generate_hook(iii);
+    tracing::info!(
+        "workflow harness hooks registered: turn-completed → wake, pre-trigger → \
+         stamp-reply, pre-generate → inject-guidance (guidance injection active)"
     );
-
-    // Arm the event-driven retries BEFORE the initial probe, so a harness that comes up
-    // mid-probe is still caught. Both binds are race-free (mandatory in-process types).
-    for trigger_type in [
-        WORKERS_AVAILABLE_TRIGGER_TYPE,
-        FUNCTIONS_AVAILABLE_TRIGGER_TYPE,
-    ] {
-        let _ = bind(iii, trigger_type, ON_REGISTRY_CHANGED_FN_ID, json!({}));
-    }
-
-    // Warm start: the harness may already be connected, in which case no further
-    // registry-change event fires for it — attempt the bind now.
-    try_bind_harness_hooks(iii, &bound).await;
 }
 
 /// (Re)bind the cron node-timeout sweep from the current config.
@@ -472,35 +336,5 @@ mod tests {
         )
         .await;
         assert_eq!(cell.read().await.default_pending_timeout_ms, 9999);
-    }
-
-    #[test]
-    fn all_trigger_types_present_requires_every_needed_id() {
-        // All three harness trigger types present → ready.
-        let ready = serde_json::json!({
-            "triggers": [
-                { "id": "harness::turn-completed" },
-                { "id": "harness::hook::pre-trigger" },
-                { "id": "harness::hook::pre-generate" },
-                { "id": "cron" },
-            ]
-        });
-        assert!(all_trigger_types_present(&ready, &HARNESS_TRIGGER_TYPES));
-
-        // One missing (the exact cold-start bug: harness up but pre-generate not
-        // yet registered) → NOT ready, so we keep waiting instead of binding early.
-        let partial = serde_json::json!({
-            "triggers": [
-                { "id": "harness::turn-completed" },
-                { "id": "harness::hook::pre-trigger" },
-            ]
-        });
-        assert!(!all_trigger_types_present(&partial, &HARNESS_TRIGGER_TYPES));
-
-        // No triggers field at all (engine unreachable / empty) → NOT ready.
-        assert!(!all_trigger_types_present(
-            &serde_json::json!({}),
-            &HARNESS_TRIGGER_TYPES
-        ));
     }
 }

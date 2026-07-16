@@ -5,6 +5,13 @@ A deterministic DAG orchestrator running over the iii harness. Accepts
 state in iii-state; fans out nodes as child harness sessions with deterministic
 ids so duplicate deliveries are idempotent.
 
+The three harness hook bindings (turn-completed → wake, pre-trigger →
+stamp-reply, pre-generate → inject-guidance) are one-shot at startup and rely
+on the engine's recoverable triggers (iii #1962, engine ≥ 0.21.8): bound
+before the harness is up, they park as pending intents and activate when the
+harness registers the trigger types. On older engines the binds are silently
+dropped.
+
 ---
 
 ## Getting the result back (don't poll)

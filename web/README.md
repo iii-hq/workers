@@ -11,6 +11,14 @@ The worker is a faithful Rust port of the original TypeScript `web::fetch`
 implementation — same request fields and success/error/image envelopes, so
 existing callers and the harness consumer are unaffected.
 
+While connected it also injects a usage section into the agent system prompt
+via the harness `pre-generate` hook (`web::inject-guidance`), so the guidance
+is presence-gated: no web worker, no prompt text. The binding is one-shot at
+startup and relies on the engine's recoverable triggers (iii #1962, engine ≥
+0.21.8): bound before the harness is up, it parks as a pending intent and
+activates when the harness registers the trigger type. On older engines the
+bind is silently dropped.
+
 ## Table of contents
 
 1. [Install](#install)

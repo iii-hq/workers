@@ -104,10 +104,11 @@ async fn main() -> Result<()> {
     let shared = cfg.into_shared();
     functions::register_all(&iii, &shared);
 
-    // Bind the harness pre-generate hook (web::inject-guidance) once the harness's hook
-    // trigger type appears — reacts to engine::*-available, no polling. Presence-gated:
-    // the guidance is injected only while this worker is connected.
-    configuration::setup_harness_hooks(&iii).await;
+    // Bind the harness pre-generate hook (web::inject-guidance). One shot: the engine
+    // parks the binding until the harness registers the trigger type (recoverable
+    // triggers, iii #1962). Presence-gated: the guidance is injected only while this
+    // worker is connected.
+    configuration::setup_harness_hooks(&iii);
 
     configuration::register_config_trigger(
         &iii,
