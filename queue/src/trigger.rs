@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
@@ -27,6 +28,62 @@ use crate::subscriber_config::SubscriberQueueConfig;
 /// lets the adapter retry an in-flight delivery while the original invocation
 /// is still running. 30 minutes covers the longest intended job budget.
 const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+
+/// How often [`IiiInvoker::connection_lost`] samples the engine epoch while
+/// an invocation is in flight, and how long one sample may take. Sampling is
+/// cheap (`engine::workers::list` against the local engine) relative to the
+/// queue-delivered jobs it guards, which run for seconds to minutes.
+const ENGINE_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
+const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
+
+/// The engine boot epoch this process last observed (0 = not yet sampled).
+/// Seeded at worker boot ([`seed_engine_epoch`]) so a restart is detectable
+/// even when the crash lands before an in-flight delivery's first own
+/// sample — the exact window the issue-507 fault injection hits.
+static LAST_KNOWN_ENGINE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Sample the engine epoch until it succeeds once and remember it as the
+/// process baseline. Spawned at boot; keeps the baseline warm before any
+/// delivery is in flight.
+pub async fn seed_engine_epoch(iii: Arc<IIIClient>) {
+    loop {
+        if let Some(epoch) = engine_epoch_ms(&iii).await {
+            let _ = LAST_KNOWN_ENGINE_EPOCH.compare_exchange(
+                0,
+                epoch,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(ENGINE_EPOCH_PROBE_INTERVAL_MS)).await;
+    }
+}
+
+/// The engine's boot identity: the earliest `connected_at_ms` among its
+/// in-process (`runtime == "engine"`) workers, which attach once at engine
+/// startup. A restarted engine reports a new epoch — the signal that every
+/// invocation in flight across the restart lost its result routing. `None`
+/// when the engine cannot be reached (outage in progress) or the response
+/// shape is unrecognized.
+async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
+    let response = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
+        })
+        .await
+        .ok()?;
+    response
+        .get("workers")?
+        .as_array()?
+        .iter()
+        .filter(|worker| worker.get("runtime").and_then(Value::as_str) == Some("engine"))
+        .filter_map(|worker| worker.get("connected_at_ms").and_then(Value::as_u64))
+        .min()
+}
 
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
@@ -49,6 +106,20 @@ pub trait Invoker: Send + Sync + 'static {
     /// burning delivery retries on a transient `FUNCTION_NOT_FOUND` error.
     async fn function_available(&self, _function_id: &str) -> Result<bool, String> {
         Ok(true)
+    }
+
+    /// Resolve when the engine connection carrying an in-flight invocation is
+    /// lost. The engine keeps invocation routing in memory, so a result for a
+    /// call that was in flight when the connection dropped can never be
+    /// delivered — the caller should treat that invocation as interrupted
+    /// instead of waiting out its full timeout, which stranded the in-flight
+    /// `harness-turn` job (and wedged its FIFO group) for the whole 30-minute
+    /// budget after an engine crash (iii-hq/workers#507).
+    ///
+    /// Default: pends forever. Unit-test invokers and embedded deployments
+    /// without a live engine connection never observe an interruption.
+    async fn connection_lost(&self) {
+        std::future::pending::<()>().await
     }
 }
 
@@ -114,6 +185,48 @@ impl Invoker for IiiInvoker {
                     Ok(false)
                 } else {
                     Err(message)
+                }
+            }
+        }
+    }
+
+    async fn connection_lost(&self) {
+        // Neither the SDK connection state nor plain liveness probes can see
+        // a fast restart: the reconnect loop reports `Connected` through its
+        // silent 2s retry sleep, and outbound messages buffered during the
+        // outage are answered by the NEW engine as if nothing happened
+        // (both verified against a SIGKILLed-and-respawned engine). The
+        // engine's boot epoch is the reliable signal — a buffered probe
+        // answered by a restarted engine reveals the changed epoch.
+        //
+        // Baseline: the boot-seeded process-wide epoch. Falling back to
+        // sampling here is best-effort only — a crash landing before the
+        // first sample would go undetected, which is why boot seeds it.
+        use std::sync::atomic::Ordering;
+        let mut baseline = LAST_KNOWN_ENGINE_EPOCH.load(Ordering::SeqCst);
+        while baseline == 0 {
+            if let Some(epoch) = engine_epoch_ms(&self.iii).await {
+                let _ = LAST_KNOWN_ENGINE_EPOCH.compare_exchange(
+                    0,
+                    epoch,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                baseline = LAST_KNOWN_ENGINE_EPOCH.load(Ordering::SeqCst);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(ENGINE_EPOCH_PROBE_INTERVAL_MS)).await;
+            baseline = LAST_KNOWN_ENGINE_EPOCH.load(Ordering::SeqCst);
+        }
+        loop {
+            tokio::time::sleep(Duration::from_millis(ENGINE_EPOCH_PROBE_INTERVAL_MS)).await;
+            // An unreadable epoch (outage in progress) never trips by
+            // itself: nothing can progress until the engine is back, and
+            // the first successful sample afterwards decides.
+            if let Some(epoch) = engine_epoch_ms(&self.iii).await {
+                if epoch != baseline {
+                    LAST_KNOWN_ENGINE_EPOCH.store(epoch, Ordering::SeqCst);
+                    return;
                 }
             }
         }

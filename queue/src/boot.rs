@@ -42,6 +42,11 @@ impl BootHandle {
 pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
 
+    // Seed the engine boot-epoch baseline before any delivery is in flight,
+    // so an engine restart under an in-flight invocation is detectable even
+    // when it lands within the delivery's first probe interval (#507).
+    tokio::spawn(crate::trigger::seed_engine_epoch(iii.clone()));
+
     let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(iii.clone()));
     // No fallback to builtin on a bad config: an adapter that fails to build
     // at boot (e.g. redis/rabbitmq unreachable) must fail the boot itself,
