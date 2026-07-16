@@ -41,7 +41,7 @@ const PANEL_OPTIONS: { value: Panel; label: string }[] = [
   { value: 'rules', label: 'rules' },
   { value: 'memories', label: 'memories' },
   { value: 'graph', label: 'graph' },
-  { value: 'recall', label: 'recall' },
+  { value: 'recall', label: 'preview' },
 ]
 
 export function Memory() {

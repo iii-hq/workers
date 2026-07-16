@@ -150,12 +150,7 @@ pub async fn pre_generate(
     // ambient and needs no function call.
     let generate = input.generate.as_ref();
     let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
-    let mut section = format!(
-        "\n\n# Memory — bank: {bank_name}\nMemory is automatic here: durable memories and \
-         preferences from this conversation are extracted and saved after each turn, and \
-         relevant memories are provided to you when they exist. When the user asks you to \
-         remember something, acknowledge it — no save call is needed.\n"
-    );
+    let mut section = ambient_header(&bank_name);
 
     if cfg.inject_rules {
         if let Ok(rules) = bank.list_rules() {
@@ -293,6 +288,19 @@ pub async fn session_deleted(
         extract::cursor_delete(&deps.iii, &input.session_id).await;
     }
     Ok(AckResponse { ok: true })
+}
+
+/// The always-present opening of the injected section (stable per
+/// session, so it never breaks the provider prompt cache): tells the
+/// model capture is ambient, so "remember X" gets an acknowledgment
+/// instead of a false "I cannot save to memory".
+pub(crate) fn ambient_header(bank_name: &str) -> String {
+    format!(
+        "\n\n# Memory — bank: {bank_name}\nMemory is automatic here: durable memories and \
+         preferences from this conversation are extracted and saved after each turn, and \
+         relevant memories are provided to you when they exist. When the user asks you to \
+         remember something, acknowledge it — no save call is needed.\n"
+    )
 }
 
 /// Turn-scoped bank override: `memory_bank` in the turn metadata.

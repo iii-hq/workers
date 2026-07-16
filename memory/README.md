@@ -60,6 +60,7 @@ Bank selection order: turn metadata `memory_bank` → session metadata `memory_b
 | `memory::get / list / update / delete / pin` | Memory CRUD; delete tombstones; update bumps a revision in the log |
 | `memory::recall` | The exact scorer the hook uses: preview what a turn would be given; `tag` narrows to one label |
 | `memory::tags` | Distinct tags across a bank's live memories with counts (the filter source) |
+| `memory::preview` | Full injection dry-run for a hypothetical chat message: rules section (budgets applied), memories post ambient floor and token budget, appended message verbatim — the hook's exact code path |
 | `memory::rule::list / set` | The always-injected markdown rules; empty content removes |
 | `memory::supersede` | Retire one memory in favor of another (tombstone + pointer) — the consolidation seam |
 | `memory::doctor` | End-to-end self-test (roundtrip + sibling reachability) |

@@ -208,6 +208,61 @@ export async function reloadStore(): Promise<void> {
   await client.trigger('memory::reload', {})
 }
 
+const previewSchema = z.object({
+  bank: z.string(),
+  system_prompt_section: z.string().default(''),
+  rules: z.number().default(0),
+  rules_truncated: z.boolean().default(false),
+  memories: z
+    .array(z.object({ memory: z.unknown(), score: z.number() }))
+    .default([]),
+  message: z.string().nullish(),
+  retrieval: z.string().default(''),
+})
+
+export interface TurnPreview {
+  systemPromptSection: string
+  rules: number
+  rulesTruncated: boolean
+  memories: RecalledMemory[]
+  message: string | null
+  retrieval: string
+}
+
+/** The full injection dry-run: exactly what a turn on this bank would be
+ * given for a hypothetical chat message — same code path as the hook. */
+export async function preview(
+  bank: string,
+  query: string,
+): Promise<TurnPreview> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>('memory::preview', { bank, query })
+  const parsed = previewSchema.safeParse(res)
+  if (!parsed.success) {
+    return {
+      systemPromptSection: '',
+      rules: 0,
+      rulesTruncated: false,
+      memories: [],
+      message: null,
+      retrieval: '',
+    }
+  }
+  return {
+    systemPromptSection: parsed.data.system_prompt_section,
+    rules: parsed.data.rules,
+    rulesTruncated: parsed.data.rules_truncated,
+    memories: parsed.data.memories
+      .map((r) => {
+        const memory = parseMemory(r.memory)
+        return memory ? { memory, score: r.score } : null
+      })
+      .filter((r): r is RecalledMemory => r !== null),
+    message: parsed.data.message ?? null,
+    retrieval: parsed.data.retrieval,
+  }
+}
+
 export async function recall(
   bank: string,
   query: string,

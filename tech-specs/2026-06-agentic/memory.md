@@ -65,6 +65,9 @@ Consumer-facing:
   automatic path.
 - `memory::recall` — rank a bank's memories against a query with the injection hook's exact
   scorer; `include_superseded` ranks history too.
+- `memory::preview` — the full injection dry-run: the system-prompt memory section (rules,
+  budgets, truncation markers), the memories a turn would be handed post ambient floor and token
+  budget, and the appended message verbatim. Shares the hook's code, so it cannot drift.
 - `memory::bank::create` / `memory::bank::list` / `memory::bank::delete` — named scopes; delete
   moves the folder to `.trash/` (recoverable).
 - `memory::rule::list` / `memory::rule::set` — the always-injected markdown rules; empty content

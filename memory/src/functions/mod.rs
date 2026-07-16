@@ -9,6 +9,7 @@
 pub mod banks;
 pub mod items;
 pub mod ops;
+pub mod preview;
 pub mod recall;
 pub mod rules;
 
@@ -73,6 +74,13 @@ pub const TAGS_ID: &str = "memory::tags";
 pub const TAGS_DESC: &str =
     "Distinct tags across a bank's live memories with usage counts, most used first — the \
      filter source for tag-scoped list/recall.";
+
+pub const PREVIEW_ID: &str = "memory::preview";
+pub const PREVIEW_DESC: &str =
+    "Full injection dry-run for a hypothetical chat message: the exact system-prompt memory \
+     section (rules, budgets, truncation markers), the memories the turn would be handed \
+     (post ambient floor and token budget), and the appended message verbatim. Runs the same \
+     code as the pre-generate hook.";
 
 pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
@@ -198,6 +206,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(
         iii,
         deps,
+        PREVIEW_ID,
+        PREVIEW_DESC,
+        false,
+        |d, r| async move { preview::preview(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
         RECALL_ID,
         RECALL_DESC,
         false,
@@ -291,6 +307,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<items::PinRequest, items::MemoryResponse>(PIN_ID, PIN_DESC),
         spec::<items::SupersedeRequest, items::MemoryResponse>(SUPERSEDE_ID, SUPERSEDE_DESC),
         spec::<items::TagsRequest, items::TagsResponse>(TAGS_ID, TAGS_DESC),
+        spec::<preview::PreviewRequest, preview::PreviewResponse>(PREVIEW_ID, PREVIEW_DESC),
         spec::<recall::RecallRequest, recall::RecallResponse>(RECALL_ID, RECALL_DESC),
         spec::<rules::RuleListRequest, rules::RuleListResponse>(RULE_LIST_ID, RULE_LIST_DESC),
         spec::<rules::RuleSetRequest, rules::RuleSetResponse>(RULE_SET_ID, RULE_SET_DESC),

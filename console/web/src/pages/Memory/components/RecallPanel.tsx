@@ -1,18 +1,19 @@
-import { Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { type MemoryItem, type RecalledMemory, recall } from '@/lib/memory'
+import { type MemoryItem, type TurnPreview, preview } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 
 /**
- * Recall dry-run: the exact scorer the pre-generate hook uses, so a user
- * can preview precisely which memories a turn on some topic would be given
- * (and why — scores shown). Zero LLM; instant. First-use DX: the panel
- * explains itself in chat terms and offers clickable example questions
- * derived from THIS bank's content, so the first recall is one click.
+ * Turn preview: not another search box (the memories tab has one) — this
+ * composes the ENTIRE memory payload a chat turn on this bank would get,
+ * via `memory::preview`, which runs the same code as the pre-generate
+ * hook: the system-prompt section with rules and budgets applied, the
+ * memories after the ambient floor and token budget, and the appended
+ * message verbatim.
  */
 
 interface RecallPanelProps {
@@ -46,10 +47,10 @@ function suggestions(
 
 export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<RecalledMemory[] | null>(null)
-  const [retrieval, setRetrieval] = useState('')
+  const [result, setResult] = useState<TurnPreview | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showPrompt, setShowPrompt] = useState(false)
 
   const examples = useMemo(() => suggestions(memories, tags), [memories, tags])
 
@@ -59,25 +60,24 @@ export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
     setRunning(true)
     setError(null)
     try {
-      const res = await recall(bank, trimmed)
-      setResults(res.memories)
-      setRetrieval(res.retrieval)
+      setResult(await preview(bank, trimmed))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
-      setResults(null)
+      setResult(null)
     } finally {
       setRunning(false)
     }
   }
 
-  const maxScore = results?.[0]?.score ?? 1
+  const maxScore = result?.memories[0]?.score || 1
 
   return (
     <div className="flex flex-col gap-3">
       <p className="font-mono text-[11px] lowercase text-ink-faint">
-        a dry-run of the agent's memory: type what someone might ask in chat,
-        and see the exact memories that turn would be handed — same scorer the
-        injection hook runs, scored and ranked, no model involved.
+        the whole turn, before it happens: type what someone would ask in chat
+        and see everything memory hands that turn — the rules going into the
+        system prompt (budgets and truncation applied) and the exact memories
+        appended, in order. same code the live hook runs.
       </p>
       <form
         className="flex items-center gap-2"
@@ -91,7 +91,7 @@ export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
           onChange={setQuery}
           preserveCase
           placeholder="ask like a chat user would — e.g. when do I publish?"
-          aria-label="recall query"
+          aria-label="turn preview query"
           className="flex-1"
         />
         <Button
@@ -102,11 +102,11 @@ export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
           className="gap-1"
         >
           <Search className="w-3.5 h-3.5" aria-hidden />
-          recall
+          preview turn
         </Button>
       </form>
 
-      {results === null && !error ? (
+      {result === null && !error ? (
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-ghost">
             try
@@ -131,44 +131,78 @@ export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
         <p className="font-mono text-[12px] lowercase text-alert">{error}</p>
       ) : null}
 
-      {results !== null && !error ? (
-        results.length === 0 ? (
-          <EmptyState
-            title="nothing recalled"
-            description="no memories in this bank matched the query. memories match on words, entity handles, and meaning (when embeddings are configured) — try one of the suggestions, or phrase it with words the memories use."
-          />
-        ) : (
-          <div className="flex flex-col gap-2">
-            <span className="font-mono text-[10px] lowercase text-ink-ghost">
-              what the turn would be given · retrieval:{' '}
-              {retrieval || 'bm25-entity'}
-            </span>
-            <ul className="border border-rule divide-y divide-rule-2">
-              {results.map(({ memory, score }) => (
-                <li key={memory.id} className="px-3 py-2 flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={cn('h-1.5 bg-accent shrink-0')}
-                      style={{
-                        width: `${Math.max(4, Math.round((score / maxScore) * 64))}px`,
-                      }}
-                      aria-hidden
-                    />
-                    <span className="font-mono text-[10px] text-ink-ghost tabular-nums">
-                      {score.toFixed(2)}
-                    </span>
-                    {memory.pinned ? (
-                      <Badge variant="accent">pinned</Badge>
-                    ) : null}
-                  </div>
-                  <p className="font-mono text-[13px] text-ink leading-snug">
-                    {memory.text}
-                  </p>
-                </li>
-              ))}
-            </ul>
+      {result !== null && !error ? (
+        <div className="flex flex-col gap-3">
+          <div className="border border-rule">
+            <button
+              type="button"
+              onClick={() => setShowPrompt((v) => !v)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-left"
+            >
+              {showPrompt ? (
+                <ChevronDown className="w-3.5 h-3.5 text-ink-ghost" aria-hidden />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5 text-ink-ghost" aria-hidden />
+              )}
+              <span className="font-mono text-[11px] lowercase text-ink">
+                system prompt gets: {result.rules} rule
+                {result.rules === 1 ? '' : 's'}
+                {result.rulesTruncated ? ' · over budget, truncated' : ''}
+              </span>
+              <span className="flex-1" />
+              <span className="font-mono text-[10px] lowercase text-ink-ghost">
+                every turn, guaranteed
+              </span>
+            </button>
+            {showPrompt ? (
+              <pre className="px-3 pb-3 font-mono text-[11px] text-ink-faint whitespace-pre-wrap leading-relaxed border-t border-rule-2 pt-2 max-h-72 overflow-auto">
+                {result.systemPromptSection.trim()}
+              </pre>
+            ) : null}
           </div>
-        )
+
+          {result.memories.length === 0 ? (
+            <EmptyState
+              title="no memories would be appended"
+              description="nothing in this bank matches this question and nothing is strong enough for the ambient floor. the rules above still land."
+            />
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span className="font-mono text-[10px] lowercase text-ink-ghost">
+                appended to the turn ({result.memories.length}, in order) ·
+                retrieval: {result.retrieval || 'bm25-entity'}
+              </span>
+              <ul className="border border-rule divide-y divide-rule-2">
+                {result.memories.map(({ memory, score }) => (
+                  <li key={memory.id} className="px-3 py-2 flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn('h-1.5 shrink-0', score > 0 ? 'bg-accent' : 'bg-rule')}
+                        style={{
+                          width: `${Math.max(4, Math.round((score / maxScore) * 64))}px`,
+                        }}
+                        aria-hidden
+                      />
+                      <span className="font-mono text-[10px] text-ink-ghost tabular-nums">
+                        {score > 0 ? score.toFixed(2) : 'ambient'}
+                      </span>
+                      {memory.pinned ? (
+                        <Badge variant="accent">pinned</Badge>
+                      ) : null}
+                    </div>
+                    <p className="font-mono text-[13px] text-ink leading-snug">
+                      {memory.text}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              <p className="font-mono text-[10px] lowercase text-ink-ghost">
+                "ambient" = didn't match the question, but strong enough that
+                every turn gets it (pinned and most-seen memories)
+              </p>
+            </div>
+          )}
+        </div>
       ) : null}
     </div>
   )

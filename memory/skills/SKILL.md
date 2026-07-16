@@ -63,6 +63,9 @@ rule; point-in-time information belongs in memories.
 - `memory::recall` — rank a bank's memories against a query (the injection
   hook's exact scorer); response names the retrieval mode that ran; `tag`
   narrows to one label.
+- `memory::preview` — the FULL injection dry-run for a hypothetical chat
+  message: the system-prompt rules section, the memories a turn would be
+  handed (floor + budget applied), and the appended message verbatim.
 - `memory::tags` — a bank's distinct tags with counts. Add `tags` on save
   when the user wants memories organized within a bank.
 - `memory::bank::create / list / delete` — named memory scopes; delete trashes.
