@@ -202,13 +202,18 @@ export function useTraceData({
       qc.invalidateQueries({ queryKey: ['traceGroupMembers'] })
     }
 
-    // ── Trace-tags refresh ────────────────────────────────────────────────
+    // ── Trace-tags refresh / row backfill ─────────────────────────────────
     // Streamed rows arrive WITHOUT `trace_tags` (only `traces::list` merges
     // them), and a row's tags can change after it exists — the tag-bearing
     // span (e.g. the harness turn step carrying `iii.session.name`) closes
     // well after the root row was pushed. Both funnel into one debounced
     // `trace_ids` read whose `trace_tags` are merged back into the cache; a
     // filtered list can't be patched row-wise, so it refetches instead.
+    // The same read doubles as the list's self-heal: a trace whose
+    // `trace-rows` frame was dropped (broadcast lag, reconnect gap) keeps
+    // firing span activity, and if its fetched ROOT isn't in the cache yet
+    // it is inserted — without this, a missed row frame leaves the trace
+    // off the list until the next full reseed.
     const pendingTagIds = new Set<string>()
     let tagFlushTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -242,22 +247,36 @@ export function useTraceData({
           limit: ids.length,
         })
         if (disposed) return
+        if (res.spans.length === 0) return
         const tagsByTrace = new Map(
           res.spans
             .filter((s) => s.trace_tags)
             .map((s) => [s.trace_id, s.trace_tags]),
         )
-        if (tagsByTrace.size === 0) return
         qc.setQueryData<TracesResponse>(key, (old) => {
           if (!old) return old
           let changed = false
+          const known = new Set(old.spans.map((s) => s.trace_id))
           const spans = old.spans.map((s) => {
             const tags = tagsByTrace.get(s.trace_id)
             if (!tags || tagsEqual(tags, s.trace_tags)) return s
             changed = true
             return { ...s, trace_tags: tags }
           })
-          return changed ? { ...old, spans } : old
+          // Backfill: roots the rows stream never delivered (dropped
+          // frame) join the list here instead of waiting for a reseed.
+          const missing = res.spans.filter(
+            (s) => !s.parent_span_id && !known.has(s.trace_id),
+          )
+          if (missing.length === 0) {
+            return changed ? { ...old, spans } : old
+          }
+          const merged = mergeTraceListSpans(
+            spans,
+            missing,
+            DEFAULT_TRACE_LIMIT,
+          )
+          return { ...old, spans: merged, total: merged.length }
         })
       } catch {
         // Transient read failure — the next activity window retries.
@@ -306,16 +325,17 @@ export function useTraceData({
         qc.invalidateQueries({ queryKey: ['traceGroupMembers'] })
       })
 
-      // Span activity on traces we already list = their merged tags may have
-      // just changed (late tag-bearing span, renamed session). Only known
-      // rows schedule — activity for traces outside the list is noise here.
+      // Span activity = a listed trace's merged tags may have just changed
+      // (late tag-bearing span, renamed session), OR a trace the rows
+      // stream never delivered is doing work. Both route through the same
+      // debounced read: known rows get their tags patched, unknown roots
+      // get backfilled (see `flushTagRefresh`). Gated on the seed having
+      // landed — before that the seed read itself covers everything.
       const offActivity = startTraceActivityFeed(client, (traceIds) => {
         if (isPausedRef.current || isHidden()) return
         const cached = qc.getQueryData<TracesResponse>(mergeKeyRef.current.key)
-        if (!cached || cached.spans.length === 0) return
-        const known = new Set(cached.spans.map((s) => s.trace_id))
-        const relevant = traceIds.filter((id) => known.has(id))
-        if (relevant.length > 0) scheduleTagRefresh(relevant)
+        if (!cached) return
+        scheduleTagRefresh(traceIds)
       })
 
       const offConn = client.addConnectionStateListener((state) => {

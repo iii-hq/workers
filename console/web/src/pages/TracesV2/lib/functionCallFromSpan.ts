@@ -10,7 +10,10 @@
  * in one of the OTel/iii attributes (`faas.invoked_name`, `function_id`,
  * `iii.function.id`) or is a worker-SDK handler span named `execute <fn>`
  * (those spans carry the function id only in their NAME — see
- * `explicitFunctionId`).
+ * `explicitFunctionId`). A span that only INHERITS an identity (ancestor
+ * invocation / baggage) renders a card only when it actually captured
+ * payload data — otherwise nested plumbing spans would all show a card
+ * with two "empty" panes.
  *
  * Input/output: best effort from the iii-sdk auto-capture events, which
  * store JSON payloads under the `iii.payload.json` event attribute. Event
@@ -183,6 +186,20 @@ export function functionCallFromSpan(
   const output =
     outputEvent?.value ??
     (span.status === 'error' ? exceptionOutput(span) : undefined)
+
+  // Only the invocation span itself (own explicit identity) always gets a
+  // card. A span that merely INHERITS its function id — the ancestor walk
+  // or baggage above — is machinery inside that call (scope spans, queue
+  // wrappers, HTTP/DB clients); the SDK attaches `iii.payload.json` events
+  // to the invocation span only, so an inherited span without captured
+  // data would render a card whose panes both read "empty".
+  if (
+    explicitFunctionId(span) === null &&
+    input === undefined &&
+    output === undefined
+  ) {
+    return null
+  }
 
   if (span.pending) {
     // Still running: no duration or output yet — the card renders its

@@ -3,6 +3,7 @@ import type { StoredSpan } from '../api/traces'
 import type { TimelineSpan } from '../components/timeline/layout'
 import type { SpanFilterSelection } from '../lib/spanFilters'
 import {
+  liveTraceIds,
   mergeFetchedVerdicts,
   reconcileTraceVisibility,
   rowRootFilterKeys,
@@ -208,6 +209,50 @@ describe('reconcileTraceVisibility', () => {
     ).toEqual(['t-1'])
   })
 
+  it('keeps a visible verdict when the visible bars prune out but hidden ones linger', () => {
+    // The mid-run vanish: the feed retains ~2min, so during a long quiet
+    // stretch a turn's visible bars prune away while its hidden
+    // bookkeeping keeps the trace in the feed. Visibility is monotone —
+    // the row must not flip back to hidden.
+    const verdicts = new Map<string, boolean>()
+    const sel = selection({ hiddenGroups: new Set(['harness::turn']) })
+    const rows = [row('t-1', 'harness::turn')]
+    const dispatch = bar({ id: 'root', groupKey: 'harness::turn' })
+    const step = bar({ id: 'step', groupKey: 'harness::turn step' })
+    expect(
+      ids(reconcileTraceVisibility(verdicts, [dispatch, step], rows, sel)),
+    ).toEqual(['t-1'])
+    // `step` pruned from the feed; only the hidden dispatch bar remains.
+    expect(
+      ids(reconcileTraceVisibility(verdicts, [dispatch], rows, sel)),
+    ).toEqual(['t-1'])
+  })
+
+  it('keeps a live trace visible even while every bar in the feed is hidden', () => {
+    // A running turn: worker spans only reach the feed when they CLOSE, so
+    // early on the feed holds nothing but hidden dispatch plumbing. The
+    // row must not hide while the trace is live.
+    const verdicts = new Map<string, boolean>()
+    const sel = selection({ hiddenGroups: new Set(['harness::turn']) })
+    const rows = [row('t-1', 'harness::turn')]
+    const dispatch = bar({ id: 'root', groupKey: 'harness::turn' })
+    expect(
+      ids(
+        reconcileTraceVisibility(
+          verdicts,
+          [dispatch],
+          rows,
+          sel,
+          new Set(['t-1']),
+        ),
+      ),
+    ).toEqual(['t-1'])
+    // Settled (no longer live) with a still-hidden composition → hides.
+    expect(
+      ids(reconcileTraceVisibility(verdicts, [dispatch], rows, sel)),
+    ).toEqual([])
+  })
+
   it('drops cached verdicts once the trace leaves the list too', () => {
     const verdicts = new Map<string, boolean>()
     const sel = selection({ hiddenGroups: new Set(['fn']) })
@@ -305,5 +350,50 @@ describe('mergeFetchedVerdicts', () => {
     mergeFetchedVerdicts(verdicts, ['t-hidden', 't-visible'], spans, sel, 2)
     expect(verdicts.get('t-visible')).toBe(true)
     expect(verdicts.has('t-hidden')).toBe(false)
+  })
+
+  it('never downgrades a visible verdict — the read raced a newer feed frame', () => {
+    const verdicts = new Map<string, boolean>([['t-1', true]])
+    mergeFetchedVerdicts(
+      verdicts,
+      ['t-1'],
+      [
+        stored({
+          span_id: 'h1',
+          attributes: [['function_id', 'fn']],
+        }),
+      ],
+      sel,
+    )
+    expect(verdicts.get('t-1')).toBe(true)
+  })
+})
+
+describe('liveTraceIds', () => {
+  // Realistic epoch ms — `toMs` sniffs nano vs ms by magnitude.
+  const now = 1_700_000_000_000
+
+  it('counts a pending snapshot as live', () => {
+    const live = liveTraceIds(
+      [stored({ span_id: 's1', trace_id: 't-1', pending: true })],
+      now,
+    )
+    expect(live.has('t-1')).toBe(true)
+  })
+
+  it('counts a just-ended span as live, an old one as settled', () => {
+    const justEnded = stored({
+      span_id: 's1',
+      trace_id: 't-recent',
+      end_time_unix_nano: (now - 2_000) * 1e6,
+    })
+    const longSettled = stored({
+      span_id: 's2',
+      trace_id: 't-old',
+      end_time_unix_nano: (now - 60_000) * 1e6,
+    })
+    const live = liveTraceIds([justEnded, longSettled], now)
+    expect(live.has('t-recent')).toBe(true)
+    expect(live.has('t-old')).toBe(false)
   })
 })

@@ -10,9 +10,10 @@
  * are pruned as frames arrive, and a hard cap keeps a busy engine from
  * growing the map without limit (oldest effective-end evicted first).
  * Paused / hidden-tab frames are dropped, matching the rows stream; a
- * reconnect or unpause re-seeds once, REPLACING the map — the engine store
- * is the source of truth, and merging would immortalize a stale pending
- * span whose close frame was lost across an engine restart.
+ * reconnect, unpause, or tab-visible re-seeds once, REPLACING the map —
+ * the engine store is the source of truth, and merging would immortalize
+ * a stale pending span whose close frame was lost across an engine
+ * restart.
  *
  * Engines without the all-spans stream simply never deliver a frame: the
  * strip then shows the seed's spans and refreshes on reconnects only.
@@ -144,9 +145,24 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
           void seedRef.current()
         }
       })
+      // Hidden-tab frames are dropped above, so the map has a hole after a
+      // tab switch — re-seed on return, mirroring the list's recovery in
+      // `useTraceData`. (REPLACE semantics, see the module docstring.)
+      let offVisibility: (() => void) | undefined
+      if (typeof document !== 'undefined') {
+        const onVisible = () => {
+          if (document.visibilityState === 'visible' && !isPausedRef.current) {
+            void seedRef.current()
+          }
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        offVisibility = () =>
+          document.removeEventListener('visibilitychange', onVisible)
+      }
       stop = () => {
         offFeed()
         offConn()
+        offVisibility?.()
       }
     })()
 
