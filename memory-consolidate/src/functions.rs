@@ -269,6 +269,15 @@ pub struct FunctionSpec {
     pub response_schema: schemars::schema::RootSchema,
 }
 
+/// Same generator settings iii-sdk uses at registration
+/// (`SchemaSettings::draft07()`), so the catalog pins exactly what
+/// registration emits.
+fn schema_of<T: JsonSchema>() -> schemars::schema::RootSchema {
+    schemars::r#gen::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>()
+}
+
 fn spec<Req: JsonSchema, Resp: JsonSchema>(
     function_id: &'static str,
     description: &'static str,
@@ -276,8 +285,8 @@ fn spec<Req: JsonSchema, Resp: JsonSchema>(
     FunctionSpec {
         function_id,
         description,
-        request_schema: schemars::schema_for!(Req),
-        response_schema: schemars::schema_for!(Resp),
+        request_schema: schema_of::<Req>(),
+        response_schema: schema_of::<Resp>(),
     }
 }
 

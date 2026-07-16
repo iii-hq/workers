@@ -1,0 +1,28 @@
+{
+  "description": "Drop all in-RAM state and reload every bank from disk — the recovery hatch after editing bank files by hand.",
+  "function_id": "memory::reload",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ReloadRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "banks": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "banks",
+      "ok"
+    ],
+    "title": "ReloadResponse",
+    "type": "object"
+  }
+}

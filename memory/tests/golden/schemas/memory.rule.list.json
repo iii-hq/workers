@@ -1,0 +1,64 @@
+{
+  "description": "List a bank's rules (markdown, injected whole into the system prompt on every turn). Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent.",
+  "function_id": "memory::rule::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "description": "Bank whose rules to list; the configured default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "RuleListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Rule": {
+        "description": "One markdown rule: always injected whole into the system prompt for sessions using its bank. Stored as `rules/<name>.md` — open it in any editor.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Milliseconds since epoch (file mtime).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content",
+          "name",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "bank": {
+        "type": "string"
+      },
+      "rules": {
+        "items": {
+          "$ref": "#/definitions/Rule"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "bank",
+      "rules"
+    ],
+    "title": "RuleListResponse",
+    "type": "object"
+  }
+}

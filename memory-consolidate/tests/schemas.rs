@@ -50,3 +50,65 @@ fn ids_are_kebab_case_names() {
         );
     }
 }
+
+mod support;
+
+fn golden_file_name(function_id: &str) -> String {
+    format!("schemas/{}.json", function_id.replace("::", "."))
+}
+
+fn spec_to_pretty_json(spec: &memory_consolidate::functions::FunctionSpec) -> String {
+    let value = serde_json::json!({
+        "function_id": spec.function_id,
+        "description": spec.description,
+        "request_schema": spec.request_schema,
+        "response_schema": spec.response_schema,
+    });
+    let mut pretty = serde_json::to_string_pretty(&value).expect("spec serializes");
+    pretty.push('\n');
+    pretty
+}
+
+/// Every catalog entry matches its committed golden snapshot — the wire
+/// surface consumed by callers and agents. Any schema or description
+/// change must land as an explicit golden diff (`UPDATE_GOLDENS=1 cargo
+/// test` regenerates).
+#[test]
+fn wire_schema_snapshots_match_goldens() {
+    let mut failures = Vec::new();
+    for spec in catalog() {
+        let rel = golden_file_name(spec.function_id);
+        let actual = spec_to_pretty_json(&spec);
+        if let Err(msg) = support::check_golden(&rel, &actual) {
+            failures.push(msg);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} wire-schema golden(s) drifted:\n\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// A golden file with no catalog entry is a stale leftover.
+#[test]
+fn no_orphan_schema_goldens() {
+    let dir = support::golden_root().join("schemas");
+    let expected: Vec<String> = catalog()
+        .iter()
+        .map(|s| format!("{}.json", s.function_id.replace("::", ".")))
+        .collect();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        assert!(
+            expected.iter().any(|e| e == &name),
+            "orphan golden tests/golden/schemas/{name}: no catalog entry produces it. \
+             Delete it or fix the catalog."
+        );
+    }
+}

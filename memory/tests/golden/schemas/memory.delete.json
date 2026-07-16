@@ -1,0 +1,177 @@
+{
+  "description": "Tombstone a memory (sets invalid_at). It leaves recall immediately but stays on disk and readable with include_superseded.",
+  "function_id": "memory::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "DeleteRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Confidence": {
+        "description": "How a memory entered the store.",
+        "oneOf": [
+          {
+            "description": "Stated directly in the source conversation.",
+            "enum": [
+              "extracted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Derived by the extraction model rather than stated verbatim.",
+            "enum": [
+              "inferred"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "enum": [
+              "stated"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Memory": {
+        "description": "One memory item. Serialized whole as a `memories.jsonl` line; replay is last-wins by `id`, so an update appends a full record with a bumped `revision` and a delete appends a tombstoned record (`invalid_at` set) — history is never destroyed, only superseded.",
+        "properties": {
+          "confidence": {
+            "$ref": "#/definitions/Confidence"
+          },
+          "corroboration": {
+            "default": 0,
+            "description": "Times this memory was independently re-observed. Boosts recall rank.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entities": {
+            "default": [],
+            "description": "Entity handles used as an exact-match retrieval signal.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Content fingerprint (`fp` + FNV-1a of the normalized text), so re-ingesting the same source reinforces instead of duplicating.",
+            "type": "string"
+          },
+          "invalid_at": {
+            "description": "Set when the memory stopped being true (superseded or deleted). The record stays on disk and remains queryable with `include_superseded: true`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pinned": {
+            "default": false,
+            "description": "Pinned memories are never touched by any automatic path (consolidation, decay); only an explicit `memory::pin`/`memory::update` changes them.",
+            "type": "boolean"
+          },
+          "revision": {
+            "default": 0,
+            "description": "Bumped on every appended revision of this id; replay keeps the highest.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Provenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "superseded_by": {
+            "description": "Memory id that replaced this one, when superseded by content.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confidence",
+          "created_at",
+          "id",
+          "text",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "Provenance": {
+        "description": "Where a memory came from. Every extracted memory points back into session-manager; nothing in memory duplicates the transcript store.",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Shared response for update/delete/pin.",
+    "properties": {
+      "memory": {
+        "$ref": "#/definitions/Memory"
+      }
+    },
+    "required": [
+      "memory"
+    ],
+    "title": "MemoryResponse",
+    "type": "object"
+  }
+}

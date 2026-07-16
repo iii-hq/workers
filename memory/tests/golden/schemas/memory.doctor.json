@@ -1,0 +1,51 @@
+{
+  "description": "End-to-end self-test: data-dir writability, a save→recall→trash roundtrip in a scratch bank, and sibling reachability (router, session-manager). Reports degraded states explicitly instead of a bare process-up health.",
+  "function_id": "memory::doctor",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DoctorRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DoctorCheck": {
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "detail",
+          "name",
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "checks": {
+        "items": {
+          "$ref": "#/definitions/DoctorCheck"
+        },
+        "type": "array"
+      },
+      "ok": {
+        "description": "True only when every REQUIRED check passed (sibling reachability is reported but advisory).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "checks",
+      "ok"
+    ],
+    "title": "DoctorResponse",
+    "type": "object"
+  }
+}

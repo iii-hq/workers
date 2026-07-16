@@ -1,0 +1,82 @@
+{
+  "description": "Create (or idempotently ensure) a named memory bank — an isolated scope of rules and memories, e.g. one per project or persona. Sessions select it via metadata `memory_bank`.",
+  "function_id": "memory::bank::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "description": {
+        "default": null,
+        "description": "Human description shown in listings and the console.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "description": "Bank name, `[a-z0-9][a-z0-9_-]{0,63}` (it becomes a folder name).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "title": "BankCreateRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BankInfo": {
+        "description": "Summary row for `memory::bank::list` and the console page.",
+        "properties": {
+          "description": {
+            "default": "",
+            "type": "string"
+          },
+          "memories": {
+            "description": "Live memory (memory) count.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pinned": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "rules": {
+            "description": "Rule (always-injected markdown) count.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memories",
+          "name",
+          "pinned",
+          "rules"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "bank": {
+        "$ref": "#/definitions/BankInfo"
+      },
+      "created": {
+        "description": "False when the bank already existed (create is idempotent).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "bank",
+      "created"
+    ],
+    "title": "BankCreateResponse",
+    "type": "object"
+  }
+}

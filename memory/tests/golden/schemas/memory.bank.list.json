@@ -1,0 +1,63 @@
+{
+  "description": "List every memory bank with memory/rule/pin counts.",
+  "function_id": "memory::bank::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "BankListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BankInfo": {
+        "description": "Summary row for `memory::bank::list` and the console page.",
+        "properties": {
+          "description": {
+            "default": "",
+            "type": "string"
+          },
+          "memories": {
+            "description": "Live memory (memory) count.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pinned": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "rules": {
+            "description": "Rule (always-injected markdown) count.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memories",
+          "name",
+          "pinned",
+          "rules"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "banks": {
+        "items": {
+          "$ref": "#/definitions/BankInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "banks"
+    ],
+    "title": "BankListResponse",
+    "type": "object"
+  }
+}
