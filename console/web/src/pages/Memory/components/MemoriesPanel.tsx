@@ -33,6 +33,9 @@ interface MemoriesPanelProps {
   onOffsetChange: (next: number) => void
   includeSuperseded: boolean
   onToggleSuperseded: (next: boolean) => void
+  tag: string | null
+  onTagChange: (next: string | null) => void
+  tags: { tag: string; count: number }[]
   onSave: (text: string) => Promise<boolean>
   onPin: (memory: MemoryItem) => void
   onEdit: (memory: MemoryItem, text: string) => Promise<boolean>
@@ -112,6 +115,14 @@ function FactRow({
         {memory.entities.map((entity) => (
           <Badge key={entity}>{entity}</Badge>
         ))}
+        {memory.tags.map((tag) => (
+          <span
+            key={tag}
+            className="font-mono text-[10px] lowercase px-1 border border-rule-2 text-ink-faint"
+          >
+            #{tag}
+          </span>
+        ))}
         <span className="font-mono text-[10px] lowercase text-ink-ghost">
           {memory.confidence}
           {memory.corroboration > 0 && ` · seen ×${memory.corroboration + 1}`}
@@ -172,6 +183,9 @@ export function MemoriesPanel({
   onOffsetChange,
   includeSuperseded,
   onToggleSuperseded,
+  tag,
+  onTagChange,
+  tags,
   onSave,
   onPin,
   onEdit,
@@ -280,6 +294,38 @@ export function MemoriesPanel({
           </Button>
         ) : null}
       </form>
+
+      {tags.length > 0 ? (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-ghost">
+            tags
+          </span>
+          {tags.map(({ tag: t, count }) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onTagChange(tag === t ? null : t)}
+              className={cn(
+                'font-mono text-[11px] lowercase px-1.5 py-0.5 border transition-colors',
+                tag === t
+                  ? 'border-accent text-ink'
+                  : 'border-rule text-ink-faint hover:border-ink hover:text-ink',
+              )}
+            >
+              #{t} · {count}
+            </button>
+          ))}
+          {tag ? (
+            <button
+              type="button"
+              onClick={() => onTagChange(null)}
+              className="font-mono text-[11px] lowercase text-ink-ghost hover:text-ink"
+            >
+              clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="font-mono text-[11px] lowercase text-ink-faint">

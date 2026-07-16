@@ -429,23 +429,41 @@ impl Bank {
     }
 
     /// Newest-first page. `include_superseded` also returns tombstoned /
-    /// superseded records (the history view).
+    /// superseded records (the history view); `tag` narrows to memories
+    /// carrying that label.
     pub async fn list(
         &self,
         limit: usize,
         offset: usize,
         include_superseded: bool,
+        tag: Option<&str>,
     ) -> (Vec<Memory>, usize) {
         let inner = self.inner.read().await;
         let mut all: Vec<&Memory> = inner
             .memories
             .values()
             .filter(|f| include_superseded || f.is_live())
+            .filter(|f| tag.is_none_or(|t| f.tags.iter().any(|x| x == t)))
             .collect();
         all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
         let total = all.len();
         let page = all.into_iter().skip(offset).take(limit).cloned().collect();
         (page, total)
+    }
+
+    /// Distinct tags across live memories with usage counts, most used
+    /// first (the console's filter source).
+    pub async fn tags(&self) -> Vec<(String, usize)> {
+        let inner = self.inner.read().await;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for m in inner.memories.values().filter(|f| f.is_live()) {
+            for tag in &m.tags {
+                *counts.entry(tag.clone()).or_default() += 1;
+            }
+        }
+        let mut out: Vec<(String, usize)> = counts.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        out
     }
 
     pub async fn counts(&self) -> (usize, usize) {
@@ -621,6 +639,7 @@ mod tests {
             id: fingerprint(text),
             text: text.into(),
             entities: vec![],
+            tags: vec![],
             confidence: Confidence::Stated,
             corroboration: 0,
             pinned: false,
@@ -682,7 +701,7 @@ mod tests {
             .recall("api port", None, 5, 30, false)
             .await
             .is_empty());
-        let (memories, total) = bank2.list(10, 0, true).await;
+        let (memories, total) = bank2.list(10, 0, true, None).await;
         assert_eq!(total, 1);
         assert!(memories[0].invalid_at.is_some());
     }
@@ -706,7 +725,7 @@ mod tests {
 
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
-        let (_, total) = bank2.list(10, 0, false).await;
+        let (_, total) = bank2.list(10, 0, false, None).await;
         assert_eq!(total, 2);
     }
 
@@ -855,7 +874,7 @@ mod tests {
         bank.commit(memory("keep across ensure")).await.unwrap();
         let (bank2, created2) = store.ensure_bank("main", Some("second")).await.unwrap();
         assert!(!created2);
-        let (memories, total) = bank2.list(10, 0, false).await;
+        let (memories, total) = bank2.list(10, 0, false, None).await;
         assert_eq!(total, 1);
         assert_eq!(memories[0].text, "keep across ensure");
     }
@@ -889,12 +908,67 @@ mod tests {
             m.updated_at = i;
             bank.commit(m).await.unwrap();
         }
-        let (page1, total) = bank.list(2, 0, false).await;
-        let (page2, _) = bank.list(2, 2, false).await;
+        let (page1, total) = bank.list(2, 0, false, None).await;
+        let (page2, _) = bank.list(2, 2, false, None).await;
         assert_eq!(total, 5);
         assert_eq!(page1[0].updated_at, 4);
         assert_eq!(page1[1].updated_at, 3);
         assert_eq!(page2[0].updated_at, 2);
+    }
+
+    #[tokio::test]
+    async fn tag_filter_narrows_list_and_tags_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut a = memory("iii uses three primitives");
+        a.tags = vec!["iii".into()];
+        let mut b = memory("workers self-register");
+        b.tags = vec!["iii".into(), "workers".into()];
+        let c = memory("untagged note");
+        for m in [&a, &b, &c] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        let (all, total) = bank.list(10, 0, false, None).await;
+        assert_eq!((all.len(), total), (3, 3));
+        let (iii, total) = bank.list(10, 0, false, Some("iii")).await;
+        assert_eq!((iii.len(), total), (2, 2));
+        let (w, total) = bank.list(10, 0, false, Some("workers")).await;
+        assert_eq!((w.len(), total), (1, 1));
+        assert_eq!(
+            bank.tags().await,
+            vec![("iii".to_string(), 2), ("workers".to_string(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn tags_survive_reopen_and_old_records_load_untagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut m = memory("tagged and durable");
+        m.tags = vec!["billing".into()];
+        bank.commit(m).await.unwrap();
+        // A pre-tags record on disk (no tags field at all).
+        let legacy = "{\"id\":\"fplegacy0000000000\",\"text\":\"old record\",\"confidence\":\"stated\",\"created_at\":1,\"updated_at\":1}";
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(bank.dir().join(MEMORIES_FILE))
+                .unwrap();
+            file.write_all(legacy.as_bytes()).unwrap();
+            file.write_all(b"\n").unwrap();
+        }
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        let (tagged, _) = bank2.list(10, 0, false, Some("billing")).await;
+        assert_eq!(tagged.len(), 1);
+        let (all, _) = bank2.list(10, 0, false, None).await;
+        assert_eq!(all.len(), 2);
+        assert!(all
+            .iter()
+            .any(|m| m.id == "fplegacy0000000000" && m.tags.is_empty()));
     }
 
     #[test]

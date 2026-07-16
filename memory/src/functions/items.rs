@@ -23,21 +23,34 @@ fn normalize_entities(entities: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Inputs for one save transition (grouped: clippy arity cap, and the
+/// call sites read better named).
+struct SaveInput {
+    id: String,
+    text: String,
+    entities: Vec<String>,
+    tags: Vec<String>,
+    pinned: bool,
+    session_id: Option<String>,
+    now: u64,
+}
+
 /// The save state transition, pure so its invariants are testable:
 /// - same fingerprint + live: reinforce (corroboration + 1, revision + 1);
 /// - same fingerprint + retired: RESURRECT — clear the tombstone and
 ///   CONTINUE the revision counter (a fresh revision-0 record would lose
 ///   to the tombstone under last-wins replay on the next boot);
 /// - unknown fingerprint: a fresh record.
-fn save_transition(
-    existing: Option<Memory>,
-    id: String,
-    text: String,
-    entities: Vec<String>,
-    pinned: bool,
-    session_id: Option<String>,
-    now: u64,
-) -> (Memory, ItemEvent, bool) {
+fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemEvent, bool) {
+    let SaveInput {
+        id,
+        text,
+        entities,
+        tags,
+        pinned,
+        session_id,
+        now,
+    } = input;
     match existing {
         Some(existing) => {
             let live = existing.is_live();
@@ -45,6 +58,12 @@ fn save_transition(
             if !live {
                 f.invalid_at = None;
                 f.superseded_by = None;
+            }
+            // A re-observation can add labels; it never removes them.
+            for tag in normalize_entities(tags) {
+                if !f.tags.contains(&tag) && f.tags.len() < 8 {
+                    f.tags.push(tag);
+                }
             }
             f.corroboration = f.corroboration.saturating_add(1);
             f.pinned = f.pinned || pinned;
@@ -61,6 +80,7 @@ fn save_transition(
                 id,
                 text,
                 entities: normalize_entities(entities),
+                tags: normalize_entities(tags),
                 confidence: Confidence::Stated,
                 corroboration: 0,
                 pinned,
@@ -91,6 +111,10 @@ pub struct SaveRequest {
     /// Entity handles (people/projects/tools) used as a retrieval signal.
     #[serde(default)]
     pub entities: Vec<String>,
+    /// Topical labels for filtering within the bank (organization, not
+    /// ranking).
+    #[serde(default)]
+    pub tags: Vec<String>,
     #[serde(default)]
     pub pinned: bool,
     /// Provenance session, when saved on behalf of a conversation.
@@ -126,12 +150,15 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     let existing = bank.get(&id).await;
     let (memory, event, created) = save_transition(
         existing,
-        id,
-        text,
-        req.entities,
-        req.pinned,
-        req.session_id,
-        now,
+        SaveInput {
+            id,
+            text,
+            entities: req.entities,
+            tags: req.tags,
+            pinned: req.pinned,
+            session_id: req.session_id,
+            now,
+        },
     );
     bank.commit(memory.clone()).await?;
     deps.emitter.item(event, &bank_name, &memory).await;
@@ -174,6 +201,9 @@ pub struct ListRequest {
     /// Include superseded/tombstoned records (the history view).
     #[serde(default)]
     pub include_superseded: Option<bool>,
+    /// Only memories carrying this tag.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -193,6 +223,7 @@ pub async fn list(deps: &Deps, req: ListRequest) -> Result<ListResponse, MemoryE
             limit,
             req.offset.unwrap_or(0),
             req.include_superseded.unwrap_or(false),
+            req.tag.as_deref(),
         )
         .await;
     Ok(ListResponse { memories, total })
@@ -213,6 +244,9 @@ pub struct UpdateRequest {
     pub text: Option<String>,
     #[serde(default)]
     pub entities: Option<Vec<String>>,
+    /// Replace the tag set (empty list clears).
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub pinned: Option<bool>,
 }
@@ -236,12 +270,10 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
         memory.text = text;
     }
     if let Some(entities) = req.entities {
-        memory.entities = entities
-            .into_iter()
-            .map(|e| e.trim().to_lowercase())
-            .filter(|e| !e.is_empty())
-            .take(8)
-            .collect();
+        memory.entities = normalize_entities(entities);
+    }
+    if let Some(tags) = req.tags {
+        memory.tags = normalize_entities(tags);
     }
     if let Some(pinned) = req.pinned {
         memory.pinned = pinned;
@@ -299,6 +331,7 @@ pub async fn pin(deps: &Deps, req: PinRequest) -> Result<MemoryResponse, MemoryE
             id: req.id,
             text: None,
             entities: None,
+            tags: None,
             pinned: Some(req.pinned),
         },
     )
@@ -377,6 +410,7 @@ mod tests {
             id: id.into(),
             text: "some text".into(),
             entities: vec![],
+            tags: vec![],
             confidence: Confidence::Stated,
             corroboration: 2,
             pinned,
@@ -393,17 +427,21 @@ mod tests {
     fn fresh_save_starts_at_revision_zero_with_normalized_entities() {
         let (m, event, created) = save_transition(
             None,
-            "fp1".into(),
-            "text".into(),
-            vec![" Mike ".into(), "".into(), "BLOG".into()],
-            true,
-            Some("s_1".into()),
-            99,
+            SaveInput {
+                id: "fp1".into(),
+                text: "text".into(),
+                entities: vec![" Mike ".into(), "".into(), "BLOG".into()],
+                tags: vec![" Intro ".into()],
+                pinned: true,
+                session_id: Some("s_1".into()),
+                now: 99,
+            },
         );
         assert!(created);
         assert!(matches!(event, ItemEvent::Created));
         assert_eq!(m.revision, 0);
         assert_eq!(m.entities, vec!["mike", "blog"]);
+        assert_eq!(m.tags, vec!["intro"]);
         assert!(m.pinned);
         assert_eq!(m.source.unwrap().session_id.as_deref(), Some("s_1"));
     }
@@ -411,7 +449,18 @@ mod tests {
     #[test]
     fn entity_cap_holds_at_eight() {
         let many: Vec<String> = (0..12).map(|i| format!("e{i}")).collect();
-        let (m, _, _) = save_transition(None, "fp".into(), "t".into(), many, false, None, 1);
+        let (m, _, _) = save_transition(
+            None,
+            SaveInput {
+                id: "fp".into(),
+                text: "t".into(),
+                entities: many,
+                tags: vec![],
+                pinned: false,
+                session_id: None,
+                now: 1,
+            },
+        );
         assert_eq!(m.entities.len(), 8);
     }
 
@@ -419,18 +468,22 @@ mod tests {
     fn live_resave_reinforces_and_never_unpins() {
         let (m, event, created) = save_transition(
             Some(record("fp1", 4, true, true)),
-            "fp1".into(),
-            "some text".into(),
-            vec![],
-            false,
-            None,
-            99,
+            SaveInput {
+                id: "fp1".into(),
+                text: "some text".into(),
+                entities: vec![],
+                tags: vec!["fresh-tag".into()],
+                pinned: false,
+                session_id: None,
+                now: 99,
+            },
         );
         assert!(!created);
         assert!(matches!(event, ItemEvent::Updated));
         assert_eq!(m.revision, 5);
         assert_eq!(m.corroboration, 3);
         assert!(m.pinned, "a resave without pinned must not unpin");
+        assert_eq!(m.tags, vec!["fresh-tag"], "re-observation adds labels");
         assert_eq!(m.updated_at, 99);
     }
 
@@ -438,12 +491,15 @@ mod tests {
     fn retired_resave_resurrects_and_continues_the_revision_counter() {
         let (m, event, created) = save_transition(
             Some(record("fp1", 7, false, false)),
-            "fp1".into(),
-            "some text".into(),
-            vec![],
-            false,
-            None,
-            99,
+            SaveInput {
+                id: "fp1".into(),
+                text: "some text".into(),
+                entities: vec![],
+                tags: vec![],
+                pinned: false,
+                session_id: None,
+                now: 99,
+            },
         );
         assert!(created, "a resurrection re-enters live sets");
         assert!(matches!(event, ItemEvent::Created));
@@ -454,4 +510,38 @@ mod tests {
         assert!(m.invalid_at.is_none());
         assert!(m.superseded_by.is_none());
     }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TagsRequest {
+    #[serde(default)]
+    pub bank: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TagsResponse {
+    pub bank: String,
+    pub tags: Vec<TagCount>,
+}
+
+pub async fn tags(deps: &Deps, req: TagsRequest) -> Result<TagsResponse, MemoryError> {
+    let cfg = deps.config().await;
+    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let store = deps.store().await;
+    let bank = store.bank(&bank_name).await?;
+    Ok(TagsResponse {
+        bank: bank_name,
+        tags: bank
+            .tags()
+            .await
+            .into_iter()
+            .map(|(tag, count)| TagCount { tag, count })
+            .collect(),
+    })
 }

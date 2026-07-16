@@ -21,6 +21,9 @@ pub struct RecallRequest {
     /// Also rank superseded/tombstoned records (the history view).
     #[serde(default)]
     pub include_superseded: Option<bool>,
+    /// Only rank memories carrying this tag.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -64,6 +67,11 @@ pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, M
         bank: bank_name,
         memories: hits
             .into_iter()
+            .filter(|(m, _)| {
+                req.tag
+                    .as_deref()
+                    .is_none_or(|t| m.tags.iter().any(|x| x == t))
+            })
             .map(|(memory, score)| ScoredMemory { memory, score })
             .collect(),
         retrieval: retrieval.into(),

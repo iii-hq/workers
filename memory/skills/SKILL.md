@@ -61,7 +61,10 @@ rule; point-in-time information belongs in memories.
 - `memory::get / list / update / delete / pin` — memory CRUD; delete tombstones,
   update bumps a revision, pinned records are untouchable by automatic paths.
 - `memory::recall` — rank a bank's memories against a query (the injection
-  hook's exact scorer); response names the retrieval mode that ran.
+  hook's exact scorer); response names the retrieval mode that ran; `tag`
+  narrows to one label.
+- `memory::tags` — a bank's distinct tags with counts. Add `tags` on save
+  when the user wants memories organized within a bank.
 - `memory::bank::create / list / delete` — named memory scopes; delete trashes.
 - `memory::rule::list / set` — always-injected markdown rules; empty content
   removes a rule.

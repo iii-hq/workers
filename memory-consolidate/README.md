@@ -31,6 +31,15 @@ The report names every group: the surviving memory, the retired duplicates, and 
 
 All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass).
 
+## The LLM tier (optional)
+
+`llm_assist_enabled` (off by default) adds one `router::complete` judge call per bank after the deterministic pass:
+
+- **Reorder groups** — word-order matches the deterministic pass surfaces report-only ("The deploy runs on Fridays" vs "On Fridays the deploy runs") are merged only when the judge confirms the meaning is identical; role swaps ("Alice manages Bob") stay untouched.
+- **Rule promotion** — memories re-observed `promote_corroboration_threshold`+ times are offered as candidates; ones the judge classifies as standing instructions land as one-line entries in the bank's auto-managed `learned` rule, fingerprint-deduped, append-only. Hand-authored rules are never touched, and the judge can only act on candidates it was offered — it cannot invent targets.
+
+Fail-soft: no router or a malformed reply just skips the tier (named in the report's errors); the deterministic pass has already completed.
+
 ## What counts as a duplicate
 
 v1 is deterministic and deliberately conservative: two live memories merge only when their normalized text matches (case, punctuation, and whitespace insensitive) or their token sets are equal (word-order shuffles). One differing word is NOT a duplicate — "always publishes" and "never publishes" must never merge. Survivor choice is stable: pinned first, then highest corroboration, then the oldest record (it carries the original provenance). Semantic near-duplicate merging is a later, LLM-assisted tier.

@@ -69,6 +69,11 @@ pub const SUPERSEDE_DESC: &str =
     "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
      plain delete. The consolidation seam; pinned memories cannot be superseded.";
 
+pub const TAGS_ID: &str = "memory::tags";
+pub const TAGS_DESC: &str =
+    "Distinct tags across a bank's live memories with usage counts, most used first — the \
+     filter source for tag-scoped list/recall.";
+
 pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
     "Rank a bank's memories against a query (BM25 + entity match + corroboration + recency; \
@@ -187,6 +192,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         false,
         |d, r| async move { items::supersede(&d, r).await },
     );
+    register(iii, deps, TAGS_ID, TAGS_DESC, false, |d, r| async move {
+        items::tags(&d, r).await
+    });
     register(
         iii,
         deps,
@@ -282,6 +290,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<items::DeleteRequest, items::MemoryResponse>(DELETE_ID, DELETE_DESC),
         spec::<items::PinRequest, items::MemoryResponse>(PIN_ID, PIN_DESC),
         spec::<items::SupersedeRequest, items::MemoryResponse>(SUPERSEDE_ID, SUPERSEDE_DESC),
+        spec::<items::TagsRequest, items::TagsResponse>(TAGS_ID, TAGS_DESC),
         spec::<recall::RecallRequest, recall::RecallResponse>(RECALL_ID, RECALL_DESC),
         spec::<rules::RuleListRequest, rules::RuleListResponse>(RULE_LIST_ID, RULE_LIST_DESC),
         spec::<rules::RuleSetRequest, rules::RuleSetResponse>(RULE_SET_ID, RULE_SET_DESC),

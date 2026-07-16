@@ -61,6 +61,9 @@ export function Memory() {
     rules,
     includeSuperseded,
     setIncludeSuperseded,
+    tag,
+    setTag,
+    tags,
     loading,
     error,
     live,
@@ -206,6 +209,9 @@ export function Memory() {
                     onOffsetChange={setOffset}
                     includeSuperseded={includeSuperseded}
                     onToggleSuperseded={setIncludeSuperseded}
+                    tag={tag}
+                    onTagChange={setTag}
+                    tags={tags}
                     onSave={(text) => act(() => saveMemory(selected, text, false))}
                     onPin={(memory: MemoryItem) =>
                       void act(() => pinMemory(selected, memory.id, !memory.pinned))
@@ -240,7 +246,12 @@ export function Memory() {
                     busy={busy}
                   />
                 ) : (
-                  <RecallPanel key={selected} bank={selected} />
+                  <RecallPanel
+                    key={selected}
+                    bank={selected}
+                    memories={memories}
+                    tags={tags}
+                  />
                 )}
               </>
             )}

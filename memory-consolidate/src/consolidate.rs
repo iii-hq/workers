@@ -44,6 +44,9 @@ pub struct PlannedGroup {
     pub winner_id: String,
     pub winner_text: String,
     pub loser_ids: Vec<String>,
+    /// Texts of the losers, aligned with `loser_ids` (the judge tier and
+    /// human review need the words, not just ids).
+    pub loser_texts: Vec<String>,
     /// Losers left alone because they are pinned (pinned is untouchable).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_pinned: Vec<String>,
@@ -64,6 +67,13 @@ pub struct BankReport {
     pub superseded: usize,
     /// Winner reinforcements applied (one per absorbed duplicate).
     pub reinforced: usize,
+    /// Reorder groups merged after the LLM judge confirmed equivalence.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llm_merged: usize,
+    /// Standing-instruction lines the judge promoted into the bank's
+    /// `learned` rule.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub promoted: usize,
     /// Work left behind by the per-run cap; the next pass picks it up.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub capped: usize,
@@ -135,12 +145,14 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
         });
         let winner = members[0];
         let mut loser_ids = Vec::new();
+        let mut loser_texts = Vec::new();
         let mut skipped_pinned = Vec::new();
         for m in &members[1..] {
             if m.pinned {
                 skipped_pinned.push(m.id.clone());
             } else {
                 loser_ids.push(m.id.clone());
+                loser_texts.push(m.text.clone());
             }
         }
         if loser_ids.is_empty() && skipped_pinned.is_empty() {
@@ -150,6 +162,7 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
             winner_id: winner.id.clone(),
             winner_text: winner.text.clone(),
             loser_ids,
+            loser_texts,
             skipped_pinned,
             report_only,
         });
@@ -229,7 +242,7 @@ pub async fn run_bank(
     bank: &str,
     dry_run: bool,
     budget: &mut usize,
-) -> BankReport {
+) -> (BankReport, Vec<MemoryRow>) {
     let mut report = BankReport {
         bank: bank.to_string(),
         ..BankReport::default()
@@ -238,50 +251,155 @@ pub async fn run_bank(
         Ok(rows) => rows,
         Err(e) => {
             report.errors.push(e);
-            return report;
+            return (report, Vec::new());
         }
     };
     report.scanned = rows.len();
     let groups = plan(&rows);
 
     for group in &groups {
-        for loser in &group.loser_ids {
-            if dry_run || group.report_only {
-                continue;
-            }
-            if *budget == 0 {
-                report.capped += 1;
-                continue;
-            }
-            let superseded = call(
-                iii,
-                "memory::supersede",
-                json!({ "bank": bank, "id": loser, "superseded_by": group.winner_id }),
-            )
-            .await;
-            match superseded {
-                Ok(_) => {
-                    *budget -= 1;
-                    report.superseded += 1;
-                    // The survivor absorbs the duplicate observation:
-                    // fingerprint-matched save = corroboration + 1.
-                    match call(
-                        iii,
-                        "memory::save",
-                        json!({ "bank": bank, "text": group.winner_text }),
-                    )
-                    .await
-                    {
-                        Ok(_) => report.reinforced += 1,
-                        Err(e) => report.errors.push(e),
-                    }
-                }
-                Err(e) => report.errors.push(e),
-            }
+        if dry_run || group.report_only {
+            continue;
         }
+        apply_group(iii, bank, group, budget, &mut report).await;
     }
     report.groups = groups;
-    report
+    (report, rows)
+}
+
+/// Supersede a group's losers into its winner and reinforce the winner,
+/// within the pass budget. Shared by the deterministic pass and the
+/// judge-confirmed merges.
+async fn apply_group(
+    iii: &IIIClient,
+    bank: &str,
+    group: &PlannedGroup,
+    budget: &mut usize,
+    report: &mut BankReport,
+) -> usize {
+    let mut applied = 0usize;
+    for loser in &group.loser_ids {
+        if *budget == 0 {
+            report.capped += 1;
+            continue;
+        }
+        let superseded = call(
+            iii,
+            "memory::supersede",
+            json!({ "bank": bank, "id": loser, "superseded_by": group.winner_id }),
+        )
+        .await;
+        match superseded {
+            Ok(_) => {
+                *budget -= 1;
+                applied += 1;
+                report.superseded += 1;
+                // The survivor absorbs the duplicate observation:
+                // fingerprint-matched save = corroboration + 1.
+                match call(
+                    iii,
+                    "memory::save",
+                    json!({ "bank": bank, "text": group.winner_text }),
+                )
+                .await
+                {
+                    Ok(_) => report.reinforced += 1,
+                    Err(e) => report.errors.push(e),
+                }
+            }
+            Err(e) => report.errors.push(e),
+        }
+    }
+    applied
+}
+
+/// Options for the LLM-assisted tier (None = tier off).
+#[derive(Debug, Clone)]
+pub struct LlmOptions {
+    pub model: String,
+    pub promote_threshold: u32,
+}
+
+/// The judge tier for one bank: confirmed reorder merges + rule
+/// promotions. Runs AFTER the deterministic pass, never on dry runs.
+/// Fail-soft — an unavailable router lands in the report's errors and the
+/// pass stays valid.
+pub async fn run_llm_tier(
+    iii: &IIIClient,
+    bank: &str,
+    rows: &[MemoryRow],
+    report: &mut BankReport,
+    budget: &mut usize,
+    opts: &LlmOptions,
+) {
+    let reorder: Vec<&PlannedGroup> = report.groups.iter().filter(|g| g.report_only).collect();
+    let candidates = crate::llm::promotion_candidates(rows, opts.promote_threshold);
+    let Some(prompt) = crate::llm::judge_prompt(&reorder, &candidates) else {
+        return;
+    };
+    let reply = match crate::llm::judge(iii, &opts.model, prompt).await {
+        Ok(r) => r,
+        Err(e) => {
+            report.errors.push(format!("llm tier skipped: {e}"));
+            return;
+        }
+    };
+
+    // Confirmed merges: clone the groups first (report holds them).
+    let confirmed: Vec<PlannedGroup> = reply
+        .merge_groups
+        .iter()
+        .filter_map(|i| reorder.get(*i).map(|g| (*g).clone()))
+        .collect();
+    for group in &confirmed {
+        let applied = apply_group(iii, bank, group, budget, report).await;
+        report.llm_merged += applied;
+    }
+
+    // Promotions: only ids that were actually offered as candidates — the
+    // judge cannot invent targets.
+    let offered: std::collections::HashSet<&str> =
+        candidates.iter().map(|c| c.id.as_str()).collect();
+    let rules: Vec<String> = reply
+        .promotions
+        .into_iter()
+        .filter(|p| offered.contains(p.id.as_str()))
+        .map(|p| p.rule)
+        .collect();
+    if rules.is_empty() {
+        return;
+    }
+    let existing = match call(iii, "memory::rule::list", json!({ "bank": bank })).await {
+        Ok(v) => v
+            .get("rules")
+            .and_then(Value::as_array)
+            .and_then(|rs| {
+                rs.iter().find(|r| {
+                    r.get("name").and_then(Value::as_str) == Some(crate::llm::LEARNED_RULE)
+                })
+            })
+            .and_then(|r| r.get("content").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string(),
+        Err(e) => {
+            report.errors.push(format!("promotion skipped: {e}"));
+            return;
+        }
+    };
+    let (merged, added) = crate::llm::merge_promotions(&existing, &rules);
+    if added == 0 {
+        return;
+    }
+    match call(
+        iii,
+        "memory::rule::set",
+        json!({ "bank": bank, "name": crate::llm::LEARNED_RULE, "content": merged }),
+    )
+    .await
+    {
+        Ok(_) => report.promoted += added,
+        Err(e) => report.errors.push(format!("promotion write failed: {e}")),
+    }
 }
 
 #[cfg(test)]

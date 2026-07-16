@@ -21,6 +21,7 @@ fn catalog_has_all_public_functions() {
             "memory::delete",
             "memory::pin",
             "memory::supersede",
+            "memory::tags",
             "memory::recall",
             "memory::rule::list",
             "memory::rule::set",

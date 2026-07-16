@@ -37,6 +37,14 @@
           "integer",
           "null"
         ]
+      },
+      "tag": {
+        "default": null,
+        "description": "Only memories carrying this tag.",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "title": "ListRequest",
@@ -139,6 +147,14 @@
               "string",
               "null"
             ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Topical labels for filtering WITHIN a bank (\"iii\", \"workers\", \"billing\") — organization, not ranking. Normalized lowercase, capped like entities. Old records without the field load as untagged.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "text": {
             "type": "string"

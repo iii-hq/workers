@@ -40,6 +40,12 @@ pub struct Memory {
     /// Entity handles used as an exact-match retrieval signal.
     #[serde(default)]
     pub entities: Vec<String>,
+    /// Topical labels for filtering WITHIN a bank ("iii", "workers",
+    /// "billing") — organization, not ranking. Normalized lowercase,
+    /// capped like entities. Old records without the field load as
+    /// untagged.
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub confidence: Confidence,
     /// Times this memory was independently re-observed. Boosts recall rank.
     #[serde(default)]
@@ -143,6 +149,7 @@ mod tests {
             id: fingerprint("x"),
             text: "x".into(),
             entities: vec!["mike".into()],
+            tags: vec!["intro".into()],
             confidence: Confidence::Extracted,
             corroboration: 2,
             pinned: true,

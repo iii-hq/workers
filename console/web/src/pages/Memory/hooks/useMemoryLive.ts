@@ -5,6 +5,7 @@ import {
   listBanks,
   listRules,
   listMemories,
+  listTags,
   type MemoryBank,
   type MemoryRule,
   type MemoryItem,
@@ -31,6 +32,10 @@ export interface MemoryLive {
   rules: MemoryRule[]
   includeSuperseded: boolean
   setIncludeSuperseded: (next: boolean) => void
+  /** Active tag filter (null = all) and the bank's tag cloud. */
+  tag: string | null
+  setTag: (next: string | null) => void
+  tags: { tag: string; count: number }[]
   loading: boolean
   error: string | null
   /** True while updates arrive through the live trigger bindings. */
@@ -46,6 +51,8 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
   const [offset, setOffset] = useState(0)
   const [rules, setRules] = useState<MemoryRule[]>([])
   const [includeSuperseded, setIncludeSuperseded] = useState(false)
+  const [tag, setTag] = useState<string | null>(null)
+  const [tags, setTags] = useState<{ tag: string; count: number }[]>([])
   const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState<string | null>(null)
   const [token, setToken] = useState(0)
@@ -54,7 +61,13 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
 
   const selectBank = useCallback((bank: string) => {
     setOffset(0)
+    setTag(null)
     setSelected(bank)
+  }, [])
+
+  const setTagReset = useCallback((next: string | null) => {
+    setOffset(0)
+    setTag(next)
   }, [])
 
   const setIncludeSupersededReset = useCallback((next: boolean) => {
@@ -88,14 +101,16 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
           setSelected(bank)
         }
         if (bank) {
-          const [memoryPage, nextBlocks] = await Promise.all([
-            listMemories(bank, includeSuperseded, offset),
+          const [memoryPage, nextRules, nextTags] = await Promise.all([
+            listMemories(bank, includeSuperseded, offset, MEMORIES_PAGE_SIZE, tag),
             listRules(bank),
+            listTags(bank),
           ])
           if (cancelled) return
           setMemories(memoryPage.memories)
           setTotal(memoryPage.total)
-          setRules(nextBlocks)
+          setRules(nextRules)
+          setTags(nextTags)
         } else {
           setMemories([])
           setTotal(0)
@@ -112,7 +127,7 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
     return () => {
       cancelled = true
     }
-  }, [enabled, token, selected, includeSuperseded, offset])
+  }, [enabled, token, selected, includeSuperseded, offset, tag])
 
   useEffect(() => {
     if (!enabled || bound) return
@@ -135,6 +150,9 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
     rules,
     includeSuperseded,
     setIncludeSuperseded: setIncludeSupersededReset,
+    tag,
+    setTag: setTagReset,
+    tags,
     loading,
     error,
     live: bound,

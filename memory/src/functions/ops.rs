@@ -75,6 +75,7 @@ async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
         let (bank, _) = store.ensure_bank(&scratch, Some("doctor scratch")).await?;
         let now = now_ms();
         bank.commit(Memory {
+            tags: vec![],
             id: fingerprint(probe_text),
             text: probe_text.into(),
             entities: vec![],

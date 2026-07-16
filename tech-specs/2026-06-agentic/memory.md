@@ -69,6 +69,9 @@ Consumer-facing:
   moves the folder to `.trash/` (recoverable).
 - `memory::rule::list` / `memory::rule::set` — the always-injected markdown rules; empty content
   removes a rule (an empty set against a nonexistent bank is a no-op).
+- `memory::tags` — distinct tags across a bank's live memories with counts. Tags are topical
+  labels for filtering WITHIN a bank (set on save/update, suggested by extraction); `memory::list`
+  and `memory::recall` accept a `tag` filter. Organization, not ranking.
 - `memory::supersede` — retire one memory in favor of another: tombstone with a `superseded_by`
   pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded.
   Agent-denied by default.
@@ -150,7 +153,12 @@ siblings over one on-disk contract, not a monolith with modes.
   supersede-only through `memory::supersede` + `memory::save`, never touches pinned records; every
   change lands as a `memory::item-changed` event. `dry_run` plans without writing;
   `max_supersedes_per_run` caps a pass. Promotion of corroborated clusters toward rules is its
-  next tier. Installable, stoppable, and removable without touching stored memory.
+  An optional LLM tier (`llm_assist_enabled`, off by default) runs after the deterministic pass:
+  one `router::complete` judge per bank confirms which reorder groups really are equivalent
+  (merged through the same seam) and promotes standing instructions observed
+  `promote_corroboration_threshold`+ times into the bank's `learned` rule — append-only,
+  fingerprint-deduped, and the judge can only act on candidates it was offered. Installable,
+  stoppable, and removable without touching stored memory.
 
 The seam is the store's append-only contract: any sibling that mutates memory goes through the
 same `memory::*` functions and the same last-wins replay, so the family shares one durability

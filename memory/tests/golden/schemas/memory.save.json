@@ -32,6 +32,14 @@
           "null"
         ]
       },
+      "tags": {
+        "default": [],
+        "description": "Topical labels for filtering within the bank (organization, not ranking).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
       "text": {
         "description": "The memory, one self-contained sentence.",
         "type": "string"
@@ -140,6 +148,14 @@
               "string",
               "null"
             ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Topical labels for filtering WITHIN a bank (\"iii\", \"workers\", \"billing\") — organization, not ranking. Normalized lowercase, capped like entities. Old records without the field load as untagged.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "text": {
             "type": "string"

@@ -36,6 +36,23 @@ pub struct WorkerConfig {
     /// waits for the next pass and the report says so).
     #[serde(default = "default_max_supersedes_per_run")]
     pub max_supersedes_per_run: usize,
+
+    /// Run the LLM-assisted tier after the deterministic pass: an
+    /// `router::complete` judge confirms reorder merges and promotes
+    /// standing instructions into the bank's `learned` rule. Off by
+    /// default — the deterministic pass alone never needs a model.
+    #[serde(default)]
+    pub llm_assist_enabled: bool,
+
+    /// Model for the judge call. Empty picks the first model in the
+    /// router catalog.
+    #[serde(default)]
+    pub llm_model: String,
+
+    /// Memories re-observed at least this many times become promotion
+    /// candidates for the judge. 0 disables promotion.
+    #[serde(default = "default_promote_threshold")]
+    pub promote_corroboration_threshold: u32,
 }
 
 fn default_true() -> bool {
@@ -46,6 +63,9 @@ fn default_interval_hours() -> u64 {
 }
 fn default_max_supersedes_per_run() -> usize {
     200
+}
+fn default_promote_threshold() -> u32 {
+    4
 }
 
 impl Default for WorkerConfig {

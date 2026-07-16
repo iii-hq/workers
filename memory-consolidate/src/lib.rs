@@ -12,4 +12,5 @@ pub mod config;
 pub mod configuration;
 pub mod consolidate;
 pub mod functions;
+pub mod llm;
 pub mod manifest;

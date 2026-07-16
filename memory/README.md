@@ -15,7 +15,7 @@ The default bank `main` materializes on first use. No configuration required; wi
 Save something, then see exactly what a turn on that topic would be given:
 
 ```bash
-iii trigger memory::save text="User publishes blog posts on Tuesday mornings" pinned=true
+iii trigger memory::save text="User publishes blog posts on Tuesday mornings" pinned=true tags=blog
 iii trigger memory::recall query="when do I publish articles"
 ```
 
@@ -37,6 +37,7 @@ All fields hot-reload through the `configuration` worker (rendered as a form in 
 - **Crash-safe by construction.** Every mutation appends one fsynced JSONL line before touching RAM. There is no shutdown flush to get wrong. An unwritable data dir is boot-fatal: this worker never silently runs in RAM.
 - **Supersede, never delete.** Updates append revisions; deletes append tombstones; trashed banks move to `.trash/`. Any state is recoverable.
 - **Pinning.** A pinned memory ranks higher in recall and is untouchable by every automatic path.
+- **Tags.** Topical labels WITHIN a bank ("iii", "billing") for filtering — organization, not ranking. Set them on save/update, extraction suggests them automatically, and `memory::list`/`memory::recall` take a `tag` filter.
 - **One LLM call per turn, zero at query time.** Extraction runs in the background after a turn completes (ADD-only, content-fingerprinted so redelivery reinforces instead of duplicating). Recall is BM25 + entity match + corroboration + recency, plus a semantic signal when `router::embed` is available: sub-millisecond at this scale.
 - **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat updates the system prompt for every later turn. Hand-authored rules are never touched; dedup by content fingerprint; `rule_learning_enabled` turns it off.
 - **Honest health.** `memory::doctor` runs a real save→recall→trash roundtrip and reports sibling reachability. `memory::recall` names the retrieval mode it ran. Degradation is explicit, never silent.
@@ -57,7 +58,8 @@ Bank selection order: turn metadata `memory_bank` → session metadata `memory_b
 | `memory::bank::create / list / delete` | Banks as first-class named scopes ("blog" vs "coding" vs "personal"); delete moves to `.trash/` |
 | `memory::save` | Explicit save ("remember this"): fingerprinted, reinforces on repeat |
 | `memory::get / list / update / delete / pin` | Memory CRUD; delete tombstones; update bumps a revision in the log |
-| `memory::recall` | The exact scorer the hook uses: preview what a turn would be given |
+| `memory::recall` | The exact scorer the hook uses: preview what a turn would be given; `tag` narrows to one label |
+| `memory::tags` | Distinct tags across a bank's live memories with counts (the filter source) |
 | `memory::rule::list / set` | The always-injected markdown rules; empty content removes |
 | `memory::supersede` | Retire one memory in favor of another (tombstone + pointer) — the consolidation seam |
 | `memory::doctor` | End-to-end self-test (roundtrip + sibling reachability) |

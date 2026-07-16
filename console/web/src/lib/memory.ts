@@ -18,6 +18,7 @@ const memorySchema = z.object({
   id: z.string(),
   text: z.string(),
   entities: z.array(z.string()).default([]),
+  tags: z.array(z.string()).default([]),
   confidence: z.string().default('extracted'),
   corroboration: z.number().default(0),
   pinned: z.boolean().default(false),
@@ -101,6 +102,7 @@ export async function listMemories(
   includeSuperseded: boolean,
   offset = 0,
   limit = MEMORIES_PAGE_SIZE,
+  tag: string | null = null,
 ): Promise<{ memories: MemoryItem[]; total: number }> {
   const client = await getIiiClient()
   const res = await client.trigger<unknown>('memory::list', {
@@ -108,6 +110,7 @@ export async function listMemories(
     limit,
     offset,
     include_superseded: includeSuperseded,
+    ...(tag ? { tag } : {}),
   })
   const parsed = memoryListSchema.safeParse(res)
   if (!parsed.success) return { memories: [], total: 0 }
@@ -169,6 +172,22 @@ export async function setRule(
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('memory::rule::set', { bank, name, content })
+}
+
+const tagsSchema = z.object({
+  tags: z
+    .array(z.object({ tag: z.string(), count: z.number().default(0) }))
+    .default([]),
+})
+
+/** Distinct tags across a bank's live memories, most used first. */
+export async function listTags(
+  bank: string,
+): Promise<{ tag: string; count: number }[]> {
+  const client = await getIiiClient()
+  const res = await client.trigger<unknown>('memory::tags', { bank })
+  const parsed = tagsSchema.safeParse(res)
+  return parsed.success ? parsed.data.tags : []
 }
 
 export async function getMemory(

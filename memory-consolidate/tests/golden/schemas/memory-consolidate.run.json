@@ -50,6 +50,18 @@
             },
             "type": "array"
           },
+          "llm_merged": {
+            "description": "Reorder groups merged after the LLM judge confirmed equivalence.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "promoted": {
+            "description": "Standing-instruction lines the judge promoted into the bank's `learned` rule.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "reinforced": {
             "description": "Winner reinforcements applied (one per absorbed duplicate).",
             "format": "uint",
@@ -87,6 +99,13 @@
             },
             "type": "array"
           },
+          "loser_texts": {
+            "description": "Texts of the losers, aligned with `loser_ids` (the judge tier and human review need the words, not just ids).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "report_only": {
             "description": "True = surfaced for review only (token-set match: same words, different order — potentially different meaning). Never written automatically.",
             "type": "boolean"
@@ -107,6 +126,7 @@
         },
         "required": [
           "loser_ids",
+          "loser_texts",
           "winner_id",
           "winner_text"
         ],

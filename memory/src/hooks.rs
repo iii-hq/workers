@@ -441,6 +441,7 @@ mod tests {
             id: id.into(),
             text: text.into(),
             entities: vec![],
+            tags: vec![],
             confidence: crate::types::Confidence::Stated,
             corroboration: 0,
             pinned: false,

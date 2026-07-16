@@ -28,8 +28,8 @@ use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
 
 const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
 Return ONLY a JSON array (no prose, no code fences). Each element:\n\
-{\"text\": string, \"entities\": [string], \"confidence\": \"extracted\"|\"inferred\", \
-\"kind\": \"memory\"|\"rule\"}\n\
+{\"text\": string, \"entities\": [string], \"tags\": [string], \
+\"confidence\": \"extracted\"|\"inferred\", \"kind\": \"memory\"|\"rule\"}\n\
 Rules:\n\
 - Only durable content worth remembering across sessions: stable preferences, corrections, \
 identities, project constants, standing instructions.\n\
@@ -37,6 +37,8 @@ identities, project constants, standing instructions.\n\
 tokens, or passwords.\n\
 - text: one self-contained sentence, max 200 characters, in the language of the source.\n\
 - entities: short lowercase handles for the people/projects/tools the memory is about.\n\
+- tags: 0-3 short lowercase topical labels for filtering within the bank (e.g. \"billing\", \
+\"deploy\"); omit when nothing fits.\n\
 - confidence: \"extracted\" when stated directly, \"inferred\" when derived.\n\
 - kind \"rule\" ONLY for standing instructions about how the assistant should behave going \
 forward — style directives, formatting conventions, workflow corrections (\"never use \
@@ -57,6 +59,8 @@ struct ExtractedItem {
     text: String,
     #[serde(default)]
     entities: Vec<String>,
+    #[serde(default)]
+    tags: Vec<String>,
     #[serde(default)]
     confidence: Option<String>,
     #[serde(default)]
@@ -253,6 +257,13 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
                         .into_iter()
                         .map(|e| e.trim().to_lowercase())
                         .filter(|e| !e.is_empty())
+                        .take(8)
+                        .collect(),
+                    tags: item
+                        .tags
+                        .into_iter()
+                        .map(|t| t.trim().to_lowercase())
+                        .filter(|t| !t.is_empty())
                         .take(8)
                         .collect(),
                     confidence: match item.confidence.as_deref() {

@@ -31,6 +31,17 @@
           "null"
         ]
       },
+      "tags": {
+        "default": null,
+        "description": "Replace the tag set (empty list clears).",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "text": {
         "default": null,
         "type": [
@@ -142,6 +153,14 @@
               "string",
               "null"
             ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Topical labels for filtering WITHIN a bank (\"iii\", \"workers\", \"billing\") — organization, not ranking. Normalized lowercase, capped like entities. Old records without the field load as untagged.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "text": {
             "type": "string"

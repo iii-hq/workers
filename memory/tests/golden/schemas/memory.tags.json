@@ -1,0 +1,57 @@
+{
+  "description": "Distinct tags across a bank's live memories with usage counts, most used first — the filter source for tag-scoped list/recall.",
+  "function_id": "memory::tags",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "bank": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "TagsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TagCount": {
+        "properties": {
+          "count": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "tag"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "bank": {
+        "type": "string"
+      },
+      "tags": {
+        "items": {
+          "$ref": "#/definitions/TagCount"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "bank",
+      "tags"
+    ],
+    "title": "TagsResponse",
+    "type": "object"
+  }
+}

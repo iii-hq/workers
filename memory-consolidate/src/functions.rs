@@ -177,7 +177,16 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
     let mut budget = cfg.max_supersedes_per_run;
     let mut reports = Vec::new();
     for bank in &banks {
-        reports.push(consolidate::run_bank(&deps.iii, bank, dry_run, &mut budget).await);
+        let (mut report, rows) = consolidate::run_bank(&deps.iii, bank, dry_run, &mut budget).await;
+        if cfg.llm_assist_enabled && !dry_run {
+            let opts = consolidate::LlmOptions {
+                model: cfg.llm_model.clone(),
+                promote_threshold: cfg.promote_corroboration_threshold,
+            };
+            consolidate::run_llm_tier(&deps.iii, bank, &rows, &mut report, &mut budget, &opts)
+                .await;
+        }
+        reports.push(report);
     }
     let superseded = reports.iter().map(|r| r.superseded).sum();
 
