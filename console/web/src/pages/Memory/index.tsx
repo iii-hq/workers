@@ -45,7 +45,8 @@ const PANEL_OPTIONS: { value: Panel; label: string }[] = [
 ]
 
 export function Memory() {
-  const { backend } = useConversationsCtx()
+  const conversations = useConversationsCtx()
+  const { backend } = conversations
   const status = useMemoryStatus(backend.id === 'real')
   const available = isMemoryAvailable(status)
 
@@ -212,6 +213,7 @@ export function Memory() {
                     tag={tag}
                     onTagChange={setTag}
                     tags={tags}
+                    onOpenChat={conversations.select}
                     onSave={(text) => act(() => saveMemory(selected, text, false))}
                     onPin={(memory: MemoryItem) =>
                       void act(() => pinMemory(selected, memory.id, !memory.pinned))

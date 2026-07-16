@@ -1,6 +1,7 @@
 import {
   ChevronLeft,
   ChevronRight,
+  MessageSquare,
   Pencil,
   Pin,
   PinOff,
@@ -8,7 +9,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -24,6 +25,31 @@ import { cn } from '@/lib/utils'
  * place: pin, edit text (revision bump), tombstone delete.
  */
 
+/** "2h ago" style relative time; day precision past a week. */
+export function timeAgo(ms: number, now = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - ms) / 1000))
+  if (s < 60) return 'just now'
+  if (s < 3_600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86_400) return `${Math.floor(s / 3_600)}h ago`
+  if (s < 7 * 86_400) return `${Math.floor(s / 86_400)}d ago`
+  return new Date(ms).toLocaleDateString()
+}
+
+/** Per-day capture counts for the last `days`, oldest first. */
+export function activityBuckets(
+  createdAts: number[],
+  days: number,
+  now = Date.now(),
+): number[] {
+  const buckets = new Array(days).fill(0)
+  const dayMs = 86_400_000
+  for (const at of createdAts) {
+    const age = Math.floor((now - at) / dayMs)
+    if (age >= 0 && age < days) buckets[days - 1 - age] += 1
+  }
+  return buckets
+}
+
 interface MemoriesPanelProps {
   bank: string
   memories: MemoryItem[]
@@ -36,6 +62,7 @@ interface MemoriesPanelProps {
   tag: string | null
   onTagChange: (next: string | null) => void
   tags: { tag: string; count: number }[]
+  onOpenChat: (sessionId: string) => void
   onSave: (text: string) => Promise<boolean>
   onPin: (memory: MemoryItem) => void
   onEdit: (memory: MemoryItem, text: string) => Promise<boolean>
@@ -48,6 +75,7 @@ function FactRow({
   onPin,
   onEdit,
   onDelete,
+  onOpenChat,
   busy,
   score,
 }: {
@@ -55,6 +83,7 @@ function FactRow({
   onPin: (memory: MemoryItem) => void
   onEdit: (memory: MemoryItem, text: string) => Promise<boolean>
   onDelete: (memory: MemoryItem) => void
+  onOpenChat: (sessionId: string) => void
   busy: boolean
   score?: number
 }) {
@@ -124,10 +153,22 @@ function FactRow({
           </span>
         ))}
         <span className="font-mono text-[10px] lowercase text-ink-ghost">
-          {memory.confidence}
+          {timeAgo(memory.created_at)}
           {memory.corroboration > 0 && ` · seen ×${memory.corroboration + 1}`}
+          {memory.confidence === 'stated' && ' · saved explicitly'}
           {superseded && ' · superseded'}
         </span>
+        {memory.source?.session_id ? (
+          <button
+            type="button"
+            onClick={() => onOpenChat(memory.source?.session_id ?? '')}
+            title="open the conversation this memory came from"
+            className="inline-flex items-center gap-1 font-mono text-[10px] lowercase text-ink-ghost hover:text-ink transition-colors"
+          >
+            <MessageSquare className="w-3 h-3" aria-hidden />
+            from chat
+          </button>
+        ) : null}
         <span className="flex-1" />
         <Button
           variant="icon"
@@ -186,6 +227,7 @@ export function MemoriesPanel({
   tag,
   onTagChange,
   tags,
+  onOpenChat,
   onSave,
   onPin,
   onEdit,
@@ -219,8 +261,53 @@ export function MemoriesPanel({
   const page = Math.floor(offset / pageSize) + 1
   const pages = Math.max(1, Math.ceil(total / pageSize))
 
+  const buckets = useMemo(
+    () => activityBuckets(memories.map((m) => m.created_at), 30),
+    [memories],
+  )
+  const capturedThisWeek = useMemo(
+    () => buckets.slice(-7).reduce((a, b) => a + b, 0),
+    [buckets],
+  )
+  const maxBucket = Math.max(1, ...buckets)
+
   return (
     <div className="flex flex-col gap-3">
+      <p className="font-mono text-[11px] lowercase text-ink-faint">
+        one line per durable thing said in chat — captured automatically after
+        each turn, each with the conversation it came from. a memory reaches
+        the agent only when it matches the question being asked; rules are the
+        always-on half.
+      </p>
+
+      {total > 0 ? (
+        <div className="flex items-center gap-3 border border-rule-2 bg-panel px-3 py-2">
+          <div className="flex items-end gap-[2px] h-8" aria-hidden>
+            {buckets.map((count, i) => (
+              <span
+                // biome-ignore lint/suspicious/noArrayIndexKey: fixed-size day series
+                key={i}
+                className={cn('w-[5px]', count > 0 ? 'bg-accent' : 'bg-rule')}
+                style={{
+                  height: `${count > 0 ? Math.max(15, Math.round((count / maxBucket) * 100)) : 6}%`,
+                }}
+              />
+            ))}
+          </div>
+          <div className="flex flex-col">
+            <span className="font-mono text-[12px] text-ink tabular-nums">
+              {capturedThisWeek > 0
+                ? `${capturedThisWeek} captured this week`
+                : 'nothing captured this week'}
+            </span>
+            <span className="font-mono text-[10px] lowercase text-ink-ghost">
+              last 30 days · {total} total · chat and this page stay in sync
+              live
+            </span>
+          </div>
+        </div>
+      ) : null}
+
       <form
         className="flex items-center gap-2"
         onSubmit={(e) => {
@@ -384,6 +471,7 @@ export function MemoriesPanel({
                 onPin={onPin}
                 onEdit={onEdit}
                 onDelete={onDelete}
+                onOpenChat={onOpenChat}
                 busy={busy}
               />
             ))}
@@ -391,8 +479,8 @@ export function MemoriesPanel({
         )
       ) : memories.length === 0 ? (
         <EmptyState
-          title="no memories in this bank yet"
-          description="memories arrive automatically after each completed turn, or save one above. sessions pick this bank via session metadata memory_bank."
+          title="nothing remembered yet"
+          description="pick this bank in the chat composer, then just talk — say something durable ('our api port is 3111') and it appears here after the turn, linked to that conversation. or type one above."
         />
       ) : (
         <ul className="border border-rule divide-y divide-rule-2">
@@ -403,6 +491,7 @@ export function MemoriesPanel({
               onPin={onPin}
               onEdit={onEdit}
               onDelete={onDelete}
+              onOpenChat={onOpenChat}
               busy={busy}
             />
           ))}

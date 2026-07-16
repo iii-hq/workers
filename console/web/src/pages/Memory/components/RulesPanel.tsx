@@ -130,17 +130,16 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <p className="font-mono text-[11px] lowercase text-ink-faint">
-        rules go into the system prompt on EVERY turn, guaranteed — unlike
-        memories, which are recalled only when they match the question. use
-        rules for what must always hold: writing style, answer format, coding
-        conventions, project constants. each rule is a markdown file under the
-        bank's rules/ folder (editing the file and editing here are the same
-        thing), and the agent updates rules as you correct it.
+        every chat on this bank starts with these — word for word, every turn.
+        put what must always hold here: voice, conventions, constants. correct
+        the agent in chat ("stop using em-dashes") and the correction lands in
+        learned.md by itself; each rule is a plain markdown file on disk, and
+        editing it here or in your editor is the same thing.
       </p>
       {rules.length === 0 ? (
         <EmptyState
-          title="no rules in this bank"
-          description="try one: add a rule named `assistant-rules` with 'always answer tersely, prefer code examples' — then ask anything in chat and watch every reply obey it, on any topic."
+          title="no rules yet"
+          description="add one named 'style' with a line like 'answer tersely, code first' — then ask anything in chat on this bank and watch every reply follow it. corrections you make in chat will grow a learned.md here on their own."
         />
       ) : (
         rules.map((rule) => (
