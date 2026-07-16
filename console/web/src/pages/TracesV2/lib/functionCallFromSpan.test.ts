@@ -146,4 +146,70 @@ describe('functionCallFromSpan', () => {
     expect(call?.running).toBeUndefined()
     expect(call?.durationMs).toBe(120)
   })
+
+  it('renders no card for a span that only inherits its identity and has no payloads', () => {
+    // A scope/plumbing span inside an invocation: identity comes from the
+    // ancestor walk (or baggage), but the SDK's payload events live on the
+    // invocation span — a card here would just show request/response "empty".
+    const execute = vis({
+      span_id: 'execute',
+      name: 'execute worker::list',
+    })
+    const inner = vis({
+      span_id: 'inner',
+      parent_span_id: 'execute',
+      name: 'HTTP GET',
+      attributes: { 'iii.function.id': 'worker::list' },
+    })
+    expect(functionCallFromSpan(inner, byId(execute, inner))).toBeNull()
+  })
+
+  it('keeps the card for an inherited-identity span that captured payload data', () => {
+    const execute = vis({
+      span_id: 'execute',
+      name: 'execute worker::list',
+    })
+    const inner = vis({
+      span_id: 'inner',
+      parent_span_id: 'execute',
+      name: 'tool call',
+      attributes: { 'tool.arguments': '{"query":"x"}' },
+    })
+    const call = functionCallFromSpan(inner, byId(execute, inner))
+    expect(call?.functionId).toBe('worker::list')
+    expect(call?.input).toEqual({ query: 'x' })
+  })
+
+  it('keeps the card for an inherited-identity span that errored', () => {
+    const execute = vis({
+      span_id: 'execute',
+      name: 'execute worker::list',
+    })
+    const inner = vis({
+      span_id: 'inner',
+      parent_span_id: 'execute',
+      name: 'HTTP GET',
+      status: 'error',
+      events: [
+        {
+          name: 'exception',
+          timestamp_unix_nano: 1,
+          attributes: { 'exception.message': 'boom' },
+        },
+      ],
+    })
+    const call = functionCallFromSpan(inner, byId(execute, inner))
+    expect(call?.output).toEqual({ error: 'boom' })
+  })
+
+  it('still renders an empty card for a true invocation span', () => {
+    // The invocation span is the one place "empty" is honest — payload
+    // capture may be disabled (III_DISABLE_TRACE_PAYLOADS) yet the call
+    // itself is real and worth a card.
+    const call = functionCallFromSpan(
+      vis({ name: 'execute worker::list', attributes: {} }),
+    )
+    expect(call?.functionId).toBe('worker::list')
+    expect(call?.input).toBeUndefined()
+  })
 })
