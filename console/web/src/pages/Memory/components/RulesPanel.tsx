@@ -123,9 +123,23 @@ function RuleEditor({
   )
 }
 
+/** A rule name from whatever was typed or pasted: lowercased, separators
+ * dashed, invalid chars dropped, trimmed to the 64-char limit. */
+function slugifyRuleName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[\s:/\\]+/g, '-')
+    .replace(/[^a-z0-9_-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-_]+/, '')
+    .slice(0, 64)
+    .replace(/[-_]+$/, '')
+}
+
 export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
   const [newName, setNewName] = useState('')
   const validName = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(newName)
+  const suggestion = validName ? '' : slugifyRuleName(newName)
 
   return (
     <div className="flex flex-col gap-3">
@@ -153,32 +167,43 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
         ))
       )}
       <form
-        className="flex items-center gap-2"
+        className="flex flex-col gap-1"
         onSubmit={(e) => {
           e.preventDefault()
-          if (!validName || busy) return
-          void onSet(newName, `# ${newName}\n`).then((ok) => {
+          if (busy) return
+          const name = validName ? newName : suggestion
+          if (!name) return
+          void onSet(name, `# ${name}\n`).then((ok) => {
             if (ok) setNewName('')
           })
         }}
       >
-        <Input
-          value={newName}
-          onChange={setNewName}
-          placeholder="new rule name (e.g. style)"
-          aria-label="new rule name"
-          className="flex-1"
-        />
-        <Button
-          type="submit"
-          variant="ghost"
-          size="sm"
-          disabled={!validName || busy}
-          className="gap-1"
-        >
-          <Plus className="w-3.5 h-3.5" aria-hidden />
-          add rule
-        </Button>
+        <div className="flex items-center gap-2">
+          <Input
+            value={newName}
+            onChange={setNewName}
+            placeholder="name the rule first (e.g. style) — content goes in the editor after"
+            aria-label="new rule name"
+            className="flex-1"
+          />
+          <Button
+            type="submit"
+            variant="ghost"
+            size="sm"
+            disabled={busy || (!validName && !suggestion)}
+            className="gap-1"
+          >
+            <Plus className="w-3.5 h-3.5" aria-hidden />
+            add rule
+          </Button>
+        </div>
+        {newName && !validName ? (
+          <p className="font-mono text-[10px] lowercase text-ink-ghost">
+            {suggestion
+              ? `names are lowercase-with-dashes (it becomes ${suggestion}.md) — adding will create "${suggestion}"; paste the content into its editor after`
+              : 'names are lowercase letters, numbers, and dashes — like style or coding-rules'}
+          </p>
+        ) : null}
       </form>
     </div>
   )
