@@ -120,9 +120,25 @@ fn required_bindings() -> Vec<(&'static str, &'static str, serde_json::Value)> {
 /// after an unlucky boot (mirrors approval-gate's hook retry).
 fn retry_bindings(iii: Arc<IIIClient>) {
     tokio::spawn(async move {
+        // engine::triggers::info exposes only an AGGREGATE instance_count,
+        // and other workers bind the same trigger types (web also binds
+        // pre-generate; several workers use durable:subscriber). A bare
+        // `count > 0` therefore confirms SOMEONE's binding, not ours —
+        // observed live: memory's hook binding died at boot while web's
+        // kept the count positive, and injection silently never ran.
+        // Until the engine exposes binding membership, attribute by
+        // DELTA: snapshot the count, re-request our binding, and treat
+        // only an increase over the snapshot as our registration landing.
+        let mut baselines: std::collections::HashMap<&'static str, u64> =
+            std::collections::HashMap::new();
+        let mut confirmed: std::collections::HashSet<&'static str> =
+            std::collections::HashSet::new();
         loop {
             let mut all_ready = true;
             for (trigger_type, function_id, config) in required_bindings() {
+                if confirmed.contains(trigger_type) {
+                    continue;
+                }
                 let count = iii
                     .trigger(iii_sdk::protocol::TriggerRequest {
                         function_id: "engine::triggers::info".into(),
@@ -133,10 +149,22 @@ fn retry_bindings(iii: Arc<IIIClient>) {
                     .await
                     .ok()
                     .and_then(|v| v.get("instance_count").and_then(serde_json::Value::as_u64));
-                let ready = count.is_some_and(|c| c > 0);
-                if !ready {
+                let Some(count) = count else {
+                    // Trigger type not registered yet (owner still booting).
                     all_ready = false;
-                    bind_best_effort(&iii, trigger_type, function_id, config);
+                    baselines.remove(trigger_type);
+                    continue;
+                };
+                match baselines.get(trigger_type) {
+                    Some(&baseline) if count > baseline => {
+                        // The count rose after our request: ours landed.
+                        confirmed.insert(trigger_type);
+                    }
+                    _ => {
+                        all_ready = false;
+                        baselines.insert(trigger_type, count);
+                        bind_best_effort(&iii, trigger_type, function_id, config);
+                    }
                 }
             }
             // The extraction queue definition is idempotent; keep asking
