@@ -11,6 +11,12 @@ use super::script::SchemaVersion1;
 pub struct RecorderConfigV1 {
     pub target: RecorderTargetV1,
     pub lifecycle: RecorderLifecycleV1,
+    /// Additional run-scoped controlled functions (e.g. hook implementations
+    /// for `harness::hook::*` scenarios). Registered exactly like the target:
+    /// declared description/schema verbatim, every call durably recorded,
+    /// declared response returned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_functions: Vec<RecorderTargetV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

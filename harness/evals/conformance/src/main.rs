@@ -24,6 +24,18 @@ struct Cli {
     #[arg(long = "worker-bin", value_parser = parse_worker_bin)]
     worker_bins: Vec<(String, PathBuf)>,
 
+    /// Optional console worker binary: spawned per-run with the stack so a
+    /// browser can watch (and record) the scenario's chat live.
+    #[arg(long)]
+    console_bin: Option<PathBuf>,
+
+    /// Record the console chat view to scenarios/<id>/console-recording.webm
+    /// via headless system Chrome (diagnostics only, never an oracle).
+    /// Requires --console-bin, `node` on PATH, and an installed
+    /// tools/console-recorder/node_modules.
+    #[arg(long, requires = "console_bin")]
+    record_console: bool,
+
     /// Scenario id, scenario directory name, or `all`.
     #[arg(long, default_value = "all")]
     scenario: String,
@@ -117,7 +129,14 @@ async fn run(cli: Cli) -> i32 {
     for fixture in &fixtures {
         let scenario_id = fixture.scenario.id.clone();
         tracing::info!(scenario = %scenario_id, "running");
-        let outcome = run_scenario(&bins, fixture, &cli.artifacts_dir, cli.retain_success).await;
+        let outcome = run_scenario(
+            &bins,
+            fixture,
+            &cli.artifacts_dir,
+            cli.retain_success,
+            cli.record_console,
+        )
+        .await;
         let classification = outcome.result.classification;
         let failed: Vec<&str> = outcome
             .result
@@ -167,10 +186,12 @@ fn resolve_bins(cli: &Cli) -> anyhow::Result<StackBins> {
         engine,
         harness,
         workers,
+        console: cli.console_bin.clone(),
     };
     for (name, path) in std::iter::once(("engine", &bins.engine))
         .chain(std::iter::once(("harness", &bins.harness)))
         .chain(bins.workers.iter().map(|(n, p)| (n.as_str(), p)))
+        .chain(bins.console.iter().map(|p| ("console", p)))
     {
         if !path.is_file() {
             anyhow::bail!("{name} binary not found at {}", path.display());

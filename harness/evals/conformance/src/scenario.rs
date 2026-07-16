@@ -36,6 +36,7 @@ pub async fn run_scenario(
     fixture: &ScenarioFixture,
     artifacts_dir: &Path,
     retain_success: bool,
+    record_console: bool,
 ) -> RunOutcome {
     let started_at = now_rfc3339();
     let started = std::time::Instant::now();
@@ -46,6 +47,7 @@ pub async fn run_scenario(
         bins,
         fixture,
         retain_success,
+        record_console,
         run_id: run_id.clone(),
         session_id,
         artifacts: Vec::new(),
@@ -84,6 +86,7 @@ struct ScenarioRunner<'a> {
     fixture: &'a ScenarioFixture,
     #[allow(dead_code)]
     retain_success: bool,
+    record_console: bool,
     run_id: String,
     session_id: String,
     artifacts: Vec<String>,
@@ -229,9 +232,10 @@ impl ScenarioRunner<'_> {
             return self.readiness_failed(stack, scenario_dir, &run_root, report);
         }
 
-        // The lifecycle binding needs the harness-registered trigger type,
-        // so it is the one Arm step that runs after the subject boots (the
-        // probe above proved the type is registered).
+        // The lifecycle binding (and any scenario hook bindings) need
+        // harness-registered trigger types, so they are the Arm steps that
+        // run after the subject boots (the probe above proved the types are
+        // registered).
         if let Err(e) = recorder
             .bind_lifecycle(
                 scenario.recorder.lifecycle.trigger_type.as_str(),
@@ -241,6 +245,82 @@ impl ScenarioRunner<'_> {
         {
             tracing::error!("lifecycle binding failed: {e:#}");
             return Ok(Classification::SetupError);
+        }
+        for binding in &scenario.bindings {
+            if let Err(e) = recorder
+                .bind(
+                    &binding.trigger_type,
+                    &binding.function_id,
+                    binding.config.clone(),
+                )
+                .await
+            {
+                tracing::error!("scenario binding failed: {e:#}");
+                return Ok(Classification::SetupError);
+            }
+        }
+        if !scenario.bindings.is_empty() {
+            // Registration acks are asynchronous; hold Send until every
+            // scenario binding is visible in the engine's registered-trigger
+            // catalog (schema-based readiness, never sleep-based).
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                let listed = client
+                    .call(
+                        "engine::registered-triggers::list",
+                        json!({ "include_internal": true }),
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .to_string();
+                if scenario
+                    .bindings
+                    .iter()
+                    .all(|b| listed.contains(&b.function_id))
+                {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::error!("scenario bindings never appeared in the trigger catalog");
+                    return Ok(Classification::SetupError);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+
+        // Diagnostics-only console recording: start before Send so the video
+        // covers the whole turn. Recorder faults cost the artifact, never
+        // the scenario.
+        let mut recording: Option<crate::console_recording::ConsoleRecording> = None;
+        if let Some(http_port) = stack.console_http_port {
+            if let Err(e) =
+                crate::console_recording::ConsoleRecording::wait_http_ready(http_port, 30_000).await
+            {
+                tracing::warn!("console HTTP not ready; skipping recording: {e:#}");
+            } else if self.record_console {
+                let script_dir =
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/console-recorder");
+                let chrome = std::path::PathBuf::from(
+                    std::env::var("CONFORMANCE_CHROME")
+                        .unwrap_or_else(|_| "/usr/bin/google-chrome".to_string()),
+                );
+                let output = scenario_dir.join("console-recording.webm");
+                match crate::console_recording::ConsoleRecording::start(
+                    &script_dir,
+                    &format!("http://127.0.0.1:{http_port}/"),
+                    &output,
+                    &chrome,
+                    &self.session_id,
+                ) {
+                    Ok(started) => {
+                        // Hold Send until Chrome has the console open, so
+                        // even a seconds-long turn is fully on video.
+                        started.wait_page_loaded(30_000).await;
+                        recording = Some(started);
+                    }
+                    Err(e) => tracing::warn!("console recorder failed to start: {e:#}"),
+                }
+            }
         }
         // The sha256 the router matches was computed from this template
         // expansion; persist it for diagnosis.
@@ -311,6 +391,64 @@ impl ScenarioRunner<'_> {
             tokio::time::sleep(std::time::Duration::from_millis(fault.restart_delay_ms)).await;
             stack.respawn_engine()?;
             tracing::info!("engine respawned after fault injection");
+        }
+
+        // ---- Release (hook-held call scenarios) ------------------------------
+        // Wait for the scripted call to park as pending/held, then release it
+        // via the public `harness::function::resolve` control surface — the
+        // approval-gate flow (issue-506 family).
+        if let Some(release) = &scenario.release {
+            let mut held = false;
+            while tokio::time::Instant::now() < scenario_deadline {
+                let status = client
+                    .call("harness::status", json!({ "session_id": self.session_id }))
+                    .await
+                    .unwrap_or(Value::Null);
+                let pending = status
+                    .get("pending_function_calls")
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| {
+                        calls
+                            .iter()
+                            .any(|c| c.as_str() == Some(&release.function_call_id))
+                    });
+                if pending {
+                    held = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            if !held {
+                tracing::error!(
+                    "call {} never appeared as pending; cannot release",
+                    release.function_call_id
+                );
+                return Ok(Classification::Timeout);
+            }
+            let resolve_response = client
+                .call(
+                    "harness::function::resolve",
+                    json!({
+                        "session_id": self.session_id,
+                        "turn_id": turn_id,
+                        "function_call_id": release.function_call_id,
+                        "action": release.action,
+                    }),
+                )
+                .await;
+            let resolve_value = match &resolve_response {
+                Ok(v) => v.clone(),
+                Err(e) => json!({ "error": e }),
+            };
+            self.artifacts.push(write_json(
+                &run_root,
+                &scenario_file(scenario_dir, "resolve-response.json"),
+                &resolve_value,
+            )?);
+            if resolve_response.is_err() {
+                tracing::error!("function::resolve failed: {resolve_value}");
+                return Ok(Classification::ContractFailure);
+            }
         }
 
         // ---- Await ----------------------------------------------------------
@@ -387,6 +525,19 @@ impl ScenarioRunner<'_> {
             &scenario_file(scenario_dir, "lifecycle-events.json"),
             &json!(lifecycle_events),
         )?);
+
+        // Recording covered Send→Collect; flush it before grading.
+        if let Some(recording) = recording.take() {
+            if let Some(video) = recording.stop().await {
+                self.artifacts.push(
+                    video
+                        .strip_prefix(&run_root)
+                        .unwrap_or(&video)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
 
         // ---- Grade ------------------------------------------------------------
         let evidence = Evidence {

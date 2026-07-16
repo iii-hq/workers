@@ -101,12 +101,6 @@ impl Recorder {
                             })?;
                         let target = &request.config.target;
                         let prefix = format!("{}::", request.run_id);
-                        if !target.function_id.starts_with(&prefix) {
-                            return Err(Error::Handler(format!(
-                                "conformance/target_scope: {} must be prefixed by {prefix}",
-                                target.function_id
-                            )));
-                        }
                         let schema = Value::Object(target.request_schema.clone());
                         let digest = crate::canonical::sha256_of_canonical(&schema);
 
@@ -116,40 +110,21 @@ impl Recorder {
                             state.configured_target = Some(request.config.clone());
                         }
 
-                        // Register the declared surface verbatim; the target
-                        // handler answers with the declared response after a
-                        // durable append.
-                        let response = target.response.clone();
-                        let delay_ms = target.response_delay_ms.unwrap_or(0);
-                        let state_for_calls = state.clone();
-                        let target_id = target.function_id.clone();
-                        let target_id_for_handler = target_id.clone();
-                        iii.register_function(
-                            &target_id,
-                            RegisterFunction::new_async(move |payload: Value| {
-                                let state = state_for_calls.clone();
-                                let response = response.clone();
-                                let function_id = target_id_for_handler.clone();
-                                async move {
-                                    state.lock().expect("recorder state").append(
-                                        RecorderEventKind::TargetCall,
-                                        &function_id,
-                                        strip_engine_fields(payload),
-                                    );
-                                    if delay_ms > 0 {
-                                        // Fault-injection window: the call is
-                                        // durably observed but still executing.
-                                        tokio::time::sleep(std::time::Duration::from_millis(
-                                            delay_ms,
-                                        ))
-                                        .await;
-                                    }
-                                    Ok::<Value, Error>(response)
-                                }
-                            })
-                            .description(target.description.clone())
-                            .request_format(schema),
-                        );
+                        // Register the declared surfaces verbatim (the target
+                        // plus any extra controlled functions, e.g. hooks);
+                        // each handler answers with its declared response
+                        // after a durable append.
+                        for declared in
+                            std::iter::once(target).chain(request.config.extra_functions.iter())
+                        {
+                            if !declared.function_id.starts_with(&prefix) {
+                                return Err(Error::Handler(format!(
+                                    "conformance/target_scope: {} must be prefixed by {prefix}",
+                                    declared.function_id
+                                )));
+                            }
+                            register_controlled_function(&iii, &state, declared);
+                        }
 
                         Ok(json!({ "schema_version": "1", "target_schema_sha256": digest }))
                     }
@@ -271,15 +246,31 @@ impl Recorder {
     /// (there are none in v1, but the filter is part of the contract) never
     /// deliver here.
     pub async fn bind_lifecycle(&self, trigger_type: &str, session_id: &str) -> anyhow::Result<()> {
+        self.bind(
+            trigger_type,
+            "conformance-recorder::lifecycle",
+            json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    /// Create an arbitrary trigger binding on the recorder's connection
+    /// (scenario `bindings`, e.g. `harness::hook::pre-trigger` chains).
+    pub async fn bind(
+        &self,
+        trigger_type: &str,
+        function_id: &str,
+        config: Value,
+    ) -> anyhow::Result<()> {
         self.client
             .inner()
             .register_trigger(RegisterTriggerInput {
                 trigger_type: trigger_type.to_string(),
-                function_id: "conformance-recorder::lifecycle".to_string(),
-                config: json!({ "session_id": session_id }),
+                function_id: function_id.to_string(),
+                config,
                 metadata: None,
             })
-            .map_err(|e| anyhow::anyhow!("lifecycle binding failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("binding {trigger_type} -> {function_id} failed: {e}"))?;
         Ok(())
     }
 
@@ -291,6 +282,44 @@ impl Recorder {
     pub async fn shutdown(&self) {
         self.client.shutdown().await;
     }
+}
+
+/// Register one declared controlled function: verbatim description/schema,
+/// durable append per call, declared response (after the optional
+/// fault-injection delay).
+fn register_controlled_function(
+    iii: &iii_sdk::IIIClient,
+    state: &Arc<Mutex<State>>,
+    declared: &crate::types::recorder::RecorderTargetV1,
+) {
+    let response = declared.response.clone();
+    let delay_ms = declared.response_delay_ms.unwrap_or(0);
+    let state = state.clone();
+    let function_id = declared.function_id.clone();
+    let handler_function_id = function_id.clone();
+    iii.register_function(
+        &function_id,
+        RegisterFunction::new_async(move |payload: Value| {
+            let state = state.clone();
+            let response = response.clone();
+            let function_id = handler_function_id.clone();
+            async move {
+                state.lock().expect("recorder state").append(
+                    RecorderEventKind::TargetCall,
+                    &function_id,
+                    strip_engine_fields(payload),
+                );
+                if delay_ms > 0 {
+                    // Fault-injection window: the call is durably observed
+                    // but still executing.
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                Ok::<Value, Error>(response)
+            }
+        })
+        .description(declared.description.clone())
+        .request_format(Value::Object(declared.request_schema.clone())),
+    );
 }
 
 /// Remove engine-injected `_`-prefixed members from a payload's top level

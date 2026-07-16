@@ -27,6 +27,16 @@ pub struct ConformanceScenarioV1 {
     /// restart boundaries with explicit fault seeds"). Absent = no fault.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<FaultV1>,
+    /// Trigger bindings the runner creates after the harness boots (the
+    /// harness owns these trigger types), e.g. `harness::hook::pre-trigger`
+    /// hook-chain bindings. The bound function ids are recorder-controlled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<TriggerBindingV1>,
+    /// Release step for hook-held calls: once `function_call_id` appears in
+    /// `harness::status` pending calls, call `harness::function::resolve`
+    /// with this action (issue-506 family scenarios).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseV1>,
     /// Quarantined scenarios reproduce a known-open defect: they assert the
     /// EXPECTED behavior, fail until the defect is fixed, and are excluded
     /// from `--scenario all` (runnable only by explicit id).
@@ -51,6 +61,26 @@ pub enum FaultKind {
     /// SIGKILL the engine process, then respawn it from the same config and
     /// data directories after `restart_delay_ms`.
     EngineSigkill,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerBindingV1 {
+    /// e.g. `harness::hook::pre-trigger`.
+    pub trigger_type: String,
+    /// Recorder-controlled function id (run-scoped).
+    pub function_id: String,
+    /// Binding config passed verbatim (e.g. `{functions, priority}`).
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseV1 {
+    /// The scripted call id to wait for and release (e.g. `call-1`).
+    pub function_call_id: String,
+    /// `execute` or `deliver` (passed verbatim to `function::resolve`).
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

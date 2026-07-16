@@ -18,6 +18,13 @@
     "RecorderConfigV1": {
       "additionalProperties": false,
       "properties": {
+        "extra_functions": {
+          "description": "Additional run-scoped controlled functions (e.g. hook implementations for `harness::hook::*` scenarios). Registered exactly like the target: declared description/schema verbatim, every call durably recorded, declared response returned.",
+          "items": {
+            "$ref": "#/definitions/RecorderTargetV1"
+          },
+          "type": "array"
+        },
         "lifecycle": {
           "$ref": "#/definitions/RecorderLifecycleV1"
         },

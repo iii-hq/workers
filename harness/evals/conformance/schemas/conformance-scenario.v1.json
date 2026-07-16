@@ -98,6 +98,13 @@
     "RecorderConfigV1": {
       "additionalProperties": false,
       "properties": {
+        "extra_functions": {
+          "description": "Additional run-scoped controlled functions (e.g. hook implementations for `harness::hook::*` scenarios). Registered exactly like the target: declared description/schema verbatim, every call durably recorded, declared response returned.",
+          "items": {
+            "$ref": "#/definitions/RecorderTargetV1"
+          },
+          "type": "array"
+        },
         "lifecycle": {
           "$ref": "#/definitions/RecorderLifecycleV1"
         },
@@ -163,15 +170,62 @@
       ],
       "type": "object"
     },
+    "ReleaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "`execute` or `deliver` (passed verbatim to `function::resolve`).",
+          "type": "string"
+        },
+        "function_call_id": {
+          "description": "The scripted call id to wait for and release (e.g. `call-1`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "function_call_id"
+      ],
+      "type": "object"
+    },
     "SchemaVersion1": {
       "description": "The literal string `\"1\"`; any other value is a schema error.",
       "enum": [
         "1"
       ],
       "type": "string"
+    },
+    "TriggerBindingV1": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "description": "Binding config passed verbatim (e.g. `{functions, priority}`)."
+        },
+        "function_id": {
+          "description": "Recorder-controlled function id (run-scoped).",
+          "type": "string"
+        },
+        "trigger_type": {
+          "description": "e.g. `harness::hook::pre-trigger`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "config",
+        "function_id",
+        "trigger_type"
+      ],
+      "type": "object"
     }
   },
   "properties": {
+    "bindings": {
+      "description": "Trigger bindings the runner creates after the harness boots (the harness owns these trigger types), e.g. `harness::hook::pre-trigger` hook-chain bindings. The bound function ids are recorder-controlled.",
+      "items": {
+        "$ref": "#/definitions/TriggerBindingV1"
+      },
+      "type": "array"
+    },
     "deadlines": {
       "$ref": "#/definitions/DeadlinesV1"
     },
@@ -204,6 +258,17 @@
     },
     "recorder": {
       "$ref": "#/definitions/RecorderConfigV1"
+    },
+    "release": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReleaseV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Release step for hook-held calls: once `function_call_id` appears in `harness::status` pending calls, call `harness::function::resolve` with this action (issue-506 family scenarios)."
     },
     "router_script": {
       "description": "Path to the router script, relative to the scenario directory.",

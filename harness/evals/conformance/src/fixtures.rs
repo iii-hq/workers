@@ -68,17 +68,23 @@ impl ScenarioFixture {
                 self.scenario.id
             );
         }
-        if !self
-            .scenario
-            .recorder
-            .target
-            .function_id
-            .starts_with("{{run_id}}::")
+        for declared in std::iter::once(&self.scenario.recorder.target)
+            .chain(self.scenario.recorder.extra_functions.iter())
         {
-            anyhow::bail!(
-                "recorder target {:?} must be scoped by the {{{{run_id}}}}:: prefix",
-                self.scenario.recorder.target.function_id
-            );
+            if !declared.function_id.starts_with("{{run_id}}::") {
+                anyhow::bail!(
+                    "recorder function {:?} must be scoped by the {{{{run_id}}}}:: prefix",
+                    declared.function_id
+                );
+            }
+        }
+        for binding in &self.scenario.bindings {
+            if !binding.function_id.starts_with("{{run_id}}::") {
+                anyhow::bail!(
+                    "scenario binding {:?} must bind a run-scoped function",
+                    binding.function_id
+                );
+            }
         }
         validate_script(&self.script)
             .with_context(|| format!("router script for {}", self.scenario.id))?;
