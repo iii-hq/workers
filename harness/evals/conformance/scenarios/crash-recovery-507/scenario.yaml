@@ -7,17 +7,14 @@
 # survive and reconnect; the restored harness-turn queue job must drive the
 # turn to recovery.
 #
-# QUARANTINED: the invariants assert the issue's EXPECTED behavior —
-#   - the interrupted `function_call` is closed by a durable
-#     `function_result` (synthesized error or real result), and
-#   - the turn reaches `completed` with no pending calls,
-# which is known to fail on harness 1.3.3 (turn fails on a boot race and the
-# call stays dangling, poisoning the session). Unquarantine when #507 lands.
+# Regression gate for #507 (fixed: the queue re-invokes in-flight
+# deliveries across engine restarts, and the harness closes interrupted
+# calls with a synthesized error result and resumes the turn to a usable
+# terminal state).
 schema_version: "1"
 id: C-E2E-507
 description: An engine crash during a dispatched function call must not leave the call dangling or the session unusable.
 stack_profile: harness-core
-quarantine: true
 fault:
   kind: engine_sigkill
   after_target_calls: 1
