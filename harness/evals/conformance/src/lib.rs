@@ -1,5 +1,5 @@
-//! Harness conformance E2E runner (spec:
-//! `tech-specs/2026-07-15-harness-evaluation/conformance-e2e.md`).
+//! Harness conformance E2E runner (see README.md; the architecture
+//! spec lives in the iii repo's harness-evaluation tech spec).
 //!
 //! Deterministic regression track: each scenario boots a fresh isolated iii
 //! stack, replaces only the `router::*` boundary with a strict scripted

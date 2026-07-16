@@ -293,7 +293,7 @@ where:
 	  echo "  no tmux session named $(TMUX_SESSION)"
 
 # ---------------------------------------------------------------------------
-# Harness conformance E2E (tech-specs/2026-07-15-harness-evaluation/conformance-e2e.md)
+# Harness conformance E2E (see harness/evals/conformance/README.md)
 #
 # Builds the subject stack + the standalone runner (evals/conformance, its own
 # workspace) and runs every scenario against the pinned engine binary. The

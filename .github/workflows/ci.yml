@@ -384,8 +384,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # Harness conformance E2E (non-required): deterministic public-path
   # regression scenarios against the engine pinned in
-  # harness/evals/conformance/engine.lock. Spec:
-  # tech-specs/2026-07-15-harness-evaluation/conformance-e2e.md.
+  # harness/evals/conformance/engine.lock (see that crate's README; the
+  # architecture spec lives in the iii repo).
   # The engine is BUILT from the pinned source, never downloaded; a
   # cache hit is still re-hashed before use. "Non-required" is enforced
   # by branch protection, not continue-on-error.
