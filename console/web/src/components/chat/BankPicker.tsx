@@ -66,7 +66,7 @@ export function BankPicker({ value, onChange, disabled }: BankPickerProps) {
       onChange={(next) => onChange(next === AUTO ? null : next)}
       disabled={disabled}
       aria-label="memory bank"
-      className="min-w-[120px] shrink-0"
+      className="min-w-[96px] max-w-[160px]"
       options={options}
     />
   )

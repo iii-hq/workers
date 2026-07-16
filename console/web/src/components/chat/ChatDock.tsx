@@ -58,6 +58,12 @@ export function ChatDock({
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  // The persisted width may come from a wider window (or the window may
+  // shrink after mount); rendering it unclamped pushes the main pane past
+  // the viewport and the whole app scrolls horizontally. Clamp at render,
+  // not just during drag.
+  const effectiveWidth = Math.min(width, maxWidth)
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault()
@@ -104,7 +110,7 @@ export function ChatDock({
     <>
       <aside
         id="chat-dock"
-        style={{ width }}
+        style={{ width: effectiveWidth }}
         onKeyDown={(e) => {
           if (e.key !== 'Escape') return
           const target = e.target as HTMLElement | null
