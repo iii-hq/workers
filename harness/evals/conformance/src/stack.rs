@@ -45,6 +45,10 @@ pub struct StackBins {
     pub harness: PathBuf,
     /// queue, iii-directory, session-manager, context-manager.
     pub workers: BTreeMap<String, PathBuf>,
+    /// Optional console worker for the recording profile: spawned per-run
+    /// like every other worker, serving its bundled SPA on a run-scoped
+    /// HTTP port. Diagnostics support only — never part of an oracle.
+    pub console: Option<PathBuf>,
 }
 
 impl StackBins {
@@ -214,6 +218,8 @@ pub struct Stack {
     /// How many times the engine was intentionally killed and respawned
     /// (suffixes the respawned process's log files).
     engine_restarts: u32,
+    /// HTTP port the optional console worker serves on.
+    pub console_http_port: Option<u16>,
 }
 
 impl Stack {
@@ -274,6 +280,7 @@ impl Stack {
                 paths.engine_dir.clone(),
             )),
             engine_restarts: 0,
+            console_http_port: None,
         };
 
         stack
@@ -302,6 +309,22 @@ impl Stack {
                 .expect("presence checked above")
                 .to_path_buf();
             stack.spawn_worker(worker, &bin).map_err(BootError::Other)?;
+        }
+
+        if let Some(console_bin) = &bins.console {
+            let http_port = free_loopback_port().map_err(BootError::Other)?;
+            let args = vec![
+                "--url".to_string(),
+                stack.ws_url.clone(),
+                "--http-port".to_string(),
+                http_port.to_string(),
+            ];
+            let bin = console_bin.clone();
+            let cwd = stack.paths.root.clone();
+            stack
+                .spawn_child("console", &bin, &args, &cwd)
+                .map_err(BootError::Other)?;
+            stack.console_http_port = Some(http_port);
         }
 
         Ok(stack)
@@ -373,6 +396,7 @@ impl Stack {
             info: Value::Null,
             engine_recipe: None,
             engine_restarts: 0,
+            console_http_port: None,
         }
     }
 
@@ -526,6 +550,9 @@ fn stack_info(bins: &StackBins, paths: &RunPaths, port: u16) -> Value {
     record("harness", &bins.harness);
     for (name, path) in &bins.workers {
         record(name, path);
+    }
+    if let Some(console) = &bins.console {
+        record("console", console);
     }
     json!({
         "port": port,

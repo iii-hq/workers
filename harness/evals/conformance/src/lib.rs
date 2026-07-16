@@ -8,6 +8,7 @@
 pub mod artifacts;
 pub mod canonical;
 pub mod client;
+pub mod console_recording;
 pub mod expand;
 pub mod fixtures;
 pub mod grader;

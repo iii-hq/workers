@@ -324,12 +324,19 @@ fn grade_one(
                 Some(want) => calls.iter().all(|c| &c.payload == want),
                 None => true,
             };
+            // `payload_subset`: every listed member must match (deep subset)
+            // in every call — used for envelope payloads (hook inputs) whose
+            // full shape carries ids/timestamps.
+            let subset_ok = match params.get("payload_subset") {
+                Some(want) => calls.iter().all(|c| subset_eq(want, &c.payload)),
+                None => true,
+            };
             let expected = Value::Object(params.clone());
             let actual = json!({
                 "count": calls.len(),
                 "payloads": calls.iter().map(|c| c.payload.clone()).collect::<Vec<_>>(),
             });
-            let passed = calls.len() as u64 == want_count && payload_ok;
+            let passed = calls.len() as u64 == want_count && payload_ok && subset_ok;
             (passed, expected, actual, vec!["target-calls.json"])
         }
 
