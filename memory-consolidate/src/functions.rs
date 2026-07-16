@@ -249,6 +249,21 @@ pub async fn status(deps: &Deps, _req: StatusRequest) -> Result<StatusResponse, 
     })
 }
 
+/// The cron worker's tick payload (all advisory; the handler re-derives
+/// due-ness from persisted state). Typed so the published interface
+/// carries a real schema.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TickInput {
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub scheduled_time: Option<String>,
+    #[serde(default)]
+    pub actual_time: Option<String>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TickResponse {
     /// A pass actually ran (false = not due yet or disabled).

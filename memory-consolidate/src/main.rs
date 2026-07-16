@@ -73,7 +73,7 @@ fn bind_schedule(iii: Arc<IIIClient>, deps: Arc<Deps>) {
     let deps_for_fn = deps.clone();
     iii.register_function(
         functions::TICK_ID,
-        RegisterFunction::new_async(move |_payload: serde_json::Value| {
+        RegisterFunction::new_async(move |_payload: functions::TickInput| {
             let deps = deps_for_fn.clone();
             async move { functions::tick(&deps).await }
         })
