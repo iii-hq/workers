@@ -263,7 +263,7 @@ fn default_functions() -> Option<FunctionPolicy> {
             "coder::search",
             "coder::list-folder",
             "coder::tree",
-            "web::fetch",
+            "scrapling::fetch",
         ]
         .into_iter()
         .map(String::from)

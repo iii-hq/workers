@@ -170,8 +170,24 @@ impl Orchestrator {
     }
 
     pub async fn start_all_managed(&self, wait_connected: bool) -> Result<()> {
-        self.start_workers(&self.config.workers, wait_connected)
-            .await
+        // "All" means all spawnable workers; external ones (non-Rust, managed
+        // via `iii worker add`) are not an error here.
+        let spawnable: Vec<String> = self
+            .config
+            .workers
+            .iter()
+            .filter(|w| self.unsupported_reason(w).is_none())
+            .cloned()
+            .collect();
+        self.start_workers(&spawnable, wait_connected).await
+    }
+
+    /// `Some(reason)` when workers-dev cannot spawn this worker locally.
+    fn unsupported_reason(&self, name: &str) -> Option<&str> {
+        match &self.config.worker_spec(name)?.spawn {
+            SpawnKind::Unsupported { reason } => Some(reason),
+            SpawnKind::CargoRun => None,
+        }
     }
 
     pub async fn start_workers(&self, names: &[String], wait_connected: bool) -> Result<()> {
@@ -183,6 +199,18 @@ impl Orchestrator {
         };
 
         for worker in order {
+            // Non-spawnable workers pulled in as dependencies run externally
+            // (`iii worker add`); skip them. Bail only when the user asked for
+            // that worker by name.
+            if let Some(reason) = self.unsupported_reason(&worker) {
+                if names.contains(&worker) {
+                    bail!("worker {worker} cannot be started from workers-dev: {reason}");
+                }
+                if self.progress {
+                    eprintln!("↷ {worker}: external, not started ({reason})");
+                }
+                continue;
+            }
             self.start_one(&worker, wait_connected).await?;
         }
         Ok(())
@@ -202,12 +230,18 @@ impl Orchestrator {
     }
 
     pub async fn restart_worker(&self, name: &str) -> Result<()> {
+        if let Some(reason) = self.unsupported_reason(name) {
+            bail!("worker {name} cannot be started from workers-dev: {reason}");
+        }
         let closure = self.graph.restart_closure(name)?;
         let stop_order = self.graph.topo_stop_order(&closure)?;
         for worker in &stop_order {
             self.stop_one(worker).await;
         }
         for worker in &closure {
+            if self.unsupported_reason(worker).is_some() {
+                continue; // external dependent; not ours to restart
+            }
             self.start_one(worker, true).await?;
         }
         Ok(())
@@ -636,6 +670,54 @@ async fn terminate_process_group(child: &mut tokio::process::Child) {
 mod tests {
     use super::*;
     use std::process::Stdio;
+
+    /// A non-Rust dependency (e.g. harness → scrapling) must classify as
+    /// unsupported so start paths skip it instead of aborting the stack start.
+    #[test]
+    fn unsupported_reason_flags_non_rust_dep() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let write = |name: &str, body: &str| {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
+            dir
+        };
+        let harness_dir = write(
+            "harness",
+            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\ndependencies:\n  scrapling: \"^0.2.4\"\n",
+        );
+        std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+        write(
+            "scrapling",
+            "iii: v1\nname: scrapling\nlanguage: python\ndeploy: bundle\n",
+        );
+
+        let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();
+        let workers = crate::discover::order_worker_names(&worker_specs);
+        let config = Config {
+            repo_root: tmp.path().to_path_buf(),
+            engine_url: crate::config::DEFAULT_ENGINE_URL.to_string(),
+            release: false,
+            poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
+            connect_timeout_ms: crate::config::DEFAULT_CONNECT_TIMEOUT_MS,
+            workers,
+            harness_stack: vec!["harness".to_string()],
+            worker_specs,
+            stop_on_exit: false,
+            color_mode: Default::default(),
+        };
+        let orch = Orchestrator::new(config, false).unwrap();
+
+        assert!(orch.unsupported_reason("harness").is_none());
+        assert!(orch.unsupported_reason("scrapling").is_some());
+        // The harness closure pulls scrapling in — the start loop must see it
+        // as skippable, not bail.
+        let order = orch
+            .graph
+            .closure_with_deps(&["harness".to_string()])
+            .unwrap();
+        assert!(order.contains(&"scrapling".to_string()));
+    }
 
     /// A worker started via `cargo run` forks the real worker binary as a
     /// child. Group-killing must take BOTH down — killing only the supervisor
