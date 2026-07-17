@@ -17,6 +17,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
+use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
@@ -25,16 +26,17 @@ pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
     cell: ConfigCell,
+    cache: ScaffoldCache,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http, cell) = (iii.clone(), http.clone(), cell.clone());
+        let (iii, http, cell, cache) = (iii.clone(), http.clone(), cell.clone(), cache.clone());
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
             let wc = { cell.read().await.clone() };
-            run_stream_call(&iii, http, &wc, input, sink.as_ref()).await;
+            run_stream_call(&iii, http, &cache, &wc, input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -45,6 +47,7 @@ pub fn make_stream(
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
+    cache: &ScaffoldCache,
     wc: &crate::config::WorkerConfig,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
@@ -52,16 +55,27 @@ async fn run_stream_call(
     let model = input.model.clone();
     let mut warnings = Vec::new();
 
-    let token = state::load_token(iii).await;
-    let resolved = match router_client::resolve(iii, token.as_deref()).await {
+    // Token + resolve are cached (ScaffoldCache): zero engine round trips
+    // on the hot path within the TTL. An auth-classified resolve failure
+    // drops the cache so the next attempt re-resolves fresh — retrying
+    // stays the router's job.
+    let token = cache.load_token(iii, state::STATE_SCOPE).await;
+    let resolved = match cache
+        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
+            let kind = classify_bus_error(&e);
+            if kind == ErrorKind::AuthExpired {
+                cache.invalidate();
+            }
             let _ = send_event(
                 sink,
                 &synthetic_error_event(
                     &format!("router::provider::resolve failed: {e}"),
                     &model,
-                    classify_bus_error(&e),
+                    kind,
                 ),
             );
             return;
@@ -123,7 +137,11 @@ async fn run_stream_call(
                 warnings,
             },
         );
-        pump(rx, sink, PING_INTERVAL).await;
+        // An upstream auth terminal means the cached credential was rotated
+        // out from under us: drop the cache so the next attempt re-resolves.
+        if pump(rx, sink, PING_INTERVAL).await == Some(ErrorKind::AuthExpired) {
+            cache.invalidate();
+        }
         return;
     }
 
@@ -176,5 +194,9 @@ async fn run_stream_call(
             warnings,
         },
     );
-    pump(rx, sink, PING_INTERVAL).await;
+    // An upstream auth terminal means the cached credential was rotated
+    // out from under us: drop the cache so the next attempt re-resolves.
+    if pump(rx, sink, PING_INTERVAL).await == Some(ErrorKind::AuthExpired) {
+        cache.invalidate();
+    }
 }

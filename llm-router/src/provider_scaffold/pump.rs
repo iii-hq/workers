@@ -3,7 +3,7 @@
 //! terminal done/error last, pings through silence. Previously a verbatim
 //! copy in every provider crate.
 use crate::chat::relay::FrameSink;
-use crate::types::events::AssistantMessageEvent;
+use crate::types::events::{AssistantMessageEvent, ErrorKind};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -21,29 +21,37 @@ pub fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<()
 /// Forward upstream events to the sink; ping through silence; stop on the
 /// terminal event or on a failed write (caller gone → dropping `rx` aborts
 /// the upstream task and its in-flight HTTP request).
+///
+/// Returns the `error_kind` of a forwarded terminal Error frame (`None` for
+/// done / no terminal / caller gone) so providers can react to specific
+/// failures — e.g. dropping a cached credential on `AuthExpired`.
 pub async fn pump(
     mut rx: mpsc::Receiver<AssistantMessageEvent>,
     sink: &dyn FrameSink,
     ping_interval: Duration,
-) {
+) -> Option<ErrorKind> {
     loop {
         match tokio::time::timeout(ping_interval, rx.recv()).await {
             Ok(Some(ev)) => {
                 let terminal = ev.is_terminal();
+                let error_kind = match &ev {
+                    AssistantMessageEvent::Error { error } => error.error_kind,
+                    _ => None,
+                };
                 if send_event(sink, &ev).is_err() {
-                    return;
+                    return None;
                 }
                 if terminal {
-                    return;
+                    return error_kind;
                 }
             }
             // Upstream task ended without a terminal (panic/abort): the
             // router synthesizes the terminal frame — never two terminals.
-            Ok(None) => return,
+            Ok(None) => return None,
             // Silent stretch: heartbeat (also probes for a gone caller).
             Err(_elapsed) => {
                 if send_event(sink, &AssistantMessageEvent::Ping).is_err() {
-                    return;
+                    return None;
                 }
             }
         }
@@ -136,6 +144,18 @@ mod tests {
             serde_json::from_str::<Value>(frames.last().unwrap()).unwrap()["type"],
             "done"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_error_kind_is_returned_to_the_caller() {
+        let ch = FakeChannel::new();
+        let (tx, rx) = mpsc::channel(8);
+        let mut error = empty_assistant("m");
+        error.error_kind = Some(ErrorKind::AuthExpired);
+        tx.send(AssistantMessageEvent::Error { error }).await.unwrap();
+        drop(tx);
+        let kind = pump(rx, &ch.writer, Duration::from_secs(30)).await;
+        assert_eq!(kind, Some(ErrorKind::AuthExpired));
     }
 
     #[tokio::test(flavor = "multi_thread")]

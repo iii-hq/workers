@@ -4,6 +4,7 @@
 //! live in the oauth-openai-codex worker / auth-credentials vault — this
 //! provider only *triggers* a refresh when the token is near expiry.
 use crate::config::build_config;
+use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, native_reasoning_effort, reasoning_effort_for};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
@@ -14,6 +15,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
+use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{
@@ -23,15 +25,16 @@ use llm_router::types::router::{
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
+    cache: ScaffoldCache,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http) = (iii.clone(), http.clone());
+        let (iii, http, cache) = (iii.clone(), http.clone(), cache.clone());
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, input, sink.as_ref()).await;
+            run_stream_call(&iii, http, &cache, input, sink.as_ref()).await;
             sink.close();
             Ok(ProviderStreamOutput { ok: true })
         })
@@ -51,17 +54,33 @@ fn default_resolve() -> ProviderResolveResponse {
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
+    cache: &ScaffoldCache,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
     let model = input.model.clone(); // router id (e.g. codex/gpt-5.5)
     let mut warnings = Vec::new();
 
-    let token = state::load_token(iii).await;
+    // Token + resolve are cached (ScaffoldCache): zero engine round trips on
+    // the hot path within the TTL. The vault credential lookup below is NOT
+    // cached — the vault refreshes expiring OAuth tokens on its own resolve,
+    // so a cached access token could be served after expiry.
+    let token = cache.load_token(iii, state::STATE_SCOPE).await;
     // Effective settings from the router; tolerate a missing router (defaults).
-    let resolved = router_client::resolve(iii, token.as_deref())
+    // An auth-classified failure drops the cache so the next attempt
+    // re-resolves fresh — retrying stays the router's job.
+    let resolved = match cache
+        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
         .await
-        .unwrap_or_else(|_| default_resolve());
+    {
+        Ok(r) => r,
+        Err(e) => {
+            if classify_bus_error(&e) == ErrorKind::AuthExpired {
+                cache.invalidate();
+            }
+            default_resolve()
+        }
+    };
 
     let credential = auth::fetch_fresh_credential(iii).await;
     let cfg = match build_config(
@@ -140,5 +159,10 @@ async fn run_stream_call(
             warnings,
         },
     );
-    pump(rx, sink, PING_INTERVAL).await;
+    // An upstream auth terminal usually means the VAULT token expired (the
+    // existing vault flow handles refresh); invalidating the resolve/token
+    // cache is harmless — the next attempt just re-fetches both.
+    if pump(rx, sink, PING_INTERVAL).await == Some(ErrorKind::AuthExpired) {
+        cache.invalidate();
+    }
 }
