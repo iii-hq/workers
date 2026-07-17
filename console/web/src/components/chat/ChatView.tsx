@@ -180,10 +180,17 @@ export function ChatView({
   const streamingIndicator = isStreaming || serverWorking
 
   // Stop requested but not yet finalized server-side. Disables the stop button
-  // (and dedupes harness::stop) until status-changed flips the indicator off.
+  // until status-changed flips the indicator off. The ref is the dedupe guard:
+  // synchronous (two clicks in one frame can't both pass, unlike closure
+  // state) and readable outside a state updater (React forbids side effects
+  // inside updaters — Strict Mode double-invokes them).
   const [stopping, setStopping] = useState(false)
+  const stopRequestedRef = useRef(false)
   useEffect(() => {
-    if (!streamingIndicator) setStopping(false)
+    if (!streamingIndicator) {
+      stopRequestedRef.current = false
+      setStopping(false)
+    }
   }, [streamingIndicator])
 
   // Messages queued mid-stream (MOT-3837): shown above the composer until the
@@ -1285,15 +1292,16 @@ export function ChatView({
   )
 
   const handleStop = useCallback(() => {
-    setStopping((already) => {
-      if (!already) {
-        abortRef.current?.abort()
-        // Re-enable the button if the stop RPC fails while the server still
-        // reports working — otherwise `stopping` never clears (the reset
-        // effect waits on the indicator) and the user can't retry.
-        void backend.abortRun?.(sessionId).catch(() => setStopping(false))
-      }
-      return true
+    if (stopRequestedRef.current) return
+    stopRequestedRef.current = true
+    setStopping(true)
+    abortRef.current?.abort()
+    // Re-enable the button if the stop RPC fails while the server still
+    // reports working — otherwise `stopping` never clears (the reset
+    // effect waits on the indicator) and the user can't retry.
+    void backend.abortRun?.(sessionId).catch(() => {
+      stopRequestedRef.current = false
+      setStopping(false)
     })
   }, [backend, sessionId])
 
