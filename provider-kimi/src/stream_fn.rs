@@ -34,7 +34,13 @@ pub fn make_stream(
         let (iii, http, aborts) = (iii.clone(), http.clone(), aborts.clone());
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
+            let request_id = input.resolution_key.clone();
             run_stream_call(&iii, http, &aborts, input, sink.as_ref()).await;
+            // Single cleanup point covering every exit path (early returns
+            // included). A fired abort already consumed the entry — no-op.
+            if let Some(rid) = &request_id {
+                aborts.remove(rid);
+            }
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -54,6 +60,12 @@ async fn run_stream_call(
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
+    // Subscribe FIRST: an abort landing during credential resolve / config —
+    // before any upstream exists — must latch (level-triggered watch), or the
+    // request would start after its own cancellation. The caller removes the
+    // entry when this returns.
+    let abort_rx = input.resolution_key.as_ref().map(|rid| aborts.watch(rid));
+
     let model = input.model.clone();
     let mut warnings = Vec::new();
 
@@ -116,6 +128,10 @@ async fn run_stream_call(
     });
     let headers = build_headers(&cfg);
 
+    // Aborted while we were setting up — never start the upstream request.
+    if abort_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+        return;
+    }
     let rx = spawn_upstream(
         http,
         UpstreamArgs {
@@ -126,13 +142,10 @@ async fn run_stream_call(
             warnings,
         },
     );
-    // Register for `provider::kimi::abort` only while the upstream is live —
-    // the phases before it burn no tokens; earlier returns need no cleanup.
-    match &input.resolution_key {
-        Some(request_id) => {
-            let abort_rx = aborts.watch(request_id);
-            let _ = pump_abortable(rx, sink, PING_INTERVAL, abort_rx).await;
-            aborts.remove(request_id);
+    // kimi discards the terminal error_kind (no cached credential to drop).
+    match abort_rx {
+        Some(abort_rx) => {
+            pump_abortable(rx, sink, PING_INTERVAL, abort_rx).await;
         }
         None => pump(rx, sink, PING_INTERVAL).await,
     }

@@ -133,7 +133,10 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             make_abort(aborts),
             invalid_request_from_serde,
         )
-        .description(surface::ABORT_DESC),
+        .description(surface::ABORT_DESC)
+        // Control-plane callback (router::abort fan-out) — hide from the
+        // agent-facing catalog like the other providers' abort functions.
+        .metadata(serde_json::json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
