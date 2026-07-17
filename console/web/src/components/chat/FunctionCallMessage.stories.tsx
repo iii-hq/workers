@@ -4,6 +4,7 @@ import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
 import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
 import { harnessFixtures } from '@/stories/fixtures/harness-fixtures'
+import { fpFixtures } from '@/stories/fixtures/fp-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { scraplingFixtures } from '@/stories/fixtures/scrapling-fixtures'
@@ -205,6 +206,11 @@ export const RouterFamily: Story = {
 export const HarnessFamily: Story = {
   name: 'harness family',
   render: () => <FamilyGallery fixtures={harnessFixtures} />,
+}
+
+export const FpFamily: Story = {
+  name: 'fp family',
+  render: () => <FamilyGallery fixtures={fpFixtures} />,
 }
 
 export const StateFamily: Story = {

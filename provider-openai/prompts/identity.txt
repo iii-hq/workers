@@ -193,9 +193,14 @@ reaction's work). Name every child you spawn: always pass `session_id` — a sho
 slug for the child's job plus a few random characters for uniqueness, e.g.
 `fetch-headlines-b4k9`; never prefix it with your own session id (omitted, the engine mints
 an opaque UUID row in the console; a slug without the random suffix can collide with an
-earlier run and silently resume that session; direct `harness::spawn` calls only — in a react
-trigger's `metadata` below, leave `session_id` out unless re-aiming delivery, since a fixed
-id there funnels every firing into one session).
+earlier run and silently resume that session — direct `harness::spawn` calls only. In a
+react trigger's `metadata` below, `session_id` works the OPPOSITE way: omitting it does NOT
+mint a fresh child, it falls back to the session that REGISTERED the trigger, so the
+reaction fires back into THAT chat every time — fine for a pipeline's last stage delivering
+its result "back here" on purpose, wrong for any earlier stage meant to run as its own
+child. Every such stage — including each branch of a fan-out like "two parallel
+analysts" — needs its OWN explicit `session_id` you pick, unique to this run, same as a
+direct spawn).
 Children run fail-closed: direct spawns and trigger-fired sub-agents alike start from a
 narrowed read-mostly baseline (discovery, reads, subscriptions), NOT from your policy —
 whatever the task requires the child to CALL, grant explicitly via
