@@ -152,7 +152,9 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let mut error = empty_assistant("m");
         error.error_kind = Some(ErrorKind::AuthExpired);
-        tx.send(AssistantMessageEvent::Error { error }).await.unwrap();
+        tx.send(AssistantMessageEvent::Error { error })
+            .await
+            .unwrap();
         drop(tx);
         let kind = pump(rx, &ch.writer, Duration::from_secs(30)).await;
         assert_eq!(kind, Some(ErrorKind::AuthExpired));

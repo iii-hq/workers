@@ -284,14 +284,28 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                         }
                     }
                 }
+                // Slim streaming shape (contract: deltas carry no partial;
+                // boundary frames carry the cumulative snapshot).
                 let message = json!({
                     "role": "assistant", "content": [{ "type": "text", "text": "live" }],
                     "stop_reason": "end", "model": model, "provider": "real", "timestamp": 2
                 });
-                writer
-                    .send_message(&json!({ "type": "done", "message": message }).to_string())
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+                let start_snapshot = json!({
+                    "role": "assistant", "content": [], "stop_reason": "end",
+                    "model": model, "provider": "real", "timestamp": 1
+                });
+                for frame in [
+                    json!({ "type": "text_start", "partial": start_snapshot }),
+                    json!({ "type": "text_delta", "delta": "li" }),
+                    json!({ "type": "text_delta", "delta": "ve" }),
+                    json!({ "type": "text_end", "partial": message }),
+                    json!({ "type": "done", "message": message }),
+                ] {
+                    writer
+                        .send_message(&frame.to_string())
+                        .await
+                        .map_err(|e| Error::Handler(e.to_string()))?;
+                }
                 let _ = writer.close().await;
                 Ok(json!({ "ok": true }))
             }
@@ -416,6 +430,20 @@ async fn end_to_end_relay_over_a_live_engine() {
         assert!(frames.len() >= 2, "want >=2 frames, got {}", frames.len());
         let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
         assert_eq!(last["type"], "done");
+        // Slim deltas must reach the consumer untouched: no partial key
+        // materialized anywhere between provider and consumer channel.
+        let deltas: Vec<Value> = frames
+            .iter()
+            .map(|f| serde_json::from_str::<Value>(f).unwrap())
+            .filter(|v| v["type"] == "text_delta")
+            .collect();
+        assert_eq!(deltas.len(), 2, "want the 2 scripted slim deltas");
+        for d in &deltas {
+            assert!(
+                d.get("partial").is_none(),
+                "slim delta grew a partial in transit: {d}"
+            );
+        }
     }
 
     let completed = call(

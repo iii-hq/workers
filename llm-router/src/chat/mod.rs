@@ -1,4 +1,5 @@
 pub mod abort;
+pub mod accumulate;
 #[allow(clippy::module_inception)] // chat/chat.rs is the plan-locked file layout
 pub mod chat;
 pub mod complete;

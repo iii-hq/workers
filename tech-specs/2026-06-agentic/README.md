@@ -340,8 +340,12 @@ when asked (`include_custom`). Neither reaches the model: providers only ever re
 ### Streaming events
 
 The discriminated union providers stream over an iii channel, relayed verbatim by `llm-router` and
-the `harness`. Non-terminal content frames carry a `partial` accumulator (`usage`, `ping`, and
-`stop` do not); `done`/`error` carry the final assembled message. `done` and `error` are terminal.
+the `harness`. Block-boundary frames (`start` and the `*_start`/`*_end` frames) carry a required
+cumulative `partial` snapshot — thinking signatures and finalized function-call arguments exist
+only on those boundaries. The `*_delta` frames may omit `partial` (a delta that carries one is
+honored as an authoritative snapshot); readers reconstruct the cumulative message as the last
+boundary snapshot plus accumulated deltas. `usage`, `ping`, and `stop` carry no `partial`;
+`done`/`error` carry the final assembled message. `done` and `error` are terminal.
 
 ```typescript
 type StopReason = "end" | "length" | "function_call" | "aborted" | "error";
@@ -356,13 +360,13 @@ type Usage = {
 type AssistantMessageEvent =
   | { type: "start";             partial: AssistantMessage }
   | { type: "text_start";        partial: AssistantMessage }
-  | { type: "text_delta";        partial: AssistantMessage; delta: string }
+  | { type: "text_delta";        partial?: AssistantMessage; delta: string }
   | { type: "text_end";          partial: AssistantMessage }
   | { type: "thinking_start";    partial: AssistantMessage }
-  | { type: "thinking_delta";    partial: AssistantMessage; delta: string }
+  | { type: "thinking_delta";    partial?: AssistantMessage; delta: string }
   | { type: "thinking_end";      partial: AssistantMessage }
   | { type: "functioncall_start";partial: AssistantMessage }
-  | { type: "functioncall_delta";partial: AssistantMessage; delta: string }
+  | { type: "functioncall_delta";partial?: AssistantMessage; delta: string }
   | { type: "functioncall_end";  partial: AssistantMessage }
   | { type: "usage";             usage: Usage }
   | { type: "ping" }                              // liveness heartbeat; consumers ignore

@@ -344,7 +344,7 @@ pub fn handle_sse_event(
                         .unwrap_or("");
                     state.text_blocks[idx].push_str(text);
                     events.push(AssistantMessageEvent::TextDelta {
-                        partial: build_partial(state, model),
+                        partial: None,
                         delta: text.to_string(),
                     });
                 }
@@ -355,7 +355,7 @@ pub fn handle_sse_event(
                         .unwrap_or("");
                     state.function_calls[idx].args_json.push_str(json);
                     events.push(AssistantMessageEvent::FunctioncallDelta {
-                        partial: build_partial(state, model),
+                        partial: None,
                         delta: json.to_string(),
                         id: state.function_calls[idx].id.clone(),
                     });
@@ -367,7 +367,7 @@ pub fn handle_sse_event(
                         .unwrap_or("");
                     state.thinking_blocks[idx].text.push_str(text);
                     events.push(AssistantMessageEvent::ThinkingDelta {
-                        partial: build_partial(state, model),
+                        partial: None,
                         delta: text.to_string(),
                     });
                 }
@@ -463,6 +463,39 @@ mod tests {
             events.extend(handle_sse_event(b, &mut state, "claude-test"));
         }
         (state, events)
+    }
+
+    /// Contract pin (llm-router types::events): delta frames are slim —
+    /// no cumulative partial per chunk — while block-boundary frames carry
+    /// the authoritative snapshot (cumulative text here; signatures and
+    /// final call args on their End frames). Readers reconstruct via
+    /// llm_router::chat::accumulate.
+    #[test]
+    fn deltas_are_slim_and_boundary_snapshots_are_cumulative() {
+        let (_, events) = run(&[
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"He\"}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"llo\"}}",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+        ]);
+        for ev in &events {
+            if let AssistantMessageEvent::TextDelta { partial, .. } = ev {
+                assert!(partial.is_none(), "delta frames must not carry partial");
+            }
+        }
+        let Some(AssistantMessageEvent::TextEnd { partial }) = events
+            .iter()
+            .find(|e| matches!(e, AssistantMessageEvent::TextEnd { .. }))
+        else {
+            panic!("want a text_end frame");
+        };
+        assert!(
+            matches!(
+                &partial.content[0],
+                llm_router::types::content::ContentBlock::Text { text } if text == "Hello"
+            ),
+            "the End snapshot must carry the cumulative block text"
+        );
     }
 
     #[test]

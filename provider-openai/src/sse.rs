@@ -262,7 +262,7 @@ pub fn handle_chunk(
                 }
                 state.text.push_str(text);
                 events.push(AssistantMessageEvent::TextDelta {
-                    partial: build_partial(state, model),
+                    partial: None,
                     delta: text.to_string(),
                 });
             }
@@ -295,7 +295,7 @@ pub fn handle_chunk(
                     if !args.is_empty() {
                         state.function_calls[index].args_json.push_str(args);
                         events.push(AssistantMessageEvent::FunctioncallDelta {
-                            partial: build_partial(state, model),
+                            partial: None,
                             delta: args.to_string(),
                             id: state.function_calls[index].id.clone(),
                         });
@@ -400,7 +400,7 @@ fn handle_responses_event(
             }
             state.text.push_str(delta);
             events.push(AssistantMessageEvent::TextDelta {
-                partial: build_partial(state, model),
+                partial: None,
                 delta: delta.to_string(),
             });
         }
@@ -418,7 +418,7 @@ fn handle_responses_event(
             }
             state.thinking.push_str(delta);
             events.push(AssistantMessageEvent::ThinkingDelta {
-                partial: build_partial(state, model),
+                partial: None,
                 delta: delta.to_string(),
             });
         }
@@ -443,7 +443,7 @@ fn handle_responses_event(
             call.args_json.push_str(delta);
             let id = call.id.clone();
             events.push(AssistantMessageEvent::FunctioncallDelta {
-                partial: build_partial(state, model),
+                partial: None,
                 delta: delta.to_string(),
                 id,
             });

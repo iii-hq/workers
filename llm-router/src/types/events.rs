@@ -48,6 +48,16 @@ pub struct Usage {
 
 /// The frozen 15-variant streaming vocabulary (README § Streaming events).
 /// New frame types are a contract revision, not a provider choice.
+///
+/// Block-boundary frames (Start / *Start / *End) carry a required
+/// cumulative `partial` snapshot — thinking signatures and finalized
+/// function-call arguments exist only there. The three per-chunk delta
+/// variants carry only `delta`: a cumulative snapshot per chunk made every
+/// stream O(N²) in output length (providers rebuilt + re-serialized the
+/// whole message per delta; every hop re-parsed it). Readers reconstruct
+/// the cumulative message as last-boundary-snapshot + accumulated deltas
+/// (see `chat::accumulate`); a legacy fat delta (`partial: Some`) is
+/// honored as an authoritative snapshot for old producers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantMessageEvent {
@@ -58,7 +68,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     TextDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
     },
     TextEnd {
@@ -68,7 +79,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     ThinkingDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
     },
     ThinkingEnd {
@@ -78,7 +90,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     FunctioncallDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
         /// Call id receiving this delta; empty from pre-id producers.
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -113,6 +126,23 @@ impl AssistantMessageEvent {
             AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
         )
     }
+
+    /// The ten content-bearing variants: block boundaries and deltas.
+    pub fn is_content(&self) -> bool {
+        matches!(
+            self,
+            AssistantMessageEvent::Start { .. }
+                | AssistantMessageEvent::TextStart { .. }
+                | AssistantMessageEvent::TextDelta { .. }
+                | AssistantMessageEvent::TextEnd { .. }
+                | AssistantMessageEvent::ThinkingStart { .. }
+                | AssistantMessageEvent::ThinkingDelta { .. }
+                | AssistantMessageEvent::ThinkingEnd { .. }
+                | AssistantMessageEvent::FunctioncallStart { .. }
+                | AssistantMessageEvent::FunctioncallDelta { .. }
+                | AssistantMessageEvent::FunctioncallEnd { .. }
+        )
+    }
 }
 
 #[cfg(test)]
@@ -142,7 +172,7 @@ mod tests {
             (AssistantMessageEvent::Start { partial: partial() }, "start"),
             (
                 AssistantMessageEvent::TextDelta {
-                    partial: partial(),
+                    partial: Some(partial()),
                     delta: "x".into(),
                 },
                 "text_delta",
@@ -183,6 +213,53 @@ mod tests {
         let ev: AssistantMessageEvent = serde_json::from_value(json.clone()).unwrap();
         assert!(ev.is_terminal());
         assert_eq!(serde_json::to_value(&ev).unwrap(), json);
+    }
+
+    #[test]
+    fn slim_and_fat_delta_frames_both_round_trip() {
+        // Slim (post-contract-change producer shape): no partial key at all.
+        let slim = serde_json::json!({ "type": "text_delta", "delta": "x" });
+        let ev: AssistantMessageEvent = serde_json::from_value(slim.clone()).unwrap();
+        assert!(matches!(
+            &ev,
+            AssistantMessageEvent::TextDelta { partial: None, .. }
+        ));
+        // partial: None is omitted on the wire, not serialized as null.
+        assert_eq!(serde_json::to_value(&ev).unwrap(), slim);
+
+        // Fat (legacy producer shape): partial still parses and re-emits.
+        let fat = serde_json::json!({
+            "type": "functioncall_delta",
+            "partial": serde_json::to_value(partial()).unwrap(),
+            "delta": "{\"x\":",
+            "id": "c1"
+        });
+        let ev: AssistantMessageEvent = serde_json::from_value(fat.clone()).unwrap();
+        assert!(matches!(
+            &ev,
+            AssistantMessageEvent::FunctioncallDelta {
+                partial: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&ev).unwrap(), fat);
+    }
+
+    #[test]
+    fn is_content_covers_exactly_the_ten_content_variants() {
+        assert!(AssistantMessageEvent::Start { partial: partial() }.is_content());
+        assert!(AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta: "x".into()
+        }
+        .is_content());
+        assert!(AssistantMessageEvent::FunctioncallEnd { partial: partial() }.is_content());
+        assert!(!AssistantMessageEvent::Ping.is_content());
+        assert!(!AssistantMessageEvent::Usage {
+            usage: Usage::default()
+        }
+        .is_content());
+        assert!(!AssistantMessageEvent::Done { message: partial() }.is_content());
     }
 
     #[test]
