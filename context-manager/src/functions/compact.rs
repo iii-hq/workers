@@ -131,14 +131,16 @@ async fn summarise(
     previous_summary: Option<&str>,
     estimator: &dyn Estimator,
 ) -> CompactResponse {
-    let selection = select(messages, budget, tail_turns, estimator);
+    // One estimate per message; select, tokens_before, and tokens_after
+    // all read this memo instead of re-serializing per pass.
+    let sizes: Vec<u64> = messages.iter().map(|m| estimator.message(m)).collect();
+    let selection = select(messages, &sizes, budget, tail_turns);
     let head = &messages[..selection.head_len];
     if head.is_empty() {
         return CompactResponse::Empty;
     }
-    let tail = &messages[selection.head_len..];
 
-    let tokens_before: u64 = head.iter().map(|m| estimator.message(m)).sum();
+    let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
     let stripped = strip_media(head, deps.config().await.max_output_chars);
 
     let request = SummarizeRequest {
@@ -166,8 +168,7 @@ async fn summarise(
         }
     };
 
-    let tokens_after =
-        estimator.text(&summary) + tail.iter().map(|m| estimator.message(m)).sum::<u64>();
+    let tokens_after = estimator.text(&summary) + sizes[selection.head_len..].iter().sum::<u64>();
 
     CompactResponse::Ok {
         summary,

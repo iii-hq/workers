@@ -262,4 +262,57 @@ impl SessionClient {
         }
         Ok(out)
     }
+
+    /// Load only the entries strictly after `after_entry_id` on the active
+    /// path — the incremental form of [`Self::messages`] for callers holding
+    /// a watermark. `Ok(None)` means the watermark left the active path
+    /// (fork / `set_active_leaf`); the caller must fall back to a full load.
+    pub async fn messages_after(
+        &self,
+        session_id: &str,
+        after_entry_id: &str,
+        include_custom: bool,
+    ) -> Result<Option<Vec<LoadedEntry>>, HarnessError> {
+        const PAGE_LIMIT: u64 = 500;
+        let mut out: Vec<LoadedEntry> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut payload = json!({
+                "session_id": session_id,
+                "include_custom": include_custom,
+                "limit": PAGE_LIMIT,
+            });
+            match &cursor {
+                // Later pages resume from the server cursor; only the first
+                // page anchors on the caller's watermark.
+                Some(c) => payload["cursor"] = json!(c),
+                None => payload["after_entry_id"] = json!(after_entry_id),
+            }
+            let resp = match self.call("session::messages", payload).await {
+                Ok(resp) => resp,
+                Err(HarnessError::Dependency(msg)) if msg.contains("session/invalid_cursor") => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            };
+            let arr = resp
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for item in arr {
+                match serde_json::from_value::<LoadedEntry>(item) {
+                    Ok(entry) => out.push(entry),
+                    Err(e) => {
+                        tracing::warn!(session_id, error = %e, "skipping unparseable session entry")
+                    }
+                }
+            }
+            match resp.get("next_cursor").and_then(Value::as_str) {
+                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                _ => break,
+            }
+        }
+        Ok(Some(out))
+    }
 }

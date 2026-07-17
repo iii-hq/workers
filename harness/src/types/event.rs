@@ -62,7 +62,10 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     TextDelta {
-        partial: AssistantMessage,
+        /// Legacy fat-frame snapshot; slim producers omit it and readers
+        /// accumulate `delta`s from the last block-boundary snapshot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
     },
     TextEnd {
@@ -72,7 +75,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     ThinkingDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
     },
     ThinkingEnd {
@@ -82,7 +86,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     FunctioncallDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
         /// Call id receiving this delta; empty from pre-id producers.
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -115,6 +120,23 @@ impl AssistantMessageEvent {
         matches!(
             self,
             AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        )
+    }
+
+    /// The ten content-bearing variants: block boundaries and deltas.
+    pub fn is_content(&self) -> bool {
+        matches!(
+            self,
+            AssistantMessageEvent::Start { .. }
+                | AssistantMessageEvent::TextStart { .. }
+                | AssistantMessageEvent::TextDelta { .. }
+                | AssistantMessageEvent::TextEnd { .. }
+                | AssistantMessageEvent::ThinkingStart { .. }
+                | AssistantMessageEvent::ThinkingDelta { .. }
+                | AssistantMessageEvent::ThinkingEnd { .. }
+                | AssistantMessageEvent::FunctioncallStart { .. }
+                | AssistantMessageEvent::FunctioncallDelta { .. }
+                | AssistantMessageEvent::FunctioncallEnd { .. }
         )
     }
 }

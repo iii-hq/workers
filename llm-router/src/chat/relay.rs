@@ -92,26 +92,10 @@ pub struct RelayOpts {
     pub aborted: Arc<AtomicBool>,
 }
 
-fn partial_of(ev: &AssistantMessageEvent) -> Option<&AssistantMessage> {
-    use AssistantMessageEvent as E;
-    match ev {
-        E::Start { partial }
-        | E::TextStart { partial }
-        | E::TextDelta { partial, .. }
-        | E::TextEnd { partial }
-        | E::ThinkingStart { partial }
-        | E::ThinkingDelta { partial, .. }
-        | E::ThinkingEnd { partial }
-        | E::FunctioncallStart { partial }
-        | E::FunctioncallDelta { partial, .. }
-        | E::FunctioncallEnd { partial } => Some(partial),
-        _ => None,
-    }
-}
-
 /// One provider attempt (design § chat flow step 5). Reads provider frames,
 /// enforces the idle budget, fills cost_usd, forwards in order, tracks the
-/// partial, classifies how the stream ended.
+/// cumulative message (boundary snapshots + accumulated deltas), classifies
+/// how the stream ended.
 ///
 /// Idle semantics: before any content, every frame (incl. ping) resets the
 /// budget — a slow first token behind provider keepalives is legitimate
@@ -125,7 +109,9 @@ pub async fn relay_frames(
     opts: &RelayOpts,
 ) -> RelayResult {
     let mut forwarded = false; // a non-ping frame reached the caller (gates retry)
-    let mut partial: Option<AssistantMessage> = None;
+                               // Cumulative message for abort/no-terminal synthesis: slim deltas are
+                               // cheap string appends; legacy fat partials replace the snapshot.
+    let mut acc = crate::chat::accumulate::PartialAccumulator::default();
     let mut usage: Option<Usage> = None;
     let mut content_started = false;
     let mut last_progress = std::time::Instant::now();
@@ -145,7 +131,7 @@ pub async fn relay_frames(
         if opts.aborted.load(Ordering::SeqCst) {
             reader.close();
             return RelayResult::Aborted {
-                partial,
+                partial: acc.current(),
                 usage,
                 forwarded,
             };
@@ -154,7 +140,7 @@ pub async fn relay_frames(
             ReadEvent::Eof => {
                 return RelayResult::NoTerminal {
                     reason: NoTerminalReason::Closed,
-                    partial,
+                    partial: acc.current(),
                     usage,
                     forwarded,
                 }
@@ -163,7 +149,7 @@ pub async fn relay_frames(
                 reader.close();
                 return RelayResult::NoTerminal {
                     reason: NoTerminalReason::Idle,
-                    partial,
+                    partial: acc.current(),
                     usage,
                     forwarded,
                 };
@@ -176,57 +162,58 @@ pub async fn relay_frames(
                     last_progress = std::time::Instant::now();
                     // Start carries an empty partial pre-content; it must not
                     // arm the strict budget or slow-first-token providers trip.
-                    if partial_of(&ev).is_some()
-                        && !matches!(ev, AssistantMessageEvent::Start { .. })
-                    {
+                    if ev.is_content() && !matches!(ev, AssistantMessageEvent::Start { .. }) {
                         content_started = true;
                     }
                 }
-                if let Some(p) = partial_of(&ev) {
-                    partial = Some(p.clone());
-                }
+                acc.apply(&ev);
+                let is_ping = matches!(ev, AssistantMessageEvent::Ping);
 
-                // Enrich usage with cost before forwarding (router fills cost_usd).
-                let out = match ev {
+                // Only Usage/Done/Error are enriched (cost_usd) and need
+                // re-serialization; every other frame is forwarded as the
+                // original string — no per-frame re-serialize on the hot path.
+                let enriched = match ev {
                     AssistantMessageEvent::Usage { usage: u } => {
                         let filled = fill_cost_usd(&u, opts.pricing.as_ref());
                         usage = Some(filled.clone());
-                        AssistantMessageEvent::Usage { usage: filled }
+                        Some(AssistantMessageEvent::Usage { usage: filled })
                     }
                     AssistantMessageEvent::Done { mut message } => {
                         message.usage = message
                             .usage
                             .map(|u| fill_cost_usd(&u, opts.pricing.as_ref()));
-                        AssistantMessageEvent::Done { message }
+                        Some(AssistantMessageEvent::Done { message })
                     }
                     AssistantMessageEvent::Error { mut error } => {
                         error.usage = error
                             .usage
                             .map(|u| fill_cost_usd(&u, opts.pricing.as_ref()))
                             .or_else(|| usage.clone());
-                        AssistantMessageEvent::Error { error }
+                        Some(AssistantMessageEvent::Error { error })
                     }
-                    other => other,
+                    _ => None,
                 };
 
+                let is_done = matches!(enriched, Some(AssistantMessageEvent::Done { .. }));
+                let is_error = matches!(enriched, Some(AssistantMessageEvent::Error { .. }));
                 // Terminal-holdback: a pre-content error terminal stays with us
                 // so chat.rs can retry the attempt invisibly.
-                let is_done = matches!(out, AssistantMessageEvent::Done { .. });
-                let is_error = matches!(out, AssistantMessageEvent::Error { .. });
                 if is_error && !forwarded {
                     reader.close();
                     return RelayResult::ErrorFrame {
-                        terminal: out,
+                        terminal: enriched.expect("error frame just matched"),
                         forwarded: false,
                         terminal_forwarded: false,
                     };
                 }
 
-                let is_ping = matches!(out, AssistantMessageEvent::Ping);
-                if sink
-                    .send(&serde_json::to_string(&out).expect("serializable frame"))
-                    .is_err()
-                {
+                let frame = match &enriched {
+                    Some(out) => std::borrow::Cow::Owned(
+                        serde_json::to_string(out).expect("serializable frame"),
+                    ),
+                    None => std::borrow::Cow::Borrowed(msg.as_str()),
+                };
+                if sink.send(&frame).is_err() {
                     reader.close(); // closure propagates: the provider's writes now fail
                     return RelayResult::CallerGone { forwarded };
                 }
@@ -235,13 +222,13 @@ pub async fn relay_frames(
                 }
                 if is_done {
                     return RelayResult::Done {
-                        terminal: out,
+                        terminal: enriched.expect("done frame just matched"),
                         forwarded,
                     };
                 }
                 if is_error {
                     return RelayResult::ErrorFrame {
-                        terminal: out,
+                        terminal: enriched.expect("error frame just matched"),
                         forwarded,
                         terminal_forwarded: true,
                     };
@@ -492,7 +479,7 @@ mod loop_tests {
         send(
             &provider,
             &AssistantMessageEvent::TextDelta {
-                partial: partial("hi"),
+                partial: Some(partial("hi")),
                 delta: "hi".into(),
             },
         );
@@ -562,5 +549,81 @@ mod loop_tests {
             panic!()
         };
         assert_eq!(p.unwrap().content.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn slim_delta_stream_synthesis_carries_the_accumulated_text() {
+        // A provider dies mid-block after slim (partial-less) deltas: the
+        // no-terminal result must still carry every delta received.
+        let provider = FakeChannel::new();
+        let caller = FakeChannel::new();
+        send(
+            &provider,
+            &AssistantMessageEvent::Start {
+                partial: partial(""),
+            },
+        );
+        send(
+            &provider,
+            &AssistantMessageEvent::TextStart {
+                partial: partial(""),
+            },
+        );
+        send(
+            &provider,
+            &AssistantMessageEvent::TextDelta {
+                partial: None,
+                delta: "Hel".into(),
+            },
+        );
+        send(
+            &provider,
+            &AssistantMessageEvent::TextDelta {
+                partial: None,
+                delta: "lo".into(),
+            },
+        );
+        provider.writer.close(); // crash: no terminal frame
+        let (_, o) = opts(1000);
+        let mut reader: Box<dyn RelayRead> = Box::new(provider.reader);
+        let RelayResult::NoTerminal { partial: p, .. } =
+            relay_frames(&mut reader, &caller.writer.clone(), &o).await
+        else {
+            panic!("want no-terminal");
+        };
+        let msg = p.expect("accumulated partial");
+        assert_eq!(
+            msg.content,
+            vec![crate::types::content::ContentBlock::Text {
+                text: "Hello".into()
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_enriched_frames_are_forwarded_byte_identical() {
+        // The relay must not re-serialize pass-through frames: the caller
+        // receives the provider's exact bytes (key order, whitespace, all).
+        let provider = FakeChannel::new();
+        let mut caller = FakeChannel::new();
+        let odd_spacing = r#"{ "type": "text_delta",   "delta": "hi" }"#;
+        provider.writer.send(odd_spacing).unwrap();
+        let done = serde_json::to_string(&AssistantMessageEvent::Done {
+            message: partial("hi"),
+        })
+        .unwrap();
+        provider.writer.send(&done).unwrap();
+        provider.writer.close();
+
+        let (_, o) = opts(1000);
+        let mut reader: Box<dyn RelayRead> = Box::new(provider.reader);
+        let result = relay_frames(&mut reader, &caller.writer.clone(), &o).await;
+        assert!(matches!(result, RelayResult::Done { .. }));
+
+        let mut raw = vec![];
+        while let ReadEvent::Msg(m) = caller.reader.next(Duration::from_millis(50)).await {
+            raw.push(m);
+        }
+        assert_eq!(raw[0], odd_spacing, "pass-through frame was rewritten");
     }
 }

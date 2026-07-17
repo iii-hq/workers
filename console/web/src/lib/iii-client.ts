@@ -35,10 +35,15 @@ export interface IiiClient {
    * Invoke an iii bus function and await its result. In the iii ecosystem
    * every bus invocation is a *trigger* — there is no separate "call"
    * concept. Thin wrapper over the SDK's `trigger({ function_id, payload })`.
+   *
+   * The SDK's default invocation timeout is 30s; pass `timeoutMs` for
+   * functions that legitimately run longer (e.g. `context::compact`, whose
+   * summariser call is budgeted up to 320s).
    */
   trigger<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
   ): Promise<T>
   on<P = unknown>(
     functionId: string,
@@ -130,13 +135,17 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // unregister still releases the engine-side binding on dispose().
   const triggerUnregisters = new Set<() => void>()
 
+  const DEFAULT_TRIGGER_TIMEOUT_MS = 5 * 60 * 1000
+
   function trigger<T>(
     functionId: string,
     payload: Record<string, unknown> = {},
+    options?: { timeoutMs?: number },
   ): Promise<T> {
     return sdk.trigger<unknown, T>({
       function_id: functionId,
       payload,
+      timeoutMs: options?.timeoutMs ?? DEFAULT_TRIGGER_TIMEOUT_MS,
     })
   }
 

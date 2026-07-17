@@ -7,6 +7,9 @@ use crate::sse::{
     PartialState,
 };
 use futures::StreamExt;
+use llm_router::provider_scaffold::sse_transport::{
+    append_utf8_chunk, drain_sse_blocks, error_chain,
+};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -31,90 +34,19 @@ pub fn spawn_upstream(
     rx
 }
 
-/// Flatten an error and its `source()` chain into one string. reqwest's
-/// top-level Display for a builder error is just "builder error"; the real
-/// cause (invalid header value, bad URL) lives in the source chain, so without
-/// this the message is undiagnosable.
-fn error_chain(e: &dyn std::error::Error) -> String {
-    let mut msg = e.to_string();
-    let mut src = e.source();
-    while let Some(s) = src {
-        let next = s.to_string();
-        if !msg.ends_with(&next) {
-            msg.push_str(": ");
-            msg.push_str(&next);
-        }
-        src = s.source();
-    }
-    msg
-}
-
-/// Append chunk bytes to `text`, retaining any trailing incomplete UTF-8 sequence.
-fn append_utf8_chunk(byte_buf: &mut Vec<u8>, text: &mut String, chunk: &[u8]) {
-    byte_buf.extend_from_slice(chunk);
-    let mut consumed = 0usize;
-    loop {
-        match std::str::from_utf8(&byte_buf[consumed..]) {
-            Ok(s) => {
-                text.push_str(s);
-                byte_buf.clear();
-                return;
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if valid > 0 {
-                    // SAFETY: valid_up_to guarantees valid UTF-8 in this prefix.
-                    text.push_str(unsafe {
-                        std::str::from_utf8_unchecked(&byte_buf[consumed..consumed + valid])
-                    });
-                    consumed += valid;
-                }
-                match e.error_len() {
-                    Some(invalid) => {
-                        byte_buf.drain(..consumed + invalid);
-                        text.push('\u{FFFD}');
-                        consumed = 0;
-                    }
-                    None => {
-                        if consumed > 0 {
-                            byte_buf.drain(..consumed);
-                        }
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn normalize_crlf(text: &mut String) {
-    if text.contains("\r\n") {
-        *text = text.replace("\r\n", "\n");
-    }
-}
-
-/// Drain complete `\n\n`-delimited SSE blocks from `text`. Returns true when a
-/// terminal event was forwarded.
-async fn drain_sse_blocks(
+/// Drain complete `\n\n`-delimited SSE blocks from `text`, decoding each
+/// through this provider's SSE state machine. Returns true when a terminal
+/// event was forwarded.
+async fn drain_blocks(
     text: &mut String,
     state: &mut PartialState,
     model: &str,
     tx: &mpsc::Sender<AssistantMessageEvent>,
 ) -> bool {
-    normalize_crlf(text);
-    while let Some(idx) = text.find("\n\n") {
-        let block: String = text.drain(..idx + 2).collect();
-        for ev in handle_sse_event(&block, state, model) {
-            let terminal = ev.is_terminal();
-            if tx.send(ev).await.is_err() {
-                return true;
-            }
-            if terminal {
-                return true;
-            }
-        }
-    }
-    false
+    drain_sse_blocks(text, tx, &mut |block: &str| {
+        handle_sse_event(block, state, model)
+    })
+    .await
 }
 
 async fn run_upstream(
@@ -185,7 +117,7 @@ async fn run_upstream(
             }
         };
         append_utf8_chunk(&mut byte_buf, &mut text, &chunk);
-        if drain_sse_blocks(&mut text, &mut state, &args.model, &tx).await {
+        if drain_blocks(&mut text, &mut state, &args.model, &tx).await {
             return;
         }
     }
@@ -196,7 +128,7 @@ async fn run_upstream(
     }
     if !text.trim().is_empty() {
         let remainder = std::mem::take(&mut text);
-        let _ = drain_sse_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await;
+        let _ = drain_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await;
     }
 
     if state.saw_message_stop {

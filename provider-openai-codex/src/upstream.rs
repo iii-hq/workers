@@ -4,6 +4,9 @@
 use crate::errors::classify;
 use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
 use futures::StreamExt;
+use llm_router::provider_scaffold::sse_transport::{
+    append_utf8_chunk, drain_sse_blocks, error_chain,
+};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -26,25 +29,6 @@ pub fn spawn_upstream(
         run_upstream(client, args, tx).await;
     });
     rx
-}
-
-/// Flatten an error and its `source()` chain into one string. reqwest's
-/// top-level Display for a builder error is just "builder error"; the real
-/// cause (invalid header value, bad URL) lives in the source chain, so without
-/// this the message is undiagnosable.
-fn error_chain(e: &dyn std::error::Error) -> String {
-    let mut msg = e.to_string();
-    let mut src = e.source();
-    while let Some(s) = src {
-        let next = s.to_string();
-        // reqwest sometimes nests the same text; skip exact repeats.
-        if !msg.ends_with(&next) {
-            msg.push_str(": ");
-            msg.push_str(&next);
-        }
-        src = s.source();
-    }
-    msg
 }
 
 /// Last `data: ` payload in an SSE block, if any.
@@ -106,6 +90,33 @@ async fn run_upstream(
 
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
+    // Cross-chunk UTF-8 buffering: network chunks split multibyte
+    // codepoints, and a per-chunk lossy conversion corrupts them to U+FFFD.
+    let mut byte_buf = Vec::new();
+    // Block decoder: [DONE] closes the stream (Stop + Done, Done terminal);
+    // anything else parses and runs the chunk state machine.
+    let decode =
+        |data_block: &str, state: &mut PartialState, model: &str| -> Vec<AssistantMessageEvent> {
+            let Some(data) = data_line(data_block) else {
+                return vec![];
+            };
+            if data == "[DONE]" {
+                return vec![
+                    AssistantMessageEvent::Stop {
+                        stop_reason: state.stop_reason(),
+                        error_message: None,
+                        error_kind: None,
+                    },
+                    AssistantMessageEvent::Done {
+                        message: build_final(state, model),
+                    },
+                ];
+            }
+            let Ok(parsed) = serde_json::from_str::<Value>(data) else {
+                return vec![];
+            };
+            handle_chunk(&parsed, state, model)
+        };
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
@@ -120,39 +131,13 @@ async fn run_upstream(
                 return;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let block: String = buf.drain(..idx + 2).collect();
-            let Some(data) = data_line(&block) else {
-                continue;
-            };
-            if data == "[DONE]" {
-                let _ = tx
-                    .send(AssistantMessageEvent::Stop {
-                        stop_reason: state.stop_reason(),
-                        error_message: None,
-                        error_kind: None,
-                    })
-                    .await;
-                let _ = tx
-                    .send(AssistantMessageEvent::Done {
-                        message: build_final(&state, &args.model),
-                    })
-                    .await;
-                return;
-            }
-            let Ok(parsed) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            for ev in handle_chunk(&parsed, &mut state, &args.model) {
-                let terminal = ev.is_terminal();
-                if tx.send(ev).await.is_err() {
-                    return; // receiver dropped → abort upstream
-                }
-                if terminal {
-                    return; // exactly one terminal event
-                }
-            }
+        append_utf8_chunk(&mut byte_buf, &mut buf, &chunk);
+        if drain_sse_blocks(&mut buf, &tx, &mut |block: &str| {
+            decode(block, &mut state, &args.model)
+        })
+        .await
+        {
+            return; // terminal forwarded, or receiver dropped → abort upstream
         }
     }
     // Stream ended without [DONE]. With output accumulated this is

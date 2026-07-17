@@ -7,6 +7,7 @@ pub mod chat;
 pub mod config;
 pub mod embed;
 pub mod manifest;
+pub mod provider_scaffold;
 pub mod register;
 pub mod registry;
 pub mod routing;

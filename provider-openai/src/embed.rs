@@ -6,11 +6,14 @@
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::types::events::ErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{config_from_resolve, ConfigError};
-use crate::{router_client, state};
+use crate::errors::classify_bus_error;
+use crate::state;
 
 pub const DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
 const EMBED_URL: &str = "https://api.openai.com/v1/embeddings";
@@ -71,6 +74,7 @@ struct WireResponse {
 pub async fn handle(
     iii: &IIIClient,
     http: &reqwest::Client,
+    cache: &ScaffoldCache,
     req: EmbedRequest,
 ) -> Result<EmbedResponse, Error> {
     if req.input.is_empty() || req.input.len() > 512 {
@@ -83,8 +87,23 @@ pub async fn handle(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
 
-    let token = state::load_token(iii).await;
-    let resolved = router_client::resolve(iii, token.as_deref()).await?;
+    // Token + resolve are cached (ScaffoldCache): zero engine round trips
+    // on the hot path within the TTL. An auth-classified resolve failure
+    // drops the cache so the next attempt re-resolves fresh — retrying
+    // stays the router's job.
+    let token = cache.load_token(iii, state::STATE_SCOPE).await;
+    let resolved = match cache
+        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            if classify_bus_error(&e) == ErrorKind::AuthExpired {
+                cache.invalidate();
+            }
+            return Err(e);
+        }
+    };
     // Reuse the chat-path credential validation; the api_url from resolve
     // targets the chat endpoint, so embeddings derive their sibling URL
     // from it (same host and version prefix).

@@ -342,8 +342,8 @@ Example:
 }
 // channel frames (abbreviated)
 { "type": "start", "partial": { "role": "assistant", "content": [], "...": "..." } }
-{ "type": "text_delta", "delta": "He", "partial": { "...": "..." } }
-{ "type": "text_delta", "delta": "llo", "partial": { "...": "..." } }
+{ "type": "text_delta", "delta": "He" }   // slim deltas omit `partial`; readers accumulate onto the last boundary snapshot
+{ "type": "text_delta", "delta": "llo" }
 { "type": "usage", "usage": { "input": 12, "output": 2 } }
 { "type": "done", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Hello" }], "stop_reason": "end", "model": "claude-sonnet-4", "provider": "anthropic", "timestamp": 2 } }
 // response (after stream closes)

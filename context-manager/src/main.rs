@@ -28,6 +28,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
+use context_manager::adapters::cache::CachingModelResolver;
 use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
 use context_manager::configuration::{self, ConfigCell};
@@ -135,15 +136,24 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("opening the compaction lease directory: {e}"))?,
     ));
 
+    // Budget lookups are TTL-cached and flushed on router::models::changed;
+    // the decorator drops into Deps.resolver with no handler changes.
+    let clock: Arc<SystemClock> = Arc::new(SystemClock);
+    let resolver = Arc::new(CachingModelResolver::new(
+        Arc::new(RouterModelResolver::new(iii.clone())),
+        clock.clone(),
+    ));
+
     let deps = Arc::new(Deps {
         config: cell.clone(),
-        resolver: Arc::new(RouterModelResolver::new(iii.clone())),
+        resolver: resolver.clone(),
         summarizer,
         leases: leases.clone(),
-        clock: Arc::new(SystemClock),
+        clock,
     });
 
     functions::register_all(&iii, &deps);
+    context_manager::adapters::cache::register_models_changed_flush(&iii, resolver);
 
     // LAST: bind the configuration-change trigger so its handler closes over
     // the snapshot cell + the lease cell it rebuilds on a lease_dir change.

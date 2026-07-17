@@ -8,11 +8,14 @@
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::types::events::ErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{config_from_resolve, ConfigError};
-use crate::{router_client, state};
+use crate::errors::{classify, classify_bus_error};
+use crate::state;
 
 /// Embeddings requests are bounded and non-streaming; a tight budget keeps
 /// hook callers (memory recall) inside their own timeouts.
@@ -72,6 +75,7 @@ fn embed_url(chat_api_url: &str) -> String {
 pub async fn handle(
     iii: &IIIClient,
     http: &reqwest::Client,
+    cache: &ScaffoldCache,
     req: EmbedRequest,
 ) -> Result<EmbedResponse, Error> {
     if req.input.is_empty() || req.input.len() > 512 {
@@ -84,8 +88,19 @@ pub async fn handle(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| "default".to_string());
 
-    let token = state::load_token(iii).await;
-    let resolved = router_client::resolve(iii, token.as_deref()).await?;
+    // Token + resolve are cached (ScaffoldCache): zero engine round trips
+    // on the hot path within the TTL. An auth-classified resolve failure
+    // drops the cache so the next attempt re-resolves fresh — retrying
+    // stays the router's job.
+    let token = cache.load_token(iii, state::STATE_SCOPE).await;
+    let resolved = cache
+        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .await
+        .inspect_err(|e| {
+            if classify_bus_error(e) == ErrorKind::AuthExpired {
+                cache.invalidate();
+            }
+        })?;
     let cfg = config_from_resolve(&model, None, &resolved).map_err(|e| match e {
         ConfigError::InvalidApiUrl(u) => {
             Error::Handler(format!("provider/config: invalid endpoint url {u:?}"))
@@ -109,6 +124,11 @@ pub async fn handle(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
+        // An upstream auth terminal means the cached credential was rotated
+        // out from under us: drop the cache so the next attempt re-resolves.
+        if classify(Some(status.as_u16()), &body) == ErrorKind::AuthExpired {
+            cache.invalidate();
+        }
         let excerpt: String = body.chars().take(300).collect();
         return Err(Error::Handler(format!(
             "provider/upstream_status: {status}: {excerpt} \

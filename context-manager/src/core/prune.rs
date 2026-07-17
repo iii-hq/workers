@@ -79,6 +79,28 @@ pub fn prune(
     params: &PruneParams,
     estimator: &dyn Estimator,
 ) -> PruneStats {
+    prune_impl(messages, None, params, estimator)
+}
+
+/// [`prune`] that also keeps a caller-held per-message size memo in
+/// sync: `sizes[i]` is re-estimated for every rewritten message, so the
+/// memo stays exactly what a from-scratch recount would produce.
+pub fn prune_with_sizes(
+    messages: &mut [AgentMessage],
+    sizes: &mut [u64],
+    params: &PruneParams,
+    estimator: &dyn Estimator,
+) -> PruneStats {
+    debug_assert_eq!(messages.len(), sizes.len());
+    prune_impl(messages, Some(sizes), params, estimator)
+}
+
+fn prune_impl(
+    messages: &mut [AgentMessage],
+    mut sizes: Option<&mut [u64]>,
+    params: &PruneParams,
+    estimator: &dyn Estimator,
+) -> PruneStats {
     let mut scanned: u64 = 0;
     let mut window_tokens: u64 = 0;
     let mut user_turns = 0usize;
@@ -138,6 +160,11 @@ pub fn prune(
         messages[*idx].set_content(vec![ContentBlock::Text {
             text: placeholder(*tokens),
         }]);
+        if let Some(sizes) = sizes.as_deref_mut() {
+            // Re-estimate the rewritten message — not freed-token
+            // arithmetic — so the memo matches a from-scratch recount.
+            sizes[*idx] = estimator.message(&messages[*idx]);
+        }
     }
 
     PruneStats {
@@ -157,6 +184,27 @@ pub fn prune(
 /// deterministic reference to the original transcript entry.
 pub fn emergency_reduce(
     messages: &mut [AgentMessage],
+    required_tokens: u64,
+    estimator: &dyn Estimator,
+) -> PruneStats {
+    emergency_reduce_impl(messages, None, required_tokens, estimator)
+}
+
+/// [`emergency_reduce`] that keeps a caller-held per-message size memo
+/// in sync (see [`prune_with_sizes`]).
+pub fn emergency_reduce_with_sizes(
+    messages: &mut [AgentMessage],
+    sizes: &mut [u64],
+    required_tokens: u64,
+    estimator: &dyn Estimator,
+) -> PruneStats {
+    debug_assert_eq!(messages.len(), sizes.len());
+    emergency_reduce_impl(messages, Some(sizes), required_tokens, estimator)
+}
+
+fn emergency_reduce_impl(
+    messages: &mut [AgentMessage],
+    mut sizes: Option<&mut [u64]>,
     required_tokens: u64,
     estimator: &dyn Estimator,
 ) -> PruneStats {
@@ -193,6 +241,9 @@ pub fn emergency_reduce(
         }
 
         messages[idx] = replacement;
+        if let Some(sizes) = sizes.as_deref_mut() {
+            sizes[idx] = replacement_tokens;
+        }
         stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
         stats.pruned_parts += 1;
     }
@@ -520,6 +571,47 @@ mod tests {
             };
             assert_eq!(details["context_reference"]["sha256"], expected);
         }
+    }
+
+    fn sizes_of(messages: &[AgentMessage]) -> Vec<u64> {
+        messages
+            .iter()
+            .map(|m| HeuristicEstimator.message(m))
+            .collect()
+    }
+
+    #[test]
+    fn prune_with_sizes_keeps_the_memo_equal_to_a_recount() {
+        let mut messages = history();
+        let mut sizes = sizes_of(&messages);
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &params(), &HeuristicEstimator);
+        assert_eq!(stats.pruned_parts, 1);
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn emergency_reduce_with_sizes_keeps_the_memo_equal_to_a_recount() {
+        let mut messages = vec![
+            result("small", 4_000, 1),
+            result("largest", 40_000, 2),
+            result("middle", 20_000, 3),
+        ];
+        let mut sizes = sizes_of(&messages);
+        let stats =
+            emergency_reduce_with_sizes(&mut messages, &mut sizes, 5_000, &HeuristicEstimator);
+        assert!(stats.pruned_parts >= 1);
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn with_sizes_variants_match_the_plain_passes() {
+        let mut plain = history();
+        let mut memoed = history();
+        let mut sizes = sizes_of(&memoed);
+        let plain_stats = prune(&mut plain, &params(), &HeuristicEstimator);
+        let memo_stats = prune_with_sizes(&mut memoed, &mut sizes, &params(), &HeuristicEstimator);
+        assert_eq!(plain_stats, memo_stats);
+        assert_eq!(plain, memoed);
     }
 
     #[test]
