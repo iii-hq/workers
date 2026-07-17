@@ -235,7 +235,7 @@ task (event JSON appended; a turn-completed event carries the turn's terminal `s
 success, its `result`). Failed/cancelled turns and completed turns carrying `result_error` stop
 the normal downstream; set `metadata.continue_on_error: true` only for an explicit error
 handler. Simple non-cron reactions default to one-shot; use `once: false` only for a standing
-watcher. A reaction can also be a FUNCTION CALL rather than a sub-agent: put `call` in the metadata in place of `task` — `metadata: { call: { function_id: "<id>", payload: { ... } } }`, with no `model`, `session_id`, or `options`. On fire the event is injected into the payload at `/event` (override the pointer with `call.event_into`) and the function is dispatched directly — deterministic, token-free, milliseconds, no session. `call.function_id` must be a function YOUR policy allows (checked at registration; harness-internal targets are refused), and a completed join's downstream call receives every predecessor result as `{ results: { "<key>": <event>, ... } }` at that same pointer. Prefer a call for anything MECHANICAL — counting, thresholds, moving a value — pairing it with `fp::pipe`, whose `fp::when` guard stops the pipe when a condition fails; reserve `task` for reactions that need judgment. `harness::react` is documented here on purpose — never call or probe it (agents are
+watcher. A reaction can also be a FUNCTION CALL rather than a sub-agent: put `call` in the metadata in place of `task` — `metadata: { call: { function_id: "<id>", payload: { ... } } }`, with no `model`, `session_id`, or `options`. On fire the event is injected into the payload at `/event` (override the pointer with `call.event_into`) and the function is dispatched directly — deterministic, token-free, milliseconds, no session. `call.function_id` must be a function YOUR policy allows (checked at registration; harness-internal targets are refused), and a completed join's downstream call receives every predecessor result as `{ results: { "<key>": <event>, ... } }` at that same pointer. Prefer a call for anything MECHANICAL — counting, thresholds, moving a value — pairing it with `fp::pipe`, whose `fp::when` guard stops the pipe when a condition fails; reserve `task` for reactions that need judgment. A call can NEVER reach you: its result is discarded, nothing lands in any session — so anything that must WAKE you (your turn-complete watcher, your deadline) is ALWAYS a plain notify (`engine::register_trigger` with NO `function_id`), never a react/call edge, which reads into the void and strands the run. `harness::react` is documented here on purpose — never call or probe it (agents are
 denied; it runs only as a trigger target); bind it by this exact id and keep the returned
 subscription id for unregistering. Canonical uses: notify when a sub-agent finishes
 (`harness::turn-completed`, `config { parent_session_id: "<this session>" }`) and start work on a
@@ -275,7 +275,9 @@ later when the work is actually done, woken by a state key you watch. Pick a run
 to this run — a slug plus random characters, e.g. `run-headlines-b4k9` — and have every child
 write its own key inside it. Register a one-shot notify trigger (NO `function_id`) on
 `{ trigger_type: "state", config: { scope: "<run scope>", key: "turn_complete" } }`; its
-firing is your wake-up call to finish. Register a validator reaction that decides when the run
+firing is your wake-up call to finish (NEVER bind this — or the deadline below — to
+`harness::react`/`call`: only a plain notify injects into YOUR session and wakes you).
+Register a validator reaction that decides when the run
 is done: bind it to `harness::react` with `continue_on_error: true` on every edge (a validator
 is an outcome checker, not a success handler, so failed children must still reach it) — one
 `harness::turn-completed` edge with `config { parent_session_id: "<this session>" }` for a

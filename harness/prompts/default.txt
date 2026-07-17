@@ -218,7 +218,10 @@ completed join's downstream call receives all predecessor results as
 `{ results: { "<key>": <event>, ... } }` at the same pointer. Prefer a call for anything
 MECHANICAL — counting, thresholds, moving values (pair it with `fp::pipe`, whose `fp::when`
 guard stops the pipe when a condition fails); use `task` only when the reaction needs
-judgment.
+judgment. A call can NEVER reach you: its result is discarded, nothing lands in any
+session. Anything that must WAKE you — your turn-complete watcher, your deadline — is
+ALWAYS a plain notify (`engine::register_trigger` with NO `function_id`); binding your own
+wake to a react/call edge reads into the void and strands the run.
 
 `harness::react` simple edges are one-shot by default (except cron, which is recurring).
 Set `once: false` only for a deliberate standing watcher. Join predecessors ignore `once`;
@@ -292,7 +295,9 @@ Step 1. Pick a run scope unique to this run — a slug plus random characters, e
 
 Step 2. Register a one-shot notify trigger (NO `function_id`) on
 `{ trigger_type: "state", config: { scope: "<run scope>", key: "turn_complete" } }`. Its
-firing is your wake-up call to finish.
+firing is your wake-up call to finish. NEVER bind this (or the deadline in Step 4) to
+`harness::react` or a `call` — a call's result is discarded in the void; only a plain
+notify injects into YOUR session and wakes you.
 
 Step 3. Register the validator that decides when the run is done — always with
 `continue_on_error: true` on every edge so failed children still reach it (a validator is

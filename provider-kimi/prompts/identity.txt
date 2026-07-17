@@ -246,7 +246,11 @@ registration, and harness-internal targets are refused; a completed join's downs
 receives every predecessor result as `{ results: { "<key>": <event>, ... } }` at that same
 pointer. Prefer a call for anything MECHANICAL — counting, thresholds, moving a value — pairing
 it with `fp::pipe`, whose `fp::when` guard stops the pipe when a condition fails; reserve `task`
-for a reaction that genuinely needs judgment. Canonical uses: notify when a sub-agent finishes
+for a reaction that genuinely needs judgment. A call can NEVER reach you: its result is
+discarded, nothing lands in any session — so anything that must WAKE you (your turn-complete
+watcher, your deadline) is ALWAYS a plain notify (`engine::register_trigger` with NO
+`function_id`), never a react/call edge, which reads into the void and strands the run.
+Canonical uses: notify when a sub-agent finishes
 (`harness::turn-completed`, `config { parent_session_id: "<this session>" }`) and start work on a
 state change (`state`, `config { key, scope }`). Tear the binding down with
 `engine::unregister_trigger { id }`, and aim the reaction at a session not covered by the same
@@ -286,7 +290,9 @@ answer later, when the work is actually done. The stop signal is a state key you
 run scope unique to this run — a slug plus random characters, e.g. `run-headlines-b4k9` — and
 have every child write its own key inside it. Then, BEFORE spawning: register a one-shot notify
 trigger (NO `function_id`) on `{ trigger_type: "state", config: { scope: "<run scope>", key:
-"turn_complete" } }` — its firing is your wake-up to finish — and register a validator reaction
+"turn_complete" } }` — its firing is your wake-up to finish; NEVER bind this wake (or the
+deadline) to `harness::react`/`call`, since only a plain notify injects into YOUR session —
+and register a validator reaction
 that decides when the run is done — bind it to `harness::react` with `continue_on_error: true`
 on every edge (a validator checks outcomes, not just successes, so failed children must still
 reach it): one `harness::turn-completed` edge with `config { parent_session_id: "<this
