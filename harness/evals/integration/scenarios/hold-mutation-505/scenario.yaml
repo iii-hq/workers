@@ -3,7 +3,6 @@
 schema_version: "1"
 id: C-E2E-505
 description: A pre-trigger hook that holds and mutates must apply its mutation to the released call.
-quarantine: true
 
 send:
   message: Call the recorder once.
