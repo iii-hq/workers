@@ -129,6 +129,19 @@ pub struct AssembleResponse {
     pub applied: Applied,
 }
 
+/// Test-only re-export of [`count_context`] so sibling function tests
+/// can pin cross-function counting equivalence (see count_tokens.rs).
+#[cfg(test)]
+pub(crate) fn count_context_for_tests(
+    messages: &[AgentMessage],
+    prompt: &str,
+    tools: &[AgentFunction],
+    request_overhead_tokens: u64,
+    estimator: &dyn Estimator,
+) -> u64 {
+    count_context(messages, prompt, tools, request_overhead_tokens, estimator)
+}
+
 fn count_context(
     messages: &[AgentMessage],
     prompt: &str,

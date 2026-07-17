@@ -14,6 +14,12 @@ pub struct MessagesRequest {
     pub limit: Option<usize>,
     /// Opaque pagination cursor from a previous response.
     pub cursor: Option<String>,
+    /// Return only entries strictly after this entry id on the
+    /// requested path (incremental fetch from a known watermark).
+    /// Errors `session/invalid_cursor` when the entry is not on the
+    /// path — e.g. after a fork moved the active leaf — so callers
+    /// fall back to a full load. Ignored when `cursor` is set.
+    pub after_entry_id: Option<String>,
     /// Only messages with these roles. Setting this also excludes
     /// `kind: "custom"` entries (it is an explicit narrowing to roles).
     pub roles: Option<Vec<Role>>,

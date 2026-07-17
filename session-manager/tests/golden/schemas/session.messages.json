@@ -15,6 +15,13 @@
       }
     },
     "properties": {
+      "after_entry_id": {
+        "description": "Return only entries strictly after this entry id on the requested path (incremental fetch from a known watermark). Errors `session/invalid_cursor` when the entry is not on the path — e.g. after a fork moved the active leaf — so callers fall back to a full load. Ignored when `cursor` is set.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "cursor": {
         "description": "Opaque pagination cursor from a previous response.",
         "type": [

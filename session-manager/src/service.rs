@@ -786,7 +786,23 @@ impl SessionService {
             .collect();
 
         let start = match &req.cursor {
-            None => 0,
+            // `after_entry_id` is a caller-held watermark: resume
+            // strictly after it, with the same not-on-path error the
+            // cursor path uses so callers share one fallback.
+            None => match &req.after_entry_id {
+                None => 0,
+                Some(after) => {
+                    let position = filtered
+                        .iter()
+                        .position(|e| e.id() == after.as_str())
+                        .ok_or_else(|| {
+                            SessionError::InvalidCursor(format!(
+                                "after_entry_id {after} is not on the requested path"
+                            ))
+                        })?;
+                    position + 1
+                }
+            },
             Some(raw) => {
                 let cursor: MessagesCursor = decode_cursor(raw)?;
                 let position = filtered

@@ -85,6 +85,65 @@ Feature: session::messages — load the active path, oldest first
     And the response field "messages.0.entry_id" is "e_005"
     And the response has no field "next_cursor"
 
+  # Prevents: the incremental-fetch watermark drifting from strict-after
+  # semantics — a steering check re-seeing the watermark entry itself
+  # would loop, and skipping one entry would miss a user interjection.
+  Scenario: after_entry_id returns only entries strictly after it
+    Given a user message "m1" appended to "s_001"
+    And a user message "m2" appended to "s_001"
+    And a user message "m3" appended to "s_001"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "after_entry_id": "e_001" }
+      """
+    Then the response field "messages" has length 2
+    And the response field "messages.0.entry_id" is "e_002"
+    And the response field "messages.1.entry_id" is "e_003"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "after_entry_id": "e_003" }
+      """
+    Then the call succeeds
+    And the response field "messages" has length 0
+
+  # Prevents: the watermark silently paging from the path start when the
+  # entry left the active path (fork/set_active_leaf) — callers need the
+  # invalid-cursor signal to fall back to a full reload.
+  Scenario: after_entry_id off the requested path is rejected
+    Given a user message "m1" appended to "s_001"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "after_entry_id": "ghost" }
+      """
+    Then the call fails with code "session/invalid_cursor"
+
+  # Prevents: the watermark landing on a filtered-out custom entry and
+  # erroring — the steering check reads with include_custom and its
+  # watermark can be a bookkeeping entry.
+  Scenario: after_entry_id works with include_custom and paginates
+    Given a user message "m1" appended to "s_001"
+    And a custom entry of type "compaction" appended to "s_001"
+    And a user message "m2" appended to "s_001"
+    And a user message "m3" appended to "s_001"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "after_entry_id": "e_002", "include_custom": true, "limit": 1 }
+      """
+    Then the response field "messages" has length 1
+    And the response field "messages.0.entry_id" is "e_003"
+    And I alias the response field "next_cursor" as "C1"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "cursor": "${C1}", "include_custom": true }
+      """
+    Then the response field "messages" has length 1
+    And the response field "messages.0.entry_id" is "e_004"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "after_entry_id": "e_002" }
+      """
+    Then the call fails with code "session/invalid_cursor"
+
   # Prevents: accepting forged/stale cursors and returning garbage pages.
   Scenario: a malformed cursor is rejected
     Given a user message "m1" appended to "s_001"
