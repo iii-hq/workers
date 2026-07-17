@@ -270,7 +270,34 @@ impl ChatPipeline {
             }
             let channel = create_router_channel(&self.iii).await?;
             let mut reader = channel.reader;
-            inflight.set_closer(reader.closer());
+            // router::abort closes the relay AND actively cancels the
+            // provider's upstream via `provider::<id>::abort` — without it the
+            // provider only notices the closed channel on its next (ping)
+            // write, billing tokens meanwhile. Detached + best-effort: a
+            // provider without the function (or a stale request id) is a
+            // harmless error/no-op.
+            inflight.set_closer({
+                let close = reader.closer();
+                let iii = self.iii.clone();
+                let provider = provider.to_string();
+                let rid = request_id.to_string();
+                Arc::new(move || {
+                    close();
+                    let iii = iii.clone();
+                    let function_id = format!("provider::{}::abort", provider);
+                    let payload = serde_json::json!({ "request_id": rid });
+                    tokio::spawn(async move {
+                        let _ = iii
+                            .trigger(TriggerRequest {
+                                function_id,
+                                payload,
+                                action: None,
+                                timeout_ms: Some(10_000),
+                            })
+                            .await;
+                    });
+                })
+            });
 
             let stream_input = build_stream_input(
                 call,

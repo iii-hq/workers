@@ -12,7 +12,7 @@ use crate::configuration::ConfigCell;
 use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
-use crate::locks::SessionLocks;
+use crate::locks::{SessionLocks, TurnCancels};
 use crate::subscriptions::SubscriptionRegistry;
 
 #[derive(Clone)]
@@ -23,6 +23,7 @@ pub struct Deps {
     pub events: TurnEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
+    pub cancels: TurnCancels,
     pub subscriptions: Arc<SubscriptionRegistry>,
     /// react's per-subscription fire-rate breaker (loop breaker #3).
     pub react_gate: Arc<crate::functions::react::FireGate>,
@@ -43,6 +44,7 @@ impl Deps {
             events,
             hooks,
             locks: SessionLocks::new(),
+            cancels: TurnCancels::new(),
             subscriptions: Arc::new(SubscriptionRegistry::new()),
             react_gate: Arc::new(crate::functions::react::FireGate::default()),
         }

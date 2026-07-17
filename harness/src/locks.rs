@@ -35,9 +35,55 @@ impl SessionLocks {
     }
 }
 
+/// Per-turn in-process cancel signals. `harness::stop` fires one lock-free so
+/// the running step can observe the stop where durable state can't reach it:
+/// inside the `router::chat` await (via `watch`) and between tool executions
+/// (via `is_fired`) — the tool phase holds the session lock, so the durable
+/// abort write is blocked behind it by construction. Level-triggered `watch`
+/// channels: a fire before subscribe is still observed. Keyed by turn_id so a
+/// stale fire can never cancel a newer turn. Same single-process caveat as
+/// `SessionLocks` above.
+#[derive(Clone, Default)]
+pub struct TurnCancels {
+    map: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+}
+
+impl TurnCancels {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Signal cancellation for `turn_id` (idempotent).
+    pub fn fire(&self, turn_id: &str) {
+        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(turn_id.to_string())
+            .or_insert_with(|| tokio::sync::watch::channel(false).0)
+            .send_replace(true);
+    }
+
+    pub fn is_fired(&self, turn_id: &str) -> bool {
+        let map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(turn_id).is_some_and(|s| *s.borrow())
+    }
+
+    /// Subscribe to `turn_id`'s cancel signal, creating it on first use.
+    pub fn watch(&self, turn_id: &str) -> tokio::sync::watch::Receiver<bool> {
+        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(turn_id.to_string())
+            .or_insert_with(|| tokio::sync::watch::channel(false).0)
+            .subscribe()
+    }
+
+    /// Drop `turn_id`'s signal once the turn is terminal.
+    pub fn clear(&self, turn_id: &str) {
+        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(turn_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SessionLocks;
+    use super::{SessionLocks, TurnCancels};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
 
@@ -83,5 +129,19 @@ mod tests {
         // A different session acquires without waiting on `held`.
         let _other = locks.guard("b").await;
         drop(held);
+    }
+
+    /// The property the chat-abort backstop relies on: level-triggering. A fire
+    /// BEFORE anyone subscribes is still observed by a later watch/is_fired.
+    #[tokio::test]
+    async fn cancel_fired_before_subscribe_is_observed() {
+        let cancels = TurnCancels::new();
+        cancels.fire("t1");
+        assert!(cancels.is_fired("t1"));
+        let rx = cancels.watch("t1");
+        assert!(*rx.borrow());
+        assert!(!cancels.is_fired("t2"));
+        cancels.clear("t1");
+        assert!(!cancels.is_fired("t1"));
     }
 }

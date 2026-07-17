@@ -177,7 +177,12 @@ describe('translateTurnSource — turn-completed', () => {
         completed({ status: 'cancelled', reason: 'stopped' }),
       ),
     ).toEqual([
-      { kind: 'stop-reason', reason: 'aborted', message: 'stopped' },
+      {
+        kind: 'stop-reason',
+        reason: 'aborted',
+        message: 'stopped',
+        entryId: 'e_t-1_stopped',
+      },
       { kind: 'assistant-end' },
     ])
   })

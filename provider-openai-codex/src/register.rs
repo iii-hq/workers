@@ -11,6 +11,7 @@ use crate::{auth, router_client, state, PROVIDER_ID};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
+use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
@@ -140,13 +141,26 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .expect("reqwest client");
     let refresh_state = Arc::new(CatalogRefreshState::default());
 
+    // request_id → live upstream cancel, shared by stream (registers) and
+    // abort (signals) — see llm_router::provider_scaffold::aborts.
+    let aborts = StreamAborts::new();
+
     iii.register_function(
         surface::STREAM_ID,
         RegisterFunction::new_async_with_bad_request(
-            make_stream(iii.clone(), http.clone(), cache.clone()),
+            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+    iii.register_function(
+        surface::ABORT_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_abort(aborts),
+            invalid_request_from_serde,
+        )
+        .description(surface::ABORT_DESC)
         .metadata(json!({ "internal": true })),
     );
     iii.register_function(
