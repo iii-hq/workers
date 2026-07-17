@@ -30,6 +30,7 @@ on:
       - 'opencode/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'
+      - 'provider-kimi/v*'
       - 'provider-llamacpp/v*'
       - 'provider-openai/v*'
       - 'provider-openai-codex/v*'
