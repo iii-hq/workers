@@ -1494,6 +1494,11 @@ pub async fn fail_turn(
 ) -> TurnStepResult {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    // Serialize with stop/resolve/sweep like every other turn-record writer
+    // (locks.rs). Safe: the only caller runs after run_step returned, so its
+    // guard is gone. Lock-free, this finalize could interleave with
+    // harness::stop's under-lock "stopping" ack and strand the session status.
+    let _guard = deps.locks.guard(session_id).await;
     let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
         .await
         .ok()

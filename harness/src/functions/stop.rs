@@ -59,14 +59,6 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     // flag write below is blocked on the session lock.
     deps.cancels.fire(&target_turn);
 
-    // Acknowledge the stop immediately via the existing phase-reason channel
-    // (status stays "working" — same semantics as "waiting for <model>"), so
-    // UIs can show "stopping" before the turn finalises.
-    let session = deps.session().await;
-    let _ = session
-        .set_status(&req.session_id, "working", Some("stopping"))
-        .await;
-
     // Cascade to non-terminal spawned children BEFORE taking this session's
     // lock (harness.md § Cancellation cascade): each child stop acquires its
     // OWN session lock, so holding the parent lock here could deadlock against a
@@ -118,6 +110,16 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
+    // "stopping" ack on the existing phase-reason channel (status stays
+    // "working" — same semantics as "waiting for <model>"). UNDER the lock and
+    // after the terminal re-check: every finalizer emits its own set_status
+    // while holding this lock, so a lock-free ack here could land AFTER a
+    // concurrent finalize's "done" and leave the session stuck on "working".
+    let session = deps.session().await;
+    let _ = session
+        .set_status(&req.session_id, "working", Some("stopping"))
+        .await;
 
     Ok(StopResponse { stopping: true })
 }

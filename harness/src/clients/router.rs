@@ -229,7 +229,12 @@ impl RouterClient {
                     // partial as Aborted. No arm in the post-ack drain branch
                     // above — that path is bounded (≤10s) already.
                     _ = &mut abort_fired => {
-                        cancel.notify_waiters();
+                        // notify_one, not notify_waiters: it stores a permit
+                        // when the pump task hasn't polled its notified() yet
+                        // (a pre-fired cancel can get here before the spawned
+                        // pump first runs), so the wakeup can't be lost and
+                        // pump.await can't hang on next_binary().
+                        cancel.notify_one();
                         let _ = pump.await;
                         // Kill the held-open router::chat task; the router's
                         // own teardown was already requested via router::abort.
@@ -246,9 +251,12 @@ impl RouterClient {
                         tokio::spawn(async move {
                             client.abort(&rid).await;
                         });
-                        let mut message = tracker
-                            .current()
-                            .or(final_message)
+                        // Prefer a terminal frame's complete message over the
+                        // tracker's partial: a stop landing between a Done
+                        // frame and EOF must not replace the full assistant
+                        // entry with the stale pre-Done partial.
+                        let mut message = final_message
+                            .or_else(|| tracker.current())
                             .unwrap_or_else(|| {
                                 empty_assistant(
                                     params.provider.as_deref().unwrap_or(""),
@@ -328,7 +336,8 @@ impl RouterClient {
         }
 
         // Stream drained; stop the pump and collect the trigger ack.
-        cancel.notify_waiters();
+        // notify_one: latched — safe even if the pump task hasn't polled yet.
+        cancel.notify_one();
         let _ = pump.await;
         let response = match response {
             Some(r) => r,
