@@ -101,6 +101,15 @@ pub const REVERSE_DESC: &str =
     "Reverse an array (lodash _.reverse, immutable like lodash/fp): { value }. Mainly useful \
      as a fp::pipe step.";
 
+pub const WHEN_ID: &str = "fp::when";
+pub const WHEN_DESC: &str =
+    "Guard: test the value at a JSON pointer ({ value, path?, op, to? }; ops ==, !=, >, >=, <, \
+     <=, exists, not_empty; path defaults to the whole value; a pointer miss FAILS the guard, \
+     it never errors). Direct calls return { passed, value }. As a fp::pipe step, a passing \
+     guard threads the ORIGINAL value onward unchanged and a failing one STOPS the pipe \
+     (`short_circuited: true`), so a trailing write step (e.g. state::set) runs only when the \
+     condition holds.";
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetRequest {
     /// Input value (a pipe lands the previous step's value here).
@@ -216,6 +225,116 @@ pub struct SortByRequest {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct UtilResponse {
     pub value: Value,
+}
+
+/// The comparison a `fp::when` guard runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+pub enum WhenOp {
+    #[serde(rename = "==")]
+    Eq,
+    #[serde(rename = "!=")]
+    Ne,
+    #[serde(rename = ">")]
+    Gt,
+    #[serde(rename = ">=")]
+    Ge,
+    #[serde(rename = "<")]
+    Lt,
+    #[serde(rename = "<=")]
+    Le,
+    #[serde(rename = "exists")]
+    Exists,
+    #[serde(rename = "not_empty")]
+    NotEmpty,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WhenRequest {
+    /// Input value (a pipe lands the previous step's value here).
+    pub value: Value,
+    /// JSON pointer selecting what to test (default: the whole value).
+    #[serde(default)]
+    pub path: Option<String>,
+    /// One of "==", "!=", ">", ">=", "<", "<=", "exists", "not_empty".
+    pub op: WhenOp,
+    /// Right-hand side for the comparison ops; meaningless (and rejected) for
+    /// exists / not_empty.
+    #[serde(default)]
+    pub to: Option<Value>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct WhenResponse {
+    pub passed: bool,
+    /// The ORIGINAL input value, untouched — guards test, they never reshape.
+    pub value: Value,
+}
+
+/// Evaluate a guard. A pointer miss FAILS the guard (Ok(false)) instead of
+/// erroring: "the thing I am waiting for is not there yet" is exactly what a
+/// guard exists to say. `exists` counts a stored null as a hit (same rule as
+/// `fp::getOr`); `not_empty` does not.
+pub fn when(
+    value: &Value,
+    path: Option<&str>,
+    op: WhenOp,
+    to: Option<&Value>,
+) -> Result<bool, String> {
+    let needs_to = matches!(
+        op,
+        WhenOp::Eq | WhenOp::Ne | WhenOp::Gt | WhenOp::Ge | WhenOp::Lt | WhenOp::Le
+    );
+    if needs_to && to.is_none() {
+        return Err("this op needs `to` (the right-hand side to compare against)".into());
+    }
+    if !needs_to && to.is_some() {
+        return Err("`to` is meaningless for exists/not_empty — drop it".into());
+    }
+    let Some(target) = value.pointer(path.unwrap_or("")) else {
+        return Ok(false);
+    };
+    Ok(match op {
+        WhenOp::Exists => true,
+        WhenOp::NotEmpty => match target {
+            Value::Array(a) => !a.is_empty(),
+            Value::String(s) => !s.is_empty(),
+            Value::Object(m) => !m.is_empty(),
+            Value::Null => false,
+            other => {
+                return Err(format!(
+                    "not_empty needs an array/string/object value (got {})",
+                    kind_of(other)
+                ))
+            }
+        },
+        WhenOp::Eq => Some(target) == to,
+        WhenOp::Ne => Some(target) != to,
+        WhenOp::Gt | WhenOp::Ge | WhenOp::Lt | WhenOp::Le => {
+            let (Some(l), Some(r)) = (target.as_f64(), to.and_then(Value::as_f64)) else {
+                return Err(format!(
+                    "ordering ops compare numbers; got {} vs {}",
+                    kind_of(target),
+                    to.map(kind_of).unwrap_or("nothing")
+                ));
+            };
+            match op {
+                WhenOp::Gt => l > r,
+                WhenOp::Ge => l >= r,
+                WhenOp::Lt => l < r,
+                WhenOp::Le => l <= r,
+                _ => unreachable!(),
+            }
+        }
+    })
+}
+
+/// Parse + evaluate a guard step's args for the pipe loop: `(passed, the
+/// original value to thread onward)`.
+pub(crate) fn eval_when(args: &Value) -> Result<(bool, Value), String> {
+    let req: WhenRequest =
+        serde_json::from_value(args.clone()).map_err(|e| format!("invalid arguments: {e}"))?;
+    let passed = when(&req.value, req.path.as_deref(), req.op, req.to.as_ref())?;
+    Ok((passed, req.value))
 }
 
 pub fn get(value: &Value, path: &str) -> Result<Value, String> {
@@ -560,9 +679,12 @@ fn cmp_scalar(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// True when `function_id` names one of the ten transforms. Every transform
+/// True when `function_id` names one of the transforms. Every transform
 /// takes its input at `value`, which the pipe uses to fail fast on an
-/// unseeded first step.
+/// unseeded first step. `fp::when` is listed here (same seeding rule) but is
+/// dispatched by the pipe loop itself, never through [`apply`] — a failing
+/// guard must be able to STOP the pipe, which `apply`'s value-or-error shape
+/// cannot express.
 pub(crate) fn is_transform(function_id: &str) -> bool {
     matches!(
         function_id,
@@ -583,6 +705,7 @@ pub(crate) fn is_transform(function_id: &str) -> bool {
             | FLATTEN_ID
             | SORT_BY_ID
             | REVERSE_ID
+            | WHEN_ID
     )
 }
 
@@ -866,6 +989,54 @@ mod tests {
             json!([1, 2, { "a": 1 }, "1"])
         );
         assert!(uniq(json!("s")).unwrap_err().contains("array"));
+    }
+
+    #[test]
+    fn when_guards_compare_exist_and_fail_on_misses() {
+        let v = json!({ "rows": [{ "n": 3 }], "empty": [], "name": "x", "nil": null });
+        let w = |path: Option<&str>, op: WhenOp, to: Option<Value>| {
+            when(&v, path, op, to.as_ref())
+        };
+        // Ordering over a pointer.
+        assert_eq!(w(Some("/rows/0/n"), WhenOp::Ge, Some(json!(3))), Ok(true));
+        assert_eq!(w(Some("/rows/0/n"), WhenOp::Gt, Some(json!(3))), Ok(false));
+        assert_eq!(w(Some("/rows/0/n"), WhenOp::Lt, Some(json!(10))), Ok(true));
+        // Structural equality, any JSON type.
+        assert_eq!(w(Some("/name"), WhenOp::Eq, Some(json!("x"))), Ok(true));
+        assert_eq!(w(Some("/name"), WhenOp::Ne, Some(json!("y"))), Ok(true));
+        // A pointer miss FAILS the guard for every op — never errors.
+        assert_eq!(w(Some("/missing"), WhenOp::Ge, Some(json!(1))), Ok(false));
+        assert_eq!(w(Some("/missing"), WhenOp::Ne, Some(json!(1))), Ok(false));
+        assert_eq!(w(Some("/missing"), WhenOp::Exists, None), Ok(false));
+        // exists counts a stored null as a hit (getOr rule); not_empty doesn't.
+        assert_eq!(w(Some("/nil"), WhenOp::Exists, None), Ok(true));
+        assert_eq!(w(Some("/nil"), WhenOp::NotEmpty, None), Ok(false));
+        assert_eq!(w(Some("/rows"), WhenOp::NotEmpty, None), Ok(true));
+        assert_eq!(w(Some("/empty"), WhenOp::NotEmpty, None), Ok(false));
+        // Default path tests the whole value.
+        assert_eq!(w(None, WhenOp::Exists, None), Ok(true));
+        // Teachable errors: missing/extra `to`, non-number ordering.
+        assert!(w(Some("/name"), WhenOp::Ge, None).unwrap_err().contains("needs `to`"));
+        assert!(w(Some("/name"), WhenOp::Exists, Some(json!(1)))
+            .unwrap_err()
+            .contains("meaningless"));
+        assert!(w(Some("/name"), WhenOp::Ge, Some(json!(1)))
+            .unwrap_err()
+            .contains("numbers"));
+        assert!(w(Some("/rows/0/n"), WhenOp::NotEmpty, None)
+            .unwrap_err()
+            .contains("array/string/object"));
+    }
+
+    #[test]
+    fn eval_when_threads_the_original_value() {
+        let args = json!({ "value": { "n": 5 }, "path": "/n", "op": ">=", "to": 3 });
+        assert_eq!(eval_when(&args), Ok((true, json!({ "n": 5 }))));
+        let args = json!({ "value": { "n": 1 }, "path": "/n", "op": ">=", "to": 3 });
+        assert_eq!(eval_when(&args), Ok((false, json!({ "n": 1 }))));
+        assert!(eval_when(&json!({ "op": ">=" }))
+            .unwrap_err()
+            .contains("invalid arguments"));
     }
 
     #[test]

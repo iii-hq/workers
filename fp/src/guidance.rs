@@ -45,9 +45,12 @@ the context window; fetching a whole document "to look at it" floods the context
 `fp::pipe` runs the move in ONE call: each step triggers a function and its result lands
 in the next step's payload at `into` (default "/value"). Pure transforms run inline as steps —
 `fp::{get, pick, omit, take, drop, map, filter, split, join, uniq, size, compact, nth,
-getOr, flatten, sortBy, reverse}` with lodash
+getOr, flatten, sortBy, reverse, when}` with lodash
 semantics — their input arrives at `value`, and what they thread onward is the transformed
 value itself (the `{value}` wrapper appears only on direct calls, never between steps).
+`fp::when { path?, op, to? }` is the guard step: a failing comparison STOPS the pipe
+(`short_circuited: true`), so a trailing write (e.g. `state::set`) runs only when the
+condition holds — the primitive for mechanical threshold checks.
 The FIRST step has no previous value to receive:
 start with a producing function (a fetch, a state::get) or seed a leading transform via its
 payload's `value`. You receive per-step sizes and a preview — never the value itself:
@@ -239,7 +242,8 @@ mod tests {
             "fp::pipe",
             "`into` (default \"/value\")",
             "fp::{get, pick, omit, take, drop, map, filter, split, join, uniq, size, compact, nth,",
-            "getOr, flatten, sortBy, reverse}",
+            "getOr, flatten, sortBy, reverse, when}",
+            "short_circuited",
             "wrapper appears only on direct calls",
             "The FIRST step has no previous value to receive",
             "preview_chars",

@@ -25,9 +25,10 @@ pub const PIPE_DESC: &str =
      lands in the next step's payload at `into` (default \"/value\") — large values flow \
      worker→worker and never enter the chat. fp::* transform steps \
      (get/pick/omit/take/drop/map/filter/split/join/uniq/size/compact/nth/getOr/flatten/\
-     sortBy/reverse, lodash semantics) run inline and \
+     sortBy/reverse/when, lodash semantics) run inline and \
      thread the transformed value itself — the {value} wrapper they return when called \
-     directly never appears between steps. \
+     directly never appears between steps. A failing fp::when guard STOPS the pipe \
+     (`short_circuited: true`), so a trailing write step runs only when its condition holds. \
      The FIRST step receives no threaded value: start with a producing function (a fetch, a \
      state::get) or seed a leading transform via payload.value. \
      Example: fetch an article and persist it trimmed: \
@@ -97,6 +98,10 @@ pub struct StepReceipt {
 pub struct PipeResponse {
     pub steps: Vec<StepReceipt>,
     pub value_preview: Option<String>,
+    /// True when a `fp::when` guard failed and stopped the pipe: the receipts
+    /// end at the guard and NO later step ran. Absent (false) on a full run.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub short_circuited: bool,
 }
 
 /// Step functions a pipe refuses. Steps run with THIS worker's authority, so
@@ -283,6 +288,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
 
     let mut receipts: Vec<StepReceipt> = Vec::with_capacity(req.through.len());
     let mut piped: Option<Value> = None;
+    let mut short_circuited = false;
 
     for (i, step) in req.through.iter().enumerate() {
         let mut args = step.payload.clone().unwrap_or_else(|| json!({}));
@@ -290,6 +296,25 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
             let pointer = step.into.as_deref().unwrap_or("/value");
             args = inject(args, pointer, value)
                 .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
+        }
+
+        // fp::when is the pipe's guard, dispatched here rather than through
+        // util::apply because a failing guard must STOP the pipe (that is its
+        // whole purpose — a trailing write step must not run). A passing
+        // guard threads the ORIGINAL value onward unchanged.
+        if step.function == util::WHEN_ID {
+            let (passed, value) =
+                util::eval_when(&args).map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
+            receipts.push(StepReceipt {
+                function: step.function.clone(),
+                chars: chars_of(&value),
+            });
+            piped = Some(value);
+            if !passed {
+                short_circuited = true;
+                break;
+            }
+            continue;
         }
 
         let value = match util::apply(&step.function, &args) {
@@ -319,6 +344,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
     Ok(PipeResponse {
         value_preview: Some(preview_of(&final_value, preview_chars)),
         steps: receipts,
+        short_circuited,
     })
 }
 
