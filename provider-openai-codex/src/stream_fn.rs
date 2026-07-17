@@ -15,8 +15,9 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
+use llm_router::provider_scaffold::aborts::StreamAborts;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, send_event, PING_INTERVAL};
+use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, ProviderStreamInput, ProviderStreamOutput,
@@ -26,15 +27,16 @@ pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
     cache: ScaffoldCache,
+    aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http, cache) = (iii.clone(), http.clone(), cache.clone());
+        let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, &cache, input, sink.as_ref()).await;
+            run_stream_call(&iii, http, &cache, &aborts, input, sink.as_ref()).await;
             sink.close();
             Ok(ProviderStreamOutput { ok: true })
         })
@@ -55,6 +57,7 @@ async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
     cache: &ScaffoldCache,
+    aborts: &StreamAborts,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
@@ -159,10 +162,22 @@ async fn run_stream_call(
             warnings,
         },
     );
+    // Register for `provider::openai-codex::abort` only while the upstream is
+    // live — the phases before it burn no tokens. Pre-upstream phases keep the
+    // plain pump; earlier returns therefore need no cleanup.
+    let kind = match &input.resolution_key {
+        Some(request_id) => {
+            let abort_rx = aborts.watch(request_id);
+            let kind = pump_abortable(rx, sink, PING_INTERVAL, abort_rx).await;
+            aborts.remove(request_id);
+            kind
+        }
+        None => pump(rx, sink, PING_INTERVAL).await,
+    };
     // An upstream auth terminal usually means the VAULT token expired (the
     // existing vault flow handles refresh); invalidating the resolve/token
     // cache is harmless — the next attempt just re-fetches both.
-    if pump(rx, sink, PING_INTERVAL).await == Some(ErrorKind::AuthExpired) {
+    if kind == Some(ErrorKind::AuthExpired) {
         cache.invalidate();
     }
 }

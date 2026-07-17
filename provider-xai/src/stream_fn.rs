@@ -17,26 +17,35 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
+use llm_router::provider_scaffold::aborts::StreamAborts;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, send_event, PING_INTERVAL};
-use llm_router::types::events::ErrorKind;
+use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
+use tokio::sync::mpsc;
 
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
     cell: ConfigCell,
     cache: ScaffoldCache,
+    aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http, cell, cache) = (iii.clone(), http.clone(), cell.clone(), cache.clone());
+        let (iii, http, cell, cache, aborts) = (
+            iii.clone(),
+            http.clone(),
+            cell.clone(),
+            cache.clone(),
+            aborts.clone(),
+        );
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
             let wc = { cell.read().await.clone() };
-            run_stream_call(&iii, http, &cache, &wc, input, sink.as_ref()).await;
+            run_stream_call(&iii, http, &cache, &aborts, &wc, input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -44,10 +53,32 @@ pub fn make_stream(
     }
 }
 
+/// Pump the upstream, abortable via `provider::xai::abort` while it's live:
+/// the abort registration exists only for the pump's duration — the phases
+/// before it burn no tokens, so a missing `resolution_key` (or an earlier
+/// return) needs no cleanup. Returns the pump's terminal `ErrorKind`.
+async fn pump_stream(
+    rx: mpsc::Receiver<AssistantMessageEvent>,
+    sink: &dyn FrameSink,
+    aborts: &StreamAborts,
+    resolution_key: Option<&str>,
+) -> Option<ErrorKind> {
+    match resolution_key {
+        Some(request_id) => {
+            let abort_rx = aborts.watch(request_id);
+            let kind = pump_abortable(rx, sink, PING_INTERVAL, abort_rx).await;
+            aborts.remove(request_id);
+            kind
+        }
+        None => pump(rx, sink, PING_INTERVAL).await,
+    }
+}
+
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
     cache: &ScaffoldCache,
+    aborts: &StreamAborts,
     wc: &crate::config::WorkerConfig,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
@@ -139,7 +170,9 @@ async fn run_stream_call(
         );
         // An upstream auth terminal means the cached credential was rotated
         // out from under us: drop the cache so the next attempt re-resolves.
-        if pump(rx, sink, PING_INTERVAL).await == Some(ErrorKind::AuthExpired) {
+        if pump_stream(rx, sink, aborts, input.resolution_key.as_deref()).await
+            == Some(ErrorKind::AuthExpired)
+        {
             cache.invalidate();
         }
         return;
@@ -196,7 +229,9 @@ async fn run_stream_call(
     );
     // An upstream auth terminal means the cached credential was rotated
     // out from under us: drop the cache so the next attempt re-resolves.
-    if pump(rx, sink, PING_INTERVAL).await == Some(ErrorKind::AuthExpired) {
+    if pump_stream(rx, sink, aborts, input.resolution_key.as_deref()).await
+        == Some(ErrorKind::AuthExpired)
+    {
         cache.invalidate();
     }
 }

@@ -12,6 +12,8 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
+use llm_router::provider_scaffold::aborts::StreamAborts;
+use llm_router::provider_scaffold::pump::pump_abortable;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
 use std::time::Duration;
@@ -23,15 +25,16 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
+    aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http) = (iii.clone(), http.clone());
+        let (iii, http, aborts) = (iii.clone(), http.clone(), aborts.clone());
         Box::pin(async move {
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, input, sink.as_ref()).await;
+            run_stream_call(&iii, http, &aborts, input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -47,6 +50,7 @@ fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<(), ()
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
+    aborts: &StreamAborts,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
@@ -122,7 +126,16 @@ async fn run_stream_call(
             warnings,
         },
     );
-    pump(rx, sink, PING_INTERVAL).await;
+    // Register for `provider::kimi::abort` only while the upstream is live —
+    // the phases before it burn no tokens; earlier returns need no cleanup.
+    match &input.resolution_key {
+        Some(request_id) => {
+            let abort_rx = aborts.watch(request_id);
+            let _ = pump_abortable(rx, sink, PING_INTERVAL, abort_rx).await;
+            aborts.remove(request_id);
+        }
+        None => pump(rx, sink, PING_INTERVAL).await,
+    }
 }
 
 /// Forward upstream events to the sink; ping through silence; stop on the

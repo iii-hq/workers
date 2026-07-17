@@ -40,6 +40,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "provider::anthropic::stream",
+            "provider::anthropic::abort",
             "provider::anthropic::refresh_models",
             "provider::anthropic::on_router_ready",
         ]
