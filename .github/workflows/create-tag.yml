@@ -36,6 +36,7 @@ on:
           - opencode
           - pi
           - provider-anthropic
+          - provider-kimi
           - provider-llamacpp
           - provider-openai
           - provider-openai-codex
