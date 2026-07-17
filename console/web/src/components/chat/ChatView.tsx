@@ -1288,7 +1288,10 @@ export function ChatView({
     setStopping((already) => {
       if (!already) {
         abortRef.current?.abort()
-        void backend.abortRun?.(sessionId).catch(() => {})
+        // Re-enable the button if the stop RPC fails while the server still
+        // reports working — otherwise `stopping` never clears (the reset
+        // effect waits on the indicator) and the user can't retry.
+        void backend.abortRun?.(sessionId).catch(() => setStopping(false))
       }
       return true
     })
