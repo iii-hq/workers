@@ -233,7 +233,17 @@ the normal downstream; set `metadata.continue_on_error: true` only for an explic
 handler. Simple non-cron reactions default to one-shot; use `once: false` only for a standing
 watcher. `harness::react` is documented here on purpose — never call or probe it (agents are
 denied; it runs only as a trigger target); bind it by this exact id and keep the returned
-subscription id for unregistering. Canonical uses: notify when a sub-agent finishes
+subscription id for unregistering. A reaction can also be a FUNCTION CALL instead of a
+sub-agent: put `call` in the metadata in place of `task` —
+`metadata: { call: { function_id, payload?, event_into? } }`, no `model` / `session_id` /
+`options` — and on fire the event is injected into `payload` at `/event` (override the pointer
+with `call.event_into`) and the function is dispatched directly: deterministic, token-free,
+milliseconds. `call.function_id` must be a function YOUR policy allows — checked at
+registration, and harness-internal targets are refused. A completed join's downstream call
+receives every predecessor result as `{ results: { "<key>": <event>, ... } }` at that same
+pointer. Prefer a call for anything MECHANICAL — counting, thresholds, moving a value —
+pairing it with `fp::pipe`, whose `fp::when` guard stops the pipe when a condition fails;
+reserve `task` for a reaction that needs judgment. Canonical uses: notify when a sub-agent finishes
 (`harness::turn-completed`, `config { parent_session_id: "<this session>" }`) and start work on a
 state change (`state`, `config { key, scope }`). Tear the binding down with
 `engine::unregister_trigger { id }`, and aim the reaction at a session not covered by the same
@@ -277,7 +287,15 @@ is an outcome checker, not a success handler, so failed children must still reac
 `harness::turn-completed` edge with `config { parent_session_id: "<this session>" }` for a
 couple of children, or a join whose `expect` covers every child for larger fan-ins (a single
 subscription's fires are rate-limited to ~10 per minute — a join accumulates instead of
-spawning per event). Pin the validator into its OWN session —
+spawning per event). Pick the validator KIND by the rule. A MECHANICAL check (keys present, a
+count reaching N, a value matching) is a `call` reaction running `fp::pipe`:
+`engine::register_trigger { trigger_type: "harness::turn-completed", function_id: "harness::react", config: { parent_session_id: "<this session>" }, once: false, metadata: { continue_on_error: true, call: { function_id: "fp::pipe", payload: { through: [ { function: "database::query", payload: { db: "primary", sql: "SELECT COUNT(*) AS n FROM <run table>" } }, { function: "fp::get", payload: { path: "/rows/0/n" } }, { function: "fp::when", payload: { op: ">=", to: <N> } }, { function: "state::set", payload: { scope: "<run scope>", key: "turn_complete", value: { done: true } }, into: "/value/count" } ] } } } }`
+— zero tokens, milliseconds, no session: the `fp::when` guard stops the pipe when its
+condition fails, so `turn_complete` is written only on pass (the same shape counts state keys
+from `state::list`, or checks any readable store), and a standing `once: false` edge re-checks
+on every child completion and passes exactly once the threshold holds — unregister it when you
+finish. A JUDGMENT check (quality, coherence, "is this actually an answer") is a sub-agent
+validator: pin it into its OWN session —
 `metadata.session_id: "validator-<run>-<rand>"`, with
 `metadata.parent_session_id: "<this session>"` for console nesting; NEVER leave its
 `session_id` out, or the reaction delivers into THIS chat. Grant it

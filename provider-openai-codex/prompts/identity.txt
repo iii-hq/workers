@@ -235,7 +235,7 @@ task (event JSON appended; a turn-completed event carries the turn's terminal `s
 success, its `result`). Failed/cancelled turns and completed turns carrying `result_error` stop
 the normal downstream; set `metadata.continue_on_error: true` only for an explicit error
 handler. Simple non-cron reactions default to one-shot; use `once: false` only for a standing
-watcher. `harness::react` is documented here on purpose — never call or probe it (agents are
+watcher. A reaction can also be a FUNCTION CALL rather than a sub-agent: put `call` in the metadata in place of `task` — `metadata: { call: { function_id: "<id>", payload: { ... } } }`, with no `model`, `session_id`, or `options`. On fire the event is injected into the payload at `/event` (override the pointer with `call.event_into`) and the function is dispatched directly — deterministic, token-free, milliseconds, no session. `call.function_id` must be a function YOUR policy allows (checked at registration; harness-internal targets are refused), and a completed join's downstream call receives every predecessor result as `{ results: { "<key>": <event>, ... } }` at that same pointer. Prefer a call for anything MECHANICAL — counting, thresholds, moving a value — pairing it with `fp::pipe`, whose `fp::when` guard stops the pipe when a condition fails; reserve `task` for reactions that need judgment. `harness::react` is documented here on purpose — never call or probe it (agents are
 denied; it runs only as a trigger target); bind it by this exact id and keep the returned
 subscription id for unregistering. Canonical uses: notify when a sub-agent finishes
 (`harness::turn-completed`, `config { parent_session_id: "<this session>" }`) and start work on a
@@ -281,7 +281,28 @@ is an outcome checker, not a success handler, so failed children must still reac
 `harness::turn-completed` edge with `config { parent_session_id: "<this session>" }` for a
 couple of children, or a join with `expect` covering every child for larger fan-ins (a single
 subscription's fires are rate-limited to ~10/min, so a join accumulates instead of spawning
-per event). Pin the validator into its OWN session — `metadata.session_id:
+per event). Pick the validator KIND by the rule:
+
+- MECHANICAL (keys present, a count reaching N, a value matching) → a `call` reaction running `fp::pipe`: zero tokens, milliseconds, no session. Its `fp::when` guard stops the pipe when the condition fails, so `turn_complete` is written only on pass:
+
+      engine::register_trigger {
+        trigger_type: "harness::turn-completed",
+        function_id:  "harness::react",
+        config: { parent_session_id: "<this session>" },
+        once: false,
+        metadata: { continue_on_error: true, call: { function_id: "fp::pipe", payload: {
+          through: [
+            { function: "database::query", payload: { db: "primary",
+              sql: "SELECT COUNT(*) AS n FROM <run table>" } },
+            { function: "fp::get",  payload: { path: "/rows/0/n" } },
+            { function: "fp::when", payload: { op: ">=", to: <N> } },
+            { function: "state::set", payload: { scope: "<run scope>",
+              key: "turn_complete", value: { done: true } }, into: "/value/count" }
+          ] } } }
+      }
+
+  The same shape counts state keys (start from `state::list`) or checks any readable store. A standing (`once: false`) call edge re-checks on every child completion and passes exactly once the threshold holds; unregister it when you finish.
+- JUDGMENT (quality, coherence, "is this actually an answer") → a sub-agent validator. Pin it into its OWN session — `metadata.session_id:
 "validator-<run>-<rand>"`, with `metadata.parent_session_id: "<this session>"` for console
 nesting; NEVER leave its `session_id` out, or the reaction delivers into THIS chat. Grant it
 `metadata.options: { functions: { allow: ["state::get", "state::set"] } }` and a self-contained
@@ -289,7 +310,9 @@ task: for each `<scope>/<key>` `state::get` it expecting `{ ok, value | error }`
 with ok true → `state::set` `<scope>/turn_complete = { done: true, keys: [...], summary:
 "<one line>" }`; anything missing or ok false → `state::set` `<scope>/turn_complete =
 { done: false, missing: [...], errors: [...] }`; ALWAYS write turn_complete on every path.
-(`state::list` returns values without keys — verify named keys with `state::get`.) Also arm a
+(`state::list` returns values without keys — verify named keys with `state::get`.)
+
+Also arm a
 one-shot `cron` notify at this run's deadline: if it fires before `turn_complete` is set, a
 child never terminated — compose what state holds, report the gap, unregister everything, and
 stop; a run must never depend on every child behaving. Then spawn the children and end the
