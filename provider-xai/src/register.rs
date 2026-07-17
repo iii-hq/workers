@@ -174,7 +174,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     iii.register_function(
         surface::STREAM_ID,
         RegisterFunction::new_async_with_bad_request(
-            make_stream(iii.clone(), http.clone(), cell.clone(), cache.clone(), aborts.clone()),
+            make_stream(
+                iii.clone(),
+                http.clone(),
+                cell.clone(),
+                cache.clone(),
+                aborts.clone(),
+            ),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC)
@@ -182,9 +188,12 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
-            .description(surface::ABORT_DESC)
-            .metadata(json!({ "internal": true })),
+        RegisterFunction::new_async_with_bad_request(
+            make_abort(aborts),
+            invalid_request_from_serde,
+        )
+        .description(surface::ABORT_DESC)
+        .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,

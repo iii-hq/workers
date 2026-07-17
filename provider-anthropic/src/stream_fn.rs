@@ -59,10 +59,7 @@ async fn run_stream_call(
     // model_meta — before any upstream exists — must latch (level-triggered
     // watch), or the request would start after its own cancellation. The
     // caller removes the entry when this returns.
-    let abort_rx = input
-        .resolution_key
-        .as_ref()
-        .map(|rid| aborts.watch(rid));
+    let abort_rx = input.resolution_key.as_ref().map(|rid| aborts.watch(rid));
 
     let model = input.model.clone();
 

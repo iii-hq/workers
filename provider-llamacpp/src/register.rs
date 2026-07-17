@@ -139,9 +139,12 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
-            .description(surface::ABORT_DESC)
-            .metadata(json!({ "internal": true })),
+        RegisterFunction::new_async_with_bad_request(
+            make_abort(aborts),
+            invalid_request_from_serde,
+        )
+        .description(surface::ABORT_DESC)
+        .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
