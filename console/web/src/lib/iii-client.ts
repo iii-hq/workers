@@ -135,6 +135,8 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // unregister still releases the engine-side binding on dispose().
   const triggerUnregisters = new Set<() => void>()
 
+  const DEFAULT_TRIGGER_TIMEOUT_MS = 5 * 60 * 1000
+
   function trigger<T>(
     functionId: string,
     payload: Record<string, unknown> = {},
@@ -143,9 +145,7 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     return sdk.trigger<unknown, T>({
       function_id: functionId,
       payload,
-      ...(options?.timeoutMs !== undefined
-        ? { timeoutMs: options.timeoutMs }
-        : {}),
+      timeoutMs: options?.timeoutMs ?? DEFAULT_TRIGGER_TIMEOUT_MS,
     })
   }
 
