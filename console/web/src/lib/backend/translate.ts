@@ -108,7 +108,14 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
 function translateTurnCompleted(event: TurnCompletedEvent): StreamEvent[] {
   const out: StreamEvent[] = []
   if (event.status === 'cancelled') {
-    out.push({ kind: 'stop-reason', reason: 'aborted', message: event.reason })
+    out.push({
+      kind: 'stop-reason',
+      reason: 'aborted',
+      message: event.reason,
+      // Same id as the harness's durable "stopped" notice entry, so the live
+      // notice and the reconciled transcript row dedupe instead of doubling.
+      entryId: `e_${event.turn_id}_stopped`,
+    })
   } else if (event.status === 'failed' || event.result_error) {
     const message = event.result_error ?? event.reason
     out.push({

@@ -179,6 +179,13 @@ export function ChatView({
   const serverWorking = conversation.status === 'working'
   const streamingIndicator = isStreaming || serverWorking
 
+  // Stop requested but not yet finalized server-side. Disables the stop button
+  // (and dedupes harness::stop) until status-changed flips the indicator off.
+  const [stopping, setStopping] = useState(false)
+  useEffect(() => {
+    if (!streamingIndicator) setStopping(false)
+  }, [streamingIndicator])
+
   // Messages queued mid-stream (MOT-3837): shown above the composer until the
   // harness drains them into the transcript. Each draft carries the predicted
   // entry id of its eventual transcript row.
@@ -1278,8 +1285,13 @@ export function ChatView({
   )
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort()
-    void backend.abortRun?.(sessionId).catch(() => {})
+    setStopping((already) => {
+      if (!already) {
+        abortRef.current?.abort()
+        void backend.abortRun?.(sessionId).catch(() => {})
+      }
+      return true
+    })
   }, [backend, sessionId])
 
   // Rescue a parked stream loop: the session hit a terminal error server-side
@@ -1729,6 +1741,7 @@ export function ChatView({
             onTextChange={handleComposerTextChange}
             onSubmit={handleSubmit}
             onStop={handleStop}
+            stopping={stopping}
             queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
             onEditQueued={backend.editQueued ? handleEditQueued : undefined}
             onBrowseChange={setBrowsedQueuedId}
