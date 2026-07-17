@@ -24,6 +24,11 @@
       "status": {
         "type": "string"
       },
+      "terminal": {
+        "default": true,
+        "description": "`false` while the session still owns an armed wake: the run continues and a later turn carries the real outcome. Missing (legacy harness) → terminal.",
+        "type": "boolean"
+      },
       "turn_id": {
         "type": "string"
       }
