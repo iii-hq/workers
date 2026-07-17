@@ -1,7 +1,10 @@
 //! Sub-agent spawning (harness.md § Sub-agents). A child is an ordinary
 //! harness run in a child session, seeded through the same CAS as
-//! `harness::send`. From a turn it is a pending dispatch: the parent parks and
-//! the child's completion resolves the parent call.
+//! `harness::send`. Spawning is fire-and-forget: the caller gets the child's
+//! ids immediately and never its result — delegation flows one way, downward,
+//! and outcomes come back only through the state the child writes and the
+//! `harness::turn-completed` event its finalize emits. The `ParentLink` is
+//! kept for event filters and console nesting, not for result delivery.
 
 use serde_json::{json, Value};
 
@@ -13,7 +16,7 @@ use crate::functions::spawn::SpawnRequest;
 use crate::ids;
 use crate::policy;
 use crate::prompt;
-use crate::trigger::{PendingInfo, ResultData};
+use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
 use crate::types::turn::{fs_scope_metadata, ParentLink, TurnOptions, TurnRecord, TurnStatus};
@@ -24,15 +27,17 @@ pub struct ChildIds {
     pub turn_id: String,
 }
 
-/// Dispatch-path spawn: enforce guards, subset the policy, seed the child, and
-/// report the call pending. Guard violations return an `is_error` result (never
-/// a throw) so the model can adapt.
-pub async fn spawn_pending(
+/// Guarded spawn from a live turn (the dispatch path AND the approval-release
+/// path): enforce depth/fan-out, subset the policy against the parent, seed
+/// the child with full linkage, and return its ids immediately. Guard
+/// violations return an `is_error` result (never a throw) so the model can
+/// adapt.
+pub async fn spawn_from_turn(
     deps: &Deps,
     parent: &TurnRecord,
     call_id: &str,
     arguments: &Value,
-) -> Result<PendingInfo, ResultData> {
+) -> Result<ChildIds, ResultData> {
     let cfg = deps.cfg().await;
     let mut req: SpawnRequest = serde_json::from_value(arguments.clone()).map_err(|e| {
         is_error(
@@ -58,13 +63,14 @@ pub async fn spawn_pending(
             ),
         ));
     }
-    // Fan-out budget: non-terminal children of this turn.
-    let live = parent.live_children().len() as u32;
-    if live >= cfg.max_children {
+    // Fan-out budget: children spawned by this turn (spawns settle instantly,
+    // so the cap is a per-turn total, not a live count).
+    let spawned = parent.spawned_children().len() as u32;
+    if spawned >= cfg.max_children {
         return Err(is_error(
             "harness/spawn_fanout_exceeded",
             format!(
-                "{live} live children at or above max_children {}",
+                "{spawned} children spawned this turn at or above max_children {}",
                 cfg.max_children
             ),
         ));
@@ -75,22 +81,32 @@ pub async fn spawn_pending(
         turn_id: parent.turn_id.clone(),
         function_call_id: call_id.to_string(),
     };
-    let child = seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent))
+    seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent))
         .await
-        .map_err(|e| is_error(e.code(), e.to_string()))?;
+        .map_err(|e| is_error(e.code(), e.to_string()))
+}
 
-    let pending_timeout_ms = req
-        .options
-        .as_ref()
-        .and_then(|o| o.pending_timeout_ms)
-        .unwrap_or(cfg.default_pending_timeout_ms);
-
-    Ok(PendingInfo {
-        pending_timeout_ms: Some(pending_timeout_ms),
-        held_by: None,
-        child_session_id: Some(child.session_id),
-        child_turn_id: Some(child.turn_id),
-    })
+/// The immediate function result for a successful fire-and-forget spawn. The
+/// hint line teaches models still carrying the old parked-spawn doctrine that
+/// no result will come back through this call.
+pub fn spawned_result(child: &ChildIds) -> ResultData {
+    let ids = json!({
+        "child_session_id": child.session_id,
+        "child_turn_id": child.turn_id,
+    });
+    let text = format!(
+        "{ids}\nfire-and-forget: this turn will NOT receive the child's result; consume it via \
+         the triggers/state you registered."
+    );
+    ResultData {
+        content: vec![ContentBlock::text(text)],
+        is_error: false,
+        details: json!({
+            "child_session_id": child.session_id,
+            "child_turn_id": child.turn_id,
+            "fire_and_forget": true,
+        }),
+    }
 }
 
 /// Direct-call entry (a consumer starting a linked child). No parent linkage or

@@ -6,8 +6,8 @@
 //! `stream`, or another worker's custom trigger type) and be NOTIFIED when it
 //! fires — instead of polling. When it fires, the shared `harness::notify_agent`
 //! handler injects a `user`-role notification into the owning session, which
-//! wakes (idle) or steers (running) a turn. This is the opposite of
-//! `harness::spawn`: the turn is never parked.
+//! wakes (idle) or steers (running) a turn. Nothing parks: notifications and
+//! fire-and-forget spawns are both non-blocking; only approval holds park.
 //!
 //! There is no harness-owned emit: the engine's trigger registry already fans a
 //! fired trigger out to every bound function, so "emitting" is just whatever

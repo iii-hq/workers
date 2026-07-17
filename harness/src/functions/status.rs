@@ -58,7 +58,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     let queued =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let children = record
-        .live_children()
+        .spawned_children()
         .into_iter()
         .map(|c| ChildRef {
             function_call_id: c.function_call_id,

@@ -350,12 +350,16 @@ async fn handle(
 
     let sub_id = format!("sub_{}", uuid::Uuid::new_v4().simple());
 
+    // A one-shot notify is an armed wake: its owning session completes
+    // non-terminally until the wake fires (or is unregistered) — see the
+    // `terminal` flag on `harness::turn-completed`.
     deps.subscriptions
         .try_insert_keyed(
             &sub_id,
             session_id,
             subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION,
             dedup,
+            once,
         )
         .map_err(|_| {
             HarnessError::InvalidRequest(format!(
@@ -580,12 +584,15 @@ async fn handle_react(
     }
 
     let sub_id = format!("sub_{}", uuid::Uuid::new_v4().simple());
+    // React bindings spawn reactions elsewhere — never a wake for the
+    // registering session.
     deps.subscriptions
         .try_insert_keyed(
             &sub_id,
             session_id,
             subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION,
             dedup,
+            false,
         )
         .map_err(|_| {
             HarnessError::InvalidRequest(format!(

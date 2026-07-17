@@ -25,7 +25,7 @@ pub struct StopResponse {
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
 
-    // Lock-free pre-read: discover the in-flight stream + live children and
+    // Lock-free pre-read: discover the in-flight stream + spawned children and
     // fast-out for a missing/mismatched/terminal turn. This drives the prompt,
     // lock-free part of cancellation (child cascade + router::abort) so
     // generation is interrupted immediately, even while the running step holds
@@ -59,13 +59,14 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     // flag write below is blocked on the session lock.
     deps.cancels.fire(&target_turn);
 
-    // Cascade to non-terminal spawned children BEFORE taking this session's
-    // lock (harness.md § Cancellation cascade): each child stop acquires its
-    // OWN session lock, so holding the parent lock here could deadlock against a
-    // child→parent resolve. Holding at most one session lock at a time keeps
-    // cancellation lock-order-free. Each child stop resolves the child's parent
-    // call with an error when the child finalises.
-    for child in record.live_children() {
+    // Cascade to spawned children BEFORE taking this session's lock
+    // (harness.md § Cancellation cascade): each child stop acquires its OWN
+    // session lock, so holding the parent lock here could deadlock against a
+    // child-side write. Holding at most one session lock at a time keeps
+    // cancellation lock-order-free. Stopping a child that already finished is
+    // a harmless no-op (fire-and-forget spawns settle Done instantly, so the
+    // checkpoint no longer tracks child liveness).
+    for child in record.spawned_children() {
         Box::pin(handle(
             deps,
             StopRequest {

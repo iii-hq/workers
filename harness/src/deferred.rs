@@ -1,8 +1,11 @@
 //! Deferred trigger (harness.md § Deferred trigger): a pending call parks the
-//! turn; `harness::function::resolve` settles it (delivering a result or
-//! releasing a hook-held call) and resumes the parked turn; a cron sweep
-//! expires stragglers so a lost child or abandoned approval can never park a
-//! turn forever.
+//! turn — an approval/hook hold, or a legacy pre-fire-and-forget child spawn.
+//! `harness::function::resolve` settles it (delivering a result or releasing a
+//! hook-held call) and resumes the parked turn; a cron sweep expires
+//! stragglers so a lost legacy child or abandoned approval can never park a
+//! turn forever. New spawns never park (see `crate::subagent`); the
+//! parent-resolve path below survives only so turns parked before the
+//! fire-and-forget deploy still resolve.
 
 use std::collections::BTreeSet;
 
@@ -92,6 +95,56 @@ pub async fn resolve(
             let arguments = find_call_arguments(deps, &record, &req.function_call_id)
                 .await
                 .unwrap_or(Value::Null);
+            // An approved spawn releases through the SAME guarded path as the
+            // turn loop — depth/fan-out guards, policy subsetting, ParentLink
+            // — never the generic dispatcher (which would seed a parentless,
+            // unguarded child). Fire-and-forget: the result is the child ids;
+            // post_trigger is skipped, mirroring the loop's spawn branch.
+            if function_id == crate::functions::SPAWN_ID {
+                let (data, child) = match crate::subagent::spawn_from_turn(
+                    deps,
+                    &record,
+                    &req.function_call_id,
+                    &arguments,
+                )
+                .await
+                {
+                    Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
+                    Err(data) => (data, None),
+                };
+                let entry_id =
+                    ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+                let message = AgentMessage::FunctionResult(FunctionResultMessage {
+                    role: FunctionResultRoleTag::FunctionResult,
+                    function_call_id: req.function_call_id.clone(),
+                    function_id,
+                    content: data.content,
+                    details: data.details,
+                    is_error: data.is_error,
+                    timestamp: AgentMessage::now_ms(),
+                });
+                session
+                    .append(
+                        &record.session_id,
+                        &message,
+                        Some(&entry_id),
+                        None,
+                        Some(&json!({ "turn_id": record.turn_id })),
+                    )
+                    .await?;
+                if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                    cp.state = CallState::Done;
+                    cp.entry_id = Some(entry_id);
+                    cp.held_by = None;
+                    cp.child_session_id = child.as_ref().map(|c| c.session_id.clone());
+                    cp.child_turn_id = child.as_ref().map(|c| c.turn_id.clone());
+                }
+                let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+                return Ok(FunctionResolveResponse {
+                    resolved: true,
+                    turn_resumed,
+                });
+            }
             // The release path runs OUTSIDE the turn loop, so re-apply the
             // filesystem scope stamp the loop would have added: without it an
             // approved shell/coder call runs un-scoped (the session's picked
