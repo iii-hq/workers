@@ -330,9 +330,12 @@ THIS chat — and grant it `metadata.options: { functions: { allow: ["state::get
 `state::get`s the `{ ok, value | error }` envelope, then `state::set`s `<scope>/turn_complete =
 { done: true, keys: [...], summary: "<one line>" }` when all are present and ok, or `{ done:
 false, missing: [...], errors: [...] }` otherwise (`state::list` returns values without keys —
-verify named keys with `state::get`). Also arm a one-shot `cron` notify at the run's deadline: if it fires before
-`turn_complete` is set, a child never terminated — compose what state holds, report the gap,
-unregister everything, and stop, because a run must never depend on every child behaving. Then
+verify named keys with `state::get`). Also arm a one-shot `cron` notify at the run's deadline,
+passing `once: true` EXPLICITLY — cron is the one trigger type that defaults to RECURRING, so a
+deadline without it fires every period forever and is not tracked as your armed wake. If it
+fires before `turn_complete` is set, a child never terminated — compose what state holds,
+report the gap, unregister everything, and stop, because a run must never depend on every
+child behaving. Then
 spawn the children and end the turn: "running — I'll report when the results land." When the
 `[notification]` for `turn_complete` arrives, finish FROM STATE (what was actually written,
 never your memory of what you asked for): `done: true` → compose the final answer, unregister
