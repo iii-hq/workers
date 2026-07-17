@@ -224,8 +224,8 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
 /// Inject a message into an EXISTING session and wake/steer a turn, reusing the
 /// session's last turn options (model / provider / dispatch policy / prompt) so
 /// a woken turn keeps the agent's capabilities. Used by ephemeral subscriptions
-/// to deliver a notification without polling — the opposite of `harness::spawn`:
-/// the agent is never parked; the event arrives as a message.
+/// to deliver a notification without polling — agents are never parked; events
+/// arrive as messages.
 ///
 /// Unlike [`start`], this never creates a session. It errors if the session has
 /// no prior turn to inherit options from — in practice a session always has a
