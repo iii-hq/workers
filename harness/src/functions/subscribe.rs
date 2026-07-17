@@ -191,7 +191,9 @@ pub async fn invoke(
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
     match function_id {
-        REGISTER_TRIGGER_ID => intercept_register(deps, arguments, session_id, caller).await,
+        REGISTER_TRIGGER_ID => {
+            intercept_register(deps, arguments, session_id, caller, policy).await
+        }
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
@@ -241,13 +243,14 @@ async fn intercept_register(
     args: &Value,
     session_id: &str,
     caller: Option<CallerModel<'_>>,
+    policy: &CompiledPolicy,
 ) -> ResultData {
     let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
         Ok(r) => r,
         Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
     };
 
-    match handle(deps, req, session_id, caller).await {
+    match handle(deps, req, session_id, caller, policy).await {
         Ok(resp) => ok_result(&resp),
         Err(e) => error_result(e.to_string()),
     }
@@ -316,6 +319,7 @@ async fn handle(
     req: SubscribeRequest,
     session_id: &str,
     caller: Option<CallerModel<'_>>,
+    policy: &CompiledPolicy,
 ) -> Result<SubscribeResponse, HarnessError> {
     if let Some(fid) = req.function_id.as_deref() {
         if fid != crate::functions::react::REACT_ID {
@@ -324,7 +328,7 @@ async fn handle(
                 crate::functions::react::REACT_ID
             )));
         }
-        return handle_react(deps, req, session_id, caller).await;
+        return handle_react(deps, req, session_id, caller, policy).await;
     }
 
     if subscriptions::is_forbidden_trigger_type(&req.trigger_type) {
@@ -550,6 +554,7 @@ async fn handle_react(
     mut req: SubscribeRequest,
     session_id: &str,
     caller: Option<CallerModel<'_>>,
+    policy: &CompiledPolicy,
 ) -> Result<SubscribeResponse, HarnessError> {
     if !react_target_type_allowed(&req.trigger_type) {
         return Err(HarnessError::InvalidRequest(format!(
@@ -569,12 +574,44 @@ async fn handle_react(
     // teardown — the accumulator keeps one binding id per key).
     let dedup = registration_dedup_key(&req, once);
 
-    inherit_model(&mut req.metadata, caller);
+    let call_mode = req
+        .metadata
+        .as_ref()
+        .is_some_and(|m| m.get("call").is_some());
+    if call_mode {
+        // A call reaction runs with worker authority at fire time, so the
+        // REGISTRANT's dispatch policy gates the target here — otherwise a
+        // narrowed session could wire a reaction to any function on the bus.
+        // Harness-internal targets are refused outright (a call re-entering
+        // react/notify would be a self-dispatch loop the loop breakers were
+        // never designed for).
+        let target = req
+            .metadata
+            .as_ref()
+            .and_then(|m| m.pointer("/call/function_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if target.starts_with("harness::") {
+            return Err(HarnessError::InvalidRequest(format!(
+                "`call.function_id` cannot target harness-internal functions (got `{target}`)"
+            )));
+        }
+        if !target.is_empty() && !policy.allows(target) {
+            return Err(HarnessError::InvalidRequest(format!(
+                "`call.function_id` `{target}` is not permitted by this session's dispatch \
+                 policy — a call reaction can only target functions you can call yourself"
+            )));
+        }
+    } else {
+        inherit_model(&mut req.metadata, caller);
+    }
     crate::functions::react::validate_spec(req.metadata.as_ref())
         .map_err(HarnessError::InvalidRequest)?;
-    crate::functions::react::validate_model(&deps.iii, req.metadata.as_ref())
-        .await
-        .map_err(HarnessError::InvalidRequest)?;
+    if !call_mode {
+        crate::functions::react::validate_model(&deps.iii, req.metadata.as_ref())
+            .await
+            .map_err(HarnessError::InvalidRequest)?;
+    }
     if let Some(existing) = deps.subscriptions.find_duplicate(session_id, &dedup) {
         return Ok(SubscribeResponse {
             subscription_id: existing,
