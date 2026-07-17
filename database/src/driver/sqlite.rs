@@ -22,6 +22,22 @@ pub async fn query(
     tokio::task::spawn_blocking(move || -> Result<QueryResult, DbError> {
         conn.with(|c| {
             let mut stmt = c.prepare(&sql).map_err(map_err)?;
+            // `database::query` is the READ surface a narrowed agent policy
+            // grants; enforcement must live here, not in the docs — live
+            // testing showed agents running raw INSERTs through it.
+            // sqlite3_stmt_readonly is authoritative: it also catches
+            // data-modifying CTEs (`WITH ... INSERT`) and writing PRAGMAs
+            // that keyword classification misses.
+            if !stmt.readonly() {
+                return Err(DbError::DriverError {
+                    driver: "sqlite".into(),
+                    code: Some("READ_ONLY".into()),
+                    message: "database::query only runs read-only SQL; this statement writes — \
+                              use database::execute"
+                        .into(),
+                    failed_index: None,
+                });
+            }
             let columns: Vec<ColumnMeta> = stmt
                 .columns()
                 .into_iter()
@@ -662,6 +678,47 @@ mod tests {
         assert_eq!(result.rows.len(), 2);
         assert!(matches!(&result.rows[0].0[0], RowValue::Int(1)));
         assert!(matches!(&result.rows[0].0[1], RowValue::Text(s) if s == "alice"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_rejects_writes_including_cte_and_pragma() {
+        let p = pool().await;
+        let setup = p.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || {
+            setup.with(|c| c.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Live-caught escalation: agents granted read-only database::query ran
+        // raw INSERTs through it. Every write shape must be refused — plain
+        // DML, DDL, data-modifying CTEs, and writing PRAGMAs alike.
+        for sql in [
+            "INSERT INTO t (name) VALUES ('x')",
+            "DELETE FROM t",
+            "DROP TABLE t",
+            "WITH src(n) AS (VALUES ('x')) INSERT INTO t (name) SELECT n FROM src",
+            "PRAGMA journal_mode = WAL",
+        ] {
+            let err = query(&p, sql, &[], 30_000).await.unwrap_err();
+            assert!(
+                err.to_string().contains("read-only"),
+                "{sql:?} must be rejected as non-read-only, got: {err}"
+            );
+        }
+        // Reads still pass, including read-only PRAGMA-free CTEs.
+        assert!(query(&p, "WITH x(n) AS (VALUES (1)) SELECT n FROM x", &[], 30_000)
+            .await
+            .is_ok());
+        assert_eq!(
+            query(&p, "SELECT COUNT(*) AS n FROM t", &[], 30_000)
+                .await
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
