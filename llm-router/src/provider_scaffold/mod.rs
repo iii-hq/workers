@@ -8,6 +8,7 @@
 //! genuinely theirs: request building, SSE event decoding, and error
 //! classification.
 
+pub mod aborts;
 pub mod cache;
 pub mod names;
 pub mod pump;

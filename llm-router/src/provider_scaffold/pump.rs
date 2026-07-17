@@ -8,7 +8,14 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
-pub const PING_INTERVAL: Duration = Duration::from_secs(30);
+///
+/// Also the abort-detection bound: a failed ping write is how a provider
+/// notices the router closed the channel (`router::abort`) while the upstream
+/// is silent — e.g. Anthropic server-buffering a large tool_use input,
+/// generating (billed) tokens with no frames flowing. Worst-case waste after
+/// a stop is ~2 intervals (one ping trips the forwarder, the next observes
+/// it), so keep this small: 2s bounds it to ~4s where 30s allowed ~60s.
+pub const PING_INTERVAL: Duration = Duration::from_secs(2);
 
 /// `Err(())` means only "the sink is gone — stop writing"; there is no
 /// error detail to carry, so the unit error is the whole contract.
@@ -26,12 +33,34 @@ pub fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<()
 /// done / no terminal / caller gone) so providers can react to specific
 /// failures — e.g. dropping a cached credential on `AuthExpired`.
 pub async fn pump(
-    mut rx: mpsc::Receiver<AssistantMessageEvent>,
+    rx: mpsc::Receiver<AssistantMessageEvent>,
     sink: &dyn FrameSink,
     ping_interval: Duration,
 ) -> Option<ErrorKind> {
+    // Held so the never-fired abort arm stays pending instead of erroring.
+    let (_hold, abort_rx) = tokio::sync::watch::channel(false);
+    pump_abortable(rx, sink, ping_interval, abort_rx).await
+}
+
+/// [`pump`] with an active cancel: returns immediately when `abort_rx` fires
+/// (`provider::<id>::abort` via [`super::aborts::StreamAborts`]) — even
+/// mid-silence, without waiting for a ping write to fail. Returning drops
+/// `rx`, which aborts the upstream task and its in-flight HTTP request.
+pub async fn pump_abortable(
+    mut rx: mpsc::Receiver<AssistantMessageEvent>,
+    sink: &dyn FrameSink,
+    ping_interval: Duration,
+    mut abort_rx: tokio::sync::watch::Receiver<bool>,
+) -> Option<ErrorKind> {
     loop {
-        match tokio::time::timeout(ping_interval, rx.recv()).await {
+        let recv = tokio::select! {
+            r = tokio::time::timeout(ping_interval, rx.recv()) => r,
+            // Level-triggered: a fire before this poll is still observed.
+            // Err (sender gone before firing) can only follow an abort's
+            // send_replace(true), so wait_for resolves Ok on the value first.
+            _ = abort_rx.wait_for(|a| *a) => return None,
+        };
+        match recv {
             Ok(Some(ev)) => {
                 let terminal = ev.is_terminal();
                 let error_kind = match &ev {
