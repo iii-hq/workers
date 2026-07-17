@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.default_max_turns, 500);
         assert_eq!(cfg.max_depth, 3);
-        assert_eq!(cfg.max_children, 5);
+        assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 1);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
     }
