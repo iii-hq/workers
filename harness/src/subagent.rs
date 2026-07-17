@@ -70,7 +70,10 @@ pub async fn spawn_from_turn(
         return Err(is_error(
             "harness/spawn_fanout_exceeded",
             format!(
-                "{spawned} children spawned this turn at or above max_children {}",
+                "{spawned} children spawned this turn at or above max_children {} — the cap is \
+                 PER TURN. Consolidate the remaining work into the children already running \
+                 (one child can cover several parts), or start the remainder from a later turn \
+                 (e.g. your next notification-woken one); do not retry this spawn in this turn.",
                 cfg.max_children
             ),
         ));
