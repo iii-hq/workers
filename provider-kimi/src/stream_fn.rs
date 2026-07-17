@@ -12,7 +12,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
-use llm_router::provider_scaffold::aborts::StreamAborts;
+use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::pump::pump_abortable;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
@@ -33,14 +33,16 @@ pub fn make_stream(
     move |input: ProviderStreamInput| {
         let (iii, http, aborts) = (iii.clone(), http.clone(), aborts.clone());
         Box::pin(async move {
+            // Register BEFORE the first await: an abort landing while the sink
+            // opens must latch, not hit an unknown id. The RAII guard
+            // deregisters on every exit — early returns and an executor
+            // cancelling this future mid-await alike.
+            let abort_reg = input
+                .resolution_key
+                .as_ref()
+                .map(|rid| aborts.register(rid));
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            let request_id = input.resolution_key.clone();
-            run_stream_call(&iii, http, &aborts, input, sink.as_ref()).await;
-            // Single cleanup point covering every exit path (early returns
-            // included). A fired abort already consumed the entry — no-op.
-            if let Some(rid) = &request_id {
-                aborts.remove(rid);
-            }
+            run_stream_call(&iii, http, abort_reg.as_ref(), input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -56,16 +58,10 @@ fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<(), ()
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
-    aborts: &StreamAborts,
+    abort_reg: Option<&AbortGuard>,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
-    // Subscribe FIRST: an abort landing during credential resolve / config —
-    // before any upstream exists — must latch (level-triggered watch), or the
-    // request would start after its own cancellation. The caller removes the
-    // entry when this returns.
-    let abort_rx = input.resolution_key.as_ref().map(|rid| aborts.watch(rid));
-
     let model = input.model.clone();
     let mut warnings = Vec::new();
 
@@ -129,7 +125,7 @@ async fn run_stream_call(
     let headers = build_headers(&cfg);
 
     // Aborted while we were setting up — never start the upstream request.
-    if abort_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+    if abort_reg.is_some_and(|g| g.is_fired()) {
         return;
     }
     let rx = spawn_upstream(
@@ -143,9 +139,9 @@ async fn run_stream_call(
         },
     );
     // kimi discards the terminal error_kind (no cached credential to drop).
-    match abort_rx {
-        Some(abort_rx) => {
-            pump_abortable(rx, sink, PING_INTERVAL, abort_rx).await;
+    match abort_reg {
+        Some(g) => {
+            pump_abortable(rx, sink, PING_INTERVAL, g.watch()).await;
         }
         None => pump(rx, sink, PING_INTERVAL).await,
     }

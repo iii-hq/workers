@@ -53,6 +53,44 @@ impl StreamAborts {
         let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
         map.remove(request_id);
     }
+
+    /// RAII registration: subscribe on create, deregister on Drop. Register
+    /// BEFORE the stream fn's first await so an abort during setup latches,
+    /// and hold the guard across the call so cleanup runs on every exit —
+    /// including the executor cancelling the handler future mid-await, which
+    /// sequential cleanup after the call would silently miss.
+    pub fn register(&self, request_id: &str) -> AbortGuard {
+        AbortGuard {
+            rx: self.watch(request_id),
+            aborts: self.clone(),
+            request_id: request_id.to_string(),
+        }
+    }
+}
+
+pub struct AbortGuard {
+    aborts: StreamAborts,
+    request_id: String,
+    rx: watch::Receiver<bool>,
+}
+
+impl AbortGuard {
+    /// A receiver for `pump_abortable` (level-triggered; clone per pump).
+    pub fn watch(&self) -> watch::Receiver<bool> {
+        self.rx.clone()
+    }
+
+    /// True once the abort fired (also observable via a pre-fired `watch`).
+    pub fn is_fired(&self) -> bool {
+        *self.rx.borrow()
+    }
+}
+
+impl Drop for AbortGuard {
+    fn drop(&mut self) {
+        // A fired abort already consumed the entry — harmless no-op then.
+        self.aborts.remove(&self.request_id);
+    }
 }
 
 /// The `provider::<id>::abort` handler, ready to register: signals the
@@ -99,5 +137,24 @@ mod tests {
         let rx = aborts.watch("r1");
         assert!(aborts.abort("r1"));
         assert!(*rx.borrow());
+    }
+
+    /// The RAII property the providers rely on: dropping the guard (any exit,
+    /// including a cancelled future) deregisters; a pre-drop abort still
+    /// reaches the guard's receiver.
+    #[test]
+    fn guard_deregisters_on_drop_and_latches_aborts() {
+        let aborts = StreamAborts::new();
+        let guard = aborts.register("r1");
+        assert!(!guard.is_fired());
+        assert!(aborts.abort("r1"));
+        assert!(guard.is_fired());
+        assert!(*guard.watch().borrow());
+        drop(guard);
+        assert!(!aborts.abort("r1"), "entry gone after guard drop");
+
+        let guard2 = aborts.register("r2");
+        drop(guard2);
+        assert!(!aborts.abort("r2"), "unfired entry removed by guard drop");
     }
 }

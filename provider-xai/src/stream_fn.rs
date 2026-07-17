@@ -17,7 +17,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
-use llm_router::provider_scaffold::aborts::StreamAborts;
+use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
@@ -43,15 +43,26 @@ pub fn make_stream(
             aborts.clone(),
         );
         Box::pin(async move {
+            // Register BEFORE the first await: an abort landing while the sink
+            // opens must latch, not hit an unknown id. The RAII guard
+            // deregisters on every exit — early returns and an executor
+            // cancelling this future mid-await alike.
+            let abort_reg = input
+                .resolution_key
+                .as_ref()
+                .map(|rid| aborts.register(rid));
             let sink = open_sink(&iii, &input.writer_ref).await?;
             let wc = { cell.read().await.clone() };
-            let request_id = input.resolution_key.clone();
-            run_stream_call(&iii, http, &cache, &aborts, &wc, input, sink.as_ref()).await;
-            // Single cleanup point covering every exit path (early returns
-            // included). A fired abort already consumed the entry — no-op.
-            if let Some(rid) = &request_id {
-                aborts.remove(rid);
-            }
+            run_stream_call(
+                &iii,
+                http,
+                &cache,
+                abort_reg.as_ref(),
+                &wc,
+                input,
+                sink.as_ref(),
+            )
+            .await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -60,9 +71,9 @@ pub fn make_stream(
 }
 
 /// Pump the upstream, abortable via `provider::xai::abort` while it's live.
-/// Takes the entry receiver subscribed once in `run_stream_call`; the caller
-/// (`make_stream`) removes the registry entry on return. Returns the pump's
-/// terminal `ErrorKind`.
+/// Takes a receiver cloned from the call's `AbortGuard`, whose Drop in
+/// `make_stream` deregisters the entry. Returns the pump's terminal
+/// `ErrorKind`.
 async fn pump_stream(
     rx: mpsc::Receiver<AssistantMessageEvent>,
     sink: &dyn FrameSink,
@@ -78,17 +89,11 @@ async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
     cache: &ScaffoldCache,
-    aborts: &StreamAborts,
+    abort_reg: Option<&AbortGuard>,
     wc: &crate::config::WorkerConfig,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
-    // Subscribe FIRST: an abort landing during credential resolve / config /
-    // model_meta — before any upstream exists — must latch (level-triggered
-    // watch), or the request would start after its own cancellation. The
-    // caller removes the entry when this returns.
-    let abort_rx = input.resolution_key.as_ref().map(|rid| aborts.watch(rid));
-
     let model = input.model.clone();
     let mut warnings = Vec::new();
 
@@ -165,7 +170,7 @@ async fn run_stream_call(
         );
         let headers = build_headers(&cfg);
         // Aborted while we were setting up — never start the upstream request.
-        if abort_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+        if abort_reg.is_some_and(|g| g.is_fired()) {
             return;
         }
         let rx = spawn_responses_upstream(
@@ -180,7 +185,8 @@ async fn run_stream_call(
         );
         // An upstream auth terminal means the cached credential was rotated
         // out from under us: drop the cache so the next attempt re-resolves.
-        if pump_stream(rx, sink, abort_rx.clone()).await == Some(ErrorKind::AuthExpired) {
+        if pump_stream(rx, sink, abort_reg.map(|g| g.watch())).await == Some(ErrorKind::AuthExpired)
+        {
             cache.invalidate();
         }
         return;
@@ -226,7 +232,7 @@ async fn run_stream_call(
     let headers = build_headers(&cfg);
 
     // Aborted while we were setting up — never start the upstream request.
-    if abort_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+    if abort_reg.is_some_and(|g| g.is_fired()) {
         return;
     }
     let rx = spawn_upstream(
@@ -241,7 +247,7 @@ async fn run_stream_call(
     );
     // An upstream auth terminal means the cached credential was rotated
     // out from under us: drop the cache so the next attempt re-resolves.
-    if pump_stream(rx, sink, abort_rx.clone()).await == Some(ErrorKind::AuthExpired) {
+    if pump_stream(rx, sink, abort_reg.map(|g| g.watch())).await == Some(ErrorKind::AuthExpired) {
         cache.invalidate();
     }
 }
