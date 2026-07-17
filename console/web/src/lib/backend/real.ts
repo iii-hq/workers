@@ -616,12 +616,20 @@ async function realCompactSession(
       }
     }
 
-    const resp = await client.trigger<CompactResponse>('context::compact', {
-      messages,
-      model: modelInput,
-      // Serialise concurrent compactions of the same conversation.
-      options: { lease_key: sessionId },
-    })
+    const resp = await client.trigger<CompactResponse>(
+      'context::compact',
+      {
+        messages,
+        model: modelInput,
+        // Serialise concurrent compactions of the same conversation.
+        options: { lease_key: sessionId },
+      },
+      // Compaction makes a summariser LLM call budgeted up to 320s
+      // (context-manager `summarizer_timeout_ms`); the SDK's default 30s
+      // invocation timeout kills it mid-summary. Give the invocation
+      // headroom over the summariser's own budget.
+      { timeoutMs: 330_000 },
+    )
 
     if (resp?.status === 'ok') {
       const tailStartEntryId =
