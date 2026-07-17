@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{estimator_for_model, Estimator};
 use crate::core::lease;
-use crate::core::prune::{emergency_reduce, prune as run_prune, PruneParams};
+use crate::core::prune::{emergency_reduce_with_sizes, prune_with_sizes, PruneParams};
 use crate::core::selection::select;
 use crate::core::summary::{
     build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
@@ -181,11 +181,26 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     let tools = req.tools.as_deref().unwrap_or_default();
     let request_overhead_tokens = options.request_overhead_tokens.unwrap_or(0);
 
-    let count = |messages: &[AgentMessage], prompt: &str| -> u64 {
-        count_context(messages, prompt, tools, request_overhead_tokens, estimator)
+    // Size memo: every message, tool, and the prompt are estimated once;
+    // the pipeline's recounts become O(1)-per-message sums, and the
+    // mutating passes below keep `sizes` in lockstep with `working`.
+    // The fold order and saturating ops mirror `count_context` exactly
+    // so totals stay byte-identical with a from-scratch recount.
+    let mut sizes: Vec<u64> = working.iter().map(|m| estimator.message(m)).collect();
+    let tool_tokens = tools.iter().fold(0u64, |total, tool| {
+        total.saturating_add(estimator.function(tool))
+    });
+    let mut prompt_tokens = estimator.text(&system_prompt);
+    let total = |sizes: &[u64], prompt_tokens: u64| -> u64 {
+        sizes
+            .iter()
+            .fold(0u64, |total, size| total.saturating_add(*size))
+            .saturating_add(prompt_tokens)
+            .saturating_add(tool_tokens)
+            .saturating_add(request_overhead_tokens)
     };
 
-    let initial_token_count = count(&working, &system_prompt);
+    let initial_token_count = total(&sizes, prompt_tokens);
     let mut applied = Applied {
         initial_token_count,
         pruned: false,
@@ -207,10 +222,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             max_output_chars: config.max_output_chars,
             protected_functions: options.protected_functions.clone().unwrap_or_default(),
         };
-        let stats = run_prune(&mut working, &params, estimator);
+        let stats = prune_with_sizes(&mut working, &mut sizes, &params, estimator);
         applied.pruned = stats.pruned_parts > 0;
         applied.pruned_tokens = stats.pruned_tokens;
-        token_count = count(&working, &system_prompt);
+        token_count = total(&sizes, prompt_tokens);
     }
 
     // Step 2: compact the head.
@@ -227,22 +242,24 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             deps,
             &req.model,
             &working,
+            &sizes,
             usable_budget,
             options.tail_turns.unwrap_or(config.tail_turns),
             &lease_key,
             options.previous_summary.as_deref(),
-            estimator,
         )
         .await
         {
             system_prompt = render_system_prompt(base_prompt, Some(&compaction.summary));
             working = working.split_off(compaction.head_len);
+            sizes = sizes.split_off(compaction.head_len);
+            prompt_tokens = estimator.text(&system_prompt);
             applied.compacted = true;
             applied.tail_start_index = Some(compaction.tail_start_view.map(|v| view_to_orig[v]));
             applied.tokens_before = Some(compaction.tokens_before);
             applied.summarized_head_tokens = Some(compaction.tokens_before);
             applied.summary = Some(compaction.summary);
-            token_count = count(&working, &system_prompt);
+            token_count = total(&sizes, prompt_tokens);
         }
     }
 
@@ -250,8 +267,9 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // messages, including latest/protected results and their details.
     // This pass is intentionally independent of all normal-prune knobs.
     if token_count > usable_budget {
-        let emergency = emergency_reduce(
+        let emergency = emergency_reduce_with_sizes(
             &mut working,
+            &mut sizes,
             token_count.saturating_sub(usable_budget),
             estimator,
         );
@@ -259,8 +277,20 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         applied.pruned_tokens = applied
             .pruned_tokens
             .saturating_add(emergency.pruned_tokens);
-        token_count = count(&working, &system_prompt);
+        token_count = total(&sizes, prompt_tokens);
     }
+
+    debug_assert_eq!(
+        token_count,
+        count_context(
+            &working,
+            &system_prompt,
+            tools,
+            request_overhead_tokens,
+            estimator
+        ),
+        "size memo drifted from a from-scratch recount"
+    );
 
     if token_count > usable_budget {
         return Err(ContextError::Overflow {
@@ -299,11 +329,11 @@ async fn try_compact(
     deps: &Deps,
     model: &ModelInput,
     working: &[AgentMessage],
+    sizes: &[u64],
     usable_budget: u64,
     tail_turns: usize,
     lease_key: &str,
     previous_summary: Option<&str>,
-    estimator: &dyn Estimator,
 ) -> Option<CompactionOutcome> {
     let config = deps.config().await;
     let leases = deps.leases().await;
@@ -312,13 +342,13 @@ async fn try_compact(
 
     let outcome = async {
         let budget = preserve_recent_budget(usable_budget, None);
-        let selection = select(working, budget, tail_turns, estimator);
+        let selection = select(working, sizes, budget, tail_turns);
         let head = &working[..selection.head_len];
         if head.is_empty() {
             return None;
         }
 
-        let tokens_before: u64 = head.iter().map(|m| estimator.message(m)).sum();
+        let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
         let stripped = strip_media(head, config.max_output_chars);
         let request = SummarizeRequest {
             system_prompt: build_system_prompt(previous_summary),
