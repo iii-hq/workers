@@ -36,7 +36,10 @@ pub fn make_stream(
             // opens must latch, not hit an unknown id. The RAII guard
             // deregisters on every exit — early returns and an executor
             // cancelling this future mid-await alike.
-            let abort_reg = input.resolution_key.as_ref().map(|rid| aborts.register(rid));
+            let abort_reg = input
+                .resolution_key
+                .as_ref()
+                .map(|rid| aborts.register(rid));
             let sink = open_sink(&iii, &input.writer_ref).await?;
             run_stream_call(&iii, http, &cache, abort_reg.as_ref(), input, sink.as_ref()).await;
             sink.close();
